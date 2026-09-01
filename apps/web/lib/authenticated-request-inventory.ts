@@ -553,6 +553,8 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
   action("app/(app)/projects/[projectId]/clips/[clipId]/studio/page.tsx", "fetchAutoLayoutAnalysis", "project", "content.edit"),
   action("app/(app)/projects/[projectId]/clips/[clipId]/studio/page.tsx", "fetchSplitLayoutAnalysis", "project", "content.edit"),
   action("app/(app)/projects/[projectId]/clips/[clipId]/studio/page.tsx", "fetchScreenLayoutAnalysis", "project", "content.edit"),
+  action("app/(app)/projects/[projectId]/clips/[clipId]/studio/page.tsx", "updateProjectCensorTerms", "project", "content.edit"),
+  action("app/(app)/projects/[projectId]/clips/[clipId]/studio/page.tsx", "recordAutoCensorEvent", "project", "content.view"),
 ];
 
 export const browserSessionServerActionModules = [

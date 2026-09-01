@@ -536,6 +536,18 @@ describe("composition FFmpeg adapter", () => {
             gain: 0.8,
           },
         ],
+        censors: [
+          {
+            startSec: 1,
+            endSec: 1.5,
+            treatment: "beep",
+            frequencyHz: 1_000,
+            gain: 0.25,
+            fadeInSec: 0.015,
+            fadeOutSec: 0.015,
+          },
+          { startSec: 3, endSec: 3.4, treatment: "mute" },
+        ],
       },
     });
 
@@ -578,7 +590,64 @@ describe("composition FFmpeg adapter", () => {
           gain: 0.8,
         },
       ],
+      censors: [
+        {
+          startSec: 1,
+          endSec: 1.5,
+          treatment: "beep",
+          frequencyHz: 1_000,
+          gain: 0.25,
+          fadeInSec: 0.015,
+          fadeOutSec: 0.015,
+        },
+        { startSec: 3, endSec: 3.4, treatment: "mute" },
+      ],
     });
+  });
+
+  test("compiles mute and beep from the shared schedule without touching music", () => {
+    const base = planCenter();
+    const plan = {
+      ...base,
+      audioSchedule: {
+        ...base.audioSchedule,
+        fingerprint: "audio:censor",
+        censors: [
+          {
+            startSec: 1,
+            endSec: 1.5,
+            treatment: "beep" as const,
+            frequencyHz: 1_000,
+            gain: 0.25,
+            fadeInSec: 0.015,
+            fadeOutSec: 0.015,
+          },
+          { startSec: 3, endSec: 3.4, treatment: "mute" as const },
+        ],
+      },
+    };
+    const audio = bindCompositionPlanAudioInputs(
+      compileCompositionPlanAudioSchedule(plan),
+      {},
+    );
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/source.mp4",
+      outputPath: "/tmp/output.mp4",
+      startSec: 0,
+      endSec: 5,
+      aspectRatio: "9:16",
+      probe: { hasVideo: true, hasAudio: true, width: 1920, height: 1080, durationSec: 5, fps: 30 },
+      srtPath: null,
+      composition: { plan, targetId: "variant-1" },
+      audio,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+
+    expect(graph).toContain("between(t,1.000,1.500)");
+    expect(graph).toContain("between(t,3.000,3.400)");
+    expect(graph).toContain("sine=frequency=1000:sample_rate=48000:duration=0.500");
+    expect(graph).toContain("afade=t=in:st=0:d=0.015");
+    expect(graph).toContain("alimiter=limit=0.950:level=disabled");
   });
 
   test("compiles the planner's complete visual order without re-reading editor policy", () => {
@@ -1091,5 +1160,122 @@ describe("composition FFmpeg adapter", () => {
     expect(Number(result.format.duration)).toBeCloseTo(plan.editedDurationSec, 1);
     expect(result.streams).toContainEqual(expect.objectContaining({ codec_type: "video", width: 180, height: 320 }));
     expect(result.streams).toContainEqual(expect.objectContaining({ codec_type: "audio" }));
+  }, 30_000);
+
+  test("renders beep and mute against real dialogue while preserving music without clipping", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "narriflow-censor-audio-"));
+    realMediaDirectories.push(directory);
+    const sourcePath = join(directory, "source.mp4");
+    const musicPath = join(directory, "music.wav");
+    const outputPath = join(directory, "output.mp4");
+    const run = async (args: string[]) => {
+      const process = Bun.spawn(args, { stdout: "ignore", stderr: "pipe" });
+      const stderr = await new Response(process.stderr).text();
+      expect(await process.exited, stderr).toBe(0);
+    };
+    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x180:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", sourcePath]);
+    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000", "-t", "4", musicPath]);
+
+    const planned = planClipComposition({
+      document: editorDocumentSchema.parse({
+        version: 2,
+        clipStartSec: 0,
+        clipEndSec: 4,
+        captionPreset: captionPresetSchema.parse({}),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({
+          framing: { mode: "center" },
+          music: { url: "https://example.com/music.wav", volume: 30 },
+        }),
+        brollUrl: null,
+        deletedRanges: [],
+        censorSegments: [
+          {
+            schemaVersion: 1,
+            id: "02650dd9-6f3c-44ec-986c-2fdd5c69d984",
+            sourceWordIds: ["word:beep"],
+            sourceStartSec: 1,
+            sourceEndSec: 1.5,
+            treatment: "beep",
+            paddingSec: 0,
+            beepSettings: { frequencyHz: 1_000, levelDb: -8 },
+            captionMaskPolicy: null,
+            suggestionFingerprint: null,
+            policyVersion: "fixture-v1",
+            enabled: true,
+          },
+          {
+            schemaVersion: 1,
+            id: "359735d5-2e12-44e0-bf50-bdaee376a20d",
+            sourceWordIds: ["word:mute"],
+            sourceStartSec: 2,
+            sourceEndSec: 2.5,
+            treatment: "mute",
+            paddingSec: 0,
+            beepSettings: null,
+            captionMaskPolicy: null,
+            suggestionFingerprint: null,
+            policyVersion: "fixture-v1",
+            enabled: true,
+          },
+        ],
+      }),
+      source: { identity: "source:censor-real", kind: "video", width: 320, height: 180, hasAudio: true },
+      evidence: { automaticLayout: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      assets: {
+        backgroundImage: { state: "missing" },
+        music: { state: "available", ref: "music:censor-real", durationSec: 4 },
+      },
+      targets: [{ id: "real", aspectRatio: "9:16", width: 180, height: 320 }],
+    });
+    if (planned.status === "invalid") throw new Error(planned.error.code);
+    const audio = bindCompositionPlanAudioInputs(
+      compileCompositionPlanAudioSchedule(planned.plan),
+      { music: { sourceRef: "music:censor-real", path: musicPath } },
+    );
+    const args = buildSingleVideoArgs({
+      sourcePath,
+      outputPath,
+      startSec: 0,
+      endSec: 4,
+      aspectRatio: "9:16",
+      probe: { hasVideo: true, hasAudio: true, width: 320, height: 180, durationSec: 4, fps: 24 },
+      srtPath: null,
+      composition: { plan: planned.plan, targetId: "real" },
+      audio,
+    });
+    await run(["ffmpeg", ...args]);
+
+    const decode = Bun.spawn(["ffmpeg", "-v", "error", "-i", outputPath, "-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1"], { stdout: "pipe", stderr: "pipe" });
+    const bytes = await new Response(decode.stdout).arrayBuffer();
+    const decodeError = await new Response(decode.stderr).text();
+    expect(await decode.exited, decodeError).toBe(0);
+    const samples = new Float32Array(bytes);
+    const amplitude = (frequencyHz: number, startSec: number, endSec: number) => {
+      const start = Math.round(startSec * 48_000);
+      const end = Math.min(samples.length, Math.round(endSec * 48_000));
+      let real = 0;
+      let imaginary = 0;
+      for (let index = start; index < end; index += 1) {
+        const angle = 2 * Math.PI * frequencyHz * index / 48_000;
+        real += samples[index]! * Math.cos(angle);
+        imaginary -= samples[index]! * Math.sin(angle);
+      }
+      return (2 * Math.hypot(real, imaginary)) / Math.max(1, end - start);
+    };
+    const dialogueBefore = amplitude(440, 0.5, 0.8);
+    const musicBefore = amplitude(220, 0.5, 0.8);
+    const beepAmplitude = amplitude(1_000, 1.15, 1.35);
+    expect(beepAmplitude).toBeGreaterThan(0.04);
+    expect(beepAmplitude).toBeLessThan(0.06);
+    expect(amplitude(440, 1.15, 1.35)).toBeLessThan(dialogueBefore * 0.15);
+    expect(amplitude(440, 2.1, 2.4)).toBeLessThan(dialogueBefore * 0.15);
+    expect(amplitude(220, 1.15, 1.35)).toBeGreaterThan(musicBefore * 0.5);
+    expect(amplitude(220, 2.1, 2.4)).toBeGreaterThan(musicBefore * 0.5);
+    expect(samples.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 0)).toBeLessThanOrEqual(0.95);
   }, 30_000);
 });

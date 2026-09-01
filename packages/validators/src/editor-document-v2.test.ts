@@ -207,4 +207,36 @@ describe("Clip Editor Document v2", () => {
       deletedRanges: [{ startSec: 14, endSec: 17 }],
     })).toThrow();
   });
+
+  test("applies a reviewed censor batch as one undo entry", () => {
+    const base = editorDocumentSchema.parse(currentDocument());
+    const makeCensor = (id: string, startSec: number) => ({
+      schemaVersion: 1 as const,
+      id,
+      sourceWordIds: [`word:${id}`],
+      sourceStartSec: startSec,
+      sourceEndSec: startSec + 0.4,
+      treatment: "mute" as const,
+      paddingSec: 0.05,
+      beepSettings: null,
+      captionMaskPolicy: null,
+      suggestionFingerprint: "c".repeat(64),
+      policyVersion: "auto-censor-2026-09-01.1",
+      enabled: true,
+    });
+    const reviewed = [
+      makeCensor("30000000-0000-4000-8000-000000000001", 12),
+      makeCensor("30000000-0000-4000-8000-000000000002", 14),
+    ];
+
+    const applied = applyWithHistory(createEditorHistory(base), {
+      type: "setCensorSegments",
+      segments: reviewed,
+    });
+
+    expect(applied.present.censorSegments).toEqual(reviewed);
+    expect(applied.past).toHaveLength(1);
+    expect(undoEditor(applied).present.censorSegments).toEqual([]);
+    expect(redoEditor(undoEditor(applied)).present.censorSegments).toEqual(reviewed);
+  });
 });

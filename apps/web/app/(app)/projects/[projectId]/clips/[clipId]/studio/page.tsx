@@ -12,8 +12,10 @@ import {
   brandFontService,
   brandProfileService,
   generatedImageCapability,
+  autoCensorService,
 } from "@narriflow/services";
 import { brandTemplateSnapshotSchema, getEffectiveClipTiming, sceneTemplateDefinitionSchema,
+  type AutoCensorAnalyticsInput,
 } from "@narriflow/validators";
 import { compositionAssetRef } from "@narriflow/composition-plan";
 import { StudioShell } from "./_components/studio-shell";
@@ -50,6 +52,8 @@ export default async function StudioPage({
   ]);
 
   if (!snapshot.project) notFound();
+
+  const autoCensorPolicy = await autoCensorService.getPolicy(appUser, projectId);
 
   const scenesEntitled = hasFeature(pricingTier, "brand.scenes");
   const generatedImagesCapability = generatedImageCapability(appUser);
@@ -230,6 +234,21 @@ export default async function StudioPage({
     );
   }
 
+  async function updateProjectCensorTerms(terms: string[]) {
+    "use server";
+    return executeProjectAction(projectId, "content.edit", async (actor) => ({
+      terms: await autoCensorService.replaceProjectTerms(actor, projectId, terms),
+    }));
+  }
+
+  async function recordAutoCensorEvent(input: AutoCensorAnalyticsInput) {
+    "use server";
+    return executeProjectAction(projectId, "content.view", async (actor) => {
+      await autoCensorService.recordEvent(actor, projectId, clipId, input);
+      return { recorded: true as const };
+    });
+  }
+
   return (
     <StudioShell
       clipInfo={clipInfo}
@@ -275,6 +294,9 @@ export default async function StudioPage({
       sceneTemplates={sceneTemplates}
       sceneWriteCapabilities={sceneWriteCapabilities}
       generatedImagesCapability={generatedImagesCapability}
+      autoCensorPolicy={autoCensorPolicy}
+      updateProjectCensorTerms={updateProjectCensorTerms}
+      recordAutoCensorEvent={recordAutoCensorEvent}
     />
   );
 }

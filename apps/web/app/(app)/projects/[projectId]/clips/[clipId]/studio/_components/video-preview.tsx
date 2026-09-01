@@ -52,6 +52,7 @@ import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
 import { hexToRgba } from "./caption-style-engine";
 import { InteractiveTextLayer } from "./interactive-text-layer";
 import { SfxPreviewTrack } from "./sfx-preview-track";
+import { CensorBeepPreviewTrack } from "./censor-beep-preview-track";
 import { SplitSecondaryTile, type SplitSecondaryTileCropRect } from "./split-secondary-tile";
 import type { NormalizedCropRect } from "./normalized-crop";
 import {
@@ -977,8 +978,8 @@ export function VideoPreview() {
     [compositionPreview],
   );
   useEffect(() => {
-    setSourceAudioEnvelope(plannedAudioState?.source.outputGain ?? 1);
-  }, [plannedAudioState?.source.outputGain, setSourceAudioEnvelope]);
+    setSourceAudioEnvelope(plannedAudioState?.source.envelopeGain ?? 1);
+  }, [plannedAudioState?.source.envelopeGain, setSourceAudioEnvelope]);
   useEffect(
     () => () => setSourceAudioEnvelope(1),
     [setSourceAudioEnvelope],
@@ -2152,6 +2153,11 @@ export function VideoPreview() {
                 );
               })
             : null}
+
+          <CensorBeepPreviewTrack
+            beep={plannedAudioState?.beep ?? null}
+            isPlaying={isPlaying}
+          />
 
           {/* Layout blur layer — a persisted background overrides this
               cosmetic entirely (see backgroundActive above), and so do

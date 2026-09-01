@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  autoCensorWordId,
   captionPresetSchema,
   clipAutoLayoutAnalysisSchema,
   editorDocumentSchema,
@@ -50,6 +51,91 @@ function fitDocument() {
 }
 
 describe("Clip Composition Plan", () => {
+  test("plans caption masks and the shared edited-time censor audio schedule", () => {
+    const censoredWord = {
+      word: "Fuck!",
+      startSec: 1,
+      endSec: 1.5,
+      confidence: 0.98,
+    };
+    const sourceWordId = autoCensorWordId({
+      utteranceIndex: 0,
+      wordIndex: 0,
+      word: censoredWord,
+      locale: "en",
+    });
+    const document = editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 0,
+      clipEndSec: 4,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [{
+        index: 0,
+        speaker: 0,
+        speakerLabel: "Speaker 1",
+        startSec: 1,
+        endSec: 1.5,
+        text: "Fuck!",
+        confidence: 0.98,
+        words: [censoredWord],
+      }],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: null,
+      deletedRanges: [],
+      censorSegments: [
+        {
+          schemaVersion: 1,
+          id: "10000000-0000-4000-8000-000000000001",
+          sourceWordIds: [sourceWordId],
+          sourceStartSec: 1,
+          sourceEndSec: 1.5,
+          treatment: "caption_mask",
+          paddingSec: 0,
+          beepSettings: null,
+          captionMaskPolicy: { replacement: "first_character", preservePunctuation: true },
+          suggestionFingerprint: "a".repeat(64),
+          policyVersion: "auto-censor-2026-09-01.1",
+          enabled: true,
+        },
+        {
+          schemaVersion: 1,
+          id: "10000000-0000-4000-8000-000000000002",
+          sourceWordIds: [sourceWordId],
+          sourceStartSec: 1,
+          sourceEndSec: 1.5,
+          treatment: "beep",
+          paddingSec: 0.08,
+          beepSettings: { frequencyHz: 1_000, levelDb: -12 },
+          captionMaskPolicy: null,
+          suggestionFingerprint: "b".repeat(64),
+          policyVersion: "auto-censor-2026-09-01.1",
+          enabled: true,
+        },
+      ],
+    });
+    const result = planClipComposition({
+      document,
+      source: { identity: "source:censor", kind: "video", width: 1920, height: 1080, hasAudio: true },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.audioSchedule.censors).toEqual([{
+      startSec: 0.92,
+      endSec: 1.58,
+      treatment: "beep",
+      frequencyHz: 1_000,
+      gain: 0.251189,
+      fadeInSec: 0.015,
+      fadeOutSec: 0.015,
+    }]);
+    const caption = result.plan.targets[0]?.visualLayers.find((layer) => layer.kind === "caption");
+    expect(caption?.kind === "caption" ? caption.words[0]?.text : null).toBe("F***!");
+  });
+
   test("plans one edited-time audio schedule for source, music, ducking, and sound effects", () => {
     const document = editorDocumentSchema.parse({
     version: 2,
@@ -167,6 +253,7 @@ describe("Clip Composition Plan", () => {
           gain: 0.8,
         },
       ],
+      censors: [],
     });
   });
 

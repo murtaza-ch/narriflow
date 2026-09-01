@@ -230,6 +230,41 @@ describe("StudioEditingSession document and history seam", () => {
     expect(session.getSnapshot().document.mediaMotions[0]?.id).toBe(motionId);
   });
 
+  test("applies reviewed censor suggestions through one session history entry", () => {
+    const session = makeSession();
+    const segment = (id: string, sourceStartSec: number) => ({
+      schemaVersion: 1 as const,
+      id,
+      sourceWordIds: [`word:${id}`],
+      sourceStartSec,
+      sourceEndSec: sourceStartSec + 0.4,
+      treatment: "mute" as const,
+      paddingSec: 0.05,
+      beepSettings: null,
+      captionMaskPolicy: null,
+      suggestionFingerprint: "d".repeat(64),
+      policyVersion: "auto-censor-2026-09-01.1",
+      enabled: true,
+    });
+    session.dispatch({
+      type: "document.edit",
+      action: {
+        type: "setCensorSegments",
+        segments: [
+          segment("40000000-0000-4000-8000-000000000001", 12),
+          segment("40000000-0000-4000-8000-000000000002", 16),
+        ],
+      },
+    });
+
+    expect(session.getSnapshot().document.censorSegments).toHaveLength(2);
+    session.dispatch({ type: "history.undo" });
+    expect(session.getSnapshot().document.censorSegments).toEqual([]);
+    expect(session.getSnapshot().history.canUndo).toBe(false);
+    session.dispatch({ type: "history.redo" });
+    expect(session.getSnapshot().document.censorSegments).toHaveLength(2);
+  });
+
   test("gesture completion prevents later edits from coalescing", () => {
     const session = makeSession();
     session.dispatch({

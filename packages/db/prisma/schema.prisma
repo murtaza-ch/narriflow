@@ -269,6 +269,10 @@ enum AnalyticsEventType {
   brand_font_upload_failed
   scene_template_used
   brand_premium_mutation_blocked
+  auto_censor_scan_started
+  auto_censor_scan_completed
+  auto_censor_applied
+  auto_censor_export_notice
 }
 
 enum AudioAssetKind {
@@ -354,6 +358,7 @@ model Project {
   brandSnapshot           Json?
   brandProfileId          String?                 @db.Uuid
   brandProfileSnapshot    Json?
+  censorTerms             Json                    @default("[]")
   // Client-minted commit token: concurrent Step-1 double-submits collapse in
   // the database, not the UI.
   commitToken             String?                 @unique @db.Uuid

@@ -2851,8 +2851,19 @@ function buildAudioFadeChain(
  * they always have.
  */
 function buildSourceGainFilter(
-  sourceAudio: BoundCompositionAudioRenderRequest["source"],
+  audio: BoundCompositionAudioRenderRequest,
 ): string | null {
+  const sourceAudio = audio.source;
+  const censorWindows = audio.censors
+    .map(
+      (censor) =>
+        `between(t,${censor.startSec.toFixed(3)},${censor.endSec.toFixed(3)})`,
+    )
+    .join("+");
+  if (censorWindows) {
+    const gain = sourceAudio.muted ? 0 : sourceAudio.gain;
+    return `volume='if(${censorWindows},0,${gain.toFixed(6)})':eval=frame`;
+  }
   if (sourceAudio.muted) return "volume=0.000";
   if (sourceAudio.gain === 1) return null;
   return `volume=${sourceAudio.gain.toFixed(3)}`;
@@ -2866,9 +2877,35 @@ function buildSourceGainFilter(
 function buildDialogueAudioFilter(
   audio: BoundCompositionAudioRenderRequest,
 ): string {
-  const gainFilter = buildSourceGainFilter(audio.source);
+  const gainFilter = buildSourceGainFilter(audio);
   const fadeChain = buildAudioFadeChain(audio.outputFades);
   return gainFilter ? `${gainFilter},${fadeChain}` : fadeChain;
+}
+
+function buildCensorBeepAudioFilter(params: {
+  censor: Extract<BoundCompositionAudioRenderRequest["censors"][number], { treatment: "beep" }>;
+  clipDurationSec: number;
+  label: string;
+}): string {
+  const durationSec = params.censor.endSec - params.censor.startSec;
+  const fadeOutStartSec = Math.max(0, durationSec - params.censor.fadeOutSec);
+  const prefix = params.label.replace(/[[\]]/g, "");
+  const toneLabel = `[${prefix}_tone]`;
+  const delayedLabel = `[${prefix}_delayed]`;
+  const tone = [
+    `sine=frequency=${params.censor.frequencyHz}:sample_rate=48000:duration=${durationSec.toFixed(3)}`,
+    `volume=${params.censor.gain.toFixed(6)}`,
+    `afade=t=in:st=0:d=${params.censor.fadeInSec.toFixed(3)}`,
+    `afade=t=out:st=${fadeOutStartSec.toFixed(3)}:d=${params.censor.fadeOutSec.toFixed(3)}`,
+  ].join(",");
+  const delayed = params.censor.startSec > 0
+    ? `anullsrc=channel_layout=mono:sample_rate=48000:d=${params.censor.startSec.toFixed(3)}[${prefix}_silence];${tone}${toneLabel};[${prefix}_silence]${toneLabel}concat=n=2:v=0:a=1${delayedLabel}`
+    : `${tone}${delayedLabel}`;
+  return `${delayed};${delayedLabel}${[
+    "apad",
+    `atrim=duration=${Math.max(0.1, params.clipDurationSec).toFixed(3)}`,
+    "asetpts=PTS-STARTPTS",
+  ].join(",")}${params.label}`;
 }
 
 /**
@@ -3020,6 +3057,10 @@ function buildAudioMixFilter(params: {
   const sfxEntries = params.audio.soundEffects
     .map((plan, index) => ({ plan, inputIndex: params.sfxInputIndexes[index]! }))
     .filter((entry) => entry.plan.activeRange.startSec < duration);
+  const beepEntries = params.audio.censors.filter(
+    (censor): censor is Extract<typeof censor, { treatment: "beep" }> =>
+      censor.treatment === "beep",
+  );
 
   const branchFilters: string[] = [];
   const branchLabels: string[] = [];
@@ -3032,7 +3073,7 @@ function buildAudioMixFilter(params: {
     // `volume=`, dialogue gain), so every branch must mix at unity gain —
     // applied here on the dialogue branch (before amix) same as the
     // no-music path.
-    const dialogueGainFilter = buildSourceGainFilter(params.audio.source);
+    const dialogueGainFilter = buildSourceGainFilter(params.audio);
     const label = "[maina]";
     branchFilters.push(
       dialogueGainFilter
@@ -3041,6 +3082,18 @@ function buildAudioMixFilter(params: {
     );
     branchLabels.push(label);
   }
+
+  beepEntries.forEach((censor, index) => {
+    const label = `[censor${index}a]`;
+    branchFilters.push(
+      buildCensorBeepAudioFilter({
+        censor,
+        clipDurationSec: duration,
+        label,
+      }),
+    );
+    branchLabels.push(label);
+  });
 
   if (params.audio.music && params.musicInputIndex != null) {
     const plan = params.audio.music;
@@ -3080,12 +3133,18 @@ function buildAudioMixFilter(params: {
   }
 
   if (branchLabels.length === 1) {
-    return `${branchFilters[0]};${branchLabels[0]}${fadeChain}[outa]`;
+    const limiter = beepEntries.length > 0
+      ? "alimiter=limit=0.950:level=disabled,"
+      : "";
+    return `${branchFilters[0]};${branchLabels[0]}${limiter}${fadeChain}[outa]`;
   }
 
+  const limiter = beepEntries.length > 0
+    ? ",alimiter=limit=0.950:level=disabled"
+    : "";
   return [
     ...branchFilters,
-    `${branchLabels.join("")}amix=inputs=${branchLabels.length}:duration=first:dropout_transition=0:normalize=0,${fadeChain}[outa]`,
+    `${branchLabels.join("")}amix=inputs=${branchLabels.length}:duration=first:dropout_transition=0:normalize=0${limiter},${fadeChain}[outa]`,
   ].join(";");
 }
 
@@ -3264,7 +3323,10 @@ export function buildSingleVideoArgs(params: {
   const audioForRender = sceneDialogueLabel
     ? { ...params.audio, source: { ...params.audio.source, available: true } }
     : params.audio;
-  const hasMixedAudio = Boolean(params.audio.music) || sfxInputIndexes.length > 0;
+  const hasMixedAudio =
+    Boolean(params.audio.music) ||
+    sfxInputIndexes.length > 0 ||
+    params.audio.censors.some((censor) => censor.treatment === "beep");
   if (hasMixedAudio) {
     filterParts.push(
       buildAudioMixFilter({
@@ -3522,7 +3584,10 @@ export function buildBrollVideoArgs(params: {
   const audioForRender = sceneDialogueLabel
     ? { ...params.audio, source: { ...params.audio.source, available: true } }
     : params.audio;
-  const hasMixedAudio = Boolean(params.audio.music) || sfxInputIndexes.length > 0;
+  const hasMixedAudio =
+    Boolean(params.audio.music) ||
+    sfxInputIndexes.length > 0 ||
+    params.audio.censors.some((censor) => censor.treatment === "beep");
   if (hasMixedAudio) {
     parts.push(
       buildAudioMixFilter({
@@ -3775,7 +3840,9 @@ export function buildAudiogramArgs(params: {
   // gate) both mix into the OUTPUT track only, never the waveform — the
   // waveform always visualizes the raw dialogue signal.
   const hasMusicOrSfx =
-    Boolean(params.audio.music) || params.audio.soundEffects.length > 0;
+    Boolean(params.audio.music) ||
+    params.audio.soundEffects.length > 0 ||
+    params.audio.censors.some((censor) => censor.treatment === "beep");
 
   const plannedLogo = plannedTarget.visualLayers.find(
     (layer) => layer.kind === "logo",

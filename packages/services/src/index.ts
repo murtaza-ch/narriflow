@@ -271,6 +271,11 @@ export {
   analyticsService,
   AnalyticsService } from "./analytics.service";
 export {
+  autoCensorService,
+  AutoCensorAccessError,
+  AutoCensorService,
+} from "./auto-censor.service";
+export {
   assertProgramWriteEnabled,
   isProgramWriteEnabled,
   ProgramWriteDisabledError,

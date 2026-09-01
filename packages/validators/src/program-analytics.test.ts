@@ -58,6 +58,27 @@ describe("program analytics metadata", () => {
     ).toThrow();
   });
 
+  test("accepts only aggregate auto-censor analytics and rejects word context", () => {
+    expect(recordAnalyticsEventSchema.parse({
+      type: "auto_censor_applied",
+      metadata: {
+        selectedCount: 4,
+        captionMaskCount: 2,
+        muteCount: 1,
+        beepCount: 1,
+        staleCount: 0,
+      },
+    }).type).toBe("auto_censor_applied");
+    expect(() => recordAnalyticsEventSchema.parse({
+      type: "auto_censor_scan_completed",
+      metadata: { resultCountBucket: "one_to_five", matchedWord: "private" },
+    })).toThrow();
+    expect(() => recordAnalyticsEventSchema.parse({
+      type: "auto_censor_scan_completed",
+      metadata: { resultCountBucket: "one_to_five", transcriptContext: "private" },
+    })).toThrow();
+  });
+
   test("limits brand-program metadata to identifiers, kind, plan, and outcome", () => {
     expect(
       brandProgramAnalyticsEventSchema.parse({

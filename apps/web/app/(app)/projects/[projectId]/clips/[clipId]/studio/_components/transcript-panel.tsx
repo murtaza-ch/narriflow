@@ -2,8 +2,8 @@
 
 import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
-import { Combine, Copy, Plus, PanelsTopLeft, Scissors, Trash2, Undo2 } from "lucide-react";
+import { Box, Button, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
+import { Combine, Copy, Plus, PanelsTopLeft, Scissors, ShieldCheck, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui";
 import { editedToSource, sourceToEdited, userErrorMessage } from "@narriflow/validators";
 import type {
@@ -26,6 +26,7 @@ import {
 } from "./transcript-selection";
 import { subtitleParagraphGroups } from "./subtitle-lines";
 import { sceneTextContent } from "./scene-fonts";
+import { AutoCensorReviewDrawer } from "./auto-censor-review-drawer";
 
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
@@ -813,6 +814,7 @@ export function TranscriptPanel() {
   const [selection, setSelection] = useState<TranscriptSelectionState | null>(null);
   const [viewMode, setViewMode] = useState<TranscriptViewMode>("word");
   const [creatingClip, setCreatingClip] = useState(false);
+  const [autoCensorOpen, setAutoCensorOpen] = useState(false);
   // Synchronous re-entrancy guard for handleCreateClip: both the toolbar
   // button and the ⇧⌘C shortcut call it, and `creatingClip` state alone
   // can't prevent a second dispatch landing before the first re-render.
@@ -1216,6 +1218,15 @@ export function TranscriptPanel() {
           <ViewModeButton mode="sentence" current={viewMode} onSelect={handleViewModeChange} />
           <ViewModeButton mode="paragraph" current={viewMode} onSelect={handleViewModeChange} />
         </Flex>
+        <Button
+          size="xs"
+          variant="outline"
+          borderColor="studio.borderStrong"
+          justifyContent="flex-start"
+          onClick={() => setAutoCensorOpen(true)}
+        >
+          <ShieldCheck size={13} /> Find sensitive words
+        </Button>
       </Flex>
 
       {/* Scrollable transcript body */}
@@ -1328,6 +1339,9 @@ export function TranscriptPanel() {
           />
         )}
       </Box>
+      {autoCensorOpen && (
+        <AutoCensorReviewDrawer onClose={() => setAutoCensorOpen(false)} />
+      )}
     </Box>
   );
 }

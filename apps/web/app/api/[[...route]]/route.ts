@@ -50,11 +50,13 @@ import {
   hasUserErrorMessage,
   userErrorMessage,
   resolvePricingTier,
+  isCensorSegmentStale,
   type CreateExportBundleInput,
   type CreateReviewRoundInput,
   type ApplySceneTemplateInput,
   type EditorDocument,
   type SceneBlock,
+  type CensorSegment,
 } from "@narriflow/validators";
 import {
   audioAssetService,
@@ -110,6 +112,7 @@ import {
   ProgramWriteDisabledError,
   hasFeature,
   isProgramWriteEnabled,
+  autoCensorService,
 } from "@narriflow/services";
 import {
   resolveCanonicalAppOrigin,
@@ -143,6 +146,37 @@ function sceneDocumentMutationError(pricingTier: string, current: EditorDocument
     return scene.content.kind === "video" && !isProgramWriteEnabled("scene_videos");
   });
   return disabled ? { status: 503 as const, error: "program_write_disabled", message: "This scene type is temporarily read-only" } : null;
+}
+
+function censorDocumentMutationError(
+  pricingTier: string,
+  current: EditorDocument,
+  next: EditorDocument,
+) {
+  const currentById = new Map(current.censorSegments.map((segment) => [segment.id, segment]));
+  const changedNext = next.censorSegments.filter(
+    (segment) => JSON.stringify(currentById.get(segment.id)) !== JSON.stringify(segment),
+  );
+  const removed = current.censorSegments.some(
+    (segment) => !next.censorSegments.some((candidate) => candidate.id === segment.id),
+  );
+  if (changedNext.length === 0 && !removed) return null;
+  if (!hasFeature(pricingTier, "editor.censoring")) {
+    return { status: 403 as const, error: "censor_feature_unavailable", message: "Auto Censor is available on Creator and above" };
+  }
+  const disabled = changedNext
+    .filter((segment) => segment.enabled)
+    .find((segment) => {
+      const group = segment.treatment === "caption_mask"
+        ? "auto_censor_caption_masks"
+        : segment.treatment === "mute"
+          ? "auto_censor_mute"
+          : "auto_censor_beep";
+      return !isProgramWriteEnabled(group);
+    });
+  return disabled
+    ? { status: 503 as const, error: "program_write_disabled", message: "This Auto Censor treatment is temporarily read-only" }
+    : null;
 }
 
 function changedSceneBlocks(current: EditorDocument, next: EditorDocument): SceneBlock[] {
@@ -1183,6 +1217,8 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     );
     const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
     if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
+    const censorError = censorDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
+    if (censorError) return c.json({ error: censorError.error, message: censorError.message }, censorError.status);
     const changedScenes = changedSceneBlocks(current.document, parsed.data.document);
     const introducedScenes = introducedSceneReferences(current.document, parsed.data.document);
     const introducedAssetIds = introducedVisualAssetIds(current.document, parsed.data.document);
@@ -1579,6 +1615,28 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
   }
 
   try {
+    const editor = await clipService.getClipEditorDocument(
+      appUser.workspaceOwnerUserId,
+      c.req.param("id"),
+      c.req.param("clipId"),
+    );
+    const staleCount = editor.document.censorSegments.filter(
+      (segment: CensorSegment) =>
+        segment.enabled && isCensorSegmentStale(segment, editor.document.transcriptSlice),
+    ).length;
+    if (staleCount > 0) {
+      await autoCensorService.recordEvent(
+        appUser,
+        c.req.param("id"),
+        c.req.param("clipId"),
+        { type: "auto_censor_export_notice", staleCount },
+      ).catch(() => undefined);
+      return c.json({
+        error: "censor_segments_stale",
+        message: "Review stale Auto Censor segments before exporting",
+        staleCount,
+      }, 422);
+    }
     const result = await clipExportService.create(
       c.req.param("id"),
       c.req.param("clipId"),

@@ -105,6 +105,30 @@ export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
   ) {
     throw new Error("invalid_clip_composition_audio_schedule");
   }
+  if (
+    schedule.censors.some((censor, index) => {
+      if (!validRange(censor)) return true;
+      const previous = schedule.censors[index - 1];
+      if (previous && previous.endSec > censor.startSec) return true;
+      if (censor.treatment === "mute") return false;
+      const durationSec = censor.endSec - censor.startSec;
+      return (
+        !Number.isFinite(censor.frequencyHz) ||
+        censor.frequencyHz < 200 ||
+        censor.frequencyHz > 2_000 ||
+        !Number.isFinite(censor.gain) ||
+        censor.gain < 0 ||
+        censor.gain > 0.95 ||
+        !Number.isFinite(censor.fadeInSec) ||
+        !Number.isFinite(censor.fadeOutSec) ||
+        censor.fadeInSec < 0 ||
+        censor.fadeOutSec < 0 ||
+        censor.fadeInSec + censor.fadeOutSec > durationSec
+      );
+    })
+  ) {
+    throw new Error("invalid_clip_composition_audio_schedule");
+  }
   return {
     scheduleFingerprint: schedule.fingerprint,
     outputFades: schedule.outputFades,
@@ -132,6 +156,7 @@ export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
       activeRange: effect.activeRange,
       gain: effect.gain,
     })),
+    censors: schedule.censors.map((censor) => ({ ...censor })),
   };
 }
 

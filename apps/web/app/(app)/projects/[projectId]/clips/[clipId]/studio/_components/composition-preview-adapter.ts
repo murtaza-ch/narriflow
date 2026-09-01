@@ -49,6 +49,31 @@ export function plannedCompositionAudioState(
 ) {
   const timeSec = Math.max(0, editedTimeSec);
   const outputGain = fadeEnvelopeAt(schedule.outputFades, timeSec);
+  const activeCensor = schedule.censors.find(
+    (censor) => timeSec >= censor.startSec && timeSec < censor.endSec,
+  );
+  const sourceEnvelopeGain = activeCensor ? 0 : outputGain;
+  const beep = activeCensor?.treatment === "beep"
+    ? {
+        frequencyHz: activeCensor.frequencyHz,
+        volume:
+          activeCensor.gain *
+          outputGain *
+          fadeEnvelopeAt(
+            {
+              fadeIn: {
+                startSec: activeCensor.startSec,
+                endSec: activeCensor.startSec + activeCensor.fadeInSec,
+              },
+              fadeOut: {
+                startSec: activeCensor.endSec - activeCensor.fadeOutSec,
+                endSec: activeCensor.endSec,
+              },
+            },
+            timeSec,
+          ),
+      }
+    : null;
   const music = schedule.music;
   let plannedMusic: {
     sourceRef: string;
@@ -98,9 +123,11 @@ export function plannedCompositionAudioState(
     scheduleFingerprint: schedule.fingerprint,
     source: {
       muted: schedule.source.muted || !schedule.source.available,
-      volume: schedule.source.gain * outputGain,
+      volume: schedule.source.gain * sourceEnvelopeGain,
       outputGain,
+      envelopeGain: sourceEnvelopeGain,
     },
+    beep,
     music: plannedMusic,
     soundEffects: schedule.soundEffects
       .filter((effect) => rangeContains(effect.activeRange, timeSec))

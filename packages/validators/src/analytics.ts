@@ -29,6 +29,10 @@ export const analyticsEventTypeSchema = z.enum([
   "brand_font_upload_failed",
   "scene_template_used",
   "brand_premium_mutation_blocked",
+  "auto_censor_scan_started",
+  "auto_censor_scan_completed",
+  "auto_censor_applied",
+  "auto_censor_export_notice",
 ]);
 
 const SENSITIVE_ANALYTICS_KEY =
@@ -62,6 +66,11 @@ const ALLOWED_ANALYTICS_METADATA_KEYS = new Set([
   "reviewRoundId",
   "sceneTemplateId",
   "selectedCount",
+  "resultCountBucket",
+  "captionMaskCount",
+  "muteCount",
+  "beepCount",
+  "staleCount",
   "templateId",
   "voice",
   "usageUnits",

@@ -9,7 +9,10 @@ export type ProgramReleaseGroup =
   | "scene_images"
   | "scene_videos"
   | "scene_templates"
-  | "generated_media";
+  | "generated_media"
+  | "auto_censor_caption_masks"
+  | "auto_censor_mute"
+  | "auto_censor_beep";
 
 const RELEASE_ENV: Record<ProgramReleaseGroup, string> = {
   brand_profiles: "NARRIFLOW_WRITES_BRAND_PROFILES",
@@ -23,6 +26,9 @@ const RELEASE_ENV: Record<ProgramReleaseGroup, string> = {
   scene_videos: "NARRIFLOW_WRITES_SCENE_VIDEOS",
   scene_templates: "NARRIFLOW_WRITES_SCENE_TEMPLATES",
   generated_media: "NARRIFLOW_WRITES_GENERATED_MEDIA",
+  auto_censor_caption_masks: "NARRIFLOW_WRITES_AUTO_CENSOR_CAPTION_MASKS",
+  auto_censor_mute: "NARRIFLOW_WRITES_AUTO_CENSOR_MUTE",
+  auto_censor_beep: "NARRIFLOW_WRITES_AUTO_CENSOR_BEEP",
 };
 
 export class ProgramWriteDisabledError extends Error {

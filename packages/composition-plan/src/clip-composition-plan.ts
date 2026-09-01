@@ -9,6 +9,9 @@ import {
   emojiForWord,
   extractSpeechWordIntervals,
   formatCaptionWord,
+  autoCensorWordId,
+  maskCensoredCaptionWord,
+  normalizeCensorAudioSchedule,
   resolveMusicFadeWindows,
   resolveEffectiveFramingMode,
   resolveSpeakerLayoutScene,
@@ -502,6 +505,7 @@ export interface CompositionAudioSchedule {
     readonly activeRange: CompositionActiveRange;
     readonly gain: number;
   }[];
+  readonly censors: ReturnType<typeof normalizeCensorAudioSchedule>;
 }
 
 export interface ClipCompositionPlan {
@@ -735,6 +739,15 @@ function buildAudioSchedule(
     ];
     },
   );
+  const censors = normalizeCensorAudioSchedule({
+    clipWindow: {
+      startSec: input.document.clipStartSec,
+      endSec: input.document.clipEndSec,
+    },
+    deletedRanges: input.document.deletedRanges,
+    segments: input.document.censorSegments,
+    sceneBlocks: input.document.sceneBlocks,
+  });
   const withoutFingerprint = {
     outputFades,
     source: {
@@ -746,6 +759,7 @@ function buildAudioSchedule(
     },
     music,
     soundEffects,
+    censors,
   };
   return {
     fingerprint: hashString(JSON.stringify(withoutFingerprint)),
@@ -1368,11 +1382,27 @@ function captionLayersForTarget(input: {
   const layers: CompositionCaptionVisualLayer[] = [];
 
   for (const utterance of document.transcriptSlice) {
-    const visibleWords = utterance.words.flatMap((word) => {
+    const visibleWords = utterance.words.flatMap((word, wordIndex) => {
       const range = sourceRangeToEdited(editedTimeMap, word);
       if (!range) return [];
+      const wordId = autoCensorWordId({
+        utteranceIndex: utterance.index,
+        wordIndex,
+        word,
+      });
+      const maskSegment = [...document.censorSegments]
+        .filter((segment) =>
+          segment.enabled &&
+          segment.treatment === "caption_mask" &&
+          segment.captionMaskPolicy !== null &&
+          segment.sourceWordIds.includes(wordId),
+        )
+        .sort((left, right) => left.id.localeCompare(right.id))[0];
+      const visibleWord = maskSegment?.captionMaskPolicy
+        ? maskCensoredCaptionWord(word.word, maskSegment.captionMaskPolicy)
+        : word.word;
       const formatted = applyCaptionTextTransform(
-        formatCaptionWord(word.word, { punctuation }),
+        formatCaptionWord(visibleWord, { punctuation }),
         preset.textTransform,
       );
       if (!formatted) return [];

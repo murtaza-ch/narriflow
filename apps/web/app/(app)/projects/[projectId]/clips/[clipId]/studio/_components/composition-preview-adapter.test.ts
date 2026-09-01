@@ -137,6 +137,7 @@ describe("composition preview adapter", () => {
           gain: 0.8,
         },
       ],
+      censors: [],
     };
 
     const state = plannedCompositionAudioState(schedule, 1.5);
@@ -145,7 +146,8 @@ describe("composition preview adapter", () => {
       music: state.music ? { ...state.music, volume: undefined } : null,
     }).toEqual({
       scheduleFingerprint: "audio:fingerprint",
-      source: { muted: false, volume: 0.65, outputGain: 1 },
+      source: { muted: false, volume: 0.65, outputGain: 1, envelopeGain: 1 },
+      beep: null,
       music: {
         sourceRef: "music:one",
         timelineTimeSec: 0.5,
@@ -184,6 +186,7 @@ describe("composition preview adapter", () => {
       },
       music: null,
       soundEffects: [],
+      censors: [],
     };
 
     expect(plannedCompositionAudioState(schedule, 0.02).source.outputGain).toBeCloseTo(
@@ -194,6 +197,60 @@ describe("composition preview adapter", () => {
       2 / 3,
       8,
     );
+  });
+
+  test("replaces dialogue with a faded beep while preserving the rest of the mix", () => {
+    const schedule = {
+      fingerprint: "audio:censor",
+      outputFades: {
+        fadeIn: { startSec: 0, endSec: 0 },
+        fadeOut: { startSec: 5, endSec: 5 },
+      },
+      source: {
+        sourceRef: "source:one",
+        available: true,
+        activeRange: { startSec: 0, endSec: 5 },
+        gain: 0.8,
+        muted: false,
+      },
+      music: null,
+      soundEffects: [],
+      censors: [
+        {
+          startSec: 1,
+          endSec: 1.5,
+          treatment: "beep" as const,
+          frequencyHz: 1_000,
+          gain: 0.5,
+          fadeInSec: 0.05,
+          fadeOutSec: 0.05,
+        },
+        { startSec: 2, endSec: 2.5, treatment: "mute" as const },
+      ],
+    };
+
+    expect(plannedCompositionAudioState(schedule, 0.9)).toMatchObject({
+      source: { volume: 0.8, envelopeGain: 1 },
+      beep: null,
+    });
+    const fadeInState = plannedCompositionAudioState(schedule, 1.025);
+    expect(fadeInState).toMatchObject({
+      source: { volume: 0, envelopeGain: 0 },
+      beep: { frequencyHz: 1_000 },
+    });
+    expect(fadeInState.beep?.volume).toBeCloseTo(0.25, 8);
+    expect(plannedCompositionAudioState(schedule, 1.25)).toMatchObject({
+      source: { volume: 0, envelopeGain: 0 },
+      beep: { frequencyHz: 1_000, volume: 0.5 },
+    });
+    expect(plannedCompositionAudioState(schedule, 2.25)).toMatchObject({
+      source: { volume: 0, envelopeGain: 0 },
+      beep: null,
+    });
+    expect(plannedCompositionAudioState(schedule, 2.5)).toMatchObject({
+      source: { volume: 0.8, envelopeGain: 1 },
+      beep: null,
+    });
   });
 
   test("adopts an audio-only audiogram without pretending its background will render", () => {

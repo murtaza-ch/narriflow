@@ -51,6 +51,8 @@ import {
   type SceneContent,
 	type SceneMotion,
   type SceneTemplateDefinition,
+  type CensorSegment,
+  type AutoCensorAnalyticsInput,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
@@ -108,7 +110,10 @@ import {
 
 class StudioExportRequestError extends Error {
   constructor(
-    readonly code: "editor_revision_conflict" | "export_queue_failed",
+    readonly code:
+      | "editor_revision_conflict"
+      | "censor_segments_stale"
+      | "export_queue_failed",
   ) {
     super(code);
     this.name = "StudioExportRequestError";
@@ -304,6 +309,15 @@ export interface TranscriptItem {
   description?: string;
 }
 
+export interface StudioAutoCensorPolicy {
+  locale: string;
+  brandTerms: readonly string[];
+  projectTerms: readonly string[];
+  canApply: boolean;
+  treatments: Readonly<Record<"caption_mask" | "mute" | "beep", boolean>>;
+  planTier: "free" | "creator" | "pro" | "business";
+}
+
 export type { TimelineSegment } from "./studio-types";
 
 /** The project's brand logo, pre-resolved server-side (studio/page.tsx) from
@@ -401,6 +415,7 @@ interface StudioState {
   sceneTemplates: readonly StudioSceneTemplate[];
   sceneWriteCapabilities: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
   generatedImagesCapability: Readonly<Pick<GeneratedImageCapability, "available" | "reason">>;
+  autoCensorPolicy: StudioAutoCensorPolicy;
   /** 'blocked' is a distinct terminal state from 'error': it means autosave
    *  has permanently stopped (a 409/422 that a reload is needed to clear),
    *  as opposed to 'error''s transient/retryable failure. */
@@ -424,6 +439,7 @@ interface StudioState {
 interface StudioContextValue extends StudioState {
   /** Current immutable Clip Editor Document projection owned by the session. */
   editorDocument: EditorDocument;
+  editorRevision: number;
   baseEditedToComposite: (timeSec: number) => number;
 	baseEditedRangeToComposite: (startSec: number, endSec: number) => ReturnType<typeof baseEditedRangeToCompositeRanges>;
   compositeToBaseEdited: (timeSec: number) => number;
@@ -620,6 +636,9 @@ interface StudioContextValue extends StudioState {
 	replaceSceneBlock: (id: string, content: SceneContent, durationSec?: number) => void;
 	updateSceneMotion: (id: string, motion: SceneMotion) => void;
   deleteSceneBlock: (id: string) => void;
+  setCensorSegments: (segments: CensorSegment[]) => void;
+  updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
+  recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
 }
 
 const StudioContext = createContext<StudioContextValue | null>(null);
@@ -720,6 +739,9 @@ interface StudioShellProps {
   sceneTemplates?: StudioSceneTemplate[];
   sceneWriteCapabilities?: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
   generatedImagesCapability?: Readonly<Pick<GeneratedImageCapability, "available" | "reason">>;
+  autoCensorPolicy: StudioAutoCensorPolicy;
+  updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
+  recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
 }
 
 export function StudioShell({
@@ -755,6 +777,9 @@ export function StudioShell({
   sceneTemplates = [],
   sceneWriteCapabilities = { cards: false, images: false, videos: false, templates: false },
   generatedImagesCapability = { available: false, reason: "rollout_disabled" },
+  autoCensorPolicy,
+  updateProjectCensorTerms,
+  recordAutoCensorEvent,
 }: StudioShellProps) {
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
   const [brollPreviewAsset, setBrollPreviewAsset] =
@@ -1289,6 +1314,12 @@ export function StudioShell({
   const deleteSceneBlock = useCallback((id: string) => {
     studioSession.dispatch({ type: "document.edit", action: { type: "deleteSceneBlock", id } });
   }, [studioSession]);
+  const setCensorSegments = useCallback((segments: CensorSegment[]) => {
+    studioSession.dispatch({
+      type: "document.edit",
+      action: { type: "setCensorSegments", segments },
+    });
+  }, [studioSession]);
 
   const setSegments = useCallback((next: TimelineSegment[]) => {
     studioSession.dispatch({ type: "segments.replace", segments: next });
@@ -1766,6 +1797,9 @@ export function StudioShell({
         if (response.status === 409) {
           throw new StudioExportRequestError("editor_revision_conflict");
         }
+        if (body?.error === "censor_segments_stale") {
+          throw new StudioExportRequestError("censor_segments_stale");
+        }
         throw new StudioExportRequestError("export_queue_failed");
       }
       setExportState("queued");
@@ -1780,6 +1814,8 @@ export function StudioShell({
         description:
           error instanceof StudioExportRequestError && error.code === "editor_revision_conflict"
             ? "The clip changed in another session. Reload before exporting."
+            : error instanceof StudioExportRequestError && error.code === "censor_segments_stale"
+              ? "Review or remove stale Auto Censor segments before exporting."
             : "The render couldn't be queued. Try again.",
       });
     }
@@ -2075,10 +2111,11 @@ export function StudioShell({
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
-    sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability,
+    sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy,
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
     resetState, canUndo, canRedo, canReset,
     editorDocument: doc,
+    editorRevision: cloud.revision,
     baseEditedToComposite: (timeSec) => baseEditedToComposite(doc, timeSec),
 		baseEditedRangeToComposite: (startSec, endSec) => baseEditedRangeToCompositeRanges(doc, startSec, endSec),
     compositeToBaseEdited: (timeSec) => compositeToBaseEdited(doc, timeSec),
@@ -2102,6 +2139,7 @@ export function StudioShell({
     reportCompositionPlanStatus, compositionPlanQaFixture,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
 		insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, deleteSceneBlock,
+    setCensorSegments, updateProjectCensorTerms, recordAutoCensorEvent,
   };
 
   return (

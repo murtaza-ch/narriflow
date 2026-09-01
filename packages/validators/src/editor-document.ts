@@ -184,6 +184,10 @@ export const editorActionSchema = z.discriminatedUnion("type", [
 	z.strictObject({ type: z.literal("updateSceneMotion"), id: z.string().uuid(), motion: sceneMotionSchema }),
   z.strictObject({ type: z.literal("deleteSceneBlock"), id: z.string().uuid() }),
   z.strictObject({ type: z.literal("insertCensorSegment"), segment: censorSegmentSchema }),
+  z.strictObject({
+    type: z.literal("setCensorSegments"),
+    segments: z.array(censorSegmentSchema).max(TIMED_EDIT_LIMITS.censorSegments),
+  }),
   z.strictObject({ type: z.literal("updateCensorSegment"), id: z.string().uuid(), segment: censorSegmentSchema }),
   z.strictObject({ type: z.literal("removeCensorSegment"), id: z.string().uuid() }),
   z.strictObject({ type: z.literal("setCensorSegmentEnabled"), id: z.string().uuid(), enabled: z.boolean() }),
@@ -681,6 +685,10 @@ export function applyEditorAction(
       return doc.censorSegments.some((segment) => segment.id === action.segment.id)
         ? doc
         : validatedTimedMutation(doc, { ...doc, censorSegments: [...doc.censorSegments, action.segment] });
+    case "setCensorSegments":
+      return timedEditsEqual(doc.censorSegments, action.segments)
+        ? doc
+        : validatedTimedMutation(doc, { ...doc, censorSegments: action.segments });
     case "updateCensorSegment": {
       const current = doc.censorSegments.find((segment) => segment.id === action.id);
       if (!current) return doc;
