@@ -30,6 +30,11 @@ import {
   type SpeakerLayerTransform,
   type StudioTextLayer,
 } from "@narriflow/validators";
+import {
+  planMediaMotion,
+  planTransitionMotion,
+  type CompositionMotionPlan,
+} from "./motion-plan";
 
 export const CLIP_COMPOSITION_PLAN_VERSION = 1 as const;
 export const CLIP_COMPOSITION_MAX_TARGETS = 4;
@@ -266,6 +271,7 @@ export interface CompositionBrollVideoLayer {
   readonly rotationDeg: 0;
   readonly opacity: 1;
   readonly zIndex: number;
+  readonly motion: CompositionMotionPlan | null;
   /** Existing Narriflow behavior keeps dialogue from the source and discards
    * B-roll audio. The plan states that choice so neither adapter decides it. */
   readonly audio: "source";
@@ -284,6 +290,7 @@ export interface CompositionBrollImageLayer {
   readonly rotationDeg: 0;
   readonly opacity: 1;
   readonly zIndex: number;
+  readonly motion: CompositionMotionPlan | null;
 }
 
 export interface CompositionAudiogramLayer {
@@ -304,7 +311,7 @@ export interface CompositionInsertedSceneLayer {
   readonly kind: "inserted-scene";
   readonly sceneBlockId: string;
   readonly content: SceneContent;
-  readonly motion: SceneBlock["motion"];
+  readonly motion: CompositionMotionPlan | null;
   readonly sourceRef: string | null;
   readonly destination: CompositionRect;
   readonly rotationDeg: 0;
@@ -377,12 +384,10 @@ export interface CompositionTransitionVisualLayer {
   readonly kind: "transition";
   readonly activeRange: CompositionActiveRange;
   readonly destination: CompositionRect;
-  readonly transition: "fade" | "fade-black" | "dip-white";
+  readonly transition: EditorDocument["studioEdits"]["transition"]["type"];
+  readonly application: "overlay" | "source";
   readonly color: "black" | "white";
-  readonly windows: {
-    readonly fadeIn: CompositionActiveRange;
-    readonly fadeOut: CompositionActiveRange;
-  };
+  readonly motion: CompositionMotionPlan;
   readonly rotationDeg: 0;
   readonly opacity: 1;
   readonly zIndex: 60;
@@ -1192,6 +1197,7 @@ function addBrollLayers(
               rotationDeg: 0,
               opacity: 1,
               zIndex: 20,
+              motion: null,
             }
           : {
               id: `layer:broll:${active.id}:${target.id}`,
@@ -1203,6 +1209,7 @@ function addBrollLayers(
               rotationDeg: 0,
               opacity: 1,
               zIndex: 20,
+              motion: null,
               audio: "source",
             };
       scenes.push({
@@ -1261,7 +1268,7 @@ function addInsertedSceneBlocks(
       kind: "inserted-scene",
       sceneBlockId: block.id,
       content: block.content,
-      motion: block.motion,
+      motion: null,
       sourceRef: block.content.kind === "image" || block.content.kind === "video"
         ? compositionAssetRef("visual_asset", `${block.content.asset.id}:${block.content.asset.fingerprint}`)
         : null,
@@ -1275,6 +1282,168 @@ function addInsertedSceneBlocks(
     ...target,
     scenes: [...sourceScenes, ...insertedScenes].sort((left, right) => left.startSec - right.startSec || left.id.localeCompare(right.id)),
   };
+}
+
+type MotionProperty = "opacity" | "transform" | "crop" | "clip";
+const MOTION_BOUNDARY_EPSILON_SEC = 0.000_001;
+
+function transitionMotionProperty(
+  type: EditorDocument["studioEdits"]["transition"]["type"],
+): MotionProperty | null {
+  if (type === "none") return null;
+  if (
+    type === "fade" ||
+    type === "fade-black" ||
+    type === "dip-white" ||
+    type === "cross-dissolve"
+  ) {
+    return "opacity";
+  }
+  if (type.startsWith("wipe-")) return "clip";
+  return "transform";
+}
+
+function mediaMotionProperty(family: string): MotionProperty | null {
+  if (family === "none") return null;
+  if (family === "fade") return "opacity";
+  if (family.startsWith("ken-burns-")) return "crop";
+  return "transform";
+}
+
+function applyTargetMediaMotion(input: {
+  readonly target: CompositionTargetPlan;
+  readonly document: EditorDocument;
+}): {
+  readonly target: CompositionTargetPlan;
+  readonly notices: readonly CompositionNotice[];
+} {
+  const transitionProperty = transitionMotionProperty(
+    input.document.studioEdits.transition.type,
+  );
+  const brollRanges = new Map<string, CompositionActiveRange>();
+  for (const scene of input.target.scenes) {
+    for (const layer of scene.layers) {
+      if (layer.kind !== "broll-video" && layer.kind !== "broll-image") continue;
+      const current = brollRanges.get(layer.id);
+      brollRanges.set(layer.id, {
+        startSec: Math.min(current?.startSec ?? scene.startSec, scene.startSec),
+        endSec: Math.max(current?.endSec ?? scene.endSec, scene.endSec),
+      });
+    }
+  }
+  const notices: CompositionNotice[] = [];
+  const noticeKeys = new Set<string>();
+  const scenes = input.target.scenes.map((scene) => ({
+    ...scene,
+    layers: scene.layers.map((layer): CompositionLayer => {
+      if (layer.kind === "inserted-scene") {
+        const block = input.document.sceneBlocks.find(
+          (candidate) => candidate.id === layer.sceneBlockId,
+        );
+        if (!block) return layer;
+        const override = input.document.mediaMotions.find(
+          (candidate) =>
+            candidate.enabled &&
+            candidate.target.kind === "scene_block" &&
+            candidate.target.sceneBlockId === block.id,
+        );
+        const settings = override ?? block.motion;
+        const activeRange = override
+          ? {
+              startSec: Math.max(scene.startSec, override.startSec),
+              endSec: Math.min(scene.endSec, override.endSec),
+            }
+          : { startSec: scene.startSec, endSec: scene.endSec };
+        if (activeRange.endSec <= activeRange.startSec) {
+          return { ...layer, motion: null };
+        }
+        let entrance = settings.entrance;
+        let exit = settings.exit;
+        if (
+          transitionProperty &&
+          Math.abs(activeRange.startSec) <= MOTION_BOUNDARY_EPSILON_SEC &&
+          mediaMotionProperty(entrance) === transitionProperty
+        ) {
+          entrance = "none";
+          const key = `entrance:${input.target.id}:${block.id}`;
+          if (!noticeKeys.has(key)) {
+            noticeKeys.add(key);
+            notices.push({
+              code: "scene_motion_entrance_suppressed_by_transition",
+              fidelity: "degraded",
+              targetId: input.target.id,
+              sceneId: block.id,
+              effectiveFallback: input.target.effectiveMode,
+              userActionPossible: true,
+            });
+          }
+        }
+        if (
+          transitionProperty &&
+          Math.abs(activeRange.endSec - input.target.scenes.at(-1)!.endSec) <=
+            MOTION_BOUNDARY_EPSILON_SEC &&
+          mediaMotionProperty(exit) === transitionProperty
+        ) {
+          exit = "none";
+          const key = `exit:${input.target.id}:${block.id}`;
+          if (!noticeKeys.has(key)) {
+            noticeKeys.add(key);
+            notices.push({
+              code: "scene_motion_exit_suppressed_by_transition",
+              fidelity: "degraded",
+              targetId: input.target.id,
+              sceneId: block.id,
+              effectiveFallback: input.target.effectiveMode,
+              userActionPossible: true,
+            });
+          }
+        }
+        const motion =
+          entrance === "none" && exit === "none"
+            ? null
+            : planMediaMotion({
+                entrance,
+                exit,
+                durationSec: settings.durationSec,
+                activeRange,
+                canvas: input.target.canvas,
+              });
+        return { ...layer, motion };
+      }
+      if (layer.kind !== "broll-video" && layer.kind !== "broll-image") {
+        return layer;
+      }
+      const settings = input.document.mediaMotions.find(
+        (candidate) => candidate.enabled && candidate.target.kind === "broll",
+      );
+      const plannedRange = brollRanges.get(layer.id);
+      if (!settings || !plannedRange) {
+        return { ...layer, activeRange: plannedRange ?? layer.activeRange, motion: null };
+      }
+      const activeRange = {
+        startSec: Math.max(plannedRange.startSec, settings.startSec),
+        endSec: Math.min(plannedRange.endSec, settings.endSec),
+      };
+      if (activeRange.endSec <= activeRange.startSec) {
+        return { ...layer, activeRange: plannedRange, motion: null };
+      }
+      return {
+        ...layer,
+        activeRange,
+        motion:
+          settings.entrance === "none" && settings.exit === "none"
+            ? null
+            : planMediaMotion({
+                entrance: settings.entrance,
+                exit: settings.exit,
+                durationSec: settings.durationSec,
+                activeRange,
+                canvas: input.target.canvas,
+              }),
+      };
+    }),
+  }));
+  return { target: { ...input.target, scenes }, notices };
 }
 
 function insertedBaseAnchors(blocks: readonly SceneBlock[]) {
@@ -1303,15 +1472,23 @@ function retimeVisualLayersForInsertedScenes(
       return [{ ...layer, activeRange: { startSec: 0, endSec: totalDurationSec } }];
     }
     if (layer.kind === "transition") {
-      const fadeInDuration = layer.windows.fadeIn.endSec - layer.windows.fadeIn.startSec;
-      const fadeOutDuration = layer.windows.fadeOut.endSec - layer.windows.fadeOut.startSec;
+      const durationSec = layer.motion.entrance
+        ? layer.motion.entrance.range.endSec - layer.motion.entrance.range.startSec
+        : layer.motion.exit
+          ? layer.motion.exit.range.endSec - layer.motion.exit.range.startSec
+          : 0;
       return [{
         ...layer,
         activeRange: { startSec: 0, endSec: totalDurationSec },
-        windows: {
-          fadeIn: { startSec: 0, endSec: Math.min(totalDurationSec, fadeInDuration) },
-          fadeOut: { startSec: Math.max(0, totalDurationSec - fadeOutDuration), endSec: totalDurationSec },
-        },
+        motion: planTransitionMotion({
+          type: layer.transition,
+          durationSec,
+          activeRange: { startSec: 0, endSec: totalDurationSec },
+          canvas: {
+            width: layer.destination.width,
+            height: layer.destination.height,
+          },
+        }),
       }];
     }
     const boundaries = [
@@ -1552,14 +1729,19 @@ function visualLayersForTarget(input: {
         activeRange: { startSec: 0, endSec: duration },
         destination,
         transition: transition.type,
+        application:
+          transition.type === "fade" ||
+          transition.type === "fade-black" ||
+          transition.type === "dip-white"
+            ? "overlay"
+            : "source",
         color: transition.type === "dip-white" ? "white" : "black",
-        windows: {
-          fadeIn: { startSec: 0, endSec: transitionDuration },
-          fadeOut: {
-            startSec: Math.max(0, duration - transitionDuration),
-            endSec: duration,
-          },
-        },
+        motion: planTransitionMotion({
+          type: transition.type,
+          durationSec: transitionDuration,
+          activeRange: { startSec: 0, endSec: duration },
+          canvas: { width: target.width, height: target.height },
+        }),
         rotationDeg: 0,
         opacity: 1,
         zIndex: 60,
@@ -2490,11 +2672,12 @@ export function planClipComposition(
 
   const totalEditedDurationSec = editedTimeMap.editedDurationSec +
     input.document.sceneBlocks.reduce((total, block) => total + block.durationSec, 0);
+  const mediaMotionNotices: CompositionNotice[] = [];
   const targets = baseTargets.map((baseTarget) => {
     const targetInput = input.targets.find(
       (candidate) => candidate.id === baseTarget.id,
     )!;
-    return {
+    const target = {
       ...addInsertedSceneBlocks(
         addBrollLayers(baseTarget, brollPlacements),
         input.document.sceneBlocks,
@@ -2510,7 +2693,14 @@ export function planClipComposition(
         totalEditedDurationSec,
       ),
     } satisfies CompositionTargetPlan;
+    const planned = applyTargetMediaMotion({
+      target,
+      document: input.document,
+    });
+    mediaMotionNotices.push(...planned.notices);
+    return planned.target;
   });
+  notices.push(...mediaMotionNotices);
 
   for (const scene of input.document.sceneBlocks) {
     if (scene.content.kind === "image" || scene.content.kind === "video") {

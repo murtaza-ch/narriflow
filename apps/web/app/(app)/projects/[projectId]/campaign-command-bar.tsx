@@ -122,8 +122,19 @@ const TRANSITION_OPTIONS: ReadonlyArray<{
 }> = [
   { value: "none", label: "Cut" },
   { value: "fade", label: "Fade" },
+  { value: "cross-dissolve", label: "Cross dissolve" },
   { value: "fade-black", label: "Fade to black" },
   { value: "dip-white", label: "Dip white" },
+  { value: "wipe-left", label: "Wipe left" },
+  { value: "wipe-right", label: "Wipe right" },
+  { value: "wipe-up", label: "Wipe up" },
+  { value: "wipe-down", label: "Wipe down" },
+  { value: "slide-left", label: "Slide left" },
+  { value: "slide-right", label: "Slide right" },
+  { value: "slide-up", label: "Slide up" },
+  { value: "slide-down", label: "Slide down" },
+  { value: "zoom-in", label: "Zoom in" },
+  { value: "zoom-out", label: "Zoom out" },
 ];
 
 const ENTRANCE_OPTIONS: ReadonlyArray<{
@@ -353,6 +364,7 @@ export function CampaignCommandBar({
     "fade",
   );
   const [motionExit, setMotionExit] = useState<ManualBrollMotion["exit"]>("fade");
+  const [motionDurationSec, setMotionDurationSec] = useState(0.5);
   const [motionPreflight, setMotionPreflight] = useState<MotionPreflight | null>(null);
   const [motionPreflightState, setMotionPreflightState] = useState<
     "idle" | "loading" | "ready" | "error"
@@ -381,11 +393,12 @@ export function CampaignCommandBar({
           }
         : {
             scope: "manual_broll",
-            motion: { entrance: motionEntrance, exit: motionExit },
+            motion: { entrance: motionEntrance, exit: motionExit, durationSec: motionDurationSec },
           },
     [
       motionEntrance,
       motionExit,
+      motionDurationSec,
       motionScope,
       transitionDurationSec,
       transitionType,
@@ -1296,6 +1309,7 @@ export function CampaignCommandBar({
                         </Box>
                       </Stack>
                     ) : (
+                      <Stack gap="3">
                       <Flex gap="3" direction={{ base: "column", sm: "row" }}>
                         <Box flex="1">
                           <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
@@ -1346,6 +1360,16 @@ export function CampaignCommandBar({
                           </NativeSelect.Root>
                         </Box>
                       </Flex>
+                      <Box>
+                        <Flex align="center" justify="space-between" mb="2">
+                          <Text textStyle="eyebrow" color="fg.subtle">Duration</Text>
+                          <Text textStyle="data" fontSize="11px" color="fg.timecode">{motionDurationSec.toFixed(2)}s</Text>
+                        </Flex>
+                        <Slider.Root value={[motionDurationSec]} min={0.1} max={2} step={0.05} size="sm" colorPalette="accent" onValueChange={(details) => setMotionDurationSec(details.value[0] ?? 0.5)}>
+                          <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
+                        </Slider.Root>
+                      </Box>
+                      </Stack>
                     )}
 
                     <Box>

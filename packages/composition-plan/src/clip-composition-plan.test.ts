@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   autoCensorWordId,
   captionPresetSchema,
+  CLIP_TRANSITION_TYPES,
   clipAutoLayoutAnalysisSchema,
   editorDocumentSchema,
   MAX_DUCKING_WINDOWS,
@@ -51,6 +52,175 @@ function fitDocument() {
 }
 
 describe("Clip Composition Plan", () => {
+  test("resolves every clip transition into canonical target motion", () => {
+    for (const type of CLIP_TRANSITION_TYPES) {
+      const document = editorDocumentSchema.parse({
+        ...centerDocument(),
+        deletedRanges: [],
+        studioEdits: studioEditsSchema.parse({
+          framing: { mode: "center" },
+          transition: { type, durationSec: 0.4 },
+        }),
+      });
+      const result = planClipComposition({
+        document,
+        source: {
+          identity: `source:${type}`,
+          kind: "video",
+          width: 1920,
+          height: 1080,
+        },
+        evidence: { automaticLayout: { state: "missing" } },
+        assets: { backgroundImage: { state: "missing" } },
+        capabilities: {
+          automaticSpeakerLayout: true,
+          automaticSpeakerEngineVersion: "shot-layout-v1",
+        },
+        targets: [
+          {
+            id: "vertical",
+            aspectRatio: "9:16",
+            width: 1080,
+            height: 1920,
+          },
+        ],
+      });
+      if (result.status === "invalid") throw new Error(result.error.code);
+      const transition = result.plan.targets[0]?.visualLayers.find(
+        (layer) => layer.kind === "transition",
+      );
+      if (type === "none") {
+        expect(transition).toBeUndefined();
+        continue;
+      }
+      expect(transition).toMatchObject({
+        kind: "transition",
+        transition: type,
+        motion: {
+          version: 1,
+          activeRange: { startSec: 0, endSec: 10 },
+          entrance: { range: { startSec: 0, endSec: 0.4 } },
+          exit: { range: { startSec: 9.6, endSec: 10 } },
+        },
+      });
+    }
+  });
+
+  test("plans Scene Block and B-roll motion with transition precedence", () => {
+    const sceneId = "10000000-0000-4000-8000-000000000001";
+    const document = editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 0,
+      clipEndSec: 4,
+      captionPreset: captionPresetSchema.parse({ visible: false }),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        transition: { type: "fade-black", durationSec: 0.4 },
+      }),
+      brollUrl: "https://example.com/manual.mp4",
+      deletedRanges: [],
+      sceneBlocks: [
+        {
+          schemaVersion: 1,
+          id: sceneId,
+          anchorSec: 0,
+          durationSec: 1,
+          content: { kind: "color", color: "#112233" },
+          motion: {
+            entrance: "fade",
+            exit: "pan-down",
+            durationSec: 0.5,
+          },
+          templateSnapshot: null,
+        },
+      ],
+      mediaMotions: [
+        {
+          schemaVersion: 1,
+          id: "10000000-0000-4000-8000-000000000002",
+          target: { kind: "broll" },
+          startSec: 0,
+          endSec: 5,
+          entrance: "pan-left",
+          exit: "ken-burns-out",
+          durationSec: 0.5,
+          enabled: true,
+        },
+      ],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:motion-precedence",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        broll: {
+          state: "available",
+          placements: [
+            {
+              id: "manual",
+              ref: "broll:manual",
+              startSec: 1,
+              endSec: 3,
+              kind: "video",
+            },
+          ],
+        },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        {
+          id: "vertical",
+          aspectRatio: "9:16",
+          width: 1080,
+          height: 1920,
+        },
+      ],
+    });
+
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const inserted = result.plan.targets[0]?.scenes
+      .flatMap((scene) => scene.layers)
+      .find((layer) => layer.kind === "inserted-scene");
+    expect(inserted).toMatchObject({
+      kind: "inserted-scene",
+      motion: {
+        activeRange: { startSec: 0, endSec: 1 },
+        entrance: null,
+        exit: { range: { startSec: 0.5, endSec: 1 } },
+      },
+    });
+    const broll = result.plan.targets[0]?.scenes
+      .flatMap((scene) => scene.layers)
+      .find((layer) => layer.kind === "broll-video");
+    expect(broll).toMatchObject({
+      kind: "broll-video",
+      activeRange: { startSec: 2, endSec: 4 },
+      motion: {
+        activeRange: { startSec: 2, endSec: 4 },
+        entrance: { range: { startSec: 2, endSec: 2.5 } },
+        exit: { range: { startSec: 3.5, endSec: 4 } },
+      },
+    });
+    expect(result.plan.notices).toContainEqual({
+      code: "scene_motion_entrance_suppressed_by_transition",
+      fidelity: "degraded",
+      targetId: "vertical",
+      sceneId,
+      effectiveFallback: "center",
+      userActionPossible: true,
+    });
+  });
+
   test("plans caption masks and the shared edited-time censor audio schedule", () => {
     const censoredWord = {
       word: "Fuck!",
@@ -2387,6 +2557,7 @@ describe("Clip Composition Plan", () => {
       opacity: 1,
       zIndex: 20,
       audio: "source",
+      motion: null,
     });
   });
 
@@ -2736,9 +2907,10 @@ describe("Clip Composition Plan", () => {
     ]);
     expect(available.plan.targets[1]?.visualLayers.at(-2)).toMatchObject({
       kind: "transition",
-      windows: {
-        fadeIn: { startSec: 0, endSec: 0.5 },
-        fadeOut: { startSec: 7.5, endSec: 8 },
+      application: "overlay",
+      motion: {
+        entrance: { range: { startSec: 0, endSec: 0.5 } },
+        exit: { range: { startSec: 7.5, endSec: 8 } },
       },
     });
     expect(available.plan.targets[1]?.visualLayers.at(-1)).toMatchObject({

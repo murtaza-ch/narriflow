@@ -1,5 +1,7 @@
 import {
   CLIP_COMPOSITION_PLAN_VERSION,
+  COMPOSITION_MOTION_VERSION,
+  sampleCompositionMotion,
   type ClipCompositionPlan,
   type ClipCompositionPlanResult,
   type CompositionBrollAvailability,
@@ -8,8 +10,20 @@ import {
   type CompositionMode,
   type CompositionNotice,
   type CompositionVisualLayer,
+  type CompositionMotionPlan,
 } from "@narriflow/composition-plan";
 import { duckingGainMultiplierAt } from "@narriflow/validators";
+
+export function adoptCompositionMotion(
+  motion: CompositionMotionPlan,
+  editedTimeSec: number,
+  reducedMotion: boolean,
+) {
+  if (motion.version !== COMPOSITION_MOTION_VERSION) {
+    throw new Error("unsupported_composition_motion_version");
+  }
+  return sampleCompositionMotion(motion, editedTimeSec, { reducedMotion });
+}
 
 function rangeContains(
   range: { startSec: number; endSec: number },
@@ -234,6 +248,10 @@ const COMPOSITION_NOTICE_COPY: Readonly<Record<string, string>> = {
 	scene_asset_unavailable: "An inserted Scene asset is unavailable. Replace or remove this Scene before exporting.",
 	scene_font_pending: "Checking the inserted Scene font… Export is paused until it is available.",
 	scene_font_unavailable: "An inserted Scene font is unavailable. Replace the font or remove this Scene before exporting.",
+  scene_motion_entrance_suppressed_by_transition:
+    "The clip transition owns this opening. The Scene entrance is paused.",
+  scene_motion_exit_suppressed_by_transition:
+    "The clip transition owns this ending. The Scene exit is paused.",
   audio_only_background_unsupported:
     "Audiograms use the standard waveform background. Remove the background choice to clear this notice.",
 };

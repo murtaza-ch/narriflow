@@ -182,6 +182,7 @@ export default async function StudioPage({
     brollCues: clip.brollCues ?? [],
     can1080pExport: hasFeature(pricingTier, "export.1080p"),
     exportHasWatermark: !hasFeature(pricingTier, "export.noWatermark"),
+    canPersistMotion: hasFeature(pricingTier, "editor.motion"),
   };
 
   /**

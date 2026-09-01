@@ -27,7 +27,6 @@ import {
   buildBrollVideoArgs as buildBrollVideoArgsWithPlan,
   buildFreeTierPostProcessArgs,
   buildSingleVideoArgs as buildSingleVideoArgsWithPlan,
-  buildTransitionFilter,
   clipRenderAttemptStorageKey,
   applySpeakerLayoutOverridesToSegments,
   decidePipUsage,
@@ -1229,49 +1228,6 @@ describe("decideSplitFallback (split packet B — fallback-decision matrix)", ()
         },
       }),
     ).toBe("no_two_up_segments");
-  });
-});
-
-describe("buildTransitionFilter (vizard-parity Phase C — apply-to-all + fade-black)", () => {
-  function transition(
-    type: "none" | "fade" | "fade-black" | "dip-white",
-    durationSec = 0.4,
-  ) {
-    return studioEditsSchema.parse({ transition: { type, durationSec } })
-      .transition;
-  }
-
-  test("none produces no filter", () => {
-    expect(buildTransitionFilter(transition("none"), 10)).toBeNull();
-  });
-
-  test("undefined transition produces no filter", () => {
-    expect(buildTransitionFilter(undefined, 10)).toBeNull();
-  });
-
-  test("fade omits an explicit color (ffmpeg's fade default is black)", () => {
-    const f = buildTransitionFilter(transition("fade"), 10)!;
-    expect(f).not.toContain(":color=");
-    expect(f).toContain("fade=t=in:st=0:d=0.400");
-    expect(f).toContain("fade=t=out:st=9.600:d=0.400");
-  });
-
-  test("fade-black explicitly dips to black", () => {
-    const f = buildTransitionFilter(transition("fade-black"), 10)!;
-    expect(f).toContain("fade=t=in:st=0:d=0.400:color=black");
-    expect(f).toContain("fade=t=out:st=9.600:d=0.400:color=black");
-  });
-
-  test("dip-white explicitly dips to white", () => {
-    const f = buildTransitionFilter(transition("dip-white"), 10)!;
-    expect(f).toContain("fade=t=in:st=0:d=0.400:color=white");
-    expect(f).toContain("fade=t=out:st=9.600:d=0.400:color=white");
-  });
-
-  test("clamps duration to half the clip length", () => {
-    const f = buildTransitionFilter(transition("fade-black", 2), 1)!;
-    expect(f).toContain("fade=t=in:st=0:d=0.500:color=black");
-    expect(f).toContain("fade=t=out:st=0.500:d=0.500:color=black");
   });
 });
 

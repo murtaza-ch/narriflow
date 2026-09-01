@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { planClipComposition } from "@narriflow/composition-plan";
+import { MOTION_ADAPTER_FIXTURES, planClipComposition, planMediaMotion } from "@narriflow/composition-plan";
 import {
   captionPresetSchema,
   editorDocumentSchema,
@@ -18,6 +18,7 @@ import {
   plannedCompositionUsesStackedStage,
   plannedCompositionFrameStyle,
   plannedCompositionVideoStyle,
+  adoptCompositionMotion,
 } from "./composition-preview-adapter";
 
 function centerPlan() {
@@ -46,6 +47,30 @@ function centerPlan() {
 }
 
 describe("composition preview adapter", () => {
+  test("samples canonical motion and keeps reduced-motion preview static", () => {
+    const fixture = MOTION_ADAPTER_FIXTURES.media.find(
+      (candidate) => candidate.entrance === "pan-left",
+    )!;
+    const motion = planMediaMotion({
+      entrance: fixture.entrance,
+      exit: fixture.exit,
+      durationSec: fixture.durationSec,
+      activeRange: fixture.activeRange,
+      canvas: fixture.target,
+    });
+    expect(adoptCompositionMotion(motion, fixture.activeRange.startSec, false)).toMatchObject({
+      transform: { translateX: 86, translateY: 0, scale: 1.08 },
+      reducedMotion: false,
+    });
+    expect(adoptCompositionMotion(motion, fixture.activeRange.startSec, true)).toEqual({
+      ...motion.restingState,
+      reducedMotion: true,
+    });
+    expect(() =>
+      adoptCompositionMotion({ ...motion, version: 2 } as never, fixture.activeRange.startSec, false),
+    ).toThrow("unsupported_composition_motion_version");
+  });
+
   test("keeps every active scoped fallback accessible", () => {
     const context = {
       requestedMode: "fit" as const,
@@ -808,7 +833,7 @@ describe("composition preview adapter", () => {
           anchorSec: 0,
           durationSec: 2,
           content: { kind: "text", text: "Opening", fontFamily: "Archivo", fontAsset: null, color: "#FFFFFF", backgroundColor: "#111827" },
-          motion: { entrance: "fade", exit: "fade" },
+          motion: { entrance: "fade", exit: "fade", durationSec: 0.5 },
           templateSnapshot: null,
         }],
       },

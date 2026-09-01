@@ -85,6 +85,7 @@ export const applyMotionSelectedSchema = z.strictObject({
       motion: z.strictObject({
         entrance: mediaMotionEntranceSchema,
         exit: mediaMotionExitSchema,
+        durationSec: z.number().finite().min(0.1).max(2).default(0.5),
       }),
     }),
   ]),

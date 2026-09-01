@@ -344,7 +344,7 @@ describe("StudioEditingSession playback seam", () => {
           anchorSec: 5,
           durationSec: 2,
           content: { kind: "color", color: "#112233" },
-          motion: { entrance: "fade", exit: "fade" },
+          motion: { entrance: "fade", exit: "fade", durationSec: 0.5 },
           templateSnapshot: null,
         },
       },

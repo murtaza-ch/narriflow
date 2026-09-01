@@ -12,6 +12,7 @@ import {
   resolveEffectiveFramingMode,
   resolveMusicFadeWindows,
   studioEditsSchema,
+  studioTransitionSchema,
   studioSfxPlacementSchema,
   type DuckingWindow,
 } from "./studio-edits";
@@ -38,6 +39,36 @@ function makeUtterance(
 }
 
 describe("studioEditsSchema (source audio + music fades)", () => {
+  test("accepts the complete canonical clip-transition vocabulary", () => {
+    const types = [
+      "none",
+      "fade",
+      "fade-black",
+      "dip-white",
+      "cross-dissolve",
+      "wipe-left",
+      "wipe-right",
+      "wipe-up",
+      "wipe-down",
+      "slide-left",
+      "slide-right",
+      "slide-up",
+      "slide-down",
+      "zoom-in",
+      "zoom-out",
+    ] as const;
+
+    for (const type of types) {
+      expect(studioTransitionSchema.parse({ type, durationSec: 0.4 })).toEqual({
+        type,
+        durationSec: 0.4,
+      });
+    }
+    expect(() =>
+      studioTransitionSchema.parse({ type: "spin", durationSec: 0.4 }),
+    ).toThrow();
+  });
+
   test("parse({}) defaults sourceAudio to unmuted 100 and music fades to 0", () => {
     const parsed = studioEditsSchema.parse({});
     expect(parsed.sourceAudio).toEqual({ volume: 100, muted: false });

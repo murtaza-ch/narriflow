@@ -1051,7 +1051,7 @@ export function TranscriptPanel() {
       anchorSec,
       durationSec: 3,
       content: sceneTextContent("New chapter", sceneFonts),
-      motion: { entrance: "fade", exit: "fade" },
+      motion: { entrance: "fade", exit: "fade", durationSec: 0.5 },
       templateSnapshot: null,
     });
     dismissSelection();

@@ -2685,31 +2685,6 @@ function hexToFfmpegRgb(hex: string): string {
   return `0x${hex.replace("#", "").slice(0, 6)}`;
 }
 
-/**
- * `fade`/`fade-black` both dip through black — ffmpeg's `fade` filter
- * defaults to black when `color` is omitted, which is what made
- * `fade-black` work today even before this explicit mapping existed.
- * `fade-black` is kept as its own transition type (vs. relying on that
- * default) so the mapping stays correct if `fade`'s meaning ever changes,
- * and so the two are named for what they visibly do.
- */
-export function buildTransitionFilter(
-  transition: StudioEdits["transition"] | undefined,
-  clipDurationSec: number,
-): string | null {
-  if (!transition || transition.type === "none") return null;
-  const duration = Math.min(transition.durationSec, clipDurationSec / 2);
-  if (duration <= 0) return null;
-  const outStart = Math.max(0, clipDurationSec - duration);
-  const color =
-    transition.type === "dip-white"
-      ? ":color=white"
-      : transition.type === "fade-black"
-        ? ":color=black"
-        : "";
-  return `fade=t=in:st=0:d=${duration.toFixed(3)}${color},fade=t=out:st=${outStart.toFixed(3)}:d=${duration.toFixed(3)}${color}`;
-}
-
 export interface CutConcatResult {
   filterParts: string[];
   /** Label (with brackets, e.g. "[vcat]") every downstream video filter must

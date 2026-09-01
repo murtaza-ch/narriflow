@@ -19,6 +19,7 @@ import {
   type CompositionTextVisualLayer,
   type CompositionTransitionVisualLayer,
   type CompositionInsertedSceneLayer,
+  type SampledCompositionMotion,
 } from "@narriflow/composition-plan";
 import {
   Smartphone,
@@ -67,6 +68,7 @@ import {
 } from "./broll-preview";
 import {
   adoptCompositionPreviewResult,
+  adoptCompositionMotion,
   compositionInvalidText,
   compositionNoticeEntries,
   manualBrollAvailabilityForPlan,
@@ -230,6 +232,46 @@ const PILL_STYLES = {
   userSelect: "none",
 } as const;
 
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReduced(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return reduced;
+}
+
+function previewMotionStyle(
+  motion: SampledCompositionMotion | null,
+  canvas: { width: number; height: number } | null,
+) {
+  if (!motion || !canvas) return undefined;
+  const cropScale = canvas.width / Math.max(1, motion.crop.width);
+  const cropCenterX = motion.crop.x + motion.crop.width / 2;
+  const cropCenterY = motion.crop.y + motion.crop.height / 2;
+  const translateX =
+    (motion.transform.translateX + canvas.width / 2 - cropCenterX) /
+    canvas.width;
+  const translateY =
+    (motion.transform.translateY + canvas.height / 2 - cropCenterY) /
+    canvas.height;
+  const clipTop = (motion.clip.y / canvas.height) * 100;
+  const clipRight =
+    ((canvas.width - motion.clip.x - motion.clip.width) / canvas.width) * 100;
+  const clipBottom =
+    ((canvas.height - motion.clip.y - motion.clip.height) / canvas.height) * 100;
+  const clipLeft = (motion.clip.x / canvas.width) * 100;
+  return {
+    opacity: motion.opacity,
+    transform: `translate(${(translateX * 100).toFixed(3)}%, ${(translateY * 100).toFixed(3)}%) scale(${(motion.transform.scale * cropScale).toFixed(6)})`,
+    transformOrigin: "center",
+    clipPath: `inset(${clipTop.toFixed(3)}% ${clipRight.toFixed(3)}% ${clipBottom.toFixed(3)}% ${clipLeft.toFixed(3)}%)`,
+  };
+}
+
 function BrollPreviewLayer({
   src,
   poster,
@@ -238,6 +280,7 @@ function BrollPreviewLayer({
   isPlaying,
   onDuration,
   onAvailabilityChange,
+  motionStyle,
 }: {
   src: string;
   poster: string | null;
@@ -246,6 +289,7 @@ function BrollPreviewLayer({
   isPlaying: boolean;
   onDuration: (durationSec: number) => void;
   onAvailabilityChange: (state: "available" | "failed") => void;
+  motionStyle?: ReturnType<typeof previewMotionStyle>;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const localTime = brollPreviewLocalTime(currentTime, window);
@@ -279,6 +323,7 @@ function BrollPreviewLayer({
       bg="black"
       pointerEvents="none"
       aria-label="B-roll preview"
+      style={motionStyle}
     >
       {/* Decorative cutaway: spoken captions remain in the interactive
           overlay above this layer, so this video intentionally has no track. */}
@@ -333,6 +378,7 @@ function BrollPreviewLayer({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function VideoPreview() {
+  const prefersReducedMotion = usePrefersReducedMotion();
   const {
     editorDocument,
     clipInfo,
@@ -1016,34 +1062,16 @@ export function VideoPreview() {
       )
     : null;
   const insertedSceneVideoRef = useRef<HTMLVideoElement | null>(null);
-  const insertedSceneMotionStyle = (() => {
-    if (!plannedInsertedScene || !compositionPreview) return undefined;
-    const durationSec = Math.max(0.001, compositionPreview.sceneEndSec - compositionPreview.sceneStartSec);
-    const edgeSec = Math.min(0.35, durationSec / 2);
-    const localSec = Math.max(0, Math.min(durationSec, currentTime - compositionPreview.sceneStartSec));
-    const entranceProgress = Math.max(0, Math.min(1, localSec / edgeSec));
-    const exitRemaining = Math.max(0, Math.min(1, (durationSec - localSec) / edgeSec));
-    const entrance = plannedInsertedScene.motion.entrance;
-    const exit = plannedInsertedScene.motion.exit;
-    const opacity =
-      (entrance === "fade" ? entranceProgress : 1) *
-      (exit === "fade" ? exitRemaining : 1);
-    const translateY = entrance === "slide-up"
-      ? (1 - entranceProgress) * 100
-      : exit === "slide-down"
-        ? (1 - exitRemaining) * 100
-        : 0;
-    const scale = entrance === "zoom-in"
-      ? 0.92 + 0.08 * entranceProgress
-      : exit === "zoom-out"
-        ? 0.92 + 0.08 * exitRemaining
-        : 1;
-    return {
-      opacity,
-      transform: `translateY(${translateY}%) scale(${scale})`,
-      transformOrigin: "center",
-    };
-  })();
+  const insertedSceneMotionStyle = previewMotionStyle(
+    plannedInsertedScene?.motion
+      ? adoptCompositionMotion(
+          plannedInsertedScene.motion,
+          currentTime,
+          prefersReducedMotion,
+        )
+      : null,
+    compositionPreview?.canvas ?? null,
+  );
   useEffect(() => {
     const node = insertedSceneVideoRef.current;
     const content = plannedInsertedScene?.content;
@@ -1063,6 +1091,12 @@ export function VideoPreview() {
   }, [compositionPreview, currentTime, isPlaying, plannedInsertedScene]);
   const activeBrollWindow = plannedBrollLayer?.activeRange ?? null;
   const brollActive = Boolean(plannedBrollLayer);
+  const brollMotionStyle = previewMotionStyle(
+    plannedBrollLayer?.motion
+      ? adoptCompositionMotion(plannedBrollLayer.motion, currentTime, prefersReducedMotion)
+      : null,
+    compositionPreview?.canvas ?? null,
+  );
   const plannedTextLayers = compositionPreview?.layers.filter(
     (layer): layer is CompositionTextVisualLayer => layer.kind === "text",
   ) ?? [];
@@ -1080,19 +1114,21 @@ export function VideoPreview() {
     (layer): layer is CompositionOutputTreatmentVisualLayer =>
       layer.kind === "output-treatment",
   );
-  const transitionOverlayOpacity = (() => {
-    if (!plannedTransitionLayer) return 0;
-    const { fadeIn, fadeOut } = plannedTransitionLayer.windows;
-    if (currentTime <= fadeIn.endSec) {
-      const durationSec = Math.max(0.001, fadeIn.endSec - fadeIn.startSec);
-      return Math.max(0, Math.min(1, 1 - (currentTime - fadeIn.startSec) / durationSec));
-    }
-    if (currentTime >= fadeOut.startSec) {
-      const durationSec = Math.max(0.001, fadeOut.endSec - fadeOut.startSec);
-      return Math.max(0, Math.min(1, (currentTime - fadeOut.startSec) / durationSec));
-    }
-    return 0;
-  })();
+  const transitionMotion = plannedTransitionLayer
+    ? adoptCompositionMotion(
+        plannedTransitionLayer.motion,
+        currentTime,
+        prefersReducedMotion,
+      )
+    : null;
+  const transitionOverlayOpacity =
+    plannedTransitionLayer?.application === "overlay"
+      ? (transitionMotion?.opacity ?? 0)
+      : 0;
+  const transitionSourceStyle =
+    plannedTransitionLayer?.application === "source"
+      ? previewMotionStyle(transitionMotion, compositionPreview?.canvas ?? null)
+      : undefined;
   const plannedSourceDims = compositionPlanResult?.status === "invalid"
     ? null
     : compositionPlanResult?.plan.source ?? null;
@@ -1106,9 +1142,15 @@ export function VideoPreview() {
     compositionPlanResult?.status === "invalid"
       ? compositionInvalidText(compositionPlanResult.error.code)
       : null;
-  const compositionStatusItems = compositionInvalidTextValue
+  const compositionStatusItems = (compositionInvalidTextValue
     ? [{ key: "invalid-composition", text: compositionInvalidTextValue }]
-    : compositionNoticeItems;
+    : compositionNoticeItems).concat(
+      prefersReducedMotion &&
+        [plannedInsertedScene?.motion, plannedBrollLayer?.motion, plannedTransitionLayer?.motion]
+          .some((motion) => motion?.entrance || motion?.exit)
+        ? [{ key: "reduced-motion", text: "Motion preview paused by reduced-motion preference." }]
+        : [],
+    );
   const backgroundActive =
     effectiveFramingMode === "fit" && clipInfo.sourceKind === "video";
   // resolveEffectiveFramingMode makes background and split/screen mutually
@@ -1717,6 +1759,7 @@ export function VideoPreview() {
             maxWidth: "100%",
             height: videoH > videoW ? "100%" : "auto",
             width: videoH <= videoW ? "100%" : "auto",
+            ...transitionSourceStyle,
           }}
           bg={activeSpeakerScene?.overrideId ? "black" : "studio.subtle"}
           overflow="hidden"
@@ -2057,11 +2100,12 @@ export function VideoPreview() {
               isPlaying={isPlaying}
               onDuration={handleBrollDuration}
               onAvailabilityChange={handleBrollAvailability}
+              motionStyle={brollMotionStyle}
             />
           ) : null}
 
 			{plannedBrollLayer?.kind === "broll-image" && plannedVisualBrollAsset?.accessUrl ? (
-				<Box position="absolute" inset="0" zIndex="20" overflow="hidden" bg="studio.canvas">
+				<Box position="absolute" inset="0" zIndex="20" overflow="hidden" bg="studio.canvas" style={brollMotionStyle}>
 					<img
 						src={plannedVisualBrollAsset.accessUrl}
 						alt=""

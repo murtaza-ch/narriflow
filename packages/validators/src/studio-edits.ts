@@ -51,8 +51,26 @@ export const studioTextLayerSchema = z
     { message: "endSec must be greater than startSec" },
   );
 
+export const CLIP_TRANSITION_TYPES = [
+  "none",
+  "fade",
+  "fade-black",
+  "dip-white",
+  "cross-dissolve",
+  "wipe-left",
+  "wipe-right",
+  "wipe-up",
+  "wipe-down",
+  "slide-left",
+  "slide-right",
+  "slide-up",
+  "slide-down",
+  "zoom-in",
+  "zoom-out",
+] as const;
+
 export const studioTransitionSchema = z.object({
-  type: z.enum(["none", "fade", "fade-black", "dip-white"]).default("none"),
+  type: z.enum(CLIP_TRANSITION_TYPES).default("none"),
   durationSec: z.number().min(0.1).max(2).default(0.4),
 });
 

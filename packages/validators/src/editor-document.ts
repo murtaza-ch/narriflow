@@ -97,6 +97,51 @@ const editorDocumentV2Schema = z
     }
 
     const sceneIds = new Set(doc.sceneBlocks.map((scene) => scene.id));
+    const motionTargetKey = (motion: MediaMotion) =>
+      motion.target.kind === "broll"
+        ? "broll"
+        : `scene:${motion.target.sceneBlockId}`;
+    if (
+      new Set(doc.mediaMotions.map(motionTargetKey)).size !==
+      doc.mediaMotions.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["mediaMotions"],
+        message: "a media target can have only one motion",
+      });
+    }
+    const animatedMotions = doc.mediaMotions.filter(
+      (motion) =>
+        motion.enabled &&
+        (motion.entrance !== "none" || motion.exit !== "none"),
+    );
+    if (animatedMotions.length > TIMED_EDIT_LIMITS.animatedMedia) {
+      context.addIssue({
+        code: "custom",
+        path: ["mediaMotions"],
+        message: `no more than ${TIMED_EDIT_LIMITS.animatedMedia} media targets may be animated`,
+      });
+    }
+    const simultaneousMotionCount = animatedMotions.reduce(
+      (maximum, candidate) =>
+        Math.max(
+          maximum,
+          animatedMotions.filter(
+            (motion) =>
+              motion.startSec <= candidate.startSec &&
+              motion.endSec > candidate.startSec,
+          ).length,
+        ),
+      0,
+    );
+    if (simultaneousMotionCount > TIMED_EDIT_LIMITS.simultaneousAnimatedLayers) {
+      context.addIssue({
+        code: "custom",
+        path: ["mediaMotions"],
+        message: `no more than ${TIMED_EDIT_LIMITS.simultaneousAnimatedLayers} media motions may overlap`,
+      });
+    }
     doc.censorSegments.forEach((segment, index) => {
       if (segment.sourceStartSec < doc.clipStartSec || segment.sourceEndSec > doc.clipEndSec) {
         context.addIssue({ code: "custom", path: ["censorSegments", index], message: "censor segment is outside the clip source window" });

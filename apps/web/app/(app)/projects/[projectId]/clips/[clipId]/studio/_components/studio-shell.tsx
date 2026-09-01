@@ -50,6 +50,7 @@ import {
   type SceneBlock,
   type SceneContent,
 	type SceneMotion,
+  type MediaMotion,
   type SceneTemplateDefinition,
   type CensorSegment,
   type AutoCensorAnalyticsInput,
@@ -361,6 +362,7 @@ export interface ClipInfo {
   brollCues: BrollCue[];
   can1080pExport: boolean;
   exportHasWatermark: boolean;
+  canPersistMotion: boolean;
 }
 
 export interface StudioExportOptions {
@@ -635,6 +637,8 @@ interface StudioContextValue extends StudioState {
   duplicateSceneBlock: (id: string) => void;
 	replaceSceneBlock: (id: string, content: SceneContent, durationSec?: number) => void;
 	updateSceneMotion: (id: string, motion: SceneMotion) => void;
+  upsertMediaMotion: (motion: MediaMotion) => void;
+  removeMediaMotion: (id: string) => void;
   deleteSceneBlock: (id: string) => void;
   setCensorSegments: (segments: CensorSegment[]) => boolean;
   updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
@@ -1311,6 +1315,20 @@ export function StudioShell({
 	const updateSceneMotion = useCallback((id: string, motion: SceneMotion) => {
 		studioSession.dispatch({ type: "document.edit", action: { type: "updateSceneMotion", id, motion } });
 	}, [studioSession]);
+  const upsertMediaMotion = useCallback((motion: MediaMotion) => {
+    const current = studioSession.getSnapshot().document.mediaMotions.find(
+      (candidate) => candidate.id === motion.id,
+    );
+    studioSession.dispatch({
+      type: "document.edit",
+      action: current
+        ? { type: "updateMediaMotion", id: motion.id, motion }
+        : { type: "insertMediaMotion", motion },
+    });
+  }, [studioSession]);
+  const removeMediaMotion = useCallback((id: string) => {
+    studioSession.dispatch({ type: "document.edit", action: { type: "removeMediaMotion", id } });
+  }, [studioSession]);
   const deleteSceneBlock = useCallback((id: string) => {
     studioSession.dispatch({ type: "document.edit", action: { type: "deleteSceneBlock", id } });
   }, [studioSession]);
@@ -2140,7 +2158,7 @@ export function StudioShell({
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
     reportCompositionPlanStatus, compositionPlanQaFixture,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
-		insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, deleteSceneBlock,
+		insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, upsertMediaMotion, removeMediaMotion, deleteSceneBlock,
     setCensorSegments, updateProjectCensorTerms, recordAutoCensorEvent,
   };
 

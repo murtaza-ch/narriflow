@@ -12,6 +12,7 @@ import {
 import { DEFAULT_CAPTION_PRESET } from "./caption-preset";
 import { AUTO_CENSOR_POLICY_VERSION } from "./auto-censor";
 import { studioEditsSchema } from "./studio-edits";
+import { mediaMotionSchema, sceneMotionSchema } from "./timed-edits";
 
 function currentDocument() {
   return {
@@ -40,6 +41,57 @@ const colorScene = (id: string, anchorSec: number, durationSec = 2) => ({
 });
 
 describe("Clip Editor Document v2", () => {
+  test("uses one bounded media-motion vocabulary for scenes and placements", () => {
+    const entrances = [
+      "none",
+      "fade",
+      "scale-in",
+      "pan-left",
+      "pan-right",
+      "pan-up",
+      "pan-down",
+      "ken-burns-in",
+    ] as const;
+    const exits = [
+      "none",
+      "fade",
+      "scale-out",
+      "pan-left",
+      "pan-right",
+      "pan-up",
+      "pan-down",
+      "ken-burns-out",
+    ] as const;
+
+    for (const entrance of entrances) {
+      expect(sceneMotionSchema.parse({ entrance, exit: "none" })).toEqual({
+        entrance,
+        exit: "none",
+        durationSec: 0.5,
+      });
+    }
+    for (const exit of exits) {
+      expect(sceneMotionSchema.parse({ entrance: "none", exit })).toEqual({
+        entrance: "none",
+        exit,
+        durationSec: 0.5,
+      });
+    }
+
+    expect(
+      mediaMotionSchema.parse({
+        schemaVersion: 1,
+        id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+        target: { kind: "broll" },
+        startSec: 0,
+        endSec: 1,
+        entrance: "fade",
+        exit: "ken-burns-out",
+        enabled: true,
+      }),
+    ).toMatchObject({ durationSec: 0.5 });
+  });
+
   test("accepts only the current strict document version", () => {
 		const current = currentDocument();
 		expect(editorDocumentSchema.parse(current)).toEqual(current);
@@ -90,6 +142,33 @@ describe("Clip Editor Document v2", () => {
       sceneBlocks: [20, 50, 80, 110].map((anchorSec) =>
         colorScene(crypto.randomUUID(), anchorSec, 30)),
     })).toThrow("total edited duration cannot exceed 120 seconds");
+  });
+
+  test("bounds animated targets and simultaneous media-motion work", () => {
+    const scenes = Array.from({ length: 5 }, (_, index) =>
+      colorScene(crypto.randomUUID(), index * 2, 2),
+    );
+    const motions = scenes.map((scene) => ({
+      schemaVersion: 1 as const,
+      id: crypto.randomUUID(),
+      target: { kind: "scene_block" as const, sceneBlockId: scene.id },
+      startSec: 0,
+      endSec: 5,
+      entrance: "fade" as const,
+      exit: "fade" as const,
+      durationSec: 0.5,
+      enabled: true,
+    }));
+    expect(() =>
+      editorDocumentSchema.parse({ ...currentDocument(), sceneBlocks: scenes, mediaMotions: motions }),
+    ).toThrow("no more than 4 media motions may overlap");
+    expect(() =>
+      editorDocumentSchema.parse({
+        ...currentDocument(),
+        sceneBlocks: [scenes[0]],
+        mediaMotions: [motions[0], { ...motions[0], id: crypto.randomUUID() }],
+      }),
+    ).toThrow("a media target can have only one motion");
   });
 
   test("insert, move, trim, duplicate, replace, and delete remap anchors deterministically", () => {

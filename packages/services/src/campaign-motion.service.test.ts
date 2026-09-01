@@ -37,7 +37,7 @@ describe("selection-scoped campaign motion", () => {
     expect(
       applyCampaignMotionChange(document(null), {
         scope: "manual_broll",
-        motion: { entrance: "fade", exit: "scale-out" },
+        motion: { entrance: "fade", exit: "scale-out", durationSec: 0.65 },
       }),
     ).toEqual({
       status: "ineligible",
@@ -49,7 +49,7 @@ describe("selection-scoped campaign motion", () => {
     const createId = () => "10000000-0000-4000-8000-000000000001";
     const change = {
       scope: "manual_broll" as const,
-      motion: { entrance: "ken-burns-in" as const, exit: "fade" as const },
+      motion: { entrance: "ken-burns-in" as const, exit: "fade" as const, durationSec: 0.85 },
     };
     const first = applyCampaignMotionChange(document("https://media.test/broll.mp4"), change, createId);
     expect(first.status).toBe("changed");
@@ -62,6 +62,7 @@ describe("selection-scoped campaign motion", () => {
         endSec: 10,
         entrance: "ken-burns-in",
         exit: "fade",
+        durationSec: 0.85,
       }),
     ]);
     expect(applyCampaignMotionChange(first.document, change, createId)).toEqual({
@@ -71,7 +72,7 @@ describe("selection-scoped campaign motion", () => {
 
     const cleared = applyCampaignMotionChange(first.document, {
       scope: "manual_broll",
-      motion: { entrance: "none", exit: "none" },
+      motion: { entrance: "none", exit: "none", durationSec: 0.5 },
     });
     expect(cleared.status).toBe("changed");
     if (cleared.status !== "changed") throw new Error("expected change");

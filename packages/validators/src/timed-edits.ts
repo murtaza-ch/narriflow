@@ -7,6 +7,8 @@ export const TIMED_EDIT_LIMITS = {
   sceneBlocks: 64,
   censorSegments: 256,
   mediaMotions: 128,
+  animatedMedia: 64,
+  simultaneousAnimatedLayers: 4,
   documentBytes: 512 * 1024,
   totalEditedDurationSec: 120,
 } as const;
@@ -22,11 +24,6 @@ export const brandFontReferenceSchema = z.strictObject({
 	kind: z.literal("brand_font"),
 	id: z.string().uuid(),
 	fingerprint: z.string().regex(/^[a-f0-9]{32,128}$/i),
-});
-
-export const sceneMotionSchema = z.strictObject({
-  entrance: z.enum(["none", "fade", "slide-up", "zoom-in"]),
-  exit: z.enum(["none", "fade", "slide-down", "zoom-out"]),
 });
 
 export const mediaMotionEntranceSchema = z.enum([
@@ -50,6 +47,12 @@ export const mediaMotionExitSchema = z.enum([
   "pan-down",
   "ken-burns-out",
 ]);
+
+export const sceneMotionSchema = z.strictObject({
+  entrance: mediaMotionEntranceSchema,
+  exit: mediaMotionExitSchema,
+  durationSec: z.number().finite().min(0.1).max(2).default(0.5),
+});
 
 export const sceneContentSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -165,6 +168,7 @@ export const mediaMotionSchema = z.strictObject({
   endSec: boundedTimeSchema,
   entrance: mediaMotionEntranceSchema,
   exit: mediaMotionExitSchema,
+  durationSec: z.number().finite().min(0.1).max(2).default(0.5),
   enabled: z.boolean().default(true),
 }).refine((motion) => motion.endSec > motion.startSec, {
   message: "endSec must be greater than startSec",

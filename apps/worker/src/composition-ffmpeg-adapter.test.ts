@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
+  MOTION_ADAPTER_FIXTURES,
   planClipComposition,
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
@@ -78,8 +79,8 @@ function planInsertedScenes(targets = [
       sceneBlocks: [
         { id: "8ab9d330-688f-4574-932c-27ac661245c1", schemaVersion: 1, anchorSec: 0, durationSec: 1, content: { kind: "color", color: "#112233" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null },
         { id: "d8ab95f8-fc16-4e60-814e-69762a59a99b", schemaVersion: 1, anchorSec: 1, durationSec: 1, content: { kind: "text", text: "Opening: 100%", fontFamily: "Missing Brand Font", fontAsset: { kind: "brand_font", id: fontId, fingerprint: "a".repeat(64) }, color: "#FFFFFF", backgroundColor: "#111827" }, motion: { entrance: "fade", exit: "fade" }, templateSnapshot: null },
-        { id: "a3196d76-b71d-4b93-8812-7435b9e17faf", schemaVersion: 1, anchorSec: 2, durationSec: 1, content: { kind: "image", asset: { kind: "visual_asset", id: imageId, fingerprint }, fit: "contain", backgroundColor: "#223344" }, motion: { entrance: "zoom-in", exit: "zoom-out" }, templateSnapshot: null },
-        { id: "31ddc1dd-838c-4fed-a940-4cbed7a3974b", schemaVersion: 1, anchorSec: 3, durationSec: 1, content: { kind: "video", asset: { kind: "visual_asset", id: videoId, fingerprint }, sourceStartSec: 0, sourceEndSec: 1, fit: "cover", backgroundColor: "#000000", muted: false, volume: 65 }, motion: { entrance: "slide-up", exit: "slide-down" }, templateSnapshot: null },
+        { id: "a3196d76-b71d-4b93-8812-7435b9e17faf", schemaVersion: 1, anchorSec: 2, durationSec: 1, content: { kind: "image", asset: { kind: "visual_asset", id: imageId, fingerprint }, fit: "contain", backgroundColor: "#223344" }, motion: { entrance: "ken-burns-in", exit: "ken-burns-out", durationSec: 0.35 }, templateSnapshot: null },
+        { id: "31ddc1dd-838c-4fed-a940-4cbed7a3974b", schemaVersion: 1, anchorSec: 3, durationSec: 1, content: { kind: "video", asset: { kind: "visual_asset", id: videoId, fingerprint }, sourceStartSec: 0, sourceEndSec: 1, fit: "cover", backgroundColor: "#000000", muted: false, volume: 65 }, motion: { entrance: "pan-up", exit: "pan-down", durationSec: 0.35 }, templateSnapshot: null },
       ],
     }),
     source: { identity: "source:key", kind: "video", ...source },
@@ -347,7 +348,10 @@ function planBroll() {
   return result.plan;
 }
 
-function planVisualStack(input: { captions?: boolean } = {}) {
+function planVisualStack(input: {
+  captions?: boolean;
+  transitionType?: (typeof MOTION_ADAPTER_FIXTURES.transitions)[number]["type"];
+} = {}) {
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
     version: 2,
@@ -374,7 +378,7 @@ function planVisualStack(input: { captions?: boolean } = {}) {
       studioEdits: studioEditsSchema.parse({
         framing: { mode: "center" },
         textLayers: [{ id: "hook", text: "It's 50%", startSec: 1, endSec: 4 }],
-        transition: { type: "dip-white", durationSec: 0.5 },
+        transition: { type: input.transitionType ?? "dip-white", durationSec: 0.5 },
       }),
       brollUrl: null,
       deletedRanges: [],
@@ -411,6 +415,20 @@ function planVisualStack(input: { captions?: boolean } = {}) {
 }
 
 describe("composition FFmpeg adapter", () => {
+  test("compiles every shared transition fixture from canonical motion", () => {
+    for (const fixture of MOTION_ADAPTER_FIXTURES.transitions) {
+      const compiled = compileCompositionPlanVisualLayers({
+        plan: planVisualStack({ transitionType: fixture.type }),
+        targetId: "variant-1",
+        inputLabel: "[composition_base]",
+        outputLabel: "[outv]",
+        logoInputIndex: 1,
+      });
+      expect(compiled.filterParts.length).toBeGreaterThan(0);
+      expect(compiled.filterParts.join(";").length).toBeLessThan(64_000);
+    }
+  });
+
   test("translates the planned audio-only audiogram without choosing its visual policy", () => {
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
@@ -767,7 +785,7 @@ describe("composition FFmpeg adapter", () => {
     ).toThrow("invalid_clip_composition_visual_destination");
   });
 
-  test("rejects transition windows that overlap or cross the exact plan end", () => {
+  test("rejects unknown canonical motion versions at the adapter boundary", () => {
     const plan = planVisualStack();
     const target = plan.targets[0]!;
     const transition = target.visualLayers.find(
@@ -781,10 +799,7 @@ describe("composition FFmpeg adapter", () => {
           layer.id === transition.id
             ? {
                 ...transition,
-                windows: {
-                  fadeIn: { startSec: 0, endSec: 0.5 },
-                  fadeOut: { startSec: plan.editedDurationSec - 0.25, endSec: plan.editedDurationSec + 0.001 },
-                },
+                motion: { ...transition.motion, version: 2 },
               }
             : layer,
         ),
@@ -798,7 +813,7 @@ describe("composition FFmpeg adapter", () => {
         outputLabel: "[outv]",
         logoInputIndex: 1,
       }),
-    ).toThrow("invalid_clip_composition_transition_windows");
+    ).toThrow("unsupported_composition_motion_version");
   });
   test("compiles the Center plan's exact crop without choosing geometry", () => {
     expect(
@@ -1075,6 +1090,7 @@ describe("composition FFmpeg adapter", () => {
         sourceRef: "broll:cutaway",
         path: "/tmp/cutaway.mp4",
         kind: "video",
+        motion: null,
         inputIndex: 1,
         startSec: 1.5,
         endSec: 4,
@@ -1109,9 +1125,10 @@ describe("composition FFmpeg adapter", () => {
       expect(graph).toContain("drawtext=fontfile='/tmp/brand.ttf':text='Opening\\: 100\\%' ".trim());
       expect(graph).toContain("force_original_aspect_ratio=decrease,pad=");
       expect(graph).toContain("force_original_aspect_ratio=increase,crop=");
-		expect(graph).toContain("0.920000+0.080000");
-		expect(graph).toContain(`pad=${target.canvas.width}:${target.canvas.height * 3}:0:${target.canvas.height}`);
-		expect(graph).toContain(`crop=${target.canvas.width}:${target.canvas.height}:0:`);
+		expect(graph).toContain("crop=w='max(2");
+		expect(graph).toContain("1.080000+-0.080000");
+		expect(graph).toContain(`pad=${target.canvas.width}:${target.canvas.height}:(ow-iw)/2:(oh-ih)/2`);
+		expect(graph).toContain(`crop=w='min(iw,${target.canvas.width})':h='min(ih,${target.canvas.height})'`);
       expect(graph).toContain("concat=n=5:v=1:a=0");
 
       const audio = compileCompositionPlanSceneAudio({
@@ -1204,6 +1221,29 @@ describe("composition FFmpeg adapter", () => {
     expect(Number(result.format.duration)).toBeCloseTo(plan.editedDurationSec, 1);
     expect(result.streams).toContainEqual(expect.objectContaining({ codec_type: "video", width: 180, height: 320 }));
     expect(result.streams).toContainEqual(expect.objectContaining({ codec_type: "audio" }));
+    const centerPixelAt = async (timeSec: number) => {
+      const frame = Bun.spawn([
+        "ffmpeg", "-v", "error", "-ss", timeSec.toFixed(3), "-i", outputPath,
+        "-frames:v", "1", "-vf", "crop=1:1:90:160,format=rgb24", "-f", "rawvideo", "pipe:1",
+      ], { stdout: "pipe", stderr: "pipe" });
+      const bytes = new Uint8Array(await new Response(frame.stdout).arrayBuffer());
+      const stderr = await new Response(frame.stderr).text();
+      expect(await frame.exited, stderr).toBe(0);
+      return [...bytes.slice(0, 3)];
+    };
+    const colorCardPixel = await centerPixelAt(0.5);
+    const imageCardPixel = await centerPixelAt(2.5);
+    expect(colorCardPixel[0]).toBeGreaterThanOrEqual(12);
+    expect(colorCardPixel[0]).toBeLessThanOrEqual(24);
+    expect(colorCardPixel[1]).toBeGreaterThanOrEqual(28);
+    expect(colorCardPixel[1]).toBeLessThanOrEqual(42);
+    expect(colorCardPixel[2]).toBeGreaterThanOrEqual(44);
+    expect(colorCardPixel[2]).toBeLessThanOrEqual(60);
+    expect(imageCardPixel[0]).toBeGreaterThanOrEqual(125);
+    expect(imageCardPixel[0]).toBeLessThanOrEqual(150);
+    expect(imageCardPixel[1]).toBeGreaterThanOrEqual(158);
+    expect(imageCardPixel[1]).toBeLessThanOrEqual(184);
+    expect(imageCardPixel[2]).toBeGreaterThan(225);
   }, 30_000);
 
   test("renders beep and mute against real dialogue while preserving music without clipping", async () => {

@@ -423,7 +423,8 @@ export function applyCampaignMotionChange(
       Math.abs(existing.startSec) <= 0.001 &&
       Math.abs(existing.endSec - totalDurationSec) <= 0.001 &&
       existing.entrance === change.motion.entrance &&
-      existing.exit === change.motion.exit;
+      existing.exit === change.motion.exit &&
+      existing.durationSec === change.motion.durationSec;
   if (equivalent) return { status: "unchanged", document };
 
   let next = document;
@@ -446,6 +447,7 @@ export function applyCampaignMotionChange(
       endSec: totalDurationSec,
       entrance: change.motion.entrance,
       exit: change.motion.exit,
+      durationSec: change.motion.durationSec,
       enabled: true,
     },
   });

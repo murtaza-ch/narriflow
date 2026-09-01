@@ -301,7 +301,7 @@ export function GeneratedImagesPanel() {
         fit: "cover",
         backgroundColor: "#0A0B0E",
       },
-      motion: { entrance: "fade", exit: "fade" },
+      motion: { entrance: "fade", exit: "fade", durationSec: 0.5 },
       templateSnapshot: null,
     });
     toaster.create({ type: "success", title: "Scene inserted", description: "A four-second image scene was added at the playhead." });

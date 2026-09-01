@@ -33,7 +33,7 @@ describe("selection-scoped campaign operation schemas", () => {
       }).change,
     ).toEqual({
       scope: "manual_broll",
-      motion: { entrance: "ken-burns-in", exit: "pan-left" },
+      motion: { entrance: "ken-burns-in", exit: "pan-left", durationSec: 0.5 },
     });
   });
 
@@ -80,5 +80,19 @@ describe("selection-scoped campaign operation schemas", () => {
         },
       }),
     ).toMatchObject({ action: "apply_motion" });
+    expect(
+      previewCampaignEditorActionSchema.parse({
+        action: "apply_motion",
+        input: {
+          change: {
+            scope: "manual_broll",
+            motion: { entrance: "pan-left", exit: "ken-burns-out", durationSec: 0.85 },
+          },
+          clips: [{ clipId, expectedEditorRevision: 7 }],
+        },
+      }),
+    ).toMatchObject({
+      input: { change: { motion: { durationSec: 0.85 } } },
+    });
   });
 });

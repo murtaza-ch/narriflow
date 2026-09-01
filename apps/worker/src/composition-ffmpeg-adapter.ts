@@ -1,10 +1,13 @@
 import {
   CLIP_COMPOSITION_PLAN_VERSION,
+  COMPOSITION_MOTION_VERSION,
   compositionAssetRef,
   type ClipCompositionPlan,
   type CompositionBrollVideoLayer,
   type CompositionBrollImageLayer,
   type CompositionInsertedSceneLayer,
+  type CompositionMotionPlan,
+  type CompositionMotionState,
   type CompositionRect,
   type CompositionTargetPlan,
   type CompositionVisualLayer,
@@ -248,52 +251,162 @@ export function compileCompositionPlanSceneAudio(input: {
   return { filterParts: parts, outputLabel: "[composition_scene_audio]" };
 }
 
-function insertedSceneMotionFilters(input: {
-  motion: CompositionInsertedSceneLayer["motion"];
-  durationSec: number;
+function assertCompositionMotion(
+  motion: CompositionMotionPlan,
+  canvas: { width: number; height: number },
+): void {
+  if (motion.version !== COMPOSITION_MOTION_VERSION) {
+    throw new Error("unsupported_composition_motion_version");
+  }
+  const validRange = (range: { startSec: number; endSec: number }) =>
+    Number.isFinite(range.startSec) &&
+    Number.isFinite(range.endSec) &&
+    range.startSec >= motion.activeRange.startSec &&
+    range.endSec <= motion.activeRange.endSec &&
+    range.endSec > range.startSec;
+  const validRect = (rect: CompositionMotionState["crop"], allowEmpty: boolean) =>
+    [rect.x, rect.y, rect.width, rect.height].every(
+      (value) => Number.isFinite(value) && Number.isInteger(value),
+    ) &&
+    rect.x >= 0 &&
+    rect.y >= 0 &&
+    rect.width >= (allowEmpty ? 0 : 2) &&
+    rect.height >= (allowEmpty ? 0 : 2) &&
+    rect.x + rect.width <= canvas.width &&
+    rect.y + rect.height <= canvas.height;
+  const validState = (state: CompositionMotionState) =>
+    Number.isFinite(state.opacity) &&
+    state.opacity >= 0 &&
+    state.opacity <= 1 &&
+    Number.isFinite(state.transform.translateX) &&
+    Number.isFinite(state.transform.translateY) &&
+    Number.isFinite(state.transform.scale) &&
+    state.transform.scale > 0 &&
+    validRect(state.crop, false) &&
+    validRect(state.clip, true);
+  const windows = [motion.entrance, motion.exit].filter(
+    (window): window is NonNullable<typeof window> => window !== null,
+  );
+  if (
+    motion.activeRange.startSec < 0 ||
+    motion.activeRange.endSec <= motion.activeRange.startSec ||
+    !validState(motion.restingState) ||
+    windows.some(
+      (window) =>
+        !validRange(window.range) ||
+        !validState(window.from) ||
+        !validState(window.to),
+    ) ||
+    (motion.entrance &&
+      motion.exit &&
+      motion.entrance.range.endSec > motion.exit.range.startSec)
+  ) {
+    throw new Error("invalid_composition_motion_plan");
+  }
+}
+
+function motionValueExpression(input: {
+  motion: CompositionMotionPlan;
+  timeOffsetSec: number;
+  resting: number;
+  read: (state: CompositionMotionState) => number;
+}): string {
+  const interpolate = (
+    from: number,
+    to: number,
+    startSec: number,
+    endSec: number,
+  ) => {
+    const start = startSec - input.timeOffsetSec;
+    const end = endSec - input.timeOffsetSec;
+    const duration = Math.max(0.001, end - start);
+    return `${from.toFixed(6)}+${(to - from).toFixed(6)}*clip((t-${start.toFixed(6)})/${duration.toFixed(6)},0,1)`;
+  };
+  let expression = input.resting.toFixed(6);
+  if (input.motion.entrance) {
+    const window = input.motion.entrance;
+    expression = `if(lt(t,${(window.range.endSec - input.timeOffsetSec).toFixed(6)}),${interpolate(input.read(window.from), input.read(window.to), window.range.startSec, window.range.endSec)},${expression})`;
+  }
+  if (input.motion.exit) {
+    const window = input.motion.exit;
+    expression = `if(gte(t,${(window.range.startSec - input.timeOffsetSec).toFixed(6)}),${interpolate(input.read(window.from), input.read(window.to), window.range.startSec, window.range.endSec)},${expression})`;
+  }
+  return expression;
+}
+
+function compositionMotionFilters(input: {
+  motion: CompositionMotionPlan | null;
   width: number;
   height: number;
   backgroundColor: string;
+  timeOffsetSec?: number;
+  alpha?: boolean;
 }) {
-  const duration = input.durationSec;
-  const edge = Math.min(0.35, duration / 2);
+  if (!input.motion) return "";
+  assertCompositionMotion(input.motion, { width: input.width, height: input.height });
+  const offset = input.timeOffsetSec ?? 0;
+  const states = [
+    input.motion.restingState,
+    input.motion.entrance?.from,
+    input.motion.entrance?.to,
+    input.motion.exit?.from,
+    input.motion.exit?.to,
+  ].filter((state): state is CompositionMotionState => state !== undefined);
+  const expr = (resting: number, read: (state: CompositionMotionState) => number) =>
+    motionValueExpression({ motion: input.motion!, timeOffsetSec: offset, resting, read });
   const filters: string[] = [];
-  if (input.motion.entrance === "fade") {
-    filters.push(`fade=t=in:st=0:d=${edge.toFixed(3)}`);
-  }
-  if (input.motion.exit === "fade") {
-    filters.push(`fade=t=out:st=${Math.max(0, duration - edge).toFixed(3)}:d=${edge.toFixed(3)}`);
-  }
-
-  const slidesIn = input.motion.entrance === "slide-up";
-  const slidesOut = input.motion.exit === "slide-down";
-  if (slidesIn || slidesOut) {
-    const center = input.height;
-    const entrance = slidesIn
-      ? `if(lt(t,${edge.toFixed(3)}),(t/${edge.toFixed(3)})*${center},${center})`
-      : `${center}`;
-    const y = slidesOut
-      ? `if(gt(t,${Math.max(0, duration - edge).toFixed(3)}),${center}+((t-${Math.max(0, duration - edge).toFixed(3)})/${edge.toFixed(3)})*${center},${entrance})`
-      : entrance;
+  const alpha = input.alpha ? ":alpha=1" : "";
+  for (const window of [input.motion.entrance, input.motion.exit]) {
+    if (!window || window.from.opacity === window.to.opacity) continue;
+    const type = window.from.opacity < window.to.opacity ? "in" : "out";
     filters.push(
-      `pad=${input.width}:${input.height * 3}:0:${input.height}:color=0x${input.backgroundColor.slice(1)}`,
-      `crop=${input.width}:${input.height}:0:'${y}'`,
+      `fade=t=${type}:st=${(window.range.startSec - offset).toFixed(3)}:d=${(window.range.endSec - window.range.startSec).toFixed(3)}${alpha}`,
     );
   }
-
-  const zoomsIn = input.motion.entrance === "zoom-in";
-  const zoomsOut = input.motion.exit === "zoom-out";
-  if (zoomsIn || zoomsOut) {
-    const entrance = zoomsIn
-      ? `if(lt(t,${edge.toFixed(3)}),0.920000+0.080000*(t/${edge.toFixed(3)}),1)`
-      : "1";
-    const factor = zoomsOut
-      ? `if(gt(t,${Math.max(0, duration - edge).toFixed(3)}),1-0.080000*((t-${Math.max(0, duration - edge).toFixed(3)})/${edge.toFixed(3)}),${entrance})`
-      : entrance;
+  const cropChanged = states.some(
+    (state) => JSON.stringify(state.crop) !== JSON.stringify(input.motion!.restingState.crop),
+  );
+  if (cropChanged) {
+    const crop = input.motion.restingState.crop;
     filters.push(
-      `scale=w='iw*(${factor})':h='ih*(${factor})':eval=frame`,
-      `pad=${input.width}:${input.height}:(ow-iw)/2:(oh-ih)/2:color=0x${input.backgroundColor.slice(1)}:eval=frame`,
-      `crop=${input.width}:${input.height}`,
+      `crop=w='max(2,${expr(crop.width, (state) => state.crop.width)})':h='max(2,${expr(crop.height, (state) => state.crop.height)})':x='${expr(crop.x, (state) => state.crop.x)}':y='${expr(crop.y, (state) => state.crop.y)}'`,
+      `scale=${input.width}:${input.height}:eval=frame`,
+    );
+  }
+  const transformChanged = states.some(
+    (state) => JSON.stringify(state.transform) !== JSON.stringify(input.motion!.restingState.transform),
+  );
+  if (transformChanged) {
+    const transform = input.motion.restingState.transform;
+    const scale = expr(transform.scale, (state) => state.transform.scale);
+    const x = expr(transform.translateX, (state) => state.transform.translateX);
+    const y = expr(transform.translateY, (state) => state.transform.translateY);
+    const largeTranslation = states.some(
+      (state) =>
+        Math.abs(state.transform.translateX) >= input.width / 2 ||
+        Math.abs(state.transform.translateY) >= input.height / 2,
+    );
+    if (largeTranslation) {
+      filters.push(
+        `pad=${input.width * 3}:${input.height * 3}:${input.width}:${input.height}:color=${input.alpha ? "black@0" : `0x${input.backgroundColor.slice(1)}`}`,
+        `crop=${input.width}:${input.height}:x='${input.width}-(${x})':y='${input.height}-(${y})'`,
+      );
+    } else {
+      filters.push(
+        `scale=w='max(2,round(iw*(${scale})/2)*2)':h='max(2,round(ih*(${scale})/2)*2)':eval=frame`,
+        `crop=w='min(iw,${input.width})':h='min(ih,${input.height})':x='max(0,(iw-${input.width})/2-(${x}))':y='max(0,(ih-${input.height})/2-(${y}))'`,
+        `pad=${input.width}:${input.height}:(ow-iw)/2:(oh-ih)/2:color=${input.alpha ? "black@0" : `0x${input.backgroundColor.slice(1)}`}`,
+      );
+    }
+  }
+  const clipChanged = states.some(
+    (state) => JSON.stringify(state.clip) !== JSON.stringify(input.motion!.restingState.clip),
+  );
+  if (clipChanged) {
+    const clip = input.motion.restingState.clip;
+    filters.push(
+      `crop=w='max(2,${expr(clip.width, (state) => state.clip.width)})':h='max(2,${expr(clip.height, (state) => state.clip.height)})':x='${expr(clip.x, (state) => state.clip.x)}':y='${expr(clip.y, (state) => state.clip.y)}'`,
+      `pad=${input.width}:${input.height}:x='${expr(clip.x, (state) => state.clip.x)}':y='${expr(clip.y, (state) => state.clip.y)}':color=${input.alpha ? "black@0" : `0x${input.backgroundColor.slice(1)}`}:eval=frame`,
     );
   }
   return filters.length ? `,${filters.join(",")},setsar=1` : "";
@@ -393,19 +506,7 @@ export function compileCompositionPlanVisualLayers(input: {
       throw new Error("invalid_clip_composition_visual_layers");
     }
     if (layer.kind === "transition") {
-      const { fadeIn, fadeOut } = layer.windows;
-      const validWindow = (window: typeof fadeIn) =>
-        window.startSec >= layer.activeRange.startSec &&
-        window.endSec > window.startSec &&
-        window.endSec <= layer.activeRange.endSec &&
-        window.endSec <= input.plan.editedDurationSec;
-      if (
-        !validWindow(fadeIn) ||
-        !validWindow(fadeOut) ||
-        fadeIn.endSec > fadeOut.startSec
-      ) {
-        throw new Error("invalid_clip_composition_transition_windows");
-      }
+      assertCompositionMotion(layer.motion, target.canvas);
     }
     previousZIndex = layer.zIndex;
   }
@@ -453,12 +554,27 @@ export function compileCompositionPlanVisualLayers(input: {
       });
     } else if (layer.kind === "transition") {
       stages.push((source, output) => {
-        const duration = layer.windows.fadeIn.endSec - layer.windows.fadeIn.startSec;
+        if (layer.application === "overlay") {
+          const fadeIn = layer.motion.entrance;
+          const fadeOut = layer.motion.exit;
+          if (!fadeIn || !fadeOut) {
+            throw new Error("invalid_composition_motion_plan");
+          }
+          return {
+            parts: [
+              `${source}fade=t=in:st=${fadeIn.range.startSec.toFixed(3)}:d=${(fadeIn.range.endSec - fadeIn.range.startSec).toFixed(3)}:color=${layer.color},` +
+                `fade=t=out:st=${fadeOut.range.startSec.toFixed(3)}:d=${(fadeOut.range.endSec - fadeOut.range.startSec).toFixed(3)}:color=${layer.color}${output}`,
+            ],
+          };
+        }
+        const motion = compositionMotionFilters({
+          motion: layer.motion,
+          width: target.canvas.width,
+          height: target.canvas.height,
+          backgroundColor: layer.color,
+        });
         return {
-          parts: [
-            `${source}fade=t=in:st=${layer.windows.fadeIn.startSec.toFixed(3)}:d=${duration.toFixed(3)}:color=${layer.color},` +
-              `fade=t=out:st=${layer.windows.fadeOut.startSec.toFixed(3)}:d=${(layer.windows.fadeOut.endSec - layer.windows.fadeOut.startSec).toFixed(3)}:color=${layer.color}${output}`,
-          ],
+          parts: [`${source}${motion || ",null"}${output}`],
         };
       });
     } else if (layer.kind === "output-treatment") {
@@ -541,6 +657,7 @@ function plannedCompositionBrollPlacements(
   endSec: number;
   audio: "source";
   kind: "image" | "video";
+  motion: CompositionMotionPlan | null;
 }> {
   if (plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
     throw new Error("unsupported_clip_composition_plan_version");
@@ -620,7 +737,8 @@ function plannedCompositionBrollPlacements(
         startSec: layer.activeRange.startSec,
         endSec: layer.activeRange.endSec,
         audio: "source" as const,
-		kind: layer.kind === "broll-image" ? "image" as const : "video" as const,
+        kind: layer.kind === "broll-image" ? "image" as const : "video" as const,
+        motion: layer.motion,
       };
     })
     .sort((left, right) => left.startSec - right.startSec);
@@ -714,12 +832,12 @@ export function compileCompositionPlanInsertedSceneSequence(input: {
     const color = inserted.content.kind === "color"
       ? inserted.content.color
       : inserted.content.backgroundColor;
-    const motionFilters = insertedSceneMotionFilters({
+    const motionFilters = compositionMotionFilters({
       motion: inserted.motion,
-      durationSec: duration,
       width: target.canvas.width,
       height: target.canvas.height,
       backgroundColor: color,
+      timeOffsetSec: inserted.motion?.activeRange.startSec ?? scene.startSec,
     });
     if (inserted.content.kind === "color") {
       parts.push(`color=c=0x${color.slice(1)}:s=${target.canvas.width}x${target.canvas.height}:r=${fps}:d=${duration.toFixed(3)},format=yuv420p${motionFilters}${output}`);
@@ -782,6 +900,7 @@ export function compileCompositionPlanVideo(input: {
     startSec: number;
     endSec: number;
     kind: "image" | "video";
+    motion: CompositionMotionPlan | null;
   }>;
   sceneInputs: Array<{ sourceRef: string; path: string; kind: "image" | "video"; inputIndex: number }>;
 } {
@@ -839,7 +958,7 @@ export function compileCompositionPlanVideo(input: {
     const brollRanges = new Map<string, { startSec: number; endSec: number }>();
     for (const scene of sourceScenes) {
       for (const layer of scene.layers) {
-        if (layer.kind !== "broll-video") continue;
+        if (layer.kind !== "broll-video" && layer.kind !== "broll-image") continue;
         const current = brollRanges.get(layer.id);
         brollRanges.set(layer.id, {
           startSec: Math.min(current?.startSec ?? scene.startSec, scene.startSec),
@@ -850,8 +969,31 @@ export function compileCompositionPlanVideo(input: {
     const normalizedSourceScenes = sourceScenes.map((scene) => ({
       ...scene,
       layers: scene.layers.map((layer) =>
-        layer.kind === "broll-video"
-          ? { ...layer, activeRange: brollRanges.get(layer.id)! }
+        layer.kind === "broll-video" || layer.kind === "broll-image"
+          ? (() => {
+              const activeRange = brollRanges.get(layer.id)!;
+              const delta = activeRange.startSec - layer.activeRange.startSec;
+              const shiftRange = (range: { startSec: number; endSec: number }) => ({
+                startSec: range.startSec + delta,
+                endSec: range.endSec + delta,
+              });
+              return {
+                ...layer,
+                activeRange,
+                motion: layer.motion
+                  ? {
+                      ...layer.motion,
+                      activeRange,
+                      entrance: layer.motion.entrance
+                        ? { ...layer.motion.entrance, range: shiftRange(layer.motion.entrance.range) }
+                        : null,
+                      exit: layer.motion.exit
+                        ? { ...layer.motion.exit, range: shiftRange(layer.motion.exit.range) }
+                        : null,
+                    }
+                  : null,
+              };
+            })()
           : layer,
       ),
     }));
@@ -906,7 +1048,8 @@ export function compileCompositionPlanVideo(input: {
       inputIndex: input.brollInputStartIndex! + index,
       startSec: placement.startSec,
       endSec: placement.endSec,
-		kind: placement.kind,
+      kind: placement.kind,
+      motion: placement.motion,
     };
   });
   const baseOutputLabel =
@@ -930,8 +1073,16 @@ export function compileCompositionPlanVideo(input: {
       result.filterParts.push(
         `[${asset.inputIndex}:v]scale=${plannedTarget.canvas.width}:${plannedTarget.canvas.height}:` +
           `force_original_aspect_ratio=increase,crop=${plannedTarget.canvas.width}:` +
-          `${plannedTarget.canvas.height},setpts=PTS-STARTPTS+${asset.startSec}/TB,` +
-          `format=yuv420p${layer}`,
+          `${plannedTarget.canvas.height},format=rgba` +
+          compositionMotionFilters({
+            motion: asset.motion,
+            width: plannedTarget.canvas.width,
+            height: plannedTarget.canvas.height,
+            backgroundColor: "#000000",
+            timeOffsetSec: asset.startSec,
+            alpha: true,
+          }) +
+          `,setpts=PTS-STARTPTS+${asset.startSec}/TB${layer}`,
         `${current}${layer}overlay=0:0:enable='between(t,${asset.startSec},${asset.endSec})'` +
           `${index === brollInputs.length - 1 ? trailingSuffix : ""}${next}`,
       );
