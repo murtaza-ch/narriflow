@@ -509,7 +509,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
                     : previewPending
                       ? selectedStatus === "failed"
                         ? "Render failed"
-                        : "Generating…"
+                        : "Preparing preview…"
                       : "Unavailable"
                 }
               />

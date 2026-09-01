@@ -1088,6 +1088,10 @@ export class ClipService {
         studioEdits: true,
         brollUrl: true,
         deletedRanges: true,
+        editorDocumentVersion: true,
+        sceneBlocks: true,
+        censorSegments: true,
+        mediaMotions: true,
         // The transcript's detected language, stated verbatim in the prompt.
         // Without it the model infers a language from a ~400-character slice and
         // drifts: an English NVIDIA interview came back with Spanish titles, one
@@ -1630,6 +1634,10 @@ export class ClipService {
           studioEdits: true,
           brollUrl: true,
           deletedRanges: true,
+          editorDocumentVersion: true,
+          sceneBlocks: true,
+          censorSegments: true,
+          mediaMotions: true,
           platformFit: true,
         },
       }),
@@ -2758,6 +2766,10 @@ export class ClipService {
         studioEdits: true,
         brollUrl: true,
         deletedRanges: true,
+        editorDocumentVersion: true,
+        sceneBlocks: true,
+        censorSegments: true,
+        mediaMotions: true,
         project: {
           select: { sourceStorageKey: true, sourceDurationSeconds: true },
         },
@@ -2770,10 +2782,24 @@ export class ClipService {
 
       // tailPadSec 0 — must stay in lockstep with toClipSnapshot (see its
       // comment): slice-only timing treats stored bounds as final.
-      const document = decodeClipEditorDocumentFromStorage(
-        clip,
-        clip.project.sourceDurationSeconds,
-      );
+      let document: EditorDocument;
+      try {
+        document = decodeClipEditorDocumentFromStorage(
+          clip,
+          clip.project.sourceDurationSeconds,
+        );
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "clip_preview_document_skipped",
+            clipId: clip.id,
+            projectId: clip.projectId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        continue;
+      }
       const effective = getEffectiveClipTiming({
         utterances: document.transcriptSlice,
         startSec: document.clipStartSec,
@@ -2923,6 +2949,10 @@ export class ClipService {
         studioEdits: true,
         brollUrl: true,
         deletedRanges: true,
+        editorDocumentVersion: true,
+        sceneBlocks: true,
+        censorSegments: true,
+        mediaMotions: true,
         editorRevision: true,
         previewStorageKey: true,
         previewStartSec: true,
@@ -2939,10 +2969,24 @@ export class ClipService {
       ) {
         continue;
       }
-      const document = decodeClipEditorDocumentFromStorage(
-        clip,
-        clip.project.sourceDurationSeconds,
-      );
+      let document: EditorDocument;
+      try {
+        document = decodeClipEditorDocumentFromStorage(
+          clip,
+          clip.project.sourceDurationSeconds,
+        );
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "clip_auto_layout_document_skipped",
+            clipId: clip.id,
+            projectId: clip.projectId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        continue;
+      }
       const claimToken = randomUUID();
       const claim = await prisma.clip.updateMany({
         where: {

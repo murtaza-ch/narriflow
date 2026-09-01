@@ -277,6 +277,7 @@ export default async function ProjectDetailPage({
     defaultProcessingStartSec: latestContentPack?.processingStartSec ?? null,
     defaultProcessingEndSec: latestContentPack?.processingEndSec ?? null,
     defaultCaptionPreset,
+    defaultAutoRenderClips: latestContentPack?.autoRenderClips ?? false,
   };
 
   // Pipeline derivation from existing workflow/status data.

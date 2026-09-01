@@ -181,6 +181,7 @@ export interface ProcessingPanelProps {
     defaultProcessingStartSec: number | null;
     defaultProcessingEndSec: number | null;
     defaultCaptionPreset: CaptionPresetId;
+    defaultAutoRenderClips: boolean;
   };
   defaultSourceLanguageCode: string | null;
 }

@@ -101,6 +101,7 @@ interface AdvancedClipSettingsProps {
   defaultProcessingStartSec?: number | null;
   defaultProcessingEndSec?: number | null;
   defaultCaptionPreset?: CaptionPresetId;
+  defaultAutoRenderClips?: boolean;
   /** Inline toolbar rendering — trigger + chips on one row, no group label. */
   compact?: boolean;
 }
@@ -118,6 +119,7 @@ export function AdvancedClipSettings({
   defaultProcessingStartSec = null,
   defaultProcessingEndSec = null,
   defaultCaptionPreset = BRAND_DEFAULT_CAPTION_PRESET_ID,
+  defaultAutoRenderClips = false,
   compact = false,
 }: AdvancedClipSettingsProps) {
   const [open, setOpen] = useState(false);
@@ -130,7 +132,7 @@ export function AdvancedClipSettings({
     "youtube_shorts",
     "instagram_reels",
   ]);
-  const [autoRender, setAutoRender] = useState(false);
+  const [autoRender, setAutoRender] = useState(defaultAutoRenderClips);
 
   const platformSummary =
     platforms.length === platformOptions.length
