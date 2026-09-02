@@ -11,6 +11,7 @@ type PublicationIntentRequest = {
   resolution: "720p" | "1080p";
   scheduledFor: string;
   providerSettings: Record<string, unknown>;
+  reviewOverrideReason?: string | null;
 };
 
 function canonicalJson(value: unknown): string {

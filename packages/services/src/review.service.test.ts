@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	brandApprovalRequiredByDefault,
   deriveReviewRoundStatus,
   hashReviewAccessToken,
   hashReviewPasscode,
@@ -40,4 +41,33 @@ describe("review guest security primitives", () => {
     expect(deriveReviewRoundStatus({ ...open, expiresAt: new Date("2026-01-01T00:00:00Z") }, new Date("2026-01-02T00:00:00Z"))).toBe("expired");
     expect(deriveReviewRoundStatus({ ...open, revokedAt: new Date("2026-01-01T00:00:00Z"), decision: "approved" })).toBe("revoked");
   });
+
+	test("reads the approval default from the frozen Brand Profile snapshot", () => {
+		const snapshot = {
+			version: 1,
+			profileId: crypto.randomUUID(),
+			profileRevision: 3,
+			name: "Launch brand",
+			identity: {
+				primaryColor: "#101828",
+				secondaryColor: "#F2F4F7",
+				accentColor: "#155EEF",
+				primaryLogoAssetId: null,
+				alternateLogoAssetId: null,
+			},
+			voice: {
+				audience: "",
+				tone: [],
+				preferredTerms: [],
+				blockedTerms: [],
+				hashtagGuidance: "",
+			},
+			approvalRule: "approval_required",
+			style: null,
+		};
+
+		expect(brandApprovalRequiredByDefault(snapshot)).toBe(true);
+		expect(brandApprovalRequiredByDefault({ ...snapshot, approvalRule: "none" })).toBe(false);
+		expect(brandApprovalRequiredByDefault(null)).toBe(false);
+	});
 });

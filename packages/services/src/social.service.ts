@@ -227,6 +227,7 @@ export class SocialService {
       resolution: parsed.resolution,
       scheduledFor,
       providerSettings: parsed.providerSettings as Prisma.JsonObject,
+		reviewOverrideReason: parsed.reviewOverrideReason,
     });
 
     const row = await prisma.socialPost.findUnique({

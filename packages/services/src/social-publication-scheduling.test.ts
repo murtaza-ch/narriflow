@@ -40,6 +40,16 @@ const baseInput = {
 	providerSettings: { privacy: "public" },
 };
 
+const authorizeReview = async ({ exportIds }: { exportIds: string[] }) => ({
+	allowed: true as const,
+	mode: "enforce" as const,
+	items: exportIds.map((exportId) => ({
+		exportId,
+		eligibility: "approved" as const,
+		overrideAuditId: null,
+	})),
+});
+
 describe("Social Publication scheduling", () => {
 	test("replays one immutable publication intent", async () => {
 		const store = createInMemoryPublicationSchedulingStore();
@@ -47,6 +57,7 @@ describe("Social Publication scheduling", () => {
 		const scheduling = createSocialPublicationScheduling({
 			store,
 			authorize: async () => undefined,
+			authorizeReview,
 			freeze: async () => {
 				freezes += 1;
 				return { kind: "ready", state: readyState };
@@ -81,6 +92,7 @@ describe("Social Publication scheduling", () => {
 		const scheduling = createSocialPublicationScheduling({
 			store,
 			authorize: async () => undefined,
+			authorizeReview,
 			freeze: async () => {
 				freezes += 1;
 				return { kind: "ready", state: readyState };
@@ -99,6 +111,7 @@ describe("Social Publication scheduling", () => {
 		const scheduling = createSocialPublicationScheduling({
 			store: createInMemoryPublicationSchedulingStore(),
 			authorize: async () => undefined,
+			authorizeReview,
 			freeze: async () => ({ kind: "ready", state: readyState }),
 			createId: () => "social-post-1",
 			now: () => new Date("2026-08-30T10:00:00.000Z"),
@@ -114,6 +127,7 @@ describe("Social Publication scheduling", () => {
 		const scheduling = createSocialPublicationScheduling({
 			store,
 			authorize: async () => undefined,
+			authorizeReview,
 			freeze: async () => ({ kind: "ready", state: readyState }),
 			createId: () => "social-post-1",
 			now: () => new Date("2026-08-28T10:00:00.000Z"),
@@ -136,6 +150,7 @@ describe("Social Publication scheduling", () => {
 		const scheduling = createSocialPublicationScheduling({
 			store,
 			authorize: async () => undefined,
+			authorizeReview,
 			freeze: async () => ({ kind: "preparing", state: preparingState }),
 			createId: () => "social-post-1",
 			now: () => new Date("2026-08-28T10:00:00.000Z"),
@@ -169,6 +184,7 @@ describe("Social Publication scheduling", () => {
 		const scheduling = createSocialPublicationScheduling({
 			store,
 			authorize: async () => undefined,
+			authorizeReview,
 			freeze: async () => ({
 				kind: "preparing",
 				state: { ...readyState, storageKey: null, sizeBytes: null },
@@ -194,5 +210,47 @@ describe("Social Publication scheduling", () => {
 		expect(await scheduling.get("workspace-1", "social-post-1")).toMatchObject({
 			status: "cancelled",
 		});
+	});
+
+	test("checks the exact frozen export and keeps its override audit reference", async () => {
+		const checks: Array<Record<string, unknown>> = [];
+		const scheduling = createSocialPublicationScheduling({
+			store: createInMemoryPublicationSchedulingStore(),
+			authorize: async () => undefined,
+			authorizeReview: async (input) => {
+				checks.push(input);
+				return {
+					allowed: true,
+					mode: "enforce",
+					items: [
+						{
+							exportId: "export-1",
+							eligibility: "overridden",
+							overrideAuditId: "audit-1",
+						},
+					],
+				};
+			},
+			freeze: async () => ({ kind: "ready", state: readyState }),
+			createId: () => "social-post-1",
+			now: () => new Date("2026-08-28T10:00:00.000Z"),
+		});
+
+		const post = await scheduling.schedule({
+			...baseInput,
+			reviewOverrideReason: "Legal approved an urgent release.",
+		});
+
+		expect(checks).toEqual([
+			{
+				principal: { kind: "workspace_user", userId: "actor-1" },
+				workspaceId: "workspace-1",
+				projectId: "project-1",
+				exportIds: ["export-1"],
+				idempotencyKey: "schedule-intent-1",
+				overrideReason: "Legal approved an urgent release.",
+			},
+		]);
+		expect(post.reviewApprovalOverrideId).toBe("audit-1");
 	});
 });

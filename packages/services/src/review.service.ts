@@ -3,6 +3,7 @@ import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
 import { AnalyticsEventType, Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
+	brandProfileSnapshotSchema,
   createReviewRoundSchema,
   internalReviewCommentSchema,
   reviewCommentEditSchema,
@@ -44,6 +45,11 @@ export function deriveReviewRoundStatus(round: {
   if (round.decision === "approved") return "approved";
   if (round.decision === "changes_requested" || round.items.some((item) => item.currentDecision === "changes_requested")) return "changes_requested";
   return round.status;
+}
+
+export function brandApprovalRequiredByDefault(snapshot: unknown): boolean {
+	const parsed = brandProfileSnapshotSchema.safeParse(snapshot);
+	return parsed.success && parsed.data.approvalRule === "approval_required";
 }
 
 function requirePrisma() {
@@ -786,7 +792,7 @@ export class ReviewService {
     const [project, rounds, clips] = await Promise.all([
       prisma.project.findFirst({
         where: { id: projectId, workspaceId },
-        select: { title: true, workspace: { select: { name: true } } },
+        select: { title: true, brandProfileSnapshot: true, workspace: { select: { name: true } } },
       }),
       prisma.reviewRound.findMany({
         where: { workspaceId, projectId },
@@ -837,7 +843,13 @@ export class ReviewService {
     const deliverySecret = access === "manage" ? reviewDeliverySecret() : null;
     const now = new Date();
     return {
-      project,
+      project: {
+		title: project.title,
+		workspace: project.workspace,
+		approvalRequiredByDefault: brandApprovalRequiredByDefault(
+			project.brandProfileSnapshot,
+		),
+	  },
       candidates: access === "manage" ? clips : [],
       rounds: rounds.map((round) => {
         const recipientEmails = normalizeRecipientEmails(

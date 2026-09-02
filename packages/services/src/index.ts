@@ -338,6 +338,18 @@ export {
   PublicationIntentStateError,
 } from "./social-publication-scheduling";
 export {
+	createReviewApprovalGate,
+	ReviewApprovalGateError,
+	type ReviewApprovalPrincipal,
+	type ReviewApprovalResult,
+} from "./review-approval-gate";
+export {
+	createProductionReviewApprovalGate,
+	reviewApprovalGate,
+	reviewApprovalGateRolloutFromEnv,
+	type ReviewApprovalGateRollout,
+} from "./review-approval-gate.prisma";
+export {
   PublicationClaimLostError,
   type OwnedPublicationAttempt,
   type PublicationAttemptExecutionResult,

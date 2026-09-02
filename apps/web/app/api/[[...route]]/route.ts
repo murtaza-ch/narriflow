@@ -91,6 +91,7 @@ import {
   projectService,
   PublicationIntentConflictError,
   PublicationIntentStateError,
+  ReviewApprovalGateError,
   QuotaExceededError,
   RssFeedError,
   RemoteFetchError,
@@ -137,6 +138,7 @@ import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
 import { clipEditorPersistenceHttpError } from "./editor-persistence-http";
 import { clipDeleteHttpError } from "./clip-delete-http";
 import { createBrandProfileRoutes } from "./brand-profile-routes";
+import { reviewApprovalHttpStatus } from "@/lib/review-approval-http";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
@@ -2448,6 +2450,14 @@ app.post("/projects/:id/social-posts", async (c) => {
     );
     return c.json(post, 201);
   } catch (error) {
+    if (error instanceof ReviewApprovalGateError) {
+      const status = reviewApprovalHttpStatus(error.code);
+      if (status === null) throw error;
+      return c.json(
+        { error: error.code, message: userErrorMessage(error.code) },
+        status,
+      );
+    }
     if (
       error instanceof PublicationIntentConflictError ||
       error instanceof PublicationIntentStateError

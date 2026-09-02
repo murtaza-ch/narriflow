@@ -61,8 +61,14 @@ describe("publication intent browser key", () => {
 
     const first = keys.forRequest(request);
     const changed = keys.forRequest({ ...request, caption: "Final caption" });
+    const overridden = keys.forRequest({
+	  ...request,
+	  caption: "Final caption",
+	  reviewOverrideReason: "Owner approved the launch exception.",
+	});
     expect(changed).not.toBe(first);
-    expect(ids).toBe(2);
+    expect(overridden).not.toBe(changed);
+    expect(ids).toBe(3);
   });
 
   test("forgets a confirmed request without exposing frozen media facts", () => {

@@ -90,7 +90,7 @@ type Round = {
 };
 
 export type ReviewRoomData = {
-  project: { title: string; workspace: { name: string } };
+  project: { title: string; workspace: { name: string }; approvalRequiredByDefault: boolean };
   candidates: Candidate[];
   rounds: Round[];
 };
@@ -132,7 +132,9 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
   const [expiresAt, setExpiresAt] = useState("");
   const [recipientText, setRecipientText] = useState("");
   const [allowDownloads, setAllowDownloads] = useState(false);
-  const [approvalRequired, setApprovalRequired] = useState(true);
+  const [approvalRequired, setApprovalRequired] = useState(
+	initialData.project.approvalRequiredByDefault,
+	);
   const [selections, setSelections] = useState<Record<string, DraftSelection>>({});
   const [contextCommentIds, setContextCommentIds] = useState<string[]>([]);
   const [replyBody, setReplyBody] = useState("");
@@ -359,7 +361,7 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
               <Stack gap="1.5"><chakra.label htmlFor="review-message" fontSize="12px" fontWeight="650">Note to reviewers</chakra.label><Textarea id="review-message" value={message} maxLength={2000} rows={3} onChange={(event) => setMessage(event.target.value)} borderColor="border.control" /></Stack>
               <Stack gap="1.5"><chakra.label htmlFor="review-recipients" fontSize="12px" fontWeight="650">Notification recipients</chakra.label><Textarea id="review-recipients" value={recipientText} rows={2} placeholder="client@example.com, producer@example.com" onChange={(event) => setRecipientText(event.target.value)} borderColor="border.control" /><Text fontSize="11px" color="fg.subtle">{recipients.length === 0 ? "The private link will only be copied, not emailed." : `${recipients.length} recipient${recipients.length === 1 ? "" : "s"}`}</Text></Stack>
               <Flex gap="3" direction={{ base: "column", sm: "row" }}><Stack gap="1.5" flex="1"><chakra.label htmlFor="review-expiry" fontSize="12px" fontWeight="650">Expires</chakra.label><Input id="review-expiry" type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} borderColor="border.control" /></Stack><Stack gap="1.5" flex="1"><chakra.label htmlFor="review-passcode" fontSize="12px" fontWeight="650">Passcode</chakra.label><Input id="review-passcode" type="password" minLength={6} maxLength={128} value={passcode} placeholder="Optional" onChange={(event) => setPasscode(event.target.value)} borderColor="border.control" /></Stack></Flex>
-              <Stack gap="2"><Checkbox checked={allowDownloads} onCheckedChange={setAllowDownloads}>Allow downloads</Checkbox><Checkbox checked={approvalRequired} onCheckedChange={setApprovalRequired}>Require all selected clips before round approval</Checkbox></Stack>
+              <Stack gap="2"><Checkbox checked={allowDownloads} onCheckedChange={setAllowDownloads}>Allow downloads</Checkbox><Checkbox checked={approvalRequired} onCheckedChange={setApprovalRequired}>Require all selected clips before publishing</Checkbox><Text fontSize="11px" color="fg.subtle">{data.project.approvalRequiredByDefault ? "Your Brand Profile defaults new rounds to approval required." : "This Brand Profile defaults to advisory review."} The choice is frozen when you send this round.</Text></Stack>
               <Box borderTopWidth="1px" borderColor="border" pt="4"><Button w="full" colorPalette="accent" onClick={() => void createRound()} disabled={busy || Object.keys(selections).length === 0}>{busy ? <RefreshCw size={14} /> : <Send size={14} />}{busy ? " Sending…" : `Send round with ${Object.keys(selections).length} clip${Object.keys(selections).length === 1 ? "" : "s"}`}</Button><Text fontSize="11px" color="fg.subtle" mt="2">Sending freezes export revisions and replaces no prior feedback.</Text></Box>
             </Stack>
           </Flex>

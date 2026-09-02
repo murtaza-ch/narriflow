@@ -34,6 +34,11 @@ import {
   SOCIAL_PLATFORM_LABELS as platformLabels,
   type SocialPostTone,
 } from "@/lib/social-post-status";
+import {
+  ReviewApprovalCheckpoint,
+  reviewApprovalOverrideReady,
+  reviewOverrideReasonForRequest,
+} from "../../_components/review-approval-checkpoint";
 
 const platforms = Object.keys(platformLabels) as SocialPlatform[];
 
@@ -136,12 +141,14 @@ export function SocialSchedulingPanel({
   posts,
   accounts,
   facebookPublishingEnabled,
+  canOverrideReview,
 }: {
   projectId: string;
   clips: ClipSnapshot[];
   posts: SocialPostSnapshot[];
   accounts: SocialAccountSnapshot[];
   facebookPublishingEnabled: boolean;
+  canOverrideReview: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -159,6 +166,8 @@ export function SocialSchedulingPanel({
   const [caption, setCaption] = useState(selectedClip?.hookText ?? "");
   const [scheduledFor, setScheduledFor] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [approvalBlocked, setApprovalBlocked] = useState(false);
+  const [reviewOverrideReason, setReviewOverrideReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [recoveryForm, setRecoveryForm] = useState<RecoveryForm | null>(null);
   const noticeRef = useRef<HTMLDivElement | null>(null);
@@ -388,6 +397,11 @@ export function SocialSchedulingPanel({
       resolution,
       scheduledFor: scheduledAt.toISOString(),
       providerSettings,
+      reviewOverrideReason: reviewOverrideReasonForRequest({
+        blocked: approvalBlocked,
+        canOverride: canOverrideReview,
+        reason: reviewOverrideReason,
+      }),
     };
     const intentKeys = createPublicationIntentKeyStore({
       storage: window.sessionStorage,
@@ -411,6 +425,7 @@ export function SocialSchedulingPanel({
           resolution,
           scheduledFor: scheduledAt.toISOString(),
           providerSettings,
+          reviewOverrideReason: request.reviewOverrideReason,
         }),
       });
       if (!response.ok) {
@@ -418,6 +433,12 @@ export function SocialSchedulingPanel({
           message?: string;
           error?: string;
         } | null;
+        if (payload?.error === "review_approval_required") {
+			setApprovalBlocked(true);
+			setNotice(null);
+			requestAnimationFrame(() => noticeRef.current?.focus());
+			return;
+		}
         console.error("schedule_post_failed", response.status, payload);
         setNotice({
           tone: "danger",
@@ -430,6 +451,8 @@ export function SocialSchedulingPanel({
         throw new Error("The scheduling response was incomplete");
       }
       intentKeys.confirm(request);
+      setApprovalBlocked(false);
+      setReviewOverrideReason("");
       setNotice({
         tone: "success",
         text: scheduledFor
@@ -615,6 +638,8 @@ export function SocialSchedulingPanel({
               value={clipId}
               onValueChange={(nextId) => {
                 setClipId(nextId);
+                setApprovalBlocked(false);
+                setReviewOverrideReason("");
                 const nextClip = clips.find((clip) => clip.id === nextId);
                 if (nextClip) setCaption(nextClip.hookText);
               }}
@@ -632,7 +657,11 @@ export function SocialSchedulingPanel({
             <Select
               items={platformItems}
               value={platform}
-              onValueChange={(value) => setPlatform(value as SocialPlatform)}
+              onValueChange={(value) => {
+                setPlatform(value as SocialPlatform);
+                setApprovalBlocked(false);
+                setReviewOverrideReason("");
+              }}
               size="sm"
               aria-label="Platform"
             />
@@ -686,15 +715,35 @@ export function SocialSchedulingPanel({
                 clips.length === 0 ||
                 !caption.trim() ||
                 !selectedAccount ||
+                !reviewApprovalOverrideReady({
+                  blocked: approvalBlocked,
+                  canOverride: canOverrideReview,
+                  reason: reviewOverrideReason,
+                }) ||
                 !(platform === "facebook_reels" ? facebookPublishingEnabled : SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabledByDefault)
               }
               onClick={schedulePost}
             >
               {submitting ? <Spinner size="xs" /> : <CalendarClock size={14} />}
-              <Text ms="1.5">{submitting ? "Scheduling…" : "Schedule"}</Text>
+              <Text ms="1.5">{submitting ? "Scheduling…" : approvalBlocked ? "Override & schedule" : "Schedule"}</Text>
             </Button>
           </Box>
         </Grid>
+
+        {approvalBlocked ? (
+          <Box
+            ref={noticeRef}
+            tabIndex={-1}
+          >
+            <ReviewApprovalCheckpoint
+              projectId={projectId}
+              canOverride={canOverrideReview}
+              reason={reviewOverrideReason}
+              onReasonChange={setReviewOverrideReason}
+              inputId="review-override-reason"
+            />
+          </Box>
+        ) : null}
 
         {notice ? (
           <Flex

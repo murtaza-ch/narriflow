@@ -72,4 +72,25 @@ describe("browser request schemas", () => {
       socialPostMetricsSchema.safeParse({ views: 1, ...forged }).success,
     ).toBe(false);
   });
+
+	test("bounds an optional review approval override reason", () => {
+		expect(
+			scheduleSocialPostSchema.safeParse({
+				...socialScheduleInput,
+				reviewOverrideReason: "Client launch approved by the Workspace owner.",
+			}).success,
+		).toBe(true);
+		expect(
+			scheduleSocialPostSchema.safeParse({
+				...socialScheduleInput,
+				reviewOverrideReason: "   ",
+			}).success,
+		).toBe(false);
+		expect(
+			scheduleSocialPostSchema.safeParse({
+				...socialScheduleInput,
+				reviewOverrideReason: "x".repeat(501),
+			}).success,
+		).toBe(false);
+	});
 });

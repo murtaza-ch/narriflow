@@ -93,6 +93,7 @@ export const scheduleSocialPostSchema = z.object({
   resolution: z.enum(["720p", "1080p"]),
   scheduledFor: z.string().datetime(),
   providerSettings: z.record(z.string(), z.unknown()).default({}),
+	reviewOverrideReason: z.string().trim().min(1).max(500).nullable().optional(),
 }).strict().superRefine((value, context) => {
   const capability = SOCIAL_PROVIDER_CAPABILITIES[value.platform];
   if (!capability.aspectRatios.some((ratio) => ratio === value.aspectRatio)) {

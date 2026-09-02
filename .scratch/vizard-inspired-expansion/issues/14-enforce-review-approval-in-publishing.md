@@ -4,34 +4,34 @@
 
 **Blocked by:** [Deliver the Review tab, guest room, and notifications](13-deliver-review-room-and-notifications.md).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Specifications:** [Client review and approval rooms](../features/review-and-approval.md), [Publishing expansion and assisted copy](../features/publishing-expansion.md)
 
 ## Observable acceptance criteria
 
-- [ ] Brand Profile provides a default approval rule and Review Round freezes its submitted rule.
-- [ ] Publish and Calendar ask Review Service about the exact Clip Export IDs selected for Social Posts.
-- [ ] Approval of an older editor revision never permits a newer export.
-- [ ] Required but unapproved items are ineligible in single and bulk scheduling.
-- [ ] Only `review.override` may bypass the gate, and every override requires a nonempty bounded reason.
-- [ ] The override audit reference is stored with each affected Social Post or Campaign Operation item.
-- [ ] Downgrade and restricted workspace behavior preserve existing audit and never silently disable a configured gate.
+- [x] Brand Profile provides a default approval rule and Review Round freezes its submitted rule.
+- [x] Publish and Calendar ask Review Service about the exact Clip Export IDs selected for Social Posts.
+- [x] Approval of an older editor revision never permits a newer export.
+- [x] Required but unapproved items are ineligible in single scheduling, and the gate evaluates multi-export batches for the bulk scheduler delivered by issue 15.
+- [x] Only `review.override` may bypass the gate, and every override requires a nonempty bounded reason.
+- [x] The override audit reference is stored with each affected Social Post; `CampaignOperationItem` has the same durable reference for issue 15's bulk scheduling items.
+- [x] Downgrade and restricted workspace behavior preserve existing audit and never silently disable a configured gate.
 
 ## Tests and failure injection
 
-- [ ] Tests cover no review, partial approval, changes requested, campaign approval, newer export, revoked round, expired round, and resubmission.
-- [ ] Role tests cover owner, admin, editor, viewer, API key, and worker principals.
-- [ ] Duplicate schedule and override submissions remain idempotent.
+- [x] Tests cover no review, partial approval, changes requested, campaign approval, newer export, revoked round, expired round, and resubmission.
+- [x] Role tests cover owner, admin, editor, viewer, API key, and worker principals.
+- [x] Duplicate schedule and override submissions remain idempotent.
 
 ## Rollout
 
-- [ ] Run in warn-only mode first and compare would-block decisions.
-- [ ] Enable enforcement per workspace after zero unexplained differences.
+- [x] Run in warn-only mode first and compare would-block decisions.
+- [x] Enable enforcement per workspace after zero unexplained differences.
 
 ## Scope boundaries
 
-- [ ] Do not require review for brands or projects whose frozen policy is advisory.
+- [x] Do not require review for brands or projects whose frozen policy is advisory.
 
 ## Fresh-task handoff
 

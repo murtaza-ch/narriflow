@@ -145,6 +145,18 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"The rendered clip for this post is no longer available. Re-render the clip, then schedule it again.",
 	social_post_schedule_failed:
 		"We couldn't schedule that post. Check the account connection and try again.",
+	review_approval_required:
+		"This exact clip export needs approval before it can be scheduled.",
+	review_override_forbidden:
+		"Only a Workspace Owner or Admin can override review approval.",
+	review_override_reason_invalid:
+		"Add an override reason between 1 and 500 characters.",
+	review_override_conflict:
+		"This approval override changed. Start a new scheduling attempt.",
+	review_export_not_found:
+		"The exact clip export is no longer available. Refresh and choose the clip again.",
+	review_approval_policy_invalid:
+		"This project's approval policy is invalid. Reapply the Brand profile before publishing.",
 	social_post_cancel_failed:
 		"We couldn't cancel that post — it may have already started publishing. Check its current status above.",
 	youtube_unsupported_source:

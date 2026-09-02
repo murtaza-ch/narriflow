@@ -159,6 +159,10 @@ export default async function ProjectDetailPage({
     { role: appUser.role, status: appUser.status },
     "review.manage",
   );
+  const canOverrideReview = workspaceAllowsCapability(
+	{ role: appUser.role, status: appUser.status },
+	"review.override",
+  );
   const snapshot = await projectService.getProjectSnapshot(
     appUser.actorUserId,
     projectId,
@@ -919,6 +923,7 @@ export default async function ProjectDetailPage({
               posts={socialPosts}
               accounts={socialAccounts}
               facebookPublishingEnabled={isSocialProviderPublishingEnabled("facebook_reels")}
+              canOverrideReview={canOverrideReview}
             />
           ) : null}
         </Tabs.Content>

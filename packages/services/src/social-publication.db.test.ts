@@ -27,6 +27,7 @@ import {
 	SocialPublicationRecoveryError,
 } from "./social-publication-recovery";
 import { acceptTikTokPublicationWebhook } from "./social-publication-tiktok-webhook";
+import { createProductionReviewApprovalGate } from "./review-approval-gate.prisma";
 
 const databaseUrl = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_URL;
 const databaseSchema = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA;
@@ -100,6 +101,13 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				name: "Social Publication DB test",
 				ownerUserId: user.id,
 				personalOwnerUserId: user.id,
+			},
+		});
+		await prisma.workspaceMember.create({
+			data: {
+				workspaceId: workspace.id,
+				userId: user.id,
+				role: "owner",
 			},
 		});
 		const project = await prisma.project.create({
@@ -225,7 +233,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: input.hash,
 			status: "scheduled" as const,
 			submissionEligible: true,
+			reviewApprovalOverrideId: null,
 			createdAt: new Date(),
+			updatedAt: new Date(),
 			frozen: {
 				id: randomUUID(),
 				socialPostId: input.id,
@@ -350,6 +360,93 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				}),
 			}),
 		).rejects.toBeInstanceOf(PublicationIntentConflictError);
+	});
+
+	test("persists one idempotent override audit and links it to the Social Post", async () => {
+		const f = await fixture();
+		await prisma.project.update({
+			where: { id: f.project.id },
+			data: {
+				brandProfileSnapshot: {
+					version: 1,
+					profileId: randomUUID(),
+					profileRevision: 1,
+					name: "Approval gate test",
+					identity: {
+						primaryColor: "#FFFFFF",
+						secondaryColor: "#111522",
+						accentColor: null,
+						primaryLogoAssetId: null,
+						alternateLogoAssetId: null,
+					},
+					voice: {
+						audience: "",
+						tone: [],
+						preferredTerms: [],
+						blockedTerms: [],
+						hashtagGuidance: "",
+					},
+					approvalRule: "approval_required",
+					style: null,
+				},
+			},
+		});
+		const key = randomUUID();
+		const gate = createProductionReviewApprovalGate({
+			enforcedWorkspaceIds: new Set([f.workspace.id]),
+		});
+		const request = {
+			principal: { kind: "workspace_user" as const, userId: f.user.id },
+			workspaceId: f.workspace.id,
+			projectId: f.project.id,
+			exportIds: [f.clipExport.id],
+			idempotencyKey: key,
+		};
+
+		await expect(gate.authorize(request)).rejects.toMatchObject({
+			code: "review_approval_required",
+		});
+		const overridden = await gate.authorize({
+			...request,
+			overrideReason: "The client approved this launch outside the review room.",
+		});
+		const replay = await gate.authorize({
+			...request,
+			overrideReason: "The client approved this launch outside the review room.",
+		});
+		expect(replay).toEqual(overridden);
+		const overrideId = overridden.items[0]?.overrideAuditId;
+		expect(overrideId).toBeString();
+		expect(
+			await prisma.reviewApprovalOverride.count({
+				where: { workspaceId: f.workspace.id, clientIdempotencyKey: key },
+			}),
+		).toBe(1);
+
+		const candidate = {
+			...frozenCandidate(f, {
+				id: randomUUID(),
+				key,
+				hash: "override-frozen-request",
+				accountId: f.firstAccount.id,
+				scheduledFor: new Date(Date.now() + 3_600_000),
+			}),
+			reviewApprovalOverrideId: overrideId ?? null,
+		};
+		const post = await prismaPublicationSchedulingStore.open({
+			workspaceId: f.workspace.id,
+			clientIdempotencyKey: key,
+			immutableRequestHash: candidate.immutableRequestHash,
+			create: async () => candidate,
+		});
+
+		expect(post.reviewApprovalOverrideId).toBe(overrideId);
+		expect(
+			await prisma.socialPost.findUnique({
+				where: { id: post.id },
+				select: { reviewApprovalOverrideId: true },
+			}),
+		).toEqual({ reviewApprovalOverrideId: overrideId });
 	});
 
 	test("claims one pre-submission slot per account while unrelated accounts progress", async () => {

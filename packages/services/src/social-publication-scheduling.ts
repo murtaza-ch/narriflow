@@ -15,6 +15,11 @@ import {
 	socialPublicationCapabilityVersion,
 } from "./social-publication-config";
 import { workspaceService } from "./workspace.service";
+import { reviewApprovalGate } from "./review-approval-gate.prisma";
+import type {
+	ReviewApprovalPrincipal,
+	ReviewApprovalResult,
+} from "./review-approval-gate";
 
 export type FrozenPublicationState = {
 	clipExportId: string;
@@ -48,6 +53,7 @@ export type PublicationIntent = {
 	immutableRequestHash: string;
 	status: PublicationIntentStatus;
 	submissionEligible: boolean;
+	reviewApprovalOverrideId: string | null;
 	frozen: FrozenPublicationState;
 	createdAt: Date;
 	updatedAt: Date;
@@ -68,6 +74,7 @@ export type SchedulePublicationInput = {
 	resolution: ClipRenderResolution;
 	scheduledFor: Date;
 	providerSettings: Prisma.JsonObject;
+	reviewOverrideReason?: string | null;
 };
 
 export type PublicationFreezeResult =
@@ -146,6 +153,7 @@ export function publicationIntentHash(input: SchedulePublicationInput): string {
 				resolution: input.resolution,
 				scheduledFor: input.scheduledFor.toISOString(),
 				providerSettings: input.providerSettings,
+				reviewOverrideReason: input.reviewOverrideReason?.trim() || null,
 			}),
 		)
 		.digest("hex");
@@ -158,6 +166,14 @@ export function createSocialPublicationScheduling(dependencies: {
 		workspaceId: string;
 		permission: "publishing.manage";
 	}): Promise<void>;
+	authorizeReview(input: {
+		principal: ReviewApprovalPrincipal;
+		workspaceId: string;
+		projectId: string;
+		exportIds: string[];
+		idempotencyKey: string;
+		overrideReason?: string | null;
+	}): Promise<ReviewApprovalResult>;
 	freeze(input: SchedulePublicationInput): Promise<PublicationFreezeResult>;
 	createId(): string;
 	now(): Date;
@@ -184,6 +200,26 @@ export function createSocialPublicationScheduling(dependencies: {
 						);
 					}
 					const frozen = await dependencies.freeze(input);
+					const review = await dependencies.authorizeReview({
+						principal: {
+							kind: "workspace_user",
+							userId: input.actorUserId,
+						},
+						workspaceId: input.workspaceId,
+						projectId: input.projectId,
+						exportIds: [frozen.state.clipExportId],
+						idempotencyKey: input.clientIdempotencyKey,
+						overrideReason: input.reviewOverrideReason,
+					});
+					const approval = review.items.find(
+						(item) => item.exportId === frozen.state.clipExportId,
+					);
+					if (!approval) {
+						throw new PublicationIntentStateError(
+							"review_approval_result_incomplete",
+							"Review approval did not cover the frozen Clip Export",
+						);
+					}
 					const now = dependencies.now();
 					const ready =
 						frozen.kind === "ready" &&
@@ -199,6 +235,7 @@ export function createSocialPublicationScheduling(dependencies: {
 						immutableRequestHash,
 						status: ready ? "scheduled" : "preparing_video",
 						submissionEligible: ready,
+						reviewApprovalOverrideId: approval.overrideAuditId,
 						frozen: frozen.state,
 						createdAt: now,
 						updatedAt: now,
@@ -424,6 +461,7 @@ function toPublicationIntent(row: PublicationIntentRow): PublicationIntent {
 			frozen.storageKey !== null &&
 			frozen.sizeBytes !== null &&
 			frozen.durationSec !== null,
+		reviewApprovalOverrideId: row.reviewApprovalOverrideId,
 		frozen: {
 			clipExportId: frozen.clipExportId,
 			clipExportVariantId: frozen.clipExportVariantId,
@@ -548,6 +586,8 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 							aspectRatio: clipAspectRatioToDb[candidate.frozen.aspectRatio],
 							scheduledFor: candidate.frozen.scheduledFor,
 							metadata: candidate.frozen.providerSettings,
+							reviewApprovalOverrideId:
+								candidate.reviewApprovalOverrideId,
 							frozenState: {
 								create: {
 									clipExportId: candidate.frozen.clipExportId,
@@ -585,6 +625,22 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 							},
 						},
 					});
+					if (candidate.reviewApprovalOverrideId) {
+						await tx.projectAnalyticsEvent.create({
+							data: {
+								projectId: candidate.projectId,
+								clipId: candidate.clipId,
+								type: "review_approval_overridden",
+								platform: candidate.frozen.platform,
+								metadata: {
+									socialPostId: candidate.id,
+									reviewApprovalOverrideId:
+										candidate.reviewApprovalOverrideId,
+									exportId: candidate.frozen.clipExportId,
+								},
+							},
+						});
+					}
 					return row;
 				},
 				{ isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
@@ -700,6 +756,7 @@ export function createProductionSocialPublicationScheduling() {
 		authorize: async ({ actorUserId, workspaceId, permission }) => {
 			await workspaceService.requireActor(actorUserId, workspaceId, permission);
 		},
+		authorizeReview: (input) => reviewApprovalGate.authorize(input),
 		async freeze(input) {
 			if (!isSocialProviderPublishingEnabled(input.platform)) {
 				throw new PublicationIntentStateError(
