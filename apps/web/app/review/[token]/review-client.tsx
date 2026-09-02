@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -118,6 +118,10 @@ export function ReviewClient({ token }: { token: string }) {
     void load().catch(() => undefined);
   }, [load]);
 
+  useLayoutEffect(() => {
+    if (!round && error) accessErrorRef.current?.focus();
+  }, [error, round]);
+
   async function access(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -133,7 +137,6 @@ export function ReviewClient({ token }: { token: string }) {
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Access could not be verified");
-      requestAnimationFrame(() => accessErrorRef.current?.focus());
     } finally {
       setBusy(false);
     }

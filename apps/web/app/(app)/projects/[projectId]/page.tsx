@@ -146,9 +146,6 @@ export default async function ProjectDetailPage({
   const [{ projectId }, query] = await Promise.all([params, searchParams]);
   const activeTab = projectTabFromSearchParam(query.tab);
   const appUser = await admitProjectPage(projectId, "content.view");
-  if (activeTab === "review") {
-    await admitProjectPage(projectId, "review.manage");
-  }
   const brandScope = {
     actorUserId: appUser.actorUserId,
     workspaceId: appUser.workspaceId,
@@ -158,6 +155,10 @@ export default async function ProjectDetailPage({
     pricingTier: appUser.pricingTier,
     isPersonalWorkspace: appUser.isPersonalWorkspace,
   };
+  const canManageReview = workspaceAllowsCapability(
+    { role: appUser.role, status: appUser.status },
+    "review.manage",
+  );
   const snapshot = await projectService.getProjectSnapshot(
     appUser.actorUserId,
     projectId,
@@ -210,7 +211,7 @@ export default async function ProjectDetailPage({
       ? brandProfileService.list(brandScope)
       : Promise.resolve([]),
     activeTab === "review"
-      ? reviewService.internalRoom(appUser.workspaceId, projectId)
+      ? reviewService.internalRoom(appUser.workspaceId, projectId, canManageReview ? "manage" : "view")
       : Promise.resolve(null),
   ]);
   const reviewRoomData = reviewRoom
@@ -905,7 +906,7 @@ export default async function ProjectDetailPage({
         {/* REVIEW */}
         <Tabs.Content value="review" pt="6">
           {activeTab === "review" && reviewRoomData ? (
-            <ReviewPanel projectId={projectId} initialData={reviewRoomData} />
+            <ReviewPanel projectId={projectId} initialData={reviewRoomData} canManage={canManageReview} />
           ) : null}
         </Tabs.Content>
 

@@ -265,7 +265,7 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 	{ method: "POST", path: "/projects/:id/campaign-operations/:operationId/retry-export-bundle", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-operation-retry", 10, 3_600), input: idempotentParamsInput("id", "operationId") },
   { method: "POST", path: "/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/apply", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-scene-template", 20, 3_600), input: campaignMutationInput(applySceneTemplateSchema, ["id", "profileId", "templateId"]) },
   { method: "POST", path: "/projects/:id/review-rounds", capability: "review.manage", projectParam: "id", rateLimit: actorRate("review-round", 20, 3_600), input: bodyInput(createReviewRoundSchema, ["id"]) },
-  { method: "GET", path: "/projects/:id/review-rounds", capability: "review.manage", projectParam: "id", input: paramsInput("id") },
+  { method: "GET", path: "/projects/:id/review-rounds", capability: "content.view", projectParam: "id", input: paramsInput("id") },
   { method: "POST", path: "/projects/:id/review-rounds/:roundId/comments", capability: "review.manage", projectParam: "id", rateLimit: actorRate("review-comment-internal", 60), input: bodyInput(internalReviewCommentSchema, ["id", "roundId"]) },
   { method: "POST", path: "/projects/:id/review-rounds/:roundId/comments/:commentId/resolve", capability: "review.manage", projectParam: "id", input: paramsInput("id", "roundId", "commentId") },
   { method: "POST", path: "/projects/:id/review-rounds/:roundId/comments/:commentId/reopen", capability: "review.manage", projectParam: "id", input: paramsInput("id", "roundId", "commentId") },

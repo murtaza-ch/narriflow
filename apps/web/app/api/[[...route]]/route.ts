@@ -51,6 +51,7 @@ import {
   userErrorMessage,
   resolvePricingTier,
   isCensorSegmentStale,
+  workspaceAllowsCapability,
   type CreateExportBundleInput,
   type CreateReviewRoundInput,
   type InternalReviewCommentInput,
@@ -1840,7 +1841,11 @@ app.get("/projects/:id/review-rounds", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id } = authenticatedHonoInput<{ id: string }>(c);
   try {
-    return c.json(await reviewService.internalRoom(appUser.workspaceId, id), 200);
+    const access = workspaceAllowsCapability(
+      { role: appUser.role, status: appUser.status },
+      "review.manage",
+    ) ? "manage" : "view";
+    return c.json(await reviewService.internalRoom(appUser.workspaceId, id, access), 200);
   } catch (error) {
     const code = error instanceof ReviewServiceError ? error.code : "review_rounds_read_failed";
     return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review rounds could not be loaded" }, code.includes("not_found") ? 404 : 400);

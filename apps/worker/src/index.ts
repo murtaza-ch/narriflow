@@ -7,6 +7,7 @@ import {
 	getWorkflowRunLifecycle,
 	getSocialPublicationRuntime,
 	projectService,
+	reviewService,
 	projectRetentionService,
 	purgeExpiredProjectSources,
 	purgeOldWebhookDeliveryLogs,
@@ -199,6 +200,19 @@ async function reapStalledRunsIfDue() {
 					level: "info",
 					message: "export_bundles_expired",
 					count: expiredBundles,
+					ts: new Date().toISOString(),
+				}),
+			);
+		}
+		const expiredReviewRounds = await reviewService.recordExpiredRounds(
+			Number(process.env.REVIEW_EXPIRY_BATCH_SIZE ?? 100),
+		);
+		if (expiredReviewRounds > 0) {
+			console.warn(
+				JSON.stringify({
+					level: "info",
+					message: "review_rounds_expired",
+					count: expiredReviewRounds,
 					ts: new Date().toISOString(),
 				}),
 			);

@@ -647,9 +647,11 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		for (let attempt = 0; attempt < 7; attempt += 1) {
 			await expect(reviewService.authenticate(created.token, { identity: "Attacker", email: "attacker@example.test", passcode: "wrong-passcode" }, "203.0.113.10", sessionSecret)).rejects.toMatchObject({ code: "review_access_invalid" });
 		}
-		await expect(reviewService.authenticate(created.token, { identity: "Attacker", email: "attacker@example.test", passcode: "wrong-passcode" }, "203.0.113.10", sessionSecret)).rejects.toMatchObject({ code: "review_access_rate_limited" });
-		await prisma.reviewRound.update({ where: { id: created.id }, data: { expiresAt: new Date(Date.now() - 1_000) } });
-		await expect(reviewService.readRound(secondSession, sessionSecret)).rejects.toBeInstanceOf(ReviewServiceError);
+			await expect(reviewService.authenticate(created.token, { identity: "Attacker", email: "attacker@example.test", passcode: "wrong-passcode" }, "203.0.113.10", sessionSecret)).rejects.toMatchObject({ code: "review_access_rate_limited" });
+			await prisma.reviewRound.update({ where: { id: created.id }, data: { expiresAt: new Date(Date.now() - 1_000) } });
+			expect(await reviewService.recordExpiredRounds(100)).toBe(1);
+			expect(await reviewService.recordExpiredRounds(100)).toBe(0);
+			await expect(reviewService.readRound(secondSession, sessionSecret)).rejects.toBeInstanceOf(ReviewServiceError);
 		expect(await prisma.projectAnalyticsEvent.count({ where: { projectId: current.project.id, type: "review_expired" } })).toBe(1);
 		await prisma.reviewRound.update({ where: { id: created.id }, data: { expiresAt: null } });
 		await reviewService.revokeRound({ workspaceId: current.workspace.id, projectId: current.project.id, actorUserId: current.user.id }, created.id);
@@ -708,9 +710,23 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		);
 		expect(linked.revision).toBe(5);
 		expect(await prisma.reviewRoundContext.count({ where: { reviewRoundId: linked.id, sourceCommentId: unresolved.id } })).toBe(1);
-		expect((await reviewService.internalRoom(current.workspace.id, current.project.id)).rounds[0]?.context).toEqual([
-			expect.objectContaining({ sourceCommentId: unresolved.id, sourceRoundRevision: 3, body: unresolved.body }),
-		]);
+			expect((await reviewService.internalRoom(current.workspace.id, current.project.id, "manage")).rounds[0]?.context).toEqual([
+				expect.objectContaining({ sourceCommentId: unresolved.id, sourceRoundRevision: 3, body: unresolved.body }),
+			]);
+			const viewerRoom = await reviewService.internalRoom(current.workspace.id, current.project.id, "view");
+			const viewerSourceRound = viewerRoom.rounds.find((round) => round.id === resubmitted.id);
+			expect(viewerRoom.candidates).toEqual([]);
+			expect(viewerSourceRound).toMatchObject({
+				path: null,
+				recipientEmails: [],
+				auditEvents: [],
+				notifications: [],
+				context: [],
+			});
+			expect(viewerSourceRound?.comments[0]?.authorName).toBe("Client reviewer");
+			expect(viewerSourceRound?.guests[0]).toMatchObject({ displayName: null, email: null });
+			expect(JSON.stringify(viewerRoom)).not.toContain(resubmitted.token);
+			expect(JSON.stringify(viewerRoom)).not.toContain("client@example.test");
 		expect(await prisma.projectAnalyticsEvent.count({ where: { projectId: current.project.id, type: "review_resubmitted" } })).toBe(4);
 
     const profile = await prisma.brandProfile.create({ data: {

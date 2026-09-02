@@ -46,7 +46,7 @@ type Round = {
   title: string;
   message: string | null;
   status: string;
-  path: string;
+  path: string | null;
   allowDownloads: boolean;
   approvalRequired: boolean;
   recipientEmails: string[];
@@ -66,7 +66,7 @@ type Round = {
     variants: Variant[];
   }>;
   comments: Comment[];
-  guests: Array<{ id: string; displayName: string; email: string; firstSeenAt: string; lastSeenAt: string }>;
+  guests: Array<{ id: string; displayName: string | null; email: string | null; firstSeenAt: string; lastSeenAt: string }>;
   auditEvents: Array<{ id: string; kind: string; targetId: string | null; createdAt: string }>;
   notifications: Array<{
     id: string;
@@ -118,11 +118,11 @@ function parseRecipients(value: string) {
   return [...new Set(value.split(/[\s,;]+/).map((email) => email.trim().toLowerCase()).filter(Boolean))];
 }
 
-export function ReviewPanel({ projectId, initialData }: { projectId: string; initialData: ReviewRoomData }) {
+export function ReviewPanel({ projectId, initialData, canManage }: { projectId: string; initialData: ReviewRoomData; canManage: boolean }) {
   const router = useRouter();
   const [data, setData] = useState(initialData);
   const [activeRoundId, setActiveRoundId] = useState(initialData.rounds[0]?.id ?? null);
-  const [creating, setCreating] = useState(initialData.rounds.length === 0);
+  const [creating, setCreating] = useState(canManage && initialData.rounds.length === 0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -265,6 +265,7 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
   }
 
   async function copyLink(round: Round) {
+    if (!round.path) return;
     await navigator.clipboard.writeText(new URL(round.path, window.location.origin).toString());
     setNotice("Private review link copied.");
   }
@@ -296,15 +297,15 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
           <Text textStyle="display" fontSize={{ base: "28px", md: "36px" }} mt="1">Review room</Text>
           <Text color="fg.muted" fontSize="sm" mt="1" maxW="620px">Submit exact export revisions, keep client feedback in one record, and see what changed before the next round.</Text>
         </Box>
-        <Button colorPalette="accent" variant={creating ? "outline" : "solid"} onClick={() => { setContextCommentIds([]); setCreating(true); requestAnimationFrame(() => createHeadingRef.current?.focus()); }} disabled={creating || data.candidates.length === 0}>
+        {canManage ? <Button colorPalette="accent" variant={creating ? "outline" : "solid"} onClick={() => { setContextCommentIds([]); setCreating(true); requestAnimationFrame(() => createHeadingRef.current?.focus()); }} disabled={creating || data.candidates.length === 0}>
           <Send size={15} /> Create review
-        </Button>
+        </Button> : null}
       </Flex>
 
       {notice ? <Flex role="status" aria-live="polite" gap="2" align="center" color="success.fg" borderStartWidth="3px" borderColor="success.solid" ps="3" py="2"><Check size={14} /><Text fontSize="sm">{notice}</Text></Flex> : null}
       {error ? <Flex role="alert" gap="2" align="center" color="danger.fg" borderStartWidth="3px" borderColor="danger.solid" ps="3" py="2"><AlertTriangle size={14} /><Text fontSize="sm">{error}</Text></Flex> : null}
 
-      {creating ? (
+      {canManage && creating ? (
         <Box layerStyle="blueprint" borderWidth="1px" borderColor="border" borderRadius="l2" overflow="hidden">
           <Flex px={{ base: "4", md: "6" }} py="4" borderBottomWidth="1px" borderColor="border" justify="space-between" align="start" gap="4">
             <Box ref={createHeadingRef} tabIndex={-1} outline="none">
@@ -365,7 +366,7 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
         </Box>
       ) : null}
 
-      {data.rounds.length === 0 && !creating ? <EmptyState title="No review rounds yet" description="Select ready exports and send a private room to collect timecoded feedback and approvals." /> : null}
+      {data.rounds.length === 0 && !creating ? <EmptyState title="No review rounds yet" description={canManage ? "Select ready exports and send a private room to collect timecoded feedback and approvals." : "A review round has not been sent yet."} /> : null}
 
       {data.rounds.length > 0 ? (
         <Flex align="start" direction={{ base: "column", lg: "row" }} gap="6">
@@ -382,7 +383,7 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
           {activeRound ? (
             <Stack flex="1" minW="0" w="full" gap="6">
               <Box borderTopWidth="3px" borderColor="accent.solid" pt="4">
-                <Flex justify="space-between" align="start" gap="4" wrap="wrap"><Box><Flex align="center" gap="2"><Text textStyle="eyebrow" color="fg.subtle">Round {String(activeRound.revision).padStart(2, "0")}</Text><StatusBadge label={eventLabel(activeRound.status)} status={STATUS_BADGE_STATUS[activeRound.status] ?? "pending"} /></Flex><Text textStyle="title" fontSize="xl" mt="2">{activeRound.title}</Text><Text fontSize="sm" color="fg.muted" mt="1">Sent {formatDateTime(activeRound.sentAt)} · {activeRound.items.length} clip{activeRound.items.length === 1 ? "" : "s"}</Text></Box><Flex gap="2" wrap="wrap"><Button size="sm" variant="outline" onClick={() => void copyLink(activeRound)}><Copy size={14} /> Copy link</Button><Button size="sm" variant="outline" asChild><a href={activeRound.path} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open room</a></Button></Flex></Flex>
+                <Flex justify="space-between" align="start" gap="4" wrap="wrap"><Box><Flex align="center" gap="2"><Text textStyle="eyebrow" color="fg.subtle">Round {String(activeRound.revision).padStart(2, "0")}</Text><StatusBadge label={eventLabel(activeRound.status)} status={STATUS_BADGE_STATUS[activeRound.status] ?? "pending"} /></Flex><Text textStyle="title" fontSize="xl" mt="2">{activeRound.title}</Text><Text fontSize="sm" color="fg.muted" mt="1">Sent {formatDateTime(activeRound.sentAt)} · {activeRound.items.length} clip{activeRound.items.length === 1 ? "" : "s"}</Text></Box>{canManage && activeRound.path ? <Flex gap="2" wrap="wrap"><Button size="sm" variant="outline" onClick={() => void copyLink(activeRound)}><Copy size={14} /> Copy link</Button><Button size="sm" variant="outline" asChild><a href={activeRound.path} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open room</a></Button></Flex> : null}</Flex>
                 {activeRound.newerWorkAvailable ? <Flex mt="4" borderStartWidth="3px" borderColor="warning.solid" ps="3" py="2" gap="2" align="center" color="warning.fg"><AlertTriangle size={14} /><Text fontSize="sm">Newer ready work exists. This round still points to the exact exports the client saw.</Text></Flex> : null}
               </Box>
 
@@ -404,20 +405,20 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
                   <Stack gap="0" borderTopWidth="1px" borderColor="border">
                     {activeRound.comments.filter((comment) => !comment.parentId).map((thread) => {
                       const replies = activeRound.comments.filter((comment) => comment.parentId === thread.id);
-                      return <Box key={thread.id} borderBottomWidth="1px" borderColor="border" py="4"><Flex justify="space-between" gap="3" align="start"><Box><Flex align="center" gap="2"><Text fontSize="12px" fontWeight="700">{thread.authorName}</Text><Text fontSize="10px" color="fg.subtle">{thread.authorKind === "guest" ? "Client" : "Team"}</Text>{thread.timestampSec !== null ? <Text textStyle="data" color="accent.fg" fontSize="11px">{formatTimecode(thread.timestampSec)}</Text> : null}</Flex><Text fontSize="13px" color="fg.muted" mt="1" whiteSpace="pre-wrap">{thread.body}</Text></Box><StatusBadge label={thread.resolvedAt ? "resolved" : "open"} status={thread.resolvedAt ? "completed" : "pending"} /></Flex>{replies.map((reply) => <Box key={reply.id} ms="5" mt="3" ps="3" borderStartWidth="2px" borderColor="border.emphasized"><Text fontSize="11px" fontWeight="700">{reply.authorName}</Text><Text fontSize="13px" color="fg.muted" mt="0.5">{reply.body}</Text></Box>)}<Flex gap="2" mt="3"><Button size="xs" variant="ghost" onClick={() => { setReplyParentId(thread.id); setReplyBody(""); requestAnimationFrame(() => replyRef.current?.focus()); }}>Reply</Button><Button size="xs" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/comments/${thread.id}/${thread.resolvedAt ? "reopen" : "resolve"}`)} disabled={busy}>{thread.resolvedAt ? <RotateCcw size={12} /> : <Check size={12} />}{thread.resolvedAt ? "Reopen" : "Resolve"}</Button></Flex></Box>;
+                      return <Box key={thread.id} borderBottomWidth="1px" borderColor="border" py="4"><Flex justify="space-between" gap="3" align="start"><Box><Flex align="center" gap="2"><Text fontSize="12px" fontWeight="700">{thread.authorName}</Text><Text fontSize="10px" color="fg.subtle">{thread.authorKind === "guest" ? "Client" : "Team"}</Text>{thread.timestampSec !== null ? <Text textStyle="data" color="accent.fg" fontSize="11px">{formatTimecode(thread.timestampSec)}</Text> : null}</Flex><Text fontSize="13px" color="fg.muted" mt="1" whiteSpace="pre-wrap">{thread.body}</Text></Box><StatusBadge label={thread.resolvedAt ? "resolved" : "open"} status={thread.resolvedAt ? "completed" : "pending"} /></Flex>{replies.map((reply) => <Box key={reply.id} ms="5" mt="3" ps="3" borderStartWidth="2px" borderColor="border.emphasized"><Text fontSize="11px" fontWeight="700">{reply.authorName}</Text><Text fontSize="13px" color="fg.muted" mt="0.5">{reply.body}</Text></Box>)}{canManage ? <Flex gap="2" mt="3"><Button size="xs" variant="ghost" onClick={() => { setReplyParentId(thread.id); setReplyBody(""); requestAnimationFrame(() => replyRef.current?.focus()); }}>Reply</Button><Button size="xs" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/comments/${thread.id}/${thread.resolvedAt ? "reopen" : "resolve"}`)} disabled={busy}>{thread.resolvedAt ? <RotateCcw size={12} /> : <Check size={12} />}{thread.resolvedAt ? "Reopen" : "Resolve"}</Button></Flex> : null}</Box>;
                     })}
                   </Stack>
-                  <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Text fontSize="12px" fontWeight="650">{replyParentId ? "Reply to thread" : "Add team note"}</Text><Textarea ref={replyRef} mt="2" rows={3} value={replyBody} onChange={(event) => setReplyBody(event.target.value.slice(0, 2000))} placeholder={activeRound.recipientEmails.length > 0 ? `Mention a recipient with @${activeRound.recipientEmails[0]}` : "Write a clear response"} borderColor="border.control" /><Flex mt="2" justify="space-between" gap="2"><Button size="xs" variant="ghost" disabled={!replyParentId} onClick={() => { setReplyParentId(null); setReplyBody(""); }}>Cancel reply</Button><Button size="sm" variant="outline" disabled={!replyBody.trim() || busy} onClick={() => void submitReply(activeRound)}><Send size={13} /> Add reply</Button></Flex></Box>
+                  {canManage ? <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Text fontSize="12px" fontWeight="650">{replyParentId ? "Reply to thread" : "Add team note"}</Text><Textarea ref={replyRef} mt="2" rows={3} value={replyBody} onChange={(event) => setReplyBody(event.target.value.slice(0, 2000))} placeholder={activeRound.recipientEmails.length > 0 ? `Mention a recipient with @${activeRound.recipientEmails[0]}` : "Write a clear response"} borderColor="border.control" /><Flex mt="2" justify="space-between" gap="2"><Button size="xs" variant="ghost" disabled={!replyParentId} onClick={() => { setReplyParentId(null); setReplyBody(""); }}>Cancel reply</Button><Button size="sm" variant="outline" disabled={!replyBody.trim() || busy} onClick={() => void submitReply(activeRound)}><Send size={13} /> Add reply</Button></Flex></Box> : null}
                 </Stack>
 
                 <Stack w={{ base: "full", xl: "310px" }} flexShrink="0" gap="5">
-                  <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><UserRound size={15} /><Text textStyle="eyebrow">Reviewers</Text></Flex>{activeRound.guests.length === 0 ? <Text fontSize="13px" color="fg.muted" mt="3">Nobody has opened the room.</Text> : activeRound.guests.map((guest) => <Box key={guest.id} py="3" borderBottomWidth="1px" borderColor="border.subtle"><Text fontSize="13px" fontWeight="650">{guest.displayName}</Text><Text fontSize="11px" color="fg.subtle">{guest.email}</Text><Text fontSize="10px" color="fg.subtle" mt="1">Last seen {formatDateTime(guest.lastSeenAt)}</Text></Box>)}</Box>
-                  <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><Send size={15} /><Text textStyle="eyebrow">Delivery</Text></Flex>{activeRound.recipientEmails.length > 0 ? <Stack gap="1" mt="3">{activeRound.recipientEmails.map((email) => <Text key={email} fontSize="12px">{email}</Text>)}</Stack> : <Text fontSize="13px" color="fg.muted" mt="3">No email recipients were configured.</Text>}{activeRound.recipientEmails.length > 0 && activeRound.notifications.length === 0 ? <Text fontSize="11px" color="fg.subtle" mt="2">Email delivery was paused when this round was sent.</Text> : activeRound.notifications.map((notification) => <Flex key={notification.id} py="3" borderBottomWidth="1px" borderColor="border.subtle" justify="space-between" gap="2" align="start"><Box minW="0"><Text fontSize="12px" truncate>{notification.recipientEmail}</Text><Text fontSize="10px" color="fg.subtle">{eventLabel(notification.kind)} · {notification.status}</Text>{notification.failureCode ? <Text fontSize="10px" color="danger.fg">{eventLabel(notification.failureCode)}</Text> : null}</Box>{notification.status === "failed" ? <Button size="xs" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/notifications/retry`, { ledgerId: notification.id })} disabled={busy}><RefreshCw size={12} /> Retry</Button> : null}</Flex>)}</Box>
-                  <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><Clock3 size={15} /><Text textStyle="eyebrow">Audit history</Text></Flex><Stack gap="0" mt="2">{activeRound.auditEvents.slice(0, 12).map((event) => <Flex key={event.id} py="2" borderBottomWidth="1px" borderColor="border.subtle" justify="space-between" gap="3"><Text fontSize="11px">{eventLabel(event.kind)}</Text><Text textStyle="data" fontSize="10px" color="fg.subtle">{formatDateTime(event.createdAt)}</Text></Flex>)}</Stack></Box>
+                  <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><UserRound size={15} /><Text textStyle="eyebrow">Reviewers</Text></Flex>{activeRound.guests.length === 0 ? <Text fontSize="13px" color="fg.muted" mt="3">Nobody has opened the room.</Text> : canManage ? activeRound.guests.map((guest) => <Box key={guest.id} py="3" borderBottomWidth="1px" borderColor="border.subtle"><Text fontSize="13px" fontWeight="650">{guest.displayName}</Text><Text fontSize="11px" color="fg.subtle">{guest.email}</Text><Text fontSize="10px" color="fg.subtle" mt="1">Last seen {formatDateTime(guest.lastSeenAt)}</Text></Box>) : <Text fontSize="13px" color="fg.muted" mt="3">{activeRound.guests.length} reviewer{activeRound.guests.length === 1 ? " has" : "s have"} opened the room.</Text>}</Box>
+                  {canManage ? <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><Send size={15} /><Text textStyle="eyebrow">Delivery</Text></Flex>{activeRound.recipientEmails.length > 0 ? <Stack gap="1" mt="3">{activeRound.recipientEmails.map((email) => <Text key={email} fontSize="12px">{email}</Text>)}</Stack> : <Text fontSize="13px" color="fg.muted" mt="3">No email recipients were configured.</Text>}{activeRound.recipientEmails.length > 0 && activeRound.notifications.length === 0 ? <Text fontSize="11px" color="fg.subtle" mt="2">Email delivery was paused when this round was sent.</Text> : activeRound.notifications.map((notification) => <Flex key={notification.id} py="3" borderBottomWidth="1px" borderColor="border.subtle" justify="space-between" gap="2" align="start"><Box minW="0"><Text fontSize="12px" truncate>{notification.recipientEmail}</Text><Text fontSize="10px" color="fg.subtle">{eventLabel(notification.kind)} · {notification.status}</Text>{notification.failureCode ? <Text fontSize="10px" color="danger.fg">{eventLabel(notification.failureCode)}</Text> : null}</Box>{notification.status === "failed" ? <Button size="xs" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/notifications/retry`, { ledgerId: notification.id })} disabled={busy}><RefreshCw size={12} /> Retry</Button> : null}</Flex>)}</Box> : null}
+                  {canManage ? <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><Clock3 size={15} /><Text textStyle="eyebrow">Audit history</Text></Flex><Stack gap="0" mt="2">{activeRound.auditEvents.slice(0, 12).map((event) => <Flex key={event.id} py="2" borderBottomWidth="1px" borderColor="border.subtle" justify="space-between" gap="3"><Text fontSize="11px">{eventLabel(event.kind)}</Text><Text textStyle="data" fontSize="10px" color="fg.subtle">{formatDateTime(event.createdAt)}</Text></Flex>)}</Stack></Box> : null}
                 </Stack>
               </Flex>
 
-              <Flex borderTopWidth="1px" borderColor="border" pt="4" justify="space-between" gap="3" wrap="wrap"><Button variant="outline" onClick={() => prepareNext(activeRound)}><RefreshCw size={14} /> Prepare next round</Button>{!activeRound.revokedAt ? <Button variant="ghost" colorPalette="danger" onClick={() => void mutate(`/${activeRound.id}/revoke`)} disabled={busy}><ShieldCheck size={14} /> Revoke access</Button> : null}</Flex>
+              {canManage ? <Flex borderTopWidth="1px" borderColor="border" pt="4" justify="space-between" gap="3" wrap="wrap"><Button variant="outline" onClick={() => prepareNext(activeRound)}><RefreshCw size={14} /> Prepare next round</Button>{!activeRound.revokedAt ? <Button variant="ghost" colorPalette="danger" onClick={() => void mutate(`/${activeRound.id}/revoke`)} disabled={busy}><ShieldCheck size={14} /> Revoke access</Button> : null}</Flex> : null}
             </Stack>
           ) : null}
         </Flex>

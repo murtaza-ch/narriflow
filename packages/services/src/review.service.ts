@@ -751,7 +751,25 @@ export class ReviewService {
     }));
   }
 
-  async internalRoom(workspaceId: string, projectId: string) {
+  async recordExpiredRounds(limit = 100, now = new Date()) {
+    const requestedLimit = Number.isFinite(limit) ? Math.floor(limit) : 100;
+    const boundedLimit = Math.max(1, Math.min(500, requestedLimit));
+    const rounds = await requirePrisma().reviewRound.findMany({
+      where: {
+        status: "open",
+        revokedAt: null,
+        expiryRecordedAt: null,
+        expiresAt: { lte: now },
+      },
+      orderBy: { expiresAt: "asc" },
+      take: boundedLimit,
+      select: { id: true },
+    });
+    const recorded = await Promise.all(rounds.map((round) => recordReviewExpiry(round.id, now)));
+    return recorded.filter(Boolean).length;
+  }
+
+  async internalRoom(workspaceId: string, projectId: string, access: "manage" | "view") {
     const prisma = requirePrisma();
     const expiredRounds = await prisma.reviewRound.findMany({
       where: {
@@ -816,11 +834,11 @@ export class ReviewService {
       }),
     ]);
     if (!project) throw new ReviewServiceError("review_project_not_found", "Project was not found");
-    const deliverySecret = reviewDeliverySecret();
+    const deliverySecret = access === "manage" ? reviewDeliverySecret() : null;
     const now = new Date();
     return {
       project,
-      candidates: clips,
+      candidates: access === "manage" ? clips : [],
       rounds: rounds.map((round) => {
         const recipientEmails = normalizeRecipientEmails(
           Array.isArray(round.recipientEmails)
@@ -833,10 +851,12 @@ export class ReviewService {
           title: round.title,
           message: round.message,
           status: deriveReviewRoundStatus(round, now),
-          path: `/review/${decryptReviewValue(round.deliveryTokenEncrypted, deliverySecret)}`,
+          path: deliverySecret
+            ? `/review/${decryptReviewValue(round.deliveryTokenEncrypted, deliverySecret)}`
+            : null,
           allowDownloads: round.allowDownloads,
           approvalRequired: round.approvalRequired,
-          recipientEmails,
+          recipientEmails: access === "manage" ? recipientEmails : [],
           sentAt: round.sentAt,
           expiresAt: round.expiresAt,
           revokedAt: round.revokedAt,
@@ -854,14 +874,22 @@ export class ReviewService {
             currentDecision: item.currentDecision,
             variants: item.export.variants,
           })),
-          comments: round.comments,
-          guests: round.guests.map((guest) => ({
-            ...guest,
-            email: decryptReviewValue(guest.emailEncrypted, deliverySecret),
+          comments: round.comments.map((comment) => ({
+            ...comment,
+            authorName: access === "manage"
+              ? comment.authorName
+              : comment.authorKind === "guest" ? "Client reviewer" : "Narriflow team",
           })),
-          auditEvents: round.auditEvents,
-          notifications: round.notificationLedgers,
-          context: round.contextLinks.map((link) => ({
+          guests: round.guests.map((guest) => ({
+            id: guest.id,
+            displayName: access === "manage" ? guest.displayName : null,
+            email: deliverySecret ? decryptReviewValue(guest.emailEncrypted, deliverySecret) : null,
+            firstSeenAt: guest.firstSeenAt,
+            lastSeenAt: guest.lastSeenAt,
+          })),
+          auditEvents: access === "manage" ? round.auditEvents : [],
+          notifications: access === "manage" ? round.notificationLedgers : [],
+          context: access === "manage" ? round.contextLinks.map((link) => ({
             id: link.id,
             sourceCommentId: link.sourceComment.id,
             sourceRoundRevision: link.sourceComment.reviewRound.revision,
@@ -869,7 +897,7 @@ export class ReviewService {
             body: link.sourceComment.body,
             timestampSec: link.sourceComment.timestampSec,
             clipTitle: link.sourceComment.item?.clip.title ?? null,
-          })),
+          })) : [],
         };
       }),
     };
