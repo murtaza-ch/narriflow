@@ -1,9 +1,10 @@
-import { createCipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   createReviewRoundSchema,
+  internalReviewCommentSchema,
   reviewCommentEditSchema,
   reviewCommentSchema,
   reviewDecisionSchema,
@@ -12,7 +13,7 @@ import {
   type PricingTier,
 } from "@narriflow/validators";
 import { hasFeature } from "./plan-features";
-import { assertProgramWriteEnabled } from "./program-rollout";
+import { assertProgramWriteEnabled, ProgramWriteDisabledError, reviewRoomRolloutFromEnv } from "./program-rollout";
 import { checkRateLimit } from "./rate-limit";
 import { presignDownloadUrl } from "./r2-storage";
 
@@ -75,12 +76,67 @@ function reviewGrantHash(subject: string) {
   return createHash("sha256").update(subject).digest("hex");
 }
 
+export function reviewGuestCanEditComment(
+  claims: Pick<ReviewSessionClaims, "guestId" | "subject">,
+  comment: { authorKind: string; authorGuestId: string | null; authorGrantHash: string; createdAt: Date },
+  now = new Date(),
+) {
+  return comment.authorKind === "guest" &&
+    comment.authorGuestId === claims.guestId &&
+    comment.authorGrantHash === reviewGrantHash(claims.subject) &&
+    now.getTime() - comment.createdAt.getTime() <= REVIEW_COMMENT_EDIT_WINDOW_MS;
+}
+
 function encryptReviewEmail(email: string, secret: string) {
+  return encryptReviewValue(email, secret);
+}
+
+export function encryptReviewValue(value: string, secret: string) {
   const key = createHash("sha256").update(secret).digest();
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const encrypted = Buffer.concat([cipher.update(email, "utf8"), cipher.final()]);
+  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   return [iv, cipher.getAuthTag(), encrypted].map((value) => value.toString("base64url")).join(".");
+}
+
+export function decryptReviewValue(value: string, secret: string) {
+  const [ivValue, tagValue, encryptedValue, extra] = value.split(".");
+  if (!ivValue || !tagValue || !encryptedValue || extra) {
+    throw new ReviewServiceError("review_secret_invalid", "Review delivery data is invalid");
+  }
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      createHash("sha256").update(secret).digest(),
+      Buffer.from(ivValue, "base64url"),
+    );
+    decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+    return Buffer.concat([
+      decipher.update(Buffer.from(encryptedValue, "base64url")),
+      decipher.final(),
+    ]).toString("utf8");
+  } catch {
+    throw new ReviewServiceError("review_secret_invalid", "Review delivery data is invalid");
+  }
+}
+
+export function reviewDeliverySecret() {
+  const secret = process.env.REVIEW_ACCESS_SECRET?.trim() || process.env.REVIEW_SESSION_SECRET?.trim();
+  if (!secret || secret.length < 32) {
+    throw new ReviewServiceError(
+      "review_delivery_configuration_invalid",
+      "Review delivery encryption is not configured",
+    );
+  }
+  return secret;
+}
+
+function normalizeRecipientEmails(values: readonly string[]) {
+  return [...new Set(values.map((value) => value.trim().toLowerCase()))].sort();
+}
+
+function assertReviewStageEnabled(enabled: boolean) {
+  if (!enabled) throw new ProgramWriteDisabledError("review_rooms");
 }
 
 function enforceLocalRateLimit(key: string, limit: number, windowMs: number, now = Date.now()) {
@@ -172,6 +228,7 @@ export class ReviewService {
       throw new ReviewServiceError("review_feature_unavailable", "Review rooms are not available on this plan");
     }
     const parsed = createReviewRoundSchema.parse(input);
+    const rollout = reviewRoomRolloutFromEnv();
     if (parsed.expiresAt && new Date(parsed.expiresAt) <= new Date()) {
       throw new ReviewServiceError("review_expiry_invalid", "Review expiry must be in the future");
     }
@@ -195,22 +252,30 @@ export class ReviewService {
     }
     const rawToken = randomBytes(32).toString("base64url");
     const tokenHash = hashReviewAccessToken(rawToken);
+    const recipientEmails = normalizeRecipientEmails(parsed.recipientEmails);
+    const deliveryTokenEncrypted = encryptReviewValue(rawToken, reviewDeliverySecret());
     const passcodeHash = parsed.passcode
       ? await hashReviewPasscode(parsed.passcode)
       : null;
     const round = await withSerializableRetry(() => prisma.$transaction(async (tx) => {
-      const latest = await tx.reviewRound.aggregate({ where: { projectId: scope.projectId }, _max: { revision: true } });
+      const latest = await tx.reviewRound.findFirst({
+        where: { projectId: scope.projectId },
+        orderBy: { revision: "desc" },
+        select: { id: true, revision: true },
+      });
       await tx.reviewRound.updateMany({ where: { projectId: scope.projectId, status: "open" }, data: { status: "superseded", supersededAt: new Date() } });
       return tx.reviewRound.create({ data: {
         workspaceId: scope.workspaceId,
         projectId: scope.projectId,
         createdByUserId: scope.actorUserId,
-        revision: (latest._max.revision ?? 0) + 1,
+        revision: (latest?.revision ?? 0) + 1,
         title: parsed.title,
         message: parsed.message,
         allowDownloads: parsed.allowDownloads,
         approvalRequired: parsed.approvalRequired,
         accessTokenHash: tokenHash,
+        deliveryTokenEncrypted,
+        recipientEmails,
         passcodeHash,
         expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : null,
         items: { create: parsed.items.map((item, position) => ({
@@ -221,12 +286,22 @@ export class ReviewService {
           selectedVariantIds: item.variantIds,
           required: item.required,
         })) },
+        auditEvents: { create: {
+          kind: latest ? "round_resubmitted" : "round_sent",
+          metadata: latest ? { previousRoundId: latest.id } : undefined,
+        } },
+        notificationLedgers: { create: (rollout.notifications ? recipientEmails : []).map((recipientEmail) => ({
+          recipientEmail,
+          kind: "round_sent",
+          scopeKey: "round",
+        })) },
       }, select: { id: true, revision: true, createdAt: true } });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
     return { ...round, token: rawToken, path: `/review/${rawToken}` };
   }
 
   async authenticate(rawToken: string, input: unknown, rateLimitKey: string, secret: string) {
+    assertReviewStageEnabled(reviewRoomRolloutFromEnv().guestRead);
     const parsed = reviewGuestAccessSchema.parse(input);
     const tokenHash = hashReviewAccessToken(rawToken);
     const sourceHash = createHash("sha256").update(rateLimitKey).digest("hex");
@@ -253,8 +328,8 @@ export class ReviewService {
     const guest = await requirePrisma().$transaction(async (tx) => {
       const row = await tx.reviewGuest.upsert({
         where: { reviewRoundId_emailHash: { reviewRoundId: round.id, emailHash } },
-        create: { reviewRoundId: round.id, displayName: parsed.identity, emailHash, emailEncrypted: encryptReviewEmail(normalizedEmail, secret), sessionGrantHash: reviewGrantHash(subject) },
-        update: { displayName: parsed.identity, emailEncrypted: encryptReviewEmail(normalizedEmail, secret), sessionGrantHash: reviewGrantHash(subject), lastSeenAt: new Date() },
+        create: { reviewRoundId: round.id, displayName: parsed.identity, emailHash, emailEncrypted: encryptReviewEmail(normalizedEmail, reviewDeliverySecret()), sessionGrantHash: reviewGrantHash(subject) },
+        update: { displayName: parsed.identity, emailEncrypted: encryptReviewEmail(normalizedEmail, reviewDeliverySecret()), sessionGrantHash: reviewGrantHash(subject), lastSeenAt: new Date() },
       });
       await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: row.id, kind: "guest_authenticated" } });
       return row;
@@ -266,7 +341,15 @@ export class ReviewService {
     const claims = verifyReviewSession(session, secret);
     const round = await requirePrisma().reviewRound.findUnique({
       where: { id: claims.roundId },
-      include: { items: { orderBy: { position: "asc" }, include: { export: { select: { id: true, editorRevision: true, variants: { select: { id: true, aspectRatio: true, durationSec: true, status: true } } } } } }, comments: { orderBy: { createdAt: "asc" } } },
+      include: {
+        project: { select: { title: true } },
+        workspace: { select: { name: true } },
+        items: { orderBy: { position: "asc" }, include: {
+          clip: { select: { title: true } },
+          export: { select: { id: true, editorRevision: true, variants: { select: { id: true, aspectRatio: true, durationSec: true, status: true } } } },
+        } },
+        comments: { orderBy: { createdAt: "asc" } },
+      },
     });
     if (!round || round.accessTokenHash.slice(0, 32) !== claims.grant || round.revokedAt || round.status !== "open" || (round.expiresAt && round.expiresAt <= new Date())) {
       throw new ReviewServiceError("review_session_invalid", "Review session is invalid or expired");
@@ -297,6 +380,7 @@ export class ReviewService {
   }
 
   async addComment(session: string, secret: string, input: unknown) {
+    assertReviewStageEnabled(reviewRoomRolloutFromEnv().feedback);
     const parsed = reviewCommentSchema.parse(input);
     const { round, claims } = await this.readRound(session, secret);
     await enforceReviewRateLimit(`review-comment:${round.id}:${claims.guestId}`, 60, 15 * 60_000);
@@ -329,6 +413,7 @@ export class ReviewService {
   }
 
   async editComment(session: string, secret: string, commentId: string, input: unknown) {
+    assertReviewStageEnabled(reviewRoomRolloutFromEnv().feedback);
     const parsed = reviewCommentEditSchema.parse(input);
     const { round, claims } = await this.readRound(session, secret);
     await enforceReviewRateLimit(`review-comment-edit:${round.id}:${claims.guestId}`, 30, 15 * 60_000);
@@ -354,6 +439,7 @@ export class ReviewService {
   }
 
   async deleteComment(session: string, secret: string, commentId: string) {
+    assertReviewStageEnabled(reviewRoomRolloutFromEnv().feedback);
     const { round, claims } = await this.readRound(session, secret);
     await enforceReviewRateLimit(`review-comment-delete:${round.id}:${claims.guestId}`, 30, 15 * 60_000);
     const grantHash = reviewGrantHash(claims.subject);
@@ -376,6 +462,7 @@ export class ReviewService {
   }
 
   async decide(session: string, secret: string, input: unknown) {
+    assertReviewStageEnabled(reviewRoomRolloutFromEnv().feedback);
     const parsed = reviewDecisionSchema.parse(input);
     const { round, claims } = await this.readRound(session, secret);
     await enforceReviewRateLimit(`review-decision:${round.id}:${claims.guestId}`, 30, 15 * 60_000);
@@ -400,8 +487,109 @@ export class ReviewService {
         await tx.reviewRound.update({ where: { id: round.id }, data: { decision: parsed.decision, decidedAt } });
       }
       await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: claims.guestId, kind: item ? "item_decided" : "campaign_decided", targetId: item?.id ?? round.id, metadata: { decision: parsed.decision } } });
+      const creator = await tx.user.findUnique({
+        where: { id: round.createdByUserId },
+        select: { primaryEmail: true },
+      });
+      const recipientEmail = creator?.primaryEmail?.trim().toLowerCase();
+      if (recipientEmail && parsed.decision === "changes_requested") {
+        await tx.reviewNotificationLedger.upsert({
+          where: { reviewRoundId_recipientEmail_kind_scopeKey: {
+            reviewRoundId: round.id,
+            recipientEmail,
+            kind: "first_change_requested",
+            scopeKey: "round",
+          } },
+          update: {},
+          create: { reviewRoundId: round.id, recipientEmail, kind: "first_change_requested", scopeKey: "round" },
+        });
+      }
+      const decisionsAfterChange = currentItems.map((candidate) =>
+        candidate.id === item?.id ? { ...candidate, currentDecision: parsed.decision } : candidate,
+      );
+      const requiredAfterChange = decisionsAfterChange.filter((candidate) => candidate.required);
+      if (
+        recipientEmail &&
+        requiredAfterChange.length > 0 &&
+        requiredAfterChange.every((candidate) => candidate.currentDecision === "approved")
+      ) {
+        await tx.reviewNotificationLedger.upsert({
+          where: { reviewRoundId_recipientEmail_kind_scopeKey: {
+            reviewRoundId: round.id,
+            recipientEmail,
+            kind: "all_approved",
+            scopeKey: "round",
+          } },
+          update: {},
+          create: { reviewRoundId: round.id, recipientEmail, kind: "all_approved", scopeKey: "round" },
+        });
+      }
       return decision;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  }
+
+  async addInternalComment(
+    scope: { workspaceId: string; projectId: string; actorUserId: string },
+    roundId: string,
+    input: unknown,
+  ) {
+    const parsed = internalReviewCommentSchema.parse(input);
+    return requirePrisma().$transaction(async (tx) => {
+      const round = await tx.reviewRound.findFirst({
+        where: { id: roundId, workspaceId: scope.workspaceId, projectId: scope.projectId },
+        include: { comments: true, items: { select: { id: true } } },
+      });
+      if (!round) throw new ReviewServiceError("review_round_not_found", "Review round was not found");
+      if (parsed.itemId && !round.items.some((item) => item.id === parsed.itemId)) {
+        throw new ReviewServiceError("review_item_not_found", "Review item was not found");
+      }
+      if (parsed.parentId) {
+        const parent = round.comments.find((comment) => comment.id === parsed.parentId);
+        if (!parent || parent.parentId || parent.itemId !== parsed.itemId) {
+          throw new ReviewServiceError("review_thread_invalid", "Replies can only be one level deep within the same review item");
+        }
+      }
+      const actor = await tx.user.findUnique({
+        where: { id: scope.actorUserId },
+        select: { firstName: true, lastName: true, primaryEmail: true },
+      });
+      const authorName = [actor?.firstName, actor?.lastName].filter(Boolean).join(" ") || actor?.primaryEmail || "Narriflow team";
+      const comment = await tx.reviewComment.create({ data: {
+        reviewRoundId: round.id,
+        itemId: parsed.itemId,
+        parentId: parsed.parentId,
+        authorKind: "internal",
+        authorName,
+        authorGrantHash: createHash("sha256").update(`internal:${scope.actorUserId}`).digest("hex"),
+        body: parsed.body,
+        timestampSec: parsed.timestampSec,
+      } });
+      await tx.reviewAuditEvent.create({ data: {
+        reviewRoundId: round.id,
+        kind: "internal_reply_created",
+        targetId: comment.id,
+        metadata: { actorUserId: scope.actorUserId },
+      } });
+      const configuredRecipients = new Set(normalizeRecipientEmails(
+        Array.isArray(round.recipientEmails)
+          ? round.recipientEmails.filter((value): value is string => typeof value === "string")
+          : [],
+      ));
+      const mentions = normalizeRecipientEmails(parsed.mentionRecipients)
+        .filter((recipientEmail) => configuredRecipients.has(recipientEmail));
+      if (mentions.length > 0) {
+        await tx.reviewNotificationLedger.createMany({
+          data: mentions.map((recipientEmail) => ({
+            reviewRoundId: round.id,
+            recipientEmail,
+            kind: "mention",
+            scopeKey: comment.id,
+          })),
+          skipDuplicates: true,
+        });
+      }
+      return comment;
+    });
   }
 
   async resolveComment(scope: { workspaceId: string; projectId: string; actorUserId: string }, roundId: string, commentId: string, resolved: boolean) {
@@ -426,6 +614,31 @@ export class ReviewService {
     });
   }
 
+  async retryNotification(
+    scope: { workspaceId: string; projectId: string },
+    roundId: string,
+    ledgerId: string,
+  ) {
+    const retried = await requirePrisma().reviewNotificationLedger.updateMany({
+      where: {
+        id: ledgerId,
+        reviewRoundId: roundId,
+        status: "failed",
+        reviewRound: { workspaceId: scope.workspaceId, projectId: scope.projectId },
+      },
+      data: {
+        status: "pending",
+        attemptCount: 0,
+        nextAttemptAt: new Date(),
+        failureCode: null,
+      },
+    });
+    if (retried.count !== 1) {
+      throw new ReviewServiceError("review_notification_not_found", "Failed notification was not found");
+    }
+    return { retrying: true };
+  }
+
   async internalProjection(workspaceId: string, projectId: string) {
     const rounds = await requirePrisma().reviewRound.findMany({
       where: { workspaceId, projectId },
@@ -446,6 +659,94 @@ export class ReviewService {
         item.clip.editorRevision > item.editorRevision ||
         (item.clip.exports[0] !== undefined && item.clip.exports[0].fingerprint !== item.export.fingerprint)),
     }));
+  }
+
+  async internalRoom(workspaceId: string, projectId: string) {
+    const prisma = requirePrisma();
+    const [project, rounds, clips] = await Promise.all([
+      prisma.project.findFirst({
+        where: { id: projectId, workspaceId },
+        select: { title: true, workspace: { select: { name: true } } },
+      }),
+      prisma.reviewRound.findMany({
+        where: { workspaceId, projectId },
+        orderBy: { revision: "desc" },
+        include: {
+          items: { orderBy: { position: "asc" }, include: {
+            clip: { select: { id: true, title: true, editorRevision: true, exports: { where: { status: "ready" }, orderBy: { createdAt: "desc" }, take: 1, select: { fingerprint: true } } } },
+            export: { select: { id: true, fingerprint: true, editorRevision: true, variants: { where: { status: "completed" }, select: { id: true, aspectRatio: true, durationSec: true } } } },
+          } },
+          comments: { orderBy: { createdAt: "asc" }, select: { id: true, itemId: true, parentId: true, authorKind: true, authorName: true, body: true, timestampSec: true, resolvedAt: true, editedAt: true, createdAt: true } },
+          guests: { orderBy: { firstSeenAt: "asc" }, select: { id: true, displayName: true, emailEncrypted: true, firstSeenAt: true, lastSeenAt: true } },
+          auditEvents: { orderBy: { createdAt: "desc" }, select: { id: true, kind: true, targetId: true, metadata: true, createdAt: true } },
+          notificationLedgers: { orderBy: { createdAt: "asc" }, select: { id: true, recipientEmail: true, kind: true, status: true, attemptCount: true, failureCode: true, sentAt: true, createdAt: true } },
+        },
+      }),
+      prisma.clip.findMany({
+        where: { projectId, exports: { some: { status: "ready" } } },
+        orderBy: { index: "asc" },
+        select: {
+          id: true,
+          title: true,
+          editorRevision: true,
+          exports: { where: { status: "ready" }, orderBy: { createdAt: "desc" }, select: {
+            id: true,
+            editorRevision: true,
+            createdAt: true,
+            variants: { where: { status: "completed" }, select: { id: true, aspectRatio: true, durationSec: true } },
+          } },
+        },
+      }),
+    ]);
+    if (!project) throw new ReviewServiceError("review_project_not_found", "Project was not found");
+    const deliverySecret = reviewDeliverySecret();
+    const now = new Date();
+    return {
+      project,
+      candidates: clips,
+      rounds: rounds.map((round) => {
+        const recipientEmails = normalizeRecipientEmails(
+          Array.isArray(round.recipientEmails)
+            ? round.recipientEmails.filter((value): value is string => typeof value === "string")
+            : [],
+        );
+        return {
+          id: round.id,
+          revision: round.revision,
+          title: round.title,
+          message: round.message,
+          status: deriveReviewRoundStatus(round, now),
+          path: `/review/${decryptReviewValue(round.deliveryTokenEncrypted, deliverySecret)}`,
+          allowDownloads: round.allowDownloads,
+          approvalRequired: round.approvalRequired,
+          recipientEmails,
+          sentAt: round.sentAt,
+          expiresAt: round.expiresAt,
+          revokedAt: round.revokedAt,
+          decision: round.decision,
+          newerWorkAvailable: round.items.some((item) =>
+            item.clip.editorRevision > item.editorRevision ||
+            (item.clip.exports[0] !== undefined && item.clip.exports[0].fingerprint !== item.export.fingerprint)),
+          items: round.items.map((item) => ({
+            id: item.id,
+            clipId: item.clipId,
+            clipTitle: item.clip.title,
+            exportId: item.exportId,
+            editorRevision: item.editorRevision,
+            required: item.required,
+            currentDecision: item.currentDecision,
+            variants: item.export.variants,
+          })),
+          comments: round.comments,
+          guests: round.guests.map((guest) => ({
+            ...guest,
+            email: decryptReviewValue(guest.emailEncrypted, deliverySecret),
+          })),
+          auditEvents: round.auditEvents,
+          notifications: round.notificationLedgers,
+        };
+      }),
+    };
   }
 }
 

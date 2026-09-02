@@ -1,6 +1,6 @@
 # Client review and approval rooms
 
-**Status:** implementation-ready
+**Status:** delivered
 
 **Vizard references:** `New Feature: Share Your Entire Project for Preview`, 14 August 2024; `Team Workspace`, 25 July 2024.
 
@@ -48,7 +48,7 @@ Round status is derived from revocation, expiry, item decisions, and campaign de
 
 ## Access and security
 
-- Generate a 256-bit random token, store only SHA-256, and compare hashes in constant time.
+- Generate a 256-bit random token. Store its SHA-256 digest as the only access lookup and compare digests in constant time. The Review Service may also persist an AES-GCM ciphertext solely so durable notification retries can reconstruct the recipient link; raw tokens never enter logs or database rows.
 - Rate-limit token, passcode, identity, comment, and decision endpoints. A valid token must not bypass passcode throttling.
 - Use short-lived presigned media URLs only after the round, item, variant, guest session, and download policy pass authorization.
 - Set `noindex`, strict referrer policy, CSP, and cache controls on review pages.
@@ -59,7 +59,7 @@ Round status is derived from revocation, expiry, item decisions, and campaign de
 
 - Send one notification when the round is sent, when a first change request arrives, when all required items become approved, and when an internal reply mentions a configured recipient.
 - Use an idempotent ledger so retries do not duplicate email.
-- Email links contain the raw token because the recipient needs it, but logs and database rows never do.
+- Email links contain the raw token because the recipient needs it, but logs and database rows never contain the raw value. Notification rows reference the round and decrypt through the Review Service only at delivery time.
 - Notification failure does not revoke the round. Show delivery status and allow an internal resend.
 
 ## Approval gate

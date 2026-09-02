@@ -62,7 +62,21 @@ export {
   issueReviewSession,
   verifyReviewSession,
   deriveReviewRoundStatus,
+  reviewGuestCanEditComment,
 } from "./review.service";
+export {
+  reviewNotificationService,
+  ReviewNotificationService,
+  REVIEW_NOTIFICATION_LEASE_MS,
+  REVIEW_NOTIFICATION_MAX_ATTEMPTS,
+  type ReviewNotificationContext,
+  type ReviewNotificationDeliverySummary,
+  type ReviewNotificationKind,
+  type ReviewNotificationLedgerRow,
+  type ReviewNotificationMailInput,
+  type ReviewNotificationMailer,
+  type ReviewNotificationStore,
+} from "./review-notification.service";
 export { isSocialProviderPublishingEnabled } from "./social-publication-config";
 export {
   brandFontService,
@@ -283,9 +297,11 @@ export {
   campaignActionRolloutFromEnv,
   campaignActionWriteEnabled,
   isProgramWriteEnabled,
+  reviewRoomRolloutFromEnv,
   ProgramWriteDisabledError,
   type CampaignActionRollout,
   type ProgramReleaseGroup,
+  type ReviewRoomRollout,
 } from "./program-rollout";
 export {
   generationAccessForTier,

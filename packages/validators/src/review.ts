@@ -9,6 +9,7 @@ export const createReviewRoundSchema = z.strictObject({
   expiresAt: z.string().datetime().nullable().default(null),
   allowDownloads: z.boolean().default(false),
   approvalRequired: z.boolean().default(true),
+  recipientEmails: z.array(z.string().trim().email().max(254)).max(25).default([]),
   items: z.array(z.strictObject({
     clipId: z.string().uuid(),
     exportId: z.string().uuid(),
@@ -16,6 +17,10 @@ export const createReviewRoundSchema = z.strictObject({
     variantIds: reviewSelectedVariantIdsSchema,
     required: z.boolean().default(true),
   })).min(1).max(100),
+});
+
+export const retryReviewNotificationSchema = z.strictObject({
+  ledgerId: z.string().uuid(),
 });
 
 export const reviewGuestAccessSchema = z.strictObject({
@@ -29,6 +34,10 @@ export const reviewCommentSchema = z.strictObject({
   parentId: z.string().uuid().nullable().default(null),
   body: z.string().trim().min(1).max(2_000),
   timestampSec: z.number().finite().nonnegative().max(60 * 60 * 12).nullable().default(null),
+});
+
+export const internalReviewCommentSchema = reviewCommentSchema.extend({
+  mentionRecipients: z.array(z.string().trim().email().max(254)).max(25).default([]),
 });
 
 export const reviewCommentEditSchema = z.strictObject({
@@ -45,3 +54,5 @@ export type CreateReviewRoundInput = z.infer<typeof createReviewRoundSchema>;
 export type ReviewGuestAccessInput = z.infer<typeof reviewGuestAccessSchema>;
 export type ReviewCommentInput = z.infer<typeof reviewCommentSchema>;
 export type ReviewDecisionInput = z.infer<typeof reviewDecisionSchema>;
+export type InternalReviewCommentInput = z.infer<typeof internalReviewCommentSchema>;
+export type RetryReviewNotificationInput = z.infer<typeof retryReviewNotificationSchema>;

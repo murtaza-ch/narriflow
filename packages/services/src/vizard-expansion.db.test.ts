@@ -576,8 +576,12 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       expiresAt: null,
       allowDownloads: false,
       approvalRequired: true,
+      recipientEmails: ["client@example.test"],
       items: [{ clipId: current.clip.id, exportId: current.clipExport.id, expectedEditorRevision: 3, variantIds: [variant.id], required: true }],
     });
+    const persistedRound = await prisma.reviewRound.findUniqueOrThrow({ where: { id: created.id } });
+    expect(persistedRound.deliveryTokenEncrypted).not.toContain(created.token);
+    expect(await prisma.reviewNotificationLedger.count({ where: { reviewRoundId: created.id, kind: "round_sent" } })).toBe(1);
     await expect(reviewService.authenticate(created.token, { identity: "Client", email: "client@example.test", passcode: "wrong-passcode" }, "203.0.113.10", sessionSecret)).rejects.toMatchObject({ code: "review_access_invalid" });
     const firstSession = await reviewService.authenticate(created.token, { identity: "Client", email: "client@example.test", passcode: "review-secret" }, "203.0.113.10", sessionSecret);
     const secondSession = await reviewService.authenticate(created.token, { identity: "Client updated", email: "CLIENT@example.test", passcode: "review-secret" }, "203.0.113.10", sessionSecret);
@@ -594,6 +598,13 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     await expect(reviewService.addComment(secondSession, sessionSecret, { itemId: null, parentId: null, body: "Impossible round timecode", timestampSec: 1 })).rejects.toMatchObject({ code: "review_timecode_requires_item" });
     await expect(reviewService.addComment(secondSession, sessionSecret, { itemId: item.id, parentId: null, body: "Past the frozen export", timestampSec: 11 })).rejects.toMatchObject({ code: "review_timecode_out_of_range" });
 		const parentComment = await reviewService.addComment(secondSession, sessionSecret, { itemId: item.id, parentId: null, body: "At the exact end", timestampSec: 10 });
+		const internalReplyParent = await reviewService.addComment(secondSession, sessionSecret, { itemId: item.id, parentId: null, body: "Please have the team respond", timestampSec: null });
+		await reviewService.addInternalComment(
+			{ workspaceId: current.workspace.id, projectId: current.project.id, actorUserId: current.user.id },
+			created.id,
+			{ itemId: item.id, parentId: internalReplyParent.id, body: "@client@example.test Please check this note", timestampSec: null, mentionRecipients: ["client@example.test"] },
+		);
+		expect(await prisma.reviewNotificationLedger.count({ where: { reviewRoundId: created.id, kind: "mention" } })).toBe(1);
 		const concurrentEdits = await Promise.all([
 			reviewService.editComment(secondSession, sessionSecret, parentComment.id, { body: "Edit from browser A" }),
 			reviewService.editComment(secondSession, sessionSecret, parentComment.id, { body: "Edit from browser B" }),
@@ -622,6 +633,10 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     expect(decisions).toHaveLength(2);
     expect(await prisma.reviewDecision.count({ where: { reviewRoundId: created.id } })).toBe(2);
     expect(await prisma.reviewDecision.count({ where: { reviewRoundId: created.id, supersededAt: null } })).toBe(1);
+		await reviewService.decide(secondSession, sessionSecret, { itemId: item.id, decision: "changes_requested", reason: "Tighten the opening" });
+		await reviewService.decide(secondSession, sessionSecret, { itemId: item.id, decision: "approved", reason: null });
+		expect(await prisma.reviewNotificationLedger.count({ where: { reviewRoundId: created.id, kind: "first_change_requested" } })).toBe(1);
+		expect(await prisma.reviewNotificationLedger.count({ where: { reviewRoundId: created.id, kind: "all_approved" } })).toBe(1);
 		for (let attempt = 0; attempt < 7; attempt += 1) {
 			await expect(reviewService.authenticate(created.token, { identity: "Attacker", email: "attacker@example.test", passcode: "wrong-passcode" }, "203.0.113.10", sessionSecret)).rejects.toMatchObject({ code: "review_access_invalid" });
 		}

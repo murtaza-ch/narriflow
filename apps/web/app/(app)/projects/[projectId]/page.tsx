@@ -21,6 +21,7 @@ import {
   MAX_INGEST_RETRY_ATTEMPTS,
   presignDownloadUrl,
   projectService,
+  reviewService,
   socialOAuthService,
   socialService,
 } from "@narriflow/services";
@@ -54,6 +55,7 @@ import { ClipsPanel } from "./clips-panel";
 import { ContentSuitePanel } from "./content-suite-panel";
 import { AnalyticsPanel } from "./analytics-panel";
 import { DubbingPanel } from "./dubbing-panel";
+import { ReviewPanel, type ReviewRoomData } from "./review-panel";
 import { SocialSchedulingPanel } from "./social-scheduling-panel";
 import { RetryIngestButton } from "./render-clips-button";
 import { AdvancedClipSettings } from "./advanced-clip-settings";
@@ -175,6 +177,7 @@ export default async function ProjectDetailPage({
     workflowHistory,
     usage,
     brandProfiles,
+    reviewRoom,
   ] = await Promise.all([
     activeTab === "transcript"
       ? projectService.getTranscriptSnapshot(appUser.workspaceOwnerUserId, projectId,
@@ -203,7 +206,13 @@ export default async function ProjectDetailPage({
     activeTab === "clips"
       ? brandProfileService.list(brandScope)
       : Promise.resolve([]),
+    activeTab === "review"
+      ? reviewService.internalRoom(appUser.workspaceId, projectId)
+      : Promise.resolve(null),
   ]);
+  const reviewRoomData = reviewRoom
+    ? JSON.parse(JSON.stringify(reviewRoom)) as ReviewRoomData
+    : null;
   const transcript = fullTranscript ?? transcriptStatus;
   const pricingTier = usage.tier;
   // vizard-parity Phase C export options: whether this owner's plan can
@@ -887,6 +896,13 @@ export default async function ProjectDetailPage({
         <Tabs.Content value="dubbing" pt="6">
           {activeTab === "dubbing" ? (
             <DubbingPanel projectId={projectId} clips={clips} dubs={dubs} />
+          ) : null}
+        </Tabs.Content>
+
+        {/* REVIEW */}
+        <Tabs.Content value="review" pt="6">
+          {activeTab === "review" && reviewRoomData ? (
+            <ReviewPanel projectId={projectId} initialData={reviewRoomData} />
           ) : null}
         </Tabs.Content>
 

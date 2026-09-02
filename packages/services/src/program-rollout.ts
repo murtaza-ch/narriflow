@@ -47,6 +47,23 @@ export type CampaignRolloutAction =
   | "apply_scene_template"
   | "apply_motion";
 
+export type ReviewRoomRollout = Readonly<{
+  internalCreation: boolean;
+  guestRead: boolean;
+  feedback: boolean;
+  notifications: boolean;
+}>;
+
+export function reviewRoomRolloutFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): ReviewRoomRollout {
+  const internalCreation = env.NARRIFLOW_WRITES_REVIEW_ROOMS === "1";
+  const guestRead = env.NARRIFLOW_READS_REVIEW_GUEST === "1";
+  const feedback = guestRead && env.NARRIFLOW_WRITES_REVIEW_FEEDBACK === "1";
+  const notifications = feedback && env.NARRIFLOW_WRITES_REVIEW_NOTIFICATIONS === "1";
+  return { internalCreation, guestRead, feedback, notifications };
+}
+
 export function campaignActionRolloutFromEnv(
   env: Record<string, string | undefined> = process.env,
 ): CampaignActionRollout {

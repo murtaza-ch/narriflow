@@ -1433,7 +1433,9 @@ model ReviewRound {
   title             String
   message           String?
   accessTokenHash   String   @unique
+  deliveryTokenEncrypted String
   passcodeHash      String?
+  recipientEmails   Json
   allowDownloads    Boolean  @default(false)
   approvalRequired  Boolean  @default(true)
   sentAt            DateTime @default(now())
@@ -1452,10 +1454,34 @@ model ReviewRound {
   decisions ReviewDecision[]
   guests    ReviewGuest[]
   auditEvents ReviewAuditEvent[]
+  notificationLedgers ReviewNotificationLedger[]
 
   @@unique([projectId, revision])
   @@index([workspaceId, createdAt(sort: Desc)])
   @@index([status, expiresAt])
+}
+
+model ReviewNotificationLedger {
+  id                String    @id @default(uuid()) @db.Uuid
+  reviewRoundId     String    @db.Uuid
+  recipientEmail    String
+  kind              String
+  scopeKey          String
+  status            String    @default("pending")
+  leaseExpiresAt    DateTime?
+  attemptCount      Int       @default(0)
+  nextAttemptAt     DateTime  @default(now())
+  providerMessageId String?
+  failureCode       String?
+  sentAt            DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  reviewRound ReviewRound @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewRoundId, recipientEmail, kind, scopeKey])
+  @@index([status, nextAttemptAt, leaseExpiresAt])
+  @@index([reviewRoundId, createdAt])
 }
 
 model ReviewRoundItem {

@@ -4,9 +4,26 @@ import {
   campaignActionRolloutFromEnv,
   isProgramWriteEnabled,
   ProgramWriteDisabledError,
+  reviewRoomRolloutFromEnv,
 } from "./program-rollout";
 
 describe("program rollout controls", () => {
+  test("keeps guest review access available when new round creation is paused", () => {
+    expect(
+      reviewRoomRolloutFromEnv({
+        NARRIFLOW_WRITES_REVIEW_ROOMS: "0",
+        NARRIFLOW_READS_REVIEW_GUEST: "1",
+        NARRIFLOW_WRITES_REVIEW_FEEDBACK: "1",
+        NARRIFLOW_WRITES_REVIEW_NOTIFICATIONS: "1",
+      }),
+    ).toEqual({
+      internalCreation: false,
+      guestRead: true,
+      feedback: true,
+      notifications: true,
+    });
+  });
+
   test("defaults to fail-closed writes while keeping reads available", () => {
     expect(isProgramWriteEnabled("brand_profiles", {})).toBe(false);
     expect(() => assertProgramWriteEnabled("brand_profiles", {})).toThrow(

@@ -40,6 +40,7 @@ import {
 import {
 	notifyExpiringProject,
 	retryPendingNotifications,
+	retryPendingReviewNotifications,
 } from "./notifications";
 
 const port = Number(process.env.PORT || 0);
@@ -532,8 +533,12 @@ const autoLayoutLoop = createPollLoop("auto_layout", async () => {
  *  pending/expired-lease claim, so this loop is safe across worker replicas. */
 const notificationRetryLoop = createPollLoop("notification_retry", async () => {
 	const startedAtMs = Date.now();
-	const result = await retryPendingNotifications(notificationRetryBatchSize);
-	if (result.claimed > 0) {
+	const [result, reviewResult] = await Promise.all([
+		retryPendingNotifications(notificationRetryBatchSize),
+		retryPendingReviewNotifications(notificationRetryBatchSize),
+	]);
+	const claimed = result.claimed + reviewResult.claimed;
+	if (claimed > 0) {
 		console.warn(
 			JSON.stringify({
 				level: "info",
@@ -541,14 +546,15 @@ const notificationRetryLoop = createPollLoop("notification_retry", async () => {
 				ts: new Date().toISOString(),
 				phase: "notification_delivery",
 				operation: "retry_pending_notifications",
-				disposition: result.failed > 0 ? "partial" : "completed",
-				retryState: result.pending > 0 ? "pending" : "drained",
+				disposition: result.failed + reviewResult.failed > 0 ? "partial" : "completed",
+				retryState: result.pending + reviewResult.pending > 0 ? "pending" : "drained",
 				elapsedMs: Date.now() - startedAtMs,
-				...result,
+				terminal: result,
+				review: reviewResult,
 			}),
 		);
 	}
-	return result.claimed;
+	return claimed;
 });
 
 const mediaCleanupLoop = createPollLoop("media_cleanup", async () => {

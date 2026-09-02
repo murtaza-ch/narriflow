@@ -3,6 +3,7 @@ export const PROJECT_TABS = [
   "transcript",
   "repurpose",
   "dubbing",
+  "review",
   "publish",
   "analytics",
   "activity",

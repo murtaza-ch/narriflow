@@ -53,6 +53,8 @@ import {
   isCensorSegmentStale,
   type CreateExportBundleInput,
   type CreateReviewRoundInput,
+  type InternalReviewCommentInput,
+  type RetryReviewNotificationInput,
   type ApplySceneTemplateInput,
   type ApplyMotionSelectedInput,
   type ApplyProjectBrandProfileSelectedInput,
@@ -1830,6 +1832,77 @@ app.post("/projects/:id/review-rounds", async (c) => {
     if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
     const code = error instanceof ReviewServiceError ? error.code : "review_round_create_failed";
     return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review round could not be created" }, code.includes("stale") ? 409 : code.includes("not_found") ? 404 : 400);
+  }
+});
+
+app.get("/projects/:id/review-rounds", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id } = authenticatedHonoInput<{ id: string }>(c);
+  try {
+    return c.json(await reviewService.internalRoom(appUser.workspaceId, id), 200);
+  } catch (error) {
+    const code = error instanceof ReviewServiceError ? error.code : "review_rounds_read_failed";
+    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review rounds could not be loaded" }, code.includes("not_found") ? 404 : 400);
+  }
+});
+
+app.post("/projects/:id/review-rounds/:roundId/comments", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, roundId, body } = authenticatedHonoInput<{ id: string; roundId: string; body: InternalReviewCommentInput }>(c);
+  try {
+    return c.json(await reviewService.addInternalComment({
+      actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      projectId: id,
+    }, roundId, body), 201);
+  } catch (error) {
+    const code = error instanceof ReviewServiceError ? error.code : "review_comment_create_failed";
+    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review reply could not be saved" }, code.includes("not_found") ? 404 : 400);
+  }
+});
+
+app.post("/projects/:id/review-rounds/:roundId/comments/:commentId/resolve", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, roundId, commentId } = authenticatedHonoInput<{ id: string; roundId: string; commentId: string }>(c);
+  try {
+    return c.json(await reviewService.resolveComment({
+      actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      projectId: id,
+    }, roundId, commentId, true), 200);
+  } catch (error) {
+    const code = error instanceof ReviewServiceError ? error.code : "review_comment_update_failed";
+    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review comment could not be resolved" }, code.includes("not_found") ? 404 : 400);
+  }
+});
+
+app.post("/projects/:id/review-rounds/:roundId/comments/:commentId/reopen", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, roundId, commentId } = authenticatedHonoInput<{ id: string; roundId: string; commentId: string }>(c);
+  try {
+    return c.json(await reviewService.resolveComment({
+      actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      projectId: id,
+    }, roundId, commentId, false), 200);
+  } catch (error) {
+    const code = error instanceof ReviewServiceError ? error.code : "review_comment_update_failed";
+    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review comment could not be reopened" }, code.includes("not_found") ? 404 : 400);
+  }
+});
+
+app.post("/projects/:id/review-rounds/:roundId/notifications/retry", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, roundId, body } = authenticatedHonoInput<{ id: string; roundId: string; body: RetryReviewNotificationInput }>(c);
+  try {
+    return c.json(await reviewService.retryNotification(
+      { workspaceId: appUser.workspaceId, projectId: id },
+      roundId,
+      body.ledgerId,
+    ), 200);
+  } catch (error) {
+    const code = error instanceof ReviewServiceError ? error.code : "review_notification_retry_failed";
+    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review notification could not be retried" }, code.includes("not_found") ? 404 : 400);
   }
 });
 

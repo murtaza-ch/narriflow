@@ -3,6 +3,7 @@ import {
   INGEST_AUTO_RETRY_MAX_ATTEMPTS,
   INGEST_RETRIES_EXHAUSTED_CODE,
   notificationService,
+  reviewNotificationService,
   WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
   WORKFLOW_RETRIES_EXHAUSTED_CODE,
   type NotificationLedgerRow,
@@ -102,6 +103,14 @@ export async function retryPendingNotifications(limit: number) {
     limit,
     buildRetryNotificationInput,
   );
+}
+
+export async function retryPendingReviewNotifications(limit: number) {
+  const baseUrl = getWorkerAppBaseUrl();
+  if (!baseUrl) {
+    return { scanned: 0, claimed: 0, sent: 0, pending: 0, failed: 0, skipped: 0 };
+  }
+  return reviewNotificationService.deliverDue(limit, baseUrl);
 }
 
 export async function notifyTerminalOutcome(input: {
