@@ -15,6 +15,7 @@ import {
 	generatedMediaService,
 	purgeExpiredGeneratedMediaPrompts,
 	reconcileOrphanGeneratedMediaReservations,
+	thumbnailFramePreparationService,
 	uploadSessionService,
 	WorkflowAttemptLost,
 	workflowAttemptRef,
@@ -99,6 +100,9 @@ const mediaCleanupPollIntervalMs = Number(
 );
 const generatedMediaPollIntervalMs = Number(
 	process.env.GENERATED_MEDIA_POLL_INTERVAL_MS ?? "2500",
+);
+const thumbnailFramePollIntervalMs = Number(
+	process.env.THUMBNAIL_FRAME_POLL_INTERVAL_MS ?? "2500",
 );
 const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
 	process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS,
@@ -583,6 +587,10 @@ const generatedMediaLoop = createPollLoop("generated_media", async () => {
 	return jobs.length;
 });
 
+const thumbnailFrameLoop = createPollLoop("thumbnail_frames", async () => {
+	return thumbnailFramePreparationService.processPending(1);
+});
+
 const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: maintenanceLoop, intervalMs: 60 * 1000 },
 	{ loop: uploadSessionMaintenanceLoop, intervalMs: 30 * 1000 },
@@ -603,6 +611,7 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: notificationRetryLoop, intervalMs: notificationRetryPollIntervalMs },
 	{ loop: mediaCleanupLoop, intervalMs: mediaCleanupPollIntervalMs },
 	{ loop: generatedMediaLoop, intervalMs: generatedMediaPollIntervalMs },
+	{ loop: thumbnailFrameLoop, intervalMs: thumbnailFramePollIntervalMs },
 ];
 
 const server = createServer(async (req, res) => {
@@ -670,3 +679,4 @@ void renderLoop.tick();
 void exportBundleLoop.tick();
 void notificationRetryLoop.tick();
 void mediaCleanupLoop.tick();
+void thumbnailFrameLoop.tick();

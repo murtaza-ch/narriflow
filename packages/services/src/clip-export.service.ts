@@ -518,6 +518,31 @@ export class ClipExportService {
     return row ? toExportSnapshot(row, true) : null;
   }
 
+  async listCurrentProjectExports(
+    workspaceId: string,
+    projectId: string,
+  ): Promise<ClipExportSnapshot[]> {
+    const rows = await requirePrisma().clipExport.findMany({
+      where: {
+        workspaceId,
+        projectId,
+        project: accessibleProjectWhere(),
+        status: { in: ["partial_ready", "ready"] },
+      },
+      orderBy: { createdAt: "desc" },
+      include: exportInclude,
+    });
+    const current: ClipExportSnapshot[] = [];
+    for (const row of rows) {
+      if (row.editorRevision !== row.clip.editorRevision) continue;
+      const snapshot = await toExportSnapshot(row, true);
+      if (snapshot.variants.some((variant) => variant.hasAsset)) {
+        current.push(snapshot);
+      }
+    }
+    return current;
+  }
+
   async retryFailed(
     userId: string,
     projectId: string,

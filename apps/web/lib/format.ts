@@ -54,6 +54,36 @@ export function formatDateTime(value: Date | string | number): string {
   return DATE_TIME_FORMAT.format(date);
 }
 
+/** Formats a workspace-local calendar date for native date inputs. */
+export function formatDateInputInTimeZone(
+  value: Date | string | number,
+  timeZone: string,
+  dayOffset = 0,
+): string {
+  const date = toDate(value);
+  if (Number.isNaN(date.getTime())) return "";
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date).map((part) => [part.type, part.value]));
+    const shifted = new Date(Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day) + dayOffset,
+    ));
+    return [
+      shifted.getUTCFullYear(),
+      String(shifted.getUTCMonth() + 1).padStart(2, "0"),
+      String(shifted.getUTCDate()).padStart(2, "0"),
+    ].join("-");
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Formats a duration compactly: `0:42`, `12:05`, `1:02:33`.
  *

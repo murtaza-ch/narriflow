@@ -462,6 +462,13 @@ export * from "./workspace.service";
 export * from "./workspace-library.service";
 export * from "./workspace-membership.service";
 export * from "./calendar-time";
+export * from "./assisted-social-copy";
+export * from "./assisted-social-copy.service";
+export * from "./bulk-social-scheduling";
+export * from "./bulk-social-scheduling.service";
+export * from "./openai-assisted-copy-provider";
+export * from "./thumbnail-frame-preparation";
+export * from "./thumbnail-frame-preparation.service";
 export { SocialPublicationRecoveryError } from "./social-publication-recovery";
 export {
 	acceptTikTokPublicationWebhook,

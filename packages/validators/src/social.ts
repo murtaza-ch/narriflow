@@ -82,10 +82,26 @@ export const socialAccountStatusSchema = z.enum([
   "revoked",
 ]);
 
+export const socialThumbnailSelectionSchema = z.strictObject({
+  assetId: z.string().uuid(),
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
+  source: z.enum(["uploaded", "generated", "extracted_frame"]),
+  sourceTimeMs: z.number().int().nonnegative().nullable(),
+}).superRefine((value, context) => {
+  if (value.source === "extracted_frame" && value.sourceTimeMs === null) {
+    context.addIssue({ code: "custom", path: ["sourceTimeMs"], message: "Extracted frames require a source time" });
+  }
+  if (value.source !== "extracted_frame" && value.sourceTimeMs !== null) {
+    context.addIssue({ code: "custom", path: ["sourceTimeMs"], message: "Only extracted frames have a source time" });
+  }
+});
+
 export const scheduleSocialPostSchema = z.object({
   clientIdempotencyKey: z.string().uuid(),
   clipId: z.string().uuid(),
   expectedEditorRevision: z.number().int().nonnegative(),
+	clipExportId: z.string().uuid().optional(),
+	clipExportVariantId: z.string().uuid().optional(),
   accountId: z.string().uuid().nullable(),
   platform: socialPlatformSchema,
   caption: z.string().trim().min(1).max(5_000),
@@ -93,8 +109,17 @@ export const scheduleSocialPostSchema = z.object({
   resolution: z.enum(["720p", "1080p"]),
   scheduledFor: z.string().datetime(),
   providerSettings: z.record(z.string(), z.unknown()).default({}),
+	assistedCopyVariantId: z.string().uuid().nullable().optional(),
+	thumbnail: socialThumbnailSelectionSchema.nullable().optional(),
 	reviewOverrideReason: z.string().trim().min(1).max(500).nullable().optional(),
 }).strict().superRefine((value, context) => {
+	if (Boolean(value.clipExportId) !== Boolean(value.clipExportVariantId)) {
+		context.addIssue({
+			code: "custom",
+			path: [value.clipExportId ? "clipExportVariantId" : "clipExportId"],
+			message: "The exact export and variant must be selected together",
+		});
+	}
   const capability = SOCIAL_PROVIDER_CAPABILITIES[value.platform];
   if (!capability.aspectRatios.some((ratio) => ratio === value.aspectRatio)) {
     context.addIssue({ code: "custom", path: ["aspectRatio"], message: "Aspect ratio is not supported by this provider" });
@@ -105,6 +130,9 @@ export const scheduleSocialPostSchema = z.object({
   const thumbnailType = value.providerSettings.thumbnailType;
   if (typeof thumbnailType === "string" && !capability.thumbnailTypes.some((candidate) => candidate === thumbnailType)) {
     context.addIssue({ code: "custom", path: ["providerSettings", "thumbnailType"], message: "Thumbnail type is not supported by this provider" });
+  }
+  if (["thumbnailAssetId", "thumbnailFingerprint", "thumbnailSource"].some((key) => key in value.providerSettings)) {
+    context.addIssue({ code: "custom", path: ["providerSettings"], message: "Thumbnail references must use the thumbnail field" });
   }
 });
 
@@ -172,6 +200,7 @@ export type SocialPlatform = z.infer<typeof socialPlatformSchema>;
 export type SocialPostStatus = z.infer<typeof socialPostStatusSchema>;
 export type SocialAccountStatus = z.infer<typeof socialAccountStatusSchema>;
 export type ScheduleSocialPostInput = z.infer<typeof scheduleSocialPostSchema>;
+export type SocialThumbnailSelection = z.infer<typeof socialThumbnailSelectionSchema>;
 export type SocialAccountSnapshot = z.infer<typeof socialAccountSnapshotSchema>;
 export type SocialPostMetricsInput = z.infer<typeof socialPostMetricsSchema>;
 export type SocialPostSnapshot = z.infer<typeof socialPostSnapshotSchema>;

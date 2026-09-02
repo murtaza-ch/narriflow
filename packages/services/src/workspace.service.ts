@@ -24,6 +24,7 @@ export interface WorkspaceActorContext {
   role: WorkspaceRole;
   status: WorkspaceStatus;
   pricingTier: PricingTier;
+	isPersonalWorkspace: boolean;
 }
 
 export interface WorkspaceApiKeyPrincipal {
@@ -262,6 +263,7 @@ export class WorkspaceService {
             ownerUserId: true,
             status: true,
             pricingTier: true,
+					personalOwnerUserId: true,
           },
         },
       },
@@ -276,6 +278,7 @@ export class WorkspaceService {
       role: membership.role,
       status: membership.workspace.status,
       pricingTier: membership.workspace.pricingTier,
+			isPersonalWorkspace: membership.workspace.personalOwnerUserId !== null,
     };
     if (!workspaceAllowsCapability(context, capability)) throw new Error("Forbidden");
     return context;

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	createInMemoryPublicationSchedulingStore,
 	createSocialPublicationScheduling,
+	socialAccountCanPublishAt,
 	PublicationIntentConflictError,
 	type FrozenPublicationState,
 } from "./social-publication-scheduling";
@@ -22,6 +23,19 @@ const readyState: FrozenPublicationState = {
 	capabilityVersion: "youtube-2026-08",
 	scheduledFor: new Date("2026-08-29T10:00:00.000Z"),
 };
+
+test("expired social credentials require a refresh token at scheduling time", () => {
+	const now = new Date("2026-08-28T10:00:00.000Z");
+	expect(socialAccountCanPublishAt({ expiresAt: null, refreshTokenEncrypted: null }, now)).toBe(true);
+	expect(socialAccountCanPublishAt({
+		expiresAt: new Date("2026-08-28T09:59:59.000Z"),
+		refreshTokenEncrypted: null,
+	}, now)).toBe(false);
+	expect(socialAccountCanPublishAt({
+		expiresAt: new Date("2026-08-28T09:59:59.000Z"),
+		refreshTokenEncrypted: "encrypted-refresh",
+	}, now)).toBe(true);
+});
 
 const baseInput = {
 	actorUserId: "actor-1",

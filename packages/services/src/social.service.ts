@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
+  clipAspectRatioToDb,
   scheduleSocialPostSchema,
   socialPostMetricsSchema,
   type ScheduleSocialPostInput,
@@ -10,11 +11,19 @@ import {
   type RecheckSocialPublicationInput,
   type RepublishSocialPublicationInput,
 } from "@narriflow/validators";
+import { assistedSocialCopyService } from "./assisted-social-copy.service";
+import { brandOwnerWhere } from "./brand-ownership";
 import { createProductionSocialPublicationScheduling } from "./social-publication-scheduling";
 import {
   allowedSocialPublicationActions,
   socialPublicationRecovery,
 } from "./social-publication-recovery";
+import {
+  ThumbnailPreparationError,
+  validateThumbnailSelection,
+  validateProviderThumbnailAsset,
+} from "./thumbnail-frame-preparation";
+import { workspaceService } from "./workspace.service";
 
 const socialPublicationScheduling = createProductionSocialPublicationScheduling();
 
@@ -212,6 +221,86 @@ export class SocialService {
     const parsed = scheduleSocialPostSchema.parse(input);
     const prisma = requirePrisma();
     const scheduledFor = new Date(parsed.scheduledFor);
+    const providerSettings = { ...parsed.providerSettings } as Prisma.JsonObject;
+    if (parsed.assistedCopyVariantId) {
+      const title = typeof providerSettings.title === "string" ? providerSettings.title : null;
+      await assistedSocialCopyService.requirePublicationConfirmation({
+        workspaceId: workspaceContext.workspaceId,
+        projectId,
+        clipId: parsed.clipId,
+        platform: parsed.platform,
+        variantId: parsed.assistedCopyVariantId,
+        publishedCaption: parsed.caption,
+        title,
+      });
+      providerSettings.assistedCopyVariantId = parsed.assistedCopyVariantId;
+    }
+    if (parsed.thumbnail) {
+		const actor = await workspaceService.requireActor(
+			workspaceContext.actorUserId,
+			workspaceContext.workspaceId,
+			"publishing.manage",
+		);
+      const normalized = validateThumbnailSelection({
+        platform: parsed.platform,
+        selection: parsed.thumbnail,
+      });
+      const asset = await prisma.visualAsset.findFirst({
+        where: {
+          id: parsed.thumbnail.assetId,
+			...brandOwnerWhere({
+				actorUserId: workspaceContext.actorUserId,
+				workspaceId: actor.workspaceId,
+				workspaceOwnerUserId: actor.workspaceOwnerUserId,
+				role: actor.role,
+				status: actor.status,
+				pricingTier: actor.pricingTier,
+				isPersonalWorkspace: actor.isPersonalWorkspace,
+			}),
+          fingerprint: parsed.thumbnail.fingerprint,
+          provenance: parsed.thumbnail.source,
+          kind: "image",
+          deletedAt: null,
+        },
+        select: { id: true, contentType: true, sizeBytes: true },
+      });
+      if (!asset) {
+        throw new ThumbnailPreparationError(
+          "thumbnail_asset_unavailable",
+          "The selected thumbnail is missing or was deleted",
+        );
+      }
+      validateProviderThumbnailAsset({
+        platform: parsed.platform,
+        contentType: asset.contentType,
+        sizeBytes: asset.sizeBytes,
+      });
+      if (parsed.thumbnail.source === "extracted_frame") {
+        const operation = await prisma.thumbnailFrameOperation.findFirst({
+          where: {
+            resultAssetId: asset.id,
+            workspaceId: workspaceContext.workspaceId,
+            projectId,
+            clipId: parsed.clipId,
+            sourceTimeMs: parsed.thumbnail.sourceTimeMs!,
+            status: "completed",
+			exportVariantId: parsed.clipExportVariantId,
+            exportVariant: {
+              aspectRatio: clipAspectRatioToDb[parsed.aspectRatio],
+              export: { editorRevision: parsed.expectedEditorRevision },
+            },
+          },
+          select: { id: true },
+        });
+        if (!operation) {
+          throw new ThumbnailPreparationError(
+            "thumbnail_export_mismatch",
+            "The frame does not belong to the selected export revision",
+          );
+        }
+      }
+      Object.assign(providerSettings, normalized);
+    }
     const intent = await socialPublicationScheduling.schedule({
       actorUserId: workspaceContext.actorUserId,
       ownerUserId: userId,
@@ -220,13 +309,15 @@ export class SocialService {
       clientIdempotencyKey: parsed.clientIdempotencyKey,
       clipId: parsed.clipId,
       expectedEditorRevision: parsed.expectedEditorRevision,
+		clipExportId: parsed.clipExportId,
+		clipExportVariantId: parsed.clipExportVariantId,
       accountId: parsed.accountId,
       platform: parsed.platform,
       caption: parsed.caption,
       aspectRatio: parsed.aspectRatio,
       resolution: parsed.resolution,
       scheduledFor,
-      providerSettings: parsed.providerSettings as Prisma.JsonObject,
+      providerSettings,
 		reviewOverrideReason: parsed.reviewOverrideReason,
     });
 

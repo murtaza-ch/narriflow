@@ -24,6 +24,7 @@ import {
   reviewService,
   socialOAuthService,
   socialService,
+  workspaceService,
 } from "@narriflow/services";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
@@ -188,6 +189,7 @@ export default async function ProjectDetailPage({
     usage,
     brandProfiles,
     reviewRoom,
+    activeWorkspace,
   ] = await Promise.all([
     activeTab === "transcript"
       ? projectService.getTranscriptSnapshot(appUser.workspaceOwnerUserId, projectId,
@@ -218,6 +220,9 @@ export default async function ProjectDetailPage({
       : Promise.resolve([]),
     activeTab === "review"
       ? reviewService.internalRoom(appUser.workspaceId, projectId, canManageReview ? "manage" : "view")
+      : Promise.resolve(null),
+    activeTab === "publish"
+      ? workspaceService.getWorkspace(appUser.actorUserId, appUser.workspaceId)
       : Promise.resolve(null),
   ]);
   const reviewRoomData = reviewRoom
@@ -939,6 +944,17 @@ export default async function ProjectDetailPage({
               accounts={socialAccounts}
               facebookPublishingEnabled={isSocialProviderPublishingEnabled("facebook_reels")}
               canOverrideReview={canOverrideReview}
+              workspaceTimezone={activeWorkspace?.timezone ?? "UTC"}
+              assistedCopyEnabled={hasFeature(pricingTier, "publishing.assistedCopy")}
+              customThumbnailsEnabled={hasFeature(pricingTier, "publishing.customThumbnails")}
+              campaignSchedulingEnabled={hasFeature(pricingTier, "campaign.operations")}
+              canUploadVisualAssets={
+                hasFeature(pricingTier, "brand.profiles") &&
+                workspaceAllowsCapability(
+                  { role: appUser.role, status: appUser.status },
+                  "brand.manage",
+                )
+              }
             />
           ) : null}
         </Tabs.Content>

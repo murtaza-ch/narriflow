@@ -12,6 +12,9 @@ import { socialOAuthService } from "./social-oauth.service";
 import { visualAssetService } from "./visual-asset.service";
 import { BrandFontReferenceError, brandFontService } from "./brand-font.service";
 import { clipExportService } from "./clip-export.service";
+import { prismaAssistedCopyStore } from "./assisted-social-copy.service";
+import { createAssistedSocialCopy } from "./assisted-social-copy";
+import { bulkSocialSchedulingService } from "./bulk-social-scheduling.service";
 
 const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
 const databaseSchema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;
@@ -110,6 +113,159 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     }, include: { variants: true } });
     return { user, workspace, project, clip, clipExport };
   }
+
+  test("keeps assisted-copy prompts and content out of analytics metadata", async () => {
+    const current = await fixture("assisted-copy-privacy");
+    const promptSecret = "PROMPT_SECRET https://private.example.test/campaign";
+    const generatedSecret = "GENERATED_COPY_SECRET";
+    const editedSecret = "EDITED_COPY_SECRET";
+    const hashtagSecret = "#PrivateLaunchSecret";
+    const assistedCopy = createAssistedSocialCopy({
+      store: prismaAssistedCopyStore,
+      provider: {
+        name: "privacy-test",
+        modelAlias: "privacy-test-model",
+        async generate() {
+          return {
+            model: "privacy-test-model-2026-09-02",
+            inputTokens: 32,
+            outputTokens: 16,
+            variants: [
+              {
+                platform: "youtube_shorts",
+                caption: generatedSecret,
+                hashtags: [hashtagSecret],
+                title: "PRIVATE_TITLE_SECRET",
+              },
+            ],
+          };
+        },
+      },
+      authorize: async () => undefined,
+      loadContext: async () => ({
+        clipTitle: "Privacy contract",
+        hook: null,
+        payoff: null,
+        voiceGuidance: null,
+      }),
+      moderate: async () => ({ outcome: "approved" }),
+      createId: randomUUID,
+      now: () => new Date("2026-09-02T12:00:00.000Z"),
+      timeoutMs: 5_000,
+    });
+
+    const generation = await assistedCopy.generate({
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+      idempotencyKey: randomUUID(),
+      platforms: ["youtube_shorts"],
+      campaignNote: promptSecret,
+    });
+    await assistedCopy.confirm({
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      variantId: generation.variants[0]!.id,
+      caption: editedSecret,
+      hashtags: [hashtagSecret],
+      title: "EDITED_PRIVATE_TITLE_SECRET",
+    });
+
+    const events = await prisma.projectAnalyticsEvent.findMany({
+      where: {
+        projectId: current.project.id,
+        type: { in: ["assisted_copy_generated", "assisted_copy_confirmed", "assisted_copy_edited"] },
+      },
+      select: { metadata: true },
+    });
+    expect(events).toHaveLength(2);
+    const serializedMetadata = JSON.stringify(events);
+    for (const secret of [
+      promptSecret,
+      generatedSecret,
+      editedSecret,
+      hashtagSecret,
+      "PRIVATE_TITLE_SECRET",
+      "EDITED_PRIVATE_TITLE_SECRET",
+    ]) {
+      expect(serializedMetadata).not.toContain(secret);
+    }
+  });
+
+	test("lists every usable current-revision export so publishing can choose a compatible older render", async () => {
+		const current = await fixture("publishing-current-exports");
+		const newer = await prisma.clipExport.create({
+			data: {
+				projectId: current.project.id,
+				workspaceId: current.workspace.id,
+				createdByUserId: current.user.id,
+				clipId: current.clip.id,
+				editorRevision: current.clip.editorRevision,
+				fingerprint: `newer-${randomUUID()}`,
+				resolution: "1080p",
+				watermark: false,
+				status: "ready",
+				progress: 100,
+				createdAt: new Date(Date.now() + 1_000),
+				completedAt: new Date(),
+				variants: {
+					create: {
+						aspectRatio: "ratio_16_9",
+						resolution: "1080p",
+						watermark: false,
+						status: "completed",
+						storageKey: `fixtures/${randomUUID()}/landscape.mp4`,
+						sizeBytes: 64n,
+						durationSec: 10,
+						completedAt: new Date(),
+					},
+				},
+			},
+		});
+
+		const exports = await clipExportService.listCurrentProjectExports(
+			current.workspace.id,
+			current.project.id,
+		);
+		expect(exports.map((item) => item.id)).toEqual([newer.id, current.clipExport.id]);
+		expect(exports[1]?.variants.some((variant) => variant.aspectRatio === "9:16" && variant.hasAsset)).toBe(true);
+	});
+
+	test("rejects cross-project bulk clip identifiers before persisting an operation", async () => {
+		const current = await fixture("bulk-boundary-current");
+		const foreign = await fixture("bulk-boundary-foreign");
+		const idempotencyKey = randomUUID();
+
+		await expect(bulkSocialSchedulingService.schedule({
+			actorUserId: current.user.id,
+			workspaceId: current.workspace.id,
+			projectId: current.project.id,
+			value: {
+				idempotencyKey,
+				accounts: [{ accountId: randomUUID(), platform: "youtube_shorts" }],
+				clips: [{
+					clipId: foreign.clip.id,
+					expectedEditorRevision: foreign.clip.editorRevision,
+					exportId: foreign.clipExport.id,
+					exportVariantId: foreign.clipExport.variants[0]!.id,
+					aspectRatio: "9:16",
+					resolution: "1080p",
+					copyByPlatform: {},
+					thumbnailByPlatform: {},
+				}],
+				startDate: "2026-09-03",
+				timeZone: "UTC",
+				postingWindow: { start: "09:00", end: "17:00" },
+				frequency: { unit: "hours", value: 2 },
+				dstDisambiguation: null,
+			},
+		})).rejects.toMatchObject({ code: "campaign_schedule_clip_not_found" });
+		expect(await prisma.campaignOperation.count({
+			where: { workspaceId: current.workspace.id, idempotencyKey },
+		})).toBe(0);
+	});
 
   test("settles duplicate and partial Render selected admission with stable item counts", async () => {
     const current = await fixture("render-selected");

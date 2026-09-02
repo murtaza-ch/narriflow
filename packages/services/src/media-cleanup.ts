@@ -8,14 +8,16 @@ export type MediaCleanupOrigin =
   | "clip_editor_document_persistence"
   | "detected_clip_replacement"
   | "clip_duplicate_compensation"
-  | "generated_media_publication";
+  | "generated_media_publication"
+  | "thumbnail_frame_preparation";
 
 export type MediaCleanupClass =
   | "mutable_render"
   | "preview_proxy"
   | "preview_peaks"
   | "dub_media"
-  | "generated_asset";
+  | "generated_asset"
+  | "thumbnail_asset";
 
 export interface MediaCleanupObligationInput {
   origin: MediaCleanupOrigin;
@@ -1094,7 +1096,7 @@ export const mediaCleanupWorker = createMediaCleanupWorker({
   },
   config: mediaCleanupConfigFromEnv(),
   async isProtected(claim) {
-    if (claim.cleanupClass !== "generated_asset") return false;
+    if (claim.cleanupClass !== "generated_asset" && claim.cleanupClass !== "thumbnail_asset") return false;
     return Boolean(await requirePrisma().visualAsset.findFirst({
       where: { storageKey: claim.objectKey, deletedAt: null },
       select: { id: true },

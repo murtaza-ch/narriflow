@@ -1,4 +1,5 @@
 export * from "./analytics";
+export * from "./assisted-publishing";
 export * from "./audio-asset";
 export * from "./auto-censor";
 export * from "./autopilot";

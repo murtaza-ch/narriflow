@@ -7,6 +7,10 @@ import {
 } from "@/lib/authenticated-request-hono";
 import {
   applyCaptionPresetToAllSchema,
+  type BulkSocialScheduleRequest,
+  type ConfirmAssistedCopyRequest,
+  type GenerateAssistedCopyRequest,
+  type RequestThumbnailFrameInput,
   applyStudioEditsToAllSchema,
   audioAssetIdParamSchema,
   brandTemplateInputSchema,
@@ -68,6 +72,8 @@ import {
 } from "@narriflow/validators";
 import {
   audioAssetService,
+  assistedSocialCopyService,
+  AssistedSocialCopyError,
   AudioAssetNotFoundError,
   billingService,
   analyticsService,
@@ -111,6 +117,8 @@ import {
   type ProjectListSourceFilter,
   type ProjectListStatusFilter,
   campaignOperationService,
+  bulkSocialSchedulingService,
+  BulkSocialSchedulingError,
   CampaignOperationError,
   reviewService,
   reviewNotificationService,
@@ -123,6 +131,8 @@ import {
   hasFeature,
   isProgramWriteEnabled,
   autoCensorService,
+  thumbnailFramePreparationService,
+  ThumbnailPreparationError,
 } from "@narriflow/services";
 import {
   resolveCanonicalAppOrigin,
@@ -1520,6 +1530,161 @@ app.get("/projects/:id/campaign-operations", async (c) => {
   return c.json({ operations: await campaignOperationService.listOperations({ workspaceId: appUser.workspaceId, projectId }) }, 200);
 });
 
+app.post("/projects/:id/assisted-copy/generations", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: GenerateAssistedCopyRequest;
+  }>(c);
+  try {
+    return c.json(await assistedSocialCopyService.generate({
+      actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      projectId,
+      ...body,
+    }), 201);
+  } catch (error) {
+    const code = error instanceof AssistedSocialCopyError
+      ? error.code
+      : "assisted_copy_generation_failed";
+    const status = code.includes("entitlement") || code.includes("forbidden")
+      ? 403
+      : code.includes("conflict") || code.includes("in_progress")
+        ? 409
+        : code.includes("not_found")
+          ? 404
+          : code.includes("timeout") || code.includes("unavailable")
+            ? 503
+            : 400;
+    return c.json({
+      error: code,
+      message: error instanceof AssistedSocialCopyError
+        ? error.message
+        : "Social copy could not be generated",
+    }, status);
+  }
+});
+
+app.post("/projects/:id/assisted-copy/variants/:variantId/confirm", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, variantId, body } = authenticatedHonoInput<{
+    id: string;
+    variantId: string;
+    body: ConfirmAssistedCopyRequest;
+  }>(c);
+  try {
+    return c.json(await assistedSocialCopyService.confirm({
+      actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      projectId,
+      variantId,
+      ...body,
+    }), 200);
+  } catch (error) {
+    const code = error instanceof AssistedSocialCopyError
+      ? error.code
+      : "assisted_copy_confirmation_failed";
+    return c.json({
+      error: code,
+      message: error instanceof AssistedSocialCopyError
+        ? error.message
+        : "Social copy could not be confirmed",
+    }, code.includes("not_found") ? 404 : code.includes("entitlement") ? 403 : 400);
+  }
+});
+
+app.post("/projects/:id/thumbnail-frames", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: RequestThumbnailFrameInput;
+  }>(c);
+  try {
+    return c.json(await thumbnailFramePreparationService.request({
+      actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      projectId,
+      ...body,
+    }), 202);
+  } catch (error) {
+    const code = error instanceof ThumbnailPreparationError
+      ? error.code
+      : "thumbnail_frame_request_failed";
+    return c.json({
+      error: code,
+      message: error instanceof ThumbnailPreparationError
+        ? error.message
+        : "The frame could not be prepared",
+    }, code.includes("entitlement") ? 403 : code.includes("not_found") || code.includes("missing") ? 404 : 400);
+  }
+});
+
+app.get("/projects/:id/thumbnail-frames/:operationId", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, operationId } = authenticatedHonoInput<{
+    id: string;
+    operationId: string;
+  }>(c);
+  try {
+    return c.json(await thumbnailFramePreparationService.get(
+      appUser.workspaceId,
+      projectId,
+      operationId,
+    ), 200);
+  } catch (error) {
+    const code = error instanceof ThumbnailPreparationError
+      ? error.code
+      : "thumbnail_frame_read_failed";
+    return c.json({ error: code, message: errorMessage(error) }, code.includes("not_found") ? 404 : 400);
+  }
+});
+
+app.post("/projects/:id/thumbnail-frames/:operationId/retry", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, operationId } = authenticatedHonoInput<{
+    id: string;
+    operationId: string;
+  }>(c);
+  try {
+		return c.json(await thumbnailFramePreparationService.retry(
+			appUser.workspaceId,
+			projectId,
+			operationId,
+		), 202);
+  } catch (error) {
+    const code = error instanceof ThumbnailPreparationError
+      ? error.code
+      : "thumbnail_frame_retry_failed";
+    return c.json({ error: code, message: errorMessage(error) }, code.includes("not_found") ? 404 : code.includes("in_progress") ? 409 : 400);
+  }
+});
+
+app.post("/projects/:id/campaign-operations/schedule", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: BulkSocialScheduleRequest;
+  }>(c);
+  try {
+    return c.json(await bulkSocialSchedulingService.schedule({
+      actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      projectId,
+      value: body,
+    }), 201);
+  } catch (error) {
+    const code = error instanceof BulkSocialSchedulingError
+      ? error.code
+      : "campaign_schedule_failed";
+    return c.json({
+      error: code,
+      message: error instanceof BulkSocialSchedulingError
+        ? error.message
+        : "The bulk schedule could not be created",
+    }, code.includes("entitlement") || code.includes("forbidden") ? 403 : code.includes("conflict") || code.includes("ambiguous") ? 409 : 400);
+  }
+});
+
 app.get("/projects/:id/campaign-operations/editor-action-catalog", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
@@ -2043,6 +2208,16 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
   }
 });
 
+app.get("/projects/:id/exports/current", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  return c.json({
+    exports: await clipExportService.listCurrentProjectExports(
+      appUser.workspaceId,
+      c.req.param("id"),
+    ),
+  }, 200, { "Cache-Control": "private, no-store" });
+});
+
 app.get("/projects/:id/clips/:clipId/exports/:exportId", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const result = await clipExportService.getOwned(
@@ -2495,6 +2670,21 @@ app.post("/projects/:id/social-posts", async (c) => {
       return c.json(
         { error: error.code, message: userErrorMessage(error.code) },
         409,
+      );
+    }
+    if (
+      error instanceof AssistedSocialCopyError ||
+      error instanceof ThumbnailPreparationError
+    ) {
+      return c.json(
+        { error: error.code, message: error.message },
+        error.code.includes("not_found") || error.code.includes("unavailable")
+          ? 404
+          : error.code.includes("stale") || error.code.includes("mismatch")
+            ? 409
+            : error.code.includes("entitlement")
+              ? 403
+              : 400,
       );
     }
     return c.json(

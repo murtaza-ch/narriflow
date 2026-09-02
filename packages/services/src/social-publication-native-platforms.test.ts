@@ -93,6 +93,7 @@ function harness(
 ) {
 	const requests: Array<{ url: string; init?: RequestInit }> = [];
 	let cleanups = 0;
+	let thumbnailAccesses = 0;
 	const registry = createNativePublicationPlatformRegistry({
 		fetch: async (url, init) => {
 			requests.push({ url: String(url), init });
@@ -115,6 +116,23 @@ function harness(
 			},
 			createScopedAccess: async () =>
 				"https://media.example/scoped/export.mp4?grant=short",
+		},
+		thumbnails: {
+			async materialize() {
+				return {
+					sizeBytes: 4,
+					fileName: "thumbnail.jpg",
+					contentType: "image/jpeg",
+					blob: async () => new Blob([new Uint8Array(4)], { type: "image/jpeg" }),
+					cleanup: async () => {
+						cleanups += 1;
+					},
+				};
+			},
+			createScopedAccess: async () => {
+				thumbnailAccesses += 1;
+				return "https://media.example/scoped/thumbnail.jpg?grant=short";
+			},
 		},
 		clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
 		metrics,
@@ -140,6 +158,7 @@ function harness(
 		registry,
 		requests,
 		cleanupCount: () => cleanups,
+		thumbnailAccessCount: () => thumbnailAccesses,
 	};
 }
 
@@ -361,6 +380,64 @@ describe("native publication adapters", () => {
 		expect(state.cleanupCount()).toBe(1);
 	});
 
+	test("sets the exact custom YouTube thumbnail after the video upload", async () => {
+		const request = input("youtube_shorts");
+		request.providerSettings = {
+			...request.providerSettings,
+			thumbnailType: "custom_image",
+			thumbnailAssetId: "asset-1",
+			thumbnailFingerprint: "a".repeat(64),
+			thumbnailSource: "generated",
+		};
+		const state = harness([
+			json({}, { headers: { Location: "https://youtube-upload.example/session" } }),
+			json({ id: "youtube-video-with-thumbnail" }),
+			json({ items: [] }),
+		]);
+		const checkpoints: string[] = [];
+		const result = await state.registry.get("youtube_shorts").publish(request, {
+			signal: new AbortController().signal,
+			checkpoint: async (operation) => checkpoints.push(operation.kind),
+		});
+
+		expect(result).toMatchObject({
+			kind: "accepted",
+			receipt: { receiptId: "youtube-video-with-thumbnail" },
+		});
+		expect(state.requests[2]).toMatchObject({
+			url: "https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=youtube-video-with-thumbnail&uploadType=media",
+			init: { method: "POST" },
+		});
+		expect(state.requests[2]!.init?.headers).toMatchObject({
+			Authorization: "Bearer access-token",
+			"Content-Type": "image/jpeg",
+			"Content-Length": "4",
+		});
+		expect(checkpoints).toEqual(["submission_started", "youtube_thumbnail"]);
+		expect(state.cleanupCount()).toBe(2);
+	});
+
+	test("retries only the custom YouTube thumbnail after an uncertain response", async () => {
+		const request = input("youtube_shorts");
+		request.providerSettings = {
+			...request.providerSettings,
+			thumbnailType: "custom_image",
+			thumbnailAssetId: "asset-1",
+			thumbnailFingerprint: "a".repeat(64),
+			thumbnailSource: "uploaded",
+		};
+		const state = harness([json({ items: [] })]);
+		const result = await state.registry.get("youtube_shorts").reconcile!(
+			request,
+			{ kind: "youtube_thumbnail", state: { videoId: "youtube-video-1" } },
+			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+		);
+
+		expect(result).toMatchObject({ kind: "accepted", receipt: { receiptId: "youtube-video-1" } });
+		expect(state.requests).toHaveLength(1);
+		expect(state.requests[0]!.url).toContain("/thumbnails/set?videoId=youtube-video-1");
+	});
+
 	test("retains an accepted YouTube receipt when the final resource reports processing failure", async () => {
 		const state = await publish("youtube_shorts", [
 			json({}, { headers: { Location: "https://youtube-upload.example/session" } }),
@@ -450,6 +527,58 @@ describe("native publication adapters", () => {
 		);
 	});
 
+	test("passes an exact frame offset to Instagram container creation", async () => {
+		const request = input("instagram_reels");
+		request.providerSettings = {
+			...request.providerSettings,
+			thumbnailType: "video_frame",
+			thumbnailAssetId: "asset-1",
+			thumbnailFingerprint: "b".repeat(64),
+			thumbnailSource: "extracted_frame",
+			videoCoverTimestampMs: 2_500,
+		};
+		const state = harness([
+			json({ id: "instagram-user-1" }),
+			json({ data: [{ quota_usage: 1, config: { quota_total: 50 } }] }),
+			json({ id: "container-1" }),
+			json({ status_code: "PUBLISHED" }),
+		]);
+		await state.registry.get("instagram_reels").publish(request, {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		});
+
+		const body = state.requests[2]!.init?.body as URLSearchParams;
+		expect(body.get("thumb_offset")).toBe("2500");
+		expect(body.has("cover_url")).toBe(false);
+	});
+
+	test("passes a scoped uploaded or generated cover to Instagram", async () => {
+		const request = input("instagram_reels");
+		request.providerSettings = {
+			...request.providerSettings,
+			thumbnailType: "custom_image",
+			thumbnailAssetId: "asset-1",
+			thumbnailFingerprint: "b".repeat(64),
+			thumbnailSource: "uploaded",
+		};
+		const state = harness([
+			json({ id: "instagram-user-1" }),
+			json({ data: [{ quota_usage: 1, config: { quota_total: 50 } }] }),
+			json({ id: "container-1" }),
+			json({ status_code: "PUBLISHED" }),
+		]);
+		await state.registry.get("instagram_reels").publish(request, {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		});
+
+		const body = state.requests[2]!.init?.body as URLSearchParams;
+		expect(body.get("cover_url")).toBe("https://media.example/scoped/thumbnail.jpg?grant=short");
+		expect(body.has("thumb_offset")).toBe(false);
+		expect(state.thumbnailAccessCount()).toBe(1);
+	});
+
 	test("preserves TikTok creator settings, upload, and accepted receipt", async () => {
 		const state = await publish("tiktok", [
 			json({
@@ -475,6 +604,9 @@ describe("native publication adapters", () => {
 		expect(state.result).toMatchObject({
 			kind: "pending",
 			receiptId: "publish-1",
+		});
+		expect(JSON.parse(String(state.requests[1]!.init?.body))).toMatchObject({
+			post_info: { title: "Approved title" },
 		});
 		if (state.result.kind !== "pending") throw new Error("expected pending");
 		const reconciled = await state.registry.get("tiktok").reconcile!(

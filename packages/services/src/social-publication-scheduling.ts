@@ -67,6 +67,8 @@ export type SchedulePublicationInput = {
 	clientIdempotencyKey: string;
 	clipId: string;
 	expectedEditorRevision: number;
+	clipExportId?: string;
+	clipExportVariantId?: string;
 	accountId: string | null;
 	platform: SocialPlatform;
 	caption: string;
@@ -124,6 +126,13 @@ export class PublicationIntentStateError extends Error {
 	}
 }
 
+export function socialAccountCanPublishAt(
+	account: { expiresAt: Date | null; refreshTokenEncrypted: string | null },
+	now: Date,
+): boolean {
+	return !account.expiresAt || account.expiresAt > now || Boolean(account.refreshTokenEncrypted);
+}
+
 function canonicalJson(value: unknown): string {
 	if (Array.isArray(value)) {
 		return `[${value.map(canonicalJson).join(",")}]`;
@@ -146,6 +155,8 @@ export function publicationIntentHash(input: SchedulePublicationInput): string {
 				projectId: input.projectId,
 				clipId: input.clipId,
 				expectedEditorRevision: input.expectedEditorRevision,
+				clipExportId: input.clipExportId ?? null,
+				clipExportVariantId: input.clipExportVariantId ?? null,
 				accountId: input.accountId,
 				platform: input.platform,
 				caption: input.caption,
@@ -803,7 +814,7 @@ export function createProductionSocialPublicationScheduling() {
 						platform: input.platform,
 						status: "active",
 					},
-					select: { id: true },
+					select: { id: true, expiresAt: true, refreshTokenEncrypted: true },
 				});
 				if (!account) {
 					throw new PublicationIntentStateError(
@@ -811,30 +822,59 @@ export function createProductionSocialPublicationScheduling() {
 						"The selected social account is unavailable for this platform",
 					);
 				}
+				if (!socialAccountCanPublishAt(account, new Date())) {
+					await prisma.socialAccount.updateMany({
+						where: { id: account.id, status: "active" },
+						data: { status: "expired" },
+					});
+					throw new PublicationIntentStateError(
+						"social_account_expired",
+						"The selected social account token has expired",
+					);
+				}
 			}
 
-			const requested = await clipExportService.create(
-				input.projectId,
-				input.clipId,
-				{
-					expectedRevision: input.expectedEditorRevision,
-					aspectRatios: [input.aspectRatio],
+			const requestedExportId = input.clipExportId
+				? input.clipExportId
+				: (await clipExportService.create(
+						input.projectId,
+						input.clipId,
+						{
+							expectedRevision: input.expectedEditorRevision,
+							aspectRatios: [input.aspectRatio],
+							resolution: input.resolution,
+						},
+						`social:${input.workspaceId}:${input.clientIdempotencyKey}`,
+						{
+							workspaceId: input.workspaceId,
+							actorUserId: input.actorUserId,
+						},
+					)).export.id;
+			const row = await prisma.clipExport.findFirst({
+				where: {
+					id: requestedExportId,
+					workspaceId: input.workspaceId,
+					projectId: input.projectId,
+					clipId: input.clipId,
+					editorRevision: input.expectedEditorRevision,
 					resolution: input.resolution,
 				},
-				`social:${input.workspaceId}:${input.clientIdempotencyKey}`,
-				{
-					workspaceId: input.workspaceId,
-					actorUserId: input.actorUserId,
-				},
-			);
-			const row = await prisma.clipExport.findUniqueOrThrow({
-				where: { id: requested.export.id },
 				include: {
 					variants: {
-						where: { aspectRatio: clipAspectRatioToDb[input.aspectRatio] },
+						where: {
+							...(input.clipExportVariantId ? { id: input.clipExportVariantId } : {}),
+							aspectRatio: clipAspectRatioToDb[input.aspectRatio],
+							resolution: input.resolution,
+						},
 					},
 				},
 			});
+			if (!row) {
+				throw new PublicationIntentStateError(
+					"publication_export_mismatch",
+					"The selected Clip Export is no longer current for this publication",
+				);
+			}
 			const variant = row.variants[0];
 			if (!variant) {
 				throw new PublicationIntentStateError(

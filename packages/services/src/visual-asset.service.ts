@@ -246,7 +246,7 @@ function toRow(asset: VisualAsset, accessUrl: string | null, replayed = false) {
     height: asset.height,
     durationSec: asset.durationSec,
     fingerprint: asset.fingerprint,
-    provenance: asset.provenance as "uploaded" | "generated",
+    provenance: asset.provenance as "uploaded" | "generated" | "extracted_frame",
     accessUrl,
     replayed,
     createdAt: asset.createdAt.toISOString(),

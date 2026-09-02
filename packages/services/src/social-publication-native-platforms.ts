@@ -22,6 +22,16 @@ export type NativePublicationMedia = {
 	cleanup(): Promise<void>;
 };
 
+export type NativePublicationThumbnail = {
+	assetId: string;
+	fingerprint: string;
+	projectId: string;
+};
+
+export type NativePublicationThumbnailMedia = NativePublicationMedia & {
+	contentType: string;
+};
+
 export type NativePublicationDependencies = {
 	fetch: typeof fetch;
 	media: {
@@ -31,6 +41,10 @@ export type NativePublicationDependencies = {
 		createScopedAccess(
 			input: PublicationPlatformInput["media"],
 		): Promise<string>;
+	};
+	thumbnails?: {
+		materialize(input: NativePublicationThumbnail): Promise<NativePublicationThumbnailMedia>;
+		createScopedAccess(input: NativePublicationThumbnail): Promise<string>;
 	};
 	clock: { now(): Date };
 	metrics?: SocialPublicationMetrics;
@@ -706,6 +720,95 @@ function youtubeReceipt(resource: YouTubeVideoResource): PublicationPlatformResu
 	};
 }
 
+function customThumbnail(
+	input: PublicationPlatformInput,
+): NativePublicationThumbnail | null {
+	const settings = metadata(input);
+	if (settings.thumbnailType !== "custom_image") return null;
+	const assetId = stringSetting(settings, ["thumbnailAssetId"]);
+	const fingerprint = stringSetting(settings, ["thumbnailFingerprint"]);
+	if (!assetId || !fingerprint) {
+		throw new PublicationPlatformConfigurationError(
+			"publication_thumbnail_invalid",
+			"The frozen custom thumbnail reference is incomplete",
+		);
+	}
+	return { assetId, fingerprint, projectId: input.projectId };
+}
+
+async function finishYoutubePublication(
+	dependencies: NativePublicationDependencies,
+	input: PublicationPlatformInput,
+	context: PublicationPlatformContext,
+	video: YouTubeVideoResource,
+): Promise<PublicationPlatformResult> {
+	const thumbnail = customThumbnail(input);
+	if (!thumbnail) return youtubeReceipt(video);
+	if (!video.id || !dependencies.thumbnails) {
+		throw new PublicationPlatformConfigurationError(
+			"youtube_thumbnail_unavailable",
+			"Custom thumbnail delivery is not configured",
+		);
+	}
+	const operation: PublicationProviderOperation = {
+		kind: "youtube_thumbnail",
+		state: { videoId: video.id },
+	};
+	await context.checkpoint(operation);
+	const media = await dependencies.thumbnails.materialize(thumbnail);
+	try {
+		await context.providerCall?.();
+		let response: Response;
+		try {
+			response = await dependencies.fetch(
+				`https://www.googleapis.com/upload/youtube/${dependencies.config.youtubeApiVersion}/thumbnails/set?videoId=${encodeURIComponent(video.id)}&uploadType=media`,
+				{
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${requireAccount(input, "youtube_shorts").accessToken}`,
+						"Content-Type": media.contentType,
+						"Content-Length": String(media.sizeBytes),
+					},
+					body: await media.blob(),
+					signal: context.signal,
+				},
+			);
+		} catch {
+			return {
+				kind: "unknown",
+				code: "youtube_thumbnail_outcome_unknown",
+				phase: "submission",
+				operation,
+			};
+		}
+		if (!response.ok) {
+			const code = await youtubeFailureCode(response, "youtube_thumbnail_failed");
+			if (response.status === 429 || response.status >= 500) {
+				return {
+					kind: "unknown",
+					code,
+					phase: "submission",
+					operation,
+					retryAfterMs: retryAfterMs(response, dependencies.clock.now()),
+				};
+			}
+			return {
+				kind: "failed",
+				failure: {
+					code,
+					phase: "submission",
+					disposition: "attention",
+					retryAfterMs: null,
+					safeToRepublishAfterSubmission: false,
+				},
+			};
+		}
+		return youtubeReceipt(video);
+	} finally {
+		await cleanupMaterializedMedia(media, input);
+	}
+}
+
 function youtubeUploadedBytes(range: string | null) {
 	if (!range) return 0;
 	const match = /^bytes=0-(\d+)$/.exec(range.trim());
@@ -786,7 +889,7 @@ async function continueYoutubeUpload(
 						null,
 					);
 				}
-				return youtubeReceipt(video);
+				return finishYoutubePublication(dependencies, input, context, video);
 			}
 			if (status.status === 404) {
 				return {
@@ -847,7 +950,7 @@ async function continueYoutubeUpload(
 						null,
 					);
 				}
-				return youtubeReceipt(video);
+				return finishYoutubePublication(dependencies, input, context, video);
 			}
 			if (response.status !== 308) {
 				throw new ProviderHttpError(
@@ -996,6 +1099,23 @@ function youtubePlatform(
 		reconcile(input, operation, context) {
 			return withNativeOutcome(async (markSubmitted) => {
 				markSubmitted();
+				if (operation.kind === "youtube_thumbnail") {
+					const videoId = operationString(operation.state, "videoId");
+					if (!videoId) {
+						return {
+							kind: "unknown",
+							code: "youtube_thumbnail_checkpoint_invalid",
+							phase: "reconciliation",
+							operation: null,
+						};
+					}
+					return finishYoutubePublication(
+						dependencies,
+						input,
+						context,
+						{ id: videoId },
+					);
+				}
 				return continueYoutubeUpload(
 					dependencies,
 					input,
@@ -1158,6 +1278,27 @@ function instagramPlatform(
 				const mediaUrl = await dependencies.media.createScopedAccess(
 					input.media,
 				);
+				const thumbnailParameters: Record<string, string> = {};
+				if (settings.thumbnailType === "video_frame") {
+					const offset = Number(settings.videoCoverTimestampMs);
+					if (!Number.isSafeInteger(offset) || offset < 0) {
+						throw new PublicationPlatformConfigurationError(
+							"instagram_thumbnail_offset_invalid",
+							"Instagram thumbnail frame offset is invalid",
+						);
+					}
+					thumbnailParameters.thumb_offset = String(offset);
+				} else if (settings.thumbnailType === "custom_image") {
+					const thumbnail = customThumbnail(input);
+					if (!thumbnail || !dependencies.thumbnails) {
+						throw new PublicationPlatformConfigurationError(
+							"instagram_thumbnail_unavailable",
+							"Custom Instagram cover delivery is not configured",
+						);
+					}
+					thumbnailParameters.cover_url =
+						await dependencies.thumbnails.createScopedAccess(thumbnail);
+				}
 				const container = await jsonRequest<{ id?: string }>(
 					dependencies,
 					context,
@@ -1173,6 +1314,7 @@ function instagramPlatform(
 								booleanSetting(settings, ["shareToFeed"], true),
 							),
 							access_token: account.accessToken,
+							...thumbnailParameters,
 						}),
 						signal: context.signal,
 					},
@@ -1612,6 +1754,7 @@ function tiktokPlatform(
 					const disableComment = booleanSetting(settings, ["disableComment"], false);
 					const disableDuet = booleanSetting(settings, ["disableDuet"], false);
 					const disableStitch = booleanSetting(settings, ["disableStitch"], false);
+					const postTitle = stringSetting(settings, ["title"], input.caption) ?? input.caption;
 					if (
 						(Boolean(creator.data?.comment_disabled) && !disableComment) ||
 						(Boolean(creator.data?.duet_disabled) && !disableDuet) ||
@@ -1666,7 +1809,7 @@ function tiktokPlatform(
 							},
 							body: JSON.stringify({
 								post_info: {
-									title: truncate(input.caption, 2200),
+									title: truncate(postTitle, 2200),
 									privacy_level: privacyLevel,
 									disable_comment: disableComment,
 									disable_duet: disableDuet,

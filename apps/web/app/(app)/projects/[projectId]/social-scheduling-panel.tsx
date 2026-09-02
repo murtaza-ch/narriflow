@@ -39,6 +39,7 @@ import {
   reviewApprovalOverrideReady,
   reviewOverrideReasonForRequest,
 } from "../../_components/review-approval-checkpoint";
+import { AssistedPublishingWorkspace } from "./assisted-publishing-workspace";
 
 const platforms = Object.keys(platformLabels) as SocialPlatform[];
 
@@ -142,6 +143,11 @@ export function SocialSchedulingPanel({
   accounts,
   facebookPublishingEnabled,
   canOverrideReview,
+  workspaceTimezone,
+  assistedCopyEnabled,
+  customThumbnailsEnabled,
+  campaignSchedulingEnabled,
+  canUploadVisualAssets,
 }: {
   projectId: string;
   clips: ClipSnapshot[];
@@ -149,6 +155,11 @@ export function SocialSchedulingPanel({
   accounts: SocialAccountSnapshot[];
   facebookPublishingEnabled: boolean;
   canOverrideReview: boolean;
+  workspaceTimezone: string;
+  assistedCopyEnabled: boolean;
+  customThumbnailsEnabled: boolean;
+  campaignSchedulingEnabled: boolean;
+  canUploadVisualAssets: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -611,12 +622,26 @@ export function SocialSchedulingPanel({
   return (
     <Box id="social-publishing" layerStyle="band">
       <Stack gap="4">
+        <AssistedPublishingWorkspace
+          projectId={projectId}
+          clips={clips}
+          accounts={accounts}
+          workspaceTimezone={workspaceTimezone}
+          assistedCopyEnabled={assistedCopyEnabled}
+          customThumbnailsEnabled={customThumbnailsEnabled}
+          campaignSchedulingEnabled={campaignSchedulingEnabled}
+          canUploadVisualAssets={canUploadVisualAssets}
+          facebookPublishingEnabled={facebookPublishingEnabled}
+			canOverrideReview={canOverrideReview}
+          onScheduled={() => startTransition(() => router.refresh())}
+        />
+
         <Box>
           <Text textStyle="eyebrow" color="fg.subtle">
-            Social schedule
+            Manual post
           </Text>
           <Text mt="0.5" fontSize="xs" color="fg.muted">
-          Freeze a clip revision, caption, account, and delivery settings before publication.
+            Schedule one exact caption without assisted copy.
           </Text>
         </Box>
 
@@ -708,6 +733,7 @@ export function SocialSchedulingPanel({
           <Box>
             <Button
               size="sm"
+              variant="outline"
               w={{ base: "full", lg: "auto" }}
               disabled={
                 isPending ||

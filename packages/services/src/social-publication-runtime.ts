@@ -1,6 +1,7 @@
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getPrismaClient } from "@narriflow/db/client";
 import {
 	claimDueSocialPublicationAttempts,
 	createSocialPublicationAttempt,
@@ -11,6 +12,7 @@ import {
 import { createPublicationCheckpointCipher } from "./social-publication-checkpoint-cipher";
 import { parseSocialPublicationConfig } from "./social-publication-config";
 import { createNativePublicationPlatformRegistry } from "./social-publication-native-platforms";
+import type { NativePublicationThumbnail } from "./social-publication-native-platforms";
 import {
 	PublicationPlatformExecutionError,
 	type PublicationPlatformInput,
@@ -59,6 +61,84 @@ async function materializeMedia(input: PublicationPlatformInput["media"]) {
 		await rm(directory, { recursive: true, force: true }).catch(
 			() => undefined,
 		);
+		throw error;
+	}
+}
+
+async function resolveThumbnail(input: NativePublicationThumbnail) {
+	const prisma = getPrismaClient();
+	if (!prisma) throw new Error("Database client unavailable");
+	const asset = await prisma.visualAsset.findFirst({
+		where: {
+			id: input.assetId,
+			fingerprint: input.fingerprint,
+			kind: "image",
+			deletedAt: null,
+		},
+		select: {
+			id: true,
+			storageKey: true,
+			contentType: true,
+			sizeBytes: true,
+		},
+	});
+	if (!asset) {
+		throw new PublicationPlatformExecutionError(
+			"publication_thumbnail_missing",
+			"preparation",
+			"The exact frozen publication thumbnail is unavailable",
+		);
+	}
+	return asset;
+}
+
+function thumbnailFileName(asset: { id: string; contentType: string }) {
+	const extension = asset.contentType === "image/jpeg"
+		? "jpg"
+		: asset.contentType === "image/png"
+			? "png"
+			: asset.contentType === "image/webp"
+				? "webp"
+				: null;
+	if (!extension) {
+		throw new PublicationPlatformExecutionError(
+			"publication_thumbnail_type_invalid",
+			"preparation",
+			"The frozen publication thumbnail format is unsupported",
+		);
+	}
+	return `${asset.id}.${extension}`;
+}
+
+async function materializeThumbnail(input: NativePublicationThumbnail) {
+	const asset = await resolveThumbnail(input);
+	const directory = await mkdtemp(join(tmpdir(), "narriflow-thumbnail-"));
+	const fileName = thumbnailFileName(asset);
+	const path = join(/* turbopackIgnore: true */ directory, fileName);
+	try {
+		await downloadObjectToFile({ key: asset.storageKey, filePath: path });
+		const facts = await stat(/* turbopackIgnore: true */ path);
+		if (BigInt(facts.size) !== asset.sizeBytes) {
+			throw new PublicationPlatformExecutionError(
+				"publication_thumbnail_changed",
+				"preparation",
+				"The exact frozen publication thumbnail no longer matches storage",
+			);
+		}
+		return {
+			sizeBytes: facts.size,
+			fileName,
+			contentType: asset.contentType,
+			async blob(start = 0, endExclusive = facts.size) {
+				const bun = (globalThis as unknown as { Bun: { file(filePath: string): Blob } }).Bun;
+				return bun.file(path).slice(start, endExclusive, asset.contentType);
+			},
+			async cleanup() {
+				await rm(directory, { recursive: true, force: true });
+			},
+		};
+	} catch (error) {
+		await rm(directory, { recursive: true, force: true }).catch(() => undefined);
 		throw error;
 	}
 }
@@ -126,6 +206,17 @@ export function createProductionSocialPublicationRuntime(
 					fileName: media.fileName,
 					expiresIn: 2 * 60 * 60,
 				}),
+		},
+		thumbnails: {
+			materialize: materializeThumbnail,
+			async createScopedAccess(input) {
+				const asset = await resolveThumbnail(input);
+				return presignDownloadUrl({
+					key: asset.storageKey,
+					fileName: thumbnailFileName(asset),
+					expiresIn: 2 * 60 * 60,
+				});
+			},
 		},
 		clock: { now: () => new Date() },
 		metrics: structuredSocialPublicationMetrics,
