@@ -54,6 +54,7 @@ import {
   workspaceAllowsCapability,
   type CreateExportBundleInput,
   type CreateReviewRoundInput,
+  type InviteReviewersInput,
   type InternalReviewCommentInput,
   type RetryReviewNotificationInput,
   type ApplySceneTemplateInput,
@@ -1833,9 +1834,8 @@ app.post("/projects/:id/review-rounds", async (c) => {
   try {
     return c.json(await reviewService.createRound({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier) }, body), 201);
   } catch (error) {
-    if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
     const code = error instanceof ReviewServiceError ? error.code : "review_round_create_failed";
-    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review round could not be created" }, code.includes("stale") ? 409 : code.includes("not_found") ? 404 : 400);
+    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review round could not be created" }, code === "review_feature_unavailable" ? 403 : code.includes("stale") ? 409 : code.includes("not_found") ? 404 : 400);
   }
 });
 
@@ -1851,6 +1851,36 @@ app.get("/projects/:id/review-rounds", async (c) => {
   } catch (error) {
     const code = error instanceof ReviewServiceError ? error.code : "review_rounds_read_failed";
     return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review rounds could not be loaded" }, code.includes("not_found") ? 404 : 400);
+  }
+});
+
+app.post("/projects/:id/review-rounds/:roundId/invite", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, roundId, body } = authenticatedHonoInput<{
+    id: string;
+    roundId: string;
+    body: InviteReviewersInput;
+  }>(c);
+  try {
+    return c.json(await reviewService.inviteReviewers({
+      actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      projectId: id,
+      pricingTier: resolvePricingTier(appUser.pricingTier),
+    }, roundId, body), 200);
+  } catch (error) {
+    const code = error instanceof ReviewServiceError ? error.code : "review_invite_failed";
+    const status = code === "review_feature_unavailable"
+      ? 403
+      : code.includes("not_found")
+        ? 404
+        : code === "review_round_closed"
+          ? 409
+          : 400;
+    return c.json({
+      error: code,
+      message: error instanceof ReviewServiceError ? error.message : "Reviewers could not be invited",
+    }, status);
   }
 });
 

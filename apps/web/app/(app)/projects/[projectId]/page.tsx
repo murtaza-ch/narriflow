@@ -56,6 +56,7 @@ import { ContentSuitePanel } from "./content-suite-panel";
 import { AnalyticsPanel } from "./analytics-panel";
 import { DubbingPanel } from "./dubbing-panel";
 import { ReviewPanel, type ReviewRoomData } from "./review-panel";
+import { ProjectShareButton } from "./project-share-button";
 import { SocialSchedulingPanel } from "./social-scheduling-panel";
 import { RetryIngestButton } from "./render-clips-button";
 import { AdvancedClipSettings } from "./advanced-clip-settings";
@@ -63,6 +64,7 @@ import { STATUS_CONFIG } from "../_lib/status";
 import { extractYoutubeId, youtubeThumbnailUrl } from "../_lib/youtube";
 import { gradientForId } from "../_lib/gradient";
 import { formatDate, formatDuration } from "@/lib/format";
+import { getDisplayName, getInitials } from "@/lib/account-display";
 import {
   deriveProjectPipelineStates,
   type PipelineStepView,
@@ -541,6 +543,19 @@ export default async function ProjectDetailPage({
           </Text>
         </Flex>
         <Box flex="1" />
+        {canManageReview ? (
+          <ProjectShareButton
+            projectId={projectId}
+            available={hasFeature(pricingTier, "review.rooms")}
+            actor={{
+              name: getDisplayName(appUser.firstName, appUser.lastName),
+              email: appUser.primaryEmail,
+              imageUrl: appUser.imageUrl,
+              initials: getInitials(appUser.firstName, appUser.lastName, appUser.primaryEmail),
+              role: appUser.role,
+            }}
+          />
+        ) : null}
         <DeleteProjectButton
           projectId={projectId}
           projectTitle={snapshot.project.title}

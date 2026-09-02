@@ -582,6 +582,39 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     const persistedRound = await prisma.reviewRound.findUniqueOrThrow({ where: { id: created.id } });
     expect(persistedRound.deliveryTokenEncrypted).not.toContain(created.token);
     expect(await prisma.reviewNotificationLedger.count({ where: { reviewRoundId: created.id, kind: "round_sent" } })).toBe(1);
+		await expect(reviewService.inviteReviewers(
+			{ actorUserId: current.user.id, workspaceId: current.workspace.id, projectId: current.project.id, pricingTier: "business" },
+			created.id,
+			{ recipientEmails: ["SECOND@example.test", "second@example.test"] },
+		)).resolves.toEqual({
+			addedCount: 1,
+			recipientEmails: ["client@example.test", "second@example.test"],
+		});
+		await expect(reviewService.inviteReviewers(
+			{ actorUserId: current.user.id, workspaceId: current.workspace.id, projectId: current.project.id, pricingTier: "business" },
+			created.id,
+			{ recipientEmails: ["second@example.test"] },
+		)).resolves.toMatchObject({ addedCount: 0 });
+		await Promise.all([
+			reviewService.inviteReviewers(
+				{ actorUserId: current.user.id, workspaceId: current.workspace.id, projectId: current.project.id, pricingTier: "business" },
+				created.id,
+				{ recipientEmails: ["third@example.test"] },
+			),
+			reviewService.inviteReviewers(
+				{ actorUserId: current.user.id, workspaceId: current.workspace.id, projectId: current.project.id, pricingTier: "business" },
+				created.id,
+				{ recipientEmails: ["fourth@example.test"] },
+			),
+		]);
+		expect((await prisma.reviewRound.findUniqueOrThrow({ where: { id: created.id } })).recipientEmails).toEqual([
+			"client@example.test",
+			"fourth@example.test",
+			"second@example.test",
+			"third@example.test",
+		]);
+		expect(await prisma.reviewNotificationLedger.count({ where: { reviewRoundId: created.id, kind: "round_sent" } })).toBe(4);
+		expect(await prisma.reviewAuditEvent.count({ where: { reviewRoundId: created.id, kind: "reviewers_invited" } })).toBe(3);
     await expect(reviewService.authenticate(created.token, { identity: "Client", email: "client@example.test", passcode: "wrong-passcode" }, "203.0.113.10", sessionSecret)).rejects.toMatchObject({ code: "review_access_invalid" });
     const firstSession = await reviewService.authenticate(created.token, { identity: "Client", email: "client@example.test", passcode: "review-secret" }, "203.0.113.10", sessionSecret);
     const secondSession = await reviewService.authenticate(created.token, { identity: "Client updated", email: "CLIENT@example.test", passcode: "review-secret" }, "203.0.113.10", sessionSecret);
@@ -618,7 +651,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		expect(concurrentResolution).toHaveLength(2);
 		expect(await prisma.reviewAuditEvent.count({ where: { reviewRoundId: created.id, targetId: parentComment.id, kind: { in: ["comment_edited", "comment_resolved", "comment_reopened"] } } })).toBe(4);
 		const auditPayload = JSON.stringify(await prisma.reviewAuditEvent.findMany({ where: { reviewRoundId: created.id } }));
-		for (const secretValue of [created.token, "review-secret", "Client updated", "client@example.test", parentComment.body, "https://review.example/private"]) {
+		for (const secretValue of [created.token, "review-secret", "Client updated", "client@example.test", "second@example.test", "third@example.test", "fourth@example.test", parentComment.body, "https://review.example/private"]) {
 			expect(auditPayload).not.toContain(secretValue);
 		}
 		const reply = await reviewService.addComment(additionalSessions[0]!, sessionSecret, { itemId: item.id, parentId: parentComment.id, body: "Reply", timestampSec: null });
@@ -656,6 +689,11 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		await prisma.reviewRound.update({ where: { id: created.id }, data: { expiresAt: null } });
 		await reviewService.revokeRound({ workspaceId: current.workspace.id, projectId: current.project.id, actorUserId: current.user.id }, created.id);
 		expect(await prisma.projectAnalyticsEvent.count({ where: { projectId: current.project.id, type: "review_revoked" } })).toBe(1);
+		await expect(reviewService.inviteReviewers(
+			{ actorUserId: current.user.id, workspaceId: current.workspace.id, projectId: current.project.id, pricingTier: "business" },
+			created.id,
+			{ recipientEmails: ["late@example.test"] },
+		)).rejects.toMatchObject({ code: "review_round_closed" });
     await expect(reviewService.readRound(secondSession, sessionSecret)).rejects.toBeInstanceOf(ReviewServiceError);
   });
 

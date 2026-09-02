@@ -24,6 +24,13 @@ export const retryReviewNotificationSchema = z.strictObject({
   ledgerId: z.string().uuid(),
 });
 
+export const inviteReviewersSchema = z.strictObject({
+  recipientEmails: z
+    .array(z.string().trim().email().max(254))
+    .min(1)
+    .max(25),
+});
+
 export const reviewGuestAccessSchema = z.strictObject({
   identity: z.string().trim().min(1).max(100),
   email: z.string().trim().email().max(254),
@@ -57,3 +64,4 @@ export type ReviewCommentInput = z.infer<typeof reviewCommentSchema>;
 export type ReviewDecisionInput = z.infer<typeof reviewDecisionSchema>;
 export type InternalReviewCommentInput = z.infer<typeof internalReviewCommentSchema>;
 export type RetryReviewNotificationInput = z.infer<typeof retryReviewNotificationSchema>;
+export type InviteReviewersInput = z.infer<typeof inviteReviewersSchema>;

@@ -42,7 +42,6 @@ const baseInput = {
 
 const authorizeReview = async ({ exportIds }: { exportIds: string[] }) => ({
 	allowed: true as const,
-	mode: "enforce" as const,
 	items: exportIds.map((exportId) => ({
 		exportId,
 		eligibility: "approved" as const,
@@ -221,7 +220,6 @@ describe("Social Publication scheduling", () => {
 				checks.push(input);
 				return {
 					allowed: true,
-					mode: "enforce",
 					items: [
 						{
 							exportId: "export-1",

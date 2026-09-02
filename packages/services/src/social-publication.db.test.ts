@@ -392,9 +392,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			},
 		});
 		const key = randomUUID();
-		const gate = createProductionReviewApprovalGate({
-			enforcedWorkspaceIds: new Set([f.workspace.id]),
-		});
+		const gate = createProductionReviewApprovalGate();
 		const request = {
 			principal: { kind: "workspace_user" as const, userId: f.user.id },
 			workspaceId: f.workspace.id,

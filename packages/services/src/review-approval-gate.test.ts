@@ -6,7 +6,6 @@ import {
 	type ReviewApprovalPolicy,
 	type ReviewApprovalPrincipal,
 } from "./review-approval-gate";
-import { reviewApprovalGateRolloutFromEnv } from "./review-approval-gate.prisma";
 
 const now = new Date("2026-09-02T10:00:00.000Z");
 
@@ -47,7 +46,6 @@ function round(
 
 function harness(input: {
 	policy: ReviewApprovalPolicy;
-	enforced?: boolean;
 	allowedOverrideUsers?: string[];
 	returnedAuditExportIds?: string[];
 }) {
@@ -56,7 +54,6 @@ function harness(input: {
 	let nextAudit = 1;
 	const gate = createReviewApprovalGate({
 		loadPolicy: async () => input.policy,
-		isEnforced: () => input.enforced ?? true,
 		authorizeOverride: async ({ principal }) => {
 			if (
 				principal.kind !== "workspace_user" ||
@@ -105,24 +102,11 @@ const request = {
 };
 
 describe("ReviewApprovalGate", () => {
-	test("starts in observe mode and enables only named workspaces", () => {
-		expect(reviewApprovalGateRolloutFromEnv({}).enforcedWorkspaceIds.size).toBe(0);
-		const rollout = reviewApprovalGateRolloutFromEnv({
-			NARRIFLOW_REVIEW_APPROVAL_ENFORCED_WORKSPACE_IDS:
-				"workspace-1, workspace-2,workspace-1",
-		});
-		expect([...rollout.enforcedWorkspaceIds]).toEqual([
-			"workspace-1",
-			"workspace-2",
-		]);
-	});
-
 	test("leaves advisory projects with no review unchanged", async () => {
 		const { gate } = harness({ policy: policy() });
 
 		await expect(gate.authorize(request)).resolves.toMatchObject({
 			allowed: true,
-			mode: "enforce",
 			items: [{ exportId: "export-1", eligibility: "advisory" }],
 		});
 	});
@@ -333,22 +317,6 @@ describe("ReviewApprovalGate", () => {
 				items: [{ reason: "awaiting_approval" }],
 			},
 		});
-	});
-
-	test("observe mode reports the difference without blocking", async () => {
-		const { gate, diagnostics } = harness({
-			policy: policy({ projectApprovalRule: "approval_required" }),
-			enforced: false,
-		});
-
-		await expect(gate.authorize(request)).resolves.toMatchObject({
-			allowed: true,
-			mode: "observe",
-			items: [{ eligibility: "would_block" }],
-		});
-		expect(diagnostics).toContainEqual(
-			expect.objectContaining({ outcome: "would_block", mode: "observe" }),
-		);
 	});
 
 	for (const principal of [

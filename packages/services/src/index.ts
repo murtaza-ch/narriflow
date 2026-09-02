@@ -297,11 +297,9 @@ export {
   campaignActionRolloutFromEnv,
   campaignActionWriteEnabled,
   isProgramWriteEnabled,
-  reviewRoomRolloutFromEnv,
   ProgramWriteDisabledError,
   type CampaignActionRollout,
   type ProgramReleaseGroup,
-  type ReviewRoomRollout,
 } from "./program-rollout";
 export {
   generationAccessForTier,
@@ -346,8 +344,6 @@ export {
 export {
 	createProductionReviewApprovalGate,
 	reviewApprovalGate,
-	reviewApprovalGateRolloutFromEnv,
-	type ReviewApprovalGateRollout,
 } from "./review-approval-gate.prisma";
 export {
   PublicationClaimLostError,

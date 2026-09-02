@@ -7,32 +7,13 @@ import {
 } from "./review-approval-gate";
 import { workspaceService } from "./workspace.service";
 
-export type ReviewApprovalGateRollout = Readonly<{
-	enforcedWorkspaceIds: ReadonlySet<string>;
-}>;
-
-export function reviewApprovalGateRolloutFromEnv(
-	env: Record<string, string | undefined> = process.env,
-): ReviewApprovalGateRollout {
-	return {
-		enforcedWorkspaceIds: new Set(
-			(env.NARRIFLOW_REVIEW_APPROVAL_ENFORCED_WORKSPACE_IDS ?? "")
-				.split(",")
-				.map((value) => value.trim())
-				.filter(Boolean),
-		),
-	};
-}
-
 function requirePrisma() {
 	const prisma = getPrismaClient();
 	if (!prisma) throw new Error("Database client unavailable");
 	return prisma;
 }
 
-export function createProductionReviewApprovalGate(
-	rollout: ReviewApprovalGateRollout = reviewApprovalGateRolloutFromEnv(),
-) {
+export function createProductionReviewApprovalGate() {
 	return createReviewApprovalGate({
 		async loadPolicy({ workspaceId, projectId, exportIds }) {
 			const project = await requirePrisma().project.findFirst({
@@ -93,8 +74,6 @@ export function createProductionReviewApprovalGate(
 				latestRound: project.reviewRounds[0] ?? null,
 			} satisfies ReviewApprovalPolicy;
 		},
-		isEnforced: (workspaceId) =>
-			rollout.enforcedWorkspaceIds.has(workspaceId),
 		async authorizeOverride({ principal, workspaceId }) {
 			if (principal.kind !== "workspace_user") {
 				throw new ReviewApprovalGateError(

@@ -44,10 +44,9 @@ export type ReviewApprovalAudit = {
 
 export type ReviewApprovalResult = {
 	allowed: true;
-	mode: "observe" | "enforce";
 	items: Array<{
 		exportId: string;
-		eligibility: "advisory" | "approved" | "would_block" | "overridden";
+		eligibility: "advisory" | "approved" | "overridden";
 		overrideAuditId: string | null;
 	}>;
 };
@@ -77,7 +76,6 @@ export function createReviewApprovalGate(dependencies: {
 		projectId: string;
 		exportIds: string[];
 	}): Promise<ReviewApprovalPolicy>;
-	isEnforced(workspaceId: string): boolean;
 	authorizeOverride(input: {
 		principal: ReviewApprovalPrincipal;
 		workspaceId: string;
@@ -94,8 +92,7 @@ export function createReviewApprovalGate(dependencies: {
 		createdAt: Date;
 	}): Promise<ReviewApprovalAudit[]>;
 	recordDiagnostic(input: {
-		mode: "observe" | "enforce";
-		outcome: "allowed" | "would_block" | "overridden";
+		outcome: "allowed" | "blocked" | "overridden";
 		workspaceId: string;
 		projectId: string;
 		roundId: string | null;
@@ -142,12 +139,8 @@ export function createReviewApprovalGate(dependencies: {
 			const blocked = evaluation.flatMap((item) =>
 				item.reason ? [{ exportId: item.exportId, reason: item.reason }] : [],
 			);
-			const enforced = dependencies.isEnforced(input.workspaceId);
-			const mode = enforced ? "enforce" : "observe";
-
 			if (blocked.length === 0) {
 				dependencies.recordDiagnostic({
-					mode,
 					outcome: "allowed",
 					workspaceId: input.workspaceId,
 					projectId: input.projectId,
@@ -157,31 +150,9 @@ export function createReviewApprovalGate(dependencies: {
 				});
 				return {
 					allowed: true,
-					mode,
 					items: evaluation.map((item) => ({
 						exportId: item.exportId,
 						eligibility: item.eligibility,
-						overrideAuditId: null,
-					})),
-				};
-			}
-
-			if (!enforced) {
-				dependencies.recordDiagnostic({
-					mode,
-					outcome: "would_block",
-					workspaceId: input.workspaceId,
-					projectId: input.projectId,
-					roundId: policy.latestRound?.id ?? null,
-					exportIds,
-					blocked,
-				});
-				return {
-					allowed: true,
-					mode,
-					items: evaluation.map((item) => ({
-						exportId: item.exportId,
-						eligibility: item.reason ? "would_block" : item.eligibility,
 						overrideAuditId: null,
 					})),
 				};
@@ -242,7 +213,6 @@ export function createReviewApprovalGate(dependencies: {
 					);
 				}
 				dependencies.recordDiagnostic({
-					mode,
 					outcome: "overridden",
 					workspaceId: input.workspaceId,
 					projectId: input.projectId,
@@ -252,7 +222,6 @@ export function createReviewApprovalGate(dependencies: {
 				});
 				return {
 					allowed: true,
-					mode,
 					items: evaluation.map((item) => ({
 						exportId: item.exportId,
 						eligibility: item.reason ? "overridden" : item.eligibility,
@@ -264,8 +233,7 @@ export function createReviewApprovalGate(dependencies: {
 			}
 
 			dependencies.recordDiagnostic({
-				mode,
-				outcome: "would_block",
+				outcome: "blocked",
 				workspaceId: input.workspaceId,
 				projectId: input.projectId,
 				roundId: policy.latestRound?.id ?? null,

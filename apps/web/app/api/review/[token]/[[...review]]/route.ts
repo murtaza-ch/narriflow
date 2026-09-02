@@ -6,7 +6,6 @@ import {
   reviewGuestCanEditComment,
   reviewService,
   ReviewServiceError,
-  ProgramWriteDisabledError,
 } from "@narriflow/services";
 
 const MAX_BODY_BYTES = 32 * 1024;
@@ -43,7 +42,6 @@ async function body(request: Request) {
 }
 
 function failure(error: unknown) {
-  if (error instanceof ProgramWriteDisabledError) return NextResponse.json({ error: error.code, message: error.message }, { status: 503 });
   const code = error instanceof ReviewServiceError ? error.code : "review_request_failed";
   const status = code.endsWith("not_found") ? 404 : code.includes("rate_limited") ? 429 : code.includes("closed") ? 409 : code.includes("forbidden") ? 403 : 400;
   return NextResponse.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review request failed" }, { status });

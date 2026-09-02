@@ -1,6 +1,5 @@
 import { getPrismaClient } from "@narriflow/db/client";
 import { decryptReviewValue, reviewDeliverySecret } from "./review.service";
-import { reviewRoomRolloutFromEnv } from "./program-rollout";
 
 export const REVIEW_NOTIFICATION_MAX_ATTEMPTS = 3;
 export const REVIEW_NOTIFICATION_LEASE_MS = 5 * 60_000;
@@ -233,7 +232,7 @@ export class ReviewNotificationService {
     this.now = dependencies.now ?? (() => new Date());
     this.leaseMs = dependencies.leaseMs ?? REVIEW_NOTIFICATION_LEASE_MS;
     this.retryDelayMs = dependencies.retryDelayMs ?? REVIEW_NOTIFICATION_RETRY_DELAY_MS;
-    this.enabled = dependencies.enabled ?? (() => reviewRoomRolloutFromEnv().notifications);
+    this.enabled = dependencies.enabled ?? (() => true);
   }
 
   async deliverDue(limit: number, appBaseUrl: string): Promise<ReviewNotificationDeliverySummary> {

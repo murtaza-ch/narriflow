@@ -27,7 +27,7 @@ import { restoreCampaignSelection } from "./campaign-selection";
 
 type Variant = { id: string; aspectRatio: string; durationSec: number | null };
 type CandidateExport = { id: string; editorRevision: number; createdAt: string; variants: Variant[] };
-type Candidate = { id: string; title: string; editorRevision: number; exports: CandidateExport[] };
+export type ReviewCandidate = { id: string; title: string; editorRevision: number; exports: CandidateExport[] };
 type Comment = {
   id: string;
   itemId: string | null;
@@ -40,7 +40,7 @@ type Comment = {
   editedAt: string | null;
   createdAt: string;
 };
-type Round = {
+export type ReviewRound = {
   id: string;
   revision: number;
   title: string;
@@ -91,8 +91,8 @@ type Round = {
 
 export type ReviewRoomData = {
   project: { title: string; workspace: { name: string }; approvalRequiredByDefault: boolean };
-  candidates: Candidate[];
-  rounds: Round[];
+  candidates: ReviewCandidate[];
+  rounds: ReviewRound[];
 };
 
 type DraftSelection = { exportId: string; variantIds: string[]; required: boolean };
@@ -122,7 +122,7 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
   const router = useRouter();
   const [data, setData] = useState(initialData);
   const [activeRoundId, setActiveRoundId] = useState(initialData.rounds[0]?.id ?? null);
-  const [creating, setCreating] = useState(canManage && initialData.rounds.length === 0);
+  const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -167,7 +167,7 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || "Review room could not be refreshed");
     setData(payload);
-    setActiveRoundId((current) => current && payload.rounds.some((round: Round) => round.id === current) ? current : payload.rounds[0]?.id ?? null);
+    setActiveRoundId((current) => current && payload.rounds.some((round: ReviewRound) => round.id === current) ? current : payload.rounds[0]?.id ?? null);
   }
 
   async function mutate(path: string, body?: unknown) {
@@ -201,7 +201,7 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
     });
   }
 
-  function toggleCandidate(candidate: Candidate, checked: boolean) {
+  function toggleCandidate(candidate: ReviewCandidate, checked: boolean) {
     setSelections((current) => {
       if (!checked) {
         const next = { ...current };
@@ -247,7 +247,7 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
     }
   }
 
-  function prepareNext(round: Round) {
+  function prepareNext(round: ReviewRound) {
     setTitle(`${data.project.title} review ${String(round.revision + 1).padStart(2, "0")}`);
     const unresolved = round.comments.filter((comment) => comment.resolvedAt === null && comment.parentId === null);
     setContextCommentIds(unresolved.map((comment) => comment.id));
@@ -266,13 +266,13 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
     requestAnimationFrame(() => createHeadingRef.current?.focus());
   }
 
-  async function copyLink(round: Round) {
+  async function copyLink(round: ReviewRound) {
     if (!round.path) return;
     await navigator.clipboard.writeText(new URL(round.path, window.location.origin).toString());
     setNotice("Private review link copied.");
   }
 
-  async function submitReply(round: Round) {
+  async function submitReply(round: ReviewRound) {
     if (!replyBody.trim()) return;
     const mentionRecipients = round.recipientEmails.filter((email) => replyBody.toLowerCase().includes(`@${email.toLowerCase()}`));
     const parent = replyParentId ? round.comments.find((comment) => comment.id === replyParentId) : null;
@@ -296,11 +296,11 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
       <Flex align={{ base: "stretch", md: "end" }} justify="space-between" gap="4" direction={{ base: "column", md: "row" }} borderBottomWidth="1px" borderColor="border" pb="5">
         <Box>
           <Text textStyle="eyebrow" color="accent.fg">Client delivery</Text>
-          <Text textStyle="display" fontSize={{ base: "28px", md: "36px" }} mt="1">Review room</Text>
-          <Text color="fg.muted" fontSize="sm" mt="1" maxW="620px">Submit exact export revisions, keep client feedback in one record, and see what changed before the next round.</Text>
+          <Text textStyle="display" fontSize={{ base: "28px", md: "36px" }} mt="1">Review history</Text>
+          <Text color="fg.muted" fontSize="sm" mt="1" maxW="620px">Share from the project header. Use this page when you need another round, advanced access controls, or the complete feedback record.</Text>
         </Box>
         {canManage ? <Button colorPalette="accent" variant={creating ? "outline" : "solid"} onClick={() => { setContextCommentIds([]); setCreating(true); requestAnimationFrame(() => createHeadingRef.current?.focus()); }} disabled={creating || data.candidates.length === 0}>
-          <Send size={15} /> Create review
+          <Send size={15} /> New round
         </Button> : null}
       </Flex>
 

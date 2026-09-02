@@ -26,8 +26,8 @@
 
 ## Rollout
 
-- [x] Run in warn-only mode first and compare would-block decisions.
-- [x] Enable enforcement per workspace after zero unexplained differences.
+- [x] Enforce the frozen approval rule for every workspace; no rollout environment variable or observe-only path exists.
+- [x] Keep advisory projects unchanged and require an audited Owner/Admin override for blocked publishing.
 
 ## Scope boundaries
 
