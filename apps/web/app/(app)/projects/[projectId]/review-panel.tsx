@@ -78,6 +78,15 @@ type Round = {
     sentAt: string | null;
     createdAt: string;
   }>;
+  context: Array<{
+    id: string;
+    sourceCommentId: string;
+    sourceRoundRevision: number;
+    authorName: string;
+    body: string;
+    timestampSec: number | null;
+    clipTitle: string | null;
+  }>;
 };
 
 export type ReviewRoomData = {
@@ -125,6 +134,7 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
   const [allowDownloads, setAllowDownloads] = useState(false);
   const [approvalRequired, setApprovalRequired] = useState(true);
   const [selections, setSelections] = useState<Record<string, DraftSelection>>({});
+  const [contextCommentIds, setContextCommentIds] = useState<string[]>([]);
   const [replyBody, setReplyBody] = useState("");
   const [replyParentId, setReplyParentId] = useState<string | null>(null);
   const replyRef = useRef<HTMLTextAreaElement>(null);
@@ -224,11 +234,13 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
       allowDownloads,
       approvalRequired,
       recipientEmails: recipients,
+      contextCommentIds,
       items,
     });
     if (result) {
       setCreating(false);
       setPasscode("");
+      setContextCommentIds([]);
       setNotice("Review round sent. The submitted exports are now immutable.");
     }
   }
@@ -236,6 +248,7 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
   function prepareNext(round: Round) {
     setTitle(`${data.project.title} review ${String(round.revision + 1).padStart(2, "0")}`);
     const unresolved = round.comments.filter((comment) => comment.resolvedAt === null && comment.parentId === null);
+    setContextCommentIds(unresolved.map((comment) => comment.id));
     setMessage(unresolved.length > 0 ? `Follow-up to round ${round.revision}. ${unresolved.length} feedback thread${unresolved.length === 1 ? " remains" : "s remain"} open.` : `Follow-up to round ${round.revision}.`);
     setRecipientText(round.recipientEmails.join(", "));
     setAllowDownloads(round.allowDownloads);
@@ -283,7 +296,7 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
           <Text textStyle="display" fontSize={{ base: "28px", md: "36px" }} mt="1">Review room</Text>
           <Text color="fg.muted" fontSize="sm" mt="1" maxW="620px">Submit exact export revisions, keep client feedback in one record, and see what changed before the next round.</Text>
         </Box>
-        <Button colorPalette="accent" onClick={() => { setCreating(true); requestAnimationFrame(() => createHeadingRef.current?.focus()); }} disabled={creating || data.candidates.length === 0}>
+        <Button colorPalette="accent" variant={creating ? "outline" : "solid"} onClick={() => { setContextCommentIds([]); setCreating(true); requestAnimationFrame(() => createHeadingRef.current?.focus()); }} disabled={creating || data.candidates.length === 0}>
           <Send size={15} /> Create review
         </Button>
       </Flex>
@@ -340,6 +353,7 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
               })}
             </Stack>
             <Stack flex="0.75" p={{ base: "4", md: "6" }} gap="4" bg="bg.panel">
+              {contextCommentIds.length > 0 ? <Box borderStartWidth="3px" borderColor="accent.solid" ps="3" py="1"><Text textStyle="eyebrow" color="accent.fg">Linked prior feedback</Text><Text fontSize="12px" color="fg.muted" mt="1">{contextCommentIds.length} unresolved thread{contextCommentIds.length === 1 ? "" : "s"} will stay attached as internal context. The client note is not copied.</Text></Box> : null}
               <Stack gap="1.5"><chakra.label htmlFor="review-title" fontSize="12px" fontWeight="650">Round name</chakra.label><Input id="review-title" value={title} maxLength={160} onChange={(event) => setTitle(event.target.value)} borderColor="border.control" /></Stack>
               <Stack gap="1.5"><chakra.label htmlFor="review-message" fontSize="12px" fontWeight="650">Note to reviewers</chakra.label><Textarea id="review-message" value={message} maxLength={2000} rows={3} onChange={(event) => setMessage(event.target.value)} borderColor="border.control" /></Stack>
               <Stack gap="1.5"><chakra.label htmlFor="review-recipients" fontSize="12px" fontWeight="650">Notification recipients</chakra.label><Textarea id="review-recipients" value={recipientText} rows={2} placeholder="client@example.com, producer@example.com" onChange={(event) => setRecipientText(event.target.value)} borderColor="border.control" /><Text fontSize="11px" color="fg.subtle">{recipients.length === 0 ? "The private link will only be copied, not emailed." : `${recipients.length} recipient${recipients.length === 1 ? "" : "s"}`}</Text></Stack>
@@ -382,6 +396,8 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
                 {activeRound.items.map((item) => <Flex key={item.id} py="3" px="2" borderBottomWidth="1px" borderColor="border" align={{ base: "start", md: "center" }} direction={{ base: "column", md: "row" }} justify="space-between" gap="3"><Box><Text fontSize="sm" fontWeight="650">{item.clipTitle}</Text><Flex gap="2" mt="1" wrap="wrap"><Text textStyle="data" fontSize="11px" color="fg.subtle">Revision {item.editorRevision}</Text>{item.variants.map((variant) => <Text key={variant.id} textStyle="data" fontSize="11px" color="fg.subtle">{aspectLabel(variant.aspectRatio)}</Text>)}</Flex></Box><StatusBadge label={eventLabel(item.currentDecision ?? "awaiting decision")} status={item.currentDecision === "approved" ? "completed" : "pending"} /></Flex>)}
               </Stack>
 
+              {activeRound.context.length > 0 ? <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" justify="space-between" gap="3"><Text textStyle="eyebrow">Prior unresolved context</Text><Text textStyle="data" fontSize="10px" color="fg.subtle">Internal only</Text></Flex><Stack gap="0" mt="2">{activeRound.context.map((context) => <Box key={context.id} py="3" borderBottomWidth="1px" borderColor="border.subtle"><Flex gap="2" wrap="wrap" align="center"><Text fontSize="11px" fontWeight="700">{context.authorName}</Text><Text textStyle="data" fontSize="10px" color="fg.subtle">Round {String(context.sourceRoundRevision).padStart(2, "0")}</Text>{context.clipTitle ? <Text fontSize="10px" color="fg.subtle">{context.clipTitle}</Text> : null}{context.timestampSec !== null ? <Text textStyle="data" fontSize="10px" color="accent.fg">{formatTimecode(context.timestampSec)}</Text> : null}</Flex><Text fontSize="12px" color="fg.muted" mt="1" whiteSpace="pre-wrap">{context.body}</Text></Box>)}</Stack></Box> : null}
+
               <Flex direction={{ base: "column", xl: "row" }} gap="6" align="start">
                 <Stack flex="1" w="full" gap="4">
                   <Flex align="center" justify="space-between"><Flex align="center" gap="2"><MessageSquareText size={16} /><Text textStyle="eyebrow">Feedback</Text></Flex><Text textStyle="data" fontSize="11px" color="fg.subtle">{activeRound.comments.filter((comment) => !comment.parentId).length} threads</Text></Flex>
@@ -396,7 +412,7 @@ export function ReviewPanel({ projectId, initialData }: { projectId: string; ini
 
                 <Stack w={{ base: "full", xl: "310px" }} flexShrink="0" gap="5">
                   <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><UserRound size={15} /><Text textStyle="eyebrow">Reviewers</Text></Flex>{activeRound.guests.length === 0 ? <Text fontSize="13px" color="fg.muted" mt="3">Nobody has opened the room.</Text> : activeRound.guests.map((guest) => <Box key={guest.id} py="3" borderBottomWidth="1px" borderColor="border.subtle"><Text fontSize="13px" fontWeight="650">{guest.displayName}</Text><Text fontSize="11px" color="fg.subtle">{guest.email}</Text><Text fontSize="10px" color="fg.subtle" mt="1">Last seen {formatDateTime(guest.lastSeenAt)}</Text></Box>)}</Box>
-                  <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><Send size={15} /><Text textStyle="eyebrow">Delivery</Text></Flex>{activeRound.notifications.length === 0 ? <Text fontSize="13px" color="fg.muted" mt="3">No email recipients were configured.</Text> : activeRound.notifications.map((notification) => <Flex key={notification.id} py="3" borderBottomWidth="1px" borderColor="border.subtle" justify="space-between" gap="2" align="start"><Box minW="0"><Text fontSize="12px" truncate>{notification.recipientEmail}</Text><Text fontSize="10px" color="fg.subtle">{eventLabel(notification.kind)} · {notification.status}</Text>{notification.failureCode ? <Text fontSize="10px" color="danger.fg">{eventLabel(notification.failureCode)}</Text> : null}</Box>{notification.status === "failed" ? <Button size="xs" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/notifications/retry`, { ledgerId: notification.id })} disabled={busy}><RefreshCw size={12} /> Retry</Button> : null}</Flex>)}</Box>
+                  <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><Send size={15} /><Text textStyle="eyebrow">Delivery</Text></Flex>{activeRound.recipientEmails.length > 0 ? <Stack gap="1" mt="3">{activeRound.recipientEmails.map((email) => <Text key={email} fontSize="12px">{email}</Text>)}</Stack> : <Text fontSize="13px" color="fg.muted" mt="3">No email recipients were configured.</Text>}{activeRound.recipientEmails.length > 0 && activeRound.notifications.length === 0 ? <Text fontSize="11px" color="fg.subtle" mt="2">Email delivery was paused when this round was sent.</Text> : activeRound.notifications.map((notification) => <Flex key={notification.id} py="3" borderBottomWidth="1px" borderColor="border.subtle" justify="space-between" gap="2" align="start"><Box minW="0"><Text fontSize="12px" truncate>{notification.recipientEmail}</Text><Text fontSize="10px" color="fg.subtle">{eventLabel(notification.kind)} · {notification.status}</Text>{notification.failureCode ? <Text fontSize="10px" color="danger.fg">{eventLabel(notification.failureCode)}</Text> : null}</Box>{notification.status === "failed" ? <Button size="xs" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/notifications/retry`, { ledgerId: notification.id })} disabled={busy}><RefreshCw size={12} /> Retry</Button> : null}</Flex>)}</Box>
                   <Box borderTopWidth="3px" borderColor="border.emphasized" pt="3"><Flex align="center" gap="2"><Clock3 size={15} /><Text textStyle="eyebrow">Audit history</Text></Flex><Stack gap="0" mt="2">{activeRound.auditEvents.slice(0, 12).map((event) => <Flex key={event.id} py="2" borderBottomWidth="1px" borderColor="border.subtle" justify="space-between" gap="3"><Text fontSize="11px">{eventLabel(event.kind)}</Text><Text textStyle="data" fontSize="10px" color="fg.subtle">{formatDateTime(event.createdAt)}</Text></Flex>)}</Stack></Box>
                 </Stack>
               </Flex>

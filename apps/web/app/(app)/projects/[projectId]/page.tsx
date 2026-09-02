@@ -146,6 +146,9 @@ export default async function ProjectDetailPage({
   const [{ projectId }, query] = await Promise.all([params, searchParams]);
   const activeTab = projectTabFromSearchParam(query.tab);
   const appUser = await admitProjectPage(projectId, "content.view");
+  if (activeTab === "review") {
+    await admitProjectPage(projectId, "review.manage");
+  }
   const brandScope = {
     actorUserId: appUser.actorUserId,
     workspaceId: appUser.workspaceId,

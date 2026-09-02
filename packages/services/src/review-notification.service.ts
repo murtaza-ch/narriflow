@@ -53,7 +53,12 @@ export interface ReviewNotificationStore {
     terminal: boolean,
     failureCode: string,
   ): Promise<boolean>;
-  retry(reviewRoundId: string, id: string, now: Date): Promise<boolean>;
+  retry(
+    scope: { workspaceId: string; projectId: string },
+    reviewRoundId: string,
+    id: string,
+    now: Date,
+  ): Promise<boolean>;
 }
 
 export interface ReviewNotificationMailInput {
@@ -177,9 +182,17 @@ function defaultStore(): ReviewNotificationStore {
       });
       return updated.count === 1;
     },
-    async retry(reviewRoundId, id, now) {
+    async retry(scope, reviewRoundId, id, now) {
       const updated = await requirePrisma().reviewNotificationLedger.updateMany({
-        where: { id, reviewRoundId, status: "failed" },
+        where: {
+          id,
+          reviewRoundId,
+          status: "failed",
+          reviewRound: {
+            workspaceId: scope.workspaceId,
+            projectId: scope.projectId,
+          },
+        },
         data: { status: "pending", attemptCount: 0, nextAttemptAt: now, failureCode: null },
       });
       return updated.count === 1;
@@ -314,8 +327,17 @@ export class ReviewNotificationService {
     return summary;
   }
 
-  async retry(reviewRoundId: string, ledgerId: string) {
-    const retrying = await this.store.retry(reviewRoundId, ledgerId, this.now());
+  async retry(
+    scope: { workspaceId: string; projectId: string },
+    reviewRoundId: string,
+    ledgerId: string,
+  ) {
+    const retrying = await this.store.retry(
+      scope,
+      reviewRoundId,
+      ledgerId,
+      this.now(),
+    );
     return { retrying };
   }
 }

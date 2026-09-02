@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
-import { Prisma } from "@prisma/client";
+import { AnalyticsEventType, Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   createReviewRoundSchema,
@@ -191,6 +191,50 @@ async function assertReviewRoundWritable(tx: Prisma.TransactionClient, roundId: 
   }
 }
 
+function recordReviewAnalytics(
+  tx: Prisma.TransactionClient,
+  projectId: string,
+  type: AnalyticsEventType,
+  reviewRoundId: string,
+  clipId?: string,
+) {
+  return tx.projectAnalyticsEvent.create({
+    data: {
+      projectId,
+      type,
+      clipId,
+      metadata: { reviewRoundId },
+    },
+  });
+}
+
+async function recordReviewExpiry(roundId: string, now = new Date()) {
+  const prisma = requirePrisma();
+  return prisma.$transaction(async (tx) => {
+    const round = await tx.reviewRound.findUnique({
+      where: { id: roundId },
+      select: { projectId: true },
+    });
+    if (!round) return false;
+    const recorded = await tx.reviewRound.updateMany({
+      where: {
+        id: roundId,
+        status: "open",
+        revokedAt: null,
+        expiryRecordedAt: null,
+        expiresAt: { lte: now },
+      },
+      data: { expiryRecordedAt: now },
+    });
+    if (recorded.count !== 1) return false;
+    await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_expired, roundId);
+    await tx.reviewAuditEvent.create({
+      data: { reviewRoundId: roundId, kind: "round_expired", targetId: roundId },
+    });
+    return true;
+  });
+}
+
 function encodeClaims(claims: ReviewSessionClaims) {
   return Buffer.from(JSON.stringify(claims)).toString("base64url");
 }
@@ -235,6 +279,9 @@ export class ReviewService {
     if (new Set(parsed.items.map((item) => item.clipId)).size !== parsed.items.length) {
       throw new ReviewServiceError("review_items_duplicate", "A clip can appear only once in a review round");
     }
+    if (new Set(parsed.contextCommentIds).size !== parsed.contextCommentIds.length) {
+      throw new ReviewServiceError("review_context_duplicate", "A feedback thread can be linked only once");
+    }
     const prisma = requirePrisma();
     const project = await prisma.project.findFirst({ where: { id: scope.projectId, workspaceId: scope.workspaceId }, select: { id: true } });
     if (!project) throw new ReviewServiceError("review_project_not_found", "Project was not found");
@@ -263,8 +310,28 @@ export class ReviewService {
         orderBy: { revision: "desc" },
         select: { id: true, revision: true },
       });
+      const contextComments = parsed.contextCommentIds.length > 0
+        ? await tx.reviewComment.findMany({
+          where: {
+            id: { in: parsed.contextCommentIds },
+            parentId: null,
+            resolvedAt: null,
+            reviewRound: {
+              workspaceId: scope.workspaceId,
+              projectId: scope.projectId,
+            },
+          },
+          select: { id: true },
+        })
+        : [];
+      if (contextComments.length !== parsed.contextCommentIds.length) {
+        throw new ReviewServiceError(
+          "review_context_stale",
+          "Linked feedback must still be unresolved in this project",
+        );
+      }
       await tx.reviewRound.updateMany({ where: { projectId: scope.projectId, status: "open" }, data: { status: "superseded", supersededAt: new Date() } });
-      return tx.reviewRound.create({ data: {
+      const created = await tx.reviewRound.create({ data: {
         workspaceId: scope.workspaceId,
         projectId: scope.projectId,
         createdByUserId: scope.actorUserId,
@@ -295,7 +362,17 @@ export class ReviewService {
           kind: "round_sent",
           scopeKey: "round",
         })) },
+        contextLinks: {
+          create: contextComments.map((comment) => ({ sourceCommentId: comment.id })),
+        },
       }, select: { id: true, revision: true, createdAt: true } });
+      await recordReviewAnalytics(
+        tx,
+        scope.projectId,
+        latest ? AnalyticsEventType.review_resubmitted : AnalyticsEventType.review_sent,
+        created.id,
+      );
+      return created;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
     return { ...round, token: rawToken, path: `/review/${rawToken}` };
   }
@@ -310,7 +387,10 @@ export class ReviewService {
       await enforceReviewRateLimit(`review-access-token:${tokenHash}`, REVIEW_ACCESS_LIMIT, REVIEW_ACCESS_WINDOW_MS);
       throw new ReviewServiceError("review_access_invalid", "Review access is invalid or expired");
     };
-    const round = await requirePrisma().reviewRound.findUnique({ where: { accessTokenHash: tokenHash }, select: { id: true, accessTokenHash: true, passcodeHash: true, status: true, expiresAt: true, revokedAt: true } });
+    const round = await requirePrisma().reviewRound.findUnique({ where: { accessTokenHash: tokenHash }, select: { id: true, projectId: true, accessTokenHash: true, passcodeHash: true, status: true, expiresAt: true, revokedAt: true } });
+    if (round?.expiresAt && round.expiresAt <= new Date()) {
+      await recordReviewExpiry(round.id);
+    }
     if (!round || round.revokedAt || round.status !== "open" || (round.expiresAt && round.expiresAt <= new Date())) {
 			return rejectAccess();
     }
@@ -332,6 +412,13 @@ export class ReviewService {
         update: { displayName: parsed.identity, emailEncrypted: encryptReviewEmail(normalizedEmail, reviewDeliverySecret()), sessionGrantHash: reviewGrantHash(subject), lastSeenAt: new Date() },
       });
       await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: row.id, kind: "guest_authenticated" } });
+      const firstOpen = await tx.reviewRound.updateMany({
+        where: { id: round.id, firstOpenedAt: null },
+        data: { firstOpenedAt: new Date() },
+      });
+      if (firstOpen.count === 1) {
+        await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_opened, round.id);
+      }
       return row;
     });
     return issueReviewSession({ roundId: round.id, guestId: guest.id, grant: round.accessTokenHash.slice(0, 32), identity: guest.displayName, subject }, secret);
@@ -351,6 +438,9 @@ export class ReviewService {
         comments: { orderBy: { createdAt: "asc" } },
       },
     });
+    if (round?.expiresAt && round.expiresAt <= new Date()) {
+      await recordReviewExpiry(round.id);
+    }
     if (!round || round.accessTokenHash.slice(0, 32) !== claims.grant || round.revokedAt || round.status !== "open" || (round.expiresAt && round.expiresAt <= new Date())) {
       throw new ReviewServiceError("review_session_invalid", "Review session is invalid or expired");
     }
@@ -408,6 +498,13 @@ export class ReviewService {
       await assertReviewRoundWritable(tx, round.id);
       const comment = await tx.reviewComment.create({ data: { reviewRoundId: round.id, itemId: parsed.itemId, parentId: parsed.parentId, authorKind: "guest", authorName: claims.identity, authorGuestId: claims.guestId, authorGrantHash: reviewGrantHash(claims.subject), body: parsed.body, timestampSec: parsed.timestampSec } });
       await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: claims.guestId, kind: "comment_created", targetId: comment.id, metadata: { itemId: parsed.itemId, timecoded: parsed.timestampSec !== null } } });
+      const firstComment = await tx.reviewRound.updateMany({
+        where: { id: round.id, firstCommentAt: null },
+        data: { firstCommentAt: new Date() },
+      });
+      if (firstComment.count === 1) {
+        await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_first_comment, round.id);
+      }
       return comment;
     });
   }
@@ -487,12 +584,28 @@ export class ReviewService {
         await tx.reviewRound.update({ where: { id: round.id }, data: { decision: parsed.decision, decidedAt } });
       }
       await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: claims.guestId, kind: item ? "item_decided" : "campaign_decided", targetId: item?.id ?? round.id, metadata: { decision: parsed.decision } } });
+      if (item && parsed.decision === "approved" && item.currentDecision !== "approved") {
+        await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_item_approved, round.id, item.clipId);
+      }
+      if (!item && parsed.decision === "approved" && round.decision !== "approved") {
+        await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.campaign_approved, round.id);
+      }
+      if (parsed.decision === "changes_requested") {
+        const firstChange = await tx.reviewRound.updateMany({
+          where: { id: round.id, firstChangeRequestedAt: null },
+          data: { firstChangeRequestedAt: decidedAt },
+        });
+        if (firstChange.count === 1) {
+          await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_changes_requested, round.id, item?.clipId);
+        }
+      }
       const creator = await tx.user.findUnique({
         where: { id: round.createdByUserId },
         select: { primaryEmail: true },
       });
       const recipientEmail = creator?.primaryEmail?.trim().toLowerCase();
-      if (recipientEmail && parsed.decision === "changes_requested") {
+      const notificationsEnabled = reviewRoomRolloutFromEnv().notifications;
+      if (notificationsEnabled && recipientEmail && parsed.decision === "changes_requested") {
         await tx.reviewNotificationLedger.upsert({
           where: { reviewRoundId_recipientEmail_kind_scopeKey: {
             reviewRoundId: round.id,
@@ -509,6 +622,7 @@ export class ReviewService {
       );
       const requiredAfterChange = decisionsAfterChange.filter((candidate) => candidate.required);
       if (
+        notificationsEnabled &&
         recipientEmail &&
         requiredAfterChange.length > 0 &&
         requiredAfterChange.every((candidate) => candidate.currentDecision === "approved")
@@ -577,7 +691,7 @@ export class ReviewService {
       ));
       const mentions = normalizeRecipientEmails(parsed.mentionRecipients)
         .filter((recipientEmail) => configuredRecipients.has(recipientEmail));
-      if (mentions.length > 0) {
+      if (reviewRoomRolloutFromEnv().notifications && mentions.length > 0) {
         await tx.reviewNotificationLedger.createMany({
           data: mentions.map((recipientEmail) => ({
             reviewRoundId: round.id,
@@ -610,33 +724,9 @@ export class ReviewService {
       });
       if (revoked.count !== 1) throw new ReviewServiceError("review_round_not_found", "Review round was not found or was already revoked");
       await tx.reviewAuditEvent.create({ data: { reviewRoundId: roundId, kind: "round_revoked", targetId: roundId, metadata: { actorUserId: scope.actorUserId } } });
+      await recordReviewAnalytics(tx, scope.projectId, AnalyticsEventType.review_revoked, roundId);
       return { revoked: true };
     });
-  }
-
-  async retryNotification(
-    scope: { workspaceId: string; projectId: string },
-    roundId: string,
-    ledgerId: string,
-  ) {
-    const retried = await requirePrisma().reviewNotificationLedger.updateMany({
-      where: {
-        id: ledgerId,
-        reviewRoundId: roundId,
-        status: "failed",
-        reviewRound: { workspaceId: scope.workspaceId, projectId: scope.projectId },
-      },
-      data: {
-        status: "pending",
-        attemptCount: 0,
-        nextAttemptAt: new Date(),
-        failureCode: null,
-      },
-    });
-    if (retried.count !== 1) {
-      throw new ReviewServiceError("review_notification_not_found", "Failed notification was not found");
-    }
-    return { retrying: true };
   }
 
   async internalProjection(workspaceId: string, projectId: string) {
@@ -663,6 +753,18 @@ export class ReviewService {
 
   async internalRoom(workspaceId: string, projectId: string) {
     const prisma = requirePrisma();
+    const expiredRounds = await prisma.reviewRound.findMany({
+      where: {
+        workspaceId,
+        projectId,
+        status: "open",
+        revokedAt: null,
+        expiryRecordedAt: null,
+        expiresAt: { lte: new Date() },
+      },
+      select: { id: true },
+    });
+    await Promise.all(expiredRounds.map((round) => recordReviewExpiry(round.id)));
     const [project, rounds, clips] = await Promise.all([
       prisma.project.findFirst({
         where: { id: projectId, workspaceId },
@@ -680,6 +782,21 @@ export class ReviewService {
           guests: { orderBy: { firstSeenAt: "asc" }, select: { id: true, displayName: true, emailEncrypted: true, firstSeenAt: true, lastSeenAt: true } },
           auditEvents: { orderBy: { createdAt: "desc" }, select: { id: true, kind: true, targetId: true, metadata: true, createdAt: true } },
           notificationLedgers: { orderBy: { createdAt: "asc" }, select: { id: true, recipientEmail: true, kind: true, status: true, attemptCount: true, failureCode: true, sentAt: true, createdAt: true } },
+          contextLinks: {
+            orderBy: { createdAt: "asc" },
+            include: {
+              sourceComment: {
+                select: {
+                  id: true,
+                  authorName: true,
+                  body: true,
+                  timestampSec: true,
+                  reviewRound: { select: { revision: true } },
+                  item: { select: { clip: { select: { title: true } } } },
+                },
+              },
+            },
+          },
         },
       }),
       prisma.clip.findMany({
@@ -744,6 +861,15 @@ export class ReviewService {
           })),
           auditEvents: round.auditEvents,
           notifications: round.notificationLedgers,
+          context: round.contextLinks.map((link) => ({
+            id: link.id,
+            sourceCommentId: link.sourceComment.id,
+            sourceRoundRevision: link.sourceComment.reviewRound.revision,
+            authorName: link.sourceComment.authorName,
+            body: link.sourceComment.body,
+            timestampSec: link.sourceComment.timestampSec,
+            clipTitle: link.sourceComment.item?.clip.title ?? null,
+          })),
         };
       }),
     };

@@ -76,7 +76,12 @@ class MemoryReviewNotificationStore implements ReviewNotificationStore {
     return true;
   }
 
-  async retry(reviewRoundId: string, id: string, now: Date) {
+  async retry(
+    _scope: { workspaceId: string; projectId: string },
+    reviewRoundId: string,
+    id: string,
+    now: Date,
+  ) {
     const row = this.rows.get(id);
     if (!row || row.reviewRoundId !== reviewRoundId || row.status !== "failed") return false;
     this.rows.set(id, {
@@ -204,7 +209,13 @@ describe("ReviewNotificationService", () => {
 
     expect(await sender.deliverDue(10, "https://app.example.test")).toMatchObject({ failed: 1 });
     expect(store.rows.get(row.id)).toMatchObject({ status: "failed", failureCode: "recipient_invalid" });
-    expect(await sender.retry(row.reviewRoundId, row.id)).toEqual({ retrying: true });
+    expect(
+      await sender.retry(
+        { workspaceId: crypto.randomUUID(), projectId: crypto.randomUUID() },
+        row.reviewRoundId,
+        row.id,
+      ),
+    ).toEqual({ retrying: true });
     expect(store.rows.get(row.id)).toMatchObject({ status: "pending", attemptCount: 0, failureCode: null });
   });
 });

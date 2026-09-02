@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { Box, Button, chakra, Flex, Heading, Input, Stack, Text, Textarea } from "@chakra-ui/react";
 import { formatTimecode } from "@/lib/format";
+import { buildReviewCommentPayload, reviewApprovalProgress } from "./review-client-model";
 
 type ReviewComment = {
   id: string;
@@ -79,6 +80,7 @@ export function ReviewClient({ token }: { token: string }) {
   const [comment, setComment] = useState("");
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [includeTimecode, setIncludeTimecode] = useState(true);
+  const [commentScope, setCommentScope] = useState<"clip" | "round">("clip");
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -91,9 +93,10 @@ export function ReviewClient({ token }: { token: string }) {
   const activeVariant = activeItem?.export.variants.find((variant) =>
     variant.id === activeVariants[activeItem.id],
   ) ?? activeItem?.export.variants[0] ?? null;
-  const requiredApproved = round?.items.filter((item) => item.required && item.currentDecision === "approved").length ?? 0;
-  const requiredCount = round?.items.filter((item) => item.required).length ?? 0;
-  const roundReady = !round?.approvalRequired || requiredApproved === requiredCount;
+  const approvalProgress = reviewApprovalProgress(round?.items ?? [], round?.approvalRequired ?? true);
+  const requiredApproved = approvalProgress.approved;
+  const requiredCount = approvalProgress.required;
+  const roundReady = approvalProgress.ready;
   const commentsForActiveItem = useMemo(
     () => round?.comments.filter((entry) => entry.itemId === activeItem?.id || entry.itemId === null) ?? [],
     [activeItem?.id, round?.comments],
@@ -171,13 +174,16 @@ export function ReviewClient({ token }: { token: string }) {
     }
     const parent = replyTo ? round?.comments.find((entry) => entry.id === replyTo) : null;
     const video = activeItem ? videoRefs.current.get(activeItem.id) : undefined;
-    const timestampSec = parent || !includeTimecode || !activeItem ? null : video?.currentTime ?? null;
-    if (await request("comments", "POST", {
-      itemId: parent?.itemId ?? activeItem?.id ?? null,
-      parentId: parent?.id ?? null,
-      body: comment.trim(),
-      timestampSec,
-    })) {
+    const payload = buildReviewCommentPayload({
+      body: comment,
+      activeItemId: activeItem?.id ?? null,
+      parent: parent ? { id: parent.id, itemId: parent.itemId } : null,
+      scope: commentScope,
+      includeTimecode,
+      currentTimeSec: video?.currentTime ?? null,
+    });
+    if (await request("comments", "POST", payload)) {
+      const { timestampSec } = payload;
       setNotice(parent ? "Reply added." : timestampSec === null ? "Comment added." : `Comment added at ${formatTimecode(timestampSec)}.`);
       setComment("");
       setReplyTo(null);
@@ -235,7 +241,7 @@ export function ReviewClient({ token }: { token: string }) {
 
             {activeItem && activeVariant ? (
               <Box role="tabpanel" aria-label={activeItem.clipTitle} layerStyle="well" overflow="hidden" borderRadius="l2">
-                <Flex px="4" py="3" borderBottomWidth="1px" borderColor="studio.border" justify="space-between" align="center" gap="3"><Box><Text textStyle="eyebrow" color="studio.fgMuted">Submitted export</Text><Text fontSize="13px" color="studio.fg" mt="0.5">{activeItem.clipTitle}</Text></Box><Flex gap="2" wrap="wrap" justify="end">{activeItem.export.variants.map((variant) => <Button key={variant.id} size="xs" variant={variant.id === activeVariant.id ? "solid" : "outline"} colorPalette={variant.id === activeVariant.id ? "accent" : undefined} onClick={() => setActiveVariants((current) => ({ ...current, [activeItem.id]: variant.id }))}>{aspectLabel(variant.aspectRatio)}</Button>)}</Flex></Flex>
+                <Flex px="4" py="3" borderBottomWidth="1px" borderColor="studio.border" justify="space-between" align="center" gap="3"><Box><Text textStyle="eyebrow" color="studio.fgMuted">Submitted export</Text><Text fontSize="13px" color="studio.fg" mt="0.5">{activeItem.clipTitle}</Text></Box><Flex gap="2" wrap="wrap" justify="end">{activeItem.export.variants.map((variant) => <Button key={variant.id} size="xs" variant="outline" borderColor={variant.id === activeVariant.id ? "accent.solid" : undefined} bg={variant.id === activeVariant.id ? "accent.subtle" : undefined} color={variant.id === activeVariant.id ? "accent.fg" : undefined} onClick={() => setActiveVariants((current) => ({ ...current, [activeItem.id]: variant.id }))}>{aspectLabel(variant.aspectRatio)}</Button>)}</Flex></Flex>
                 <Box bg="studio.canvas" display="flex" justifyContent="center">
                   {/* biome-ignore lint/a11y/useMediaCaption: submitted exports contain the final burned-in captions. */}
                   <video ref={(node) => { if (node) videoRefs.current.set(activeItem.id, node); else videoRefs.current.delete(activeItem.id); }} key={activeVariant.id} controls playsInline preload="metadata" aria-label={`${activeItem.clipTitle}, ${aspectLabel(activeVariant.aspectRatio)} submitted export`} src={`${endpoint}/media/${activeItem.id}/${activeVariant.id}`} style={{ width: "100%", maxHeight: "68vh", objectFit: "contain" }} />
@@ -255,7 +261,7 @@ export function ReviewClient({ token }: { token: string }) {
               {replyTo ? <Flex mt="3" align="center" justify="space-between" gap="2" px="3" py="2" bg="bg.muted"><Text fontSize="11px" color="fg.muted"><Reply size={11} style={{ display: "inline", marginRight: 5 }} />Replying in thread</Text><Button size="2xs" variant="ghost" aria-label="Cancel reply" onClick={() => { setReplyTo(null); setComment(""); }}><X size={12} /></Button></Flex> : null}
               {editingCommentId ? <Flex mt="3" align="center" justify="space-between" gap="2" px="3" py="2" bg="bg.muted"><Text fontSize="11px" color="fg.muted"><Pencil size={11} style={{ display: "inline", marginRight: 5 }} />Editing your comment</Text><Button size="2xs" variant="ghost" aria-label="Cancel editing" onClick={() => { setEditingCommentId(null); setComment(""); }}><X size={12} /></Button></Flex> : null}
               <Textarea ref={commentRef} mt="3" rows={4} value={comment} maxLength={2000} onChange={(event) => setComment(event.target.value)} placeholder="Describe what should change, or why this is approved" borderColor="border.control" aria-label="Review comment" />
-              <Flex mt="2" justify="space-between" align="center" gap="2"><Button size="xs" variant="ghost" disabled={Boolean(replyTo || editingCommentId || !activeItem)} onClick={() => setIncludeTimecode((current) => !current)} color={includeTimecode ? "accent.fg" : "fg.muted"}>{includeTimecode ? <Check size={12} /> : <X size={12} />} Attach playhead</Button><Button size="sm" variant="outline" disabled={!comment.trim() || busy} onClick={() => void saveComment()}><Send size={13} /> {editingCommentId ? "Save" : replyTo ? "Reply" : "Comment"}</Button></Flex>
+              <Flex mt="2" justify="space-between" align="center" gap="2" wrap="wrap"><Flex gap="1"><Button size="xs" variant="ghost" disabled={Boolean(replyTo || editingCommentId)} onClick={() => setCommentScope((current) => current === "clip" ? "round" : "clip")} color={commentScope === "round" ? "accent.fg" : "fg.muted"}>{commentScope === "round" ? "General feedback" : "Clip feedback"}</Button><Button size="xs" variant="ghost" disabled={Boolean(replyTo || editingCommentId || !activeItem || commentScope === "round")} onClick={() => setIncludeTimecode((current) => !current)} color={includeTimecode && commentScope === "clip" ? "accent.fg" : "fg.muted"}>{includeTimecode && commentScope === "clip" ? <Check size={12} /> : <X size={12} />} Attach playhead</Button></Flex><Button size="sm" variant="outline" disabled={!comment.trim() || busy} onClick={() => void saveComment()}><Send size={13} /> {editingCommentId ? "Save" : replyTo ? "Reply" : "Comment"}</Button></Flex>
             </Box>
 
             <Stack gap="0" borderTopWidth="1px" borderColor="border">

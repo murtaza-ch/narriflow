@@ -110,6 +110,7 @@ import {
   campaignOperationService,
   CampaignOperationError,
   reviewService,
+  reviewNotificationService,
   ReviewServiceError,
   visualAssetService,
   VisualAssetIntegrityError,
@@ -1895,11 +1896,14 @@ app.post("/projects/:id/review-rounds/:roundId/notifications/retry", async (c) =
   const appUser = authenticatedHonoActor(c);
   const { id, roundId, body } = authenticatedHonoInput<{ id: string; roundId: string; body: RetryReviewNotificationInput }>(c);
   try {
-    return c.json(await reviewService.retryNotification(
+    const result = await reviewNotificationService.retry(
       { workspaceId: appUser.workspaceId, projectId: id },
       roundId,
       body.ledgerId,
-    ), 200);
+    );
+    return result.retrying
+      ? c.json(result, 200)
+      : c.json({ error: "review_notification_not_found", message: "Failed notification was not found" }, 404);
   } catch (error) {
     const code = error instanceof ReviewServiceError ? error.code : "review_notification_retry_failed";
     return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review notification could not be retried" }, code.includes("not_found") ? 404 : 400);

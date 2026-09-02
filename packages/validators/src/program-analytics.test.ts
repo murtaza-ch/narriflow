@@ -5,6 +5,24 @@ import {
 } from "./analytics";
 
 describe("program analytics metadata", () => {
+  test.each([
+    "review_sent",
+    "review_opened",
+    "review_first_comment",
+    "review_changes_requested",
+    "review_item_approved",
+    "campaign_approved",
+    "review_resubmitted",
+    "review_expired",
+    "review_revoked",
+    "review_approval_overridden",
+  ] as const)("accepts the review lifecycle event: %s", (type) => {
+    expect(recordAnalyticsEventSchema.parse({
+      type,
+      metadata: { reviewRoundId: crypto.randomUUID() },
+    }).type).toBe(type);
+  });
+
   test("accepts the approved campaign interval and bounded guardrail metadata", () => {
     expect(
       recordAnalyticsEventSchema.parse({

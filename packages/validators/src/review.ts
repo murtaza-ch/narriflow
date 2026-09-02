@@ -10,6 +10,7 @@ export const createReviewRoundSchema = z.strictObject({
   allowDownloads: z.boolean().default(false),
   approvalRequired: z.boolean().default(true),
   recipientEmails: z.array(z.string().trim().email().max(254)).max(25).default([]),
+  contextCommentIds: z.array(z.string().uuid()).max(100).default([]),
   items: z.array(z.strictObject({
     clipId: z.string().uuid(),
     exportId: z.string().uuid(),
