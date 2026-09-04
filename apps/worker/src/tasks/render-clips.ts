@@ -161,7 +161,6 @@ import {
   type BoundCompositionAudioRenderRequest,
 } from "../composition-ffmpeg-adapter";
 import { escapeDrawtextText } from "../ffmpeg-text";
-export { escapeDrawtextText } from "../ffmpeg-text";
 import { classifyRenderObjectKey } from "../render-object-key";
 import {
   productionRenderClockAdapter,

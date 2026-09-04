@@ -33,7 +33,6 @@ import {
   decideScreenFallback,
   decideSplitFallback,
   downloadUrlToFile,
-  escapeDrawtextText,
   generateAssFromCompositionCaptionLayers,
   generateAssFromSlice,
   generateSrtFromSlice,
@@ -46,6 +45,7 @@ import {
   sceneAssetOwnerWhere,
 } from "./render-clips";
 import { buildClipCutPlan } from "./cut-plan";
+import { escapeDrawtextText } from "../ffmpeg-text";
 import type { SplitLayoutSegment } from "./two-up";
 
 type SingleVideoArgs = Parameters<typeof buildSingleVideoArgsWithPlan>[0];
