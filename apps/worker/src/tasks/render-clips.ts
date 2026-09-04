@@ -50,6 +50,7 @@ import {
   type GuardedFetchOptions,
   type MotionRenderAnalyticsMetadata,
   type RenderWorkSetOutcome,
+  type WorkflowAttemptContext,
   type WorkflowAttemptRef,
 } from "@narriflow/services";
 import {
@@ -497,7 +498,6 @@ interface PendingRenderOutput {
 interface RenderExecutionContext {
   config: Readonly<RenderConfig>;
   signal: AbortSignal;
-  attempt: ClipRenderingWorkflowAttempt;
   adapters: ClipRenderAttemptAdapters;
 }
 
@@ -911,22 +911,11 @@ function log(
   message: string,
   context?: Record<string, unknown>,
 ) {
-  const attempt = renderExecutionStorage.getStore()?.attempt;
-  const enrichedContext = attempt
-    ? {
-        ...context,
-        workflowRunId: attempt.workflowRunId,
-        workflowAttemptId: attempt.attemptId,
-        projectId: attempt.projectId,
-        stage: attempt.stage,
-        attemptCount: attempt.attemptCount,
-      }
-    : context;
   try {
     currentRenderAdapters().diagnose({
       level,
       message,
-      context: sanitizeRenderDiagnosticValue(enrichedContext) as
+      context: sanitizeRenderDiagnosticValue(context) as
         | Record<string, unknown>
         | undefined,
     });
@@ -956,10 +945,8 @@ function diagnoseOptionalAssetFallback(input: {
   failureCode: string;
   context: Record<string, unknown>;
 }): void {
-  const attempt = renderExecutionStorage.getStore()?.attempt;
   log("error", "clip_render_optional_asset_fallback", {
     ...input.context,
-    ...(attempt ? { workflowAttemptId: attempt.attemptId } : {}),
     phase: input.phase,
     assetClass: input.assetClass,
     failureCode: input.failureCode,
@@ -1210,14 +1197,10 @@ function runCommand(
 }
 
 function diagnoseRenderProcessOperation(event: RenderProcessDiagnostic): void {
-  const attempt = renderExecutionStorage.getStore()?.attempt;
   log(
     event.status === "failed" ? "error" : "info",
     "clip_render_command_operation",
     {
-      workflowRunId: attempt?.workflowRunId,
-      projectId: attempt?.projectId,
-      workflowAttemptId: attempt?.attemptId,
       phase: "command_execution",
       ...event,
     },
@@ -4389,7 +4372,7 @@ async function uploadRenderedOutput(params: {
     } catch (error) {
       log("error", "clip_render_provisional_cleanup_failed", {
         workflowRunId: params.workflowRunId,
-        attemptId: renderExecutionStorage.getStore()?.attempt.attemptId,
+        attemptId: params.attempt.attemptId,
         projectId: params.projectId,
         clipId: params.output.clipId,
         clipRenderId: params.output.clipRenderId,
@@ -4560,44 +4543,58 @@ export class ClipRenderAttempt {
     };
   }
 
-  async execute(input: {
-    attempt: ClipRenderingWorkflowAttempt;
-    signal: AbortSignal;
-  }): Promise<RenderWorkSetOutcome> {
+  async execute(
+    attempt: ClipRenderingWorkflowAttempt,
+    context: WorkflowAttemptContext,
+  ): Promise<RenderWorkSetOutcome> {
     if (!this.#config.clipRenderAttemptEnabled) {
       throw new ClipRenderAttemptDisabled();
     }
     if (
-      input.attempt.workflowRunId !== this.#run.id ||
-      input.attempt.projectId !== this.#run.projectId
+      attempt.workflowRunId !== this.#run.id ||
+      attempt.projectId !== this.#run.projectId
     ) {
-      throw new WorkflowAttemptLost(input.attempt);
+      throw new WorkflowAttemptLost(attempt);
     }
     const ownershipController = new AbortController();
     const signal = AbortSignal.any([
-      input.signal,
+      context.signal,
       ownershipController.signal,
     ]);
+    const adapters: ClipRenderAttemptAdapters = {
+      ...this.#adapters,
+      diagnose: (event) =>
+        this.#adapters.diagnose({
+          ...event,
+          context: {
+            ...event.context,
+            workflowRunId: attempt.workflowRunId,
+            workflowAttemptId: attempt.attemptId,
+            projectId: attempt.projectId,
+            stage: attempt.stage,
+            attemptCount: attempt.attemptCount,
+          },
+        }),
+    };
     return renderExecutionStorage.run(
       {
         config: this.#config,
         signal,
-        attempt: input.attempt,
-        adapters: this.#adapters,
+        adapters,
       },
       async () => {
         const attemptStartedAtMs = currentTimeMs();
         try {
           signal.throwIfAborted();
-          const workSet = await this.#lifecycle.beginRenderWorkSet(input.attempt);
+          const workSet = await this.#lifecycle.beginRenderWorkSet(attempt);
           signal.throwIfAborted();
           const outcome =
             workSet.variantIds.length === 0
-              ? await this.#lifecycle.settleRenderWorkSet(input.attempt)
+              ? await this.#lifecycle.settleRenderWorkSet(attempt)
               : await executeClipRenderAttempt(
                   this.#run,
                   signal,
-                  input.attempt,
+                  attempt,
                   this.#lifecycle,
                   workSet.variantIds,
                   (error) => ownershipController.abort(error),

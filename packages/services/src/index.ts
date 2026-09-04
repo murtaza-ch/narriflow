@@ -390,10 +390,12 @@ export {
   type R2ObjectSummary,
 } from "./r2-storage";
 export {
+  accessibleProjectWhere,
+} from "./project-access";
+export {
   projectRetentionService,
   ProjectRetentionService,
   RETENTION_POLICIES,
-  accessibleProjectWhere,
   deleteProjectPrefixObjects,
   getRetentionRuntimeConfig,
   isProjectAccessible,
@@ -419,7 +421,6 @@ export {
   getLastWorkflowSeq,
   getWorkflowChannel,
   getWorkflowEventsSince,
-  publishWorkflowStageUpdated,
   publishPersistedWorkflowEvent,
 } from "./workflow.service";
 export {

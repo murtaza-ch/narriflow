@@ -19,7 +19,7 @@ import {
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
 export { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { hasFeature } from "./billing.service";
-import { accessibleProjectWhere } from "./project-retention.service";
+import { accessibleProjectWhere } from "./project-access";
 import { headObject, presignDownloadUrl } from "./r2-storage";
 import { workspaceService } from "./workspace.service";
 import {

@@ -55,14 +55,14 @@ import {
 import {
 	getLastWorkflowSeq,
 	getWorkflowEventsSince,
-	publishWorkflowStageUpdated,
+	publishIngestWorkflowStageUpdated,
 } from "./workflow.service";
 import {
-	accessibleProjectWhere,
 	ProjectExpiredError,
 	projectRetentionService,
 	type RetentionPolicyKey,
 } from "./project-retention.service";
+import { accessibleProjectWhere } from "./project-access";
 import {
 	workspaceService,
 	type WorkspaceCapability,
@@ -1981,19 +1981,10 @@ export class ProjectService {
 			};
 		}
 
-		const event = await this.publishWorkflowRunEvent({
-			projectId,
-			workflowRunId,
-			stage: "stt",
-			status: "queued",
-			progress: 0,
-			errorCode: null,
-		});
-
 		return {
 			workflowRunId,
-			acceptedAt: event?.emittedAt ?? new Date().toISOString(),
-			initialSeq: event?.seq ?? 0,
+			acceptedAt: new Date().toISOString(),
+			initialSeq: 0,
 		};
 	}
 
@@ -3498,31 +3489,6 @@ export class ProjectService {
 		return reaped;
 	}
 
-	private async publishWorkflowRunEvent(input: {
-		projectId: string;
-		workflowRunId: string;
-		stage:
-			| "stt"
-			| "moment_detection"
-			| "clip_rendering"
-			| "dubbing"
-			| "output_pack_generation"
-			| "export_bundle";
-		status: "queued" | "running" | "completed" | "failed";
-		progress: number;
-		errorCode: string | null;
-	}) {
-		return publishWorkflowStageUpdated({
-			event: "workflow.stage.updated",
-			projectId: input.projectId,
-			workflowRunId: input.workflowRunId,
-			stage: input.stage,
-			status: input.status,
-			progress: input.progress,
-			errorCode: input.errorCode,
-		});
-	}
-
 	private async publishIngestLifecycleEvent(input: {
 		projectId: string;
 		workflowRunId: string;
@@ -3531,7 +3497,7 @@ export class ProjectService {
 		errorCode: string | null;
 		retrying?: boolean;
 	}) {
-		await publishWorkflowStageUpdated({
+		await publishIngestWorkflowStageUpdated({
 			event: "workflow.stage.updated",
 			projectId: input.projectId,
 			workflowRunId: input.workflowRunId,

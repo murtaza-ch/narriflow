@@ -15,7 +15,7 @@ import {
   type BulkScheduleStore,
 } from "./bulk-social-scheduling";
 import { hasFeature } from "./plan-features";
-import { accessibleProjectWhere } from "./project-retention.service";
+import { accessibleProjectWhere } from "./project-access";
 import { socialService } from "./social.service";
 import { workspaceService } from "./workspace.service";
 

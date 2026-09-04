@@ -266,6 +266,37 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     return { run, variant, lateVariant, eventCount, followUpCount };
   }
 
+  test("project expiry cancels queued runs through the lifecycle", async () => {
+    const { project, run } = await fixture("dubbing");
+    const running = await prisma.workflowRun.create({
+      data: {
+        projectId: project.id,
+        idempotencyKey: `running:${randomUUID()}`,
+        stage: "clip_rendering",
+        status: "running",
+      },
+    });
+    const lifecycle = new WorkflowRunLifecycle({ prisma });
+
+    const cancelled = await prisma.$transaction((tx) =>
+      lifecycle.cancelQueuedProjectRuns(tx, {
+        projectId: project.id,
+        errorCode: "PROJECT_EXPIRED",
+      }),
+    );
+
+    expect(cancelled).toBe(1);
+    expect(
+      await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
+    ).toMatchObject({ status: "cancelled", errorCode: "PROJECT_EXPIRED" });
+    expect(
+      await prisma.workflowRun.findUniqueOrThrow({ where: { id: running.id } }),
+    ).toMatchObject({ status: "running", errorCode: null });
+    expect(
+      await prisma.workflowEvent.count({ where: { workflowRunId: run.id } }),
+    ).toBe(0);
+  });
+
   test("the first owned begin freezes eligible pending variants without rewriting history", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);

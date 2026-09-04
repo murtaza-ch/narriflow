@@ -9,7 +9,7 @@ import {
 	type SocialPlatform,
 } from "@narriflow/validators";
 import { clipExportService } from "./clip-export.service";
-import { accessibleProjectWhere } from "./project-retention.service";
+import { accessibleProjectWhere } from "./project-access";
 import {
 	isSocialProviderPublishingEnabled,
 	socialPublicationCapabilityVersion,

@@ -82,7 +82,7 @@ import {
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
 import { hasFeature } from "./billing.service";
-import { accessibleProjectWhere } from "./project-retention.service";
+import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
 import {
   getWorkflowRunLifecycle,

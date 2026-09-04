@@ -139,7 +139,7 @@ export async function getWorkflowEventsSince(projectId: string, sinceSeq = 0) {
   }));
 }
 
-export async function publishWorkflowStageUpdated(
+export async function publishIngestWorkflowStageUpdated(
   event: Omit<WorkflowStageUpdatedEvent, "seq" | "emittedAt">,
 ) {
   const prisma = getPrismaClient();
@@ -147,9 +147,8 @@ export async function publishWorkflowStageUpdated(
 
   const emittedAt = new Date();
 
-  // Protocol-v1 callers still use this compatibility adapter. Sequence truth
-  // now lives on Project, so concurrent writers serialize on one atomic
-  // increment instead of racing on MAX(seq)+1.
+  // Ingest Jobs have a separate lifecycle but share the durable project event
+  // stream. Concurrent ingest writers serialize on Project's atomic sequence.
   let nextSeq: number | null = null;
   let eventId: string | null = null;
   for (let attempt = 0; attempt < 5 && nextSeq === null; attempt++) {
@@ -190,7 +189,7 @@ export async function publishWorkflowStageUpdated(
             progress: event.progress,
             errorCode: event.errorCode,
             emittedAt,
-            dedupeKey: `compat:${id}`,
+            dedupeKey: `ingest:${id}`,
             payload,
             redisRequired: isWorkflowRedisDeliveryEnabled(),
             nextDeliveryAt: emittedAt,

@@ -1,5 +1,5 @@
 import { getPrismaClient } from "@narriflow/db/client";
-import { accessibleProjectWhere } from "./project-retention.service";
+import { accessibleProjectWhere } from "./project-access";
 
 export const NOTIFICATION_MAX_ATTEMPTS = 3;
 export const NOTIFICATION_LEASE_MS = 5 * 60 * 1000;

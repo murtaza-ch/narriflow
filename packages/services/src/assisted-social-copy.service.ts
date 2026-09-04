@@ -15,7 +15,7 @@ import {
   createOpenAiAssistedCopyProvider,
 } from "./openai-assisted-copy-provider";
 import { hasFeature } from "./plan-features";
-import { accessibleProjectWhere } from "./project-retention.service";
+import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
 
 const generationInclude = {

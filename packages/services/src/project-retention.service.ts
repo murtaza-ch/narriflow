@@ -11,6 +11,7 @@ import {
 	putJson,
 	type R2ObjectSummary,
 } from "./r2-storage";
+import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
 export const RETENTION_POLICIES = {
 	free_project_v1: { durationMs: 72 * 60 * 60 * 1000 },
@@ -124,13 +125,6 @@ export function isProjectAccessible(
 		!project.purgeStartedAt &&
 		(!project.expiresAt || project.expiresAt.getTime() > now.getTime())
 	);
-}
-
-export function accessibleProjectWhere(now = new Date()) {
-	return {
-		purgeStartedAt: null,
-		OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-	} satisfies Prisma.ProjectWhereInput;
 }
 
 export function projectDeletionHash(projectId: string): string {
@@ -536,9 +530,9 @@ export class ProjectRetentionService {
 						completedAt: now,
 					},
 				}),
-				tx.workflowRun.updateMany({
-					where: { projectId: candidate.id, status: "queued" },
-					data: { status: "cancelled", errorCode: "PROJECT_EXPIRED" },
+				getWorkflowRunLifecycle().cancelQueuedProjectRuns(tx, {
+					projectId: candidate.id,
+					errorCode: "PROJECT_EXPIRED",
 				}),
 				tx.transcript.updateMany({
 					where: { projectId: candidate.id, status: "queued" },

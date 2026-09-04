@@ -32,7 +32,7 @@ import {
   admitMediaCleanupObligations,
   type MediaCleanupObligationInput,
 } from "./media-cleanup";
-import { accessibleProjectWhere } from "./project-retention.service";
+import { accessibleProjectWhere } from "./project-access";
 
 export class ClipEditorRevisionConflictError extends Error {
   constructor(readonly currentRevision: number) {

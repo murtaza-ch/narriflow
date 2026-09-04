@@ -18,6 +18,8 @@ import {
 	thumbnailFramePreparationService,
 	uploadSessionService,
 	WorkflowAttemptLost,
+	type ClaimedWorkflowAttempt,
+	type WorkflowAttemptContext,
 	type WorkflowAttemptRef,
 } from "@narriflow/services";
 import { processDueAutopilotRules } from "./tasks/autopilot";
@@ -27,10 +29,7 @@ import { processPendingAutoLayoutAnalyses } from "./tasks/auto-layout-analysis";
 import { processDubbingRun } from "./tasks/dubbing";
 import { processIngestJob } from "./tasks/ingest";
 import { expireExportBundles, processExportBundleRun } from "./tasks/export-bundle";
-import {
-	ClipRenderAttempt,
-	type ClipRenderingWorkflowAttempt,
-} from "./tasks/render-clips";
+import { ClipRenderAttempt } from "./tasks/render-clips";
 import { parseWorkerRenderConfig } from "./render-config";
 import { processDueSocialPosts } from "./tasks/social-publisher";
 import { parseWorkspaceBillingPollInterval } from "./workspace-billing-config";
@@ -43,7 +42,7 @@ import {
 	retryPendingNotifications,
 	retryPendingReviewNotifications,
 } from "./notifications";
-import { executeClaimedWorkflowAttempt } from "./workflow-attempt-executor";
+import { executeNextWorkflowAttempt } from "./workflow-attempt-executor";
 
 const port = Number(process.env.PORT || 0);
 const workerShutdown = new AbortController();
@@ -392,20 +391,30 @@ const workspaceBillingLoop = createPollLoop("workspace_billing", async () => {
 	return result.claimed;
 });
 
+function processNextWorkflowAttempt<
+	TStage extends WorkflowAttemptRef["stage"],
+>(input: {
+	stage: TStage;
+	process: (
+		attempt: ClaimedWorkflowAttempt & { stage: TStage },
+		context: WorkflowAttemptContext,
+	) => Promise<void>;
+}) {
+	return executeNextWorkflowAttempt<TStage>({
+		...input,
+		lifecycle: getWorkflowRunLifecycle(),
+		onAttemptLost: (attempt, error, startedAtMs) =>
+			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
+	});
+}
+
 // Submit-and-release: this claim only covers the AssemblyAI submission round
 // trip (seconds), not the transcription itself — see sttResultsLoop.
 const sttLoop = createPollLoop("stt", async () => {
-	const attempt = await getWorkflowRunLifecycle().claim("stt");
-	if (!attempt) return 0;
-	const startedAtMs = Date.now();
-	await executeClaimedWorkflowAttempt({
-		attempt,
-		lifecycle: getWorkflowRunLifecycle(),
+	return processNextWorkflowAttempt({
+		stage: "stt",
 		process: processTranscriptRun,
-		onAttemptLost: (error) =>
-			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
 	});
-	return 1;
 });
 
 const sttResultsLoop = createPollLoop("stt_results", async () => {
@@ -413,45 +422,24 @@ const sttResultsLoop = createPollLoop("stt_results", async () => {
 });
 
 const detectionLoop = createPollLoop("moment_detection", async () => {
-	const attempt = await getWorkflowRunLifecycle().claim("moment_detection");
-	if (!attempt) return 0;
-	const startedAtMs = Date.now();
-	await executeClaimedWorkflowAttempt({
-		attempt,
-		lifecycle: getWorkflowRunLifecycle(),
+	return processNextWorkflowAttempt({
+		stage: "moment_detection",
 		process: processClipDetectionRun,
-		onAttemptLost: (error) =>
-			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
 	});
-	return 1;
 });
 
 const dubbingLoop = createPollLoop("dubbing", async () => {
-	const attempt = await getWorkflowRunLifecycle().claim("dubbing");
-	if (!attempt) return 0;
-	const startedAtMs = Date.now();
-	await executeClaimedWorkflowAttempt({
-		attempt,
-		lifecycle: getWorkflowRunLifecycle(),
+	return processNextWorkflowAttempt({
+		stage: "dubbing",
 		process: processDubbingRun,
-		onAttemptLost: (error) =>
-			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
 	});
-	return 1;
 });
 
 const exportBundleLoop = createPollLoop("export_bundle", async () => {
-	const attempt = await getWorkflowRunLifecycle().claim("export_bundle");
-	if (!attempt) return 0;
-	const startedAtMs = Date.now();
-	await executeClaimedWorkflowAttempt({
-		attempt,
-		lifecycle: getWorkflowRunLifecycle(),
+	return processNextWorkflowAttempt({
+		stage: "export_bundle",
 		process: processExportBundleRun,
-		onAttemptLost: (error) =>
-			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
 	});
-	return 1;
 });
 
 // Deadline-sensitive scheduled posts have a dedicated loop. Remote RSS feeds
@@ -469,29 +457,18 @@ const renderLoop = createPollLoop("render", async () => {
 	if (!renderConfig.clipRenderAttemptEnabled) return 0;
 	await projectService.ensurePendingClipRenderingRun();
 	const lifecycle = getWorkflowRunLifecycle();
-	const claimed = await lifecycle.claim("clip_rendering");
-	if (!claimed) return 0;
-	const attempt = claimed as ClipRenderingWorkflowAttempt;
-	const run = { ...claimed, id: claimed.workflowRunId };
-	const clipRenderAttempt = new ClipRenderAttempt({
-		run,
-		config: renderConfig,
-		lifecycle,
+	return processNextWorkflowAttempt({
+		stage: "clip_rendering",
+		process: async (attempt, context) => {
+			const run = { ...attempt, id: attempt.workflowRunId };
+			const clipRenderAttempt = new ClipRenderAttempt({
+				run,
+				config: renderConfig,
+				lifecycle,
+			});
+			await clipRenderAttempt.execute(attempt, context);
+		},
 	});
-	const attemptStartedAtMs = Date.now();
-	try {
-		await lifecycle.runAttempt(attempt, ({ signal }) =>
-			clipRenderAttempt.execute({ attempt, signal }),
-		);
-	} catch (error) {
-		if (!(error instanceof WorkflowAttemptLost)) throw error;
-		diagnoseWorkflowAttemptLost({
-			run,
-			error,
-			startedAtMs: attemptStartedAtMs,
-		});
-	}
-	return 1;
 });
 
 /** Preview proxies: bounded ffmpeg cuts on their own loop so they can neither

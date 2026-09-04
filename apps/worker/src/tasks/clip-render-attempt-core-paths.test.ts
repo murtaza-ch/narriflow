@@ -16,6 +16,7 @@ import {
   AudioAssetAccessError,
   clipService,
   type RenderWorkSetOutcome,
+  type WorkflowAttemptContext,
   WorkflowAttemptLost,
   WorkflowFailure,
 } from "@narriflow/services";
@@ -47,6 +48,10 @@ import {
 type PendingClipRender = Awaited<
   ReturnType<typeof clipService.getPendingClipRendersForWorkSet>
 >[number];
+
+function attemptContext(signal: AbortSignal): WorkflowAttemptContext {
+  return { signal, reportProgress: async () => {} };
+}
 
 type CoreRenderTopology =
   "single-video" | "shared-multi-output" | "studio-per-output" | "audiogram";
@@ -933,10 +938,7 @@ for (const fixture of topologyFixtures) {
     });
 
     await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
+      harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
     ).resolves.toEqual({
       status: "completed",
       requested: fixture.topology === "single-video" ? 1 : 2,
@@ -996,10 +998,7 @@ test("ClipRenderAttempt isolates resource probe failure from rendering and settl
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.persistedVariantIds).toEqual(["variant-9x16"]);
   expect(harness.settlementCalls()).toBe(1);
@@ -1014,10 +1013,7 @@ test("ClipRenderAttempt isolates resource probe failure from rendering and settl
 
 test("ClipRenderAttempt accepts the exact composition command budget and rejects one byte less before FFmpeg", async () => {
   const baseline = createCoreRenderPathTracer({ topology: "single-video" });
-  await baseline.clipRenderAttempt.execute({
-    attempt: baseline.attempt,
-    signal: new AbortController().signal,
-  });
+  await baseline.clipRenderAttempt.execute(baseline.attempt, attemptContext(new AbortController().signal));
   const command = baseline.commands[0];
   if (!command) throw new Error("baseline command missing");
   const encoder = new TextEncoder();
@@ -1033,10 +1029,7 @@ test("ClipRenderAttempt accepts the exact composition command budget and rejects
     },
   });
   await expect(
-    accepted.clipRenderAttempt.execute({
-      attempt: accepted.attempt,
-      signal: new AbortController().signal,
-    }),
+    accepted.clipRenderAttempt.execute(accepted.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
 
   const rejected = createCoreRenderPathTracer({
@@ -1046,10 +1039,7 @@ test("ClipRenderAttempt accepts the exact composition command budget and rejects
     },
   });
   await expect(
-    rejected.clipRenderAttempt.execute({
-      attempt: rejected.attempt,
-      signal: new AbortController().signal,
-    }),
+    rejected.clipRenderAttempt.execute(rejected.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "failed", failed: 1 });
   expect(rejected.commands).toHaveLength(0);
   expect(rejected.failureCodes.get("variant-9x16")).toBe(
@@ -1131,10 +1121,7 @@ test("ClipRenderAttempt deduplicates keyed analysis and extraction across mixed 
   for (const analysisCase of cases) {
     const harness = createCoreRenderPathTracer(analysisCase.input);
     await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
+      harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
       analysisCase.label,
     ).resolves.toMatchObject({ status: "completed", succeeded: 2 });
     expect(harness.analysisCounts(), analysisCase.label).toEqual(
@@ -1162,10 +1149,7 @@ test("ClipRenderAttempt degrades shared extraction failure without changing sett
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
   expect(harness.analysisCounts()).toEqual({
     extraction: 1,
@@ -1230,10 +1214,7 @@ test("ClipRenderAttempt rejects unknown evidence versions before writes or comma
       configOverrides: evidenceCase.configOverrides,
     });
     await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
+      harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
       evidenceCase.label,
     ).resolves.toMatchObject({ status: "failed", succeeded: 0, failed: 1 });
     expect(harness.commands, evidenceCase.label).toHaveLength(0);
@@ -1294,10 +1275,7 @@ test("ClipRenderAttempt skips analysis for Center, Fit, B-roll-short-circuited, 
         candidates: [qualifyingPipCandidate],
       },
     });
-    await harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    });
+    await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal));
     expect(harness.analysisCounts()).toEqual({
       extraction: 0,
       face: 0,
@@ -1327,10 +1305,7 @@ test("ClipRenderAttempt omits an unavailable brand logo and diagnoses the fallba
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -1364,10 +1339,7 @@ test("ClipRenderAttempt retries an audio-only render without a command-failing l
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
   expect(harness.commands).toHaveLength(3);
   expect(harness.diagnostics).toContainEqual({
@@ -1405,10 +1377,7 @@ test("ClipRenderAttempt propagates ownership loss during brand logo download", a
   });
 
   await expect(
-    interruptedHarness.clipRenderAttempt.execute({
-      attempt: interruptedHarness.attempt,
-      signal: new AbortController().signal,
-    }),
+    interruptedHarness.clipRenderAttempt.execute(interruptedHarness.attempt, attemptContext(new AbortController().signal)),
   ).rejects.toBe(ownershipLoss);
   expect(interruptedHarness.commands).toHaveLength(0);
   expect(interruptedHarness.persistedVariantIds).toHaveLength(0);
@@ -1433,10 +1402,7 @@ test("ClipRenderAttempt omits a stored brand logo that fails decode validation",
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -1455,10 +1421,7 @@ test("ClipRenderAttempt omits an invalid stored brand snapshot", async () => {
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -1482,10 +1445,7 @@ test("ClipRenderAttempt skips unavailable stock B-roll through its optional-asse
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -1524,10 +1484,7 @@ test("ClipRenderAttempt validates downloaded stock B-roll before caching it", as
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.brollCacheWrites).toEqual([]);
   expect(harness.diagnostics).toContainEqual({
@@ -1550,10 +1507,7 @@ test("ClipRenderAttempt preserves stock B-roll attribution after successful sele
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.brollCacheWrites).toEqual([resolvedBrollFixture.downloadUrl]);
   expect(harness.diagnostics).toContainEqual({
@@ -1576,10 +1530,7 @@ test("ClipRenderAttempt retries a failed stock B-roll composition without B-roll
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.commands).toHaveLength(2);
   expect(harness.diagnostics).toContainEqual({
@@ -1615,10 +1566,7 @@ for (const brollFailure of [
     });
 
     await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
+      harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
     ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
     expect(harness.commands).toHaveLength(1);
     expect(harness.diagnostics).toContainEqual({
@@ -1666,10 +1614,7 @@ for (const optionalAudioCase of [
     });
 
     await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
+      harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
     ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
     expect(harness.diagnostics).toContainEqual({
       message: "clip_render_optional_asset_fallback",
@@ -1698,10 +1643,7 @@ test("ClipRenderAttempt skips music when its refreshed access location cannot do
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -1726,10 +1668,7 @@ test("ClipRenderAttempt skips corrupt music after decode validation", async () =
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.commands).toHaveLength(1);
   expect(harness.diagnostics).toContainEqual({
@@ -1762,10 +1701,7 @@ test("ClipRenderAttempt skips a corrupt sound effect after decode validation", a
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -1796,10 +1732,7 @@ test("ClipRenderAttempt retries a failed sound-effect mix without sound effects"
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.commands).toHaveLength(2);
   expect(harness.diagnostics).toContainEqual({
@@ -1824,10 +1757,7 @@ test("ClipRenderAttempt retries a failed optional music mix without music", asyn
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.commands).toHaveLength(2);
   expect(harness.diagnostics).toContainEqual({
@@ -1853,10 +1783,7 @@ test("ClipRenderAttempt does not report degradation when the required fallback c
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "requeued", succeeded: 0 });
   expect(harness.diagnostics).not.toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -1876,10 +1803,7 @@ test("ClipRenderAttempt classifies an optional music access refresh failure", as
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -1903,10 +1827,7 @@ test("ClipRenderAttempt settles output when optional workspace cleanup fails", a
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -1935,10 +1856,7 @@ test("ClipRenderAttempt uses the frozen solid color when a background image is c
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.commands).toHaveLength(1);
   expect(harness.diagnostics).toContainEqual({
@@ -1969,10 +1887,7 @@ test("ClipRenderAttempt uses the frozen solid color when background decode fails
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_optional_asset_fallback",
@@ -2004,10 +1919,7 @@ test("ClipRenderAttempt propagates ownership loss from fenced analysis persisten
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).rejects.toBe(ownershipLoss);
   expect(harness.commands).toHaveLength(0);
   expect(harness.persistedVariantIds).toHaveLength(0);
@@ -2030,10 +1942,7 @@ test("ClipRenderAttempt records degraded Screen evidence when analysis is unavai
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_screen_pip_fallback",
@@ -2093,10 +2002,7 @@ test("ClipRenderAttempt selects a qualifying picture-in-picture crop", async () 
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_screen_pip_selected",
@@ -2132,10 +2038,7 @@ test("ClipRenderAttempt always compiles Screen through the shared plan", async (
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   const graph = harness.commands[0]?.args.join(" ") ?? "";
   expect(graph).toContain("composition_scene_0_layer_0_src");
@@ -2206,10 +2109,7 @@ test("ClipRenderAttempt reuses matching Screen v2 evidence without rerunning or 
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.persistedScreenLayouts).toHaveLength(0);
   expect(harness.analysisCounts()).toEqual({
@@ -2247,10 +2147,7 @@ test("ClipRenderAttempt preserves speaker-band framing for a valid no-screen res
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_screen_pip_fallback",
@@ -2293,10 +2190,7 @@ test("ClipRenderAttempt applies a deterministic split-layout analysis", async ()
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_split_applied",
@@ -2361,10 +2255,7 @@ test("ClipRenderAttempt reuses matching durable Split evidence without rerunning
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.persistedSplitLayouts).toHaveLength(0);
   expect(harness.analysisCounts()).toEqual({
@@ -2407,10 +2298,7 @@ test("ClipRenderAttempt compiles explicit Split through the shared plan", async 
     })),
   });
 
-  const splitResult = await harness.clipRenderAttempt.execute({
-    attempt: harness.attempt,
-    signal: new AbortController().signal,
-  });
+  const splitResult = await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal));
   if (splitResult.status !== "completed") {
     throw new Error(
       JSON.stringify({
@@ -2474,10 +2362,7 @@ test("ClipRenderAttempt keeps Split rendering when preview evidence persistence 
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_split_layout_analysis_persist_failed",
@@ -2509,10 +2394,7 @@ test("ClipRenderAttempt degrades only the ineligible Split target", async () => 
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
   const verticalGraph =
     harness.commands
@@ -2576,10 +2458,7 @@ test("ClipRenderAttempt reuses matching durable Automatic evidence without rerun
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
   expect(harness.persistedAutoLayouts).toHaveLength(0);
   expect(harness.analysisCounts()).toEqual({
@@ -2622,10 +2501,7 @@ test("ClipRenderAttempt rejects shot-layout evidence truncated before the canoni
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_layout_plan_fallback",
@@ -2659,10 +2535,7 @@ for (const disabledAnalysisCase of [
     });
 
     await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
+      harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
     ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
     expect(harness.analysisCounts()).toEqual({
       extraction: 0,
@@ -2703,10 +2576,7 @@ for (const disabledPlanCase of [
     });
 
     await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
+      harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
     ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
     const graph = harness.commands[0]?.args.join(" ") ?? "";
     expect(graph).not.toContain("sendcmd=");
@@ -2752,10 +2622,7 @@ test("ClipRenderAttempt contains a per-output command failure to its variant", a
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toEqual({
     status: "partial",
     requested: 3,
@@ -2784,10 +2651,7 @@ test("ClipRenderAttempt permanently classifies a composition adapter contract fa
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({ status: "failed", succeeded: 0, failed: 1 });
   expect(harness.commands).toHaveLength(0);
   expect(harness.failureCodes.get("variant-9x16")).toBe(
@@ -2803,10 +2667,7 @@ test("ClipRenderAttempt settles a per-output failure as terminal partial", async
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toEqual({
     status: "partial",
     requested: 2,
@@ -2833,10 +2694,7 @@ test("ClipRenderAttempt contains an audiogram command failure to one output", as
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toEqual({
     status: "partial",
     requested: 2,
@@ -2857,10 +2715,7 @@ test("ClipRenderAttempt records one failed upload without discarding sibling out
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toMatchObject({
     status: "partial",
     requested: 2,
@@ -2903,10 +2758,7 @@ for (const resumedDeliveryFailure of [
     });
 
     await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
+      harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
     ).resolves.toEqual({
       status: "partial",
       requested: 2,
@@ -2950,10 +2802,7 @@ test("ClipRenderAttempt resumes only pending work and counts the whole Render Wo
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toEqual({
     status: "partial",
     requested: 3,
@@ -2996,10 +2845,7 @@ for (const retryCase of [
     });
 
     await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
+      harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
     ).resolves.toMatchObject({
       status: retryCase.expectedStatus,
       requested: 1,
@@ -3018,10 +2864,7 @@ test("ClipRenderAttempt fails a zero-success permanent command without requeuein
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toEqual({
     status: "failed",
     requested: 1,
@@ -3041,10 +2884,7 @@ test("ClipRenderAttempt completes a Render Work Set whose variants are all super
   });
 
   await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
+    harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
   ).resolves.toEqual({
     status: "completed",
     requested: 2,
@@ -3395,10 +3235,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       });
 
       await expect(
-        harness.clipRenderAttempt.execute({
-          attempt: harness.attempt,
-          signal: new AbortController().signal,
-        }),
+        harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
       ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
 
       expect(output).toMatchObject({
@@ -3475,10 +3312,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       });
 
       await expect(
-        harness.clipRenderAttempt.execute({
-          attempt: harness.attempt,
-          signal: new AbortController().signal,
-        }),
+        harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
       ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
 
       expect(output).toMatchObject({
@@ -3595,10 +3429,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       });
 
       await expect(
-        harness.clipRenderAttempt.execute({
-          attempt: harness.attempt,
-          signal: new AbortController().signal,
-        }),
+        harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
       ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
       expect(windows.fullMusic).toBeGreaterThan(windows.fadeIn + 8);
       expect(windows.fullMusic).toBeGreaterThan(windows.duckedMusic + 5);
@@ -3655,10 +3486,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
           },
         });
         await expect(
-          harness.clipRenderAttempt.execute({
-            attempt: harness.attempt,
-            signal: new AbortController().signal,
-          }),
+          harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
         ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
         if (!result) throw new Error(`missing output probe for ${input.id}`);
         return result;
@@ -3801,10 +3629,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
         });
 
         await expect(
-          harness.clipRenderAttempt.execute({
-            attempt: harness.attempt,
-            signal: new AbortController().signal,
-          }),
+          harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
         ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
         expect(result).toMatchObject({ width: 720, height: 1280 });
         expect(harness.diagnostics).toContainEqual({
@@ -3906,10 +3731,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
         });
 
         await expect(
-          harness.clipRenderAttempt.execute({
-            attempt: harness.attempt,
-            signal: new AbortController().signal,
-          }),
+          harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
         ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
         expect(result).toMatchObject({
           width: analysisCase.resolution === "1080p" ? 1080 : 720,
@@ -4000,10 +3822,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
         });
 
         await expect(
-          harness.clipRenderAttempt.execute({
-            attempt: harness.attempt,
-            signal: new AbortController().signal,
-          }),
+          harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
         ).resolves.toMatchObject({
           status: "completed",
           succeeded: variants.length,
@@ -4060,10 +3879,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
         });
 
         await expect(
-          harness.clipRenderAttempt.execute({
-            attempt: harness.attempt,
-            signal: new AbortController().signal,
-          }),
+          harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
         ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
         expect(result).toMatchObject({ width: 720, height: 1280 });
         expect(harness.diagnostics).toContainEqual({

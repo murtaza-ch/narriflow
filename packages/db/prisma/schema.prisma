@@ -702,7 +702,7 @@ model WorkflowEvent {
   progress                Int       @default(0)
   errorCode               String?
   emittedAt               DateTime
-  /// Null only for protocol-v1 rows created during rolling compatibility.
+  /// Nullable only for historical rows predating durable event deduplication.
   dedupeKey               String?   @unique
   eventType               String    @default("workflow.stage.updated")
   payload                 Json?

@@ -2,7 +2,7 @@ import { getPrismaClient } from "@narriflow/db/client";
 import type { ClipAspectRatio, ClipExportStatus, SocialPlatform, SocialPostStatus } from "@prisma/client";
 import type { SocialPostSnapshot } from "@narriflow/validators";
 
-import { accessibleProjectWhere } from "./project-retention.service";
+import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
 
 function requiredPrisma() {
