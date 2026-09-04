@@ -68,7 +68,6 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       stage: "moment_detection",
       status: "completed",
       progress: 100,
-      lifecycleVersion: 2,
     } });
     const clip = await prisma.clip.create({ data: {
       projectId: project.id,
@@ -474,7 +473,6 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       idempotencyKey,
       stage,
       status: "queued",
-      lifecycleVersion: 2,
     }, select: { id: true } }));
     await expect(bundleService.createExportBundle({
       actorUserId: current.user.id,
@@ -628,7 +626,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		expect(source.items[0]).toMatchObject({ status: "failed", errorCode: "export_bundle_admission_failed" });
 
 		const succeeding = new CampaignOperationService(async ({ projectId, idempotencyKey, stage }) => prisma.workflowRun.create({
-			data: { projectId, idempotencyKey, stage, status: "queued", lifecycleVersion: 2 },
+			data: { projectId, idempotencyKey, stage, status: "queued" },
 			select: { id: true },
 		}));
 		const retried = await succeeding.retryExportBundleOperation({

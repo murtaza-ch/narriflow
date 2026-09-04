@@ -346,11 +346,11 @@ function createOrdinaryTracer(input: {
         },
       },
       project: {
-        publishWorkflowProgress: async () => {},
+        reportProgress: async () => {},
       },
       clip: {
         completeClipAutoLayoutAnalysis: async () => false,
-        completeClipRenderVariant: async (_variantId, completion) => {
+        completeClipRenderVariant: async (_attempt, _variantId, completion) => {
           actions.push("guarded_completion");
           if (input.failure === "guarded_completion") {
             throw new WorkflowAttemptLost(attempt);
@@ -367,6 +367,7 @@ function createOrdinaryTracer(input: {
           return { persisted: true };
         },
         failClipRenderVariant: async (
+          _attempt,
           _variantId,
           code,
           disposition,
@@ -590,11 +591,11 @@ function createUploadQueueTracer(input: {
       },
       process: { execute: async () => "" },
       project: {
-        publishWorkflowProgress: async () => {},
+        reportProgress: async () => {},
       },
       clip: {
         completeClipAutoLayoutAnalysis: async () => false,
-        completeClipRenderVariant: async (variantId, completion) => {
+        completeClipRenderVariant: async (_attempt, variantId, completion) => {
           states.set(variantId, "completed");
           objectReferences.push(completion.storageKey);
           return { persisted: true };
@@ -602,7 +603,7 @@ function createUploadQueueTracer(input: {
         failClipRenderVariant: async (variantId) => {
           states.set(variantId, "failed");
         },
-        markClipRenderVariantRendering: async (variantId) => {
+        markClipRenderVariantRendering: async (_attempt, variantId) => {
           states.set(variantId, "rendering");
           return true;
         },
@@ -804,7 +805,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
         },
       },
       project: {
-        publishWorkflowProgress: async () => {},
+        reportProgress: async () => {},
       },
       clip: {
         completeClipAutoLayoutAnalysis: async () => false,
@@ -987,15 +988,15 @@ test("ClipRenderAttempt drives failure and cleanup through construction adapters
           }),
       },
       project: {
-        publishWorkflowProgress: async () => {},
+        reportProgress: async () => {},
       },
       clip: {
         completeClipAutoLayoutAnalysis: async () => false,
         completeClipRenderVariant: async () => ({ persisted: true }),
-        failClipRenderVariant: async (_id, code, disposition) => {
+        failClipRenderVariant: async (_attempt, _id, code, disposition) => {
           mutations.push(`fail:${code}:${disposition}`);
         },
-        markClipRenderVariantRendering: async (id) => {
+        markClipRenderVariantRendering: async (_attempt, id) => {
           mutations.push(`mark:${id}`);
         },
         setClipLayoutAnalysis: async () => {},
@@ -1070,7 +1071,7 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
           }),
       },
       project: {
-        publishWorkflowProgress: async () => {},
+        reportProgress: async () => {},
       },
       clip: {
         completeClipAutoLayoutAnalysis: async () => false,
@@ -1194,15 +1195,15 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
             : "",
       },
       project: {
-        publishWorkflowProgress: async () => {},
+        reportProgress: async () => {},
       },
       clip: {
         completeClipAutoLayoutAnalysis: async () => false,
         completeClipRenderVariant: async () => ({ persisted: true }),
-        failClipRenderVariant: async (_id, code, disposition) => {
+        failClipRenderVariant: async (_attempt, _id, code, disposition) => {
           mutations.push(`fail:${code}:${disposition}`);
         },
-        markClipRenderVariantRendering: async (id) => {
+        markClipRenderVariantRendering: async (_attempt, id) => {
           mutations.push(`mark:${id}`);
           return true;
         },

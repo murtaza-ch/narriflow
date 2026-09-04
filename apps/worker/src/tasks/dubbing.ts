@@ -4,29 +4,26 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  analyticsService,
+  type ClaimedWorkflowAttempt,
+  deleteObject,
   downloadObjectToFile,
   dubbingService,
-  projectService,
+  getWorkflowRunLifecycle,
   putFileFromPath,
   rethrowWorkflowAttemptLost,
+  WorkflowAttemptLost,
+  type WorkflowAttemptContext,
   WorkflowFailure,
   workflowFailureFromUnknown,
   workflowHttpFailureDisposition,
 } from "@narriflow/services";
 import {
   clipAspectRatioDbSchema,
+  clipAspectRatioFromDb,
   transcriptUtteranceSchema,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-
-interface WorkflowRunJob {
-  id: string;
-  projectId: string;
-  attemptId?: string | null;
-  project: {
-    title: string;
-  };
-}
 
 class WorkflowWorkerError extends WorkflowFailure {
   constructor(
@@ -367,9 +364,12 @@ async function muxDubbedVideo(params: {
 }
 
 export async function processDubbingRun(
-  run: WorkflowRunJob,
-  signal?: AbortSignal,
+  attempt: ClaimedWorkflowAttempt,
+  context: WorkflowAttemptContext,
 ) {
+  const run = { ...attempt, id: attempt.workflowRunId };
+  const { signal } = context;
+  const lifecycle = getWorkflowRunLifecycle();
   signal?.throwIfAborted();
   log("info", "dubbing_run_started", {
     workflowRunId: run.id,
@@ -385,7 +385,7 @@ export async function processDubbingRun(
     );
 
     if (pendingDubs.length === 0) {
-      await projectService.completeDubbingWorkflowRun(run.id);
+      await lifecycle.completeDubbing(attempt);
       return;
     }
 
@@ -396,8 +396,8 @@ export async function processDubbingRun(
     for (let index = 0; index < pendingDubs.length; index += 1) {
       signal?.throwIfAborted();
       const dub = pendingDubs[index]!;
-      const claimed = await dubbingService.markDubProcessing(dub.id);
-      if (!claimed) continue;
+      const claimed = await lifecycle.markDubProcessing(attempt, dub.id);
+      if (claimed.count === 0) continue;
 
       try {
         const aspectRatioDb = clipAspectRatioDbSchema.parse(dub.aspectRatio);
@@ -430,14 +430,7 @@ export async function processDubbingRun(
           );
         }
 
-        await projectService.publishWorkflowProgress({
-          projectId: run.projectId,
-          workflowRunId: run.id,
-          stage: "dubbing",
-          status: "running",
-          progress: Math.min(25, 10 + index * 5),
-          errorCode: null,
-        });
+        await context.reportProgress(Math.min(25, 10 + index * 5));
 
         const translatedText = await translateForDub({
           apiKey,
@@ -455,14 +448,7 @@ export async function processDubbingRun(
           filePath: baseVideoPath,
         });
 
-        await projectService.publishWorkflowProgress({
-          projectId: run.projectId,
-          workflowRunId: run.id,
-          stage: "dubbing",
-          status: "running",
-          progress: 45,
-          errorCode: null,
-        });
+        await context.reportProgress(45);
 
         await synthesizeSpeech({
           apiKey,
@@ -472,14 +458,7 @@ export async function processDubbingRun(
           outputPath: audioPath,
         });
 
-        await projectService.publishWorkflowProgress({
-          projectId: run.projectId,
-          workflowRunId: run.id,
-          stage: "dubbing",
-          status: "running",
-          progress: 70,
-          errorCode: null,
-        });
+        await context.reportProgress(70);
 
         await muxDubbedVideo({
           videoPath: baseVideoPath,
@@ -493,7 +472,7 @@ export async function processDubbingRun(
           probeDurationSec(outputPath).catch(() => null),
         ]);
 
-        const attemptSuffix = run.attemptId ?? "legacy";
+        const attemptSuffix = attempt.attemptId;
         const audioStorageKey = `projects/${run.projectId}/dubs/${dub.clipId}/${dub.id}-${attemptSuffix}.mp3`;
         const renderStorageKey = `projects/${run.projectId}/dubs/${dub.clipId}/${dub.id}-${attemptSuffix}.mp4`;
 
@@ -522,16 +501,62 @@ export async function processDubbingRun(
           },
         });
 
-        await dubbingService.completeDub(dub.id, {
-          transcriptText,
-          translatedText,
-          audioStorageKey,
-          renderStorageKey,
-          audioSizeBytes: Number(audioStat.size),
-          renderSizeBytes: Number(videoStat.size),
-          durationSec,
-          model: dub.model,
-        });
+        let updated: { count: number };
+        try {
+          updated = await lifecycle.completeDub(attempt, dub.id, {
+            status: "completed",
+            transcriptText,
+            translatedText,
+            audioStorageKey,
+            renderStorageKey,
+            audioSizeBytes: BigInt(audioStat.size),
+            renderSizeBytes: BigInt(videoStat.size),
+            durationSec,
+            model: dub.model,
+            errorCode: null,
+            completedAt: new Date(),
+          });
+        } catch (error) {
+          if (!(error instanceof WorkflowAttemptLost)) throw error;
+          await Promise.all([
+            deleteObject(audioStorageKey).catch(() => {}),
+            deleteObject(renderStorageKey).catch(() => {}),
+          ]);
+          throw error;
+        }
+        if (updated.count === 0) {
+          await Promise.all([
+            deleteObject(audioStorageKey).catch(() => {}),
+            deleteObject(renderStorageKey).catch(() => {}),
+          ]);
+          throw new WorkflowAttemptLost(attempt);
+        }
+
+        await analyticsService
+          .recordProjectEvent({
+            projectId: dub.projectId,
+            clipId: dub.clipId,
+            type: "dub_completed",
+            metadata: {
+              languageCode: dub.targetLanguageCode,
+              voice: dub.voice,
+              aspectRatio:
+                clipAspectRatioFromDb[
+                  clipAspectRatioDbSchema.parse(dub.aspectRatio)
+                ],
+            },
+          })
+          .catch((error) => {
+            console.warn(
+              JSON.stringify({
+                level: "warn",
+                message: "dub_analytics_record_failed",
+                projectId: dub.projectId,
+                clipId: dub.clipId,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            );
+          });
 
         completed += 1;
         log("info", "dub_completed", {
@@ -551,7 +576,8 @@ export async function processDubbingRun(
         if (failure.disposition === "retryable") {
           failedDisposition = "retryable";
         }
-        await dubbingService.failDub(dub.id, code).catch(() => {});
+        const updated = await lifecycle.failDub(attempt, dub.id, code);
+        if (updated.count === 0) throw new WorkflowAttemptLost(attempt);
         log("error", "dub_failed", {
           workflowRunId: run.id,
           projectId: run.projectId,
@@ -564,8 +590,8 @@ export async function processDubbingRun(
     }
 
     if (completed === 0 && failed > 0) {
-      await projectService.failDubbingWorkflowRun(
-        run.id,
+      await lifecycle.failAttempt(
+        attempt,
         new WorkflowFailure(
           "dubbing_failed",
           failedDisposition,
@@ -575,7 +601,7 @@ export async function processDubbingRun(
       return;
     }
 
-    await projectService.completeDubbingWorkflowRun(run.id);
+    await lifecycle.completeDubbing(attempt);
     log("info", "dubbing_run_completed", {
       workflowRunId: run.id,
       projectId: run.projectId,
@@ -586,9 +612,9 @@ export async function processDubbingRun(
     rethrowWorkflowAttemptLost(error);
     const failure = workflowFailureFromUnknown(error);
     const code = failure.code;
-    await projectService
-      .failDubbingWorkflowRun(run.id, failure)
-      .catch(() => {});
+    await lifecycle.failAttempt(attempt, failure).catch((failureError) => {
+      rethrowWorkflowAttemptLost(failureError);
+    });
     log("error", "dubbing_run_failed", {
       workflowRunId: run.id,
       projectId: run.projectId,

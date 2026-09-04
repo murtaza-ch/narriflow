@@ -489,7 +489,7 @@ function createCoreRenderPathTracer(input: {
           }
         : {}),
       project: {
-        publishWorkflowProgress: async () => {},
+        reportProgress: async () => {},
       },
       optionalAssets: {
         validateOptionalMedia: async (_path, kind) =>
@@ -614,25 +614,25 @@ function createCoreRenderPathTracer(input: {
           }
         : {}),
       clip: {
-        completeClipAutoLayoutAnalysis: async (_clipId, analysis) => {
+        completeClipAutoLayoutAnalysis: async (_attempt, _clipId, analysis) => {
           if (input.analysisPersistenceFailure) {
             throw input.analysisPersistenceFailure;
           }
           persistedAutoLayouts.push(analysis);
           return false;
         },
-        completeClipSplitLayoutAnalysis: async (_clipId, analysis) => {
+        completeClipSplitLayoutAnalysis: async (_attempt, _clipId, analysis) => {
           if (input.analysisPersistenceFailure) {
             throw input.analysisPersistenceFailure;
           }
           persistedSplitLayouts.push(analysis);
           return true;
         },
-        completeClipSplitLayoutFailure: async (_clipId, failure) => {
+        completeClipSplitLayoutFailure: async (_attempt, _clipId, failure) => {
           persistedSplitLayouts.push(failure);
           return true;
         },
-        completeClipRenderVariant: async (variantId) => {
+        completeClipRenderVariant: async (_attempt, variantId) => {
           mutationVariantIds.push(variantId);
           if (input.rejectPersistenceForVariantIds?.includes(variantId)) {
             throw new Error("Injected guarded persistence rejection");
@@ -645,7 +645,7 @@ function createCoreRenderPathTracer(input: {
           persistedVariantIds.push(variantId);
           return { persisted: true };
         },
-        failClipRenderVariant: async (variantId, code, disposition) => {
+        failClipRenderVariant: async (_attempt, variantId, code, disposition) => {
           mutationVariantIds.push(variantId);
           states.set(
             variantId,
@@ -656,19 +656,19 @@ function createCoreRenderPathTracer(input: {
           failureCodes.set(variantId, code);
           failureDispositions.set(variantId, disposition);
         },
-        markClipRenderVariantRendering: async (variantId) => {
+        markClipRenderVariantRendering: async (_attempt, variantId) => {
           mutationVariantIds.push(variantId);
           if (states.get(variantId) !== "pending") return false;
           states.set(variantId, "rendering");
           return true;
         },
-        setClipLayoutAnalysis: async (_clipId, analysis) => {
+        setClipLayoutAnalysis: async (_attempt, _clipId, analysis) => {
           if (input.analysisPersistenceFailure) {
             throw input.analysisPersistenceFailure;
           }
           persistedScreenLayouts.push(analysis);
         },
-        setClipLayoutAnalysisFailure: async (_clipId, failure) => {
+        setClipLayoutAnalysisFailure: async (_attempt, _clipId, failure) => {
           persistedScreenLayouts.push(failure);
         },
       },

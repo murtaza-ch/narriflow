@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { AsyncLocalStorage } from "node:async_hooks";
-import { Prisma, type PrismaClient, type WorkflowRun } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import { workflowStageUpdatedEventSchema } from "@narriflow/validators";
 import type {
@@ -22,7 +21,6 @@ import {
   admitRetiredClipMediaCleanup,
 } from "./media-cleanup";
 
-export const WORKFLOW_LIFECYCLE_VERSION = 2;
 export const WORKFLOW_LEASE_DURATION_MS = 2 * 60 * 1000;
 export const WORKFLOW_HEARTBEAT_INTERVAL_MS = 30 * 1000;
 export const WORKFLOW_MAX_ATTEMPTS = 3;
@@ -35,8 +33,6 @@ const EVENT_MAX_BACKOFF_MS = 5 * 60 * 1000;
 const TRANSACTION_RETRY_LIMIT = 10;
 
 type TransactionClient = Prisma.TransactionClient;
-const workflowAttemptStorage = new AsyncLocalStorage<WorkflowAttemptRef>();
-const legacyWorkflowRunStorage = new AsyncLocalStorage<LegacyWorkflowRunRef>();
 
 export interface WorkflowAttemptRef {
   workflowRunId: string;
@@ -44,12 +40,6 @@ export interface WorkflowAttemptRef {
   stage: WorkflowStage;
   attemptId: string;
   attemptCount: number;
-}
-
-export interface LegacyWorkflowRunRef {
-  workflowRunId: string;
-  projectId: string;
-  stage: WorkflowStage;
 }
 
 export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef {
@@ -99,15 +89,6 @@ export class WorkflowAttemptLost extends Error {
   constructor(public readonly attempt: WorkflowAttemptRef) {
     super(`Workflow attempt ${attempt.attemptId} no longer owns ${attempt.workflowRunId}`);
     this.name = "WorkflowAttemptLost";
-  }
-}
-
-export class WorkflowAttemptContextRequired extends Error {
-  readonly code = "workflow_attempt_context_required";
-
-  constructor(public readonly workflowRunId: string) {
-    super(`Protocol-v2 workflow run ${workflowRunId} requires its attempt context`);
-    this.name = "WorkflowAttemptContextRequired";
   }
 }
 
@@ -396,7 +377,6 @@ export class WorkflowRunLifecycle {
       id: attempt.workflowRunId,
       projectId: attempt.projectId,
       stage: attempt.stage,
-      lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
       attemptId: attempt.attemptId,
       OR: [
         { status: "waiting" },
@@ -514,12 +494,12 @@ export class WorkflowRunLifecycle {
     const inserted = await tx.$queryRaw<Array<{ id: string }>>`
       INSERT INTO "WorkflowRun" (
         "id", "projectId", "idempotencyKey", "stage", "status",
-        "progress", "attemptCount", "lifecycleVersion", "contentPackId",
+        "progress", "attemptCount", "contentPackId",
         "createdAt", "updatedAt"
       ) VALUES (
         ${workflowRunId}::uuid, ${input.projectId}::uuid,
         ${input.idempotencyKey}, ${input.stage}, 'queued', 0, 0,
-        ${WORKFLOW_LIFECYCLE_VERSION}, ${input.contentPackId ?? null}::uuid,
+        ${input.contentPackId ?? null}::uuid,
         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       )
       ON CONFLICT ("projectId", "idempotencyKey") DO NOTHING
@@ -773,7 +753,6 @@ export class WorkflowRunLifecycle {
       const leaseExpiresAt = new Date(now.getTime() + this.leaseDurationMs);
       const candidate = await tx.workflowRun.findFirst({
         where: {
-          lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
           stage,
           status: "queued",
           OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
@@ -790,7 +769,6 @@ export class WorkflowRunLifecycle {
       const won = await tx.workflowRun.updateMany({
         where: {
           id: candidate.id,
-          lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
           status: "queued",
           OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
         },
@@ -904,7 +882,6 @@ export class WorkflowRunLifecycle {
       WHERE "id" = ${attempt.workflowRunId}
         AND "projectId" = ${attempt.projectId}::uuid
         AND "stage" = ${attempt.stage}
-        AND "lifecycleVersion" = ${WORKFLOW_LIFECYCLE_VERSION}
         AND "status" = 'running'
         AND "attemptId" = ${attempt.attemptId}::uuid
         AND "leaseOwner" = ${this.leaseOwner}
@@ -920,7 +897,6 @@ export class WorkflowRunLifecycle {
       WHERE "id" = ${attempt.workflowRunId}
         AND "projectId" = ${attempt.projectId}::uuid
         AND "stage" = ${attempt.stage}
-        AND "lifecycleVersion" = ${WORKFLOW_LIFECYCLE_VERSION}
         AND "attemptId" = ${attempt.attemptId}::uuid
         AND (
           "status" = 'waiting'
@@ -1022,7 +998,6 @@ export class WorkflowRunLifecycle {
       FROM "WorkflowRun"
       WHERE "id" = ${attempt.workflowRunId}
         AND "projectId" = ${attempt.projectId}::uuid
-        AND "lifecycleVersion" = ${WORKFLOW_LIFECYCLE_VERSION}
         AND "status" = 'running'
         AND "attemptId" = ${attempt.attemptId}::uuid
         AND "stage" = ${expectedStage}
@@ -1119,17 +1094,19 @@ export class WorkflowRunLifecycle {
 
   async markClipRenderVariantRendering(
     attempt: WorkflowAttemptRef,
-    input: {
-      clipRenderId: string;
-      exportVariantId: string | null;
-      startedAt: Date;
-    },
+    clipRenderId: string,
   ) {
     return this.transaction(async (tx) => {
       await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      const render = await tx.clipRender.findFirst({
+        where: { id: clipRenderId, clip: { projectId: attempt.projectId } },
+        select: { exportVariantId: true },
+      });
+      if (!render) return false;
+      const startedAt = new Date();
       const claim = await tx.clipRender.updateMany({
         where: {
-          id: input.clipRenderId,
+          id: clipRenderId,
           status: "pending",
           workflowRunId: attempt.workflowRunId,
           clip: { projectId: attempt.projectId },
@@ -1138,21 +1115,21 @@ export class WorkflowRunLifecycle {
           status: "rendering",
           workflowAttemptId: attempt.attemptId,
           failureDisposition: null,
-          startedAt: input.startedAt,
+          startedAt,
           errorCode: null,
         },
       });
       if (claim.count === 0) return false;
-      if (input.exportVariantId) {
+      if (render.exportVariantId) {
         await tx.clipExportVariant.update({
-          where: { id: input.exportVariantId },
+          where: { id: render.exportVariantId },
           data: {
             status: "rendering",
-            startedAt: input.startedAt,
+            startedAt,
             errorCode: null,
           },
         });
-        await this.syncClipExportAggregate(tx, input.exportVariantId);
+        await this.syncClipExportAggregate(tx, render.exportVariantId);
       }
       return true;
     });
@@ -1160,20 +1137,24 @@ export class WorkflowRunLifecycle {
 
   async completeClipRenderVariant(
     attempt: WorkflowAttemptRef,
+    clipRenderId: string,
     input: {
-      clipRenderId: string;
-      exportVariantId: string | null;
       storageKey: string;
       sizeBytes: number;
       durationSec: number;
-      completedAt: Date;
     },
   ) {
     return this.transaction(async (tx) => {
       await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      const render = await tx.clipRender.findFirst({
+        where: { id: clipRenderId, clip: { projectId: attempt.projectId } },
+        select: { exportVariantId: true },
+      });
+      if (!render) return false;
+      const completedAt = new Date();
       const claim = await tx.clipRender.updateMany({
         where: {
-          id: input.clipRenderId,
+          id: clipRenderId,
           status: "rendering",
           workflowAttemptId: attempt.attemptId,
           workflowRunId: attempt.workflowRunId,
@@ -1186,23 +1167,23 @@ export class WorkflowRunLifecycle {
           durationSec: input.durationSec,
           errorCode: null,
           failureDisposition: null,
-          completedAt: input.completedAt,
+          completedAt,
         },
       });
       if (claim.count === 0) return false;
-      if (input.exportVariantId) {
+      if (render.exportVariantId) {
         await tx.clipExportVariant.update({
-          where: { id: input.exportVariantId },
+          where: { id: render.exportVariantId },
           data: {
             status: "completed",
             storageKey: input.storageKey,
             sizeBytes: BigInt(input.sizeBytes),
             durationSec: input.durationSec,
             errorCode: null,
-            completedAt: input.completedAt,
+            completedAt,
           },
         });
-        await this.syncClipExportAggregate(tx, input.exportVariantId);
+        await this.syncClipExportAggregate(tx, render.exportVariantId);
       }
       const run = await tx.workflowRun.findUniqueOrThrow({
         where: { id: attempt.workflowRunId },
@@ -1216,7 +1197,7 @@ export class WorkflowRunLifecycle {
         status: "running",
         progress: run.progress,
         errorCode: null,
-        transition: `child_completed:${input.clipRenderId}`,
+        transition: `child_completed:${clipRenderId}`,
       });
       return true;
     });
@@ -1224,18 +1205,20 @@ export class WorkflowRunLifecycle {
 
   async failClipRenderVariant(
     attempt: WorkflowAttemptRef,
-    input: {
-      clipRenderId: string;
-      exportVariantId: string | null;
-      errorCode: string;
-      disposition: RenderVariantFailureDisposition;
-    },
+    clipRenderId: string,
+    errorCode: string,
+    disposition: RenderVariantFailureDisposition,
   ) {
     return this.transaction(async (tx) => {
       await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      const render = await tx.clipRender.findFirst({
+        where: { id: clipRenderId, clip: { projectId: attempt.projectId } },
+        select: { exportVariantId: true },
+      });
+      if (!render) return false;
       const claim = await tx.clipRender.updateMany({
         where: {
-          id: input.clipRenderId,
+          id: clipRenderId,
           status: "rendering",
           workflowAttemptId: attempt.attemptId,
           workflowRunId: attempt.workflowRunId,
@@ -1243,18 +1226,18 @@ export class WorkflowRunLifecycle {
         },
         data: {
           status: "failed",
-          errorCode: input.errorCode,
-          failureDisposition: input.disposition,
+          errorCode,
+          failureDisposition: disposition,
           completedAt: new Date(),
         },
       });
       if (claim.count === 0) return false;
-      if (input.exportVariantId) {
+      if (render.exportVariantId) {
         await tx.clipExportVariant.update({
-          where: { id: input.exportVariantId },
-          data: { status: "failed", errorCode: input.errorCode },
+          where: { id: render.exportVariantId },
+          data: { status: "failed", errorCode },
         });
-        await this.syncClipExportAggregate(tx, input.exportVariantId);
+        await this.syncClipExportAggregate(tx, render.exportVariantId);
       }
       return true;
     });
@@ -1527,12 +1510,10 @@ export class WorkflowRunLifecycle {
     }, this.heartbeatIntervalMs);
 
     try {
-      const result = await workflowAttemptStorage.run(attempt, () =>
-        handler({
-          signal: controller.signal,
-          reportProgress: (progress) => this.reportProgress(attempt, progress),
-        }),
-      );
+      const result = await handler({
+        signal: controller.signal,
+        reportProgress: (progress) => this.reportProgress(attempt, progress),
+      });
       if (ownershipError) throw ownershipError;
       return result;
     } catch (error) {
@@ -1543,13 +1524,6 @@ export class WorkflowRunLifecycle {
     }
   }
 
-  async runWaitingAttempt<T>(
-    attempt: WorkflowAttemptRef,
-    handler: () => Promise<T>,
-  ): Promise<T> {
-    return workflowAttemptStorage.run(attempt, handler);
-  }
-
   async claimDueWaitingTranscripts(
     batchSize: number,
     minPollIntervalMs: number,
@@ -1557,7 +1531,6 @@ export class WorkflowRunLifecycle {
     const now = new Date();
     const candidates = await this.prisma.workflowRun.findMany({
       where: {
-        lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
         stage: "stt",
         status: "waiting",
         nextPollAt: { lte: now },
@@ -1606,7 +1579,6 @@ export class WorkflowRunLifecycle {
       const won = await this.prisma.workflowRun.updateMany({
         where: {
           id: run.id,
-          lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
           status: "waiting",
           attemptId: run.attemptId,
           nextPollAt: { lte: now },
@@ -1793,7 +1765,6 @@ export class WorkflowRunLifecycle {
           stage: "moment_detection",
           status: "queued",
           progress: 0,
-          lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
           contentPackId: run.contentPackId,
         },
         update: {},
@@ -2167,7 +2138,6 @@ export class WorkflowRunLifecycle {
           id: attempt.workflowRunId,
           projectId: attempt.projectId,
           stage: attempt.stage,
-          lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
           status: { in: ["running", "waiting"] },
           attemptId: attempt.attemptId,
         },
@@ -2192,7 +2162,6 @@ export class WorkflowRunLifecycle {
               id: run.id,
               projectId: attempt.projectId,
               stage: attempt.stage,
-              lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
               attemptId: attempt.attemptId,
               status: "running",
               leaseExpiresAt: { lte: databaseNow },
@@ -2511,7 +2480,6 @@ export class WorkflowRunLifecycle {
     if (!now) throw new Error("Database clock unavailable");
     const expired = await this.prisma.workflowRun.findMany({
       where: {
-        lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
         status: "running",
         leaseExpiresAt: { lte: now },
       },
@@ -2681,50 +2649,6 @@ export function getWorkflowRunLifecycle() {
   return singleton;
 }
 
-export function workflowAttemptRef(run: {
-  id: string;
-  projectId: string;
-  stage: string;
-  attemptId: string;
-  attemptCount: number;
-}): WorkflowAttemptRef {
-  return {
-    workflowRunId: run.id,
-    projectId: run.projectId,
-    stage: run.stage as WorkflowStage,
-    attemptId: run.attemptId,
-    attemptCount: run.attemptCount,
-  };
-}
-
-export function currentWorkflowAttempt(workflowRunId?: string) {
-  const attempt = workflowAttemptStorage.getStore() ?? null;
-  if (workflowRunId && attempt?.workflowRunId !== workflowRunId) return null;
-  return attempt;
-}
-
-export function runProtocolV1Compatibility<T>(
-  run: LegacyWorkflowRunRef,
-  handler: () => Promise<T>,
-): Promise<T> {
-  return legacyWorkflowRunStorage.run(run, handler);
-}
-
-export function requireProtocolV1WorkflowContext(
-  expectedStage: WorkflowStage,
-  workflowRunId?: string,
-): LegacyWorkflowRunRef {
-  const run = legacyWorkflowRunStorage.getStore();
-  if (
-    !run ||
-    run.stage !== expectedStage ||
-    (workflowRunId && run.workflowRunId !== workflowRunId)
-  ) {
-    throw new WorkflowAttemptContextRequired(workflowRunId ?? "unknown");
-  }
-  return run;
-}
-
 export function workflowFailureFromUnknown(error: unknown): WorkflowFailure {
   if (error instanceof WorkflowFailure) return error;
   const candidate = error as { code?: unknown; message?: unknown; retryable?: unknown };
@@ -2737,10 +2661,6 @@ export function workflowFailureFromUnknown(error: unknown): WorkflowFailure {
     message,
     error instanceof Error ? { cause: error } : undefined,
   );
-}
-
-export function isProtocolV2Run(run: Pick<WorkflowRun, "lifecycleVersion">) {
-  return run.lifecycleVersion === WORKFLOW_LIFECYCLE_VERSION;
 }
 
 export function rethrowWorkflowAttemptLost(error: unknown): void {

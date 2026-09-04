@@ -16,7 +16,9 @@ import {
   WorkflowFailure,
   workflowFailureFromUnknown,
   workflowHttpFailureDisposition,
-  workflowAttemptRef,
+  type ClaimedWorkflowAttempt,
+  type WorkflowAttemptContext,
+  type WorkflowAttemptRef,
 } from "@narriflow/services";
 import { isR2Configured } from "@narriflow/services/r2-storage";
 import {
@@ -479,6 +481,7 @@ export async function getAssemblyAiTranscript(
 async function submitAssemblyAiJob(
   run: WorkflowRunJob,
   apiKey: string,
+  reportProgress: WorkflowAttemptContext["reportProgress"],
   options: { languageCode: string | null },
 ): Promise<{ transcriptId: string; submissionPath: "presigned_source" | "uploaded_audio" }> {
   const sourceStorageKey = run.project.sourceStorageKey;
@@ -533,24 +536,10 @@ async function submitAssemblyAiJob(
 
     await downloadObjectToFile({ key: sourceStorageKey, filePath: sourcePath });
     await extractTranscriptionAudio(sourcePath, audioPath);
-    await projectService.publishWorkflowProgress({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "stt",
-      status: "running",
-      progress: 20,
-      errorCode: null,
-    });
+    await reportProgress(20);
 
     const uploadUrl = await uploadAssemblyAiAudio(audioPath, apiKey);
-    await projectService.publishWorkflowProgress({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "stt",
-      status: "running",
-      progress: 30,
-      errorCode: null,
-    });
+    await reportProgress(30);
 
     const transcriptId = await submitAssemblyAiTranscript(
       uploadUrl,
@@ -604,9 +593,11 @@ async function extractTranscriptionAudio(
  * holds its poll slot for longer than the submission round trip.
  */
 export async function processTranscriptRun(
-  run: WorkflowRunJob,
-  signal?: AbortSignal,
+  attempt: ClaimedWorkflowAttempt,
+  context: WorkflowAttemptContext,
 ) {
+  const run: WorkflowRunJob = { ...attempt, id: attempt.workflowRunId };
+  const { signal } = context;
   signal?.throwIfAborted();
   log("info", "transcription_run_started", {
     workflowRunId: run.id,
@@ -628,20 +619,19 @@ export async function processTranscriptRun(
     );
 
     const submitStartedAtMs = Date.now();
-    const { transcriptId } = await submitAssemblyAiJob(run, apiKey, {
-      languageCode,
-    });
+    const { transcriptId } = await submitAssemblyAiJob(
+      run,
+      apiKey,
+      context.reportProgress,
+      { languageCode },
+    );
     signal?.throwIfAborted();
     const submitMs = Date.now() - submitStartedAtMs;
-    await projectService.markTranscriptSubmitted(run.projectId, transcriptId);
-    await projectService.publishWorkflowProgress({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "stt",
-      status: "running",
-      progress: 40,
-      errorCode: null,
+    await getWorkflowRunLifecycle().waitForProvider(attempt, {
+      providerJobId: transcriptId,
+      nextPollAt: new Date(Date.now() + 5_000),
     });
+    await context.reportProgress(40);
 
     log("info", "transcription_run_submitted", {
       workflowRunId: run.id,
@@ -650,12 +640,13 @@ export async function processTranscriptRun(
       submitMs,
     });
   } catch (error) {
-    await settleTranscriptRunFailure(run, error);
+    await settleTranscriptRunFailure(run, attempt, error);
   }
 }
 
 async function settleTranscriptRunFailure(
   run: { id: string; projectId: string },
+  attempt: WorkflowAttemptRef,
   error: unknown,
 ) {
   rethrowWorkflowAttemptLost(error);
@@ -663,7 +654,7 @@ async function settleTranscriptRunFailure(
   const code = failure.code;
   const message =
     error instanceof Error ? error.message : "Unknown worker error";
-  await projectService.failTranscriptWorkflowRun(run.id, failure);
+  await getWorkflowRunLifecycle().failAttempt(attempt, failure);
   log("error", "transcription_run_failed", {
     workflowRunId: run.id,
     projectId: run.projectId,
@@ -680,6 +671,7 @@ async function settleTranscriptRunFailure(
 
 async function finalizeCompletedTranscript(
   run: { id: string; projectId: string; providerJobId: string },
+  attempt: WorkflowAttemptRef,
   assemblyAiPayload: Record<string, unknown>,
 ) {
   const normalized = normalizeAssemblyAiTranscript(assemblyAiPayload);
@@ -701,9 +693,7 @@ async function finalizeCompletedTranscript(
     },
   });
 
-  await projectService.completeTranscriptWorkflowRun(
-    run.id,
-    {
+  await getWorkflowRunLifecycle().completeTranscript(attempt, {
       provider: normalized.provider,
       providerModel: normalized.providerModel,
       providerJobId: normalized.providerJobId,
@@ -714,12 +704,7 @@ async function finalizeCompletedTranscript(
       speakerCount: normalized.speakerCount,
       durationSeconds: normalized.durationSeconds,
       rawStorageKey,
-    },
-    // Stale-attempt fence: if the run was requeued and resubmitted while this
-    // poll was in flight, the Transcript row carries a different job id and
-    // the finalize is skipped.
-    { expectedProviderJobId: run.providerJobId },
-  );
+    });
 
   log("info", "transcription_run_completed", {
     workflowRunId: run.id,
@@ -733,7 +718,7 @@ async function finalizeCompletedTranscript(
 
 /**
  * Result-poll phase, driven by its own loop in index.ts. Claims submitted
- * transcripts via a per-tick lease (see claimSubmittedTranscriptRunsForPolling)
+ * transcripts via a per-tick next-poll claim
  * so replicas never double-poll, checks AssemblyAI once per claim, and settles
  * only on a definitive outcome:
  *  - completed  -> store raw payload + finalize the run (idempotent downstream)
@@ -751,14 +736,15 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
 
   const pollIntervalMs = getAssemblyAiPollIntervalMs();
   const pollTimeoutMs = getAssemblyAiPollTimeoutMs();
-  const runs = await projectService.claimSubmittedTranscriptRunsForPolling(
+  const attempts = await getWorkflowRunLifecycle().claimDueWaitingTranscripts(
     getSttResultPollBatchSize(),
     pollIntervalMs,
   );
 
   let settled = 0;
 
-  for (const run of runs) {
+  for (const attempt of attempts) {
+    const run = { ...attempt, id: attempt.workflowRunId };
     const pollOne = async () => {
       try {
       // Timeout is checked BEFORE the provider GET so that persistently
@@ -769,6 +755,7 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
       if (elapsedMs > pollTimeoutMs) {
         await settleTranscriptRunFailure(
           run,
+          attempt,
           new WorkflowWorkerError(
             "assemblyai_transcription_timeout",
             "AssemblyAI transcription did not complete before the polling timeout",
@@ -782,7 +769,7 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
       const status = payload.status;
 
       if (status === "completed") {
-        await finalizeCompletedTranscript(run, payload);
+        await finalizeCompletedTranscript(run, attempt, payload);
         log("info", "transcription_provider_timing", {
           workflowRunId: run.id,
           projectId: run.projectId,
@@ -795,6 +782,7 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
       if (status === "error") {
         await settleTranscriptRunFailure(
           run,
+          attempt,
           new WorkflowWorkerError(
             "assemblyai_transcription_failed",
             getResponseMessage(payload, "AssemblyAI transcription failed"),
@@ -805,19 +793,15 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
       }
 
       const elapsedRatio = Math.min(1, elapsedMs / pollTimeoutMs);
-      await projectService.publishWorkflowProgress({
-        projectId: run.projectId,
-        workflowRunId: run.id,
-        stage: "stt",
-        status: "running",
-        progress: Math.min(90, 40 + Math.round(elapsedRatio * 45)),
-        errorCode: null,
-      });
+      await getWorkflowRunLifecycle().reportProgress(
+        attempt,
+        Math.min(90, 40 + Math.round(elapsedRatio * 45)),
+      );
       } catch (error) {
         rethrowWorkflowAttemptLost(error);
         const failure = workflowFailureFromUnknown(error);
         if (failure.disposition === "permanent") {
-          await settleTranscriptRunFailure(run, failure);
+          await settleTranscriptRunFailure(run, attempt, failure);
           settled += 1;
           return;
         }
@@ -829,26 +813,15 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
       }
     };
 
-    if (run.lifecycleVersion === 2 && run.attemptId) {
-      const attempt = workflowAttemptRef({
-        id: run.id,
-        projectId: run.projectId,
-        stage: run.stage,
-        attemptId: run.attemptId,
-        attemptCount: run.attemptCount,
-      });
-      try {
-        await getWorkflowRunLifecycle().runWaitingAttempt(attempt, pollOne);
-      } catch (error) {
-        if (!(error instanceof WorkflowAttemptLost)) throw error;
-        log("info", "transcription_stale_poll_discarded", {
-          workflowRunId: run.id,
-          projectId: run.projectId,
-          attemptId: run.attemptId,
-        });
-      }
-    } else {
+    try {
       await pollOne();
+    } catch (error) {
+      if (!(error instanceof WorkflowAttemptLost)) throw error;
+      log("info", "transcription_stale_poll_discarded", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        attemptId: attempt.attemptId,
+      });
     }
   }
 

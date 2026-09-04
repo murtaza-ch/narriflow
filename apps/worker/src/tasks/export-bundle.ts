@@ -8,12 +8,13 @@ import archiver from "archiver";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   copyObject,
-  currentWorkflowAttempt,
+  type ClaimedWorkflowAttempt,
   deleteObject,
   downloadObjectToFile,
   getWorkflowRunLifecycle,
   putFileFromPath,
   rethrowWorkflowAttemptLost,
+  type WorkflowAttemptContext,
   workflowFailureFromUnknown,
 } from "@narriflow/services";
 import { exportBundleManifestSchema, type ExportBundleManifest } from "@narriflow/validators";
@@ -77,14 +78,16 @@ export async function runExportBundlePipeline<TArchive>(input: {
   return archive;
 }
 
-export async function processExportBundleRun(run: { id: string; projectId: string; attemptId: string | null }, signal?: AbortSignal) {
-  if (!run.attemptId) throw new Error("export_bundle_attempt_missing");
+export async function processExportBundleRun(
+  attempt: ClaimedWorkflowAttempt,
+  context: WorkflowAttemptContext,
+) {
+  const run = { ...attempt, id: attempt.workflowRunId };
+  const { signal } = context;
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("Database client unavailable");
   const bundle = await prisma.exportBundle.findUnique({ where: { workflowRunId: run.id }, include: { operation: { include: { items: true } } } });
   if (!bundle || bundle.operation.projectId !== run.projectId) throw new Error("export_bundle_not_found");
-  const attempt = currentWorkflowAttempt(run.id);
-  if (!attempt) throw new Error("export_bundle_attempt_context_missing");
   const lifecycle = getWorkflowRunLifecycle();
   if (bundle.status === "completed") {
     await lifecycle.completeStage(attempt);
@@ -103,7 +106,11 @@ export async function processExportBundleRun(run: { id: string; projectId: strin
   // Publication keys remain attempt-scoped. A stale worker that loses its
   // lease after copying can then remove only its own object, never the object
   // published by a winning takeover attempt.
-  const { attemptKey, finalKey } = exportBundleStorageKeys(run.projectId, bundle.operationId, run.attemptId);
+  const { attemptKey, finalKey } = exportBundleStorageKeys(
+    run.projectId,
+    bundle.operationId,
+    attempt.attemptId,
+  );
   let finalPublished = false;
   let bundleSettled = false;
   try {
@@ -127,7 +134,7 @@ export async function processExportBundleRun(run: { id: string; projectId: strin
         return { archiveInfo, checksumSha256: await hashFile(archivePath) };
       },
       upload: async () => {
-        await putFileFromPath({ key: attemptKey, filePath: archivePath, contentType: "application/zip", metadata: { operation_id: bundle.operationId, workflow_attempt_id: run.attemptId! }, signal });
+        await putFileFromPath({ key: attemptKey, filePath: archivePath, contentType: "application/zip", metadata: { operation_id: bundle.operationId, workflow_attempt_id: attempt.attemptId }, signal });
       },
       assertOwnership: () => lifecycle.assertOwnership(attempt),
       publish: async () => {

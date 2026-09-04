@@ -125,7 +125,6 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				idempotencyKey: `social-publication:${suffix}`,
 				stage: "clip_rendering",
 				status: "completed",
-				lifecycleVersion: 2,
 			},
 		});
 		const clip = await prisma.clip.create({

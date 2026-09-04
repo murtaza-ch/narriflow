@@ -18,9 +18,6 @@ import {
   clipAspectRatioOptions,
   clipAspectRatioToDb,
   clipAutoLayoutAnalysisSchema,
-  clipSplitLayoutFailureSchema,
-  clipLayoutAnalysisSchema,
-  clipLayoutAnalysisFailureSchema,
   clipRenderResolutionSchema,
   clipTitleSuggestionsLlmResponseSchema,
 	contentPackSchema,
@@ -63,12 +60,8 @@ import type {
   SourceRange,
   StudioEdits,
   TranscriptUtterance,
-  WorkflowStageUpdatedEvent,
 } from "@narriflow/validators";
-import {
-  getLastWorkflowSeq,
-  publishWorkflowStageUpdated,
-} from "./workflow.service";
+import { getLastWorkflowSeq } from "./workflow.service";
 import {
   classifyR2StorageError,
   copyObject,
@@ -78,7 +71,6 @@ import {
 } from "./r2-storage";
 import {
   adoptDurableMediaCopies,
-  admitRetiredClipMediaCleanup,
   runDurableMediaCopies,
   type DurableMediaCopyPlan,
 } from "./media-cleanup";
@@ -89,14 +81,12 @@ import {
   type ClipPreviewPeaks,
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
-import { clipExportService } from "./clip-export.service";
 import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-retention.service";
 import { workspaceService } from "./workspace.service";
 import {
-  currentWorkflowAttempt,
   getWorkflowRunLifecycle,
-  requireProtocolV1WorkflowContext,
+  type WorkflowAttemptRef,
 } from "./workflow-run-lifecycle";
 import {
   clipEditorDocumentPersistence,
@@ -978,17 +968,13 @@ export class ClipService {
   }
 
   async persistDetectedClips(
-    projectId: string,
-    workflowRunId: string,
+    attempt: WorkflowAttemptRef,
     clips: DetectedClip[],
     llmMeta: LlmMeta,
     contentPack?: ContentPack | null,
   ) {
     const prisma = requirePrisma();
-    const attempt = currentWorkflowAttempt(workflowRunId);
-    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
-    if (attempt) await lifecycle?.assertOwnership(attempt);
-    else requireProtocolV1WorkflowContext("moment_detection", workflowRunId);
+    const { projectId, workflowRunId } = attempt;
     const project = await prisma.project.findUnique({
       where: { id: projectId },
       select: { brandSnapshot: true, sourceDurationSeconds: true },
@@ -1053,21 +1039,10 @@ export class ClipService {
             llmTokensUsed: llmMeta.totalTokensUsed,
           };
     }) satisfies Prisma.ClipCreateManyInput[];
-    if (attempt && lifecycle) {
-      await lifecycle.replaceDetectedClips(attempt, detectedClipRows);
-    } else {
-      await prisma.$transaction(async (tx) => {
-        await admitRetiredClipMediaCleanup(
-          tx,
-          "detected_clip_replacement",
-          projectId,
-        );
-        await tx.clip.deleteMany({ where: { projectId } });
-        if (detectedClipRows.length > 0) {
-          await tx.clip.createMany({ data: detectedClipRows });
-        }
-      });
-    }
+    await getWorkflowRunLifecycle().replaceDetectedClips(
+      attempt,
+      detectedClipRows,
+    );
   }
 
   async listClips(userId: string, projectId: string): Promise<ClipSnapshot[]> {
@@ -2306,273 +2281,6 @@ export class ClipService {
     );
   }
 
-  async markClipRenderVariantRendering(clipRenderId: string) {
-    const prisma = requirePrisma();
-    const attempt = currentWorkflowAttempt();
-    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
-    if (attempt) await lifecycle?.assertOwnership(attempt);
-    else requireProtocolV1WorkflowContext("clip_rendering");
-
-    const render = await prisma.clipRender.findUnique({
-      where: { id: clipRenderId },
-      select: { exportVariantId: true },
-    });
-
-    const startedAt = new Date();
-    const persisted =
-      attempt && lifecycle
-        ? await lifecycle.markClipRenderVariantRendering(attempt, {
-            clipRenderId,
-            exportVariantId: render?.exportVariantId ?? null,
-            startedAt,
-          })
-        : await prisma.$transaction(async (tx) => {
-            // updateMany: an editor save/reset can deleteMany this row while
-            // the encode is queued — a vanished row is a no-op, not P2025.
-            const claim = await tx.clipRender.updateMany({
-              where: { id: clipRenderId, status: "pending" },
-              data: {
-                status: "rendering",
-                workflowAttemptId: null,
-                startedAt,
-                errorCode: null,
-              },
-            });
-            if (claim.count === 0) return false;
-            if (render?.exportVariantId) {
-              await tx.clipExportVariant.update({
-                where: { id: render.exportVariantId },
-                data: { status: "rendering", startedAt, errorCode: null },
-              });
-            }
-            return true;
-          });
-    if (persisted && render?.exportVariantId && !attempt) {
-      const variant = await prisma.clipExportVariant.findUniqueOrThrow({
-        where: { id: render.exportVariantId },
-        select: { exportId: true },
-      });
-      await clipExportService.syncAggregate(variant.exportId);
-    }
-  }
-
-  /**
-   * Claims a ClipRender row for a just-uploaded render output. Render
-   * storage keys are attempt-unique (the caller mints a fresh key per
-   * encode, mirroring `clipPreviewAttemptStorageKey`'s pattern from
-   * 5c3b985) — this only has to detect whether the row this attempt was
-   * rendering for is STILL the live one, since an editor save or reset can
-   * `clipRender.deleteMany` the row out from under an in-flight encode.
-   * Uses `updateMany` rather than `update` so a deleted row makes this a
-   * clean `persisted: false` instead of throwing P2025 — the caller (the
-   * worker's `uploadRenderedOutput`) must then delete its own just-uploaded
-   * object, since with attempt-unique keys that object can never collide
-   * with (and therefore never needs to protect) anything another attempt
-   * uploaded.
-   */
-  async completeClipRenderVariant(
-    clipRenderId: string,
-    input: {
-      storageKey: string;
-      sizeBytes: number;
-      durationSec: number;
-      motionAnalytics?: MotionRenderAnalyticsMetadata;
-    },
-  ): Promise<{ persisted: boolean }> {
-    const prisma = requirePrisma();
-    const attempt = currentWorkflowAttempt();
-    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
-    if (attempt) {
-      await lifecycle?.assertOwnership(attempt);
-    } else requireProtocolV1WorkflowContext("clip_rendering");
-    const render = await prisma.clipRender.findUnique({
-      where: { id: clipRenderId },
-      include: {
-        clip: {
-          select: {
-            projectId: true,
-          },
-        },
-        exportVariant: { select: { id: true, exportId: true } },
-      },
-    });
-    if (!render) {
-      return { persisted: false };
-    }
-
-    const completedAt = new Date();
-    const persisted =
-      attempt && lifecycle
-        ? await lifecycle.completeClipRenderVariant(attempt, {
-            clipRenderId,
-            exportVariantId: render.exportVariant?.id ?? null,
-            ...input,
-            completedAt,
-          })
-        : await prisma.$transaction(async (tx) => {
-            const claim = await tx.clipRender.updateMany({
-              where: { id: clipRenderId },
-              data: {
-                status: "completed",
-                storageKey: input.storageKey,
-                sizeBytes: BigInt(input.sizeBytes),
-                durationSec: input.durationSec,
-                errorCode: null,
-                completedAt,
-              },
-            });
-            if (claim.count === 0) return false;
-            if (render.exportVariant) {
-              await tx.clipExportVariant.update({
-                where: { id: render.exportVariant.id },
-                data: {
-                  status: "completed",
-                  storageKey: input.storageKey,
-                  sizeBytes: BigInt(input.sizeBytes),
-                  durationSec: input.durationSec,
-                  errorCode: null,
-                  completedAt,
-                },
-              });
-            }
-            return true;
-          });
-    if (!persisted) return { persisted: false };
-
-    if (render.exportVariant && !attempt) {
-      await clipExportService.syncAggregate(render.exportVariant.exportId);
-    }
-
-    await analyticsService
-      .recordProjectEvent({
-        projectId: render.clip.projectId,
-        clipId: render.clipId,
-        type: "render_completed",
-        metadata: { aspectRatio: render.aspectRatio },
-      })
-      .catch((error) => {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "render_analytics_record_failed",
-            projectId: render.clip.projectId,
-            clipId: render.clipId,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      });
-    if (input.motionAnalytics && input.motionAnalytics.targetCount > 0) {
-      await analyticsService
-        .recordProjectEvent({
-          projectId: render.clip.projectId,
-          clipId: render.clipId,
-          type: "motion_render_outcome",
-          metadata: {
-            aspectRatio: render.aspectRatio,
-            ...input.motionAnalytics,
-            renderOutcome: "completed",
-          },
-        })
-        .catch((error) => {
-          console.warn(
-            JSON.stringify({
-              level: "warn",
-              message: "motion_render_analytics_record_failed",
-              projectId: render.clip.projectId,
-              clipId: render.clipId,
-              error: error instanceof Error ? error.message : String(error),
-            }),
-          );
-        });
-    }
-
-    // Incremental delivery: nudge the project's live stream as soon as this
-    // individual clip's render lands, instead of only on the run's overall
-    // completed/failed transition — see project-events.tsx's throttled
-    // refresh-on-progress handling.
-    if (!attempt) await this.pingActiveWorkflowRun(render.clip.projectId);
-
-    return { persisted: true };
-  }
-
-  async failClipRenderVariant(
-    clipRenderId: string,
-    errorCode: string,
-    disposition: "retryable" | "permanent" = "retryable",
-    motionAnalytics?: MotionRenderAnalyticsMetadata,
-  ) {
-    const prisma = requirePrisma();
-    const attempt = currentWorkflowAttempt();
-    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
-    if (attempt) {
-      await lifecycle?.assertOwnership(attempt);
-    } else requireProtocolV1WorkflowContext("clip_rendering");
-
-    const render = await prisma.clipRender.findUnique({
-      where: { id: clipRenderId },
-      select: {
-        aspectRatio: true,
-        clipId: true,
-        exportVariantId: true,
-        clip: { select: { projectId: true } },
-      },
-    });
-
-    const persisted =
-      attempt && lifecycle
-        ? await lifecycle.failClipRenderVariant(attempt, {
-            clipRenderId,
-            exportVariantId: render?.exportVariantId ?? null,
-            errorCode,
-            disposition,
-          })
-        : await prisma.$transaction(async (tx) => {
-            const claim = await tx.clipRender.updateMany({
-              where: { id: clipRenderId },
-              data: { status: "failed", errorCode },
-            });
-            if (claim.count === 0) return false;
-            if (render?.exportVariantId) {
-              await tx.clipExportVariant.update({
-                where: { id: render.exportVariantId },
-                data: { status: "failed", errorCode },
-              });
-            }
-            return true;
-          });
-    if (persisted && render?.exportVariantId && !attempt) {
-      const variant = await prisma.clipExportVariant.findUniqueOrThrow({
-        where: { id: render.exportVariantId },
-        select: { exportId: true },
-      });
-      await clipExportService.syncAggregate(variant.exportId);
-    }
-    if (persisted && render && motionAnalytics && motionAnalytics.targetCount > 0) {
-      await analyticsService
-        .recordProjectEvent({
-          projectId: render.clip.projectId,
-          clipId: render.clipId,
-          type: "motion_render_outcome",
-          metadata: {
-            aspectRatio: render.aspectRatio,
-            ...motionAnalytics,
-            renderOutcome: "failed",
-          },
-        })
-        .catch((error) => {
-          console.warn(
-            JSON.stringify({
-              level: "warn",
-              message: "motion_render_analytics_record_failed",
-              projectId: render.clip.projectId,
-              clipId: render.clipId,
-              error: error instanceof Error ? error.message : String(error),
-            }),
-          );
-        });
-    }
-  }
-
   /** Queues a fresh clip_rendering run for variants that were added while a
    *  now-completed run was already rendering (the one-live-run guard absorbed
    *  their trigger, but that run had already snapshotted its work). Keyed to
@@ -2969,7 +2677,7 @@ export class ClipService {
    * proxy has been recorded yet AND the clip's boundary window still
    * matches what this attempt cut its proxy for. `previewStorageKey IS
    * NULL` is the atomic claim condition (mirroring the codebase's
-   * claim-via-conditional-update idiom used by e.g. `claimNextWorkflowRun`),
+   * claim-via-conditional-update idiom used by Workflow Run claims),
    * since the Clip model has no separate "generating" status column to
    * transition: two workers racing to cut the same clip's proxy will both
    * upload, but only one write wins here — the loser (persisted: false)
@@ -3036,10 +2744,6 @@ export class ClipService {
     if (claim.count === 0) {
       return { persisted: false, projectId: clip.projectId };
     }
-
-    // Incremental delivery: nudge the project's live stream — see
-    // project-events.tsx's throttled refresh-on-progress handling.
-    await this.pingActiveWorkflowRun(clip.projectId);
 
     return { persisted: true, projectId: clip.projectId };
   }
@@ -3177,113 +2881,6 @@ export class ClipService {
     return null;
   }
 
-  /** Atomically publishes a derived automatic layout plan only while the clip
-   * still has the same editor revision and proxy that were analyzed. */
-  async completeClipAutoLayoutAnalysis(
-    clipId: string,
-    analysis: ClipAutoLayoutAnalysis,
-    expected: {
-      editorRevision: number;
-      previewStorageKey: string;
-    },
-  ): Promise<boolean> {
-    const prisma = requirePrisma();
-    const parsed = clipAutoLayoutAnalysisSchema.parse(analysis);
-    const attempt = currentWorkflowAttempt();
-    if (attempt) {
-      return getWorkflowRunLifecycle().completeClipAutoLayoutAnalysis(attempt, {
-        clipId,
-        analysis: parsed as unknown as Prisma.InputJsonValue,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-      });
-    }
-    const result = await prisma.clip.updateMany({
-      where: {
-        id: clipId,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-        autoLayoutAnalysis: { equals: Prisma.DbNull },
-      },
-      data: {
-        autoLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
-        autoLayoutStatus: "completed",
-        autoLayoutClaimToken: null,
-        autoLayoutLeaseExpiresAt: null,
-      },
-    });
-    return result.count === 1;
-  }
-
-  /** Publishes explicit Split evidence behind the same revision/proxy and
-   * workflow-ownership fences as Automatic evidence. */
-  async completeClipSplitLayoutAnalysis(
-    clipId: string,
-    analysis: ClipSplitLayoutAnalysis,
-    expected: {
-      editorRevision: number;
-      previewStorageKey: string;
-    },
-  ): Promise<boolean> {
-    const prisma = requirePrisma();
-    const parsed = parseClipSplitLayoutAnalysis(analysis);
-    if (!parsed) {
-      throw new Error("invalid_split_layout_analysis_engine");
-    }
-    const attempt = currentWorkflowAttempt();
-    if (attempt) {
-      return getWorkflowRunLifecycle().completeClipSplitLayoutAnalysis(attempt, {
-        clipId,
-        analysis: parsed as unknown as Prisma.InputJsonValue,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-      },
-      );
-    }
-    const result = await prisma.clip.updateMany({
-      where: {
-        id: clipId,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-      },
-      data: {
-        splitLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
-      },
-    });
-    return result.count === 1;
-  }
-
-  /** Persists an identity-bound terminal Split analysis failure so Studio
-   * shows the same typed degraded plan as export instead of polling forever. */
-  async completeClipSplitLayoutFailure(
-    clipId: string,
-    failure: ClipSplitLayoutFailure,
-    expected: { editorRevision: number; previewStorageKey: string },
-  ): Promise<boolean> {
-    const prisma = requirePrisma();
-    const parsed = clipSplitLayoutFailureSchema.parse(failure);
-    const attempt = currentWorkflowAttempt();
-    if (attempt) {
-      return getWorkflowRunLifecycle().completeClipSplitLayoutFailure(attempt, {
-        clipId,
-        failure: parsed as unknown as Prisma.InputJsonValue,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-      });
-    }
-    const result = await prisma.clip.updateMany({
-      where: {
-        id: clipId,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-      },
-      data: {
-        splitLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
-      },
-    });
-    return result.count === 1;
-  }
-
   /** Complete a worker claim only if its fencing token and analyzed inputs
    * are still current. */
   async completeClaimedClipAutoLayoutAnalysis(
@@ -3338,44 +2935,6 @@ export class ClipService {
       },
     });
     return result.count === 1;
-  }
-
-  /**
-   * Best-effort "something changed" ping for a project's live SSE stream —
-   * reuses whatever WorkflowRun is currently queued/running for the
-   * project rather than inventing a new event shape or stage (the shape is
-   * the shared `workflow.stage.updated` event consumed by
-   * apps/web/app/api/stream/[projectId]/route.ts). A no-op when nothing is
-   * actively in flight for the project, so a backfill run touching an
-   * already-finished project doesn't inject stale-looking "activity".
-   * Never throws — a missed nudge just means the client catches up on its
-   * next poll/navigation instead of getting an instant push.
-   */
-  private async pingActiveWorkflowRun(projectId: string): Promise<void> {
-    try {
-      const prisma = requirePrisma();
-      const run = await prisma.workflowRun.findFirst({
-        where: {
-          projectId,
-          lifecycleVersion: 1,
-          status: { in: ["queued", "running", "waiting"] },
-        },
-        orderBy: { updatedAt: "desc" },
-      });
-      if (!run) return;
-
-      await publishWorkflowStageUpdated({
-        event: "workflow.stage.updated",
-        projectId,
-        workflowRunId: run.id,
-        stage: run.stage as WorkflowStageUpdatedEvent["stage"],
-        status: run.status as WorkflowStageUpdatedEvent["status"],
-        progress: run.progress,
-        errorCode: run.errorCode,
-      });
-    } catch {
-      // Best-effort only — the SSE route also polls the DB as a fallback.
-    }
   }
 
   /**
@@ -3510,79 +3069,12 @@ export class ClipService {
     return parseClipLayoutAnalysisOutcome(clip.layoutAnalysis);
   }
 
-  /** Publishes derived Screen evidence only while the analyzed editor
-   * revision and preview proxy are still current. The write does not bump the
-   * editor revision because evidence is not a user edit. */
-  async setClipLayoutAnalysis(
-    clipId: string,
-    analysis: ClipLayoutAnalysis,
-    expected: { editorRevision: number; previewStorageKey: string },
-  ): Promise<void> {
-    const prisma = requirePrisma();
-    const parsed = clipLayoutAnalysisSchema.parse(analysis);
-
-    const attempt = currentWorkflowAttempt();
-    if (attempt) {
-      await getWorkflowRunLifecycle().setClipLayoutAnalysis(attempt, {
-        clipId,
-        analysis: parsed as unknown as Prisma.InputJsonValue,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-      });
-      return;
-    }
-
-    await prisma.clip.updateMany({
-      where: {
-        id: clipId,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-      },
-      data: { layoutAnalysis: parsed as unknown as Prisma.InputJsonValue },
-    });
-  }
-
-  async setClipLayoutAnalysisFailure(
-    clipId: string,
-    failure: ClipLayoutAnalysisFailure,
-    expected: { editorRevision: number; previewStorageKey: string },
-  ): Promise<void> {
-    const prisma = requirePrisma();
-    const parsed = clipLayoutAnalysisFailureSchema.parse(failure);
-    const attempt = currentWorkflowAttempt();
-    if (attempt) {
-      await getWorkflowRunLifecycle().setClipLayoutAnalysisFailure(attempt, {
-        clipId,
-        failure: parsed as unknown as Prisma.InputJsonValue,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-      });
-      return;
-    }
-    await prisma.clip.updateMany({
-      where: {
-        id: clipId,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-      },
-      data: { layoutAnalysis: parsed as unknown as Prisma.InputJsonValue },
-    });
-  }
-
   async autoQueueDefaultRenders(
-    projectId: string,
-    detectionWorkflowRunId: string,
+    attempt: WorkflowAttemptRef,
     aspectRatio: ClipAspectRatio = "9:16",
   ): Promise<void> {
     const prisma = requirePrisma();
-    const attempt = currentWorkflowAttempt(detectionWorkflowRunId);
-    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
-    if (attempt) await lifecycle?.assertOwnership(attempt);
-    else
-      requireProtocolV1WorkflowContext(
-        "moment_detection",
-        detectionWorkflowRunId,
-      );
+    const { projectId, workflowRunId: detectionWorkflowRunId } = attempt;
 
     const clips = await prisma.clip.findMany({
       where: { projectId },
@@ -3628,25 +3120,9 @@ export class ClipService {
       resolution: resolvedResolution,
     })) satisfies Prisma.ClipRenderCreateManyInput[];
 
-    if (attempt && lifecycle) {
-      await lifecycle.admitAutoRenderWork(attempt, {
-        idempotencyKey: `auto-render-${detectionWorkflowRunId}`,
-        renders: renderRows,
-      });
-      return;
-    }
-
-    if (renderRows.length > 0) {
-      await prisma.clipRender.createMany({
-        data: renderRows,
-        skipDuplicates: true,
-      });
-    }
-
-    await getWorkflowRunLifecycle().admit({
-      projectId,
+    await getWorkflowRunLifecycle().admitAutoRenderWork(attempt, {
       idempotencyKey: `auto-render-${detectionWorkflowRunId}`,
-      stage: "clip_rendering",
+      renders: renderRows,
     });
   }
 }

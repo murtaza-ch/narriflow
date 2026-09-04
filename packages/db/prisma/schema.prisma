@@ -528,9 +528,6 @@ model WorkflowRun {
   // permanently; WorkflowRun had no equivalent at all, so stt /
   // moment_detection / clip_rendering / dubbing could not be retried either.
   attemptCount          Int       @default(0)
-  /// Protocol 1 is the legacy ProjectService lifecycle. Protocol 2 is owned
-  /// exclusively by WorkflowRunLifecycle. Kept explicit for rolling deploys.
-  lifecycleVersion      Int       @default(1)
   /// Immutable identity for the current execution attempt. It remains set
   /// while an asynchronous provider operation is waiting, but has no active
   /// lease in that state.
@@ -564,7 +561,7 @@ model WorkflowRun {
   // clip_rendering run per project may be queued/running at a time. Creation
   // paths must catch the unique violation and reuse the existing live run.
   @@unique([projectId, idempotencyKey])
-  @@index([lifecycleVersion, stage, status, nextAttemptAt, createdAt])
+  @@index([stage, status, nextAttemptAt, createdAt])
   @@index([status, leaseExpiresAt])
   @@index([status, nextPollAt])
 }
@@ -594,7 +591,7 @@ model NotificationLedger {
 }
 
 /// NOTE: updatedAt doubles as the submit-and-release STT timeout anchor —
-/// between markTranscriptSubmitted and completion, NOTHING may write this row
+/// between provider submission and completion, NOTHING may write this row
 /// (a backfill or new mid-flight write would silently disable the overall
 /// transcription timeout in processSubmittedTranscriptResults).
 model Transcript {

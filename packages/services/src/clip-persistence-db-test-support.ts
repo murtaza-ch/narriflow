@@ -105,7 +105,6 @@ export async function createClipPersistenceFixture(prisma: PrismaClient) {
       idempotencyKey: `clip-persistence:${suffix}`,
       stage: "moment_detection",
       status: "completed",
-      lifecycleVersion: 2,
     },
   });
   const document = clipPersistenceEditorDocument();

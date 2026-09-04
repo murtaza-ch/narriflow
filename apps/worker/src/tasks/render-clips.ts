@@ -27,6 +27,7 @@ import {
 import {
   assertPublicHttpUrl,
   assertResponseContentLength,
+  analyticsService,
   audioAssetService as productionAudioAssetService,
   clipService as productionClipService,
   createByteLimitTransform,
@@ -34,10 +35,10 @@ import {
   deleteObject as productionDeleteObject,
   downloadObjectToFile as productionDownloadObjectToFile,
   guardedFetch as productionGuardedFetch,
+  getWorkflowRunLifecycle,
   hasFeature,
   motionRenderAnalyticsMetadata,
   presignDownloadUrl as productionPresignDownloadUrl,
-  projectService as productionProjectService,
   putFileFromPath as productionPutFileFromPath,
   rethrowWorkflowAttemptLost,
   RemoteFetchError,
@@ -315,21 +316,62 @@ interface ClipRenderAttemptAdapters {
     typeof productionClipService,
     "getFrozenRenderingStateForWorkSet"
   >;
-  project: Pick<
-    typeof productionProjectService,
-    "publishWorkflowProgress"
-  >;
-  clip: Pick<
-    typeof productionClipService,
-    | "completeClipRenderVariant"
-    | "completeClipAutoLayoutAnalysis"
-    | "completeClipSplitLayoutAnalysis"
-    | "completeClipSplitLayoutFailure"
-    | "failClipRenderVariant"
-    | "markClipRenderVariantRendering"
-    | "setClipLayoutAnalysis"
-    | "setClipLayoutAnalysisFailure"
-  >;
+  project: {
+    reportProgress(attempt: WorkflowAttemptRef, progress: number): Promise<void>;
+  };
+  clip: {
+    markClipRenderVariantRendering(
+      attempt: WorkflowAttemptRef,
+      clipRenderId: string,
+    ): Promise<boolean>;
+    completeClipRenderVariant(
+      attempt: WorkflowAttemptRef,
+      clipRenderId: string,
+      input: {
+        storageKey: string;
+        sizeBytes: number;
+        durationSec: number;
+        motionAnalytics?: MotionRenderAnalyticsMetadata;
+      },
+    ): Promise<{ persisted: boolean }>;
+    failClipRenderVariant(
+      attempt: WorkflowAttemptRef,
+      clipRenderId: string,
+      errorCode: string,
+      disposition?: "retryable" | "permanent",
+      motionAnalytics?: MotionRenderAnalyticsMetadata,
+    ): Promise<void>;
+    completeClipAutoLayoutAnalysis(
+      attempt: WorkflowAttemptRef,
+      clipId: string,
+      analysis: unknown,
+      expected: { editorRevision: number; previewStorageKey: string },
+    ): Promise<boolean>;
+    completeClipSplitLayoutAnalysis(
+      attempt: WorkflowAttemptRef,
+      clipId: string,
+      analysis: unknown,
+      expected: { editorRevision: number; previewStorageKey: string },
+    ): Promise<boolean>;
+    completeClipSplitLayoutFailure(
+      attempt: WorkflowAttemptRef,
+      clipId: string,
+      failure: unknown,
+      expected: { editorRevision: number; previewStorageKey: string },
+    ): Promise<boolean>;
+    setClipLayoutAnalysis(
+      attempt: WorkflowAttemptRef,
+      clipId: string,
+      analysis: unknown,
+      expected: { editorRevision: number; previewStorageKey: string },
+    ): Promise<void>;
+    setClipLayoutAnalysisFailure(
+      attempt: WorkflowAttemptRef,
+      clipId: string,
+      failure: unknown,
+      expected: { editorRevision: number; previewStorageKey: string },
+    ): Promise<void>;
+  };
   audioAsset: Pick<typeof productionAudioAssetService, "resolveRenderSource">;
   optionalAssets: {
     downloadUrlToFile: typeof downloadUrlToFile;
@@ -466,23 +508,126 @@ const defaultRenderConfig = parseRenderConfig({});
 // object spread; spreading the service instance itself drops every prototype
 // method and only fails in a real worker process.
 const productionClipMutationAdapter: ClipRenderAttemptAdapters["clip"] = {
-  completeClipRenderVariant: (...args) =>
-    productionClipService.completeClipRenderVariant(...args),
-  completeClipAutoLayoutAnalysis: (...args) =>
-    productionClipService.completeClipAutoLayoutAnalysis(...args),
-  completeClipSplitLayoutAnalysis: (...args) =>
-    productionClipService.completeClipSplitLayoutAnalysis(...args),
-  completeClipSplitLayoutFailure: (...args) =>
-    productionClipService.completeClipSplitLayoutFailure(...args),
-  failClipRenderVariant: (...args) =>
-    productionClipService.failClipRenderVariant(...args),
-  markClipRenderVariantRendering: (...args) =>
-    productionClipService.markClipRenderVariantRendering(...args),
-  setClipLayoutAnalysis: (...args) =>
-    productionClipService.setClipLayoutAnalysis(...args),
-  setClipLayoutAnalysisFailure: (...args) =>
-    productionClipService.setClipLayoutAnalysisFailure(...args),
+  markClipRenderVariantRendering: (attempt, clipRenderId) =>
+    getWorkflowRunLifecycle().markClipRenderVariantRendering(
+      attempt,
+      clipRenderId,
+    ),
+  completeClipRenderVariant: async (attempt, clipRenderId, input) => {
+    const persisted = await getWorkflowRunLifecycle().completeClipRenderVariant(
+      attempt,
+      clipRenderId,
+      input,
+    );
+    if (persisted) {
+      await recordRenderAnalytics(clipRenderId, "completed", input.motionAnalytics);
+    }
+    return { persisted };
+  },
+  failClipRenderVariant: async (
+    attempt,
+    clipRenderId,
+    errorCode,
+    disposition = "retryable",
+    motionAnalytics,
+  ) => {
+    const persisted = await getWorkflowRunLifecycle().failClipRenderVariant(
+      attempt,
+      clipRenderId,
+      errorCode,
+      disposition,
+    );
+    if (persisted) {
+      await recordRenderAnalytics(clipRenderId, "failed", motionAnalytics);
+    }
+  },
+  completeClipAutoLayoutAnalysis: (attempt, clipId, analysis, expected) =>
+    getWorkflowRunLifecycle().completeClipAutoLayoutAnalysis(attempt, {
+      clipId,
+      analysis: analysis as never,
+      ...expected,
+    }),
+  completeClipSplitLayoutAnalysis: (attempt, clipId, analysis, expected) =>
+    getWorkflowRunLifecycle().completeClipSplitLayoutAnalysis(attempt, {
+      clipId,
+      analysis: analysis as never,
+      ...expected,
+    }),
+  completeClipSplitLayoutFailure: (attempt, clipId, failure, expected) =>
+    getWorkflowRunLifecycle().completeClipSplitLayoutFailure(attempt, {
+      clipId,
+      failure: failure as never,
+      ...expected,
+    }),
+  setClipLayoutAnalysis: async (attempt, clipId, analysis, expected) => {
+    await getWorkflowRunLifecycle().setClipLayoutAnalysis(attempt, {
+      clipId,
+      analysis: analysis as never,
+      ...expected,
+    });
+  },
+  setClipLayoutAnalysisFailure: async (attempt, clipId, failure, expected) => {
+    await getWorkflowRunLifecycle().setClipLayoutAnalysisFailure(attempt, {
+      clipId,
+      failure: failure as never,
+      ...expected,
+    });
+  },
 };
+
+async function recordRenderAnalytics(
+  clipRenderId: string,
+  outcome: "completed" | "failed",
+  motionAnalytics?: MotionRenderAnalyticsMetadata,
+) {
+  const prisma = getPrismaClient();
+  if (!prisma) return;
+  const render = await prisma.clipRender.findUnique({
+    where: { id: clipRenderId },
+    select: {
+      aspectRatio: true,
+      clipId: true,
+      clip: { select: { projectId: true } },
+    },
+  });
+  if (!render) return;
+  const events = [];
+  if (outcome === "completed") {
+    events.push(
+      analyticsService.recordProjectEvent({
+        projectId: render.clip.projectId,
+        clipId: render.clipId,
+        type: "render_completed",
+        metadata: { aspectRatio: render.aspectRatio },
+      }),
+    );
+  }
+  if (motionAnalytics && motionAnalytics.targetCount > 0) {
+    events.push(
+      analyticsService.recordProjectEvent({
+        projectId: render.clip.projectId,
+        clipId: render.clipId,
+        type: "motion_render_outcome",
+        metadata: {
+          aspectRatio: render.aspectRatio,
+          ...motionAnalytics,
+          renderOutcome: outcome,
+        },
+      }),
+    );
+  }
+  await Promise.all(events).catch((error) => {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "render_analytics_record_failed",
+        projectId: render.clip.projectId,
+        clipId: render.clipId,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  });
+}
 
 function measureCompositionResource(): CompositionResourceMeasurement {
   if (process.platform === "linux") {
@@ -513,7 +658,10 @@ const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
   media: productionRenderMediaAdapter,
   process: productionRenderProcessAdapter,
   state: productionClipService,
-  project: productionProjectService,
+  project: {
+    reportProgress: (attempt, progress) =>
+      getWorkflowRunLifecycle().reportProgress(attempt, progress),
+  },
   clip: productionClipMutationAdapter,
   audioAsset: productionAudioAssetService,
   optionalAssets: {
@@ -4210,6 +4358,7 @@ async function commitProvisionalRenderUpload<T>(input: {
 }
 
 async function uploadRenderedOutput(params: {
+  attempt: WorkflowAttemptRef;
   workflowRunId: string;
   projectId: string;
   output: PendingRenderOutput;
@@ -4302,6 +4451,7 @@ async function uploadRenderedOutput(params: {
     signal: currentRenderSignal(),
     complete: () =>
       currentRenderAdapters().clip.completeClipRenderVariant(
+        params.attempt,
         params.output.clipRenderId,
         {
           storageKey: params.output.storageKey,
@@ -4673,14 +4823,7 @@ async function executeClipRenderAttempt(
       (left, right) => left[0]!.clip.index - right[0]!.clip.index,
     );
 
-    await currentRenderAdapters().project.publishWorkflowProgress({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "clip_rendering",
-      status: "running",
-      progress: 10,
-      errorCode: null,
-    });
+    await currentRenderAdapters().project.reportProgress(attempt, 10);
 
     let renderedVariantCount = 0;
 
@@ -4705,6 +4848,7 @@ async function executeClipRenderAttempt(
       uploadQueue.schedule(async () => {
         try {
           const persisted = await uploadRenderedOutput({
+            attempt,
             workflowRunId: run.id,
             projectId: run.projectId,
             output,
@@ -4731,6 +4875,7 @@ async function executeClipRenderAttempt(
           await currentRenderAdapters()
             .clip
             .failClipRenderVariant(
+              attempt,
               output.clipRenderId,
               errorCode,
               disposition,
@@ -4990,6 +5135,7 @@ async function executeClipRenderAttempt(
       await Promise.all(
         outputs.map((output) =>
           currentRenderAdapters().clip.markClipRenderVariantRendering(
+            attempt,
             output.clipRenderId,
           ),
         ),
@@ -5010,6 +5156,7 @@ async function executeClipRenderAttempt(
         await Promise.all(
           outputs.map((output) =>
             currentRenderAdapters().clip.failClipRenderVariant(
+              attempt,
               output.clipRenderId,
               "clip_cut_plan_empty",
               "permanent",
@@ -5019,14 +5166,7 @@ async function executeClipRenderAttempt(
         );
         const progress =
           10 + Math.round(((clipGroupIndex + 1) / clipGroups.length) * 80);
-        await currentRenderAdapters().project.publishWorkflowProgress({
-          projectId: run.projectId,
-          workflowRunId: run.id,
-          stage: "clip_rendering",
-          status: "running",
-          progress,
-          errorCode: null,
-        });
+        await currentRenderAdapters().project.reportProgress(attempt, progress);
         continue;
       }
 
@@ -5720,7 +5860,7 @@ async function executeClipRenderAttempt(
             if (clip.previewStorageKey) {
               await currentRenderAdapters()
                 .clip
-                .completeClipAutoLayoutAnalysis(clip.id, envelope, {
+                .completeClipAutoLayoutAnalysis(attempt, clip.id, envelope, {
                   editorRevision: clip.editorRevision,
                   previewStorageKey: clip.previewStorageKey,
                 })
@@ -6031,6 +6171,7 @@ async function executeClipRenderAttempt(
               if (clip.previewStorageKey) {
                 try {
                   await currentRenderAdapters().clip.setClipLayoutAnalysisFailure(
+                    attempt,
                     clip.id,
                     failure,
                     {
@@ -6071,6 +6212,7 @@ async function executeClipRenderAttempt(
               if (clip.previewStorageKey) {
                 try {
                   await currentRenderAdapters().clip.setClipLayoutAnalysis(
+                    attempt,
                     clip.id,
                     screenEnvelope,
                     {
@@ -6254,7 +6396,7 @@ async function executeClipRenderAttempt(
                 reason: fallbackReason,
               });
               await currentRenderAdapters()
-                .clip.completeClipSplitLayoutFailure(clip.id, failure, {
+                .clip.completeClipSplitLayoutFailure(attempt, clip.id, failure, {
                   editorRevision: clip.editorRevision,
                   previewStorageKey: clip.previewStorageKey,
                 })
@@ -6366,10 +6508,15 @@ async function executeClipRenderAttempt(
             if (!reusableSplitAnalysis && clip.previewStorageKey) {
               await currentRenderAdapters()
                 .clip
-                .completeClipSplitLayoutAnalysis(clip.id, splitPreviewEnvelope, {
+                .completeClipSplitLayoutAnalysis(
+                  attempt,
+                  clip.id,
+                  splitPreviewEnvelope,
+                  {
                   editorRevision: clip.editorRevision,
                   previewStorageKey: clip.previewStorageKey,
-                })
+                  },
+                )
                 .catch((error) => {
                   rethrowRenderControlFlow(error);
                   log("error", "clip_split_layout_analysis_persist_failed", {
@@ -7201,6 +7348,7 @@ async function executeClipRenderAttempt(
                 : "ffmpeg_render_failed";
 
             await currentRenderAdapters().clip.failClipRenderVariant(
+              attempt,
               output.clipRenderId,
               errorCode,
               error instanceof WorkflowFailure
@@ -7345,6 +7493,7 @@ async function executeClipRenderAttempt(
                 ? renderFailure.code
                 : "ffmpeg_render_failed";
             await currentRenderAdapters().clip.failClipRenderVariant(
+              attempt,
               output.clipRenderId,
               errorCode,
               renderFailure
@@ -7403,19 +7552,12 @@ async function executeClipRenderAttempt(
       });
 
       const progress = 10 + Math.round(((clipGroupIndex + 1) / clipGroups.length) * 80);
-      await currentRenderAdapters().project.publishWorkflowProgress({
-        projectId: run.projectId,
-        workflowRunId: run.id,
-        stage: "clip_rendering",
-        status: "running",
-        progress,
-        errorCode: null,
-      });
+      await currentRenderAdapters().project.reportProgress(attempt, progress);
     }
 
     // Settle every in-flight upload before reading `renderedVariantCount` —
     // the all-failed check and run completion below must see the final
-    // truth, and completeClipRenderingWorkflowRun must never race a
+    // truth, and render settlement must never race a
     // completeClipRenderVariant write.
     const drainStartedAtMs = currentTimeMs();
     await uploadQueue.drain();
@@ -7463,9 +7605,11 @@ async function executeClipRenderAttempt(
       error instanceof Error ? error.message : "Unknown worker error";
     for (const clipRenderId of workSetVariantIds) {
       await currentRenderAdapters().clip.markClipRenderVariantRendering(
+        attempt,
         clipRenderId,
       );
       await currentRenderAdapters().clip.failClipRenderVariant(
+        attempt,
         clipRenderId,
         code,
         failure.disposition,

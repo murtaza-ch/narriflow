@@ -8,13 +8,10 @@ import {
   isAutoRetryableFailureCode,
   MAX_INGEST_RETRY_ATTEMPTS,
   PERMANENT_FAILURE_CODES,
-  WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
-  WORKFLOW_RETRIES_EXHAUSTED_CODE,
 } from "./project.service";
 
 // This suite covers the pure decision logic behind the automatic job-level
-// retry policy (failIngestJob / fail*WorkflowRun / reapStuckIngestJobs /
-// reapStuckWorkflowRuns in project.service.ts). Those methods themselves all
+// retry policy for Ingest Jobs in project.service.ts. Those methods
 // require a live Prisma client (this package's tests run without
 // DATABASE_URL, matching getPrismaClient()'s documented "no database"
 // fallback — see project-delete.test.ts / project-source-purge.test.ts), so
@@ -119,7 +116,7 @@ describe("decideAutoRetry", () => {
     });
   });
 
-  test("reaper requeue vs reaper terminal fail: reapStuckIngestJobs/reapStuckWorkflowRuns both classify a stall as errorCode \"worker_stalled\", which is retryable", () => {
+  test("the ingest reaper classifies worker_stalled as retryable until its cap", () => {
     // Below the cap: the reaper requeues rather than permanently failing —
     // "a job stalled because a worker crashed is the most retryable case".
     expect(
@@ -149,18 +146,6 @@ describe("decideAutoRetry", () => {
       terminalErrorCode: INGEST_RETRIES_EXHAUSTED_CODE,
     });
 
-    // Same shape for the workflow-run reaper, with its own cap/exhausted code.
-    expect(
-      decideAutoRetry(
-        WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
-        "worker_stalled",
-        WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
-        WORKFLOW_RETRIES_EXHAUSTED_CODE,
-      ),
-    ).toEqual({
-      outcome: "permanent",
-      terminalErrorCode: WORKFLOW_RETRIES_EXHAUSTED_CODE,
-    });
   });
 
   test("a permanent code at attemptCount 0 is never mistaken for cap exhaustion (terminal code stays the original, specific one)", () => {

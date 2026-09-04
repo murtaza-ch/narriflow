@@ -4,7 +4,7 @@ import {
   INGEST_RETRIES_EXHAUSTED_CODE,
   notificationService,
   reviewNotificationService,
-  WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
+  WORKFLOW_MAX_ATTEMPTS,
   WORKFLOW_RETRIES_EXHAUSTED_CODE,
   type NotificationLedgerRow,
   type NotificationOutcome,
@@ -196,7 +196,7 @@ export async function notifyWorkflowFailureAfterSettlement(input: {
     const decision = decideAutoRetry(
       context.attemptCount,
       input.errorCode,
-      WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
+      WORKFLOW_MAX_ATTEMPTS,
       WORKFLOW_RETRIES_EXHAUSTED_CODE,
     );
     if (decision.outcome !== "permanent") {

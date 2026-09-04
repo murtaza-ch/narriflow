@@ -5,11 +5,14 @@ import {
   computePacingScore,
   computePlatformScore,
   computeViralityScore,
+  getWorkflowRunLifecycle,
   projectService,
   rethrowWorkflowAttemptLost,
   WorkflowFailure,
   workflowFailureFromUnknown,
   workflowHttpFailureDisposition,
+  type ClaimedWorkflowAttempt,
+  type WorkflowAttemptContext,
 } from "@narriflow/services";
 import {
   clipDetectionLlmResponseSchema,
@@ -1167,9 +1170,11 @@ async function callOpenAI(
 }
 
 export async function processClipDetectionRun(
-  run: WorkflowRunJob,
-  signal?: AbortSignal,
+  attempt: ClaimedWorkflowAttempt,
+  context: WorkflowAttemptContext,
 ) {
+  const run: WorkflowRunJob = { ...attempt, id: attempt.workflowRunId };
+  const { signal } = context;
   signal?.throwIfAborted();
   log("info", "clip_detection_run_started", {
     workflowRunId: run.id,
@@ -1276,8 +1281,7 @@ export async function processClipDetectionRun(
 
       signal?.throwIfAborted();
       await clipService.persistDetectedClips(
-        run.projectId,
-        run.id,
+        attempt,
         [captionClip],
         { provider: "openai", model: "caption-only", totalTokensUsed: 0 },
         contentPack,
@@ -1285,8 +1289,7 @@ export async function processClipDetectionRun(
 
       try {
         await clipService.autoQueueDefaultRenders(
-          run.projectId,
-          run.id,
+          attempt,
           "16:9",
         );
       } catch (error) {
@@ -1303,7 +1306,7 @@ export async function processClipDetectionRun(
         );
       }
 
-      await projectService.completeClipDetectionWorkflowRun(run.id);
+      await getWorkflowRunLifecycle().completeMomentDetection(attempt);
       return;
     }
 
@@ -1361,14 +1364,7 @@ export async function processClipDetectionRun(
     });
 
     // Update progress
-    await projectService.publishWorkflowProgress({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "moment_detection",
-      status: "running",
-      progress: 20,
-      errorCode: null,
-    });
+    await context.reportProgress(20);
 
     // Process each chunk
     const allRawClips: RawDetectedClip[] = [];
@@ -1405,16 +1401,7 @@ export async function processClipDetectionRun(
 
       const inFlightProgress = 20 + Math.round((i / chunks.length) * 60);
       const heartbeat = setInterval(() => {
-        void projectService
-          .publishWorkflowProgress({
-            projectId: run.projectId,
-            workflowRunId: run.id,
-            stage: "moment_detection",
-            status: "running",
-            progress: inFlightProgress,
-            errorCode: null,
-          })
-          .catch(() => {});
+        void context.reportProgress(inFlightProgress).catch(() => {});
       }, OPENAI_CALL_HEARTBEAT_INTERVAL_MS);
 
       const llmCallStartedAtMs = Date.now();
@@ -1477,14 +1464,7 @@ export async function processClipDetectionRun(
 
       // Update progress per chunk
       const chunkProgress = 20 + Math.round(((i + 1) / chunks.length) * 60);
-      await projectService.publishWorkflowProgress({
-        projectId: run.projectId,
-        workflowRunId: run.id,
-        stage: "moment_detection",
-        status: "running",
-        progress: chunkProgress,
-        errorCode: null,
-      });
+      await context.reportProgress(chunkProgress);
     }
 
     if (allRawClips.length === 0) {
@@ -1560,8 +1540,7 @@ export async function processClipDetectionRun(
     // Persist clips
     signal?.throwIfAborted();
     await clipService.persistDetectedClips(
-      run.projectId,
-      run.id,
+      attempt,
       finalClips,
       {
         provider: "openai",
@@ -1574,8 +1553,7 @@ export async function processClipDetectionRun(
     if (contentPack?.autoRenderClips) {
       try {
         await clipService.autoQueueDefaultRenders(
-          run.projectId,
-          run.id,
+          attempt,
           contentPack.defaultAspectRatio,
         );
       } catch (error) {
@@ -1594,7 +1572,7 @@ export async function processClipDetectionRun(
     }
 
     // Complete workflow run
-    await projectService.completeClipDetectionWorkflowRun(run.id);
+    await getWorkflowRunLifecycle().completeMomentDetection(attempt);
 
     log("info", "clip_detection_run_completed", {
       workflowRunId: run.id,
@@ -1617,7 +1595,7 @@ export async function processClipDetectionRun(
     const code = failure.code;
     const message =
       error instanceof Error ? error.message : "Unknown worker error";
-    await projectService.failClipDetectionWorkflowRun(run.id, failure);
+    await getWorkflowRunLifecycle().failAttempt(attempt, failure);
     log("error", "clip_detection_run_failed", {
       workflowRunId: run.id,
       projectId: run.projectId,

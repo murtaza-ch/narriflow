@@ -14,14 +14,11 @@ import { workflowStageUpdatedEventSchema } from "@narriflow/validators";
 import { Pool } from "pg";
 import {
   type WorkflowAttemptRef,
-  WorkflowAttemptContextRequired,
   WorkflowAttemptLost,
   WorkflowFailure,
   WorkflowRunLifecycle,
-  workflowAttemptRef,
 } from "./workflow-run-lifecycle";
 import { notificationService } from "./notification.service";
-import { projectService } from "./project.service";
 import { clipService } from "./clip.service";
 
 const databaseUrl = process.env.WORKFLOW_TEST_DATABASE_URL;
@@ -113,7 +110,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         idempotencyKey: `fixture:${suffix}`,
         stage,
         status: "queued",
-        lifecycleVersion: 2,
       },
     });
     return { user, workspace, project, run };
@@ -178,17 +174,8 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     disposition: "retryable" | "permanent",
     errorCode: string,
   ) {
-    await lifecycle.markClipRenderVariantRendering(attempt, {
-      clipRenderId: variantId,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
-    await lifecycle.failClipRenderVariant(attempt, {
-      clipRenderId: variantId,
-      exportVariantId: null,
-      errorCode,
-      disposition,
-    });
+    await lifecycle.markClipRenderVariantRendering(attempt, variantId);
+    await lifecycle.failClipRenderVariant(attempt, variantId, errorCode, disposition);
   }
 
   async function proveRenderWorkSetBeginRollback(
@@ -648,30 +635,14 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ]);
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
-    await lifecycle.markClipRenderVariantRendering(attempt, {
-      clipRenderId: completedVariant.id,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
-    await lifecycle.completeClipRenderVariant(attempt, {
-      clipRenderId: completedVariant.id,
-      exportVariantId: null,
+    await lifecycle.markClipRenderVariantRendering(attempt, completedVariant.id);
+    await lifecycle.completeClipRenderVariant(attempt, completedVariant.id, {
       storageKey: "projects/test/renders/completed-attempt.mp4",
       sizeBytes: 1024,
       durationSec: 10,
-      completedAt: new Date(),
     });
-    await lifecycle.markClipRenderVariantRendering(attempt, {
-      clipRenderId: failedVariant.id,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
-    await lifecycle.failClipRenderVariant(attempt, {
-      clipRenderId: failedVariant.id,
-      exportVariantId: null,
-      errorCode: "source_invalid",
-      disposition: "permanent",
-    });
+    await lifecycle.markClipRenderVariantRendering(attempt, failedVariant.id);
+    await lifecycle.failClipRenderVariant(attempt, failedVariant.id, "source_invalid", "permanent");
 
     const outcome = await lifecycle.settleRenderWorkSet(attempt);
 
@@ -733,18 +704,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
       if (outcome !== "failed") {
         const completed = variants[0]!;
-        await lifecycle.markClipRenderVariantRendering(attempt, {
-          clipRenderId: completed.id,
-          exportVariantId: null,
-          startedAt: new Date(),
-        });
-        await lifecycle.completeClipRenderVariant(attempt, {
-          clipRenderId: completed.id,
-          exportVariantId: null,
+        await lifecycle.markClipRenderVariantRendering(attempt, completed.id);
+        await lifecycle.completeClipRenderVariant(attempt, completed.id, {
           storageKey: `projects/test/renders/${outcome}.mp4`,
           sizeBytes: 512,
           durationSec: 8,
-          completedAt: new Date(),
         });
       }
       if (outcome !== "completed") {
@@ -812,18 +776,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
-    await lifecycle.markClipRenderVariantRendering(attempt, {
-      clipRenderId: variant.id,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
-    await lifecycle.completeClipRenderVariant(attempt, {
-      clipRenderId: variant.id,
-      exportVariantId: null,
+    await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
+    await lifecycle.completeClipRenderVariant(attempt, variant.id, {
       storageKey: "projects/test/renders/replay-safe.mp4",
       sizeBytes: 512,
       durationSec: 8,
-      completedAt: new Date(),
     });
     await lifecycle.settleRenderWorkSet(attempt);
 
@@ -1061,7 +1018,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ).toBe(0);
   });
 
-  test("protocol-v2 settlement does not retry a legacy null disposition", async () => {
+  test("settlement does not retry a render without explicit retry disposition", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
     const variant = await prisma.clipRender.create({
@@ -1108,24 +1065,13 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ]);
     const first = await claimRenderAttempt();
     await first.lifecycle.beginRenderWorkSet(first.attempt);
-    await first.lifecycle.markClipRenderVariantRendering(first.attempt, {
-      clipRenderId: completedVariant.id,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
-    await first.lifecycle.completeClipRenderVariant(first.attempt, {
-      clipRenderId: completedVariant.id,
-      exportVariantId: null,
+    await first.lifecycle.markClipRenderVariantRendering(first.attempt, completedVariant.id);
+    await first.lifecycle.completeClipRenderVariant(first.attempt, completedVariant.id, {
       storageKey: "projects/test/renders/first-attempt.mp4",
       sizeBytes: 100,
       durationSec: 5,
-      completedAt: new Date(),
     });
-    await first.lifecycle.markClipRenderVariantRendering(first.attempt, {
-      clipRenderId: interruptedVariant.id,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
+    await first.lifecycle.markClipRenderVariantRendering(first.attempt, interruptedVariant.id);
 
     const second = await failAndClaimNextRenderAttempt(
       run.id,
@@ -1145,18 +1091,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       status: "completed",
       workflowAttemptId: first.attempt.attemptId,
     });
-    await second.lifecycle.markClipRenderVariantRendering(second.attempt, {
-      clipRenderId: interruptedVariant.id,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
-    await second.lifecycle.completeClipRenderVariant(second.attempt, {
-      clipRenderId: interruptedVariant.id,
-      exportVariantId: null,
+    await second.lifecycle.markClipRenderVariantRendering(second.attempt, interruptedVariant.id);
+    await second.lifecycle.completeClipRenderVariant(second.attempt, interruptedVariant.id, {
       storageKey: "projects/test/renders/second-attempt.mp4",
       sizeBytes: 100,
       durationSec: 5,
-      completedAt: new Date(),
     });
 
     expect(await second.lifecycle.settleRenderWorkSet(second.attempt)).toEqual({
@@ -1221,18 +1160,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const lateVariant = await prisma.clipRender.create({
       data: { clipId: lateClip.id, aspectRatio: "ratio_1_1" },
     });
-    await lifecycle.markClipRenderVariantRendering(attempt, {
-      clipRenderId: completedVariant.id,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
-    await lifecycle.completeClipRenderVariant(attempt, {
-      clipRenderId: completedVariant.id,
-      exportVariantId: null,
+    await lifecycle.markClipRenderVariantRendering(attempt, completedVariant.id);
+    await lifecycle.completeClipRenderVariant(attempt, completedVariant.id, {
       storageKey: "projects/test/renders/replayed.mp4",
       sizeBytes: 100,
       durationSec: 5,
-      completedAt: new Date(),
     });
 
     const admissionLock = await pool.connect();
@@ -1334,11 +1266,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         const lateVariant = await prisma.clipRender.create({
           data: { clipId: lateClip.id, aspectRatio: "ratio_1_1" },
         });
-        await lifecycle.markClipRenderVariantRendering(attempt, {
-          clipRenderId: variant.id,
-          exportVariantId: null,
-          startedAt: new Date(),
-        });
+        await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
         await prisma.workflowRun.update({
           where: { id: run.id },
           data: { attemptCount: 3 },
@@ -1423,11 +1351,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
-    await lifecycle.markClipRenderVariantRendering(attempt, {
-      clipRenderId: variant.id,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
+    await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
     await prisma.workflowRun.update({
       where: { id: run.id },
       data: { attemptCount: 3 },
@@ -1494,30 +1418,14 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const lateVariant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_16_9" },
     });
-    await lifecycle.markClipRenderVariantRendering(attempt, {
-      clipRenderId: completedVariant.id,
-      exportVariantId: null,
-      startedAt: new Date(),
-    });
-    await lifecycle.completeClipRenderVariant(attempt, {
-      clipRenderId: completedVariant.id,
-      exportVariantId: null,
+    await lifecycle.markClipRenderVariantRendering(attempt, completedVariant.id);
+    await lifecycle.completeClipRenderVariant(attempt, completedVariant.id, {
       storageKey: "projects/test/renders/reaper-completed.mp4",
       sizeBytes: 100,
       durationSec: 5,
-      completedAt: new Date(),
     });
-    await lifecycle.markClipRenderVariantRendering(attempt, {
-      clipRenderId: permanentVariant.id,
-      exportVariantId: exportVariant.id,
-      startedAt: new Date(),
-    });
-    await lifecycle.failClipRenderVariant(attempt, {
-      clipRenderId: permanentVariant.id,
-      exportVariantId: exportVariant.id,
-      errorCode: "source_invalid",
-      disposition: "permanent",
-    });
+    await lifecycle.markClipRenderVariantRendering(attempt, permanentVariant.id);
+    await lifecycle.failClipRenderVariant(attempt, permanentVariant.id, "source_invalid", "permanent");
     await prisma.workflowRun.update({
       where: { id: run.id },
       data: { attemptCount: 3 },
@@ -1773,6 +1681,100 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(events[0]?.status).toBe("queued");
   });
 
+  test("claim returns the one explicit attempt protocol", async () => {
+    const { project, run } = await fixture("dubbing");
+    const lifecycle = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+    });
+
+    const attempt = await lifecycle.claim("dubbing");
+
+    expect(attempt).toMatchObject({
+      workflowRunId: run.id,
+      projectId: project.id,
+      stage: "dubbing",
+      status: "running",
+      attemptCount: 1,
+    });
+    expect(attempt?.attemptId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  test("progress and dubbing artifacts are fenced by the explicit attempt", async () => {
+    const { project, run } = await fixture("dubbing");
+    const clip = await clipFixture(project.id, run.id);
+    const [completedDub, failedDub] = await Promise.all([
+      prisma.clipDub.create({
+        data: {
+          projectId: project.id,
+          clipId: clip.id,
+          aspectRatio: "ratio_9_16",
+          targetLanguageCode: "es",
+          voice: "marin",
+          model: "test",
+          status: "queued",
+        },
+      }),
+      prisma.clipDub.create({
+        data: {
+          projectId: project.id,
+          clipId: clip.id,
+          aspectRatio: "ratio_9_16",
+          targetLanguageCode: "fr",
+          voice: "marin",
+          model: "test",
+          status: "queued",
+        },
+      }),
+    ]);
+    const lifecycle = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+    });
+    const attempt = await lifecycle.claim("dubbing");
+    if (!attempt) throw new Error("claim missing");
+
+    await lifecycle.reportProgress(attempt, 42);
+    expect((await lifecycle.markDubProcessing(attempt, completedDub.id)).count).toBe(1);
+    expect(
+      (
+        await lifecycle.completeDub(attempt, completedDub.id, {
+          status: "completed",
+          transcriptText: "hello",
+          translatedText: "hola",
+          audioStorageKey: "test/dub.mp3",
+          renderStorageKey: "test/dub.mp4",
+          audioSizeBytes: 10n,
+          renderSizeBytes: 20n,
+          durationSec: 1,
+          model: "test",
+          errorCode: null,
+          completedAt: new Date(),
+        })
+      ).count,
+    ).toBe(1);
+    expect((await lifecycle.markDubProcessing(attempt, failedDub.id)).count).toBe(1);
+    expect((await lifecycle.failDub(attempt, failedDub.id, "dub_failed")).count).toBe(1);
+
+    const [storedRun, storedCompleted, storedFailed] = await Promise.all([
+      prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
+      prisma.clipDub.findUniqueOrThrow({ where: { id: completedDub.id } }),
+      prisma.clipDub.findUniqueOrThrow({ where: { id: failedDub.id } }),
+    ]);
+    expect(storedRun.progress).toBe(42);
+    expect(storedCompleted).toMatchObject({
+      status: "completed",
+      workflowAttemptId: attempt.attemptId,
+    });
+    expect(storedFailed).toMatchObject({
+      status: "failed",
+      workflowAttemptId: attempt.attemptId,
+      errorCode: "dub_failed",
+    });
+  });
+
   test("one of twenty racing workers owns a queued run", async () => {
     const { run } = await fixture();
     const claims = await Promise.all(
@@ -1883,13 +1885,10 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     if (!second) throw new Error("second claim missing");
 
     await expect(
-      firstLifecycle.completeClipRenderVariant(first, {
-        clipRenderId: render.id,
-        exportVariantId: null,
+      firstLifecycle.completeClipRenderVariant(first, render.id, {
         storageKey: "test/stale.mp4",
         sizeBytes: 100,
         durationSec: 10,
-        completedAt: new Date(),
       }),
     ).rejects.toBeInstanceOf(WorkflowAttemptLost);
     expect(
@@ -1993,9 +1992,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       ownedVariant.id,
     ]);
     expect(
-      await lifecycle.markClipRenderVariantRendering(attempt, {
-        clipRenderId: ownedVariant.id,
-      }),
+      await lifecycle.markClipRenderVariantRendering(attempt, ownedVariant.id),
     ).toBe(true);
 
     await expect(
@@ -2106,11 +2103,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       variant.id,
     ]);
     expect(
-      await lifecycle.markClipRenderVariantRendering(attempt, {
-        clipRenderId: variant.id,
-        exportVariantId: null,
-        startedAt: new Date(),
-      }),
+      await lifecycle.markClipRenderVariantRendering(attempt, variant.id),
     ).toBe(true);
 
     const input = {
@@ -2284,26 +2277,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(render.workflowAttemptId).toBeNull();
   });
 
-  test("the production render claim ignores protocol-v1 rows", async () => {
-    const legacy = await fixture("clip_rendering");
-    await prisma.workflowRun.update({
-      where: { id: legacy.run.id },
-      data: { lifecycleVersion: 1 },
-    });
-    const current = await fixture("clip_rendering");
-
-    const claimed = await projectService.claimNextClipRenderAttempt();
-
-    expect(claimed?.id).toBe(current.run.id);
-    expect(claimed?.lifecycleVersion).toBe(2);
-    expect(claimed?.attemptId).not.toBeNull();
-    expect(
-      (await prisma.workflowRun.findUniqueOrThrow({
-        where: { id: legacy.run.id },
-      })).status,
-    ).toBe("queued");
-  });
-
   test("export child completion settles its parent aggregate in the same lifecycle command", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
@@ -2334,23 +2307,16 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
-    await lifecycle.markClipRenderVariantRendering(attempt, {
-      clipRenderId: render.id,
-      exportVariantId: exportVariant.id,
-      startedAt: new Date(),
-    });
+    await lifecycle.markClipRenderVariantRendering(attempt, render.id);
 
     expect(
       await prisma.clipExport.findUniqueOrThrow({ where: { id: clipExport.id } }),
     ).toMatchObject({ status: "rendering", progress: 5 });
 
-    await lifecycle.completeClipRenderVariant(attempt, {
-      clipRenderId: render.id,
-      exportVariantId: exportVariant.id,
+    await lifecycle.completeClipRenderVariant(attempt, render.id, {
       storageKey: "projects/test/exports/completed.mp4",
       sizeBytes: 100,
       durationSec: 5,
-      completedAt: new Date(),
     });
 
     expect(
@@ -2402,24 +2368,17 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
     await Promise.all(
-      renders.map((render, index) =>
-        lifecycle.markClipRenderVariantRendering(attempt, {
-          clipRenderId: render.id,
-          exportVariantId: exportVariants[index]!.id,
-          startedAt: new Date(),
-        }),
+      renders.map((render) =>
+        lifecycle.markClipRenderVariantRendering(attempt, render.id),
       ),
     );
 
     await Promise.all(
       renders.map((render, index) =>
-        lifecycle.completeClipRenderVariant(attempt, {
-          clipRenderId: render.id,
-          exportVariantId: exportVariants[index]!.id,
+        lifecycle.completeClipRenderVariant(attempt, render.id, {
           storageKey: `projects/test/exports/concurrent-${index}.mp4`,
           sizeBytes: 100,
           durationSec: 5,
-          completedAt: new Date(),
         }),
       ),
     );
@@ -2460,55 +2419,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       (await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }))
         .status,
     ).toBe("running");
-  });
-
-  test("a context-free caller cannot claim a protocol-v2 child artifact", async () => {
-    const { run, project } = await fixture("clip_rendering");
-    const clip = await prisma.clip.create({
-      data: {
-        projectId: project.id,
-        workflowRunId: run.id,
-        index: 0,
-        startSec: 0,
-        endSec: 10,
-        hookText: "Guarded",
-        reasoning: "Test fixture",
-        category: "hook",
-        transcriptSlice: [],
-        viralityScore: 50,
-        hookStrengthScore: 50,
-        emotionalIntensityScore: 50,
-        pacingScore: 50,
-        durationOptimalityScore: 50,
-        tiktokScore: 50,
-        youtubeScore: 50,
-        instagramScore: 50,
-        llmProvider: "test",
-        llmModel: "test",
-      },
-    });
-    const render = await prisma.clipRender.create({
-      data: { clipId: clip.id, aspectRatio: "ratio_9_16", status: "pending" },
-    });
-
-    await expect(
-      clipService.markClipRenderVariantRendering(render.id),
-    ).rejects.toBeInstanceOf(WorkflowAttemptContextRequired);
-    expect(
-      (await prisma.clipRender.findUniqueOrThrow({ where: { id: render.id } }))
-        .status,
-    ).toBe("pending");
-  });
-
-  test("a protocol-v2 run cannot fall through a context-free compatibility completion", async () => {
-    const { run } = await fixture("dubbing");
-    await expect(
-      projectService.completeDubbingWorkflowRun(run.id),
-    ).rejects.toBeInstanceOf(WorkflowAttemptContextRequired);
-    expect(
-      (await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }))
-        .status,
-    ).toBe("queued");
   });
 
   test("heartbeat renews ownership and a live attempt is not reaped", async () => {
@@ -2568,13 +2478,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
     const claimed = await lifecycle.claim("stt");
     if (!claimed) throw new Error("claim missing");
-    const attempt = workflowAttemptRef({
-      id: claimed.workflowRunId,
-      projectId: claimed.projectId,
-      stage: claimed.stage,
-      attemptId: claimed.attemptId,
-      attemptCount: claimed.attemptCount,
-    });
+    const attempt = claimed;
     await lifecycle.waitForProvider(attempt, {
       providerJobId: "provider-job-1",
       nextPollAt: new Date(Date.now() - 1_000),
@@ -2584,8 +2488,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(due).toHaveLength(1);
     expect(due[0]?.attemptId).toBe(attempt.attemptId);
 
-    await lifecycle.runWaitingAttempt(attempt, () =>
-      lifecycle.completeTranscript(attempt, {
+    await lifecycle.completeTranscript(attempt, {
         provider: "assemblyai",
         providerModel: "test",
         providerJobId: "provider-job-1",
@@ -2596,8 +2499,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         speakerCount: 1,
         durationSeconds: 10,
         rawStorageKey: null,
-      }),
-    );
+      });
 
     const [settled, transcript, child] = await Promise.all([
       prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
@@ -2609,7 +2511,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(settled.status).toBe("completed");
     expect(transcript.workflowAttemptId).toBe(attempt.attemptId);
     expect(child.status).toBe("queued");
-    expect(child.lifecycleVersion).toBe(2);
   });
 
   test("concurrent transitions allocate unique monotonic project sequences", async () => {
@@ -2626,7 +2527,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         idempotencyKey: `sequence:${index}`,
         stage: "dubbing",
         status: "queued",
-        lifecycleVersion: 2,
       })),
     });
     const claims = [];
@@ -2654,135 +2554,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       select: { seq: true },
     });
     expect(events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-  });
-
-  test("a protocol-v2 admission advances past an event inserted by a protocol-v1 writer", async () => {
-    const { project, run } = await fixture();
-    await prisma.workflowEvent.deleteMany({ where: { projectId: project.id } });
-    await prisma.project.update({
-      where: { id: project.id },
-      data: { workflowEventSeq: 0 },
-    });
-    await prisma.workflowEvent.create({
-      data: {
-        projectId: project.id,
-        workflowRunId: run.id,
-        seq: 1,
-        stage: "dubbing",
-        status: "queued",
-        progress: 0,
-        emittedAt: new Date(),
-        dedupeKey: null,
-        payload: {
-          event: "workflow.stage.updated",
-          projectId: project.id,
-          workflowRunId: run.id,
-          seq: 1,
-          stage: "dubbing",
-          status: "queued",
-          progress: 0,
-          errorCode: null,
-          emittedAt: new Date().toISOString(),
-        },
-      },
-    });
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: { status: "completed" },
-    });
-
-    const lifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    await expect(
-      lifecycle.admit({
-        projectId: project.id,
-        idempotencyKey: `mixed-version:${randomUUID()}`,
-        stage: "dubbing",
-      }),
-    ).resolves.toMatchObject({ created: true });
-
-    const [events, advancedProject] = await Promise.all([
-      prisma.workflowEvent.findMany({
-        where: { projectId: project.id },
-        orderBy: { seq: "asc" },
-        select: { seq: true },
-      }),
-      prisma.project.findUniqueOrThrow({ where: { id: project.id } }),
-    ]);
-    expect(events.map((event) => event.seq)).toEqual([1, 2]);
-    expect(advancedProject.workflowEventSeq).toBe(2);
-  });
-
-  test("a protocol-v2 admission retries when a protocol-v1 writer wins the same sequence", async () => {
-    const { project, run } = await fixture();
-    await prisma.workflowEvent.deleteMany({ where: { projectId: project.id } });
-    await prisma.project.update({
-      where: { id: project.id },
-      data: { workflowEventSeq: 0 },
-    });
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: { status: "completed" },
-    });
-
-    const legacyWriter = await pool.connect();
-    let legacyTransactionOpen = false;
-    try {
-      await legacyWriter.query("BEGIN");
-      legacyTransactionOpen = true;
-      await legacyWriter.query(
-        `INSERT INTO "WorkflowEvent" (
-          "id", "projectId", "workflowRunId", "seq", "stage", "status",
-          "progress", "emittedAt"
-        ) VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'dubbing', 'queued', 0, CURRENT_TIMESTAMP)`,
-        [randomUUID(), project.id, run.id],
-      );
-
-      const lifecycle = new WorkflowRunLifecycle({
-        prisma,
-        leaseOwner: randomUUID(),
-      });
-      const admission = lifecycle.admit({
-        projectId: project.id,
-        idempotencyKey: `mixed-version-race:${randomUUID()}`,
-        stage: "dubbing",
-      });
-
-      let collisionIsWaiting = false;
-      for (let poll = 0; poll < 50 && !collisionIsWaiting; poll += 1) {
-        const waiting = await pool.query<Array<{ count: bigint }>>(
-          `
-          SELECT COUNT(*)::bigint AS "count"
-          FROM pg_stat_activity
-          WHERE datname = current_database()
-            AND pid <> $1
-            AND wait_event_type = 'Lock'
-            AND query NOT LIKE '%pg_stat_activity%'
-        `,
-          [legacyWriter.processID],
-        );
-        collisionIsWaiting = Number(waiting.rows[0]?.count ?? 0) > 0;
-      }
-      expect(collisionIsWaiting).toBe(true);
-      await legacyWriter.query("COMMIT");
-      legacyTransactionOpen = false;
-
-      await expect(admission).resolves.toMatchObject({ created: true });
-      expect(
-        (
-          await prisma.workflowEvent.findMany({
-            where: { projectId: project.id },
-            orderBy: { seq: "asc" },
-            select: { seq: true },
-          })
-        ).map((event) => event.seq),
-      ).toEqual([1, 2]);
-    } finally {
-      if (legacyTransactionOpen) await legacyWriter.query("ROLLBACK");
-      legacyWriter.release();
-    }
   });
 
   test("an unavailable Redis publisher is not acknowledged as delivered", async () => {

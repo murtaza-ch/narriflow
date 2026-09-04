@@ -18,8 +18,7 @@ import {
 	thumbnailFramePreparationService,
 	uploadSessionService,
 	WorkflowAttemptLost,
-	workflowAttemptRef,
-	runProtocolV1Compatibility,
+	type WorkflowAttemptRef,
 } from "@narriflow/services";
 import { processDueAutopilotRules } from "./tasks/autopilot";
 import { processClipDetectionRun } from "./tasks/detect-clips";
@@ -44,6 +43,7 @@ import {
 	retryPendingNotifications,
 	retryPendingReviewNotifications,
 } from "./notifications";
+import { executeClaimedWorkflowAttempt } from "./workflow-attempt-executor";
 
 const port = Number(process.env.PORT || 0);
 const workerShutdown = new AbortController();
@@ -87,8 +87,8 @@ const autoLayoutPollIntervalMs = Number(
 );
 // Submit-and-release STT: the stt loop only submits; this loop polls
 // AssemblyAI for submitted transcripts. Its cadence can stay coarser than the
-// claim loops — claimSubmittedTranscriptRunsForPolling additionally gates
-// each run by ASSEMBLYAI_POLL_INTERVAL_MS via its lease.
+// claim loops — waiting STT polling additionally gates each run by
+// ASSEMBLYAI_POLL_INTERVAL_MS via its next-poll timestamp.
 const sttResultPollIntervalMs = Number(
 	process.env.STT_RESULT_POLL_INTERVAL_MS ?? "5000",
 );
@@ -117,27 +117,15 @@ const notificationRetryBatchSize = Number(
 let processedCount = 0;
 let lastReapAt = 0;
 
-/** Periodically fails workflow runs orphaned by a crashed/evicted worker.
- * The independent maintenance loop rate-limits this sweep via lastReapAt. */
+/** Periodically reaps ingest jobs orphaned by a crashed/evicted worker.
+ * Workflow attempts have their own single lease-reaper loop. */
 async function reapStalledRunsIfDue() {
 	const now = Date.now();
 	if (now - lastReapAt < reapIntervalMs) return;
 	lastReapAt = now;
 	try {
-		const reaped =
-			await projectService.reapStuckWorkflowRuns(reapStallTimeoutMs);
 		const reapedIngest =
 			await projectService.reapStuckIngestJobs(reapStallTimeoutMs);
-		if (reaped > 0) {
-			console.log(
-				JSON.stringify({
-					level: "info",
-					message: "workflow_runs_reaped",
-					count: reaped,
-					ts: new Date().toISOString(),
-				}),
-			);
-		}
 		if (reapedIngest > 0) {
 			console.log(
 				JSON.stringify({
@@ -279,12 +267,7 @@ async function reapStalledRunsIfDue() {
 }
 
 function diagnoseWorkflowAttemptLost(input: {
-	run: {
-		id: string;
-		projectId: string;
-		stage: string;
-		attemptId: string;
-	};
+	run: WorkflowAttemptRef;
 	error: WorkflowAttemptLost;
 	startedAtMs: number;
 }) {
@@ -293,7 +276,7 @@ function diagnoseWorkflowAttemptLost(input: {
 			level: "warn",
 			message: "workflow_attempt_lost",
 			ts: new Date().toISOString(),
-			workflowRunId: input.run.id,
+			workflowRunId: input.run.workflowRunId,
 			workflowAttemptId: input.run.attemptId,
 			attemptId: input.run.attemptId,
 			projectId: input.run.projectId,
@@ -307,52 +290,6 @@ function diagnoseWorkflowAttemptLost(input: {
 		}),
 	);
 }
-
-async function executeClaimedWorkflowRun<
-	TRun extends {
-		id: string;
-		projectId: string;
-		stage: string;
-		lifecycleVersion: number;
-		attemptId: string | null;
-		attemptCount: number;
-	},
->(run: TRun, process: (run: TRun, signal?: AbortSignal) => Promise<void>) {
-	if (run.lifecycleVersion !== 2 || !run.attemptId) {
-		await runProtocolV1Compatibility(
-			{
-				workflowRunId: run.id,
-				projectId: run.projectId,
-				stage: run.stage as Parameters<
-					typeof runProtocolV1Compatibility
-				>[0]["stage"],
-			},
-			() => process(run),
-		);
-		return;
-	}
-	const attempt = workflowAttemptRef({
-		id: run.id,
-		projectId: run.projectId,
-		stage: run.stage,
-		attemptId: run.attemptId,
-		attemptCount: run.attemptCount,
-	});
-	const attemptStartedAtMs = Date.now();
-	try {
-		await getWorkflowRunLifecycle().runAttempt(attempt, ({ signal }) =>
-			process(run, signal),
-		);
-	} catch (error) {
-		if (!(error instanceof WorkflowAttemptLost)) throw error;
-		diagnoseWorkflowAttemptLost({
-			run: { ...run, attemptId: run.attemptId },
-			error,
-			startedAtMs: attemptStartedAtMs,
-		});
-	}
-}
-
 /**
  * One loop per stage, each with its own mutex and consecutive-failure circuit
  * breaker. The old single IO loop held one mutex across ingest + stt +
@@ -360,7 +297,7 @@ async function executeClaimedWorkflowRun<
  * worker, so any long stage (a multi-GB ingest, an in-flight detection call)
  * starved all the others — the same reasoning that split render and preview
  * out originally, applied to the rest. Claims stay atomic
- * (claimNextWorkflowRun / claimNextIngestJob conditional updates), so loops
+ * (WorkflowRunLifecycle / IngestJob conditional updates), so loops
  * on this process and on other replicas can never double-claim a job.
  */
 function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
@@ -458,9 +395,16 @@ const workspaceBillingLoop = createPollLoop("workspace_billing", async () => {
 // Submit-and-release: this claim only covers the AssemblyAI submission round
 // trip (seconds), not the transcription itself — see sttResultsLoop.
 const sttLoop = createPollLoop("stt", async () => {
-	const run = await projectService.claimNextWorkflowRun("stt");
-	if (!run) return 0;
-	await executeClaimedWorkflowRun(run, processTranscriptRun);
+	const attempt = await getWorkflowRunLifecycle().claim("stt");
+	if (!attempt) return 0;
+	const startedAtMs = Date.now();
+	await executeClaimedWorkflowAttempt({
+		attempt,
+		lifecycle: getWorkflowRunLifecycle(),
+		process: processTranscriptRun,
+		onAttemptLost: (error) =>
+			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
+	});
 	return 1;
 });
 
@@ -469,23 +413,44 @@ const sttResultsLoop = createPollLoop("stt_results", async () => {
 });
 
 const detectionLoop = createPollLoop("moment_detection", async () => {
-	const run = await projectService.claimNextWorkflowRun("moment_detection");
-	if (!run) return 0;
-	await executeClaimedWorkflowRun(run, processClipDetectionRun);
+	const attempt = await getWorkflowRunLifecycle().claim("moment_detection");
+	if (!attempt) return 0;
+	const startedAtMs = Date.now();
+	await executeClaimedWorkflowAttempt({
+		attempt,
+		lifecycle: getWorkflowRunLifecycle(),
+		process: processClipDetectionRun,
+		onAttemptLost: (error) =>
+			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
+	});
 	return 1;
 });
 
 const dubbingLoop = createPollLoop("dubbing", async () => {
-	const run = await projectService.claimNextWorkflowRun("dubbing");
-	if (!run) return 0;
-	await executeClaimedWorkflowRun(run, processDubbingRun);
+	const attempt = await getWorkflowRunLifecycle().claim("dubbing");
+	if (!attempt) return 0;
+	const startedAtMs = Date.now();
+	await executeClaimedWorkflowAttempt({
+		attempt,
+		lifecycle: getWorkflowRunLifecycle(),
+		process: processDubbingRun,
+		onAttemptLost: (error) =>
+			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
+	});
 	return 1;
 });
 
 const exportBundleLoop = createPollLoop("export_bundle", async () => {
-	const run = await projectService.claimNextWorkflowRun("export_bundle");
-	if (!run) return 0;
-	await executeClaimedWorkflowRun(run, processExportBundleRun);
+	const attempt = await getWorkflowRunLifecycle().claim("export_bundle");
+	if (!attempt) return 0;
+	const startedAtMs = Date.now();
+	await executeClaimedWorkflowAttempt({
+		attempt,
+		lifecycle: getWorkflowRunLifecycle(),
+		process: processExportBundleRun,
+		onAttemptLost: (error) =>
+			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
+	});
 	return 1;
 });
 
@@ -499,20 +464,15 @@ const autopilotLoop = createPollLoop("autopilot", async () => {
 	return processDueAutopilotRules();
 });
 
-/** CPU-bound stage: clip rendering only. The dedicated claim is protocol-v2
- *  only, so a legacy queued row cannot be mutated and then rejected. */
+/** CPU-bound stage: clip rendering only. */
 const renderLoop = createPollLoop("render", async () => {
 	if (!renderConfig.clipRenderAttemptEnabled) return 0;
-	const run = await projectService.claimNextClipRenderAttempt();
-	if (!run) return 0;
+	await projectService.ensurePendingClipRenderingRun();
 	const lifecycle = getWorkflowRunLifecycle();
-	const attempt = workflowAttemptRef({
-		id: run.id,
-		projectId: run.projectId,
-		stage: run.stage,
-		attemptId: run.attemptId,
-		attemptCount: run.attemptCount,
-	}) as ClipRenderingWorkflowAttempt;
+	const claimed = await lifecycle.claim("clip_rendering");
+	if (!claimed) return 0;
+	const attempt = claimed as ClipRenderingWorkflowAttempt;
+	const run = { ...claimed, id: claimed.workflowRunId };
 	const clipRenderAttempt = new ClipRenderAttempt({
 		run,
 		config: renderConfig,
@@ -623,7 +583,6 @@ const server = createServer(async (req, res) => {
 				service: "narriflow-worker",
 				render: {
 					enabled: renderConfig.clipRenderAttemptEnabled,
-					lifecycleVersion: 2,
 				},
 				queue: {
 					processedCount,
