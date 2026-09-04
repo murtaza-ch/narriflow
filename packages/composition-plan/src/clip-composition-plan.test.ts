@@ -955,7 +955,7 @@ describe("Clip Composition Plan", () => {
     if (first.status === "invalid" || second.status === "invalid") {
       throw new Error("expected a valid Center plan");
     }
-    expect(first.plan.version).toBe(1);
+    expect(first.plan.version).toBe(2);
     expect(first.plan.fingerprint).toMatch(/^[0-9a-f]{16}$/);
     expect(second.plan.fingerprint).toBe(first.plan.fingerprint);
     expect(first.plan.editedDurationSec).toBe(8);
@@ -1054,6 +1054,315 @@ describe("Clip Composition Plan", () => {
       [0, 2], [2, 6], [6, 7], [7, 11],
     ]);
     expect(scenes.filter((scene) => scene.layers[0]?.kind === "inserted-scene")).toHaveLength(2);
+  });
+
+  test("fits inserted Scene text into target-specific plan geometry", () => {
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      sceneBlocks: [
+        {
+          id: "8ab9d330-688f-4574-932c-27ac661245c1",
+          schemaVersion: 1,
+          anchorSec: 0,
+          durationSec: 2,
+          content: {
+            kind: "text",
+            text: "Opening",
+            fontFamily: "Arial",
+            fontAsset: null,
+            color: "#FFFFFF",
+            backgroundColor: "#111827",
+          },
+          motion: { entrance: "none", exit: "none" },
+          templateSnapshot: null,
+        },
+      ],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:fitted-scene-text",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        {
+          id: "vertical",
+          aspectRatio: "9:16",
+          width: 1080,
+          height: 1920,
+        },
+      ],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.version).toBe(2);
+    expect(result.plan.targets[0]?.scenes[0]?.layers[0]).toMatchObject({
+      kind: "inserted-scene",
+      textRender: {
+        lines: ["Opening"],
+        fontSizePx: 108,
+        lineHeightPx: 113,
+        maxWidthPx: 886,
+      },
+    });
+  });
+
+  test("normalizes whitespace and wraps Scene copy at word boundaries before shrinking", () => {
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      sceneBlocks: [
+        {
+          id: "8ab9d330-688f-4574-932c-27ac661245c1",
+          schemaVersion: 1,
+          anchorSec: 0,
+          durationSec: 2,
+          content: {
+            kind: "text",
+            text: "  The\tquick\n\n brown  ",
+            fontFamily: "Arial",
+            fontAsset: null,
+            color: "#FFFFFF",
+            backgroundColor: "#111827",
+          },
+          motion: { entrance: "none", exit: "none" },
+          templateSnapshot: null,
+        },
+      ],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:wrapped-scene-text",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        {
+          id: "vertical",
+          aspectRatio: "9:16",
+          width: 1080,
+          height: 1920,
+        },
+      ],
+    });
+
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.targets[0]?.scenes[0]?.layers[0]).toMatchObject({
+      kind: "inserted-scene",
+      textRender: {
+        lines: ["The quick", "brown"],
+        fontSizePx: 108,
+        lineHeightPx: 113,
+        maxWidthPx: 886,
+      },
+    });
+  });
+
+  test("keeps Unicode graphemes intact while hard-wrapping an oversized word", () => {
+    const graphemeGroup = "e\u0301👨‍👩‍👧‍👦新";
+    const text = graphemeGroup.repeat(4);
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      sceneBlocks: [
+        {
+          id: "8ab9d330-688f-4574-932c-27ac661245c1",
+          schemaVersion: 1,
+          anchorSec: 0,
+          durationSec: 2,
+          content: {
+            kind: "text",
+            text,
+            fontFamily: "Arial",
+            fontAsset: null,
+            color: "#FFFFFF",
+            backgroundColor: "#111827",
+          },
+          motion: { entrance: "none", exit: "none" },
+          templateSnapshot: null,
+        },
+      ],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:unicode-scene-text",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        {
+          id: "square",
+          aspectRatio: "1:1",
+          width: 100,
+          height: 100,
+        },
+      ],
+    });
+
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.targets[0]?.scenes[0]?.layers[0]).toMatchObject({
+      kind: "inserted-scene",
+      textRender: {
+        lines: [
+          `${graphemeGroup.repeat(2)}e\u0301👨‍👩‍👧‍👦`,
+          `新${graphemeGroup}`,
+        ],
+        fontSizePx: 10,
+        lineHeightPx: 11,
+        maxWidthPx: 82,
+      },
+    });
+  });
+
+  test("rejects text that cannot fit at the target-scaled readable minimum", () => {
+    const sceneId = "8ab9d330-688f-4574-932c-27ac661245c1";
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      sceneBlocks: [
+        {
+          id: sceneId,
+          schemaVersion: 1,
+          anchorSec: 0,
+          durationSec: 2,
+          content: {
+            kind: "text",
+            text: "W".repeat(500),
+            fontFamily: "Arial",
+            fontAsset: null,
+            color: "#FFFFFF",
+            backgroundColor: "#111827",
+          },
+          motion: { entrance: "none", exit: "none" },
+          templateSnapshot: null,
+        },
+      ],
+    });
+
+    expect(planClipComposition({
+      document,
+      source: {
+        identity: "source:unfit-scene-text",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        {
+          id: "tiny",
+          aspectRatio: "1:1",
+          width: 2,
+          height: 2,
+        },
+      ],
+    })).toEqual({
+      status: "invalid",
+      error: {
+        code: "text_scene_unfit",
+        targetId: "tiny",
+        sceneId,
+      },
+    });
+  });
+
+  test("fits 500 characters deterministically across every output target", () => {
+    const phrase = "مرحبا بالعالم 新产品发布 🚀 The quick brown fox ";
+    const text = `${phrase.repeat(10)}${"W".repeat(70)}`;
+    expect(text.length).toBe(500);
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      sceneBlocks: [
+        {
+          id: "8ab9d330-688f-4574-932c-27ac661245c1",
+          schemaVersion: 1,
+          anchorSec: 0,
+          durationSec: 2,
+          content: {
+            kind: "text",
+            text,
+            fontFamily: "Arial",
+            fontAsset: null,
+            color: "#FFFFFF",
+            backgroundColor: "#111827",
+          },
+          motion: { entrance: "none", exit: "none" },
+          templateSnapshot: null,
+        },
+      ],
+    });
+    const input = {
+      document,
+      source: {
+        identity: "source:maximum-scene-text",
+        kind: "video" as const,
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" as const } },
+      assets: { backgroundImage: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+        { id: "square", aspectRatio: "1:1" as const, width: 1080, height: 1080 },
+        { id: "landscape", aspectRatio: "16:9" as const, width: 1920, height: 1080 },
+        { id: "portrait", aspectRatio: "4:5" as const, width: 1080, height: 1350 },
+      ],
+    };
+    const first = planClipComposition(input);
+    const second = planClipComposition(input);
+
+    if (first.status === "invalid" || second.status === "invalid") {
+      throw new Error("expected fitted maximum Scene text");
+    }
+    expect(second.plan.fingerprint).toBe(first.plan.fingerprint);
+    expect(first.plan.targets.map((target) => {
+      const layer = target.scenes[0]?.layers[0];
+      if (layer?.kind !== "inserted-scene" || !layer.textRender) {
+        throw new Error("expected planned Scene text");
+      }
+      return {
+        targetId: target.id,
+        copyWithoutWhitespace: layer.textRender.lines.join("").replace(/\s/gu, ""),
+        fontSizePx: layer.textRender.fontSizePx,
+        maxWidthPx: layer.textRender.maxWidthPx,
+      };
+    })).toEqual([
+      { targetId: "vertical", copyWithoutWhitespace: text.replace(/\s/gu, ""), fontSizePx: 57, maxWidthPx: 886 },
+      { targetId: "square", copyWithoutWhitespace: text.replace(/\s/gu, ""), fontSizePx: 44, maxWidthPx: 886 },
+      { targetId: "landscape", copyWithoutWhitespace: text.replace(/\s/gu, ""), fontSizePx: 56, maxWidthPx: 1574 },
+      { targetId: "portrait", copyWithoutWhitespace: text.replace(/\s/gu, ""), fontSizePx: 46, maxWidthPx: 886 },
+    ]);
   });
 
   test("reports frozen Scene media and Brand fonts that cannot be resolved", () => {

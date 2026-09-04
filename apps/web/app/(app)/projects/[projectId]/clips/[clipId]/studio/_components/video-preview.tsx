@@ -77,6 +77,7 @@ import {
   plannedCompositionSourceDimensions,
   plannedCompositionUsesStackedStage,
   plannedCompositionVideoStyle,
+  plannedSceneTextPreview,
 } from "./composition-preview-adapter";
 import { compositionCapabilities } from "./composition-capabilities";
 import {
@@ -84,7 +85,10 @@ import {
   reconcileSelectedAudioAssets,
   type PreviewAudioAssetResolutionMap,
 } from "./preview-audio-asset-resolution";
-import { applyCompositionPlanQaFixture } from "./composition-plan-qa-fixture";
+import {
+  applyCompositionDocumentQaFixture,
+  applyCompositionPlanQaFixture,
+} from "./composition-plan-qa-fixture";
 import { applyStudioMotionPreview } from "./studio-editing-session";
 
 /** After this long with no metadata yet, hint that the source is just large. */
@@ -424,8 +428,11 @@ export function VideoPreview() {
     compositionPlanQaFixture,
   } = useStudio();
   const previewEditorDocument = useMemo(
-    () => applyStudioMotionPreview(editorDocument, motionPreview),
-    [editorDocument, motionPreview],
+    () => applyCompositionDocumentQaFixture(
+      applyStudioMotionPreview(editorDocument, motionPreview),
+      compositionPlanQaFixture,
+    ),
+    [compositionPlanQaFixture, editorDocument, motionPreview],
   );
 
   // Effective logo settings for THIS clip — studioEdits.logo overrides
@@ -1068,6 +1075,17 @@ export function VideoPreview() {
         font.fingerprint === insertedSceneFontReference.fingerprint,
       )
     : null;
+  const plannedInsertedSceneText =
+    plannedInsertedScene?.content.kind === "text" &&
+    plannedInsertedScene.textRender &&
+    compositionPreview &&
+    previewWidth > 0
+      ? plannedSceneTextPreview(
+          plannedInsertedScene.textRender,
+          compositionPreview.canvas,
+          previewWidth,
+        )
+      : null;
   const insertedSceneVideoRef = useRef<HTMLVideoElement | null>(null);
   const insertedSceneMotionStyle = previewMotionStyle(
     plannedInsertedScene?.motion
@@ -1764,8 +1782,8 @@ export function VideoPreview() {
             aspectRatio: `${videoW} / ${videoH}`,
             maxHeight: "100%",
             maxWidth: "100%",
-            height: videoH > videoW ? "100%" : "auto",
-            width: videoH <= videoW ? "100%" : "auto",
+            height: "100%",
+            width: "auto",
             ...transitionSourceStyle,
           }}
           bg={activeSpeakerScene?.overrideId ? "black" : "studio.subtle"}
@@ -2124,7 +2142,9 @@ export function VideoPreview() {
           {plannedInsertedScene ? (
             <Flex key={plannedInsertedScene.sceneBlockId} position="absolute" inset="0" zIndex="24" align="center" justify="center" overflow="hidden" bg={plannedInsertedScene.content.kind === "color" ? plannedInsertedScene.content.color : plannedInsertedScene.content.kind === "text" ? plannedInsertedScene.content.backgroundColor : plannedInsertedScene.content.backgroundColor} style={insertedSceneMotionStyle}>
               {plannedInsertedScene.content.kind === "text" ? (
-                <Text maxW="82%" textAlign="center" fontFamily={insertedSceneFont ? sceneFontPreviewFamily(insertedSceneFont) : systemSceneFontPreviewFamily(plannedInsertedScene.content.fontFamily)} fontSize="clamp(24px, 5vw, 68px)" fontWeight={insertedSceneFont?.weight ?? 700} fontStyle={insertedSceneFont?.style.toLowerCase().includes("italic") ? "italic" : "normal"} lineHeight="1.05" color={plannedInsertedScene.content.color}>{plannedInsertedScene.content.text}</Text>
+                plannedInsertedSceneText ? (
+                  <Text maxW={`${plannedInsertedSceneText.maxWidthPx}px`} textAlign="center" whiteSpace="pre" fontFamily={insertedSceneFont ? sceneFontPreviewFamily(insertedSceneFont) : systemSceneFontPreviewFamily(plannedInsertedScene.content.fontFamily)} fontSize={`${plannedInsertedSceneText.fontSizePx}px`} fontWeight={insertedSceneFont?.weight ?? 700} fontStyle={insertedSceneFont?.style.toLowerCase().includes("italic") ? "italic" : "normal"} lineHeight={`${plannedInsertedSceneText.lineHeightPx}px`} color={plannedInsertedScene.content.color}>{plannedInsertedSceneText.text}</Text>
+                ) : null
               ) : plannedInsertedScene.content.kind === "image" && insertedSceneAsset?.accessUrl ? (
                 <img src={insertedSceneAsset.accessUrl} alt="" style={{ width: "100%", height: "100%", objectFit: plannedInsertedScene.content.fit }} />
               ) : plannedInsertedScene.content.kind === "video" && insertedSceneAsset?.accessUrl ? (

@@ -967,7 +967,7 @@ for (const fixture of topologyFixtures) {
     expect(harness.diagnostics).toContainEqual({
       message: "clip_composition_resources",
       context: expect.objectContaining({
-        planVersion: 1,
+        planVersion: 2,
         planFingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
         requestedMode: expect.any(String),
         effectiveModes: expect.any(Array),

@@ -6,6 +6,7 @@ import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
   MOTION_ADAPTER_FIXTURES,
+  SCENE_TEXT_ADAPTER_FIXTURES,
   planClipComposition,
   planMediaMotion,
   sampleCompositionMotion,
@@ -974,7 +975,7 @@ describe("composition FFmpeg adapter", () => {
   test("rejects an unknown plan version before command construction", () => {
     expect(() =>
       compileCompositionPlanVideo({
-        plan: { ...planCenter(), version: 2 } as never,
+        plan: { ...planCenter(), version: 1 } as never,
         targetId: "variant-1",
         videoInputLabel: "[0:v]",
         outputLabel: "[outv]",
@@ -1068,7 +1069,7 @@ describe("composition FFmpeg adapter", () => {
         },
         srtPath: null,
         composition: {
-          plan: { ...planCenter(), version: 2 } as never,
+          plan: { ...planCenter(), version: 1 } as never,
           targetId: "variant-1",
         },
       }),
@@ -1324,6 +1325,54 @@ describe("composition FFmpeg adapter", () => {
       expect(audio.filterParts.join(";")).toContain("[2:a]atrim=start=0.000:end=1.000");
       expect(audio.filterParts.join(";")).toContain("volume=0.650");
       expect(audio.filterParts.join(";")).toContain("concat=n=5:v=0:a=1");
+    }
+  });
+
+  test("translates every shared Scene text fixture without re-fitting it", () => {
+    const { plan, imageRef, videoRef, fontRef } = planInsertedScenes();
+    for (const fixture of SCENE_TEXT_ADAPTER_FIXTURES) {
+      const fixturePlan = {
+        ...plan,
+        targets: plan.targets.map((target) => ({
+          ...target,
+          scenes: target.scenes.map((scene) => ({
+            ...scene,
+            layers: scene.layers.map((layer) =>
+              layer.kind === "inserted-scene" && layer.content.kind === "text"
+                ? {
+                    ...layer,
+                    content: { ...layer.content, text: fixture.text },
+                    textRender: fixture.render,
+                  }
+                : layer),
+          })),
+        })),
+      };
+      const compiled = compileCompositionPlanVideo({
+        plan: fixturePlan,
+        targetId: "vertical",
+        videoInputLabel: "[0:v]",
+        outputLabel: "[outv]",
+        resolvedSceneAssets: {
+          [imageRef]: { path: "/tmp/card.png", kind: "image" },
+          [videoRef]: { path: "/tmp/insert.mp4", kind: "video" },
+        },
+        resolvedSceneFonts: { [fontRef]: "/tmp/brand.ttf" },
+        sceneInputStartIndex: 1,
+      });
+      const graph = compiled.filterParts.join(";");
+      expect(graph.match(/drawtext=/g), fixture.id).toHaveLength(
+        fixture.render.lines.length,
+      );
+      expect(graph.match(new RegExp(`fontsize=${fixture.render.fontSizePx}`, "g")), fixture.id)
+        .toHaveLength(fixture.render.lines.length);
+      const expectedEscapedLines = fixture.id === "escaped-multilingual-title"
+        ? ["مرحبا 新 🚀", "It\\'s 100\\%"]
+        : fixture.render.lines;
+      for (const line of expectedEscapedLines) {
+        expect(graph, fixture.id).toContain(line);
+      }
+      expect(graph, fixture.id).not.toContain("line_spacing=12");
     }
   });
 

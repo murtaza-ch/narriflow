@@ -1,6 +1,7 @@
 import {
   CLIP_COMPOSITION_PLAN_VERSION,
   COMPOSITION_MOTION_VERSION,
+  SCENE_CONTINUITY_EPSILON_SEC,
   compositionAssetRef,
   type ClipCompositionPlan,
   type CompositionBrollVideoLayer,
@@ -517,7 +518,8 @@ export function compileCompositionPlanVisualLayers(input: {
       layer.zIndex < previousZIndex ||
       layer.activeRange.startSec < 0 ||
       layer.activeRange.endSec <= layer.activeRange.startSec ||
-      layer.activeRange.endSec > input.plan.editedDurationSec + 0.075
+      layer.activeRange.endSec >
+        input.plan.editedDurationSec + SCENE_CONTINUITY_EPSILON_SEC
     ) {
       throw new Error("invalid_clip_composition_visual_layers");
     }
@@ -652,7 +654,8 @@ function baseOnlyTarget(target: CompositionTargetPlan): CompositionTargetPlan {
     const previous = result[result.length - 1];
     if (
       previous &&
-      Math.abs(previous.endSec - scene.startSec) <= 0.075 &&
+      Math.abs(previous.endSec - scene.startSec) <=
+        SCENE_CONTINUITY_EPSILON_SEC &&
       JSON.stringify(previous.layers) === JSON.stringify(scene.layers)
     ) {
       result[result.length - 1] = { ...previous, endSec: scene.endSec };
@@ -740,12 +743,15 @@ function plannedCompositionBrollPlacements(
       const ordered = ranges.sort((left, right) => left[0] - right[0]);
       let cursor = layer.activeRange.startSec;
       for (const [startSec, endSec] of ordered) {
-        if (Math.abs(startSec - cursor) > 0.075) {
+        if (Math.abs(startSec - cursor) > SCENE_CONTINUITY_EPSILON_SEC) {
           throw new Error("invalid_clip_composition_broll_layer");
         }
         cursor = endSec;
       }
-      if (Math.abs(cursor - layer.activeRange.endSec) > 0.075) {
+      if (
+        Math.abs(cursor - layer.activeRange.endSec) >
+        SCENE_CONTINUITY_EPSILON_SEC
+      ) {
         throw new Error("invalid_clip_composition_broll_layer");
       }
       return {
@@ -777,6 +783,31 @@ function assertRect(
       (rect.x + rect.width > bounds.width || rect.y + rect.height > bounds.height))
   ) {
     throw new Error(code);
+  }
+}
+
+function assertInsertedSceneTextRender(
+  layer: CompositionInsertedSceneLayer,
+  canvas: { width: number; height: number },
+): asserts layer is CompositionInsertedSceneLayer & {
+  textRender: NonNullable<CompositionInsertedSceneLayer["textRender"]>;
+} {
+  const render = layer.textRender;
+  if (
+    layer.content.kind !== "text" ||
+    !render ||
+    render.lines.length === 0 ||
+    render.lines.some((line) => line.length === 0 || /[\r\n]/u.test(line)) ||
+    !Number.isInteger(render.fontSizePx) ||
+    !Number.isInteger(render.lineHeightPx) ||
+    !Number.isInteger(render.maxWidthPx) ||
+    render.fontSizePx <= 0 ||
+    render.lineHeightPx < render.fontSizePx ||
+    render.maxWidthPx <= 0 ||
+    render.maxWidthPx > canvas.width ||
+    render.lines.length * render.lineHeightPx > canvas.height
+  ) {
+    throw new Error("invalid_clip_composition_scene_text");
   }
 }
 
@@ -814,12 +845,18 @@ export function compileCompositionPlanInsertedSceneSequence(input: {
   });
   let cursor = 0;
   for (const scene of target.scenes) {
-    if (Math.abs(scene.startSec - cursor) > 0.075 || scene.endSec <= scene.startSec) {
+    if (
+      Math.abs(scene.startSec - cursor) > SCENE_CONTINUITY_EPSILON_SEC ||
+      scene.endSec <= scene.startSec
+    ) {
       throw new Error("invalid_clip_composition_scenes");
     }
     cursor = scene.endSec;
   }
-  if (Math.abs(cursor - input.plan.editedDurationSec) > 0.075) {
+  if (
+    Math.abs(cursor - input.plan.editedDurationSec) >
+    SCENE_CONTINUITY_EPSILON_SEC
+  ) {
     throw new Error("invalid_clip_composition_scenes");
   }
 
@@ -857,27 +894,46 @@ export function compileCompositionPlanInsertedSceneSequence(input: {
       timeOffsetSec: inserted.motion?.activeRange.startSec ?? scene.startSec,
     });
     if (inserted.content.kind === "color") {
+      if (inserted.textRender !== null) {
+        throw new Error("invalid_clip_composition_scene_text");
+      }
       parts.push(`color=c=0x${color.slice(1)}:s=${target.canvas.width}x${target.canvas.height}:r=${fps}:d=${duration.toFixed(3)},format=yuv420p${motionFilters}${output}`);
       return;
     }
     if (inserted.content.kind === "text") {
-      const fontSelector = inserted.content.fontAsset
+      assertInsertedSceneTextRender(inserted, target.canvas);
+      const textContent = inserted.content;
+      const textRender = inserted.textRender;
+      const fontSelector = textContent.fontAsset
         ? (() => {
             const fontPath = input.resolvedSceneFonts?.[
               compositionAssetRef(
                 "brand_font",
-                `${inserted.content.fontAsset.id}:${inserted.content.fontAsset.fingerprint}`,
+                `${textContent.fontAsset.id}:${textContent.fontAsset.fingerprint}`,
               )
             ];
             if (!fontPath) throw new Error("clip_composition_scene_font_missing");
             return `fontfile='${escapeDrawtextValue(fontPath)}'`;
           })()
-        : `font='${escapeDrawtextValue(inserted.content.fontFamily)}'`;
+        : `font='${escapeDrawtextValue(textContent.fontFamily)}'`;
+      const textBlockHeightPx =
+        textRender.lines.length * textRender.lineHeightPx;
+      const drawTextFilters = textRender.lines.map((line, index) =>
+        `drawtext=${fontSelector}:text='${escapeDrawtextValue(line)}'` +
+          `:fontcolor=0x${textContent.color.slice(1)}` +
+          `:fontsize=${textRender.fontSizePx}` +
+          ":x=(w-text_w)/2" +
+          `:y=(h-${textBlockHeightPx})/2+${index * textRender.lineHeightPx}` +
+          `+(${textRender.lineHeightPx}-text_h)/2`,
+      ).join(",");
       parts.push(
         `color=c=0x${color.slice(1)}:s=${target.canvas.width}x${target.canvas.height}:r=${fps}:d=${duration.toFixed(3)},` +
-          `drawtext=${fontSelector}:text='${escapeDrawtextValue(inserted.content.text)}':fontcolor=0x${inserted.content.color.slice(1)}:fontsize=${Math.max(24, Math.round(target.canvas.height / 18))}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=12,format=yuv420p${motionFilters}${output}`,
+          `${drawTextFilters},format=yuv420p${motionFilters}${output}`,
       );
       return;
+    }
+    if (inserted.textRender !== null) {
+      throw new Error("invalid_clip_composition_scene_text");
     }
     const asset = sceneInputs.find((candidate) => candidate.sourceRef === inserted.sourceRef);
     if (!asset) throw new Error("clip_composition_scene_input_missing");
@@ -952,12 +1008,18 @@ export function compileCompositionPlanVideo(input: {
   if (insertedLayers.length > 0) {
     let cursor = 0;
     for (const scene of plannedTarget.scenes) {
-      if (Math.abs(scene.startSec - cursor) > 0.075 || scene.endSec <= scene.startSec) {
+      if (
+        Math.abs(scene.startSec - cursor) > SCENE_CONTINUITY_EPSILON_SEC ||
+        scene.endSec <= scene.startSec
+      ) {
         throw new Error("invalid_clip_composition_scenes");
       }
       cursor = scene.endSec;
     }
-    if (Math.abs(cursor - input.plan.editedDurationSec) > 0.075) {
+    if (
+      Math.abs(cursor - input.plan.editedDurationSec) >
+      SCENE_CONTINUITY_EPSILON_SEC
+    ) {
       throw new Error("invalid_clip_composition_scenes");
     }
     const sourceScenes = plannedTarget.scenes
@@ -1131,10 +1193,11 @@ export function compileCompositionPlanVideo(input: {
     const sceneOutputs: string[] = [];
     target.scenes.forEach((scene, sceneIndex) => {
       if (
-        Math.abs(scene.startSec - cursor) > 0.075 ||
+        Math.abs(scene.startSec - cursor) > SCENE_CONTINUITY_EPSILON_SEC ||
         scene.endSec <= scene.startSec ||
         (sceneIndex === target.scenes.length - 1 &&
-          Math.abs(scene.endSec - input.plan.editedDurationSec) > 0.075)
+          Math.abs(scene.endSec - input.plan.editedDurationSec) >
+            SCENE_CONTINUITY_EPSILON_SEC)
       ) {
         throw new Error("invalid_clip_composition_scenes");
       }

@@ -36,11 +36,12 @@ import {
   type CompositionMotionPlan,
 } from "./motion-plan";
 
-export const CLIP_COMPOSITION_PLAN_VERSION = 1 as const;
+export const CLIP_COMPOSITION_PLAN_VERSION = 2 as const;
 export const CLIP_COMPOSITION_MAX_TARGETS = 4;
 export const CLIP_COMPOSITION_MAX_SERIALIZED_BYTES = 512 * 1024;
 export const CLIP_AUDIO_FADE_IN_SEC = 0.04;
 export const CLIP_AUDIO_FADE_OUT_SEC = 0.12;
+export const SCENE_CONTINUITY_EPSILON_SEC = 0.075;
 
 export type CompositionMode =
   | "auto"
@@ -311,12 +312,20 @@ export interface CompositionInsertedSceneLayer {
   readonly kind: "inserted-scene";
   readonly sceneBlockId: string;
   readonly content: SceneContent;
+  readonly textRender: CompositionSceneTextRender | null;
   readonly motion: CompositionMotionPlan | null;
   readonly sourceRef: string | null;
   readonly destination: CompositionRect;
   readonly rotationDeg: 0;
   readonly opacity: 1;
   readonly zIndex: 25;
+}
+
+export interface CompositionSceneTextRender {
+  readonly lines: readonly string[];
+  readonly fontSizePx: number;
+  readonly lineHeightPx: number;
+  readonly maxWidthPx: number;
 }
 
 export type CompositionLayer =
@@ -541,8 +550,10 @@ export type ClipCompositionPlanResult =
           | "empty_edited_timeline"
           | "invalid_broll_placement"
           | "unsupported_mode"
+          | "text_scene_unfit"
           | "plan_size_exceeded";
         readonly targetId?: string;
+        readonly sceneId?: string;
       };
     }
   | {
@@ -919,14 +930,14 @@ function segmentsAreComplete(
     if (
       !Number.isFinite(segment.startSec) ||
       !Number.isFinite(segment.endSec) ||
-      Math.abs(segment.startSec - cursor) > 0.075 ||
+      Math.abs(segment.startSec - cursor) > SCENE_CONTINUITY_EPSILON_SEC ||
       segment.endSec <= segment.startSec
     ) {
       return false;
     }
     cursor = segment.endSec;
   }
-  return Math.abs(cursor - editedDurationSec) <= 0.075;
+  return Math.abs(cursor - editedDurationSec) <= SCENE_CONTINUITY_EPSILON_SEC;
 }
 
 function evidenceMatches(
@@ -1141,7 +1152,8 @@ function validAutomaticLayoutEvidence(
     // on the source-derived Studio proxy and then applied to the original
     // render dimensions, so pixel dimensions are descriptive rather than
     // part of the evidence invalidation key.
-    Math.abs(analysis.editedDurationSec - editedDurationSec) > 0.075 ||
+    Math.abs(analysis.editedDurationSec - editedDurationSec) >
+      SCENE_CONTINUITY_EPSILON_SEC ||
     !clipAutoLayoutMatchesInputs(analysis, {
       clipStartSec: input.document.clipStartSec,
       clipEndSec: input.document.clipEndSec,
@@ -1224,9 +1236,153 @@ function addBrollLayers(
   return { ...target, scenes };
 }
 
+const SCENE_TEXT_WIDTH_SAFETY_FACTOR = 1.08;
+const SCENE_TEXT_NARROW_ASCII = /^[ilI1.,'|!:;`]$/u;
+const SCENE_TEXT_WIDE_ASCII = /^[MW@#%&]$/u;
+const SCENE_TEXT_CJK_OR_FULL_WIDTH =
+  /^[\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]$/u;
+const SCENE_TEXT_SEGMENTER = typeof Intl.Segmenter === "function"
+  ? new Intl.Segmenter("und", { granularity: "grapheme" })
+  : null;
+
+function sceneTextGraphemes(value: string): string[] {
+  if (SCENE_TEXT_SEGMENTER) {
+    return [...SCENE_TEXT_SEGMENTER.segment(value)].map(
+      (segment) => segment.segment,
+    );
+  }
+  return Array.from(value);
+}
+
+function sceneTextGraphemeWidthEm(grapheme: string): number {
+  if (/^\s+$/u.test(grapheme)) return 0.35;
+  if (/\p{Extended_Pictographic}/u.test(grapheme)) return 1;
+  if (SCENE_TEXT_CJK_OR_FULL_WIDTH.test(grapheme)) return 1;
+  if (SCENE_TEXT_NARROW_ASCII.test(grapheme)) return 0.4;
+  if (SCENE_TEXT_WIDE_ASCII.test(grapheme)) return 0.9;
+  if (/^\p{Lu}$/u.test(grapheme)) return 0.72;
+  if (/^[\p{Ll}\p{N}]$/u.test(grapheme)) return 0.62;
+  if (/^\p{P}$/u.test(grapheme)) return 0.5;
+  return 0.75;
+}
+
+interface PreparedSceneTextWord {
+  readonly text: string;
+  readonly graphemes: readonly {
+    readonly text: string;
+    readonly widthEm: number;
+  }[];
+  readonly widthEm: number;
+}
+
+function prepareSceneText(text: string): PreparedSceneTextWord[] {
+  return text.trim().replace(/\s+/gu, " ").split(" ").map((word) => {
+    const graphemes = sceneTextGraphemes(word).map((grapheme) => ({
+      text: grapheme,
+      widthEm: sceneTextGraphemeWidthEm(grapheme),
+    }));
+    return {
+      text: word,
+      graphemes,
+      widthEm: graphemes.reduce((width, grapheme) => width + grapheme.widthEm, 0),
+    };
+  });
+}
+
+function breakSceneTextWord(
+  word: PreparedSceneTextWord,
+  maxWidthEm: number,
+): string[] {
+  const lines: string[] = [];
+  let line = "";
+  let lineWidthEm = 0;
+  for (const grapheme of word.graphemes) {
+    if (line && lineWidthEm + grapheme.widthEm > maxWidthEm) {
+      lines.push(line);
+      line = grapheme.text;
+      lineWidthEm = grapheme.widthEm;
+    } else {
+      line += grapheme.text;
+      lineWidthEm += grapheme.widthEm;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function wrapSceneText(
+  words: readonly PreparedSceneTextWord[],
+  fontSizePx: number,
+  maxWidthPx: number,
+): string[] {
+  const maxWidthEm = maxWidthPx /
+    (fontSizePx * SCENE_TEXT_WIDTH_SAFETY_FACTOR);
+  const lines: string[] = [];
+  let line = "";
+  let lineWidthEm = 0;
+  const spaceWidthEm = sceneTextGraphemeWidthEm(" ");
+  for (const word of words) {
+    if (word.widthEm > maxWidthEm) {
+      if (line) lines.push(line);
+      const pieces = breakSceneTextWord(word, maxWidthEm);
+      lines.push(...pieces.slice(0, -1));
+      line = pieces.at(-1) ?? "";
+      lineWidthEm = word.graphemes
+        .slice(word.graphemes.length - sceneTextGraphemes(line).length)
+        .reduce((width, grapheme) => width + grapheme.widthEm, 0);
+      continue;
+    }
+    if (line && lineWidthEm + spaceWidthEm + word.widthEm > maxWidthEm) {
+      lines.push(line);
+      line = word.text;
+      lineWidthEm = word.widthEm;
+    } else {
+      line = line ? `${line} ${word.text}` : word.text;
+      lineWidthEm += (lineWidthEm > 0 ? spaceWidthEm : 0) + word.widthEm;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function fitSceneText(
+  text: string,
+  canvas: { width: number; height: number },
+): CompositionSceneTextRender | null {
+  const shorterSide = Math.min(canvas.width, canvas.height);
+  const maxWidthPx = Math.round(canvas.width * 0.82);
+  const maxHeightPx = Math.round(canvas.height * 0.82);
+  const maximumFontSizePx = Math.max(1, Math.round(shorterSide * 0.1));
+  const minimumFontSizePx = Math.max(
+    1,
+    Math.round(shorterSide * (24 / 1080)),
+  );
+  const words = prepareSceneText(text);
+  for (
+    let fontSizePx = maximumFontSizePx;
+    fontSizePx >= minimumFontSizePx;
+    fontSizePx -= 1
+  ) {
+    const lineHeightPx = Math.round(fontSizePx * 1.05);
+    const lines = wrapSceneText(words, fontSizePx, maxWidthPx);
+    if (
+      lines.length > 0 &&
+      lines.length * lineHeightPx <= maxHeightPx
+    ) {
+      return { lines, fontSizePx, lineHeightPx, maxWidthPx };
+    }
+  }
+  return null;
+}
+
+function sceneTextRenderKey(targetId: string, sceneBlockId: string): string {
+  return `${targetId}:${sceneBlockId}`;
+}
+
 function addInsertedSceneBlocks(
   target: CompositionBaseTargetPlan,
   blocks: readonly SceneBlock[],
+  textRenders: ReadonlyMap<string, CompositionSceneTextRender>,
 ): CompositionBaseTargetPlan {
   if (blocks.length === 0) return target;
   let insertedBeforeSec = 0;
@@ -1268,6 +1424,9 @@ function addInsertedSceneBlocks(
       kind: "inserted-scene",
       sceneBlockId: block.id,
       content: block.content,
+      textRender: block.content.kind === "text"
+        ? textRenders.get(sceneTextRenderKey(target.id, block.id)) ?? null
+        : null,
       motion: null,
       sourceRef: block.content.kind === "image" || block.content.kind === "video"
         ? compositionAssetRef("visual_asset", `${block.content.asset.id}:${block.content.asset.fingerprint}`)
@@ -1837,6 +1996,25 @@ export function planClipComposition(
 ): ClipCompositionPlanResult {
   const invalid = validateInput(input);
   if (invalid) return invalid;
+
+  const sceneTextRenders = new Map<string, CompositionSceneTextRender>();
+  for (const target of input.targets) {
+    for (const scene of input.document.sceneBlocks) {
+      if (scene.content.kind !== "text") continue;
+      const textRender = fitSceneText(scene.content.text, target);
+      if (!textRender) {
+        return {
+          status: "invalid",
+          error: {
+            code: "text_scene_unfit",
+            targetId: target.id,
+            sceneId: scene.id,
+          },
+        };
+      }
+      sceneTextRenders.set(sceneTextRenderKey(target.id, scene.id), textRender);
+    }
+  }
 
   const editedTimeMap = buildEditedTimeMap(input.document.deletedRanges, {
     startSec: input.document.clipStartSec,
@@ -2680,6 +2858,7 @@ export function planClipComposition(
       ...addInsertedSceneBlocks(
         addBrollLayers(baseTarget, brollPlacements),
         input.document.sceneBlocks,
+        sceneTextRenders,
       ),
       visualLayers: retimeVisualLayersForInsertedScenes(
         visualLayersForTarget({

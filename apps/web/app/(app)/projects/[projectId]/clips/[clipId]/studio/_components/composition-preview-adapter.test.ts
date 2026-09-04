@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { MOTION_ADAPTER_FIXTURES, planClipComposition, planMediaMotion } from "@narriflow/composition-plan";
+import {
+  MOTION_ADAPTER_FIXTURES,
+  SCENE_TEXT_ADAPTER_FIXTURES,
+  planClipComposition,
+  planMediaMotion,
+} from "@narriflow/composition-plan";
 import {
   captionPresetSchema,
   editorDocumentSchema,
@@ -18,6 +23,7 @@ import {
   plannedCompositionUsesStackedStage,
   plannedCompositionFrameStyle,
   plannedCompositionVideoStyle,
+  plannedSceneTextPreview,
   adoptCompositionMotion,
 } from "./composition-preview-adapter";
 
@@ -47,6 +53,19 @@ function centerPlan() {
 }
 
 describe("composition preview adapter", () => {
+  test("translates every shared Scene text fixture without re-fitting it", () => {
+    for (const fixture of SCENE_TEXT_ADAPTER_FIXTURES) {
+      expect(
+        plannedSceneTextPreview(fixture.render, { width: 1080, height: 1920 }, 540),
+      ).toEqual({
+        text: fixture.render.lines.join("\n"),
+        fontSizePx: fixture.render.fontSizePx / 2,
+        lineHeightPx: fixture.render.lineHeightPx / 2,
+        maxWidthPx: fixture.render.maxWidthPx / 2,
+      });
+    }
+  });
+
   test("samples canonical motion and keeps reduced-motion preview static", () => {
     const fixture = MOTION_ADAPTER_FIXTURES.media.find(
       (candidate) => candidate.entrance === "pan-left",
@@ -436,6 +455,9 @@ describe("composition preview adapter", () => {
     expect(compositionInvalidText("plan_size_exceeded")).toBe(
       "This composition is too complex to export. Remove some timed elements and try again.",
     );
+    expect(compositionInvalidText("text_scene_unfit")).toBe(
+      "This Scene has too much text for this format. Shorten the copy or choose another format before exporting.",
+    );
   });
 
   test("names scoped pending and degraded fallbacks in accessible text", () => {
@@ -559,7 +581,7 @@ describe("composition preview adapter", () => {
     const adopted = adoptCompositionPreview(centerPlan(), "9:16", 6);
 
     expect(adopted).toEqual({
-      planVersion: 1,
+      planVersion: 2,
       planFingerprint: expect.any(String),
       mainMediaKey: "preview:key-1",
       canvas: { width: 1080, height: 1920, divisibleBy: 2 },

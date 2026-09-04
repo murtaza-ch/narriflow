@@ -1,6 +1,7 @@
 import {
   CLIP_COMPOSITION_PLAN_VERSION,
   COMPOSITION_MOTION_VERSION,
+  SCENE_CONTINUITY_EPSILON_SEC,
   sampleCompositionMotion,
   type ClipCompositionPlan,
   type ClipCompositionPlanResult,
@@ -9,10 +10,41 @@ import {
   type CompositionLayer,
   type CompositionMode,
   type CompositionNotice,
+  type CompositionSceneTextRender,
   type CompositionVisualLayer,
   type CompositionMotionPlan,
 } from "@narriflow/composition-plan";
 import { duckingGainMultiplierAt } from "@narriflow/validators";
+
+export function plannedSceneTextPreview(
+  render: CompositionSceneTextRender,
+  canvas: { width: number; height: number },
+  previewWidth: number,
+) {
+  if (
+    render.lines.length === 0 ||
+    render.lines.some((line) => line.length === 0 || /[\r\n]/u.test(line)) ||
+    !Number.isInteger(render.fontSizePx) ||
+    !Number.isInteger(render.lineHeightPx) ||
+    !Number.isInteger(render.maxWidthPx) ||
+    render.fontSizePx <= 0 ||
+    render.lineHeightPx < render.fontSizePx ||
+    render.maxWidthPx <= 0 ||
+    render.maxWidthPx > canvas.width ||
+    render.lines.length * render.lineHeightPx > canvas.height ||
+    !Number.isFinite(previewWidth) ||
+    previewWidth <= 0
+  ) {
+    throw new Error("invalid_clip_composition_scene_text");
+  }
+  const scale = previewWidth / canvas.width;
+  return {
+    text: render.lines.join("\n"),
+    fontSizePx: render.fontSizePx * scale,
+    lineHeightPx: render.lineHeightPx * scale,
+    maxWidthPx: render.maxWidthPx * scale,
+  };
+}
 
 export function adoptCompositionMotion(
   motion: CompositionMotionPlan,
@@ -339,6 +371,9 @@ export function compositionNoticeEntries(
 }
 
 export function compositionInvalidText(code: string): string {
+  if (code === "text_scene_unfit") {
+    return "This Scene has too much text for this format. Shorten the copy or choose another format before exporting.";
+  }
   if (code === "plan_size_exceeded") {
     return "This composition is too complex to export. Remove some timed elements and try again.";
   }
@@ -418,8 +453,6 @@ export function plannedCompositionUsesStackedStage(
   );
 }
 
-const SCENE_END_EPSILON_SEC = 0.075;
-
 function assertFiniteRect(
   rect: { x: number; y: number; width: number; height: number },
   bounds: { width: number; height: number },
@@ -481,7 +514,8 @@ function assertVisualLayers(
       !Number.isFinite(layer.activeRange.endSec) ||
       layer.activeRange.startSec < 0 ||
       layer.activeRange.endSec <= layer.activeRange.startSec ||
-      layer.activeRange.endSec > durationSec + SCENE_END_EPSILON_SEC ||
+      layer.activeRange.endSec >
+        durationSec + SCENE_CONTINUITY_EPSILON_SEC ||
       layer.zIndex < previousZIndex
     ) {
       throw new Error("invalid_clip_composition_visual_layers");
@@ -517,11 +551,12 @@ export function adoptCompositionPreview(
   let cursor = 0;
   for (const [index, candidate] of target.scenes.entries()) {
     if (
-      Math.abs(candidate.startSec - cursor) > SCENE_END_EPSILON_SEC ||
+      Math.abs(candidate.startSec - cursor) >
+        SCENE_CONTINUITY_EPSILON_SEC ||
       candidate.endSec <= candidate.startSec ||
       (index === target.scenes.length - 1 &&
         Math.abs(candidate.endSec - plan.editedDurationSec) >
-          SCENE_END_EPSILON_SEC)
+          SCENE_CONTINUITY_EPSILON_SEC)
     ) {
       throw new Error("invalid_clip_composition_scenes");
     }
@@ -543,7 +578,7 @@ export function adoptCompositionPreview(
       time >= candidate.startSec &&
       (time < candidate.endSec ||
         (index === target.scenes.length - 1 &&
-          time <= candidate.endSec + SCENE_END_EPSILON_SEC)),
+          time <= candidate.endSec + SCENE_CONTINUITY_EPSILON_SEC)),
   );
   if (!scene) throw new Error("clip_composition_scene_missing");
   const mainSource = scene.layers.find(
@@ -561,8 +596,8 @@ export function adoptCompositionPreview(
       time >= layer.activeRange.startSec &&
       (time < layer.activeRange.endSec ||
         (Math.abs(layer.activeRange.endSec - plan.editedDurationSec) <=
-          SCENE_END_EPSILON_SEC &&
-          time <= layer.activeRange.endSec + SCENE_END_EPSILON_SEC)),
+          SCENE_CONTINUITY_EPSILON_SEC &&
+          time <= layer.activeRange.endSec + SCENE_CONTINUITY_EPSILON_SEC)),
   );
 
   return {
