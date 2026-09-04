@@ -278,12 +278,10 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
     const lifecycle = new WorkflowRunLifecycle({ prisma });
 
-    const cancelled = await prisma.$transaction((tx) =>
-      lifecycle.cancelQueuedProjectRuns(tx, {
-        projectId: project.id,
-        errorCode: "PROJECT_EXPIRED",
-      }),
-    );
+    const cancelled = await lifecycle.cancelQueuedProjectRuns({
+      projectId: project.id,
+      errorCode: "PROJECT_EXPIRED",
+    });
 
     expect(cancelled).toBe(1);
     expect(
@@ -295,6 +293,128 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(
       await prisma.workflowEvent.count({ where: { workflowRunId: run.id } }),
     ).toBe(0);
+  });
+
+  test("export-bundle commands own their fenced child transactions", async () => {
+    const createBundle = async () => {
+      const { user, workspace, project, run } = await fixture("export_bundle");
+      const operation = await prisma.campaignOperation.create({
+        data: {
+          workspaceId: workspace.id,
+          projectId: project.id,
+          actorUserId: user.id,
+          action: "export_bundle",
+          idempotencyKey: randomUUID(),
+          requestFingerprint: randomUUID(),
+          validatedOptions: {},
+          pricingTier: "business",
+          requestedCount: 1,
+          workflowRunId: run.id,
+          items: {
+            create: {
+              requestedClipId: randomUUID(),
+              status: "failed",
+              errorCode: "export_bundle_build_failed",
+            },
+          },
+          bundle: { create: { workflowRunId: run.id, manifest: {} } },
+        },
+        include: { bundle: true, items: true },
+      });
+      if (!operation.bundle) throw new Error("export bundle fixture missing");
+      return { operation, bundle: operation.bundle, item: operation.items[0]!, run };
+    };
+
+    const first = await createBundle();
+    const lifecycle = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+    });
+    const firstAttempt = await lifecycle.claim("export_bundle");
+    if (!firstAttempt) throw new Error("export-bundle claim missing");
+    await lifecycle.beginExportBundleBuild(firstAttempt, {
+      bundleId: first.bundle.id,
+      operationId: first.operation.id,
+      attemptStorageKey: "projects/test/attempt.zip",
+    });
+    expect(
+      await prisma.exportBundle.findUniqueOrThrow({
+        where: { id: first.bundle.id },
+      }),
+    ).toMatchObject({
+      status: "building",
+      attemptStorageKey: "projects/test/attempt.zip",
+    });
+    expect(
+      await prisma.campaignOperationItem.findUniqueOrThrow({
+        where: { id: first.item.id },
+      }),
+    ).toMatchObject({ status: "pending", errorCode: null });
+
+    await lifecycle.completeExportBundleBuild(firstAttempt, {
+      bundleId: first.bundle.id,
+      operationId: first.operation.id,
+      storageKey: "projects/test/final.zip",
+      sizeBytes: 42,
+      checksumSha256: "checksum",
+      operationStatus: "completed",
+      succeededCount: 1,
+    });
+    expect(
+      await prisma.exportBundle.findUniqueOrThrow({
+        where: { id: first.bundle.id },
+      }),
+    ).toMatchObject({
+      status: "completed",
+      attemptStorageKey: null,
+      storageKey: "projects/test/final.zip",
+      sizeBytes: 42n,
+    });
+    expect(
+      await prisma.campaignOperation.findUniqueOrThrow({
+        where: { id: first.operation.id },
+      }),
+    ).toMatchObject({
+      status: "completed",
+      succeededCount: 1,
+      failedCount: 0,
+    });
+
+    const second = await createBundle();
+    const secondAttempt = await lifecycle.claim("export_bundle");
+    if (!secondAttempt) throw new Error("second export-bundle claim missing");
+    await lifecycle.beginExportBundleBuild(secondAttempt, {
+      bundleId: second.bundle.id,
+      operationId: second.operation.id,
+      attemptStorageKey: "projects/test/failed-attempt.zip",
+    });
+    await lifecycle.failExportBundleBuild(secondAttempt, {
+      bundleId: second.bundle.id,
+      operationId: second.operation.id,
+      errorCode: "export_bundle_build_failed",
+      failedCount: 1,
+    });
+    expect(
+      await prisma.exportBundle.findUniqueOrThrow({
+        where: { id: second.bundle.id },
+      }),
+    ).toMatchObject({
+      status: "failed",
+      attemptStorageKey: null,
+      errorCode: "export_bundle_build_failed",
+    });
+    expect(
+      await prisma.campaignOperation.findUniqueOrThrow({
+        where: { id: second.operation.id },
+      }),
+    ).toMatchObject({ status: "failed", succeededCount: 0, failedCount: 1 });
+    await expect(
+      lifecycle.beginExportBundleBuild(secondAttempt, {
+        bundleId: first.bundle.id,
+        operationId: first.operation.id,
+        attemptStorageKey: "projects/test/wrong.zip",
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
   });
 
   test("the first owned begin freezes eligible pending variants without rewriting history", async () => {

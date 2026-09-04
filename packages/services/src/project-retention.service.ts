@@ -453,6 +453,10 @@ export class ProjectRetentionService {
 			const claimed = await this.claimDueProject(now);
 			if (!claimed) break;
 			try {
+				await getWorkflowRunLifecycle().cancelQueuedProjectRuns({
+					projectId: claimed.id,
+					errorCode: "PROJECT_EXPIRED",
+				});
 				const outcome = await this.purgeClaimedProject(claimed);
 				if (outcome === "purged") summary.purged += 1;
 				else summary.waiting += 1;
@@ -530,10 +534,6 @@ export class ProjectRetentionService {
 						completedAt: now,
 					},
 				}),
-				getWorkflowRunLifecycle().cancelQueuedProjectRuns(tx, {
-					projectId: candidate.id,
-					errorCode: "PROJECT_EXPIRED",
-				}),
 				tx.transcript.updateMany({
 					where: { projectId: candidate.id, status: "queued" },
 					data: { status: "failed", errorCode: "PROJECT_EXPIRED" },
@@ -562,7 +562,7 @@ export class ProjectRetentionService {
 					purgeDeletedBytes: true,
 				},
 			});
-		});
+			});
 	}
 
 	private async purgeClaimedProject(

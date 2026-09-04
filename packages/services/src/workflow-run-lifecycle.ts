@@ -874,15 +874,17 @@ export class WorkflowRunLifecycle {
     });
   }
 
-  async cancelQueuedProjectRuns(
-    tx: TransactionClient,
-    input: { projectId: string; errorCode: string },
-  ): Promise<number> {
-    const cancelled = await tx.workflowRun.updateMany({
-      where: { projectId: input.projectId, status: "queued" },
-      data: { status: "cancelled", errorCode: input.errorCode },
+  async cancelQueuedProjectRuns(input: {
+    projectId: string;
+    errorCode: string;
+  }): Promise<number> {
+    return this.transaction(async (tx) => {
+      const cancelled = await tx.workflowRun.updateMany({
+        where: { projectId: input.projectId, status: "queued" },
+        data: { status: "cancelled", errorCode: input.errorCode },
+      });
+      return cancelled.count;
     });
-    return cancelled.count;
   }
 
   async heartbeat(attempt: WorkflowAttemptRef): Promise<void> {
@@ -924,18 +926,142 @@ export class WorkflowRunLifecycle {
     if (owned.length === 0) throw new WorkflowAttemptLost(attempt);
   }
 
-  /**
-   * Runs a child-artifact mutation while holding the owning WorkflowRun row.
-   * Reapers and takeover claims must acquire the same lock, so the attempt
-   * cannot lose ownership between the fence check and its database writes.
-   */
-  async mutateOwnedAttempt<T>(
+  private async requireOwnedExportBundle(
+    tx: TransactionClient,
     attempt: WorkflowAttemptRef,
-    operation: (tx: TransactionClient) => Promise<T>,
-  ): Promise<T> {
+    input: { bundleId: string; operationId: string },
+  ) {
+    await this.fenceChildMutation(tx, attempt, "export_bundle");
+    const bundle = await tx.exportBundle.findFirst({
+      where: {
+        id: input.bundleId,
+        operationId: input.operationId,
+        workflowRunId: attempt.workflowRunId,
+        operation: { projectId: attempt.projectId },
+      },
+      select: { id: true },
+    });
+    if (!bundle) throw new WorkflowAttemptLost(attempt);
+  }
+
+  async beginExportBundleBuild(
+    attempt: WorkflowAttemptRef,
+    input: {
+      bundleId: string;
+      operationId: string;
+      attemptStorageKey: string;
+    },
+  ): Promise<void> {
     return this.transaction(async (tx) => {
-      await this.fenceChildMutation(tx, attempt, attempt.stage);
-      return operation(tx);
+      await this.requireOwnedExportBundle(tx, attempt, input);
+      await tx.exportBundle.update({
+        where: { id: input.bundleId },
+        data: {
+          status: "building",
+          attemptStorageKey: input.attemptStorageKey,
+          errorCode: null,
+        },
+      });
+      await tx.campaignOperationItem.updateMany({
+        where: {
+          operationId: input.operationId,
+          status: "failed",
+          errorCode: "export_bundle_build_failed",
+        },
+        data: { status: "pending", errorCode: null, settledAt: null },
+      });
+      await tx.campaignOperation.update({
+        where: { id: input.operationId },
+        data: {
+          status: "running",
+          succeededCount: 0,
+          failedCount: 0,
+          completedAt: null,
+        },
+      });
+    });
+  }
+
+  async completeExportBundleBuild(
+    attempt: WorkflowAttemptRef,
+    input: {
+      bundleId: string;
+      operationId: string;
+      storageKey: string;
+      sizeBytes: number;
+      checksumSha256: string;
+      operationStatus: "completed" | "partial";
+      succeededCount: number;
+    },
+  ): Promise<void> {
+    return this.transaction(async (tx) => {
+      await this.requireOwnedExportBundle(tx, attempt, input);
+      const completedAt = await this.databaseNow(tx);
+      await tx.campaignOperationItem.updateMany({
+        where: { operationId: input.operationId, status: "pending" },
+        data: { status: "succeeded", settledAt: completedAt, errorCode: null },
+      });
+      await tx.exportBundle.update({
+        where: { id: input.bundleId },
+        data: {
+          status: "completed",
+          attemptStorageKey: null,
+          storageKey: input.storageKey,
+          sizeBytes: BigInt(input.sizeBytes),
+          checksumSha256: input.checksumSha256,
+          completedAt,
+          errorCode: null,
+        },
+      });
+      await tx.campaignOperation.update({
+        where: { id: input.operationId },
+        data: {
+          status: input.operationStatus,
+          succeededCount: input.succeededCount,
+          failedCount: 0,
+          completedAt,
+        },
+      });
+    });
+  }
+
+  async failExportBundleBuild(
+    attempt: WorkflowAttemptRef,
+    input: {
+      bundleId: string;
+      operationId: string;
+      errorCode: string;
+      failedCount: number;
+    },
+  ): Promise<void> {
+    return this.transaction(async (tx) => {
+      await this.requireOwnedExportBundle(tx, attempt, input);
+      const completedAt = await this.databaseNow(tx);
+      await tx.exportBundle.update({
+        where: { id: input.bundleId },
+        data: {
+          status: "failed",
+          attemptStorageKey: null,
+          errorCode: input.errorCode,
+        },
+      });
+      await tx.campaignOperationItem.updateMany({
+        where: { operationId: input.operationId, status: "pending" },
+        data: {
+          status: "failed",
+          errorCode: input.errorCode,
+          settledAt: completedAt,
+        },
+      });
+      await tx.campaignOperation.update({
+        where: { id: input.operationId },
+        data: {
+          status: "failed",
+          succeededCount: 0,
+          failedCount: input.failedCount,
+          completedAt,
+        },
+      });
     });
   }
 

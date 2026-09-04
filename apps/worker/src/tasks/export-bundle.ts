@@ -114,10 +114,10 @@ export async function processExportBundleRun(
   let finalPublished = false;
   let bundleSettled = false;
   try {
-    await lifecycle.mutateOwnedAttempt(attempt, async (tx) => {
-      await tx.exportBundle.update({ where: { id: bundle.id }, data: { status: "building", attemptStorageKey: attemptKey, errorCode: null } });
-      await tx.campaignOperationItem.updateMany({ where: { operationId: bundle.operationId, status: "failed", errorCode: "export_bundle_build_failed" }, data: { status: "pending", errorCode: null, settledAt: null } });
-      await tx.campaignOperation.update({ where: { id: bundle.operationId }, data: { status: "running", succeededCount: 0, failedCount: 0, completedAt: null } });
+    await lifecycle.beginExportBundleBuild(attempt, {
+      bundleId: bundle.id,
+      operationId: bundle.operationId,
+      attemptStorageKey: attemptKey,
     });
     const entries = manifest.included.flatMap((item) => item.files);
     await runExportBundlePipeline({
@@ -142,10 +142,14 @@ export async function processExportBundleRun(
         finalPublished = true;
       },
       settle: async ({ archiveInfo, checksumSha256 }) => {
-        await lifecycle.mutateOwnedAttempt(attempt, async (tx) => {
-          await tx.campaignOperationItem.updateMany({ where: { operationId: bundle.operationId, status: "pending" }, data: { status: "succeeded", settledAt: new Date(), errorCode: null } });
-          await tx.exportBundle.update({ where: { id: bundle.id }, data: { status: "completed", attemptStorageKey: null, storageKey: finalKey, sizeBytes: BigInt(archiveInfo.size), checksumSha256, completedAt: new Date(), errorCode: null } });
-					await tx.campaignOperation.update({ where: { id: bundle.operationId }, data: { status: manifest.excluded.length ? "partial" : "completed", succeededCount: manifest.included.length, failedCount: 0, completedAt: new Date() } });
+        await lifecycle.completeExportBundleBuild(attempt, {
+          bundleId: bundle.id,
+          operationId: bundle.operationId,
+          storageKey: finalKey,
+          sizeBytes: archiveInfo.size,
+          checksumSha256,
+          operationStatus: manifest.excluded.length ? "partial" : "completed",
+          succeededCount: manifest.included.length,
         });
         bundleSettled = true;
       },
@@ -159,10 +163,11 @@ export async function processExportBundleRun(
     await deleteObject(attemptKey).catch(() => {});
     rethrowWorkflowAttemptLost(error);
     if (!bundleSettled) {
-      await lifecycle.mutateOwnedAttempt(attempt, async (tx) => {
-        await tx.exportBundle.update({ where: { id: bundle.id }, data: { status: "failed", attemptStorageKey: null, errorCode: "export_bundle_build_failed" } });
-        await tx.campaignOperationItem.updateMany({ where: { operationId: bundle.operationId, status: "pending" }, data: { status: "failed", errorCode: "export_bundle_build_failed", settledAt: new Date() } });
-        await tx.campaignOperation.update({ where: { id: bundle.operationId }, data: { status: "failed", succeededCount: 0, failedCount: manifest.included.length, completedAt: new Date() } });
+      await lifecycle.failExportBundleBuild(attempt, {
+        bundleId: bundle.id,
+        operationId: bundle.operationId,
+        errorCode: "export_bundle_build_failed",
+        failedCount: manifest.included.length,
       });
     }
     await lifecycle.failAttempt(attempt, workflowFailureFromUnknown(error));
