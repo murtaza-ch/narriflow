@@ -32,6 +32,7 @@ import {
   admitMediaCleanupObligations,
   type MediaCleanupObligationInput,
 } from "./media-cleanup";
+import { accessibleProjectWhere } from "./project-retention.service";
 
 export class ClipEditorRevisionConflictError extends Error {
   constructor(readonly currentRevision: number) {
@@ -66,7 +67,8 @@ export class ClipEditorDocumentPersistenceError extends Error {
 }
 
 export interface ClipEditorDocumentStoredState {
-  actorUserId: string;
+  workspaceId: string;
+  workspaceOwnerUserId: string;
   projectId: string;
   clipId: string;
   revision: number;
@@ -96,8 +98,13 @@ export interface ClipEditorDocumentStoredState {
   mutableRenders: Array<{ id: string; storageKey: string | null }>;
 }
 
-export interface ClipEditorDocumentScope {
+export interface ClipEditorDocumentActorScope {
   actorUserId: string;
+  workspaceId: string;
+  workspaceOwnerUserId: string;
+}
+
+export interface ClipEditorDocumentScope extends ClipEditorDocumentActorScope {
   projectId: string;
   clipId: string;
 }
@@ -138,8 +145,7 @@ interface ClipEditorDocumentCommit {
   cleanupIntents: MediaCleanupObligationInput[];
 }
 
-interface ClipEditorProjectSelectionScope {
-  actorUserId: string;
+interface ClipEditorProjectSelectionScope extends ClipEditorDocumentActorScope {
   projectId: string;
   excludeClipId?: string;
 }
@@ -691,6 +697,8 @@ export function createClipEditorDocumentPersistence(input: {
     mutateDocument,
     async mutateProjectSelection(request: {
       actorUserId: string;
+      workspaceId: string;
+      workspaceOwnerUserId: string;
       projectId: string;
       excludeClipId?: string;
       intent: ClipEditorProjectSelectionIntent;
@@ -713,6 +721,8 @@ export function createClipEditorDocumentPersistence(input: {
             {
               scope: {
                 actorUserId: request.actorUserId,
+                workspaceId: request.workspaceId,
+                workspaceOwnerUserId: request.workspaceOwnerUserId,
                 projectId: request.projectId,
                 clipId: state.clipId,
               },
@@ -803,7 +813,7 @@ export function createInMemoryClipEditorDocumentStore(
     ]),
   );
   const projectOwners = new Map(
-    seeds.map((seed) => [seed.projectId, seed.actorUserId]),
+    seeds.map((seed) => [seed.projectId, seed.workspaceOwnerUserId]),
   );
   let forcedContention = 0;
 
@@ -812,7 +822,8 @@ export function createInMemoryClipEditorDocumentStore(
       .filter(
         (record) =>
           record.state.projectId === scope.projectId &&
-          record.state.actorUserId === scope.actorUserId &&
+          record.state.workspaceId === scope.workspaceId &&
+          record.state.workspaceOwnerUserId === scope.workspaceOwnerUserId &&
           record.state.clipId !== scope.excludeClipId,
       )
       .sort((left, right) => left.state.clipId.localeCompare(right.state.clipId));
@@ -851,7 +862,8 @@ export function createInMemoryClipEditorDocumentStore(
       if (
         !record ||
         record.state.projectId !== scope.projectId ||
-        record.state.actorUserId !== scope.actorUserId
+        record.state.workspaceId !== scope.workspaceId ||
+        record.state.workspaceOwnerUserId !== scope.workspaceOwnerUserId
       ) {
         return null;
       }
@@ -862,7 +874,8 @@ export function createInMemoryClipEditorDocumentStore(
       return Boolean(
         record &&
           record.state.projectId === scope.projectId &&
-          record.state.actorUserId === scope.actorUserId &&
+          record.state.workspaceId === scope.workspaceId &&
+          record.state.workspaceOwnerUserId === scope.workspaceOwnerUserId &&
           record.state.revision === expectedRevision,
       );
     },
@@ -877,11 +890,16 @@ export function createInMemoryClipEditorDocumentStore(
       return clone(record.state);
     },
     async readProjectSelection(scope) {
-      if (projectOwners.get(scope.projectId) !== scope.actorUserId) return null;
+      if (projectOwners.get(scope.projectId) !== scope.workspaceOwnerUserId) {
+        return null;
+      }
       return selectedRecords(scope).map((record) => clone(record.state));
     },
     async commitProjectSelection(input) {
-      if (projectOwners.get(input.scope.projectId) !== input.scope.actorUserId) {
+      if (
+        projectOwners.get(input.scope.projectId) !==
+        input.scope.workspaceOwnerUserId
+      ) {
         return false;
       }
       const selected = selectedRecords(input.scope);
@@ -1063,6 +1081,7 @@ function decodePrismaState(
   row: NonNullable<PrismaStoredClip> & {
     project: {
       userId: string;
+      workspaceId: string;
       sourceDurationSeconds: number | null;
       sourceStorageKey: string | null;
       transcript: { utterancesJson: Prisma.JsonValue } | null;
@@ -1090,7 +1109,8 @@ function decodePrismaState(
     persistenceError("corrupt_stored_document", "Stored source transcript is malformed");
   }
   return {
-    actorUserId: row.project.userId,
+    workspaceId: row.project.workspaceId,
+    workspaceOwnerUserId: row.project.userId,
     projectId: row.projectId,
     clipId: row.id,
     revision: row.editorRevision,
@@ -1125,6 +1145,7 @@ const prismaClipInclude = {
   project: {
     select: {
       userId: true,
+      workspaceId: true,
       sourceDurationSeconds: true,
       sourceStorageKey: true,
       transcript: { select: { utterancesJson: true } },
@@ -1182,13 +1203,21 @@ function prismaDocumentUpdateData(
 
 class ProjectSelectionRevisionChanged extends Error {}
 
+function prismaProjectAccessWhere(scope: ClipEditorDocumentActorScope) {
+  return {
+    workspaceId: scope.workspaceId,
+    userId: scope.workspaceOwnerUserId,
+    ...accessibleProjectWhere(),
+  } satisfies Prisma.ProjectWhereInput;
+}
+
 export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
   async read(scope) {
     const row = await requirePrisma().clip.findFirst({
       where: {
         id: scope.clipId,
         projectId: scope.projectId,
-        project: { userId: scope.actorUserId },
+        project: prismaProjectAccessWhere(scope),
       },
       include: prismaClipInclude,
     });
@@ -1201,7 +1230,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
         id: scope.clipId,
         projectId: scope.projectId,
         editorRevision: expectedRevision,
-        project: { userId: scope.actorUserId },
+        project: prismaProjectAccessWhere(scope),
       },
     });
     return count === 1;
@@ -1215,7 +1244,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
           id: input.scope.clipId,
           projectId: input.scope.projectId,
           editorRevision: input.expectedRevision,
-          project: { userId: input.scope.actorUserId },
+          project: prismaProjectAccessWhere(input.scope),
         },
         data: prismaDocumentUpdateData(input),
       });
@@ -1240,9 +1269,10 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
 
   async readProjectSelection(scope) {
     const project = await requirePrisma().project.findFirst({
-      where: { id: scope.projectId, userId: scope.actorUserId },
+      where: { id: scope.projectId, ...prismaProjectAccessWhere(scope) },
       select: {
         userId: true,
+        workspaceId: true,
         sourceDurationSeconds: true,
         sourceStorageKey: true,
         transcript: { select: { utterancesJson: true } },
@@ -1259,6 +1289,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
         ...row,
         project: {
           userId: project.userId,
+          workspaceId: project.workspaceId,
           sourceDurationSeconds: project.sourceDurationSeconds,
           sourceStorageKey: project.sourceStorageKey,
           transcript: project.transcript,
@@ -1275,7 +1306,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
           const projectCount = await tx.project.count({
             where: {
               id: input.scope.projectId,
-              userId: input.scope.actorUserId,
+              ...prismaProjectAccessWhere(input.scope),
             },
           });
           if (projectCount !== 1) throw new ProjectSelectionRevisionChanged();

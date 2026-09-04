@@ -102,6 +102,7 @@ import {
   clipEditorDocumentPersistence,
   decodeClipEditorDocumentFromStorage,
   encodeClipEditorDocumentForStorage,
+  type ClipEditorDocumentActorScope,
 } from "./clip-editor-document-persistence";
 import {
   computeDurationOptimality,
@@ -3383,7 +3384,7 @@ export class ClipService {
    * no snapshot exists yet, so the current state IS the original.
    */
   async getClipEditorDocument(
-    userId: string,
+    actor: ClipEditorDocumentActorScope,
     projectId: string,
     clipId: string,
   ): Promise<{
@@ -3411,7 +3412,7 @@ export class ClipService {
     layoutAnalysisFailure: ClipLayoutAnalysisFailure | null;
   }> {
     const result = await clipEditorDocumentPersistence.readDocument({
-      actorUserId: userId,
+      ...actor,
       projectId,
       clipId,
     });

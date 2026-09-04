@@ -60,6 +60,14 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     return addClipPersistenceFixtureClip(prisma, fixtureState, index, document);
   }
 
+  function fixtureActorScope(f: Awaited<ReturnType<typeof fixture>>) {
+    return {
+      actorUserId: f.user.id,
+      workspaceId: f.workspace.id,
+      workspaceOwnerUserId: f.user.id,
+    };
+  }
+
   test("document, revision, original, render retirement, and cleanup commit together", async () => {
     const f = await fixture();
     const persistence = createClipEditorDocumentPersistence({
@@ -67,7 +75,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     });
     const next = editorDocument({ brollUrl: "https://cdn.example.com/cutaway.mp4" });
     const result = await persistence.mutateDocument({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       clipId: f.clip.id,
       intent: { kind: "replace", baseRevision: 0, document: next },
@@ -89,6 +97,37 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     ]);
   });
 
+  test("a Workspace editor can save a Clip Editor Document owned by the Workspace owner", async () => {
+    const f = await fixture();
+    const member = await prisma.user.create({
+      data: {
+        clerkId: `clip-editor-member:${randomUUID()}`,
+        primaryEmail: `clip-editor-member-${randomUUID()}@example.test`,
+        workspaceMemberships: {
+          create: { workspaceId: f.workspace.id, role: "editor" },
+        },
+      },
+    });
+    const persistence = createClipEditorDocumentPersistence({
+      store: prismaClipEditorDocumentStore,
+    });
+
+    const result = await persistence.mutateDocument({
+      actorUserId: member.id,
+      workspaceId: f.workspace.id,
+      workspaceOwnerUserId: f.user.id,
+      projectId: f.project.id,
+      clipId: f.clip.id,
+      intent: {
+        kind: "replace",
+        baseRevision: 0,
+        document: editorDocument({ brollUrl: "https://cdn.example.com/member.mp4" }),
+      },
+    });
+
+    expect(result).toMatchObject({ revision: 1, noop: false });
+  });
+
   test("project selection commits every changed document and cleanup obligation atomically", async () => {
     const f = await fixture();
     const secondDocument = editorDocument({
@@ -106,7 +145,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     });
 
     const result = await persistence.mutateProjectSelection({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       intent: { kind: "set_caption_preset", captionPreset },
     });
@@ -141,7 +180,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
 
     await expect(
       persistence.mutateProjectSelection({
-        actorUserId: f.user.id,
+        ...fixtureActorScope(f),
         projectId: f.project.id,
         intent: { kind: "set_caption_preset", captionPreset },
       }),
@@ -153,12 +192,41 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     ).toBe(2);
   });
 
+  test("a Workspace editor can bulk-edit Clip Editor Documents owned by the Workspace owner", async () => {
+    const f = await fixture();
+    const member = await prisma.user.create({
+      data: {
+        clerkId: `clip-editor-bulk-member:${randomUUID()}`,
+        primaryEmail: `clip-editor-bulk-member-${randomUUID()}@example.test`,
+        workspaceMemberships: {
+          create: { workspaceId: f.workspace.id, role: "editor" },
+        },
+      },
+    });
+    const persistence = createClipEditorDocumentPersistence({
+      store: prismaClipEditorDocumentStore,
+    });
+
+    const result = await persistence.mutateProjectSelection({
+      actorUserId: member.id,
+      workspaceId: f.workspace.id,
+      workspaceOwnerUserId: f.user.id,
+      projectId: f.project.id,
+      intent: {
+        kind: "set_caption_preset",
+        captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+      },
+    });
+
+    expect(result).toEqual({ updated: 1 });
+  });
+
   test("two different full replacements from one revision have one winner", async () => {
     const f = await fixture();
     const persistence = createClipEditorDocumentPersistence({ store: prismaClipEditorDocumentStore });
     const attempts = await Promise.allSettled([
       persistence.mutateDocument({
-        actorUserId: f.user.id,
+        ...fixtureActorScope(f),
         projectId: f.project.id,
         clipId: f.clip.id,
         intent: {
@@ -168,7 +236,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
         },
       }),
       persistence.mutateDocument({
-        actorUserId: f.user.id,
+        ...fixtureActorScope(f),
         projectId: f.project.id,
         clipId: f.clip.id,
         intent: {
@@ -190,7 +258,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     const f = await fixture();
     const persistence = createClipEditorDocumentPersistence({ store: prismaClipEditorDocumentStore });
     await persistence.mutateDocument({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       clipId: f.clip.id,
       intent: {
@@ -224,7 +292,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     });
 
     const reset = await persistence.mutateDocument({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       clipId: f.clip.id,
       intent: { kind: "reset", baseRevision: 1 },
@@ -234,7 +302,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       where: { clipId: f.clip.id },
     });
     const retry = await persistence.mutateDocument({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       clipId: f.clip.id,
       intent: { kind: "reset", baseRevision: 1 },
@@ -264,7 +332,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     const f = await fixture();
     const persistence = createClipEditorDocumentPersistence({ store: prismaClipEditorDocumentStore });
     await persistence.mutateDocument({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       clipId: f.clip.id,
       intent: {
@@ -275,13 +343,13 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     });
     const attempts = await Promise.allSettled([
       persistence.mutateDocument({
-        actorUserId: f.user.id,
+        ...fixtureActorScope(f),
         projectId: f.project.id,
         clipId: f.clip.id,
         intent: { kind: "reset", baseRevision: 1 },
       }),
       persistence.mutateDocument({
-        actorUserId: f.user.id,
+        ...fixtureActorScope(f),
         projectId: f.project.id,
         clipId: f.clip.id,
         intent: {
@@ -327,7 +395,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       store: prismaClipEditorDocumentStore,
     });
     const fieldMutation = fieldPersistence.mutateDocument({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       clipId: f.clip.id,
       intent: {
@@ -361,7 +429,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     });
     await entered;
     await fullPersistence.mutateDocument({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       clipId: f.clip.id,
       intent: {
@@ -408,13 +476,13 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     });
     const captionPreset = { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" };
     const bulk = bulkPersistence.mutateProjectSelection({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       intent: { kind: "set_caption_preset", captionPreset },
     });
     await entered;
     await singlePersistence.mutateDocument({
-      actorUserId: f.user.id,
+      ...fixtureActorScope(f),
       projectId: f.project.id,
       clipId: f.clip.id,
       intent: {
@@ -466,7 +534,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       });
       await expect(
         persistence.mutateDocument({
-          actorUserId: f.user.id,
+          ...fixtureActorScope(f),
           projectId: f.project.id,
           clipId: f.clip.id,
           intent: {
@@ -524,7 +592,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       });
       await expect(
         persistence.mutateProjectSelection({
-          actorUserId: f.user.id,
+          ...fixtureActorScope(f),
           projectId: f.project.id,
           intent: {
             kind: "set_caption_preset",
@@ -582,7 +650,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       }
       await expect(
         persistence.readDocument({
-          actorUserId: f.user.id,
+          ...fixtureActorScope(f),
           projectId: f.project.id,
           clipId: f.clip.id,
         }),

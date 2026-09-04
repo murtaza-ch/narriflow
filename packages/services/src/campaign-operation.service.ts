@@ -151,6 +151,7 @@ type ApplyCampaignStyleResult = ReturnType<typeof campaignOperationSnapshot> & {
 type CampaignMotionActorScope = {
   actorUserId: string;
   workspaceId: string;
+  workspaceOwnerUserId: string;
   projectId: string;
   pricingTier: PricingTier;
   role: WorkspaceAccessRole;
@@ -659,6 +660,7 @@ export class CampaignOperationService {
       CampaignBrandActorScope,
       | "actorUserId"
       | "workspaceId"
+      | "workspaceOwnerUserId"
       | "projectId"
       | "pricingTier"
       | "idempotencyKey"
@@ -809,6 +811,8 @@ export class CampaignOperationService {
       try {
         const current = await clipEditorDocumentPersistence.readDocument({
           actorUserId: scope.actorUserId,
+          workspaceId: scope.workspaceId,
+          workspaceOwnerUserId: scope.workspaceOwnerUserId,
           projectId: scope.projectId,
           clipId: requested.clipId,
         });
@@ -826,6 +830,8 @@ export class CampaignOperationService {
         } else {
           const mutation = await clipEditorDocumentPersistence.mutateDocument({
             actorUserId: scope.actorUserId,
+            workspaceId: scope.workspaceId,
+            workspaceOwnerUserId: scope.workspaceOwnerUserId,
             projectId: scope.projectId,
             clipId: requested.clipId,
             intent: {
@@ -1532,6 +1538,8 @@ export class CampaignOperationService {
       try {
         const current = await clipEditorDocumentPersistence.readDocument({
           actorUserId: scope.actorUserId,
+          workspaceId: scope.workspaceId,
+          workspaceOwnerUserId: scope.workspaceOwnerUserId,
           projectId: scope.projectId,
           clipId: selected.clipId,
         });
@@ -1845,6 +1853,8 @@ export class CampaignOperationService {
       try {
         const current = await clipEditorDocumentPersistence.readDocument({
           actorUserId: scope.actorUserId,
+          workspaceId: scope.workspaceId,
+          workspaceOwnerUserId: scope.workspaceOwnerUserId,
           projectId: scope.projectId,
           clipId: requested.clipId,
         });
@@ -1884,6 +1894,8 @@ export class CampaignOperationService {
             } else {
               const mutation = await clipEditorDocumentPersistence.mutateDocument({
                 actorUserId: scope.actorUserId,
+                workspaceId: scope.workspaceId,
+                workspaceOwnerUserId: scope.workspaceOwnerUserId,
                 projectId: scope.projectId,
                 clipId: requested.clipId,
                 intent: { kind: "replace", baseRevision: current.revision, document: next },
@@ -2112,6 +2124,8 @@ export class CampaignOperationService {
       try {
         const current = await clipEditorDocumentPersistence.readDocument({
           actorUserId: scope.actorUserId,
+          workspaceId: scope.workspaceId,
+          workspaceOwnerUserId: scope.workspaceOwnerUserId,
           projectId: scope.projectId,
           clipId: requested.clipId,
         });
@@ -2129,6 +2143,8 @@ export class CampaignOperationService {
         } else {
           const mutation = await clipEditorDocumentPersistence.mutateDocument({
             actorUserId: scope.actorUserId,
+            workspaceId: scope.workspaceId,
+            workspaceOwnerUserId: scope.workspaceOwnerUserId,
             projectId: scope.projectId,
             clipId: requested.clipId,
             intent: {

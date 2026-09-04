@@ -52,7 +52,8 @@ function document(overrides: Partial<EditorDocument> = {}): EditorDocument {
 
 function stored(overrides: Partial<ClipEditorDocumentStoredState> = {}) {
   return {
-    actorUserId: "user-1",
+    workspaceId: "workspace-1",
+    workspaceOwnerUserId: "user-1",
     projectId: "project-1",
     clipId: "clip-1",
     revision: 3,
@@ -75,11 +76,19 @@ function stored(overrides: Partial<ClipEditorDocumentStoredState> = {}) {
   } satisfies ClipEditorDocumentStoredState;
 }
 
+function actorScope(state: ClipEditorDocumentStoredState) {
+  return {
+    actorUserId: state.workspaceOwnerUserId,
+    workspaceId: state.workspaceId,
+    workspaceOwnerUserId: state.workspaceOwnerUserId,
+  };
+}
+
 function setup(state = stored()) {
   const store = createInMemoryClipEditorDocumentStore([state]);
   const persistence = createClipEditorDocumentPersistence({ store });
   const scope = {
-    actorUserId: state.actorUserId,
+    ...actorScope(state),
     projectId: state.projectId,
     clipId: state.clipId,
   };
@@ -404,7 +413,7 @@ describe("Clip Editor Document Persistence", () => {
     const persistence = createClipEditorDocumentPersistence({ store });
 
     const result = await persistence.mutateProjectSelection({
-      actorUserId: open.actorUserId,
+      ...actorScope(open),
       projectId: open.projectId,
       excludeClipId: open.clipId,
       intent: {
@@ -467,7 +476,7 @@ describe("Clip Editor Document Persistence", () => {
 
     await expect(
       persistence.mutateProjectSelection({
-        actorUserId: matching.actorUserId,
+        ...actorScope(matching),
         projectId: matching.projectId,
         intent: { kind: "set_caption_preset", captionPreset },
       }),
@@ -492,7 +501,7 @@ describe("Clip Editor Document Persistence", () => {
 
     await expect(
       persistence.mutateProjectSelection({
-        actorUserId: valid.actorUserId,
+        ...actorScope(valid),
         projectId: valid.projectId,
         intent: {
           kind: "set_caption_preset",
@@ -512,7 +521,7 @@ describe("Clip Editor Document Persistence", () => {
 
     await expect(
       persistence.mutateProjectSelection({
-        actorUserId: first.actorUserId,
+        ...actorScope(first),
         projectId: first.projectId,
         intent: {
           kind: "set_caption_preset",
@@ -758,7 +767,7 @@ describe("Clip Editor Document Persistence", () => {
     });
 
     const result = await persistence.mutateDocument({
-      actorUserId: seed.actorUserId,
+      ...actorScope(seed),
       projectId: seed.projectId,
       clipId: seed.clipId,
       intent: { kind: "set_transcript", transcriptSlice: seed.document.transcriptSlice },
@@ -800,7 +809,7 @@ describe("Clip Editor Document Persistence", () => {
 
     await expect(
       persistence.mutateDocument({
-        actorUserId: seed.actorUserId,
+        ...actorScope(seed),
         projectId: seed.projectId,
         clipId: seed.clipId,
         intent: { kind: "reset", baseRevision: seed.revision },
@@ -888,7 +897,7 @@ describe("Clip Editor Document Persistence", () => {
     const before = backing.inspect(seed.clipId);
     await expect(
       persistence.mutateDocument({
-        actorUserId: seed.actorUserId,
+        ...actorScope(seed),
         projectId: seed.projectId,
         clipId: seed.clipId,
         intent: {
@@ -912,7 +921,7 @@ describe("Clip Editor Document Persistence", () => {
     });
 
     await persistence.mutateDocument({
-      actorUserId: seed.actorUserId,
+      ...actorScope(seed),
       projectId: seed.projectId,
       clipId: seed.clipId,
       intent: {
@@ -923,7 +932,7 @@ describe("Clip Editor Document Persistence", () => {
 
     expect(events).toEqual([
       {
-        actorUserId: seed.actorUserId,
+        actorUserId: seed.workspaceOwnerUserId,
         projectId: seed.projectId,
         clipId: seed.clipId,
         mutationKind: "set_broll_url",

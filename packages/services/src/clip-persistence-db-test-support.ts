@@ -148,7 +148,7 @@ export async function createClipPersistenceFixture(prisma: PrismaClient) {
       storageKey: `projects/${project.id}/renders/current.mp4`,
     },
   });
-  return { user, project, workflowRun, clip, document };
+  return { user, workspace, project, workflowRun, clip, document };
 }
 
 export async function addClipPersistenceFixtureClip(

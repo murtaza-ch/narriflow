@@ -896,6 +896,8 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
     if (boundariesParsed.success) {
       await clipEditorDocumentPersistence.mutateDocument({
         actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: { kind: "set_boundaries", ...boundariesParsed.data },
@@ -909,6 +911,8 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
     if (captionPresetParsed.success) {
       await clipEditorDocumentPersistence.mutateDocument({
         actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: {
@@ -925,6 +929,8 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
     if (transcriptParsed.success) {
       await clipEditorDocumentPersistence.mutateDocument({
         actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: {
@@ -941,6 +947,8 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
     if (brollParsed.success) {
       await clipEditorDocumentPersistence.mutateDocument({
         actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: { kind: "set_broll_url", brollUrl: brollParsed.data.brollUrl },
@@ -963,6 +971,8 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
     if (studioEditsParsed?.success) {
       await clipEditorDocumentPersistence.mutateDocument({
         actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: {
@@ -1174,7 +1184,7 @@ app.get("/projects/:id/clips/:clipId/editor", async (c) => {
 
   try {
     const result = await clipService.getClipEditorDocument(
-      appUser.workspaceOwnerUserId,
+      appUser,
       projectId,
       c.req.param("clipId"),
     );
@@ -1206,7 +1216,7 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
 
   try {
     const current = await clipService.getClipEditorDocument(
-      appUser.workspaceOwnerUserId,
+      appUser,
       projectId,
       c.req.param("clipId"),
     );
@@ -1228,6 +1238,8 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     ]);
     const mutation = await clipEditorDocumentPersistence.mutateDocument({
       actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      workspaceOwnerUserId: appUser.workspaceOwnerUserId,
       projectId,
       clipId: c.req.param("clipId"),
       intent: {
@@ -1307,11 +1319,13 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
   }
 
   try {
-    const current = await clipService.getClipEditorDocument(appUser.workspaceOwnerUserId, projectId, c.req.param("clipId"));
+    const current = await clipService.getClipEditorDocument(appUser, projectId, c.req.param("clipId"));
     const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, current.original);
     if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
     const mutation = await clipEditorDocumentPersistence.mutateDocument({
       actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      workspaceOwnerUserId: appUser.workspaceOwnerUserId,
       projectId,
       clipId: c.req.param("clipId"),
       intent: { kind: "reset", baseRevision: parsed.data.baseRevision },
@@ -1879,6 +1893,7 @@ app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
         {
           actorUserId: appUser.actorUserId,
           workspaceId: appUser.workspaceId,
+          workspaceOwnerUserId: appUser.workspaceOwnerUserId,
           projectId,
           pricingTier: resolvePricingTier(appUser.pricingTier),
           role: appUser.role,
@@ -2140,7 +2155,7 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
 
   try {
     const editor = await clipService.getClipEditorDocument(
-      appUser.workspaceOwnerUserId,
+      appUser,
       c.req.param("id"),
       c.req.param("clipId"),
     );
@@ -2311,6 +2326,8 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
   try {
     const result = await clipEditorDocumentPersistence.mutateProjectSelection({
       actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      workspaceOwnerUserId: appUser.workspaceOwnerUserId,
       projectId,
       excludeClipId: parsed.data.excludeClipId,
       intent: {
@@ -2343,6 +2360,8 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
   try {
     const result = await clipEditorDocumentPersistence.mutateProjectSelection({
       actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      workspaceOwnerUserId: appUser.workspaceOwnerUserId,
       projectId,
       excludeClipId: parsed.data.excludeClipId,
       intent: { kind: "patch_studio_edits", patches: parsed.data.patches },

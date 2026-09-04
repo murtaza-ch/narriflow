@@ -87,7 +87,7 @@ export default async function StudioPage({
           expiresIn: 3600,
         }).catch(() => null)
       : Promise.resolve(null),
-    clipService.getClipEditorDocument(appUser.workspaceOwnerUserId, projectId, clipId,
+    clipService.getClipEditorDocument(appUser, projectId, clipId,
     ),
     // Presign the brand logo (if any) for the preview overlay. Non-fatal —
     // a presign failure just means no logo overlay in preview, not a broken
