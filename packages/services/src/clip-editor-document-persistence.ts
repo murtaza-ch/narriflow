@@ -812,10 +812,25 @@ export function createInMemoryClipEditorDocumentStore(
       },
     ]),
   );
-  const projectOwners = new Map(
-    seeds.map((seed) => [seed.projectId, seed.workspaceOwnerUserId]),
+  const projectScopes = new Map(
+    seeds.map((seed) => [
+      seed.projectId,
+      {
+        workspaceId: seed.workspaceId,
+        workspaceOwnerUserId: seed.workspaceOwnerUserId,
+      },
+    ]),
   );
   let forcedContention = 0;
+
+  const projectMatchesScope = (scope: ClipEditorProjectSelectionScope) => {
+    const projectScope = projectScopes.get(scope.projectId);
+    return Boolean(
+      projectScope &&
+        projectScope.workspaceId === scope.workspaceId &&
+        projectScope.workspaceOwnerUserId === scope.workspaceOwnerUserId,
+    );
+  };
 
   const selectedRecords = (scope: ClipEditorProjectSelectionScope) =>
     [...records.values()]
@@ -890,18 +905,11 @@ export function createInMemoryClipEditorDocumentStore(
       return clone(record.state);
     },
     async readProjectSelection(scope) {
-      if (projectOwners.get(scope.projectId) !== scope.workspaceOwnerUserId) {
-        return null;
-      }
+      if (!projectMatchesScope(scope)) return null;
       return selectedRecords(scope).map((record) => clone(record.state));
     },
     async commitProjectSelection(input) {
-      if (
-        projectOwners.get(input.scope.projectId) !==
-        input.scope.workspaceOwnerUserId
-      ) {
-        return false;
-      }
+      if (!projectMatchesScope(input.scope)) return false;
       const selected = selectedRecords(input.scope);
       const expected = [...input.expectedRevisions].sort((left, right) =>
         left.clipId.localeCompare(right.clipId),

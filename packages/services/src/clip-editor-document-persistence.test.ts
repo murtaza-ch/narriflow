@@ -488,6 +488,28 @@ describe("Clip Editor Document Persistence", () => {
     });
   });
 
+  test("project selection rejects a mismatched Workspace", async () => {
+    const state = stored();
+    const store = createInMemoryClipEditorDocumentStore([state]);
+    const persistence = createClipEditorDocumentPersistence({ store });
+
+    await expect(
+      persistence.mutateProjectSelection({
+        ...actorScope(state),
+        workspaceId: "workspace-other",
+        projectId: state.projectId,
+        intent: {
+          kind: "set_caption_preset",
+          captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "project_not_found" });
+    expect(store.inspect(state.clipId)).toMatchObject({
+      writeCount: 0,
+      state: { revision: state.revision },
+    });
+  });
+
   test("a malformed project target aborts before any target changes", async () => {
     const valid = stored({ clipId: "clip-valid" });
     const malformed = stored({ clipId: "clip-malformed" });

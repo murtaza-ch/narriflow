@@ -331,6 +331,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     const scope = {
       actorUserId: current.user.id,
       workspaceId: current.workspace.id,
+      workspaceOwnerUserId: current.user.id,
       projectId: current.project.id,
       pricingTier: "business" as const,
       role: "owner" as const,
@@ -365,6 +366,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 
     const persisted = await clipEditorDocumentPersistence.readDocument({
       actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      workspaceOwnerUserId: current.user.id,
       projectId: current.project.id,
       clipId: current.clip.id,
     });
@@ -1067,7 +1070,13 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       clips: [{ clipId: current.clip.id, expectedEditorRevision: 4 }],
     });
     expect(reapplied.counts).toEqual({ succeeded: 0, unchanged: 1, stale: 0, ineligible: 0, failed: 0 });
-    const persisted = await clipEditorDocumentPersistence.readDocument({ actorUserId: current.user.id, projectId: current.project.id, clipId: current.clip.id });
+    const persisted = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      workspaceOwnerUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+    });
     expect(persisted.document.sceneBlocks).toHaveLength(1);
 
     const appliedAtEnd = await campaignOperationService.applySceneTemplate({
@@ -1080,7 +1089,13 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       clips: [{ clipId: current.clip.id, expectedEditorRevision: persisted.revision }],
     });
     expect(appliedAtEnd.counts.succeeded).toBe(1);
-    const afterEnd = await clipEditorDocumentPersistence.readDocument({ actorUserId: current.user.id, projectId: current.project.id, clipId: current.clip.id });
+    const afterEnd = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      workspaceOwnerUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+    });
     const reappliedAtEnd = await campaignOperationService.applySceneTemplate({
       ...scope,
       projectId: current.project.id,
@@ -1091,7 +1106,13 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       clips: [{ clipId: current.clip.id, expectedEditorRevision: afterEnd.revision }],
     });
     expect(reappliedAtEnd.counts.unchanged).toBe(1);
-    const finalDocument = await clipEditorDocumentPersistence.readDocument({ actorUserId: current.user.id, projectId: current.project.id, clipId: current.clip.id });
+    const finalDocument = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      workspaceOwnerUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+    });
     expect(finalDocument.document.sceneBlocks).toHaveLength(2);
     const createdExport = await clipExportService.create(
       current.project.id,
