@@ -328,6 +328,33 @@ export interface CompositionSceneTextRender {
   readonly maxWidthPx: number;
 }
 
+export function assertCompositionSceneTextRender(
+  render: unknown,
+  canvas: { readonly width: number; readonly height: number },
+): asserts render is CompositionSceneTextRender {
+  if (!render || typeof render !== "object") {
+    throw new Error("invalid_clip_composition_scene_text");
+  }
+  const candidate = render as Partial<CompositionSceneTextRender>;
+  if (
+    !Array.isArray(candidate.lines) ||
+    candidate.lines.length === 0 ||
+    candidate.lines.some(
+      (line) => typeof line !== "string" || line.length === 0 || /[\r\n]/u.test(line),
+    ) ||
+    !Number.isInteger(candidate.fontSizePx) ||
+    !Number.isInteger(candidate.lineHeightPx) ||
+    !Number.isInteger(candidate.maxWidthPx) ||
+    candidate.fontSizePx! <= 0 ||
+    candidate.lineHeightPx! < candidate.fontSizePx! ||
+    candidate.maxWidthPx! <= 0 ||
+    candidate.maxWidthPx! > canvas.width ||
+    candidate.lines.length * candidate.lineHeightPx! > canvas.height
+  ) {
+    throw new Error("invalid_clip_composition_scene_text");
+  }
+}
+
 export type CompositionLayer =
   | CompositionSourceVideoLayer
   | CompositionBackgroundLayer
@@ -1241,17 +1268,37 @@ const SCENE_TEXT_NARROW_ASCII = /^[ilI1.,'|!:;`]$/u;
 const SCENE_TEXT_WIDE_ASCII = /^[MW@#%&]$/u;
 const SCENE_TEXT_CJK_OR_FULL_WIDTH =
   /^[\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]$/u;
-const SCENE_TEXT_SEGMENTER = typeof Intl.Segmenter === "function"
-  ? new Intl.Segmenter("und", { granularity: "grapheme" })
-  : null;
-
 function sceneTextGraphemes(value: string): string[] {
-  if (SCENE_TEXT_SEGMENTER) {
-    return [...SCENE_TEXT_SEGMENTER.segment(value)].map(
-      (segment) => segment.segment,
-    );
+  const clusters: string[] = [];
+  for (const codePoint of Array.from(value)) {
+    const previous = clusters.at(-1);
+    if (!previous) {
+      clusters.push(codePoint);
+      continue;
+    }
+    const isCombining = /^\p{M}$/u.test(codePoint);
+    const isVariationSelector = /^[\uFE0E\uFE0F]$/u.test(codePoint);
+    const isEmojiModifier = /^\p{Emoji_Modifier}$/u.test(codePoint);
+    const isEmojiTag = /^[\u{E0020}-\u{E007F}]$/u.test(codePoint);
+    const isRegionalIndicator = /^\p{Regional_Indicator}$/u.test(codePoint);
+    const previousRegionalIndicators = Array.from(previous).filter((part) =>
+      /^\p{Regional_Indicator}$/u.test(part)
+    ).length;
+    if (
+      isCombining ||
+      isVariationSelector ||
+      isEmojiModifier ||
+      isEmojiTag ||
+      codePoint === "\u200D" ||
+      previous.endsWith("\u200D") ||
+      (isRegionalIndicator && previousRegionalIndicators % 2 === 1)
+    ) {
+      clusters[clusters.length - 1] = previous + codePoint;
+    } else {
+      clusters.push(codePoint);
+    }
   }
-  return Array.from(value);
+  return clusters;
 }
 
 function sceneTextGraphemeWidthEm(grapheme: string): number {

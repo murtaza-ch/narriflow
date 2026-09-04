@@ -2,6 +2,7 @@ import {
   CLIP_COMPOSITION_PLAN_VERSION,
   COMPOSITION_MOTION_VERSION,
   SCENE_CONTINUITY_EPSILON_SEC,
+  assertCompositionSceneTextRender,
   sampleCompositionMotion,
   type ClipCompositionPlan,
   type ClipCompositionPlanResult,
@@ -21,20 +22,8 @@ export function plannedSceneTextPreview(
   canvas: { width: number; height: number },
   previewWidth: number,
 ) {
-  if (
-    render.lines.length === 0 ||
-    render.lines.some((line) => line.length === 0 || /[\r\n]/u.test(line)) ||
-    !Number.isInteger(render.fontSizePx) ||
-    !Number.isInteger(render.lineHeightPx) ||
-    !Number.isInteger(render.maxWidthPx) ||
-    render.fontSizePx <= 0 ||
-    render.lineHeightPx < render.fontSizePx ||
-    render.maxWidthPx <= 0 ||
-    render.maxWidthPx > canvas.width ||
-    render.lines.length * render.lineHeightPx > canvas.height ||
-    !Number.isFinite(previewWidth) ||
-    previewWidth <= 0
-  ) {
+  assertCompositionSceneTextRender(render, canvas);
+  if (!Number.isFinite(previewWidth) || previewWidth <= 0) {
     throw new Error("invalid_clip_composition_scene_text");
   }
   const scale = previewWidth / canvas.width;

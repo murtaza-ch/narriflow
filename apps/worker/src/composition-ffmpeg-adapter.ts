@@ -2,6 +2,7 @@ import {
   CLIP_COMPOSITION_PLAN_VERSION,
   COMPOSITION_MOTION_VERSION,
   SCENE_CONTINUITY_EPSILON_SEC,
+  assertCompositionSceneTextRender,
   compositionAssetRef,
   type ClipCompositionPlan,
   type CompositionBrollVideoLayer,
@@ -13,6 +14,7 @@ import {
   type CompositionTargetPlan,
   type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
+import { escapeDrawtextText } from "./ffmpeg-text";
 
 export function compileCompositionPlanAudiogram(
   plan: ClipCompositionPlan,
@@ -786,31 +788,6 @@ function assertRect(
   }
 }
 
-function assertInsertedSceneTextRender(
-  layer: CompositionInsertedSceneLayer,
-  canvas: { width: number; height: number },
-): asserts layer is CompositionInsertedSceneLayer & {
-  textRender: NonNullable<CompositionInsertedSceneLayer["textRender"]>;
-} {
-  const render = layer.textRender;
-  if (
-    layer.content.kind !== "text" ||
-    !render ||
-    render.lines.length === 0 ||
-    render.lines.some((line) => line.length === 0 || /[\r\n]/u.test(line)) ||
-    !Number.isInteger(render.fontSizePx) ||
-    !Number.isInteger(render.lineHeightPx) ||
-    !Number.isInteger(render.maxWidthPx) ||
-    render.fontSizePx <= 0 ||
-    render.lineHeightPx < render.fontSizePx ||
-    render.maxWidthPx <= 0 ||
-    render.maxWidthPx > canvas.width ||
-    render.lines.length * render.lineHeightPx > canvas.height
-  ) {
-    throw new Error("invalid_clip_composition_scene_text");
-  }
-}
-
 export function compileCompositionPlanInsertedSceneSequence(input: {
   plan: ClipCompositionPlan;
   targetId: string;
@@ -901,7 +878,7 @@ export function compileCompositionPlanInsertedSceneSequence(input: {
       return;
     }
     if (inserted.content.kind === "text") {
-      assertInsertedSceneTextRender(inserted, target.canvas);
+      assertCompositionSceneTextRender(inserted.textRender, target.canvas);
       const textContent = inserted.content;
       const textRender = inserted.textRender;
       const fontSelector = textContent.fontAsset
@@ -919,7 +896,7 @@ export function compileCompositionPlanInsertedSceneSequence(input: {
       const textBlockHeightPx =
         textRender.lines.length * textRender.lineHeightPx;
       const drawTextFilters = textRender.lines.map((line, index) =>
-        `drawtext=${fontSelector}:text='${escapeDrawtextValue(line)}'` +
+        `drawtext=${fontSelector}:text=${escapeDrawtextText(line)}` +
           `:fontcolor=0x${textContent.color.slice(1)}` +
           `:fontsize=${textRender.fontSizePx}` +
           ":x=(w-text_w)/2" +

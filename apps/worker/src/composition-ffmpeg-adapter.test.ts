@@ -27,6 +27,7 @@ import {
   compileCompositionPlanVisualLayers,
   bindCompositionPlanAudioInputs,
 } from "./composition-ffmpeg-adapter";
+import { escapeDrawtextText } from "./ffmpeg-text";
 import { buildAudiogramArgs, buildSingleVideoArgs } from "./tasks/render-clips";
 
 function planCenter() {
@@ -1303,7 +1304,9 @@ describe("composition FFmpeg adapter", () => {
       const graph = compiled.filterParts.join(";");
       expect(compiled.sceneInputs.map((input) => input.sourceRef)).toEqual([imageRef, videoRef]);
       expect(graph).toContain(`s=${target.canvas.width}x${target.canvas.height}`);
-      expect(graph).toContain("drawtext=fontfile='/tmp/brand.ttf':text='Opening\\: 100\\%' ".trim());
+      expect(graph).toContain(
+        `drawtext=fontfile='/tmp/brand.ttf':text=${escapeDrawtextText("Opening: 100%")}`,
+      );
       expect(graph).toContain("force_original_aspect_ratio=decrease,pad=");
       expect(graph).toContain("force_original_aspect_ratio=increase,crop=");
 		expect(graph).toContain("scale=w='max(2,round(iw*");
@@ -1366,15 +1369,97 @@ describe("composition FFmpeg adapter", () => {
       );
       expect(graph.match(new RegExp(`fontsize=${fixture.render.fontSizePx}`, "g")), fixture.id)
         .toHaveLength(fixture.render.lines.length);
-      const expectedEscapedLines = fixture.id === "escaped-multilingual-title"
-        ? ["مرحبا 新 🚀", "It\\'s 100\\%"]
-        : fixture.render.lines;
+      const expectedEscapedLines = fixture.render.lines.map(escapeDrawtextText);
       for (const line of expectedEscapedLines) {
         expect(graph, fixture.id).toContain(line);
       }
       expect(graph, fixture.id).not.toContain("line_spacing=12");
     }
   });
+
+  test("executes the shared multilingual Scene text fixture in real FFmpeg", async () => {
+    const fixture = SCENE_TEXT_ADAPTER_FIXTURES.find(
+      (candidate) => candidate.id === "escaped-multilingual-title",
+    );
+    if (!fixture) throw new Error("missing multilingual Scene text fixture");
+    const planned = planClipComposition({
+      document: editorDocumentSchema.parse({
+        version: 2,
+        clipStartSec: 0,
+        clipEndSec: 1,
+        captionPreset: captionPresetSchema.parse({ visible: false }),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+        brollUrl: null,
+        deletedRanges: [],
+        sceneBlocks: [
+          {
+            id: "d8ab95f8-fc16-4e60-814e-69762a59a99b",
+            schemaVersion: 1,
+            anchorSec: 0,
+            durationSec: 1,
+            content: {
+              kind: "text",
+              text: fixture.text,
+              fontFamily: "Arial",
+              fontAsset: null,
+              color: "#FFFFFF",
+              backgroundColor: "#111827",
+            },
+            motion: { entrance: "none", exit: "none" },
+            templateSnapshot: null,
+          },
+        ],
+      }),
+      source: {
+        identity: "source:real-scene-text",
+        kind: "video",
+        width: 1080,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "square", aspectRatio: "1:1", width: 1080, height: 1080 },
+      ],
+    });
+    if (planned.status === "invalid") throw new Error(planned.error.code);
+    const fixturePlan = {
+      ...planned.plan,
+      targets: planned.plan.targets.map((target) => ({
+        ...target,
+        scenes: target.scenes.map((scene) => ({
+          ...scene,
+          layers: scene.layers.map((layer) =>
+            layer.kind === "inserted-scene" && layer.content.kind === "text"
+              ? { ...layer, textRender: fixture.render }
+              : layer),
+        })),
+      })),
+    };
+    const compiled = compileCompositionPlanVideo({
+      plan: fixturePlan,
+      targetId: "square",
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+    });
+    const process = Bun.spawn([
+      "ffmpeg",
+      "-v", "error",
+      "-f", "lavfi",
+      "-i", "testsrc2=size=1080x1080:rate=24:duration=1",
+      "-filter_complex", compiled.filterParts.join(";"),
+      "-map", "[outv]",
+      "-f", "null",
+      "-",
+    ], { stdout: "ignore", stderr: "pipe" });
+    const stderr = await new Response(process.stderr).text();
+    expect(await process.exited, stderr).toBe(0);
+  }, 30_000);
 
   test("fails closed when a required inserted-scene asset is missing", () => {
     const { plan } = planInsertedScenes();

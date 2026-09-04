@@ -160,6 +160,8 @@ import {
   compileCompositionPlanVisualLayers,
   type BoundCompositionAudioRenderRequest,
 } from "../composition-ffmpeg-adapter";
+import { escapeDrawtextText } from "../ffmpeg-text";
+export { escapeDrawtextText } from "../ffmpeg-text";
 import { classifyRenderObjectKey } from "../render-object-key";
 import {
   productionRenderClockAdapter,
@@ -3988,19 +3990,6 @@ export function buildAudiogramArgs(params: {
   );
 
   return args;
-}
-
-/**
- * Escapes a literal string for use as a drawtext `text` value inside a
- * filtergraph. Two escaping levels apply (see ffmpeg-utils "Quoting and
- * escaping" + filter docs): first the option value (`\`, `'`, `:`, `%` for
- * drawtext expansion), then the filtergraph parser (`\`, `'`, `,`, `;`,
- * `[`, `]`). Verified against ffmpeg 8 — quoting the value instead breaks
- * on embedded `'`.
- */
-export function escapeDrawtextText(text: string): string {
-  const optionLevel = text.replace(/[\\':%]/g, (char) => `\\${char}`);
-  return optionLevel.replace(/[\\',;[\]]/g, (char) => `\\${char}`);
 }
 
 /**
