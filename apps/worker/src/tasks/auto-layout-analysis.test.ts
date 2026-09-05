@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
+import type { WorkerProcessModule } from "../worker-process";
 import {
   analyzeClipAutoLayout,
   buildMultiFaceDetectorArgs,
@@ -76,6 +77,39 @@ describe("analyzeClipAutoLayout", () => {
     expect(analysis.segments).toEqual([]);
     expect(analysis.noSplitSegments).toEqual([]);
     expect(analysis.editedDurationSec).toBe(10);
+  });
+
+  test("forwards the caller signal and skips visual subprocesses for audio-only media", async () => {
+    const controller = new AbortController();
+    let inspectedSignal: AbortSignal | undefined;
+    const workerProcess: WorkerProcessModule = {
+      execute: async () => {
+        throw new Error("audio-only analysis must not start a visual subprocess");
+      },
+      inspectMedia: async (request) => {
+        inspectedSignal = request.signal;
+        return {
+          durationSec: 10,
+          width: 0,
+          height: 0,
+          hasVideo: false,
+          hasAudio: true,
+          hasVisualStream: false,
+          fps: 30,
+        };
+      },
+      withScratchDirectory: async (_prefix, work) => work("/tmp/unused"),
+    };
+
+    const analysis = await analyzeClipAutoLayout({
+      clip: candidate(),
+      previewPath: "/tmp/audio.m4a",
+      signal: controller.signal,
+      workerProcess,
+    });
+
+    expect(inspectedSignal).toBe(controller.signal);
+    expect(analysis.segments).toEqual([]);
   });
 
   test("uses edited duration and fingerprints deleted source ranges", async () => {

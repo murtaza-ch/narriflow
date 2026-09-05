@@ -20,7 +20,7 @@ the same time. The additive schema remains in place during rollback.
    dry reconciliation:
 
    ```sh
-   bun test apps/worker/src/render-config.test.ts apps/worker/src/render-process-adapter.test.ts apps/worker/src/render-media-adapter.test.ts apps/worker/src/render-runtime-adapters.test.ts apps/worker/src/render-diagnostic-adapter.test.ts apps/worker/src/tasks/clip-render-attempt.test.ts apps/worker/src/tasks/clip-render-attempt-core-paths.test.ts apps/worker/src/render-object-reconciler.test.ts packages/services/src/r2-storage.test.ts packages/services/src/notification.service.test.ts
+   bun test apps/worker/src/render-config.test.ts apps/worker/src/worker-process.test.ts apps/worker/src/render-runtime-adapters.test.ts apps/worker/src/render-diagnostic-adapter.test.ts apps/worker/src/tasks/clip-render-attempt.test.ts apps/worker/src/tasks/clip-render-attempt-core-paths.test.ts apps/worker/src/render-object-reconciler.test.ts packages/services/src/r2-storage.test.ts packages/services/src/notification.service.test.ts
    bun run test:workflow:db
    R2_CONTRACT_TEST_PREFIX=tests/narriflow-cutover bun --env-file=apps/worker/.env test packages/services/src/r2-storage.test.ts --test-name-pattern 'R2 object adapter uploads'
    ```

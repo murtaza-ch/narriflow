@@ -1,7 +1,4 @@
-import { spawn } from "node:child_process";
 import { stat, writeFile } from "node:fs/promises";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   analyticsService,
@@ -24,6 +21,10 @@ import {
   transcriptUtteranceSchema,
   type TranscriptUtterance,
 } from "@narriflow/validators";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
+
+const DUBBING_FFMPEG_TIMEOUT_MS = 10 * 60 * 1000;
+const DUBBING_PROBE_TIMEOUT_MS = 30_000;
 
 class WorkflowWorkerError extends WorkflowFailure {
   constructor(
@@ -251,121 +252,70 @@ async function synthesizeSpeech(params: {
   await writeFile(params.outputPath, buffer);
 }
 
-async function execCommand(command: string, args: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      reject(
-        error.code === "ENOENT"
-          ? new WorkflowWorkerError(
-              "worker_command_missing",
-              `${command} is not installed`,
-              "permanent",
-            )
-          : error,
-      );
-    });
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(
-        new WorkflowWorkerError(
-          "worker_command_failed",
-          `${command} failed with code ${code}: ${stderr.slice(-500)}`,
-        ),
-      );
-    });
-  });
-}
-
-async function execCommandOutput(command: string, args: string[]) {
-  return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      reject(
-        error.code === "ENOENT"
-          ? new WorkflowWorkerError(
-              "worker_command_missing",
-              `${command} is not installed`,
-              "permanent",
-            )
-          : error,
-      );
-    });
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve(stdout);
-        return;
-      }
-      reject(
-        new WorkflowWorkerError(
-          "worker_command_failed",
-          `${command} failed with code ${code}: ${stderr.slice(-500)}`,
-        ),
-      );
-    });
-  });
-}
-
-async function probeDurationSec(filePath: string): Promise<number | null> {
-  const output = await execCommandOutput("ffprobe", [
-    "-v",
-    "error",
-    "-show_entries",
-    "format=duration",
-    "-of",
-    "default=noprint_wrappers=1:nokey=1",
-    filePath,
-  ]);
-  const value = Number(output.trim());
-  return Number.isFinite(value) && value > 0 ? value : null;
+async function probeDurationSec(
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
+  filePath: string,
+): Promise<number | null> {
+  return (
+    await workerProcess.inspectMedia({
+      sourcePath: filePath,
+      signal,
+      deadlineMs: DUBBING_PROBE_TIMEOUT_MS,
+    })
+  ).durationSec;
 }
 
 async function muxDubbedVideo(params: {
+  workerProcess: WorkerProcessModule;
+  signal: AbortSignal;
   videoPath: string;
   audioPath: string;
   outputPath: string;
 }) {
-  await execCommand("ffmpeg", [
-    "-y",
-    "-i",
-    params.videoPath,
-    "-i",
-    params.audioPath,
-    "-map",
-    "0:v:0",
-    "-map",
-    "1:a:0",
-    "-c:v",
-    "copy",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "160k",
-    "-shortest",
-    "-movflags",
-    "+faststart",
-    params.outputPath,
-  ]);
+  await params.workerProcess.execute({
+    command: "ffmpeg",
+    args: [
+      "-y",
+      "-i",
+      params.videoPath,
+      "-i",
+      params.audioPath,
+      "-map",
+      "0:v:0",
+      "-map",
+      "1:a:0",
+      "-c:v",
+      "copy",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "160k",
+      "-shortest",
+      "-movflags",
+      "+faststart",
+      params.outputPath,
+    ],
+    signal: params.signal,
+    deadlineMs: DUBBING_FFMPEG_TIMEOUT_MS,
+  });
 }
 
 export async function processDubbingRun(
   attempt: ClaimedWorkflowAttempt,
   context: WorkflowAttemptContext,
+  workerProcess: WorkerProcessModule = productionWorkerProcessModule,
+) {
+  return workerProcess.withScratchDirectory("narriflow-dub-", (tempDir) =>
+    processDubbingRunInScratch(attempt, context, workerProcess, tempDir),
+  );
+}
+
+async function processDubbingRunInScratch(
+  attempt: ClaimedWorkflowAttempt,
+  context: WorkflowAttemptContext,
+  workerProcess: WorkerProcessModule,
+  tempDir: string,
 ) {
   const run = { ...attempt, id: attempt.workflowRunId };
   const { signal } = context;
@@ -375,8 +325,6 @@ export async function processDubbingRun(
     workflowRunId: run.id,
     projectId: run.projectId,
   });
-
-  const tempDir = await mkdtemp(join(tmpdir(), "narriflow-dub-"));
 
   try {
     const apiKey = getRequiredOpenAIApiKey();
@@ -461,6 +409,8 @@ export async function processDubbingRun(
         await context.reportProgress(70);
 
         await muxDubbedVideo({
+          workerProcess,
+          signal,
           videoPath: baseVideoPath,
           audioPath,
           outputPath,
@@ -469,7 +419,10 @@ export async function processDubbingRun(
         const [audioStat, videoStat, durationSec] = await Promise.all([
           stat(audioPath),
           stat(outputPath),
-          probeDurationSec(outputPath).catch(() => null),
+          probeDurationSec(workerProcess, signal, outputPath).catch(() => {
+            signal.throwIfAborted();
+            return null;
+          }),
         ]);
 
         const attemptSuffix = attempt.attemptId;
@@ -569,6 +522,7 @@ export async function processDubbingRun(
           renderSizeBytes: Number(videoStat.size),
         });
       } catch (error) {
+        signal.throwIfAborted();
         rethrowWorkflowAttemptLost(error);
         failed += 1;
         const failure = workflowFailureFromUnknown(error);
@@ -609,6 +563,7 @@ export async function processDubbingRun(
       failed,
     });
   } catch (error) {
+    signal.throwIfAborted();
     rethrowWorkflowAttemptLost(error);
     const failure = workflowFailureFromUnknown(error);
     const code = failure.code;
@@ -621,7 +576,5 @@ export async function processDubbingRun(
       errorCode: code,
       error: error instanceof Error ? error.message : "Unknown error",
     });
-  } finally {
-    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }

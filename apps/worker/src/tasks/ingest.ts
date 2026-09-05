@@ -1,10 +1,8 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
-import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   assertPublicHttpUrl,
@@ -15,6 +13,7 @@ import {
   redactUrlForDisplay,
   RemoteFetchError,
   UnsafeUrlError,
+  WorkflowFailure,
 } from "@narriflow/services";
 import {
   InvalidObjectMetadataError,
@@ -29,6 +28,11 @@ import {
   type LinkProviderId,
 } from "@narriflow/validators";
 import { notifyIngestFailureAfterSettlement } from "../notifications";
+import {
+  productionWorkerProcessModule,
+  WorkerProcessFailure,
+  type WorkerProcessModule,
+} from "../worker-process";
 
 const MEDIA_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const METADATA_PROBE_TIMEOUT_MS = 120 * 1000;
@@ -115,90 +119,39 @@ function assertObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-const COMMAND_KILL_GRACE_MS = 5000;
-
 async function execCommand(
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
   command: string,
   args: string[],
-  options?: { timeoutMs?: number; acceptableExitCodes?: readonly number[] },
+  options: { timeoutMs: number; acceptableExitCodes?: readonly number[] },
 ) {
-  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const clearTimers = () => {
-      if (timeoutTimer) clearTimeout(timeoutTimer);
-      if (killTimer) clearTimeout(killTimer);
-    };
-
-    if (options?.timeoutMs) {
-      timeoutTimer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-        killTimer = setTimeout(() => {
-          child.kill("SIGKILL");
-        }, COMMAND_KILL_GRACE_MS);
-      }, options.timeoutMs);
-    }
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      clearTimers();
-      if (error.code === "ENOENT") {
-        reject(new IngestWorkerError("worker_command_missing", `${command} is not installed`));
-        return;
-      }
-
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      clearTimers();
-
-      if (timedOut) {
-        reject(
-          new IngestWorkerError(
-            "worker_command_timeout",
-            `${command} timed out after ${options?.timeoutMs}ms`,
-          ),
-        );
-        return;
-      }
-
-      const acceptableExitCodes = options?.acceptableExitCodes ?? [0];
-      if (code !== null && acceptableExitCodes.includes(code)) {
-        resolve({ stdout, stderr });
-        return;
-      }
-
-      reject(new IngestWorkerError("worker_command_failed", `${command} failed with code ${code}: ${stderr}`));
-    });
+  const result = await workerProcess.execute({
+    command,
+    args,
+    signal,
+    deadlineMs: options.timeoutMs,
+    acceptableExitCodes: options.acceptableExitCodes,
+    captureStdout: true,
   });
+  return { stdout: result.stdout.toString("utf8") };
 }
 
 async function execYtdlp(
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
   args: string[],
   options: { timeoutMs: number; acceptableExitCodes?: readonly number[] },
 ) {
   try {
-    return await execCommand("yt-dlp", args, options);
+    return await execCommand(workerProcess, signal, "yt-dlp", args, options);
   } catch (error) {
     const classified = classifyYtdlpProviderFailure(
-      error instanceof Error ? error.message : String(error),
+      error instanceof WorkerProcessFailure
+        ? error.diagnostic
+        : error instanceof Error
+          ? error.message
+          : String(error),
     );
     if (classified) {
       throw new IngestWorkerError(classified.code, classified.message);
@@ -307,7 +260,11 @@ async function withTransientRetry<T>(
   }
 }
 
-async function runUploadFinalize(job: IngestJob) {
+async function runUploadFinalize(
+  job: IngestJob,
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
+) {
   const verified = readVerifiedUploadPayload(job.payload);
 
   await projectService.markIngestJobNormalizing(job.id);
@@ -318,7 +275,7 @@ async function runUploadFinalize(job: IngestJob) {
   let probedDuration: number | null = null;
   try {
     const url = await presignDownloadUrl({ key: verified.storageKey });
-    probedDuration = await probeDurationSeconds(url);
+    probedDuration = await probeDurationSeconds(workerProcess, signal, url);
   } catch {
     probedDuration = null;
   }
@@ -364,20 +321,23 @@ export function readVerifiedUploadPayload(payload: unknown): {
   return { storageKey, sizeBytes, contentType };
 }
 
-async function probeDurationSeconds(input: string): Promise<number | null> {
+async function probeDurationSeconds(
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
+  input: string,
+): Promise<number | null> {
   try {
-    const { stdout } = await execCommand("ffprobe", [
-      "-v",
-      "quiet",
-      "-print_format",
-      "json",
-      "-show_format",
-      input,
-    ]);
-    const data = JSON.parse(stdout) as { format?: { duration?: string } };
-    const dur = data.format?.duration ? Number(data.format.duration) : NaN;
-    return normalizeDuration(dur);
+    return normalizeDuration(
+      (
+        await workerProcess.inspectMedia({
+          sourcePath: input,
+          signal,
+          deadlineMs: METADATA_PROBE_TIMEOUT_MS,
+        })
+      ).durationSec,
+    );
   } catch {
+    signal.throwIfAborted();
     return null;
   }
 }
@@ -407,7 +367,11 @@ export function normalizeDropboxDownloadUrl(rawUrl: string): string {
   return url.toString();
 }
 
-async function runLinkImport(job: IngestJob) {
+async function runLinkImport(
+  job: IngestJob,
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
+) {
   const payload = assertObject(job.payload);
   // Legacy in-flight youtube_import jobs carry `youtubeUrl`; link_import jobs
   // carry `url` + `provider`.
@@ -452,11 +416,11 @@ async function runLinkImport(job: IngestJob) {
   await projectService.markIngestJobDownloading(job.id);
 
   if (providerDef.strategy === "direct") {
-    await runDirectLinkDownload(job, rawUrl, provider);
+    await runDirectLinkDownload(job, rawUrl, provider, workerProcess, signal);
     return;
   }
 
-  await runYtdlpLinkDownload(job, rawUrl, provider);
+  await runYtdlpLinkDownload(job, rawUrl, provider, workerProcess, signal);
 }
 
 /** yt-dlp-backed providers: YouTube, Google Drive, StreamYard, Loom, Twitch,
@@ -465,13 +429,15 @@ async function runYtdlpLinkDownload(
   job: IngestJob,
   url: string,
   provider: LinkProviderId,
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
 ) {
-  const tempDir = await mkdtemp(join(tmpdir(), "narriflow-link-"));
-
-  try {
+  return workerProcess.withScratchDirectory("narriflow-link-", async (tempDir) => {
     const probeStartedAtMs = Date.now();
     const metadataOutput = await withTransientRetry("yt_dlp_metadata_probe", () =>
       execYtdlp(
+        workerProcess,
+        signal,
         ["--dump-single-json", "--no-warnings", "--no-playlist", url],
         { timeoutMs: METADATA_PROBE_TIMEOUT_MS },
       ),
@@ -501,6 +467,8 @@ async function runYtdlpLinkDownload(
     // retry, so re-running the whole command on a transient failure is safe.
     const downloadOutput = await withTransientRetry("yt_dlp_download", () =>
       execYtdlp(
+        workerProcess,
+        signal,
         [
           "--no-warnings",
           "--no-playlist",
@@ -520,7 +488,10 @@ async function runYtdlpLinkDownload(
           outputTemplate,
           url,
         ],
-        { timeoutMs: LINK_DOWNLOAD_TIMEOUT_MS, acceptableExitCodes: [0, 101] },
+        {
+          timeoutMs: LINK_DOWNLOAD_TIMEOUT_MS,
+          acceptableExitCodes: [0, 101],
+        },
       ),
     );
 
@@ -545,7 +516,7 @@ async function runYtdlpLinkDownload(
     }
 
     const durationSeconds = requireDuration(
-      metadataDuration ?? (await probeDurationSeconds(downloadedPath)),
+      metadataDuration ?? (await probeDurationSeconds(workerProcess, signal, downloadedPath)),
     );
     if (durationSeconds > MAX_MEDIA_DURATION_SECONDS) {
       throw new IngestWorkerError(
@@ -593,9 +564,7 @@ async function runYtdlpLinkDownload(
       sourceSizeBytes: fileInfo.size,
       sourceDurationSeconds: durationSeconds,
     });
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
+  });
 }
 
 /** Direct-download providers: Dropbox. */
@@ -603,12 +572,11 @@ async function runDirectLinkDownload(
   job: IngestJob,
   url: string,
   provider: LinkProviderId,
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
 ) {
-  const tempDir = await mkdtemp(join(tmpdir(), "narriflow-link-"));
-
-  try {
-    const downloadUrl =
-      provider === "dropbox" ? normalizeDropboxDownloadUrl(url) : url;
+  return workerProcess.withScratchDirectory("narriflow-link-", async (tempDir) => {
+    const downloadUrl = provider === "dropbox" ? normalizeDropboxDownloadUrl(url) : url;
 
     let urlPath: string;
     try {
@@ -625,7 +593,9 @@ async function runDirectLinkDownload(
     await projectService.markIngestJobNormalizing(job.id);
 
     const fileInfo = await stat(tempFile);
-    const durationSeconds = requireDuration(await probeDurationSeconds(tempFile));
+    const durationSeconds = requireDuration(
+      await probeDurationSeconds(workerProcess, signal, tempFile),
+    );
     if (durationSeconds > MAX_MEDIA_DURATION_SECONDS) {
       throw new IngestWorkerError(
         "ingest_max_duration_exceeded",
@@ -653,9 +623,7 @@ async function runDirectLinkDownload(
       sourceSizeBytes: fileInfo.size,
       sourceDurationSeconds: durationSeconds,
     });
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
+  });
 }
 
 async function downloadToFile(url: string, targetPath: string) {
@@ -799,7 +767,11 @@ function mapRemoteDownloadError(error: unknown) {
   );
 }
 
-async function runRssImport(job: IngestJob) {
+async function runRssImport(
+  job: IngestJob,
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
+) {
   const payload = assertObject(job.payload);
   const episode = assertObject(payload.episode);
   const enclosureUrl = String(episode.enclosureUrl ?? "").trim();
@@ -812,9 +784,7 @@ async function runRssImport(job: IngestJob) {
 
   await projectService.markIngestJobDownloading(job.id);
 
-  const tempDir = await mkdtemp(join(tmpdir(), "narriflow-rss-"));
-
-  try {
+  return workerProcess.withScratchDirectory("narriflow-rss-", async (tempDir) => {
     let enclosurePath: string;
     try {
       enclosurePath = assertPublicHttpUrl(enclosureUrl).pathname;
@@ -829,7 +799,7 @@ async function runRssImport(job: IngestJob) {
 
     const fileInfo = await stat(tempFile);
     const durationSeconds = requireDuration(
-      await probeDurationSeconds(tempFile),
+      await probeDurationSeconds(workerProcess, signal, tempFile),
     );
     const key = `projects/${job.projectId}/rss/${Date.now()}-${sanitizeFileName(episodeTitle)}${enclosureExt}`;
 
@@ -851,12 +821,18 @@ async function runRssImport(job: IngestJob) {
       sourceSizeBytes: fileInfo.size,
       sourceDurationSeconds: durationSeconds,
     });
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
+  });
 }
 
-export async function processIngestJob(job: IngestJob) {
+export async function processIngestJob(
+  job: IngestJob,
+  options: {
+    signal?: AbortSignal;
+    workerProcess?: WorkerProcessModule;
+  } = {},
+) {
+  const signal = options.signal ?? new AbortController().signal;
+  const workerProcess = options.workerProcess ?? productionWorkerProcessModule;
   const jobStartedAtMs = Date.now();
   log("info", "ingest_job_started", {
     jobId: job.id,
@@ -866,15 +842,18 @@ export async function processIngestJob(job: IngestJob) {
 
   try {
     if (job.jobType === "upload_finalize") {
-      await runUploadFinalize(job);
+      await runUploadFinalize(job, workerProcess, signal);
     } else if (job.jobType === "link_import" || job.jobType === "youtube_import") {
       // youtube_import is kept only to drain legacy in-flight jobs enqueued
       // before the link_import migration; runLinkImport maps its payload.
-      await runLinkImport(job);
+      await runLinkImport(job, workerProcess, signal);
     } else if (job.jobType === "rss_import") {
-      await runRssImport(job);
+      await runRssImport(job, workerProcess, signal);
     } else {
-      throw new IngestWorkerError("worker_unknown_job_type", `Unsupported ingest job type: ${job.jobType}`);
+      throw new IngestWorkerError(
+        "worker_unknown_job_type",
+        `Unsupported ingest job type: ${job.jobType}`,
+      );
     }
 
     log("info", "ingest_job_completed", {
@@ -884,6 +863,7 @@ export async function processIngestJob(job: IngestJob) {
       totalMs: Date.now() - jobStartedAtMs,
     });
   } catch (error) {
+    signal.throwIfAborted();
     const normalizedError =
       error instanceof InvalidObjectMetadataError
         ? new IngestWorkerError(
@@ -892,7 +872,7 @@ export async function processIngestJob(job: IngestJob) {
           )
         : error;
     const code =
-      normalizedError instanceof IngestWorkerError
+      normalizedError instanceof IngestWorkerError || normalizedError instanceof WorkflowFailure
         ? normalizedError.code
         : "worker_unhandled_error";
     const message =

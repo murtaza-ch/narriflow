@@ -12,11 +12,8 @@ import {
   WorkflowFailure,
 } from "@narriflow/services";
 import { parseRenderConfig } from "../render-config";
-import { ProductionRenderMediaAdapter } from "../render-media-adapter";
-import {
-  ClipRenderAttempt,
-  type ClipRenderingWorkflowAttempt,
-} from "./render-clips";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
+import { ClipRenderAttempt, type ClipRenderingWorkflowAttempt } from "./render-clips";
 
 type PendingClipRender = Awaited<
   ReturnType<typeof clipService.getPendingClipRendersForWorkSet>
@@ -88,7 +85,7 @@ function createOrdinaryTracer(input: {
   };
   presignNeverResolves?: boolean;
   presignedUrl?: string;
-  productionMedia?: ProductionRenderMediaAdapter;
+  productionMedia?: Pick<WorkerProcessModule, "inspectMedia">;
   sourceMode?: "ranged" | "download";
   superseded?: boolean;
   exportBound?: boolean;
@@ -249,18 +246,20 @@ function createOrdinaryTracer(input: {
           };
         },
       },
-      media: input.productionMedia ?? {
-        probe: async ({ sourcePath, signal, deadlineMs }) => {
-          const mode = sourcePath.startsWith("https://") ? "ranged" : "local";
-          if (
-            input.sourceMode === "ranged" ||
-            input.sourceInterruption?.operation === `${mode}_probe`
-          ) {
-            actions.push(`probe:${mode}`);
-          }
-          expect(signal).toBeInstanceOf(AbortSignal);
-          expect(deadlineMs).toBeGreaterThan(0);
-          interruptSource(`${mode}_probe`);
+      workerProcess: {
+        inspectMedia:
+          input.productionMedia?.inspectMedia.bind(input.productionMedia) ??
+          (async ({ sourcePath, signal, deadlineMs }) => {
+            const mode = sourcePath.startsWith("https://") ? "ranged" : "local";
+            if (
+              input.sourceMode === "ranged" ||
+              input.sourceInterruption?.operation === `${mode}_probe`
+            ) {
+              actions.push(`probe:${mode}`);
+            }
+            expect(signal).toBeInstanceOf(AbortSignal);
+            expect(deadlineMs).toBeGreaterThan(0);
+            interruptSource(`${mode}_probe`);
           if (shouldFail(`${mode}_probe`)) {
             throw new WorkflowFailure(
               mode === "ranged"
@@ -268,28 +267,28 @@ function createOrdinaryTracer(input: {
                 : "worker_command_input_invalid",
               mode === "ranged" ? "retryable" : "permanent",
               `injected ${mode} probe failure`,
-            );
-          }
-          return {
-            width: 0,
-            height: 0,
-            hasVideo: false,
-            hasAudio: true,
-            fps: 30,
-          };
-        },
-      },
-      process: {
+              );
+            }
+            return {
+              durationSec: 10,
+              width: 0,
+              height: 0,
+              hasVideo: false,
+              hasAudio: true,
+              hasVisualStream: false,
+              fps: 30,
+            };
+          }),
         execute: async ({ command, deadlineMs, diagnose, signal }) => {
           if (command === "ffprobe") {
-            throw new Error("source probes must use the media adapter");
+            throw new Error("source probes must use inspectMedia");
           }
           expect(signal).toBeInstanceOf(AbortSignal);
           expect(deadlineMs).toBeGreaterThan(0);
           actions.push("command");
           if (input.waitForCommandAbort) {
             actions.push("command_started");
-            return new Promise<string>((_resolve, reject) => {
+            return new Promise<never>((_resolve, reject) => {
               const abort = () => {
                 actions.push("command_terminated");
                 reject(
@@ -347,7 +346,23 @@ function createOrdinaryTracer(input: {
             });
             throw commandFailure;
           }
-          return "";
+          return { exitCode: 0, stdout: Buffer.alloc(0) };
+        },
+        withScratchDirectory: async (_prefix, work, diagnose) => {
+          const directory = input.workspaceDirectory ?? "/tmp/narriflow-render-ordinary-tracer";
+          try {
+            return await work(directory);
+          } finally {
+            actions.push("workspace_cleanup");
+            if (input.failure === "cleanup") {
+              diagnose?.({
+                operation: "scratch_cleanup",
+                status: "failed",
+                elapsedMs: 0,
+                failureCode: "worker_scratch_cleanup_failed",
+              });
+            }
+          }
         },
       },
       project: {
@@ -434,12 +449,6 @@ function createOrdinaryTracer(input: {
         },
       },
       workspace: {
-        mkdtemp: async () =>
-          input.workspaceDirectory ?? "/tmp/narriflow-render-ordinary-tracer",
-        rm: async () => {
-          actions.push("workspace_cleanup");
-          if (input.failure === "cleanup") throw injectedError;
-        },
         stat: async () => ({ size: 100 }) as never,
       },
       clock: {
@@ -585,16 +594,26 @@ function createUploadQueueTracer(input: {
             }),
           ),
       },
-      media: {
-        probe: async () => ({
+      workerProcess: {
+        inspectMedia: async () => ({
+          durationSec: 10,
           width: 0,
           height: 0,
           hasVideo: false,
           hasAudio: true,
+          hasVisualStream: false,
           fps: 30,
         }),
+        execute: async () => ({ exitCode: 0, stdout: Buffer.alloc(0) }),
+        withScratchDirectory: async (_prefix, work) => {
+          try {
+            return await work("/tmp/narriflow-render-upload-queue-tracer");
+          } finally {
+            cleanupActiveUploads = activeUploads;
+            actions.push("workspace_cleanup");
+          }
+        },
       },
-      process: { execute: async () => "" },
       project: {
         reportProgress: async () => {},
       },
@@ -652,11 +671,6 @@ function createUploadQueueTracer(input: {
         deleteObject: async (key) => ({ key }),
       },
       workspace: {
-        mkdtemp: async () => "/tmp/narriflow-render-upload-queue-tracer",
-        rm: async () => {
-          cleanupActiveUploads = activeUploads;
-          actions.push("workspace_cleanup");
-        },
         stat: async () => ({ size: 100 }) as never,
       },
       diagnose: () => {},
@@ -797,16 +811,28 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
     },
     adapters: {
       state: {
-        getFrozenRenderingStateForWorkSet: async () =>
-          frozenRenderingState([pendingRender]),
+        getFrozenRenderingStateForWorkSet: async () => frozenRenderingState([pendingRender]),
       },
-      process: {
-        execute: async ({ command }) => {
-          if (command === "ffprobe") {
-            return JSON.stringify({ streams: [{ codec_type: "audio" }] });
-          }
+      workerProcess: {
+        inspectMedia: async () => ({
+          durationSec: 10,
+          width: 0,
+          height: 0,
+          hasVideo: false,
+          hasAudio: true,
+          hasVisualStream: false,
+          fps: 30,
+        }),
+        execute: async () => {
           actions.push("encode");
-          return "";
+          return { exitCode: 0, stdout: Buffer.alloc(0) };
+        },
+        withScratchDirectory: async (_prefix, work) => {
+          try {
+            return await work("/tmp/narriflow-render-post-upload-cancel");
+          } finally {
+            actions.push("cleanup");
+          }
         },
       },
       project: {
@@ -837,10 +863,6 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
         },
       },
       workspace: {
-        mkdtemp: async () => "/tmp/narriflow-render-post-upload-cancel",
-        rm: async () => {
-          actions.push("cleanup");
-        },
         stat: async () => ({ size: 100 }) as never,
       },
       diagnose: () => {},
@@ -1003,10 +1025,13 @@ test("ClipRenderAttempt drives failure and cleanup through construction adapters
         },
         setClipLayoutAnalysis: async () => {},
       },
-      workspace: {
-        mkdtemp: async () => "/tmp/narriflow-render-test",
-        rm: async () => {
-          mutations.push("cleanup");
+      workerProcess: {
+        withScratchDirectory: async (_prefix, work) => {
+          try {
+            return await work("/tmp/narriflow-render-test");
+          } finally {
+            mutations.push("cleanup");
+          }
         },
       },
       clock: { nowMs: () => 1_000 },
@@ -1089,10 +1114,13 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
           throw controller.signal.reason;
         },
       },
-      workspace: {
-        mkdtemp: async () => "/tmp/narriflow-render-cancelled",
-        rm: async () => {
-          mutations.push("cleanup");
+      workerProcess: {
+        withScratchDirectory: async (_prefix, work) => {
+          try {
+            return await work("/tmp/narriflow-render-cancelled");
+          } finally {
+            mutations.push("cleanup");
+          }
         },
       },
       diagnose: () => {},
@@ -1179,19 +1207,26 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
     },
     adapters: {
       state: {
-        getFrozenRenderingStateForWorkSet: async () =>
-          frozenRenderingState([pendingRender]),
+        getFrozenRenderingStateForWorkSet: async () => frozenRenderingState([pendingRender]),
       },
-      process: {
-        execute: async ({ command }) =>
-          command === "ffprobe"
-            ? JSON.stringify({
-                streams: [
-                  { codec_type: "video", width: 1920, height: 1080 },
-                  { codec_type: "audio" },
-                ],
-              })
-            : "",
+      workerProcess: {
+        inspectMedia: async () => ({
+          durationSec: 10,
+          width: 1920,
+          height: 1080,
+          hasVideo: true,
+          hasAudio: true,
+          hasVisualStream: true,
+          fps: 30,
+        }),
+        execute: async () => ({ exitCode: 0, stdout: Buffer.alloc(0) }),
+        withScratchDirectory: async (_prefix, work) => {
+          try {
+            return await work("/tmp/narriflow-render-empty-cut");
+          } finally {
+            mutations.push("cleanup");
+          }
+        },
       },
       project: {
         reportProgress: async () => {},
@@ -1209,10 +1244,7 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
         setClipLayoutAnalysis: async () => {},
       },
       storage: { downloadObjectToFile: async () => {} },
-      workspace: {
-        mkdtemp: async () => "/tmp/narriflow-render-empty-cut",
-        rm: async () => mutations.push("cleanup"),
-      },
+      workspace: {},
       diagnose: () => {},
     },
   });
@@ -1559,7 +1591,7 @@ test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
           followUpWorkflowRunId: null,
         },
         presignedUrl: `http://127.0.0.1:${server.port}/unavailable.mp3`,
-        productionMedia: new ProductionRenderMediaAdapter(),
+        productionMedia: productionWorkerProcessModule,
         sourceMode: "ranged",
         workspaceDirectory,
       });
@@ -2263,7 +2295,7 @@ test("ClipRenderAttempt diagnoses cleanup failure without reversing settlement",
     message: "clip_render_workspace_cleanup_failed",
     context: expect.objectContaining({
       phase: "cleanup",
-      operation: "workspace_remove",
+      operation: "scratch_cleanup",
     }),
   });
 });

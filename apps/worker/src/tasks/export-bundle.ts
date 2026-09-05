@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdtemp, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import archiver from "archiver";
@@ -18,6 +17,7 @@ import {
   workflowFailureFromUnknown,
 } from "@narriflow/services";
 import { exportBundleManifestSchema, type ExportBundleManifest } from "@narriflow/validators";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
 
 export async function createExportBundleArchive(input: {
   outputPath: string;
@@ -27,7 +27,9 @@ export async function createExportBundleArchive(input: {
   const output = createWriteStream(input.outputPath, { flags: "wx" });
   const archive = archiver("zip", { zlib: { level: 6 } });
   const completion = pipeline(archive, output);
-  archive.append(`${JSON.stringify(input.manifest, null, 2)}\n`, { name: "manifest.json" });
+  archive.append(`${JSON.stringify(input.manifest, null, 2)}\n`, {
+    name: "manifest.json",
+  });
   for (const file of input.files) archive.append(createReadStream(file.path), { name: file.name });
   await archive.finalize();
   await completion;
@@ -49,9 +51,16 @@ export function exportBundleStorageKeys(projectId: string, operationId: string, 
 }
 
 export async function runExportBundlePipeline<TArchive>(input: {
-  entries: ReadonlyArray<{ variantId: string; name: string; sizeBytes: number }>;
+  entries: ReadonlyArray<{
+    variantId: string;
+    name: string;
+    sizeBytes: number;
+  }>;
   signal?: AbortSignal;
-  download(entry: { variantId: string; name: string; sizeBytes: number }, index: number): Promise<{ path: string; sizeBytes: number }>;
+  download(
+    entry: { variantId: string; name: string; sizeBytes: number },
+    index: number,
+  ): Promise<{ path: string; sizeBytes: number }>;
   archive(files: Array<{ path: string; name: string }>): Promise<TArchive>;
   upload(archive: TArchive): Promise<void>;
   assertOwnership(): Promise<void>;
@@ -81,6 +90,7 @@ export async function runExportBundlePipeline<TArchive>(input: {
 export async function processExportBundleRun(
   attempt: ClaimedWorkflowAttempt,
   context: WorkflowAttemptContext,
+  workerProcess: WorkerProcessModule = productionWorkerProcessModule,
 ) {
   const run = { ...attempt, id: attempt.workflowRunId };
   const { signal } = context;
@@ -96,84 +106,111 @@ export async function processExportBundleRun(
   const manifest = exportBundleManifestSchema.parse(bundle.manifest);
   const variantIds = manifest.included.flatMap((item) => item.files.map((file) => file.variantId));
   const variants = await prisma.clipExportVariant.findMany({
-    where: { id: { in: variantIds }, status: "completed", storageKey: { not: null }, export: { campaignOperationItems: { some: { operationId: bundle.operationId } } } },
+    where: {
+      id: { in: variantIds },
+      status: "completed",
+      storageKey: { not: null },
+      export: {
+        campaignOperationItems: { some: { operationId: bundle.operationId } },
+      },
+    },
     select: { id: true, storageKey: true },
   });
   const byId = new Map(variants.map((variant) => [variant.id, variant.storageKey!]));
   if (byId.size !== variantIds.length) throw new Error("export_bundle_variant_missing");
-  const directory = await mkdtemp(join(tmpdir(), "narriflow-export-bundle-"));
-  const archivePath = join(directory, "bundle.zip");
-  // Publication keys remain attempt-scoped. A stale worker that loses its
-  // lease after copying can then remove only its own object, never the object
-  // published by a winning takeover attempt.
-  const { attemptKey, finalKey } = exportBundleStorageKeys(
-    run.projectId,
-    bundle.operationId,
-    attempt.attemptId,
-  );
-  let finalPublished = false;
-  let bundleSettled = false;
-  try {
-    await lifecycle.beginExportBundleBuild(attempt, {
-      bundleId: bundle.id,
-      operationId: bundle.operationId,
-      attemptStorageKey: attemptKey,
-    });
-    const entries = manifest.included.flatMap((item) => item.files);
-    await runExportBundlePipeline({
-      entries,
-      signal,
-      download: async (entry) => {
-        const path = join(directory, `${entry.variantId}.mp4`);
-        await downloadObjectToFile({ key: byId.get(entry.variantId)!, filePath: path, signal });
-        const downloaded = await stat(path);
-        return { path, sizeBytes: downloaded.size };
-      },
-      archive: async (files) => {
-        const archiveInfo = await createExportBundleArchive({ outputPath: archivePath, manifest, files });
-        return { archiveInfo, checksumSha256: await hashFile(archivePath) };
-      },
-      upload: async () => {
-        await putFileFromPath({ key: attemptKey, filePath: archivePath, contentType: "application/zip", metadata: { operation_id: bundle.operationId, workflow_attempt_id: attempt.attemptId }, signal });
-      },
-      assertOwnership: () => lifecycle.assertOwnership(attempt),
-      publish: async () => {
-        await copyObject({ sourceKey: attemptKey, destinationKey: finalKey });
-        finalPublished = true;
-      },
-      settle: async ({ archiveInfo, checksumSha256 }) => {
-        await lifecycle.completeExportBundleBuild(attempt, {
-          bundleId: bundle.id,
-          operationId: bundle.operationId,
-          storageKey: finalKey,
-          sizeBytes: archiveInfo.size,
-          checksumSha256,
-          operationStatus: manifest.excluded.length ? "partial" : "completed",
-          succeededCount: manifest.included.length,
-        });
-        bundleSettled = true;
-      },
-    });
-    await lifecycle.completeStage(attempt);
-    await deleteObject(attemptKey, { signal }).catch(() => {});
-  } catch (error) {
-    if (finalPublished && !bundleSettled) {
-      await deleteObject(finalKey).catch(() => {});
-    }
-    await deleteObject(attemptKey).catch(() => {});
-    rethrowWorkflowAttemptLost(error);
-    if (!bundleSettled) {
-      await lifecycle.failExportBundleBuild(attempt, {
+  return workerProcess.withScratchDirectory("narriflow-export-bundle-", async (directory) => {
+    const archivePath = join(directory, "bundle.zip");
+    // Publication keys remain attempt-scoped. A stale worker that loses its
+    // lease after copying can then remove only its own object, never the object
+    // published by a winning takeover attempt.
+    const { attemptKey, finalKey } = exportBundleStorageKeys(
+      run.projectId,
+      bundle.operationId,
+      attempt.attemptId,
+    );
+    let finalPublished = false;
+    let bundleSettled = false;
+    try {
+      await lifecycle.beginExportBundleBuild(attempt, {
         bundleId: bundle.id,
         operationId: bundle.operationId,
-        errorCode: "export_bundle_build_failed",
-        failedCount: manifest.included.length,
+        attemptStorageKey: attemptKey,
       });
+      const entries = manifest.included.flatMap((item) => item.files);
+      await runExportBundlePipeline({
+        entries,
+        signal,
+        download: async (entry) => {
+          const path = join(directory, `${entry.variantId}.mp4`);
+          await downloadObjectToFile({
+            key: byId.get(entry.variantId)!,
+            filePath: path,
+            signal,
+          });
+          const downloaded = await stat(path);
+          return { path, sizeBytes: downloaded.size };
+        },
+        archive: async (files) => {
+          const archiveInfo = await createExportBundleArchive({
+            outputPath: archivePath,
+            manifest,
+            files,
+          });
+          return { archiveInfo, checksumSha256: await hashFile(archivePath) };
+        },
+        upload: async () => {
+          await putFileFromPath({
+            key: attemptKey,
+            filePath: archivePath,
+            contentType: "application/zip",
+            metadata: {
+              operation_id: bundle.operationId,
+              workflow_attempt_id: attempt.attemptId,
+            },
+            signal,
+          });
+        },
+        assertOwnership: () => lifecycle.assertOwnership(attempt),
+        publish: async () => {
+          await copyObject({
+            sourceKey: attemptKey,
+            destinationKey: finalKey,
+          });
+          finalPublished = true;
+        },
+        settle: async ({ archiveInfo, checksumSha256 }) => {
+          await lifecycle.completeExportBundleBuild(attempt, {
+            bundleId: bundle.id,
+            operationId: bundle.operationId,
+            storageKey: finalKey,
+            sizeBytes: archiveInfo.size,
+            checksumSha256,
+            operationStatus: manifest.excluded.length ? "partial" : "completed",
+            succeededCount: manifest.included.length,
+          });
+          bundleSettled = true;
+        },
+      });
+      await lifecycle.completeStage(attempt);
+      await deleteObject(attemptKey, { signal }).catch(() => {});
+    } catch (error) {
+      signal.throwIfAborted();
+      if (finalPublished && !bundleSettled) {
+        await deleteObject(finalKey).catch(() => {});
+      }
+      await deleteObject(attemptKey).catch(() => {});
+      rethrowWorkflowAttemptLost(error);
+      if (!bundleSettled) {
+        await lifecycle.failExportBundleBuild(attempt, {
+          bundleId: bundle.id,
+          operationId: bundle.operationId,
+          errorCode: "export_bundle_build_failed",
+          failedCount: manifest.included.length,
+        });
+      }
+      await lifecycle.failAttempt(attempt, workflowFailureFromUnknown(error));
     }
-    await lifecycle.failAttempt(attempt, workflowFailureFromUnknown(error));
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  });
 }
 
 type ExportBundleExpiryDependencies = {

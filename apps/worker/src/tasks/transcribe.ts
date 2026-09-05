@@ -1,8 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
-import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   downloadObjectToFile,
@@ -26,6 +23,7 @@ import {
   sourceLanguageCodeSchema,
 } from "@narriflow/validators";
 import { notifyWorkflowFailureAfterSettlement } from "../notifications";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
 
 interface WorkflowRunJob {
   id: string;
@@ -52,6 +50,7 @@ const ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com";
 const ASSEMBLYAI_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const ASSEMBLYAI_SUBMIT_TIMEOUT_MS = 30 * 1000;
 const ASSEMBLYAI_POLL_TIMEOUT_MS = 30 * 1000;
+const TRANSCRIPTION_FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
 
 function isAbortOrTimeoutError(error: unknown) {
   return (
@@ -161,49 +160,6 @@ function log(
   );
 }
 
-async function execCommand(command: string, args: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stderr = "";
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") {
-        reject(
-          new WorkflowWorkerError(
-            "worker_command_missing",
-            `${command} is not installed`,
-            "permanent",
-          ),
-        );
-        return;
-      }
-
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(
-        new WorkflowWorkerError(
-          "worker_command_failed",
-          `${command} failed with code ${code}: ${stderr}`,
-        ),
-      );
-    });
-  });
-}
-
 function getRequiredAssemblyAiApiKey() {
   const apiKey = process.env.ASSEMBLYAI_API_KEY?.trim();
 
@@ -306,7 +262,11 @@ async function uploadAssemblyAiAudio(audioPath: string, apiKey: string) {
       // `body` is a Buffer (read once above), not a stream, so it's safe to
       // resend unchanged across retry attempts. Fewer retries than the other
       // calls since a large upload retry is more expensive to repeat.
-      { label: "upload", timeoutMs: ASSEMBLYAI_UPLOAD_TIMEOUT_MS, maxRetries: 2 },
+      {
+        label: "upload",
+        timeoutMs: ASSEMBLYAI_UPLOAD_TIMEOUT_MS,
+        maxRetries: 2,
+      },
     );
   } catch (error) {
     if (isAbortOrTimeoutError(error)) {
@@ -482,8 +442,15 @@ async function submitAssemblyAiJob(
   run: WorkflowRunJob,
   apiKey: string,
   reportProgress: WorkflowAttemptContext["reportProgress"],
-  options: { languageCode: string | null },
-): Promise<{ transcriptId: string; submissionPath: "presigned_source" | "uploaded_audio" }> {
+  options: {
+    languageCode: string | null;
+    signal: AbortSignal;
+    workerProcess: WorkerProcessModule;
+  },
+): Promise<{
+  transcriptId: string;
+  submissionPath: "presigned_source" | "uploaded_audio";
+}> {
   const sourceStorageKey = run.project.sourceStorageKey;
   if (!sourceStorageKey) {
     throw new WorkflowWorkerError(
@@ -528,33 +495,32 @@ async function submitAssemblyAiJob(
 
   // Fallback: download the source, extract a small audio track locally, and
   // upload just that to AssemblyAI.
-  const tempDir = await mkdtemp(join(tmpdir(), "narriflow-stt-"));
-  try {
+  return options.workerProcess.withScratchDirectory("narriflow-stt-", async (tempDir) => {
     const sourceExt = extname(sourceStorageKey) || ".bin";
     const sourcePath = join(tempDir, `source${sourceExt}`);
     const audioPath = join(tempDir, "transcription-input.mp3");
 
-    await downloadObjectToFile({ key: sourceStorageKey, filePath: sourcePath });
-    await extractTranscriptionAudio(sourcePath, audioPath);
+    await downloadObjectToFile({
+      key: sourceStorageKey,
+      filePath: sourcePath,
+      signal: options.signal,
+    });
+    await extractTranscriptionAudio(options.workerProcess, options.signal, sourcePath, audioPath);
     await reportProgress(20);
 
     const uploadUrl = await uploadAssemblyAiAudio(audioPath, apiKey);
     await reportProgress(30);
 
-    const transcriptId = await submitAssemblyAiTranscript(
-      uploadUrl,
-      apiKey,
-      options,
-    );
+    const transcriptId = await submitAssemblyAiTranscript(uploadUrl, apiKey, {
+      languageCode: options.languageCode,
+    });
     log("info", "assemblyai_submission_path", {
       workflowRunId: run.id,
       projectId: run.projectId,
       path: "uploaded_audio",
     });
     return { transcriptId, submissionPath: "uploaded_audio" };
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
+  });
 }
 
 const DEFAULT_STT_RESULT_POLL_BATCH_SIZE = 10;
@@ -567,22 +533,17 @@ function getSttResultPollBatchSize(): number {
 }
 
 async function extractTranscriptionAudio(
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
   inputPath: string,
   outputPath: string,
 ) {
-  await execCommand("ffmpeg", [
-    "-y",
-    "-i",
-    inputPath,
-    "-vn",
-    "-ac",
-    "1",
-    "-ar",
-    "16000",
-    "-b:a",
-    "64k",
-    outputPath,
-  ]);
+  await workerProcess.execute({
+    command: "ffmpeg",
+    args: ["-y", "-i", inputPath, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", outputPath],
+    signal,
+    deadlineMs: TRANSCRIPTION_FFMPEG_TIMEOUT_MS,
+  });
 }
 
 /**
@@ -595,6 +556,7 @@ async function extractTranscriptionAudio(
 export async function processTranscriptRun(
   attempt: ClaimedWorkflowAttempt,
   context: WorkflowAttemptContext,
+  workerProcess: WorkerProcessModule = productionWorkerProcessModule,
 ) {
   const run: WorkflowRunJob = { ...attempt, id: attempt.workflowRunId };
   const { signal } = context;
@@ -614,17 +576,14 @@ export async function processTranscriptRun(
     }
 
     const apiKey = getRequiredAssemblyAiApiKey();
-    const languageCode = await projectService.getProjectLanguageCode(
-      run.projectId,
-    );
+    const languageCode = await projectService.getProjectLanguageCode(run.projectId);
 
     const submitStartedAtMs = Date.now();
-    const { transcriptId } = await submitAssemblyAiJob(
-      run,
-      apiKey,
-      context.reportProgress,
-      { languageCode },
-    );
+    const { transcriptId } = await submitAssemblyAiJob(run, apiKey, context.reportProgress, {
+      languageCode,
+      signal,
+      workerProcess,
+    });
     signal?.throwIfAborted();
     const submitMs = Date.now() - submitStartedAtMs;
     await getWorkflowRunLifecycle().waitForProvider(attempt, {
@@ -640,6 +599,7 @@ export async function processTranscriptRun(
       submitMs,
     });
   } catch (error) {
+    signal.throwIfAborted();
     await settleTranscriptRunFailure(run, attempt, error);
   }
 }

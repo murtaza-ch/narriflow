@@ -5,12 +5,9 @@ import {
   buildAudiogramPreviewArgs,
   buildClipPreviewArgs,
   buildPeaksExtractionArgs,
-  classifyMediaStreams,
   clipPreviewAttemptStorageKey,
   computeAmplitudePeaks,
   computeClipPreviewWindow,
-  isAttachedPictureStream,
-  type ProbeStreamLite,
   previewTimeToSourceTime,
   quantizePeaks,
   sourceTimeToPreviewTime,
@@ -146,7 +143,11 @@ describe("buildClipPreviewArgs", () => {
   });
 
   test("includes mono AAC audio at the configured bitrate when the source has audio", () => {
-    const args = buildClipPreviewArgs({ ...base, hasAudio: true, audioBitrate: "64k" });
+    const args = buildClipPreviewArgs({
+      ...base,
+      hasAudio: true,
+      audioBitrate: "64k",
+    });
     expect(args).toContain("aac");
     const acIndex = args.indexOf("-ac");
     expect(args[acIndex + 1]).toBe("1");
@@ -181,121 +182,19 @@ describe("buildClipPreviewArgs", () => {
   });
 });
 
-describe("isAttachedPictureStream (podcast cover-art detection)", () => {
-  test("is false for a non-video stream regardless of disposition", () => {
-    const stream: ProbeStreamLite = {
-      codec_type: "audio",
-      disposition: { attached_pic: 1 },
-    };
-    expect(isAttachedPictureStream(stream)).toBe(false);
-  });
-
-  test("is true when ffprobe sets disposition.attached_pic (the standard signal)", () => {
-    const stream: ProbeStreamLite = {
-      codec_type: "video",
-      nb_frames: "1",
-      disposition: { attached_pic: 1 },
-    };
-    expect(isAttachedPictureStream(stream)).toBe(true);
-  });
-
-  test("falls back to a tiny frame count when disposition is absent", () => {
-    // Some muxers/tagging tools embed cover art without ever setting the
-    // attached_pic flag -- the tiny-frame-count fallback must still catch it.
-    const stream: ProbeStreamLite = { codec_type: "video", nb_frames: "1" };
-    expect(isAttachedPictureStream(stream)).toBe(true);
-  });
-
-  test("is true for a zero-frame video stream too", () => {
-    const stream: ProbeStreamLite = { codec_type: "video", nb_frames: "0" };
-    expect(isAttachedPictureStream(stream)).toBe(true);
-  });
-
-  test("is false for a real video stream with a large frame count", () => {
-    const stream: ProbeStreamLite = { codec_type: "video", nb_frames: "900" };
-    expect(isAttachedPictureStream(stream)).toBe(false);
-  });
-
-  test("is false when nb_frames is missing/unparseable and disposition is absent", () => {
-    // A real video stream can legitimately lack nb_frames metadata (e.g.
-    // some streamed/piped sources) -- absence of the signal must never
-    // itself imply cover art.
-    const withoutFrames: ProbeStreamLite = { codec_type: "video" };
-    const withNA: ProbeStreamLite = { codec_type: "video", nb_frames: "N/A" };
-    expect(isAttachedPictureStream(withoutFrames)).toBe(false);
-    expect(isAttachedPictureStream(withNA)).toBe(false);
-  });
-
-  test("is false when disposition.attached_pic is explicitly 0", () => {
-    const stream: ProbeStreamLite = {
-      codec_type: "video",
-      nb_frames: "900",
-      disposition: { attached_pic: 0 },
-    };
-    expect(isAttachedPictureStream(stream)).toBe(false);
-  });
-});
-
-describe("classifyMediaStreams (video vs audio-only vs cover-art source)", () => {
-  test("a true audio-only file (no video stream at all) is audio-only", () => {
-    const result = classifyMediaStreams([{ codec_type: "audio" }]);
-    expect(result).toEqual({ hasVideo: false, hasAudio: true });
-  });
-
-  test("a normal video-with-audio source has both", () => {
-    const result = classifyMediaStreams([
-      { codec_type: "video", nb_frames: "1800" },
-      { codec_type: "audio" },
-    ]);
-    expect(result).toEqual({ hasVideo: true, hasAudio: true });
-  });
-
-  test("a silent video (no audio stream) still counts as video", () => {
-    const result = classifyMediaStreams([{ codec_type: "video", nb_frames: "1800" }]);
-    expect(result).toEqual({ hasVideo: true, hasAudio: false });
-  });
-
-  test("a podcast MP3 with embedded cover art is classified as audio-only, not video", () => {
-    // The exact shape ffprobe reports for an MP3's ID3 APIC cover image: its
-    // own video stream, disposition.attached_pic = 1, nb_frames = "1".
-    const result = classifyMediaStreams([
-      { codec_type: "audio" },
-      { codec_type: "video", nb_frames: "1", disposition: { attached_pic: 1 } },
-    ]);
-    expect(result).toEqual({ hasVideo: false, hasAudio: true });
-  });
-
-  test("cover art without an explicit disposition flag still falls back to audio-only", () => {
-    const result = classifyMediaStreams([
-      { codec_type: "audio" },
-      { codec_type: "video", nb_frames: "1" },
-    ]);
-    expect(result).toEqual({ hasVideo: false, hasAudio: true });
-  });
-
-  test("a real video stream alongside a separate attached-picture stream still counts as video", () => {
-    // e.g. a video file that also carries an embedded thumbnail -- the real
-    // video stream must win, not get masked by the cover-art stream.
-    const result = classifyMediaStreams([
-      { codec_type: "video", nb_frames: "1800" },
-      { codec_type: "video", nb_frames: "1", disposition: { attached_pic: 1 } },
-      { codec_type: "audio" },
-    ]);
-    expect(result).toEqual({ hasVideo: true, hasAudio: true });
-  });
-
-  test("no streams at all classifies as neither video nor audio", () => {
-    expect(classifyMediaStreams([])).toEqual({ hasVideo: false, hasAudio: false });
-  });
-});
-
 describe("audiogramPreviewDimensions", () => {
   test("960x540 at a 540 max height -- exactly half of 1080p, genuine 16:9 '540p'", () => {
-    expect(audiogramPreviewDimensions(540)).toEqual({ width: 960, height: 540 });
+    expect(audiogramPreviewDimensions(540)).toEqual({
+      width: 960,
+      height: 540,
+    });
   });
 
   test("scales proportionally for a smaller configured max height", () => {
-    expect(audiogramPreviewDimensions(360)).toEqual({ width: 640, height: 360 });
+    expect(audiogramPreviewDimensions(360)).toEqual({
+      width: 640,
+      height: 360,
+    });
   });
 
   test("rounds an odd max height down to the nearest even number", () => {

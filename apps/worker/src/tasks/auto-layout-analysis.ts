@@ -1,6 +1,3 @@
-import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compositionAssetRef } from "@narriflow/composition-plan";
@@ -15,27 +12,22 @@ import {
   type ClipAutoLayoutAnalysis,
 } from "@narriflow/validators";
 import { buildClipCutPlan, type ClipCutPlan } from "./cut-plan";
-import {
-  buildAutoLayoutPlan,
-  speechWordsFromUtterances,
-} from "./layout-engine";
-import {
-  remapMultiFaceSamplesForCutPlan,
-  type MultiFaceSample,
-} from "./two-up";
+import { buildAutoLayoutPlan, speechWordsFromUtterances } from "./layout-engine";
+import { remapMultiFaceSamplesForCutPlan, type MultiFaceSample } from "./two-up";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
 
 const DEFAULT_BATCH_SIZE = 2;
 const COMMAND_TIMEOUT_MS = 120_000;
-const COMMAND_KILL_GRACE_MS = 5_000;
 const FAILURE_BACKOFF_MS = 5 * 60_000;
 
-function log(
-  level: "info" | "warn" | "error",
-  message: string,
-  context?: Record<string, unknown>,
-) {
+function log(level: "info" | "warn" | "error", message: string, context?: Record<string, unknown>) {
   console.warn(
-    JSON.stringify({ level, message, ts: new Date().toISOString(), ...context }),
+    JSON.stringify({
+      level,
+      message,
+      ts: new Date().toISOString(),
+      ...context,
+    }),
   );
 }
 
@@ -58,77 +50,46 @@ function failureBackoffMs(): number {
     : FAILURE_BACKOFF_MS;
 }
 
-function runOutput(command: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), COMMAND_KILL_GRACE_MS);
-    }, COMMAND_TIMEOUT_MS);
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr = (stderr + chunk.toString()).slice(-8192);
-    });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
-      if (timedOut) {
-        reject(new Error(`${command} timed out after ${COMMAND_TIMEOUT_MS}ms`));
-      } else if (code !== 0) {
-        reject(new Error(`${command} failed with code ${code}: ${stderr.slice(-500)}`));
-      } else {
-        resolve(stdout);
-      }
-    });
+async function runOutput(
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
+  command: string,
+  args: string[],
+): Promise<string> {
+  const result = await workerProcess.execute({
+    command,
+    args,
+    signal,
+    deadlineMs: COMMAND_TIMEOUT_MS,
+    captureStdout: true,
   });
+  return result.stdout.toString("utf8");
 }
 
-async function probeVideo(path: string): Promise<{
+async function probeVideo(
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
+  path: string,
+): Promise<{
   hasVideo: boolean;
   width: number;
   height: number;
 }> {
-  const output = await runOutput("ffprobe", [
-    "-v",
-    "error",
-    "-select_streams",
-    "v:0",
-    "-show_entries",
-    "stream=width,height,disposition",
-    "-of",
-    "json",
-    path,
-  ]);
-  const parsed = JSON.parse(output) as {
-    streams?: Array<{
-      width?: number;
-      height?: number;
-      disposition?: { attached_pic?: number };
-    }>;
-  };
-  const stream = parsed.streams?.find(
-    (candidate) => candidate.disposition?.attached_pic !== 1,
-  );
+  const inspection = await workerProcess.inspectMedia({
+    sourcePath: path,
+    signal,
+    deadlineMs: COMMAND_TIMEOUT_MS,
+  });
   return {
-    hasVideo: Boolean(stream && (stream.width ?? 0) > 0 && (stream.height ?? 0) > 0),
-    width: stream?.width ?? 1,
-    height: stream?.height ?? 1,
+    hasVideo: inspection.hasVideo,
+    width: inspection.width || 1,
+    height: inspection.height || 1,
   };
 }
 
 async function detectFaces(params: {
+  workerProcess: WorkerProcessModule;
+  signal: AbortSignal;
   path: string;
   startSec: number;
   durationSec: number;
@@ -142,6 +103,8 @@ async function detectFaces(params: {
     "/usr/local/share/narriflow/face_yunet.onnx";
   const fps = process.env.REFRAME_SAMPLE_FPS ?? "4";
   const output = await runOutput(
+    params.workerProcess,
+    params.signal,
     python,
     buildMultiFaceDetectorArgs({
       scriptPath,
@@ -183,12 +146,14 @@ export function buildMultiFaceDetectorArgs(params: {
 }
 
 async function detectSceneCuts(params: {
+  workerProcess: WorkerProcessModule;
+  signal: AbortSignal;
   path: string;
   startSec: number;
   durationSec: number;
 }): Promise<number[]> {
   const threshold = process.env.REFRAME_SCENE_THRESHOLD ?? "0.3";
-  const output = await runOutput("ffmpeg", [
+  const output = await runOutput(params.workerProcess, params.signal, "ffmpeg", [
     "-hide_banner",
     "-nostats",
     ...(params.startSec > 0 ? ["-ss", String(params.startSec)] : []),
@@ -239,9 +204,13 @@ function remapSceneCuts(
 export async function analyzeClipAutoLayout(params: {
   clip: ClipPendingAutoLayoutAnalysis;
   previewPath: string;
+  signal?: AbortSignal;
+  workerProcess?: WorkerProcessModule;
 }): Promise<ClipAutoLayoutAnalysis> {
   const { clip, previewPath } = params;
-  const probe = await probeVideo(previewPath);
+  const signal = params.signal ?? new AbortController().signal;
+  const workerProcess = params.workerProcess ?? productionWorkerProcessModule;
+  const probe = await probeVideo(workerProcess, signal, previewPath);
   const rawDurationSec = clip.endSec - clip.startSec;
   const cutPlan = buildClipCutPlan(clip.deletedRanges, {
     startSec: clip.startSec,
@@ -281,11 +250,15 @@ export async function analyzeClipAutoLayout(params: {
     }
     const [samples, sceneCuts] = await Promise.all([
       detectFaces({
+        workerProcess,
+        signal,
         path: previewPath,
         startSec: previewOffsetSec,
         durationSec: detectionDurationSec,
       }),
       detectSceneCuts({
+        workerProcess,
+        signal,
         path: previewPath,
         startSec: previewOffsetSec,
         durationSec: detectionDurationSec,
@@ -356,9 +329,12 @@ export async function analyzeClipAutoLayout(params: {
 }
 
 export async function processPendingAutoLayoutAnalyses(
-  limit = batchSize(),
+  options: { limit?: number; signal?: AbortSignal; workerProcess?: WorkerProcessModule } = {},
 ): Promise<number> {
   if (process.env.WORKER_AUTO_LAYOUT_ANALYSIS === "0") return 0;
+  const limit = options.limit ?? batchSize();
+  const signal = options.signal ?? new AbortController().signal;
+  const workerProcess = options.workerProcess ?? productionWorkerProcessModule;
   let completed = 0;
 
   // Claim immediately before each sequential analysis. Pre-claiming a whole
@@ -367,70 +343,75 @@ export async function processPendingAutoLayoutAnalyses(
   for (let attempt = 0; attempt < limit; attempt += 1) {
     const clip = await clipService.claimNextClipForAutoLayoutAnalysis(leaseMs());
     if (!clip) break;
-    const tempDir = await mkdtemp(join(tmpdir(), "narriflow-auto-layout-"));
-    const previewPath = join(tempDir, "preview.mp4");
-    try {
-      await downloadObjectToFile({
-        key: clip.previewStorageKey,
-        filePath: previewPath,
-      });
-      const analysis = await analyzeClipAutoLayout({ clip, previewPath });
-      const persisted = await clipService.completeClaimedClipAutoLayoutAnalysis(
-        clip.id,
-        analysis,
-        {
-          editorRevision: clip.editorRevision,
-          previewStorageKey: clip.previewStorageKey,
-          claimToken: clip.autoLayoutClaimToken,
-        },
-      );
-      if (persisted) {
-        completed += 1;
-        log("info", "clip_auto_layout_analysis_completed", {
-          clipId: clip.id,
-          projectId: clip.projectId,
-          segmentCount: analysis.segments.length,
-          twoUpSegmentCount: analysis.twoUpSegmentCount,
-          shotCount: analysis.shotCount,
-          mappedSpeakerCount: analysis.mappedSpeakerCount,
+    await workerProcess.withScratchDirectory("narriflow-auto-layout-", async (tempDir) => {
+      const previewPath = join(tempDir, "preview.mp4");
+      try {
+        await downloadObjectToFile({
+          key: clip.previewStorageKey,
+          filePath: previewPath,
         });
-      } else {
-        // Usually means an editor mutation invalidated this attempt or a
-        // foreground render published the same plan first. This token-scoped
-        // release is a no-op if either path already cleared/replaced it.
-        await clipService.deferClaimedClipAutoLayoutAnalysis(
+        const analysis = await analyzeClipAutoLayout({
+          clip,
+          previewPath,
+          signal,
+          workerProcess,
+        });
+        const persisted = await clipService.completeClaimedClipAutoLayoutAnalysis(
           clip.id,
-          clip.autoLayoutClaimToken,
-          new Date(),
+          analysis,
+          {
+            editorRevision: clip.editorRevision,
+            previewStorageKey: clip.previewStorageKey,
+            claimToken: clip.autoLayoutClaimToken,
+          },
         );
-      }
-    } catch (error) {
-      await clipService
-        .deferClaimedClipAutoLayoutAnalysis(
-          clip.id,
-          clip.autoLayoutClaimToken,
-          new Date(Date.now() + failureBackoffMs()),
-        )
-        .catch((deferError) => {
-          log("error", "clip_auto_layout_analysis_defer_failed", {
+        if (persisted) {
+          completed += 1;
+          log("info", "clip_auto_layout_analysis_completed", {
             clipId: clip.id,
             projectId: clip.projectId,
-            message:
-              deferError instanceof Error ? deferError.message : "unknown",
+            segmentCount: analysis.segments.length,
+            twoUpSegmentCount: analysis.twoUpSegmentCount,
+            shotCount: analysis.shotCount,
+            mappedSpeakerCount: analysis.mappedSpeakerCount,
           });
+        } else {
+          // Usually means an editor mutation invalidated this attempt or a
+          // foreground render published the same plan first. This token-scoped
+          // release is a no-op if either path already cleared/replaced it.
+          await clipService.deferClaimedClipAutoLayoutAnalysis(
+            clip.id,
+            clip.autoLayoutClaimToken,
+            new Date(),
+          );
+        }
+      } catch (error) {
+        signal.throwIfAborted();
+        await clipService
+          .deferClaimedClipAutoLayoutAnalysis(
+            clip.id,
+            clip.autoLayoutClaimToken,
+            new Date(Date.now() + failureBackoffMs()),
+          )
+          .catch((deferError) => {
+            log("error", "clip_auto_layout_analysis_defer_failed", {
+              clipId: clip.id,
+              projectId: clip.projectId,
+              message:
+                deferError instanceof Error ? deferError.message : "unknown",
+            });
+          });
+        log("error", "clip_auto_layout_analysis_failed", {
+          clipId: clip.id,
+          projectId: clip.projectId,
+          message: error instanceof Error ? error.message : "unknown",
+          python: process.env.REFRAME_PYTHON ?? "python3",
+          modelPath:
+            process.env.REFRAME_MODEL_PATH ??
+            "/usr/local/share/narriflow/face_yunet.onnx",
         });
-      log("error", "clip_auto_layout_analysis_failed", {
-        clipId: clip.id,
-        projectId: clip.projectId,
-        message: error instanceof Error ? error.message : "unknown",
-        python: process.env.REFRAME_PYTHON ?? "python3",
-        modelPath:
-          process.env.REFRAME_MODEL_PATH ??
-          "/usr/local/share/narriflow/face_yunet.onnx",
-      });
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
-    }
+      }
+    });
   }
   return completed;
 }

@@ -1,9 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import {
-  createWriteStream as productionCreateWriteStream,
-  readFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { createWriteStream as productionCreateWriteStream, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline as productionPipeline } from "node:stream/promises";
@@ -142,15 +138,12 @@ import {
 } from "../render-object-key";
 export { clipRenderAttemptStorageKey } from "../render-object-key";
 import {
-  productionRenderProcessAdapter,
-  type RenderProcessDiagnostic,
-} from "../render-process-adapter";
-import {
   HTTP_SOURCE_RW_TIMEOUT_US,
-  ProductionRenderMediaAdapter,
-  productionRenderMediaAdapter,
-  type RenderMediaProbe,
-} from "../render-media-adapter";
+  productionWorkerProcessModule,
+  type WorkerMediaInspection,
+  type WorkerProcessDiagnostic,
+  type WorkerProcessModule,
+} from "../worker-process";
 import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
 import {
   bindCompositionPlanAudioInputs,
@@ -311,12 +304,8 @@ interface CompositionResourceMeasurement {
 }
 
 interface ClipRenderAttemptAdapters {
-  media: Pick<typeof productionRenderMediaAdapter, "probe">;
-  process: Pick<typeof productionRenderProcessAdapter, "execute">;
-  state: Pick<
-    typeof productionClipService,
-    "getFrozenRenderingStateForWorkSet"
-  >;
+  workerProcess: WorkerProcessModule;
+  state: Pick<typeof productionClipService, "getFrozenRenderingStateForWorkSet">;
   project: {
     reportProgress(attempt: WorkflowAttemptRef, progress: number): Promise<void>;
   };
@@ -421,7 +410,15 @@ interface ClipRenderAttemptAdapters {
 type ClipRenderAttemptAdapterOverrides = Partial<
   Omit<
     ClipRenderAttemptAdapters,
-    "analysis" | "clip" | "composition" | "optionalAssets" | "storage" | "workspace" | "clock" | "resource"
+    | "analysis"
+    | "clip"
+    | "composition"
+    | "optionalAssets"
+    | "storage"
+    | "workspace"
+    | "clock"
+    | "resource"
+    | "workerProcess"
   >
 > & {
   analysis?: Partial<ClipRenderAttemptAdapters["analysis"]>;
@@ -432,6 +429,7 @@ type ClipRenderAttemptAdapterOverrides = Partial<
   clock?: Partial<ClipRenderAttemptAdapters["clock"]>;
   resource?: Partial<ClipRenderAttemptAdapters["resource"]>;
   composition?: Partial<ClipRenderAttemptAdapters["composition"]>;
+  workerProcess?: Partial<WorkerProcessModule>;
 };
 
 interface ClipRenderAttemptDependencies {
@@ -475,7 +473,7 @@ export function resolveRenderTimingForClip(input: {
   });
 }
 
-type SourceProbe = RenderMediaProbe;
+type SourceProbe = WorkerMediaInspection;
 
 interface PendingRenderOutput {
   clipRenderId: string;
@@ -655,8 +653,7 @@ function measureCompositionResource(): CompositionResourceMeasurement {
 }
 
 const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
-  media: productionRenderMediaAdapter,
-  process: productionRenderProcessAdapter,
+  workerProcess: productionWorkerProcessModule,
   state: productionClipService,
   project: {
     reportProgress: (attempt, progress) =>
@@ -1183,28 +1180,24 @@ function runCommand(
     recordResourceSample?: (rssBytes: number) => void;
   },
 ): Promise<string> {
-  const config = currentRenderConfig();
-  return currentRenderAdapters().process.execute({
-    command,
-    args,
-    signal: currentRenderSignal() ?? new AbortController().signal,
-    deadlineMs: options.timeoutMs,
-    killGraceMs: config.processKillGraceMs,
-    captureStdout: options.captureStdout,
-    recordResourceSample: options.recordResourceSample,
-    diagnose: diagnoseRenderProcessOperation,
-  });
+  return currentRenderAdapters()
+    .workerProcess.execute({
+      command,
+      args,
+      signal: currentRenderSignal() ?? new AbortController().signal,
+      deadlineMs: options.timeoutMs,
+      captureStdout: options.captureStdout,
+      recordResourceSample: options.recordResourceSample,
+      diagnose: diagnoseRenderProcessOperation,
+    })
+    .then((result) => result.stdout.toString("utf8"));
 }
 
-function diagnoseRenderProcessOperation(event: RenderProcessDiagnostic): void {
-  log(
-    event.status === "failed" ? "error" : "info",
-    "clip_render_command_operation",
-    {
-      phase: "command_execution",
-      ...event,
-    },
-  );
+function diagnoseRenderProcessOperation(event: WorkerProcessDiagnostic): void {
+  log(event.status === "failed" ? "error" : "info", "clip_render_command_operation", {
+    phase: "command_execution",
+    ...event,
+  });
 }
 
 async function execCommand(
@@ -1274,11 +1267,10 @@ function httpSourceInputArgs(input: string): string[] {
 
 async function probeSource(sourcePath: string): Promise<SourceProbe> {
   const config = currentRenderConfig();
-  return currentRenderAdapters().media.probe({
+  return currentRenderAdapters().workerProcess.inspectMedia({
     sourcePath,
     signal: currentRenderSignal() ?? new AbortController().signal,
     deadlineMs: config.probeCommandTimeoutMs,
-    killGraceMs: config.processKillGraceMs,
     diagnose: diagnoseRenderProcessOperation,
   });
 }
@@ -1495,15 +1487,14 @@ export function resolveBackgroundPlanForDownloadedImage(params: {
  */
 async function probeBackgroundImageDecodable(filePath: string): Promise<boolean> {
   try {
-    const output = await execCommandOutput(
-      "ffprobe",
-      ["-v", "quiet", "-print_format", "json", "-show_streams", filePath],
-      { timeoutMs: currentRenderConfig().probeCommandTimeoutMs },
-    );
-    const data = JSON.parse(output) as {
-      streams?: Array<{ codec_type?: string }>;
-    };
-    return (data.streams ?? []).some((stream) => stream.codec_type === "video");
+    return (
+      await currentRenderAdapters().workerProcess.inspectMedia({
+        sourcePath: filePath,
+        signal: currentRenderSignal() ?? new AbortController().signal,
+        deadlineMs: currentRenderConfig().probeCommandTimeoutMs,
+        diagnose: diagnoseRenderProcessOperation,
+      })
+    ).hasVisualStream;
   } catch (error) {
     rethrowRenderControlFlow(error);
     return false;
@@ -1519,22 +1510,14 @@ async function probeBackgroundImageDecodable(filePath: string): Promise<boolean>
  */
 async function probeMediaDurationSec(filePath: string): Promise<number | null> {
   try {
-    const output = await execCommandOutput(
-      "ffprobe",
-      [
-        "-v",
-        "quiet",
-        "-print_format",
-        "json",
-        "-show_entries",
-        "format=duration",
-        filePath,
-      ],
-      { timeoutMs: currentRenderConfig().probeCommandTimeoutMs },
-    );
-    const data = JSON.parse(output) as { format?: { duration?: string } };
-    const parsed = data.format?.duration ? Number(data.format.duration) : NaN;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    return (
+      await currentRenderAdapters().workerProcess.inspectMedia({
+        sourcePath: filePath,
+        signal: currentRenderSignal() ?? new AbortController().signal,
+        deadlineMs: currentRenderConfig().probeCommandTimeoutMs,
+        diagnose: diagnoseRenderProcessOperation,
+      })
+    ).durationSec;
   } catch (error) {
     rethrowRenderControlFlow(error);
     return null;
@@ -1550,15 +1533,14 @@ async function validateOptionalMedia(
   try {
     const config = currentRenderConfig();
     const signal = currentRenderSignal() ?? new AbortController().signal;
-    const probe = await currentRenderAdapters().media.probe({
+    const probe = await currentRenderAdapters().workerProcess.inspectMedia({
       sourcePath: filePath,
       signal,
       deadlineMs: config.probeCommandTimeoutMs,
-      killGraceMs: config.processKillGraceMs,
       diagnose: diagnoseRenderProcessOperation,
     });
     const expectedStream =
-      kind === "audio" ? probe.hasAudio : probe.hasVideo;
+      kind === "audio" ? probe.hasAudio : kind === "image" ? probe.hasVisualStream : probe.hasVideo;
     if (!expectedStream) return false;
     await execCommand(
       "ffmpeg",
@@ -1992,7 +1974,10 @@ export interface DecidePipUsageParams {
   segmentExtracted: boolean;
   /** `detectPipPath`'s result, or `null` when the script itself failed/was
    *  unavailable (no python/opencv/numpy). */
-  detection: { movingPxFrac: number | null; insufficientSamples: boolean } | null;
+  detection: {
+    movingPxFrac: number | null;
+    insufficientSamples: boolean;
+  } | null;
   /** `classifyScreencast`'s threshold override — defaults to
    *  `pipMotionThreshold()` inside `classifyScreencast` itself when
    *  omitted, same as every other caller. */
@@ -2113,7 +2098,10 @@ export interface ResolvePipAnalysisParams {
 }
 
 export interface ResolvePipAnalysisResult {
-  detectionResult: { movingPxFrac: number | null; insufficientSamples: boolean } | null;
+  detectionResult: {
+    movingPxFrac: number | null;
+    insufficientSamples: boolean;
+  } | null;
   selectedRect: PipRect | null;
   /** `null` for a persisted-hit (no fresh candidate list exists to count —
    *  L1, adversarial review: NOT `0`, which would misleadingly read as "ran
@@ -2178,7 +2166,12 @@ export async function resolvePipAnalysis(
   // constructs the identity-complete Screen evidence envelope.
   const selectedRect = selectPipRect(pip.candidates);
 
-  return { detectionResult, selectedRect, candidateCount, analysisSource: "fresh" };
+  return {
+    detectionResult,
+    selectedRect,
+    candidateCount,
+    analysisSource: "fresh",
+  };
 }
 
 /** Converts detected face motion into bounded Screen face-band evidence for
@@ -2644,7 +2637,9 @@ export function generateAssFromSlice(
         // skipped from the rendered line below, never emitted as a bare space.
         const transformedWords = group.map((w) =>
           applyTextTransform(
-            formatCaptionWord(w.word, { punctuation: captionPreset.punctuation !== false }),
+            formatCaptionWord(w.word, {
+              punctuation: captionPreset.punctuation !== false,
+            }),
             txtTransform,
           ),
         );
@@ -2691,7 +2686,9 @@ export function generateAssFromSlice(
         .split(/\s+/)
         .filter(Boolean)
         .map((w) =>
-          formatCaptionWord(w, { punctuation: captionPreset.punctuation !== false }),
+          formatCaptionWord(w, {
+            punctuation: captionPreset.punctuation !== false,
+          }),
         )
         .filter((w) => w.length > 0)
         .join(" ");
@@ -2922,7 +2919,11 @@ function buildCutConcatFilter(params: {
     filterParts.push(
       `${interleaved}concat=n=${segments.length}:v=1:a=1${videoOutLabel}${audioOutLabel}`,
     );
-    return { filterParts, videoLabel: videoOutLabel, audioLabel: audioOutLabel };
+    return {
+      filterParts,
+      videoLabel: videoOutLabel,
+      audioLabel: audioOutLabel,
+    };
   }
 
   if (includeVideo) {
@@ -3167,7 +3168,10 @@ function buildAudioMixFilter(params: {
   const fadeChain = buildAudioFadeChain(params.audio.outputFades);
   const dialogueInputRef = params.dialogueInputRef ?? "[0:a]";
   const sfxEntries = params.audio.soundEffects
-    .map((plan, index) => ({ plan, inputIndex: params.sfxInputIndexes[index]! }))
+    .map((plan, index) => ({
+      plan,
+      inputIndex: params.sfxInputIndexes[index]!,
+    }))
     .filter((entry) => entry.plan.activeRange.startSec < duration);
   const beepEntries = params.audio.censors.filter(
     (censor): censor is Extract<typeof censor, { treatment: "beep" }> =>
@@ -4503,11 +4507,21 @@ export class ClipRenderAttempt {
     this.#adapters = {
       ...productionClipRenderAttemptAdapters,
       ...dependencies.adapters,
-      media:
-        dependencies.adapters?.media ??
-        (dependencies.adapters?.process
-          ? new ProductionRenderMediaAdapter(dependencies.adapters.process)
-          : productionRenderMediaAdapter),
+      workerProcess: {
+        execute:
+          dependencies.adapters?.workerProcess?.execute?.bind(
+            dependencies.adapters.workerProcess,
+          ) ?? productionWorkerProcessModule.execute.bind(productionWorkerProcessModule),
+        inspectMedia:
+          dependencies.adapters?.workerProcess?.inspectMedia?.bind(
+            dependencies.adapters.workerProcess,
+          ) ?? productionWorkerProcessModule.inspectMedia.bind(productionWorkerProcessModule),
+        withScratchDirectory:
+          dependencies.adapters?.workerProcess?.withScratchDirectory?.bind(
+            dependencies.adapters.workerProcess,
+          ) ??
+          productionWorkerProcessModule.withScratchDirectory.bind(productionWorkerProcessModule),
+      },
       optionalAssets: {
         ...productionClipRenderAttemptAdapters.optionalAssets,
         ...dependencies.adapters?.optionalAssets,
@@ -4673,10 +4687,10 @@ async function executeClipRenderAttempt(
     ownerTier,
   });
 
-  const tempDir = await currentRenderAdapters().workspace.mkdtemp(
-    join(tmpdir(), "narriflow-render-"),
-  );
   const touchedOptionalAssetClasses = new Set<OptionalAssetClass>();
+  return currentRenderAdapters().workerProcess.withScratchDirectory(
+    "narriflow-render-",
+    async (tempDir) => {
   // Captured outside the try so `finally` can settle in-flight background
   // uploads before deleting tempDir (their source files live there).
   let uploadQueueRef: { drain: () => Promise<void> } | null = null;
@@ -4774,7 +4788,10 @@ async function executeClipRenderAttempt(
                 assetClass: "logo",
                 phase: "decode",
                 failureCode: "brand_logo_invalid",
-                context: { workflowRunId: run.id, projectId: run.projectId },
+                context: {
+                  workflowRunId: run.id,
+                  projectId: run.projectId,
+                },
               });
             }
           } catch (error) {
@@ -4862,24 +4879,17 @@ async function executeClipRenderAttempt(
           }
           rethrowRenderCancellation(error);
           const errorCode =
-            error instanceof WorkflowFailure
-              ? error.code
-              : "render_upload_failed";
+            error instanceof WorkflowFailure ? error.code : "render_upload_failed";
           const disposition =
-            error instanceof WorkflowFailure
-              ? error.disposition
-              : "retryable";
-          await currentRenderAdapters()
-            .clip
-            .failClipRenderVariant(
-              attempt,
-              output.clipRenderId,
-              errorCode,
-              disposition,
-              { ...params.motionAnalytics, renderOutcome: "failed" },
-            );
-          const persistenceFailure =
-            error instanceof RenderPersistenceFailure ? error : null;
+            error instanceof WorkflowFailure ? error.disposition : "retryable";
+          await currentRenderAdapters().clip.failClipRenderVariant(
+            attempt,
+            output.clipRenderId,
+            errorCode,
+            disposition,
+            { ...params.motionAnalytics, renderOutcome: "failed" },
+          );
+          const persistenceFailure = error instanceof RenderPersistenceFailure ? error : null;
           log("error", "clip_render_variant_failed", {
             workflowRunId: run.id,
             attemptId: attempt.attemptId,
@@ -5075,28 +5085,21 @@ async function executeClipRenderAttempt(
         );
         if (srtContent.length > 0) {
           srtPath = join(tempDir, `clip-${clip.id}.srt`);
-          await currentRenderAdapters().workspace.writeFile(
-            srtPath,
-            srtContent,
-            "utf-8",
-          );
+          await currentRenderAdapters().workspace.writeFile(srtPath, srtContent, "utf-8");
         }
       }
 
       const outputs: PendingRenderOutput[] = renderGroup.map((render) => {
-        const aspectRatio = clipAspectRatioFromDb[
-          clipAspectRatioDbSchema.parse(render.aspectRatio)
-        ];
+        const aspectRatio =
+          clipAspectRatioFromDb[clipAspectRatioDbSchema.parse(render.aspectRatio)];
         const slug =
-          clipAspectRatioOptions.find((option) => option.value === aspectRatio)
-            ?.slug ?? "9x16";
+          clipAspectRatioOptions.find((option) => option.value === aspectRatio)?.slug ?? "9x16";
         // Tolerant parse, same fallback as clip.service's
         // toClipRenderVariantSnapshot — a row written before this column
         // existed (or an unexpected value) degrades to the column's own DB
         // default rather than failing the whole clip.
         const resolution =
-          clipRenderResolutionSchema.safeParse(render.resolution).data ??
-          "1080p";
+          clipRenderResolutionSchema.safeParse(render.resolution).data ?? "1080p";
 
         return {
           clipRenderId: render.id,
@@ -5192,6 +5195,7 @@ async function executeClipRenderAttempt(
             output.subtitlePath = assPath;
           }
         }
+
       }
 
       // Stock B-roll: when a Pexels key is set, plan 2-4 recurring cutaways
@@ -5558,7 +5562,12 @@ async function executeClipRenderAttempt(
             id: { in: sceneAssetReferences.map((asset) => asset.id) },
             ...sceneOwnerWhere,
           },
-          select: { id: true, kind: true, fingerprint: true, storageKey: true },
+          select: {
+            id: true,
+            kind: true,
+            fingerprint: true,
+            storageKey: true,
+          },
         });
         const byId = new Map(assets.map((asset) => [asset.id, asset]));
         for (const reference of sceneAssetReferences) {
@@ -5572,20 +5581,41 @@ async function executeClipRenderAttempt(
             filePath: path,
             signal: renderStorageSignal(),
           });
-          const decodable = await currentRenderAdapters().optionalAssets.validateOptionalMedia(path, asset.kind);
-          if (!decodable) throw new WorkflowWorkerError("scene_asset_invalid", "An inserted scene asset is not decodable", "permanent");
+          const decodable = await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+            path,
+            asset.kind,
+          );
+          if (!decodable)
+            throw new WorkflowWorkerError(
+              "scene_asset_invalid",
+              "An inserted scene asset is not decodable",
+              "permanent",
+            );
           const sceneProbe = asset.kind === "video" ? await probeSource(path) : null;
           if (sceneProbe) {
             const sceneDurationSec = await probeMediaDurationSec(path);
-            const invalidRange = compositionDocument.sceneBlocks.some((block) =>
-              block.content.kind === "video" &&
-              block.content.asset.id === asset.id &&
-              (sceneDurationSec === null || block.content.sourceEndSec > sceneDurationSec + 0.05));
+            const invalidRange = compositionDocument.sceneBlocks.some(
+              (block) =>
+                block.content.kind === "video" &&
+                block.content.asset.id === asset.id &&
+                (sceneDurationSec === null ||
+                  block.content.sourceEndSec > sceneDurationSec + 0.05),
+            );
             if (invalidRange || sceneDurationSec === null) {
-              throw new WorkflowWorkerError("scene_asset_range_invalid", "An inserted video scene exceeds its source duration", "permanent");
+              throw new WorkflowWorkerError(
+                "scene_asset_range_invalid",
+                "An inserted video scene exceeds its source duration",
+                "permanent",
+              );
             }
           }
-          resolvedSceneAssets[compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`)] = { path, kind: asset.kind, hasAudio: sceneProbe?.hasAudio ?? false };
+          resolvedSceneAssets[
+            compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`)
+          ] = {
+            path,
+            kind: asset.kind,
+            hasAudio: sceneProbe?.hasAudio ?? false,
+          };
         }
       }
       if (sceneFontReferences.length > 0 && prisma) {
@@ -5796,11 +5826,7 @@ async function executeClipRenderAttempt(
               cutPlan,
               clipStartSec,
             );
-            const remappedCuts = remapSceneCutsForCutPlan(
-              sceneCuts,
-              cutPlan,
-              clipStartSec,
-            );
+            const remappedCuts = remapSceneCutsForCutPlan(sceneCuts, cutPlan, clipStartSec);
             const words = speechWordsFromUtterances(
               utterances,
               cutPlan,
@@ -5825,7 +5851,10 @@ async function executeClipRenderAttempt(
                 activeSpeakerCuts: false,
               },
             };
-            const fullPlan = buildAutoLayoutPlan({ ...planBase, allowTwoUp: true });
+            const fullPlan = buildAutoLayoutPlan({
+              ...planBase,
+              allowTwoUp: true,
+            });
             const noSplitPlan = buildAutoLayoutPlan({
               ...planBase,
               allowTwoUp: false,
@@ -5926,7 +5955,6 @@ async function executeClipRenderAttempt(
             });
           }
         }
-
       }
 
       let splitLayoutEvidenceForPlan: CompositionEvidenceAvailability<
@@ -6064,12 +6092,8 @@ async function executeClipRenderAttempt(
                   durationSec: effective.durationSec,
                   detect: currentRenderAdapters().analysis.detectPipPath,
                 });
-            const {
-              detectionResult,
-              selectedRect,
-              candidateCount,
-              analysisSource,
-            } = resolvedPip;
+            const { detectionResult, selectedRect, candidateCount, analysisSource } =
+              resolvedPip;
 
             // Face detection runs on the same segment both to confirm a new
             // PiP candidate and to support the whole-frame speaker fallback.
@@ -6630,10 +6654,7 @@ async function executeClipRenderAttempt(
             if (decodable) {
               musicPlan = {
                 path: musicPath,
-                ref: compositionAssetRef(
-                  "music",
-                  studioEdits.music.assetId ?? musicUrl,
-                ),
+                ref: compositionAssetRef("music", studioEdits.music.assetId ?? musicUrl),
                 durationSec: musicDurationSec,
               };
             } else {
@@ -6810,7 +6831,11 @@ async function executeClipRenderAttempt(
       let backgroundPlan: BackgroundPlan | null = null;
       if (resolveEffectiveFramingMode(studioEdits) === "fit") {
         const fallbackColor = studioEdits.background.color ?? "#000000";
-        backgroundPlan = { mode: "color", color: fallbackColor, imagePath: null };
+        backgroundPlan = {
+          mode: "color",
+          color: fallbackColor,
+          imagePath: null,
+        };
 
         if (studioEdits.background.mode === "image" && studioEdits.background.imageUrl) {
           let imageUrlSafe = false;
@@ -6878,13 +6903,28 @@ async function executeClipRenderAttempt(
         failureCode: string;
       }> = [
         ...(logo
-          ? [{ assetClass: "logo" as const, failureCode: "brand_logo_command_failed" }]
+          ? [
+              {
+                assetClass: "logo" as const,
+                failureCode: "brand_logo_command_failed",
+              },
+            ]
           : []),
         ...(brollPlan || studioEdits.visualBroll.length > 0
-          ? [{ assetClass: "broll" as const, failureCode: "broll_command_failed" }]
+          ? [
+              {
+                assetClass: "broll" as const,
+                failureCode: "broll_command_failed",
+              },
+            ]
           : []),
         ...(musicPlan
-          ? [{ assetClass: "music" as const, failureCode: "music_mix_failed" }]
+          ? [
+              {
+                assetClass: "music" as const,
+                failureCode: "music_mix_failed",
+              },
+            ]
           : []),
         ...(sfxPlans.length > 0
           ? [
@@ -6926,13 +6966,20 @@ async function executeClipRenderAttempt(
           } = {},
         ) => {
           const visualBrollAvailable = studioEdits.visualBroll.every((placement) =>
-            Boolean(resolvedSceneAssets[compositionAssetRef("visual_asset", `${placement.asset.id}:${placement.asset.fingerprint}`)]),
+            Boolean(
+              resolvedSceneAssets[
+                compositionAssetRef(
+                  "visual_asset",
+                  `${placement.asset.id}:${placement.asset.fingerprint}`,
+                )
+              ],
+            ),
           );
-          const brollAvailable = availability.broll ?? (Boolean(brollPlan) || visualBrollAvailable);
+          const brollAvailable =
+            availability.broll ?? (Boolean(brollPlan) || visualBrollAvailable);
           const logoAvailable = availability.logo ?? Boolean(brandLogo);
           const musicAvailable = availability.music ?? Boolean(musicPlan);
-          const soundEffectsAvailable =
-            availability.soundEffects ?? sfxPlans.length > 0;
+          const soundEffectsAvailable = availability.soundEffects ?? sfxPlans.length > 0;
           return planClipComposition({
             document: compositionDocument,
             source: {
@@ -7634,25 +7681,23 @@ async function executeClipRenderAttempt(
     // the success path (already drained above). Never let a drain error
     // block cleanup.
     if (uploadQueueRef) await uploadQueueRef.drain().catch(() => {});
-    await currentRenderAdapters()
-      .workspace.rm(tempDir, { recursive: true, force: true })
-      .catch((error) => {
-        for (const assetClass of touchedOptionalAssetClasses) {
-          diagnoseOptionalAssetFallback({
-            assetClass,
-            phase: "cleanup",
-            failureCode: "optional_asset_cleanup_failed",
-            context: { workflowRunId: run.id, projectId: run.projectId },
-          });
-        }
-        log("error", "clip_render_workspace_cleanup_failed", {
-          workflowRunId: run.id,
-          projectId: run.projectId,
-          phase: "cleanup",
-          operation: "workspace_remove",
-          errorCode:
-            error instanceof Error ? error.name : "workspace_remove_failed",
-        });
-      });
   }
+    },
+    (event) => {
+      for (const assetClass of touchedOptionalAssetClasses) {
+        diagnoseOptionalAssetFallback({
+          assetClass,
+          phase: "cleanup",
+          failureCode: "optional_asset_cleanup_failed",
+          context: { workflowRunId: run.id, projectId: run.projectId },
+        });
+      }
+      log("error", "clip_render_workspace_cleanup_failed", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        phase: "cleanup",
+        ...event,
+      });
+    },
+  );
 }

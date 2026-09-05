@@ -1,8 +1,6 @@
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 
 export interface RenderWorkspaceAdapter {
-  mkdtemp: typeof mkdtemp;
-  rm: typeof rm;
   stat: typeof stat;
   writeFile: typeof writeFile;
 }
@@ -17,8 +15,6 @@ export interface RenderClockAdapter {
 }
 
 export const productionRenderWorkspaceAdapter: RenderWorkspaceAdapter = {
-  mkdtemp,
-  rm,
   stat,
   writeFile,
 };

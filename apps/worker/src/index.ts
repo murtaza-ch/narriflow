@@ -337,7 +337,7 @@ function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
 const ingestLoop = createPollLoop("ingest", async () => {
 	const ingestJob = await projectService.claimNextIngestJob();
 	if (!ingestJob) return 0;
-	await processIngestJob(ingestJob);
+	await processIngestJob(ingestJob, { signal: workerShutdown.signal });
 	return 1;
 });
 
@@ -474,14 +474,14 @@ const renderLoop = createPollLoop("render", async () => {
 /** Preview proxies: bounded ffmpeg cuts on their own loop so they can neither
  *  block ingest/STT nor delay due social posts. */
 const previewLoop = createPollLoop("preview", async () => {
-	return processPendingClipPreviews();
+	return processPendingClipPreviews({ signal: workerShutdown.signal });
 });
 
 /** Face/shot analysis runs against the small preview proxies and publishes
  * the shared plan consumed by both studio and render. Separate mutex keeps
  * it from blocking proxy generation or workflow claims. */
 const autoLayoutLoop = createPollLoop("auto_layout", async () => {
-	return processPendingAutoLayoutAnalyses();
+	return processPendingAutoLayoutAnalyses({ signal: workerShutdown.signal });
 });
 
 /** Durable terminal-email retries. The service performs an atomic

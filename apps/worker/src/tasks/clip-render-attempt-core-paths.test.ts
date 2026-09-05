@@ -32,8 +32,7 @@ import {
   screenLayoutInputFingerprint,
 } from "@narriflow/composition-plan";
 import { parseRenderConfig } from "../render-config";
-import { ProductionRenderMediaAdapter } from "../render-media-adapter";
-import { productionRenderProcessAdapter } from "../render-process-adapter";
+import { productionWorkerProcessModule } from "../worker-process";
 import {
   bindCompositionPlanAudioInputs,
   compileCompositionPlanAudioSchedule,
@@ -389,31 +388,31 @@ function createCoreRenderPathTracer(input: {
           ),
         }),
       },
-      media: input.realMedia
-        ? input.sourceAccess?.failRangedProbe
-          ? {
-              probe: async (request) => {
-                if (request.sourcePath === input.sourceAccess?.presignedUrl) {
-                  throw new WorkflowFailure(
-                    "worker_command_failed",
-                    "retryable",
-                    "Injected ranged probe failure",
-                  );
-                }
-                return new ProductionRenderMediaAdapter().probe(request);
-              },
+      workerProcess: {
+        inspectMedia: async (request) => {
+          if (input.realMedia) {
+            if (
+              input.sourceAccess?.failRangedProbe &&
+              request.sourcePath === input.sourceAccess.presignedUrl
+            ) {
+              throw new WorkflowFailure(
+                "worker_command_failed",
+                "retryable",
+                "Injected ranged probe failure",
+              );
             }
-          : new ProductionRenderMediaAdapter()
-        : {
-            probe: async () => ({
-              width: input.topology === "audiogram" ? 0 : 1920,
-              height: input.topology === "audiogram" ? 0 : 1080,
-              hasVideo: input.topology !== "audiogram",
-              hasAudio: true,
-              fps: 30,
-            }),
-          },
-      process: {
+            return productionWorkerProcessModule.inspectMedia(request);
+          }
+          return {
+            durationSec: 20,
+            width: input.topology === "audiogram" ? 0 : 1920,
+            height: input.topology === "audiogram" ? 0 : 1080,
+            hasVideo: input.topology !== "audiogram",
+            hasAudio: true,
+            hasVisualStream: input.topology !== "audiogram",
+            fps: 30,
+          };
+        },
         execute: async (request) => {
           const { command, args } = request;
           if (command !== "ffmpeg") {
@@ -437,14 +436,14 @@ function createCoreRenderPathTracer(input: {
                   "Injected nonzero analysis exit",
                 );
               case "invalid":
-                return "not-json";
+                return { exitCode: 0, stdout: Buffer.from("not-json") };
               case "no-face":
-                return JSON.stringify({ samples: [] });
+                return {
+                  exitCode: 0,
+                  stdout: Buffer.from(JSON.stringify({ samples: [] })),
+                };
               case "cancel": {
-                const reason = new DOMException(
-                  "Injected analysis cancellation",
-                  "AbortError",
-                );
+                const reason = new DOMException("Injected analysis cancellation", "AbortError");
                 input.analysisAbortController?.abort(reason);
                 request.signal.throwIfAborted();
                 throw reason;
@@ -480,8 +479,28 @@ function createCoreRenderPathTracer(input: {
             );
           }
           return input.realMedia
-            ? productionRenderProcessAdapter.execute(request)
-            : "";
+            ? productionWorkerProcessModule.execute(request)
+            : { exitCode: 0, stdout: Buffer.alloc(0) };
+        },
+        withScratchDirectory: async (_prefix, work, diagnose) => {
+          const path = input.realMedia
+            ? await mkdtemp(join(tmpdir(), "narriflow-core-render-paths-"))
+            : "/tmp/narriflow-core-render-paths";
+          try {
+            return await work(path);
+          } finally {
+            workspaceCleanupCount += 1;
+            if (input.workspaceCleanupFailure) {
+              diagnose?.({
+                operation: "scratch_cleanup",
+                status: "failed",
+                elapsedMs: 0,
+                failureCode: "worker_scratch_cleanup_failed",
+              });
+            } else if (input.realMedia) {
+              await rm(path, { recursive: true, force: true });
+            }
+          }
         },
       },
       ...(input.compositionAdapterFailure
@@ -709,16 +728,6 @@ function createCoreRenderPathTracer(input: {
         deleteObject: async (key) => ({ key }),
       },
       workspace: {
-        mkdtemp: input.realMedia
-          ? (prefix) => mkdtemp(prefix)
-          : async () => "/tmp/narriflow-core-render-paths",
-        rm: async (path, options) => {
-          workspaceCleanupCount += 1;
-          if (input.workspaceCleanupFailure) {
-            throw input.workspaceCleanupFailure;
-          }
-          if (input.realMedia) await rm(path, options);
-        },
         stat: input.realMedia ? stat : async () => ({ size: 256 }) as never,
         writeFile: input.realMedia ? writeFile : async () => {},
       },
@@ -845,7 +854,12 @@ function buildBaselineCommands(input: {
         brollUrl: null,
         deletedRanges: [],
       }),
-      source: { identity: "audio:baseline", kind: "audio", width: 0, height: 0 },
+      source: {
+        identity: "audio:baseline",
+        kind: "audio",
+        width: 0,
+        height: 0,
+      },
       evidence: { automaticLayout: { state: "missing" } },
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
@@ -3235,8 +3249,15 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       });
 
       await expect(
-        harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
-      ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+        harness.clipRenderAttempt.execute(
+          harness.attempt,
+          attemptContext(new AbortController().signal),
+        ),
+      ).resolves.toMatchObject({
+        status: "completed",
+        succeeded: 1,
+        failed: 0,
+      });
 
       expect(output).toMatchObject({
         variantId: "variant-visual-stack",
@@ -3312,8 +3333,15 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       });
 
       await expect(
-        harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
-      ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+        harness.clipRenderAttempt.execute(
+          harness.attempt,
+          attemptContext(new AbortController().signal),
+        ),
+      ).resolves.toMatchObject({
+        status: "completed",
+        succeeded: 1,
+        failed: 0,
+      });
 
       expect(output).toMatchObject({
         variantId: "variant-audiogram-plan",
@@ -3429,8 +3457,15 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       });
 
       await expect(
-        harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
-      ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+        harness.clipRenderAttempt.execute(
+          harness.attempt,
+          attemptContext(new AbortController().signal),
+        ),
+      ).resolves.toMatchObject({
+        status: "completed",
+        succeeded: 1,
+        failed: 0,
+      });
       expect(windows.fullMusic).toBeGreaterThan(windows.fadeIn + 8);
       expect(windows.fullMusic).toBeGreaterThan(windows.duckedMusic + 5);
       expect(windows.sfx).toBeGreaterThan(windows.duckedMusic + 3);

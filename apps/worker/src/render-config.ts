@@ -15,7 +15,6 @@ export interface RenderConfig {
   readonly compositionCommandMaxBytes: number;
   readonly remoteMediaTimeoutMs: number;
   readonly storageOperationTimeoutMs: number;
-  readonly processKillGraceMs: number;
   readonly reframePython: string;
   readonly reframeModelPath: string;
   readonly reframeSampleFps: number;
@@ -192,11 +191,6 @@ export function parseRenderConfig(
       environment,
       "WORKER_STORAGE_TIMEOUT_MS",
       2 * 60 * 1000,
-    ),
-    processKillGraceMs: positiveNumber(
-      environment,
-      "WORKER_PROCESS_KILL_GRACE_MS",
-      5_000,
     ),
     reframePython: environment.REFRAME_PYTHON?.trim() || "python3",
     reframeModelPath:

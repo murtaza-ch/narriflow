@@ -16,7 +16,7 @@
  * full-source-streaming behaviour this feature exists to replace. Telling
  * "real video" apart from a podcast MP3's embedded cover-art image (which
  * ffprobe reports as its own video stream) is the load-bearing bit — see
- * `classifyMediaStreams`.
+ * the shared worker process module's media inspection contract.
  *
  * This deliberately *polls for clips missing a proxy* rather than being
  * triggered from detect-clips.ts, so it also backfills every pre-existing
@@ -30,10 +30,7 @@
  * never fails the batch).
  */
 
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   clipService,
@@ -46,25 +43,11 @@ import {
 import type { ClipPreviewPeaks } from "@narriflow/services";
 import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import type { CaptionPreset } from "@narriflow/validators";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
 
-type ClipPendingPreview = Awaited<
-  ReturnType<typeof clipService.getClipsNeedingPreview>
->[number];
+type ClipPendingPreview = Awaited<ReturnType<typeof clipService.getClipsNeedingPreview>>[number];
 
-class ClipPreviewWorkerError extends Error {
-  code: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
-
-function log(
-  level: "info" | "warn" | "error",
-  message: string,
-  context?: Record<string, unknown>,
-) {
+function log(level: "info" | "warn" | "error", message: string, context?: Record<string, unknown>) {
   // Structured logs per CLAUDE.md: console.warn(JSON.stringify({level,message,...ctx})).
   console.warn(
     JSON.stringify({
@@ -147,10 +130,6 @@ const HTTP_SOURCE_ARGS = [
 // headroom for a slower network or a longer padded window before killing it.
 const DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS = 120_000;
 const DEFAULT_PREVIEW_FFPROBE_TIMEOUT_MS = 30_000;
-/** Grace period between SIGTERM and SIGKILL when a child ignores the
- *  timeout's first signal. */
-const FORCE_KILL_GRACE_MS = 5_000;
-
 // A permanently-broken clip (corrupt source slice, unsupported codec, ...)
 // must not monopolize every tick's batch forever — see the
 // ClipPreviewFailureBackoff class below. Base delay doubles per consecutive
@@ -447,346 +426,6 @@ export function clipPreviewAttemptStorageKey(
   attemptId: string,
 ): string {
   return `projects/${projectId}/previews/${clipId}/${attemptId}.mp4`;
-}
-
-// ─── ffmpeg/ffprobe process helpers ────────────────────────────────────────
-// Duplicated in shape from render-clips.ts's private execCommand/
-// execCommandOutput (not exported there) — see the file header.
-
-/**
- * Starts a wall-clock timer that SIGTERMs `child` on expiry and escalates to
- * SIGKILL if it hasn't exited within {@link FORCE_KILL_GRACE_MS}. Returns a
- * `{ timedOut, cancel }` handle: callers check `timedOut.current` from their
- * `close` handler to tell a real timeout apart from an ordinary non-zero
- * exit, and must call `cancel()` once the child settles so the timer doesn't
- * keep the process alive. Shared by execCommand/execCommandOutput so a
- * stalled ffmpeg/ffprobe child (e.g. a source read that goes quiet without
- * erroring — see HTTP_SOURCE_ARGS's `-rw_timeout` comment for why that can
- * still happen) can never block this task's poll loop indefinitely.
- */
-function armProcessTimeout(
-  child: ReturnType<typeof spawn>,
-  timeoutMs: number | undefined,
-): { timedOut: { current: boolean }; cancel: () => void } {
-  const timedOut = { current: false };
-  if (!timeoutMs) {
-    return { timedOut, cancel: () => {} };
-  }
-
-  let killTimer: ReturnType<typeof setTimeout> | null = null;
-  const termTimer = setTimeout(() => {
-    timedOut.current = true;
-    child.kill("SIGTERM");
-    killTimer = setTimeout(() => {
-      child.kill("SIGKILL");
-    }, FORCE_KILL_GRACE_MS);
-  }, timeoutMs);
-
-  return {
-    timedOut,
-    cancel: () => {
-      clearTimeout(termTimer);
-      if (killTimer) clearTimeout(killTimer);
-    },
-  };
-}
-
-async function execCommand(
-  command: string,
-  args: string[],
-  options?: { timeoutMs?: number },
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    const { timedOut, cancel } = armProcessTimeout(child, options?.timeoutMs);
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      cancel();
-      if (error.code === "ENOENT") {
-        reject(
-          new ClipPreviewWorkerError(
-            "worker_command_missing",
-            `${command} is not installed`,
-          ),
-        );
-        return;
-      }
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      cancel();
-      if (timedOut.current) {
-        reject(
-          new ClipPreviewWorkerError(
-            "worker_command_timeout",
-            `${command} timed out after ${options?.timeoutMs}ms and was killed`,
-          ),
-        );
-        return;
-      }
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(
-        new ClipPreviewWorkerError(
-          "worker_command_failed",
-          `${command} failed with code ${code}: ${stderr.slice(-500)}`,
-        ),
-      );
-    });
-  });
-}
-
-async function execCommandOutput(
-  command: string,
-  args: string[],
-  options?: { timeoutMs?: number },
-): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    const { timedOut, cancel } = armProcessTimeout(child, options?.timeoutMs);
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      cancel();
-      if (error.code === "ENOENT") {
-        reject(
-          new ClipPreviewWorkerError(
-            "worker_command_missing",
-            `${command} is not installed`,
-          ),
-        );
-        return;
-      }
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      cancel();
-      if (timedOut.current) {
-        reject(
-          new ClipPreviewWorkerError(
-            "worker_command_timeout",
-            `${command} timed out after ${options?.timeoutMs}ms and was killed`,
-          ),
-        );
-        return;
-      }
-      if (code === 0) {
-        resolve(stdout);
-        return;
-      }
-      reject(
-        new ClipPreviewWorkerError(
-          "worker_command_failed",
-          `${command} failed with code ${code}: ${stderr.slice(-500)}`,
-        ),
-      );
-    });
-  });
-}
-
-/**
- * Same shape as {@link execCommandOutput} but collects stdout as a Buffer
- * instead of coercing every chunk through `.toString()` — required for the
- * raw `s16le` PCM {@link generateClipPreviewPeaks} reads off ffmpeg's
- * stdout, since decoding binary audio samples as UTF-8 text would corrupt
- * them (this file's other `execCommandOutput` uses are all textual: JSON
- * from ffprobe).
- */
-async function execCommandBuffer(
-  command: string,
-  args: string[],
-  options?: { timeoutMs?: number },
-): Promise<Buffer> {
-  return new Promise<Buffer>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    const stdoutChunks: Buffer[] = [];
-    let stderr = "";
-    const { timedOut, cancel } = armProcessTimeout(child, options?.timeoutMs);
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdoutChunks.push(chunk);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      cancel();
-      if (error.code === "ENOENT") {
-        reject(
-          new ClipPreviewWorkerError(
-            "worker_command_missing",
-            `${command} is not installed`,
-          ),
-        );
-        return;
-      }
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      cancel();
-      if (timedOut.current) {
-        reject(
-          new ClipPreviewWorkerError(
-            "worker_command_timeout",
-            `${command} timed out after ${options?.timeoutMs}ms and was killed`,
-          ),
-        );
-        return;
-      }
-      if (code === 0) {
-        resolve(Buffer.concat(stdoutChunks));
-        return;
-      }
-      reject(
-        new ClipPreviewWorkerError(
-          "worker_command_failed",
-          `${command} failed with code ${code}: ${stderr.slice(-500)}`,
-        ),
-      );
-    });
-  });
-}
-
-/** Result of classifying a source's streams — see {@link classifyMediaStreams}.
- *  `hasVideo` is true only for a *real* (non-cover-art) video stream. */
-interface SourceProbeLite {
-  hasVideo: boolean;
-  hasAudio: boolean;
-}
-
-/** The handful of ffprobe `-show_streams` fields this file needs to tell a
- *  real video stream apart from a podcast's embedded cover-art image and
- *  from audio. Deliberately narrower than ffprobe's full stream schema. */
-export interface ProbeStreamLite {
-  codec_type?: string;
-  nb_frames?: string;
-  /** Stream duration in seconds, as ffprobe reports it (a numeric string).
-   *  Corroborating signal for the nb_frames<=1 fallback below — see
-   *  isAttachedPictureStream. */
-  duration?: string;
-  /** ffprobe's codec name for this stream (e.g. "h264", "mjpeg", "png").
-   *  Corroborating signal for the nb_frames<=1 fallback below. */
-  codec_name?: string;
-  disposition?: { attached_pic?: number };
-}
-
-/** Attached pictures are always encoded with a still-image codec — never a
- *  real motion-video codec. A single h264/vp9/hevc/... frame is exactly the
- *  legitimate-still-image-video case that must NOT be caught here. */
-const STILL_IMAGE_CODEC_NAMES: ReadonlySet<string> = new Set([
-  "mjpeg",
-  "png",
-  "bmp",
-  "gif",
-  "tiff",
-  "webp",
-  "jpeg2000",
-  "jpegls",
-]);
-
-/** Below this, a video stream's reported duration is treated as "no
- *  meaningful duration" — i.e. a static image rather than a timed track. A
- *  true embedded cover-art stream typically reports no duration at all
- *  (ffprobe can't compute one for a single untimed picture); a legitimate
- *  still-image video stretched across the clip's audio reports a duration
- *  close to the clip's own length, comfortably above this. */
-const NEGLIGIBLE_STREAM_DURATION_SEC = 1;
-
-/**
- * A podcast MP3/M4A/FLAC's embedded cover art (ID3 `APIC`, FLAC/M4A cover
- * picture blocks, ...) shows up to ffprobe as its own *video* stream —
- * almost always flagged `disposition.attached_pic = 1`. Naively treating
- * that stream as "this source has video" routes a podcast through the video
- * cut-and-scale path, which produces a proxy that's a single frozen JPEG for
- * the whole clip duration (there's nothing moving to encode). This tells the
- * two apart.
- *
- * `disposition.attached_pic` is the primary, authoritative signal in either
- * direction: ffprobe (and the muxers/taggers that produce this metadata) set
- * it deliberately, so it's trusted outright when present — including an
- * explicit `0`, which must never be second-guessed by the frame-count
- * fallback below.
- *
- * When the flag is absent (some muxers/tagging tools embed cover art without
- * ever setting it), this falls back to a frame-count heuristic — but
- * `nb_frames <= 1` alone is not enough: a legitimate single-frame video with
- * audio (e.g. a static-background lyric video, or any real footage that
- * happens to encode as one long-duration keyframe) would misclassify as
- * cover art and wrongly render as an audiogram instead of showing its real
- * frame. The fallback only fires when a *second*, independent signal also
- * points at "static image, not a timed video track": either the stream's
- * codec is a still-image format (never used for real motion video), or the
- * stream reports no meaningful duration.
- */
-export function isAttachedPictureStream(stream: ProbeStreamLite): boolean {
-  if (stream.codec_type !== "video") return false;
-
-  // Primary signal — authoritative in both directions when present.
-  if (stream.disposition?.attached_pic === 1) return true;
-  if (stream.disposition?.attached_pic === 0) return false;
-
-  // No explicit disposition flag: fall back to nb_frames <= 1, corroborated
-  // by a second signal (see the doc comment above).
-  const frameCount = Number(stream.nb_frames);
-  const looksLikeSingleFrame = Number.isFinite(frameCount) && frameCount <= 1;
-  if (!looksLikeSingleFrame) return false;
-
-  if (stream.codec_name && STILL_IMAGE_CODEC_NAMES.has(stream.codec_name)) {
-    return true;
-  }
-
-  const duration = Number(stream.duration);
-  const hasNoMeaningfulDuration =
-    !Number.isFinite(duration) || duration < NEGLIGIBLE_STREAM_DURATION_SEC;
-  return hasNoMeaningfulDuration;
-}
-
-/**
- * Classifies a probed source's streams into "has real playable video" (at
- * least one video stream that isn't just embedded cover art) and "has
- * audio". A source with both a genuine video stream and a separate
- * attached-picture stream (e.g. a video file carrying an embedded
- * thumbnail) still counts as having video — only sources whose *only*
- * video stream(s) are cover art fall through to the audio-only path. Pure
- * and exported so this classification is unit-testable against synthetic
- * ffprobe stream lists without spawning ffprobe (see clip-preview.test.ts).
- */
-export function classifyMediaStreams(streams: ProbeStreamLite[]): SourceProbeLite {
-  return {
-    hasVideo: streams.some(
-      (stream) => stream.codec_type === "video" && !isAttachedPictureStream(stream),
-    ),
-    hasAudio: streams.some((stream) => stream.codec_type === "audio"),
-  };
-}
-
-async function probeSourceLite(sourcePath: string): Promise<SourceProbeLite> {
-  const output = await execCommandOutput(
-    "ffprobe",
-    ["-v", "quiet", "-print_format", "json", "-show_streams", sourcePath],
-    { timeoutMs: previewFfprobeTimeoutMs() },
-  );
-  const data = JSON.parse(output) as { streams?: ProbeStreamLite[] };
-  return classifyMediaStreams(data.streams ?? []);
 }
 
 /**
@@ -1099,6 +738,8 @@ export function quantizePeaks(peaks: number[]): number[] {
  * non-fatal to the proxy itself).
  */
 async function generateClipPreviewPeaks(params: {
+  workerProcess: WorkerProcessModule;
+  signal: AbortSignal;
   proxyFilePath: string;
   windowStartSec: number;
   windowDurationSec: number;
@@ -1106,14 +747,18 @@ async function generateClipPreviewPeaks(params: {
   const pcmSampleRateHz = previewPeaksPcmSampleRateHz();
   const peaksPerSec = previewPeaksPerSec();
 
-  const pcmBuffer = await execCommandBuffer(
-    "ffmpeg",
-    buildPeaksExtractionArgs({
-      inputPath: params.proxyFilePath,
-      sampleRateHz: pcmSampleRateHz,
-    }),
-    { timeoutMs: previewFfmpegTimeoutMs() },
-  );
+  const pcmBuffer = (
+    await params.workerProcess.execute({
+      command: "ffmpeg",
+      args: buildPeaksExtractionArgs({
+        inputPath: params.proxyFilePath,
+        sampleRateHz: pcmSampleRateHz,
+      }),
+      signal: params.signal,
+      deadlineMs: previewFfmpegTimeoutMs(),
+      captureStdout: true,
+    })
+  ).stdout;
 
   // Manual sample-by-sample copy rather than aliasing an Int16Array over
   // pcmBuffer's own backing ArrayBuffer: Int16Array's constructor requires
@@ -1142,6 +787,8 @@ async function generateClipPreviewPeaks(params: {
 // ─── Orchestration ──────────────────────────────────────────────────────────
 
 async function cutAndUploadClipPreview(params: {
+  workerProcess: WorkerProcessModule;
+  signal: AbortSignal;
   clip: ClipPendingPreview;
   sourcePath: string;
   tempDir: string;
@@ -1164,7 +811,11 @@ async function cutAndUploadClipPreview(params: {
     return false;
   }
 
-  const probe = await probeSourceLite(sourcePath);
+  const probe = await params.workerProcess.inspectMedia({
+    sourcePath,
+    signal: params.signal,
+    deadlineMs: previewFfprobeTimeoutMs(),
+  });
   if (!probe.hasVideo && !probe.hasAudio) {
     // Neither a real video stream nor audio — e.g. a corrupt file, or one
     // that's *only* an attached-picture stream with no audio alongside it.
@@ -1196,7 +847,12 @@ async function cutAndUploadClipPreview(params: {
 
   // Bounded: without this a stalled ffmpeg (dead R2 socket that never errors,
   // pathological input) would hold the preview loop's mutex indefinitely.
-  await execCommand("ffmpeg", args, { timeoutMs: previewFfmpegTimeoutMs() });
+  await params.workerProcess.execute({
+    command: "ffmpeg",
+    args,
+    signal: params.signal,
+    deadlineMs: previewFfmpegTimeoutMs(),
+  });
 
   // Attempt-unique key. Two workers racing the same clip used to upload to
   // one shared key and claim afterwards, so the loser's cleanup deleted the
@@ -1232,6 +888,8 @@ async function cutAndUploadClipPreview(params: {
   if (probe.hasAudio) {
     try {
       const peaksPayload = await generateClipPreviewPeaks({
+        workerProcess: params.workerProcess,
+        signal: params.signal,
         proxyFilePath: outputPath,
         windowStartSec: window.startSec,
         windowDurationSec: window.durationSec,
@@ -1304,13 +962,16 @@ async function cutAndUploadClipPreview(params: {
  * A clip failing (bad source, ffmpeg error, lost claim race, ...) is logged
  * and skipped — it never fails the batch or aborts processing of the rest.
  *
- * Call signature: `processPendingClipPreviews(batchSize?: number): Promise<number>`
+ * Call signature: `processPendingClipPreviews(options?): Promise<number>`
  * — returns how many clips actually got a proxy persisted in this call.
  * Not wired into a poll loop here; apps/worker/src/index.ts owns that.
  */
 export async function processPendingClipPreviews(
-  batchSize: number = previewBatchSize(),
+  options: { batchSize?: number; signal?: AbortSignal; workerProcess?: WorkerProcessModule } = {},
 ): Promise<number> {
+  const batchSize = options.batchSize ?? previewBatchSize();
+  const signal = options.signal ?? new AbortController().signal;
+  const workerProcess = options.workerProcess ?? productionWorkerProcessModule;
   // Ask for a wider pool than we intend to cut, then drop the clips currently
   // inside a failure backoff window. Without the wider pool, N permanently
   // broken top-ranked clips would fill the batch every tick and nothing below
@@ -1345,9 +1006,8 @@ export async function processPendingClipPreviews(
   let processed = 0;
 
   for (const [projectId, clips] of byProject) {
-    const tempDir = await mkdtemp(join(tmpdir(), "clip-preview-"));
-
-    try {
+    signal.throwIfAborted();
+    await workerProcess.withScratchDirectory("clip-preview-", async (tempDir) => {
       const sourceStorageKey = clips[0]!.sourceStorageKey;
 
       // Stream the source over HTTP rather than downloading it. Sources here
@@ -1364,17 +1024,21 @@ export async function processPendingClipPreviews(
           expiresIn: SOURCE_STREAM_URL_TTL_SEC,
         });
       } catch (error) {
+        signal.throwIfAborted();
         log("error", "clip_preview_source_presign_failed", {
           projectId,
           clipCount: clips.length,
           message: error instanceof Error ? error.message : "Unknown error",
         });
-        continue;
+        return;
       }
 
       for (const clip of clips) {
+        signal.throwIfAborted();
         try {
           const didPersist = await cutAndUploadClipPreview({
+            workerProcess,
+            signal,
             clip,
             sourcePath,
             tempDir,
@@ -1384,6 +1048,7 @@ export async function processPendingClipPreviews(
           // proxy does now exist, so clearing any history is still correct.
           previewFailureBackoff.recordSuccess(clip.id);
         } catch (error) {
+          signal.throwIfAborted();
           previewFailureBackoff.recordFailure(clip.id, Date.now());
           log("error", "clip_preview_failed", {
             clipId: clip.id,
@@ -1392,9 +1057,7 @@ export async function processPendingClipPreviews(
           });
         }
       }
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
-    }
+    });
   }
 
   return processed;
