@@ -252,7 +252,7 @@ async function synthesizeSpeech(params: {
   await writeFile(params.outputPath, buffer);
 }
 
-async function probeDurationSec(
+export async function probeDubbedMediaDuration(
   workerProcess: WorkerProcessModule,
   signal: AbortSignal,
   filePath: string,
@@ -266,7 +266,7 @@ async function probeDurationSec(
   ).durationSec;
 }
 
-async function muxDubbedVideo(params: {
+export async function muxDubbedVideo(params: {
   workerProcess: WorkerProcessModule;
   signal: AbortSignal;
   videoPath: string;
@@ -419,7 +419,7 @@ async function processDubbingRunInScratch(
         const [audioStat, videoStat, durationSec] = await Promise.all([
           stat(audioPath),
           stat(outputPath),
-          probeDurationSec(workerProcess, signal, outputPath).catch(() => {
+          probeDubbedMediaDuration(workerProcess, signal, outputPath).catch(() => {
             signal.throwIfAborted();
             return null;
           }),

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkflowAttemptLost } from "@narriflow/services";
@@ -88,6 +88,20 @@ test("worker process classifies a missing executable as permanent", async () => 
       failureCode: "worker_command_missing",
     }),
   );
+});
+
+test("worker process preserves cancellation when a spawn error races the abort", async () => {
+  const controller = new AbortController();
+  const reason = { kind: "shutdown-during-spawn" };
+  const executing = createWorkerProcessModule({ killGraceMs: 20 }).execute({
+    command: "narriflow-command-that-does-not-exist",
+    args: [],
+    signal: controller.signal,
+    deadlineMs: 1_000,
+  });
+  controller.abort(reason);
+
+  await expect(executing).rejects.toBe(reason);
 });
 
 test("worker process classifies invalid input and bounds redacted diagnostics", async () => {
@@ -298,6 +312,7 @@ test("media inspection normalizes duration, streams, dimensions, fps, and HTTP c
     captureStdout: true,
   });
   expect(received!.args).toContain("-rw_timeout");
+  expect(received!.args.slice(0, 2)).toEqual(["-v", "error"]);
 });
 
 test("media inspection does not classify attached cover art as playable video", async () => {
@@ -349,6 +364,12 @@ test("media inspection rejects malformed output and empty media", async () => {
       stdout: Buffer.from(JSON.stringify({ streams: [] })),
     }),
   });
+  const nonMedia = createWorkerProcessModule({
+    execute: async () => ({
+      exitCode: 0,
+      stdout: Buffer.from(JSON.stringify({ streams: [{ codec_type: "subtitle" }] })),
+    }),
+  });
   const request = {
     sourcePath: "/tmp/corrupt.mp4",
     signal: new AbortController().signal,
@@ -360,6 +381,10 @@ test("media inspection rejects malformed output and empty media", async () => {
     disposition: "permanent",
   });
   await expect(empty.inspectMedia(request)).rejects.toMatchObject({
+    code: "source_media_invalid",
+    disposition: "permanent",
+  });
+  await expect(nonMedia.inspectMedia(request)).rejects.toMatchObject({
     code: "source_media_invalid",
     disposition: "permanent",
   });
@@ -485,6 +510,29 @@ test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
         hasAudio: true,
         hasVisualStream: true,
         fps: 24,
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(!FFPROBE_AVAILABLE)(
+  "media inspection classifies a real corrupt file as permanent invalid media",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "narriflow-corrupt-media-contract-"));
+    const sourcePath = join(directory, "corrupt.mp4");
+    try {
+      await writeFile(sourcePath, "this is not media");
+      await expect(
+        createWorkerProcessModule({ killGraceMs: 50 }).inspectMedia({
+          sourcePath,
+          signal: new AbortController().signal,
+          deadlineMs: 5_000,
+        }),
+      ).rejects.toMatchObject({
+        code: "source_media_invalid",
+        disposition: "permanent",
       });
     } finally {
       await rm(directory, { recursive: true, force: true });

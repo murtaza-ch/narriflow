@@ -1606,8 +1606,8 @@ test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
         message: "clip_render_source_operation_failed",
         context: expect.objectContaining({
           operation: "ranged_probe",
-          failureCode: "worker_command_failed",
-          disposition: "retryable",
+          failureCode: "source_media_invalid",
+          disposition: "permanent",
         }),
       });
       expect(harness.diagnostics).toContainEqual({

@@ -112,6 +112,42 @@ describe("analyzeClipAutoLayout", () => {
     expect(analysis.segments).toEqual([]);
   });
 
+  test("preserves shutdown cancellation from optional scene detection", async () => {
+    const controller = new AbortController();
+    const reason = { kind: "worker-shutdown" };
+    const workerProcess: WorkerProcessModule = {
+      execute: async (request) => {
+        if (request.command === "ffmpeg") {
+          controller.abort(reason);
+          throw reason;
+        }
+        return {
+          exitCode: 0,
+          stdout: Buffer.from(JSON.stringify({ samples: [] })),
+        };
+      },
+      inspectMedia: async () => ({
+        durationSec: 10,
+        width: 1920,
+        height: 1080,
+        hasVideo: true,
+        hasAudio: true,
+        hasVisualStream: true,
+        fps: 30,
+      }),
+      withScratchDirectory: async (_prefix, work) => work("/tmp/unused"),
+    };
+
+    await expect(
+      analyzeClipAutoLayout({
+        clip: candidate(),
+        previewPath: "/tmp/video.mp4",
+        signal: controller.signal,
+        workerProcess,
+      }),
+    ).rejects.toBe(reason);
+  });
+
   test("uses edited duration and fingerprints deleted source ranges", async () => {
     const dir = await mkdtemp(join(tmpdir(), "narriflow-auto-layout-test-"));
     tempDirs.push(dir);

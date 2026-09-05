@@ -137,7 +137,7 @@ async function execCommand(
   return { stdout: result.stdout.toString("utf8") };
 }
 
-async function execYtdlp(
+export async function executeYtdlpCommand(
   workerProcess: WorkerProcessModule,
   signal: AbortSignal,
   args: string[],
@@ -435,7 +435,7 @@ async function runYtdlpLinkDownload(
   return workerProcess.withScratchDirectory("narriflow-link-", async (tempDir) => {
     const probeStartedAtMs = Date.now();
     const metadataOutput = await withTransientRetry("yt_dlp_metadata_probe", () =>
-      execYtdlp(
+      executeYtdlpCommand(
         workerProcess,
         signal,
         ["--dump-single-json", "--no-warnings", "--no-playlist", url],
@@ -466,7 +466,7 @@ async function runYtdlpLinkDownload(
     // yt-dlp resumes/overwrites the same deterministic output path cleanly on
     // retry, so re-running the whole command on a transient failure is safe.
     const downloadOutput = await withTransientRetry("yt_dlp_download", () =>
-      execYtdlp(
+      executeYtdlpCommand(
         workerProcess,
         signal,
         [

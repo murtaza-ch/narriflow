@@ -4645,6 +4645,14 @@ export class ClipRenderAttempt {
   }
 }
 
+type FrozenRenderingState = NonNullable<
+  Awaited<
+    ReturnType<
+      ClipRenderAttemptAdapters["state"]["getFrozenRenderingStateForWorkSet"]
+    >
+  >
+>;
+
 async function executeClipRenderAttempt(
   run: WorkflowRunJob,
   signal: AbortSignal,
@@ -4690,7 +4698,68 @@ async function executeClipRenderAttempt(
   const touchedOptionalAssetClasses = new Set<OptionalAssetClass>();
   return currentRenderAdapters().workerProcess.withScratchDirectory(
     "narriflow-render-",
-    async (tempDir) => {
+    (tempDir) =>
+      executeClipRenderAttemptInScratch({
+        run,
+        signal,
+        attempt,
+        lifecycle,
+        workSetVariantIds,
+        abortAttempt,
+        frozenState,
+        pendingRenders,
+        applyWatermark,
+        runStartedAtMs,
+        tempDir,
+        touchedOptionalAssetClasses,
+      }),
+    (event) => {
+      for (const assetClass of touchedOptionalAssetClasses) {
+        diagnoseOptionalAssetFallback({
+          assetClass,
+          phase: "cleanup",
+          failureCode: "optional_asset_cleanup_failed",
+          context: { workflowRunId: run.id, projectId: run.projectId },
+        });
+      }
+      log("error", "clip_render_workspace_cleanup_failed", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        phase: "cleanup",
+        ...event,
+      });
+    },
+  );
+}
+
+async function executeClipRenderAttemptInScratch(params: {
+  run: WorkflowRunJob;
+  signal: AbortSignal;
+  attempt: ClipRenderingWorkflowAttempt;
+  lifecycle: ClipRenderAttemptLifecycle;
+  workSetVariantIds: readonly string[];
+  abortAttempt: (error: WorkflowAttemptLost) => void;
+  frozenState: FrozenRenderingState;
+  pendingRenders: FrozenRenderingState["pendingRenders"];
+  applyWatermark: boolean;
+  runStartedAtMs: number;
+  tempDir: string;
+  touchedOptionalAssetClasses: Set<OptionalAssetClass>;
+}): Promise<RenderWorkSetOutcome> {
+  const {
+    run,
+    signal,
+    attempt,
+    lifecycle,
+    workSetVariantIds,
+    abortAttempt,
+    frozenState,
+    pendingRenders,
+    applyWatermark,
+    runStartedAtMs,
+    tempDir,
+    touchedOptionalAssetClasses,
+  } = params;
   // Captured outside the try so `finally` can settle in-flight background
   // uploads before deleting tempDir (their source files live there).
   let uploadQueueRef: { drain: () => Promise<void> } | null = null;
@@ -7682,22 +7751,4 @@ async function executeClipRenderAttempt(
     // block cleanup.
     if (uploadQueueRef) await uploadQueueRef.drain().catch(() => {});
   }
-    },
-    (event) => {
-      for (const assetClass of touchedOptionalAssetClasses) {
-        diagnoseOptionalAssetFallback({
-          assetClass,
-          phase: "cleanup",
-          failureCode: "optional_asset_cleanup_failed",
-          context: { workflowRunId: run.id, projectId: run.projectId },
-        });
-      }
-      log("error", "clip_render_workspace_cleanup_failed", {
-        workflowRunId: run.id,
-        projectId: run.projectId,
-        phase: "cleanup",
-        ...event,
-      });
-    },
-  );
 }

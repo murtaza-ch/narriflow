@@ -737,7 +737,7 @@ export function quantizePeaks(peaks: number[]): number[] {
  * call in `cutAndUploadClipPreview`, which treats a failure here as
  * non-fatal to the proxy itself).
  */
-async function generateClipPreviewPeaks(params: {
+export async function generateClipPreviewPeaks(params: {
   workerProcess: WorkerProcessModule;
   signal: AbortSignal;
   proxyFilePath: string;
@@ -905,6 +905,7 @@ async function cutAndUploadClipPreview(params: {
         },
       });
     } catch (error) {
+      params.signal.throwIfAborted();
       peaksKey = null;
       log("warn", "clip_preview_peaks_failed", {
         clipId: clip.id,

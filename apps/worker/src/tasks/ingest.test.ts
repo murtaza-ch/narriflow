@@ -1,9 +1,23 @@
 import { describe, expect, test } from "bun:test";
+import { WorkerProcessFailure, type WorkerProcessModule } from "../worker-process";
 import {
   classifyYtdlpProviderFailure,
+  executeYtdlpCommand,
   normalizeDropboxDownloadUrl,
   readVerifiedUploadPayload,
 } from "./ingest";
+
+function processModuleWithExecute(
+  execute: WorkerProcessModule["execute"],
+): WorkerProcessModule {
+  return {
+    execute,
+    inspectMedia: async () => {
+      throw new Error("unexpected media inspection");
+    },
+    withScratchDirectory: async (_prefix, work) => work("/tmp/unused"),
+  };
+}
 
 describe("readVerifiedUploadPayload", () => {
   test("uses the Upload Session's verified object facts", () => {
@@ -43,6 +57,49 @@ describe("classifyYtdlpProviderFailure", () => {
   test("leaves an unrelated command failure unclassified", () => {
     expect(classifyYtdlpProviderFailure("ERROR: requested format is not available"))
       .toBeNull();
+  });
+});
+
+describe("executeYtdlpCommand process contract", () => {
+  test("forwards yt-dlp's declared 101 success code", async () => {
+    const controller = new AbortController();
+    const workerProcess = processModuleWithExecute(async (request) => {
+      expect(request).toMatchObject({
+        command: "yt-dlp",
+        signal: controller.signal,
+        acceptableExitCodes: [0, 101],
+        captureStdout: true,
+      });
+      return { exitCode: 101, stdout: Buffer.from("/tmp/video.mp4\n") };
+    });
+
+    await expect(
+      executeYtdlpCommand(workerProcess, controller.signal, ["--max-downloads", "1"], {
+        timeoutMs: 45_000,
+        acceptableExitCodes: [0, 101],
+      }),
+    ).resolves.toEqual({ stdout: "/tmp/video.mp4\n" });
+  });
+
+  test("classifies a bounded process diagnostic as provider access denial", async () => {
+    const workerProcess = processModuleWithExecute(async () => {
+      throw new WorkerProcessFailure(
+        "worker_command_failed",
+        "retryable",
+        "yt-dlp failed",
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+        1,
+      );
+    });
+
+    await expect(
+      executeYtdlpCommand(
+        workerProcess,
+        new AbortController().signal,
+        ["https://video.example/watch?v=1"],
+        { timeoutMs: 45_000 },
+      ),
+    ).rejects.toMatchObject({ code: "source_provider_access_denied" });
   });
 });
 

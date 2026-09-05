@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkflowFailure } from "@narriflow/services";
@@ -364,6 +363,21 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         if (settled) return;
         settled = true;
         cleanup();
+        if (terminationReason === "cancellation") {
+          reject(request.signal.reason);
+          return;
+        }
+        if (terminationReason === "timeout") {
+          reject(
+            new WorkerProcessFailure(
+              "worker_command_timeout",
+              "retryable",
+              `Worker command timed out after ${request.deadlineMs}ms`,
+              boundedDiagnostic(stderr),
+            ),
+          );
+          return;
+        }
         const failure =
           error.code === "ENOENT"
             ? new WorkerProcessFailure(
@@ -441,7 +455,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         command: "ffprobe",
         args: [
           "-v",
-          "quiet",
+          "error",
           "-print_format",
           "json",
           "-show_streams",
@@ -483,7 +497,9 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       );
     }
     const streams = data.streams ?? [];
-    if (streams.length === 0) {
+    const hasAudio = streams.some((stream) => stream.codec_type === "audio");
+    const hasVisualStream = streams.some((stream) => stream.codec_type === "video");
+    if (!hasAudio && !hasVisualStream) {
       throw new WorkflowFailure(
         "source_media_invalid",
         "permanent",
@@ -505,8 +521,8 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       width: videoStream?.width ?? 0,
       height: videoStream?.height ?? 0,
       hasVideo: Boolean(videoStream),
-      hasAudio: streams.some((stream) => stream.codec_type === "audio"),
-      hasVisualStream: streams.some((stream) => stream.codec_type === "video"),
+      hasAudio,
+      hasVisualStream,
       fps: parseFrameRate(videoStream?.r_frame_rate),
     };
   }
@@ -544,7 +560,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
               level: "warn",
               message: "worker_scratch_cleanup_failed",
               directory,
-              error: error instanceof Error ? error.message : String(error),
+              error: boundedDiagnostic(error instanceof Error ? error.message : String(error)),
             }),
           );
         }

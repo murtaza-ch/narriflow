@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
+import type { WorkerProcessModule, WorkerProcessRequest } from "../worker-process";
 import {
   audiogramPreviewDimensions,
   buildAudiogramPreviewArgs,
@@ -8,10 +9,23 @@ import {
   clipPreviewAttemptStorageKey,
   computeAmplitudePeaks,
   computeClipPreviewWindow,
+  generateClipPreviewPeaks,
   previewTimeToSourceTime,
   quantizePeaks,
   sourceTimeToPreviewTime,
 } from "./clip-preview";
+
+function processModuleWithExecute(
+  execute: WorkerProcessModule["execute"],
+): WorkerProcessModule {
+  return {
+    execute,
+    inspectMedia: async () => {
+      throw new Error("unexpected media inspection");
+    },
+    withScratchDirectory: async (_prefix, work) => work("/tmp/unused"),
+  };
+}
 
 describe("computeClipPreviewWindow (padding + clamping)", () => {
   test("pads a mid-source clip symmetrically on both sides", () => {
@@ -407,5 +421,55 @@ describe("quantizePeaks", () => {
 
   test("returns an empty array for empty input", () => {
     expect(quantizePeaks([])).toEqual([]);
+  });
+});
+
+describe("generateClipPreviewPeaks process contract", () => {
+  test("captures binary PCM with the exact caller signal", async () => {
+    const controller = new AbortController();
+    let request: WorkerProcessRequest | undefined;
+    const pcm = Buffer.alloc(800 * 2);
+    for (let index = 0; index < 800; index += 1) {
+      pcm.writeInt16LE(index % 2 === 0 ? 32_767 : -32_768, index * 2);
+    }
+    const workerProcess = processModuleWithExecute(async (received) => {
+      request = received;
+      return { exitCode: 0, stdout: pcm };
+    });
+
+    const result = await generateClipPreviewPeaks({
+      workerProcess,
+      signal: controller.signal,
+      proxyFilePath: "/tmp/preview.mp4",
+      windowStartSec: 12,
+      windowDurationSec: 0.1,
+    });
+
+    expect(request).toMatchObject({
+      command: "ffmpeg",
+      signal: controller.signal,
+      captureStdout: true,
+    });
+    expect(result.peaks.length).toBeGreaterThan(0);
+    expect(result.peaks.every((peak) => peak === 100)).toBe(true);
+  });
+
+  test("preserves shutdown cancellation from peak extraction", async () => {
+    const controller = new AbortController();
+    const reason = { kind: "worker-shutdown" };
+    const workerProcess = processModuleWithExecute(async () => {
+      controller.abort(reason);
+      throw reason;
+    });
+
+    await expect(
+      generateClipPreviewPeaks({
+        workerProcess,
+        signal: controller.signal,
+        proxyFilePath: "/tmp/preview.mp4",
+        windowStartSec: 0,
+        windowDurationSec: 1,
+      }),
+    ).rejects.toBe(reason);
   });
 });

@@ -263,6 +263,7 @@ export async function analyzeClipAutoLayout(params: {
         startSec: previewOffsetSec,
         durationSec: detectionDurationSec,
       }).catch((error) => {
+        signal.throwIfAborted();
         log("warn", "clip_auto_layout_scene_detection_failed", {
           clipId: clip.id,
           message: error instanceof Error ? error.message : "unknown",
