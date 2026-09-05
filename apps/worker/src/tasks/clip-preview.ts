@@ -130,6 +130,7 @@ const HTTP_SOURCE_ARGS = [
 // headroom for a slower network or a longer padded window before killing it.
 const DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS = 120_000;
 const DEFAULT_PREVIEW_FFPROBE_TIMEOUT_MS = 30_000;
+const PREVIEW_PEAKS_MAX_STDOUT_BYTES = 32 * 1024 * 1024;
 // A permanently-broken clip (corrupt source slice, unsupported codec, ...)
 // must not monopolize every tick's batch forever — see the
 // ClipPreviewFailureBackoff class below. Base delay doubles per consecutive
@@ -757,6 +758,7 @@ export async function generateClipPreviewPeaks(params: {
       signal: params.signal,
       deadlineMs: previewFfmpegTimeoutMs(),
       captureStdout: true,
+      maxStdoutBytes: PREVIEW_PEAKS_MAX_STDOUT_BYTES,
     })
   ).stdout;
 
@@ -782,6 +784,26 @@ export async function generateClipPreviewPeaks(params: {
     durationSec: params.windowDurationSec,
     peaks: quantizePeaks(rawPeaks),
   };
+}
+
+export async function persistOptionalClipPreviewPeaks(params: {
+  workerProcess: WorkerProcessModule;
+  signal: AbortSignal;
+  proxyFilePath: string;
+  windowStartSec: number;
+  windowDurationSec: number;
+  persist(peaks: ClipPreviewPeaks): Promise<unknown>;
+  diagnose(error: unknown): void;
+}): Promise<boolean> {
+  try {
+    const peaks = await generateClipPreviewPeaks(params);
+    await params.persist(peaks);
+    return true;
+  } catch (error) {
+    params.signal.throwIfAborted();
+    params.diagnose(error);
+    return false;
+  }
 }
 
 // ─── Orchestration ──────────────────────────────────────────────────────────
@@ -886,33 +908,31 @@ async function cutAndUploadClipPreview(params: {
   // source, so it can never be the expensive part of this attempt.
   let peaksKey: string | null = null;
   if (probe.hasAudio) {
-    try {
-      const peaksPayload = await generateClipPreviewPeaks({
-        workerProcess: params.workerProcess,
-        signal: params.signal,
-        proxyFilePath: outputPath,
-        windowStartSec: window.startSec,
-        windowDurationSec: window.durationSec,
-      });
-      peaksKey = derivePeaksStorageKey(key);
-      await putJson({
-        key: peaksKey,
-        value: peaksPayload,
-        metadata: {
-          project_id: clip.projectId,
-          clip_id: clip.id,
-          kind: "preview_peaks",
-        },
-      });
-    } catch (error) {
-      params.signal.throwIfAborted();
-      peaksKey = null;
-      log("warn", "clip_preview_peaks_failed", {
-        clipId: clip.id,
-        projectId: clip.projectId,
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
+    const candidatePeaksKey = derivePeaksStorageKey(key);
+    const persisted = await persistOptionalClipPreviewPeaks({
+      workerProcess: params.workerProcess,
+      signal: params.signal,
+      proxyFilePath: outputPath,
+      windowStartSec: window.startSec,
+      windowDurationSec: window.durationSec,
+      persist: (peaksPayload) =>
+        putJson({
+          key: candidatePeaksKey,
+          value: peaksPayload,
+          metadata: {
+            project_id: clip.projectId,
+            clip_id: clip.id,
+            kind: "preview_peaks",
+          },
+        }),
+      diagnose: (error) =>
+        log("warn", "clip_preview_peaks_failed", {
+          clipId: clip.id,
+          projectId: clip.projectId,
+          message: error instanceof Error ? error.message : "Unknown error",
+        }),
+    });
+    peaksKey = persisted ? candidatePeaksKey : null;
   }
 
   const result = await clipService.completeClipPreview(clip.id, {

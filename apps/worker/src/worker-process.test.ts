@@ -104,6 +104,47 @@ test("worker process preserves cancellation when a spawn error races the abort",
   await expect(executing).rejects.toBe(reason);
 });
 
+test.skipIf(process.platform === "win32")(
+  "worker process classifies a generic spawn error as retryable with its cause",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "narriflow-spawn-error-contract-"));
+    const command = join(directory, "not-executable");
+    const diagnostics: WorkerProcessDiagnostic[] = [];
+    try {
+      await writeFile(command, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+      let failure: unknown;
+      try {
+        await createWorkerProcessModule({ killGraceMs: 20 }).execute({
+          command,
+          args: [],
+          signal: new AbortController().signal,
+          deadlineMs: 1_000,
+          diagnose: (event) => diagnostics.push(event),
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(WorkerProcessFailure);
+      expect(failure).toMatchObject({
+        code: "worker_command_spawn_failed",
+        disposition: "retryable",
+        cause: expect.any(Error),
+      });
+      expect(diagnostics).toContainEqual(
+        expect.objectContaining({
+          operation: "spawn",
+          status: "failed",
+          failureCode: "worker_command_spawn_failed",
+          disposition: "retryable",
+        }),
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
 test("worker process classifies invalid input and bounds redacted diagnostics", async () => {
   const secretUrl = `https://media.example/video.mp4?token=${"secret".repeat(2_000)}`;
   let failure: unknown;
@@ -144,6 +185,30 @@ test("worker process classifies other nonzero exits as retryable", async () => {
     disposition: "retryable",
     exitCode: 7,
   });
+});
+
+test("worker process terminates captured output that exceeds the caller limit", async () => {
+  const diagnostics: WorkerProcessDiagnostic[] = [];
+  await expect(
+    createWorkerProcessModule({ killGraceMs: 20 }).execute({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('x'.repeat(4096))"],
+      signal: new AbortController().signal,
+      deadlineMs: 1_000,
+      captureStdout: true,
+      maxStdoutBytes: 128,
+      diagnose: (event) => diagnostics.push(event),
+    }),
+  ).rejects.toMatchObject({
+    code: "worker_command_output_too_large",
+    disposition: "permanent",
+  });
+  expect(diagnostics).toContainEqual(
+    expect.objectContaining({
+      operation: "output_limit",
+      failureCode: "worker_command_output_too_large",
+    }),
+  );
 });
 
 test("worker process samples worker and command memory", async () => {

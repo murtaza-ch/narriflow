@@ -10,6 +10,7 @@ import {
   computeAmplitudePeaks,
   computeClipPreviewWindow,
   generateClipPreviewPeaks,
+  persistOptionalClipPreviewPeaks,
   previewTimeToSourceTime,
   quantizePeaks,
   sourceTimeToPreviewTime,
@@ -449,27 +450,59 @@ describe("generateClipPreviewPeaks process contract", () => {
       command: "ffmpeg",
       signal: controller.signal,
       captureStdout: true,
+      maxStdoutBytes: 32 * 1024 * 1024,
     });
     expect(result.peaks.length).toBeGreaterThan(0);
     expect(result.peaks.every((peak) => peak === 100)).toBe(true);
   });
 
-  test("preserves shutdown cancellation from peak extraction", async () => {
+  test("preserves shutdown cancellation across the optional-degradation boundary", async () => {
     const controller = new AbortController();
     const reason = { kind: "worker-shutdown" };
     const workerProcess = processModuleWithExecute(async () => {
       controller.abort(reason);
       throw reason;
     });
+    let persisted = false;
 
     await expect(
-      generateClipPreviewPeaks({
+      persistOptionalClipPreviewPeaks({
         workerProcess,
         signal: controller.signal,
         proxyFilePath: "/tmp/preview.mp4",
         windowStartSec: 0,
         windowDurationSec: 1,
+        persist: async () => {
+          persisted = true;
+        },
+        diagnose: () => {},
       }),
     ).rejects.toBe(reason);
+    expect(persisted).toBe(false);
+  });
+
+  test("degrades a non-cancellation peak failure without persisting", async () => {
+    const failure = new Error("optional peak generation failed");
+    const workerProcess = processModuleWithExecute(async () => {
+      throw failure;
+    });
+    let diagnosed: unknown;
+
+    await expect(
+      persistOptionalClipPreviewPeaks({
+        workerProcess,
+        signal: new AbortController().signal,
+        proxyFilePath: "/tmp/preview.mp4",
+        windowStartSec: 0,
+        windowDurationSec: 1,
+        persist: async () => {
+          throw new Error("must not persist");
+        },
+        diagnose: (error) => {
+          diagnosed = error;
+        },
+      }),
+    ).resolves.toBe(false);
+    expect(diagnosed).toBe(failure);
   });
 });

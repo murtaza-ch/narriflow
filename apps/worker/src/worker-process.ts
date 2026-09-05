@@ -8,6 +8,8 @@ const DEFAULT_KILL_GRACE_MS = 5_000;
 const DEFAULT_MEDIA_FPS = 30;
 export const HTTP_SOURCE_RW_TIMEOUT_US = 30_000_000;
 const MAX_DIAGNOSTIC_CHARS = 8_192;
+const DEFAULT_CAPTURED_STDOUT_BYTES = 8 * 1024 * 1024;
+const MAX_CAPTURED_STDOUT_BYTES = 64 * 1024 * 1024;
 const PROCESS_GROUP_REAP_TIMEOUT_MS = 1_000;
 const RESOURCE_SAMPLE_INTERVAL_MS = 100;
 
@@ -18,6 +20,7 @@ export interface WorkerProcessRequest {
   deadlineMs: number;
   acceptableExitCodes?: readonly number[];
   captureStdout?: boolean;
+  maxStdoutBytes?: number;
   recordResourceSample?(rssBytes: number): void;
   diagnose?(event: WorkerProcessDiagnostic): void;
 }
@@ -28,7 +31,14 @@ export interface WorkerProcessResult {
 }
 
 export interface WorkerProcessDiagnostic {
-  operation: "spawn" | "timeout" | "exit" | "cancellation" | "termination" | "scratch_cleanup";
+  operation:
+    | "spawn"
+    | "timeout"
+    | "output_limit"
+    | "exit"
+    | "cancellation"
+    | "termination"
+    | "scratch_cleanup";
   status: "completed" | "failed";
   elapsedMs: number;
   failureCode?: string;
@@ -258,6 +268,16 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
     if (!Number.isFinite(request.deadlineMs) || request.deadlineMs <= 0) {
       throw new Error("Worker process deadline must be finite and positive");
     }
+    const maxStdoutBytes = request.maxStdoutBytes ?? DEFAULT_CAPTURED_STDOUT_BYTES;
+    if (
+      !Number.isFinite(maxStdoutBytes) ||
+      maxStdoutBytes <= 0 ||
+      maxStdoutBytes > MAX_CAPTURED_STDOUT_BYTES
+    ) {
+      throw new Error(
+        `Worker process stdout limit must be between 1 and ${MAX_CAPTURED_STDOUT_BYTES} bytes`,
+      );
+    }
     const startedAtMs = Date.now();
     const diagnose = (event: Omit<WorkerProcessDiagnostic, "elapsedMs">): void => {
       safeDiagnose(request.diagnose, {
@@ -280,9 +300,10 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         detached: process.platform !== "win32",
       });
       const stdoutChunks: Buffer[] = [];
+      let stdoutBytes = 0;
       let stderr = "";
       let invalidInput = false;
-      let terminationReason: "timeout" | "cancellation" | null = null;
+      let terminationReason: "timeout" | "cancellation" | "output_limit" | null = null;
       let settled = false;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
       let resourceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -321,7 +342,9 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
           // The process may exit between classification and delivery.
         }
       };
-      const beginTermination = (reason: "timeout" | "cancellation"): void => {
+      const beginTermination = (
+        reason: "timeout" | "cancellation" | "output_limit",
+      ): void => {
         if (terminationReason) return;
         terminationReason = reason;
         diagnose({
@@ -330,8 +353,14 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
           failureCode:
             reason === "timeout"
               ? "worker_command_timeout"
-              : cancellationFailureCode(request.signal),
-          ...(reason === "timeout" ? { disposition: "retryable" as const } : {}),
+              : reason === "output_limit"
+                ? "worker_command_output_too_large"
+                : cancellationFailureCode(request.signal),
+          ...(reason === "timeout"
+            ? { disposition: "retryable" as const }
+            : reason === "output_limit"
+              ? { disposition: "permanent" as const }
+              : {}),
         });
         terminate("SIGTERM");
         killTimer = setTimeout(() => terminate("SIGKILL"), this.killGraceMs);
@@ -352,7 +381,13 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         void sampleResources();
       });
       child.stdout.on("data", (chunk: Buffer) => {
-        if (request.captureStdout) stdoutChunks.push(chunk);
+        if (!request.captureStdout || terminationReason) return;
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > maxStdoutBytes) {
+          beginTermination("output_limit");
+          return;
+        }
+        stdoutChunks.push(chunk);
       });
       child.stderr.on("data", (chunk: Buffer) => {
         const text = chunk.toString();
@@ -373,6 +408,17 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
               "worker_command_timeout",
               "retryable",
               `Worker command timed out after ${request.deadlineMs}ms`,
+              boundedDiagnostic(stderr),
+            ),
+          );
+          return;
+        }
+        if (terminationReason === "output_limit") {
+          reject(
+            new WorkerProcessFailure(
+              "worker_command_output_too_large",
+              "permanent",
+              `Worker command exceeded its ${maxStdoutBytes}-byte stdout limit`,
               boundedDiagnostic(stderr),
             ),
           );
@@ -424,6 +470,18 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
               "worker_command_timeout",
               "retryable",
               `Worker command timed out after ${request.deadlineMs}ms`,
+              boundedDiagnostic(stderr),
+              code,
+            ),
+          );
+          return;
+        }
+        if (terminationReason === "output_limit") {
+          reject(
+            new WorkerProcessFailure(
+              "worker_command_output_too_large",
+              "permanent",
+              `Worker command exceeded its ${maxStdoutBytes}-byte stdout limit`,
               boundedDiagnostic(stderr),
               code,
             ),
