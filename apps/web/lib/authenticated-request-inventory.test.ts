@@ -358,10 +358,11 @@ describe("authenticated request inventory", () => {
       await Promise.all([
         "app/api/[[...route]]/route.ts",
         "app/api/[[...route]]/brand-profile-routes.ts",
+        "app/api/[[...route]]/clip-editor-http.ts",
       ].map((module) => Bun.file(new URL(module, webRoot)).text()))
     ).join("\n");
     const registered = source.matchAll(
-      /app\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g,
+      /(?:app|routes)\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g,
     );
     for (const [, method, path] of registered) {
       expect(
@@ -374,11 +375,14 @@ describe("authenticated request inventory", () => {
   });
 
   test("registers every main-app inventory declaration", async () => {
-    const source = await Bun.file(
-      new URL("app/api/[[...route]]/route.ts", webRoot),
-    ).text();
+    const source = (
+      await Promise.all([
+        "app/api/[[...route]]/route.ts",
+        "app/api/[[...route]]/clip-editor-http.ts",
+      ].map((module) => Bun.file(new URL(module, webRoot)).text()))
+    ).join("\n");
     const registered = new Set(
-      [...source.matchAll(/app\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g)].map(
+      [...source.matchAll(/(?:app|routes)\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g)].map(
         ([, method, path]) => `${method?.toUpperCase()} ${path}`,
       ),
     );

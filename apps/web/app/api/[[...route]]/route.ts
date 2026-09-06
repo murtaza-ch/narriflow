@@ -44,14 +44,6 @@ import {
   triggerClipRenderSchema,
   brollSearchQuerySchema,
   createClipFromSelectionSchema,
-  resetEditorDocumentSchema,
-  saveEditorDocumentSchema,
-  updateClipBoundariesSchema,
-  updateClipBrollSchema,
-  updateClipCaptionPresetSchema,
-  updateClipStudioEditsSchema,
-  updateClipTitleSchema,
-  updateClipTranscriptSliceSchema,
   userErrorMessage,
   resolvePricingTier,
   isCensorSegmentStale,
@@ -66,8 +58,6 @@ import {
   type ApplyProjectBrandProfileSelectedInput,
   type ApplyStyleSelectedInput,
   type PreviewCampaignEditorActionInput,
-  type EditorDocument,
-  type SceneBlock,
   type CensorSegment,
 } from "@narriflow/validators";
 import {
@@ -80,7 +70,6 @@ import {
   isPexelsConfigured,
   brandTemplateService,
   clipService,
-  ClipActionError,
   clipEditorDocumentPersistence,
   clipExportService,
   ClipExportError,
@@ -104,10 +93,7 @@ import {
   reviewNotificationService,
   visualAssetService,
   brandFontService,
-  hasFeature,
-  isProgramWriteEnabled,
-  ProgramWriteDisabledError,
-  type ProgramReleaseGroup,
+  analyzeSceneDocumentMutation,
   autoCensorService,
   thumbnailFramePreparationService,
 } from "@narriflow/services";
@@ -115,15 +101,14 @@ import {
   resolveCanonicalAppOrigin,
   safeSocialRedirectPath,
 } from "@/lib/safe-redirect";
-import { censorDocumentMutationError } from "@/lib/censor-document-mutation";
 import {
   motionDocumentExportError,
-  motionDocumentMutationError,
 } from "@/lib/motion-document-mutation";
 import { createUploadSessionHttpRoutes } from "./upload-session-http";
 import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
 import { createBrandProfileRoutes } from "./brand-profile-routes";
+import { createClipEditorHttpRoutes } from "./clip-editor-http";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
@@ -132,76 +117,6 @@ export const maxDuration = 60;
 const app = new Hono().basePath("/api");
 app.onError(authenticatedRequestHonoErrorHandler);
 
-function sceneDocumentMutationError(pricingTier: string, current: EditorDocument, next: EditorDocument) {
-  const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
-  const nextById = new Map(next.sceneBlocks.map((scene) => [scene.id, scene]));
-  const changed = new Set([...currentById.keys(), ...nextById.keys()].filter((id) =>
-    JSON.stringify(currentById.get(id)) !== JSON.stringify(nextById.get(id)),
-  ));
-  if (changed.size === 0) return null;
-  if (!hasFeature(pricingTier, "brand.scenes")) {
-    return new ClipActionError(
-      "scene_feature_unavailable",
-    );
-  }
-  const disabledGroup = [...changed]
-    .flatMap((id) => [currentById.get(id), nextById.get(id)])
-    .filter((scene): scene is SceneBlock => Boolean(scene))
-    .map(sceneProgramReleaseGroup)
-    .find((group) => group && !isProgramWriteEnabled(group));
-  return disabledGroup ? new ProgramWriteDisabledError(disabledGroup) : null;
-}
-
-function sceneProgramReleaseGroup(
-  scene: SceneBlock,
-): ProgramReleaseGroup | null {
-  if (scene.templateSnapshot) return "scene_templates";
-  if (scene.content.kind === "text" || scene.content.kind === "color") {
-    return "scene_cards";
-  }
-  if (scene.content.kind === "image") return "scene_images";
-  if (scene.content.kind === "video") return "scene_videos";
-  return null;
-}
-
-function changedSceneBlocks(current: EditorDocument, next: EditorDocument): SceneBlock[] {
-  const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
-  return next.sceneBlocks.filter((scene) =>
-    JSON.stringify(currentById.get(scene.id)) !== JSON.stringify(scene),
-  );
-}
-
-function introducedSceneReferences(current: EditorDocument, next: EditorDocument): SceneBlock[] {
-  const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
-  return next.sceneBlocks.filter((scene) => {
-    const previous = currentById.get(scene.id);
-    if (!previous || previous.content.kind !== scene.content.kind) return true;
-    const previousAsset = previous.content.kind === "image" || previous.content.kind === "video"
-      ? previous.content.asset
-      : previous.content.kind === "text"
-        ? previous.content.fontAsset
-        : null;
-    const nextAsset = scene.content.kind === "image" || scene.content.kind === "video"
-      ? scene.content.asset
-      : scene.content.kind === "text"
-        ? scene.content.fontAsset
-        : null;
-    return JSON.stringify(previousAsset) !== JSON.stringify(nextAsset);
-  });
-}
-
-function introducedVisualAssetIds(current: EditorDocument, next: EditorDocument): string[] {
-  const ids = (document: EditorDocument) => [
-    ...document.sceneBlocks.flatMap((scene) =>
-      scene.content.kind === "image" || scene.content.kind === "video"
-        ? [scene.content.asset.id]
-        : [],
-    ),
-    ...document.studioEdits.visualBroll.map((placement) => placement.asset.id),
-  ];
-  const currentIds = new Set(ids(current));
-  return [...new Set(ids(next).filter((id) => !currentIds.has(id)))];
-}
 app.use("*", authenticatedRequestHonoMiddleware);
 billingService.validateConfiguration({ surface: "web" });
 
@@ -267,6 +182,18 @@ app.route(
   "/",
   createBrandProfileRoutes({
     getActor: (context) => authenticatedHonoActor(context),
+  }),
+);
+
+app.route(
+  "/",
+  createClipEditorHttpRoutes({
+    getActor: (context) => authenticatedHonoActor(context),
+    clip: clipService,
+    persistence: clipEditorDocumentPersistence,
+    analyzeSceneMutation: analyzeSceneDocumentMutation,
+    visualAssets: visualAssetService,
+    brandFonts: brandFontService,
   }),
 );
 
@@ -672,132 +599,6 @@ app.get("/projects/:id/clips/:clipId/preview-peaks", async (c) => {
   return c.json(peaks, 200);
 });
 
-app.patch("/projects/:id/clips/:clipId", async (c) => {
-  const appUser = authenticatedHonoActor(c);
-
-  const projectId = c.req.param("id");
-
-  const clipId = c.req.param("clipId");
-  const payload = await c.req.json().catch(() => null);
-
-  if (!payload || typeof payload !== "object") {
-    return c.json({ error: "invalid_input" }, 400);
-  }
-
-  const titleParsed = updateClipTitleSchema.safeParse(payload);
-    if (titleParsed.success) {
-      const clip = await clipService.updateClipTitle(
-        appUser.workspaceOwnerUserId,
-        projectId,
-        clipId,
-        titleParsed.data.title,
-      );
-      return c.json(clip, 200);
-    }
-
-    const boundariesParsed = updateClipBoundariesSchema.safeParse(payload);
-    if (boundariesParsed.success) {
-      await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.actorUserId,
-        workspaceId: appUser.workspaceId,
-        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-        projectId,
-        clipId,
-        intent: { kind: "set_boundaries", ...boundariesParsed.data },
-      });
-      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
-      );
-      return c.json(clip, 200);
-    }
-
-    const captionPresetParsed = updateClipCaptionPresetSchema.safeParse(payload);
-    if (captionPresetParsed.success) {
-      await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.actorUserId,
-        workspaceId: appUser.workspaceId,
-        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-        projectId,
-        clipId,
-        intent: {
-          kind: "set_caption_preset",
-          captionPreset: captionPresetParsed.data.captionPreset,
-        },
-      });
-      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
-      );
-      return c.json(clip, 200);
-    }
-
-    const transcriptParsed = updateClipTranscriptSliceSchema.safeParse(payload);
-    if (transcriptParsed.success) {
-      await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.actorUserId,
-        workspaceId: appUser.workspaceId,
-        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-        projectId,
-        clipId,
-        intent: {
-          kind: "set_transcript",
-          transcriptSlice: transcriptParsed.data.transcriptSlice,
-        },
-      });
-      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
-      );
-      return c.json(clip, 200);
-    }
-
-    const brollParsed = updateClipBrollSchema.safeParse(payload);
-    if (brollParsed.success) {
-      await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.actorUserId,
-        workspaceId: appUser.workspaceId,
-        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-        projectId,
-        clipId,
-        intent: { kind: "set_broll_url", brollUrl: brollParsed.data.brollUrl },
-      });
-      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
-      );
-      return c.json(clip, 200);
-    }
-
-    // studioEditsSchema carries its own top-level `.default()` (so a bare
-    // `{studioEdits: {...}}` update can omit unset sub-fields), which means
-    // safeParse(payload) would happily succeed — and silently wipe
-    // textLayers/transition/music back to defaults — for ANY object that
-    // simply lacks a `studioEdits` key. Only attempt this branch when the
-    // body actually claims to be a studio-edits update.
-    const studioEditsParsed =
-      "studioEdits" in payload
-        ? updateClipStudioEditsSchema.safeParse(payload)
-        : null;
-    if (studioEditsParsed?.success) {
-      await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.actorUserId,
-        workspaceId: appUser.workspaceId,
-        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-        projectId,
-        clipId,
-        intent: {
-          kind: "set_studio_edits",
-          studioEdits: studioEditsParsed.data.studioEdits,
-        },
-      });
-      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
-      );
-      return c.json(clip, 200);
-    }
-
-  return c.json(
-      {
-        error: "unrecognized_clip_update",
-        message:
-          "Body didn't match any supported clip update (status, title, boundaries, captionPreset, transcriptSlice, brollUrl, or studioEdits).",
-      },
-      400,
-  );
-});
-
 /**
  * Alternative AI-written titles for one clip. Read-only — the caller picks one
  * and PATCHes it back as an ordinary `{ title }` rename, so nothing is
@@ -874,133 +675,6 @@ app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
       parsed.data,
   );
   return c.json(clip, 201);
-});
-
-/**
- * Studio editor document (docs/plans/vizard-parity.md Phase A/B): GET returns
- * {revision, document, original}; PUT is the atomic revision-guarded save
- * replacing the legacy per-field PATCHes — including boundary changes since
- * Phase B step 13 (in-studio trim). 409 carries the current revision so the
- * client can refetch and rebase; 422 rejects an invalid boundary change
- * (min-duration/out-of-source-range) or a delete that would leave nothing
- * renderable.
- */
-app.get("/projects/:id/clips/:clipId/editor", async (c) => {
-  const appUser = authenticatedHonoActor(c);
-
-  const projectId = c.req.param("id");
-
-  const result = await clipService.getClipEditorDocument(
-      appUser,
-      projectId,
-      c.req.param("clipId"),
-  );
-  return c.json(result, 200);
-});
-
-app.put("/projects/:id/clips/:clipId/editor", async (c) => {
-  const appUser = authenticatedHonoActor(c);
-
-  const projectId = c.req.param("id");
-
-  const payload = await c.req.json().catch(() => null);
-  if (!payload || typeof payload !== "object") {
-    return c.json({ error: "invalid_input" }, 400);
-  }
-
-  const parsed = saveEditorDocumentSchema.safeParse(payload);
-  if (!parsed.success) {
-    return c.json({ error: "invalid_input" }, 400);
-  }
-    const current = await clipService.getClipEditorDocument(
-      appUser,
-      projectId,
-      c.req.param("clipId"),
-    );
-    const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
-    if (sceneError) throw sceneError;
-    const motionError = motionDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
-    if (motionError) throw motionError;
-    const censorError = censorDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
-    if (censorError) throw censorError;
-    const changedScenes = changedSceneBlocks(current.document, parsed.data.document);
-    const introducedScenes = introducedSceneReferences(current.document, parsed.data.document);
-    const introducedAssetIds = introducedVisualAssetIds(current.document, parsed.data.document);
-    await Promise.all([
-      visualAssetService.assertSceneReferencesWithPolicy(appUser, changedScenes, true),
-      visualAssetService.assertSceneReferences(appUser, introducedScenes),
-      visualAssetService.assertVisualBrollReferences(appUser, parsed.data.document.studioEdits.visualBroll),
-      brandFontService.assertSceneReferences(appUser, projectId, changedScenes, { allowDeleted: true, requireActiveProfile: false }),
-      brandFontService.assertSceneReferences(appUser, projectId, introducedScenes, { allowDeleted: false, requireActiveProfile: true }),
-    ]);
-    const mutation = await clipEditorDocumentPersistence.mutateDocument({
-      actorUserId: appUser.actorUserId,
-      workspaceId: appUser.workspaceId,
-      workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-      projectId,
-      clipId: c.req.param("clipId"),
-      intent: {
-        kind: "replace",
-        baseRevision: parsed.data.baseRevision,
-        document: parsed.data.document,
-      },
-    });
-    await visualAssetService.recordGeneratedInsertionsBestEffort(
-      appUser,
-      projectId,
-      introducedAssetIds,
-    );
-    const clip = await clipService.getClipSnapshot(
-      appUser.workspaceOwnerUserId,
-      projectId,
-      c.req.param("clipId"),
-    );
-    return c.json(
-      { revision: mutation.revision, document: mutation.document, clip },
-      200,
-    );
-});
-
-/**
- * Reset-to-original (docs/plans/vizard-parity.md Phase A step 4): restores
- * the editor document — including clip boundaries — from the immutable
- * revision-zero snapshot. Same revision-guard/error mapping as the PUT above.
- */
-app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
-  const appUser = authenticatedHonoActor(c);
-
-  const projectId = c.req.param("id");
-
-  const payload = await c.req.json().catch(() => null);
-  if (!payload || typeof payload !== "object") {
-    return c.json({ error: "invalid_input" }, 400);
-  }
-
-  const parsed = resetEditorDocumentSchema.safeParse(payload);
-  if (!parsed.success) {
-    return c.json({ error: "invalid_input" }, 400);
-  }
-
-  const current = await clipService.getClipEditorDocument(appUser, projectId, c.req.param("clipId"));
-    const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, current.original);
-    if (sceneError) throw sceneError;
-    const mutation = await clipEditorDocumentPersistence.mutateDocument({
-      actorUserId: appUser.actorUserId,
-      workspaceId: appUser.workspaceId,
-      workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-      projectId,
-      clipId: c.req.param("clipId"),
-      intent: { kind: "reset", baseRevision: parsed.data.baseRevision },
-    });
-    const clip = await clipService.getClipSnapshot(
-      appUser.workspaceOwnerUserId,
-      projectId,
-      c.req.param("clipId"),
-    );
-  return c.json(
-      { revision: mutation.revision, document: mutation.document, clip },
-      200,
-  );
 });
 
 /**

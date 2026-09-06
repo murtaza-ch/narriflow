@@ -324,6 +324,10 @@ export {
   type ProgramReleaseGroup,
 } from "./program-rollout";
 export {
+  analyzeSceneDocumentMutation,
+  type SceneDocumentMutationAnalysis,
+} from "./scene-document-mutation";
+export {
   generationAccessForTier,
   generatedImageCapability,
   type GeneratedImageCapability,
