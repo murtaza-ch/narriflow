@@ -39,6 +39,7 @@ const brandFontIntegrityFailureCatalog = {
   brand_font_fingerprint_mismatch: "unprocessable",
   brand_font_format_mismatch: "unprocessable",
   brand_font_key_forbidden: "forbidden",
+	brand_font_in_use: "conflict",
   brand_font_malformed: "unprocessable",
   brand_font_mime_mismatch: "unprocessable",
   brand_font_name_invalid: "invalid",
@@ -46,6 +47,7 @@ const brandFontIntegrityFailureCatalog = {
   brand_font_object_missing: "missing",
   brand_font_replacement_invalid: "unprocessable",
   brand_font_size_mismatch: "unprocessable",
+	brand_font_storage_unavailable: "unavailable",
   scene_brand_font_invalid: "unprocessable",
   scene_brand_font_profile_invalid: "unprocessable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -61,7 +63,12 @@ export class BrandFontIntegrityError extends ExpectedDomainFailureError<BrandFon
 
 export class BrandFontReferenceError extends ExpectedDomainFailureError<"brand_font_in_use"> {
   constructor() {
-    super({ code: "brand_font_in_use", kind: "conflict", message: "Remove this font from every Brand Profile and Scene template before deleting it" });
+    super({
+      code: "brand_font_in_use",
+      kind: brandFontIntegrityFailureCatalog.brand_font_in_use,
+      message:
+        "Remove this font from every Brand Profile and Scene template before deleting it",
+    });
     this.name = "BrandFontReferenceError";
   }
 }
@@ -170,7 +177,9 @@ export class BrandFontService {
   async presignUpload(scope: BrandActorScope, input: BrandFontUploadInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
     const parsed = brandFontUploadSchema.parse(input);
-    if (!isR2Configured()) throw new Error("R2 configuration is missing");
+    if (!isR2Configured()) {
+      throw new BrandFontIntegrityError("brand_font_storage_unavailable");
+    }
     const format = formatForContentType(parsed.contentType);
     const key = `${brandOwnerStoragePrefix(scope, "brand-fonts")}${randomUUID()}.${format}`;
     return { key, contentType: parsed.contentType, uploadUrl: await presignSingleUploadUrl({ key, contentType: parsed.contentType }) };

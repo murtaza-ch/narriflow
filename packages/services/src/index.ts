@@ -12,11 +12,13 @@ export {
   audioAssetService,
   AudioAssetService,
   AudioAssetAccessError,
+  AudioAssetError,
   AudioAssetNotFoundError,
   audioAssetUploadPrefix,
   isOwnedAudioUploadKey,
   extensionForAudioContentType,
   type AudioAssetListRow,
+	type AudioAssetFailureCode,
 } from "./audio-asset.service";
 export {
   autopilotService,
@@ -33,12 +35,15 @@ export {
   MAX_RSS_FEED_BYTES,
   MAX_RSS_EPISODES,
   type RssFeedSnapshot,
+	type RssFeedFailureCode,
 } from "./rss";
 export {
   brandTemplateService,
   BrandTemplateService,
   BrandTemplateForbiddenError,
+  BrandTemplateError,
   BrandTemplateNotFoundError,
+	type BrandTemplateFailureCode,
 } from "./brand-template.service";
 export {
   brandProfileService,
@@ -200,6 +205,7 @@ export {
   ProjectHasActivePublicationError,
   ProjectHasActiveWorkflowError,
   ProjectNotFoundError,
+  ProjectServiceError,
   MAX_INGEST_RETRY_ATTEMPTS,
   purgeExpiredProjectSources,
   purgeOldWorkflowEvents,
@@ -210,6 +216,7 @@ export {
   type ProjectListSort,
   type ProjectListSourceFilter,
   type ProjectListStatusFilter,
+  type ProjectFailureCode,
   type ProjectSourcePurgeCandidate,
   // Automatic job-level retry policy (requeue-with-backoff for IngestJob /
   // WorkflowRun) — see the "Automatic job-level retry policy" comment block
@@ -259,7 +266,9 @@ export {
 export {
   dubbingService,
   DubbingService,
+  DubbingFailureError,
   DubbingTierError,
+  type DubbingFailureCode,
 } from "./dubbing.service";
 export {
   billingService,
@@ -295,7 +304,10 @@ export {
 } from "./workspace-billing.service";
 export {
   analyticsService,
-  AnalyticsService } from "./analytics.service";
+  AnalyticsService,
+  AnalyticsServiceError,
+  type AnalyticsFailureCode,
+} from "./analytics.service";
 export {
   autoCensorService,
   AutoCensorAccessError,

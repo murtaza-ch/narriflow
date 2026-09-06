@@ -63,7 +63,10 @@ import {
 	type RetentionPolicyKey,
 } from "./project-retention.service";
 import { accessibleProjectWhere } from "./project-access";
-import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import {
+	ExpectedDomainFailureError,
+	type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 import {
 	workspaceService,
 	type WorkspaceCapability,
@@ -368,6 +371,40 @@ function ingestProgress(status: IngestLifecycleStatus) {
 	return 100;
 }
 
+export const projectFailureCatalog = {
+	idempotency_key_required: "invalid",
+	ingest_not_failed: "conflict",
+	ingest_retry_limit_exceeded: "conflict",
+	link_unsupported_source: "unprocessable",
+	project_access_denied: "forbidden",
+	project_deletion_incomplete: "unavailable",
+	project_has_active_publication: "conflict",
+	project_has_active_workflow: "conflict",
+	project_ingest_not_ready: "conflict",
+	project_not_found: "missing",
+	quota_exceeded: "payment_required",
+	rss_commit_token_requires_single_episode: "invalid",
+	rss_concurrent_ingest_limit_reached: "conflict",
+	rss_episode_count_invalid: "invalid",
+	rss_episode_not_found: "missing",
+	rss_ingest_job_missing: "unavailable",
+	ingest_job_not_found: "missing",
+	ingest_retry_source_not_found: "missing",
+	transcript_not_found: "missing",
+	transcript_not_ready: "conflict",
+	upload_too_long: "payment_required",
+	workspace_not_found: "missing",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type ProjectFailureCode = keyof typeof projectFailureCatalog;
+
+export class ProjectServiceError extends ExpectedDomainFailureError<ProjectFailureCode> {
+	constructor(code: ProjectFailureCode, message: string) {
+		super({ code, kind: projectFailureCatalog[code], message });
+		this.name = "ProjectServiceError";
+	}
+}
+
 export class QuotaExceededError extends ExpectedDomainFailureError<"quota_exceeded", {
 	tier: string;
 	limitMinutes: number;
@@ -383,7 +420,12 @@ export class QuotaExceededError extends ExpectedDomainFailureError<"quota_exceed
 			requestedMinutes: number;
 		},
 	) {
-		super({ code: "quota_exceeded", kind: "payment_required", message, details });
+		super({
+			code: "quota_exceeded",
+			kind: projectFailureCatalog.quota_exceeded,
+			message,
+			details,
+		});
 		this.name = "QuotaExceededError";
 	}
 }
@@ -401,7 +443,12 @@ export class UploadTooLongError extends ExpectedDomainFailureError<"upload_too_l
 			seconds: number;
 		},
 	) {
-		super({ code: "upload_too_long", kind: "payment_required", message, details });
+		super({
+			code: "upload_too_long",
+			kind: projectFailureCatalog.upload_too_long,
+			message,
+			details,
+		});
 		this.name = "UploadTooLongError";
 	}
 }
@@ -410,22 +457,28 @@ export class UploadTooLongError extends ExpectedDomainFailureError<"upload_too_l
  *  retryFailedIngest refuses and tells the user to start a new upload. */
 export const MAX_INGEST_RETRY_ATTEMPTS = 5;
 
-export class IngestRetryLimitExceededError extends Error {
-	readonly code = "ingest_retry_limit_exceeded";
-
-	constructor(public readonly maxAttempts: number) {
-		super(
-			`This upload has failed ${maxAttempts} times and can't be retried again automatically.`,
-		);
+export class IngestRetryLimitExceededError extends ExpectedDomainFailureError<
+	"ingest_retry_limit_exceeded",
+	{ maxAttempts: number }
+> {
+	constructor(maxAttempts: number) {
+		super({
+			code: "ingest_retry_limit_exceeded",
+			kind: projectFailureCatalog.ingest_retry_limit_exceeded,
+			message: `This upload has failed ${maxAttempts} times and can't be retried again automatically.`,
+			details: { maxAttempts },
+		});
 		this.name = "IngestRetryLimitExceededError";
 	}
 }
 
-export class IngestNotFailedError extends Error {
-	readonly code = "ingest_not_failed";
-
+export class IngestNotFailedError extends ExpectedDomainFailureError<"ingest_not_failed"> {
 	constructor() {
-		super("This project's ingest isn't in a failed state.");
+		super({
+			code: "ingest_not_failed",
+			kind: projectFailureCatalog.ingest_not_failed,
+			message: "This project's ingest isn't in a failed state.",
+		});
 		this.name = "IngestNotFailedError";
 	}
 }
@@ -653,62 +706,75 @@ export function claimBackoffWhereClauses(
 // unit coverage without touching a real database or R2 bucket.
 // ---------------------------------------------------------------------------
 
-export class ProjectNotFoundError extends Error {
-	readonly code = "project_not_found";
-
+export class ProjectNotFoundError extends ExpectedDomainFailureError<"project_not_found"> {
 	constructor() {
-		super("Project not found.");
+		super({
+			code: "project_not_found",
+			kind: projectFailureCatalog.project_not_found,
+			message: "Project not found.",
+		});
 		this.name = "ProjectNotFoundError";
 	}
 }
 
-export class LinkUnsupportedSourceError extends Error {
-  readonly code = "link_unsupported_source";
-
+export class LinkUnsupportedSourceError extends ExpectedDomainFailureError<"link_unsupported_source"> {
   constructor() {
-    super("This link source is not supported.");
+		super({
+			code: "link_unsupported_source",
+			kind: projectFailureCatalog.link_unsupported_source,
+			message: "This link source is not supported.",
+		});
     this.name = "LinkUnsupportedSourceError";
 	}
 }
 
-export class ProjectAccessDeniedError extends Error {
-	readonly code = "project_access_denied";
-
+export class ProjectAccessDeniedError extends ExpectedDomainFailureError<"project_access_denied"> {
 	constructor() {
-		super("You don't have access to this project.");
+		super({
+			code: "project_access_denied",
+			kind: projectFailureCatalog.project_access_denied,
+			message: "You don't have access to this project.",
+		});
 		this.name = "ProjectAccessDeniedError";
 	}
 }
 
-export class ProjectHasActiveWorkflowError extends Error {
-	readonly code = "project_has_active_workflow";
-
+export class ProjectHasActiveWorkflowError extends ExpectedDomainFailureError<"project_has_active_workflow"> {
 	constructor() {
-		super(
-			"This project has a run in progress. Wait for it to finish, then try deleting again.",
-		);
+		super({
+			code: "project_has_active_workflow",
+			kind: projectFailureCatalog.project_has_active_workflow,
+			message:
+				"This project has a run in progress. Wait for it to finish, then try deleting again.",
+		});
 		this.name = "ProjectHasActiveWorkflowError";
 	}
 }
 
-export class ProjectHasActivePublicationError extends Error {
-	readonly code = "project_has_active_publication";
-
+export class ProjectHasActivePublicationError extends ExpectedDomainFailureError<"project_has_active_publication"> {
 	constructor() {
-		super(
-			"This project has a live or uncertain social publication. Resolve it before deleting the project.",
-		);
+		super({
+			code: "project_has_active_publication",
+			kind: projectFailureCatalog.project_has_active_publication,
+			message:
+				"This project has a live or uncertain social publication. Resolve it before deleting the project.",
+		});
 		this.name = "ProjectHasActivePublicationError";
 	}
 }
 
-export class ProjectDeletionIncompleteError extends Error {
-	readonly code = "project_deletion_incomplete";
-
-	constructor(public readonly failedKeyCount: number) {
-		super(
-			"Some of this project's files couldn't be removed from storage. Please try deleting again.",
-		);
+export class ProjectDeletionIncompleteError extends ExpectedDomainFailureError<
+	"project_deletion_incomplete",
+	{ failedKeyCount: number }
+> {
+	constructor(failedKeyCount: number) {
+		super({
+			code: "project_deletion_incomplete",
+			kind: projectFailureCatalog.project_deletion_incomplete,
+			message:
+				"Some of this project's files couldn't be removed from storage. Please try deleting again.",
+			details: { failedKeyCount },
+		});
 		this.name = "ProjectDeletionIncompleteError";
 	}
 }
@@ -1709,11 +1775,17 @@ export class ProjectService {
 		const transcript = await this.getTranscriptSnapshot(userId, projectId);
 
 		if (!transcript) {
-			throw new Error("transcript not found");
+			throw new ProjectServiceError(
+				"transcript_not_found",
+				"Transcript not found.",
+			);
 		}
 
 		if (transcript.status !== "completed") {
-			throw new Error("transcript is not ready");
+			throw new ProjectServiceError(
+				"transcript_not_ready",
+				"The transcript is not ready.",
+			);
 		}
 
 		const slug = (transcript.languageCode ?? "transcript").replace(
@@ -1752,7 +1824,12 @@ export class ProjectService {
 			where: { id: workspaceId },
 			select: { pricingTier: true },
 		});
-		if (!workspace) throw new Error("Workspace not found");
+		if (!workspace) {
+			throw new ProjectServiceError(
+				"workspace_not_found",
+				"Workspace not found.",
+			);
+		}
 		return resolvePricingTier(workspace.pricingTier);
 	}
 
@@ -1861,17 +1938,23 @@ export class ProjectService {
 		);
 
 		if (!idempotencyKey) {
-			throw new Error("idempotency key is required");
+			throw new ProjectServiceError(
+				"idempotency_key_required",
+				"An idempotency key is required.",
+			);
 		}
 
 		if (!hasDatabase()) {
 			const project = projects.get(projectId);
 			if (!project || project.userId !== userId) {
-				throw new Error("project not found");
+				throw new ProjectNotFoundError();
 			}
 
 			if (project.ingestStatus !== "ready") {
-				throw new Error("project ingest is not ready");
+				throw new ProjectServiceError(
+					"project_ingest_not_ready",
+					"Project ingest is not ready.",
+				);
 			}
 		} else {
 			const prisma = this.requirePrisma();
@@ -1895,11 +1978,14 @@ export class ProjectService {
 			});
 
 			if (!project) {
-				throw new Error("project not found");
+				throw new ProjectNotFoundError();
 			}
 
 			if (project.ingestStatus !== "ready") {
-				throw new Error("project ingest is not ready");
+				throw new ProjectServiceError(
+					"project_ingest_not_ready",
+					"Project ingest is not ready.",
+				);
 			}
 
 			if (!parsed.forceRegenerate) {
@@ -2018,7 +2104,7 @@ export class ProjectService {
 			});
 			if (existing) {
 				if (existing.workspaceId !== ownership.workspaceId) {
-					throw new Error("project not found");
+					throw new ProjectNotFoundError();
 				}
 				return {
 					project: toProjectSnapshot(existing),
@@ -2250,7 +2336,12 @@ export class ProjectService {
 		);
 		const episodes = parsed.episodeIds.map((episodeId) => {
 			const episode = episodesById.get(episodeId);
-			if (!episode) throw new Error("rss_episode_not_found");
+			if (!episode) {
+				throw new ProjectServiceError(
+					"rss_episode_not_found",
+					"RSS episode not found.",
+				);
+			}
 			return episode;
 		});
 
@@ -2299,10 +2390,16 @@ export class ProjectService {
 		} = {},
 	) {
 		if (input.episodes.length < 1 || input.episodes.length > 10) {
-			throw new Error("rss_episode_count_invalid");
+			throw new ProjectServiceError(
+				"rss_episode_count_invalid",
+				"Select exactly one RSS episode.",
+			);
 		}
 		if (input.commitToken && input.episodes.length !== 1) {
-			throw new Error("rss_commit_token_requires_single_episode");
+			throw new ProjectServiceError(
+				"rss_commit_token_requires_single_episode",
+				"The RSS commit token requires one episode.",
+			);
 		}
 
 		const prisma = this.requirePrisma();
@@ -2330,10 +2427,15 @@ export class ProjectService {
 			});
 			if (existing) {
 				if (existing.workspaceId !== ownership.workspaceId) {
-					throw new Error("project not found");
+					throw new ProjectNotFoundError();
 				}
 				const queuedJobId = existing.ingestJobs[0]?.id;
-				if (!queuedJobId) throw new Error("rss_ingest_job_missing");
+				if (!queuedJobId) {
+					throw new ProjectServiceError(
+						"rss_ingest_job_missing",
+						"The RSS ingest job is unavailable.",
+					);
+				}
 				return {
 					count: 1,
 					projects: [{ project: toProjectSnapshot(existing), queuedJobId }],
@@ -2349,7 +2451,10 @@ export class ProjectService {
 			},
 		});
 		if (activeRssIngests >= MAX_CONCURRENT_RSS_INGESTS_PER_WORKSPACE) {
-			throw new Error("rss_concurrent_ingest_limit_reached");
+			throw new ProjectServiceError(
+				"rss_concurrent_ingest_limit_reached",
+				"Too many RSS episodes are already being ingested.",
+			);
 		}
 
 		const requestedSeconds = input.episodes.reduce(
@@ -2501,7 +2606,12 @@ export class ProjectService {
 						});
 						if (winner && winner.workspaceId === ownership.workspaceId) {
 							const queuedJobId = winner.ingestJobs[0]?.id;
-							if (!queuedJobId) throw new Error("rss_ingest_job_missing");
+							if (!queuedJobId) {
+								throw new ProjectServiceError(
+									"rss_ingest_job_missing",
+									"The RSS ingest job is unavailable.",
+								);
+							}
 							createdProjects.push({
 								project: toProjectSnapshot(winner),
 								queuedJobId,
@@ -2670,7 +2780,10 @@ export class ProjectService {
 		const job = await prisma.ingestJob.findUnique({ where: { id: jobId } });
 
 		if (!job) {
-			throw new Error("ingest job not found");
+			throw new ProjectServiceError(
+				"ingest_job_not_found",
+				"Ingest job not found.",
+			);
 		}
 
 		await prisma.$transaction(async (tx) => {
@@ -2736,7 +2849,10 @@ export class ProjectService {
 		const job = await prisma.ingestJob.findUnique({ where: { id: jobId } });
 
 		if (!job) {
-			throw new Error("ingest job not found");
+			throw new ProjectServiceError(
+				"ingest_job_not_found",
+				"Ingest job not found.",
+			);
 		}
 
 		const decision = decideAutoRetry(
@@ -2859,7 +2975,7 @@ export class ProjectService {
 		});
 
 		if (!project) {
-			throw new Error("project not found");
+			throw new ProjectNotFoundError();
 		}
 
 		if (project.ingestStatus !== "failed") {
@@ -2875,7 +2991,10 @@ export class ProjectService {
 		]);
 
 		if (!lastJob) {
-			throw new Error("no prior ingest job found to retry");
+			throw new ProjectServiceError(
+				"ingest_retry_source_not_found",
+				"No prior ingest job was found to retry.",
+			);
 		}
 
 		if (attemptCount >= MAX_INGEST_RETRY_ATTEMPTS) {
@@ -2931,7 +3050,10 @@ export class ProjectService {
 		const job = await prisma.ingestJob.findUnique({ where: { id: jobId } });
 
 		if (!job) {
-			throw new Error("ingest job not found");
+			throw new ProjectServiceError(
+				"ingest_job_not_found",
+				"Ingest job not found.",
+			);
 		}
 
 		const projectUpdate = await prisma.project.updateMany({
@@ -3009,7 +3131,7 @@ export class ProjectService {
 		});
 
 		if (!project) {
-			throw new Error("project not found");
+			throw new ProjectNotFoundError();
 		}
 
 		let brandSnapshotData:
@@ -3160,7 +3282,7 @@ export class ProjectService {
 			select: { id: true, workspaceId: true, ingestStatus: true },
 		});
 		if (!project) {
-			throw new Error("project not found");
+			throw new ProjectNotFoundError();
 		}
 
 		const existingRun = await prisma.workflowRun.findFirst({
@@ -3297,7 +3419,7 @@ export class ProjectService {
 			where: { id: projectId, userId },
 			select: { id: true },
 		});
-		if (!project) throw new Error("project not found");
+		if (!project) throw new ProjectNotFoundError();
 
 		const existingRun = await prisma.workflowRun.findFirst({
 			where: { projectId },
@@ -3386,7 +3508,7 @@ export class ProjectService {
 			data: { notifyOnComplete },
 		});
 		if (updated.count === 0) {
-			throw new Error("project not found");
+			throw new ProjectNotFoundError();
 		}
 	}
 

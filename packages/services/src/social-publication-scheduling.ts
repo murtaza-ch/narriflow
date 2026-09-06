@@ -109,17 +109,6 @@ export interface PublicationSchedulingStore {
 	}): Promise<void>;
 }
 
-export class PublicationIntentConflictError extends ExpectedDomainFailureError<"publication_intent_conflict"> {
-	constructor() {
-		super({
-			code: "publication_intent_conflict",
-			kind: "conflict",
-			message: "The idempotency key is already bound to a different publication intent",
-		});
-		this.name = "PublicationIntentConflictError";
-	}
-}
-
 const publicationIntentFailureCatalog = {
 	clip_not_found: "missing",
 	editor_revision_conflict: "conflict",
@@ -128,6 +117,7 @@ const publicationIntentFailureCatalog = {
 	publication_already_started: "conflict",
 	publication_export_mismatch: "conflict",
 	publication_export_variant_missing: "missing",
+	publication_intent_conflict: "conflict",
 	publication_intent_active: "conflict",
 	publication_intent_incomplete: "unprocessable",
 	publication_media_preparation_failed: "unavailable",
@@ -139,7 +129,22 @@ const publicationIntentFailureCatalog = {
 	social_provider_publishing_disabled: "unavailable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
-type PublicationIntentStateErrorCode = keyof typeof publicationIntentFailureCatalog;
+export class PublicationIntentConflictError extends ExpectedDomainFailureError<"publication_intent_conflict"> {
+	constructor() {
+		super({
+			code: "publication_intent_conflict",
+			kind: publicationIntentFailureCatalog.publication_intent_conflict,
+			message:
+				"The idempotency key is already bound to a different publication intent",
+		});
+		this.name = "PublicationIntentConflictError";
+	}
+}
+
+type PublicationIntentStateErrorCode = Exclude<
+	keyof typeof publicationIntentFailureCatalog,
+	"publication_intent_conflict"
+>;
 
 export class PublicationIntentStateError extends ExpectedDomainFailureError<PublicationIntentStateErrorCode> {
 	constructor(

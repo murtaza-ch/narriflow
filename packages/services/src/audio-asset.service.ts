@@ -39,12 +39,21 @@ function log(
 }
 
 const audioAssetFailureCatalog = {
+	audio_asset_key_forbidden: "forbidden",
   audio_asset_not_found: "missing",
   audio_asset_presign_failed: "unavailable",
   audio_asset_duplicate: "conflict",
+	audio_asset_storage_unavailable: "unavailable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type AudioAssetFailureCode = keyof typeof audioAssetFailureCatalog;
+
+export class AudioAssetError extends ExpectedDomainFailureError<AudioAssetFailureCode> {
+  constructor(code: AudioAssetFailureCode, message: string) {
+    super({ code, kind: audioAssetFailureCatalog[code], message });
+    this.name = "AudioAssetError";
+  }
+}
 
 /** L3: thrown by `deleteUserAsset` when the id doesn't resolve to a live row
  *  the caller owns — lets the route map this to a clean 404 instead of the
@@ -206,7 +215,10 @@ export class AudioAssetService {
   ): Promise<{ key: string; uploadUrl: string; contentType: string }> {
     const parsed = presignAudioUploadSchema.parse(input);
     if (!isR2Configured()) {
-      throw new Error("R2 configuration is missing");
+      throw new AudioAssetError(
+        "audio_asset_storage_unavailable",
+        "Audio asset storage is temporarily unavailable",
+      );
     }
 
     const ext = extensionForAudioContentType(parsed.contentType);
@@ -228,7 +240,10 @@ export class AudioAssetService {
       ? parsed.key.startsWith(workspaceAudioAssetUploadPrefix(context.workspaceId))
       : isOwnedAudioUploadKey(userId, parsed.key);
     if (!owned) {
-      throw new Error("upload key is not owned by this user");
+      throw new AudioAssetError(
+        "audio_asset_key_forbidden",
+        "The audio upload does not belong to this Workspace",
+      );
     }
 
     const prisma = this.requirePrisma();

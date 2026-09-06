@@ -55,6 +55,9 @@ export const workspaceOperationFailureCatalog = {
 	workspace_collaboration_disabled: "forbidden",
 	workspace_invites_require_business: "payment_required",
 	workspace_admin_invite_owner_required: "forbidden",
+	workspace_access_denied: "forbidden",
+	workspace_avatar_invalid: "invalid",
+	workspace_avatar_storage_mismatch: "forbidden",
 	workspace_invite_email_invalid: "invalid",
 	workspace_member_already_exists: "conflict",
 	workspace_invite_unavailable: "unavailable",
@@ -62,10 +65,12 @@ export const workspaceOperationFailureCatalog = {
 	workspace_api_name_required: "invalid",
 	workspace_api_scope_invalid: "invalid",
 	workspace_paid_members_unavailable: "unavailable",
+	workspace_personal_not_initialized: "missing",
 	workspace_billing_action_required: "payment_required",
 	workspace_invite_invalid: "invalid",
 	workspace_invite_email_mismatch: "forbidden",
 	workspace_members_unavailable: "unavailable",
+	workspace_storage_unavailable: "unavailable",
 	workspace_admin_promotion_owner_required: "forbidden",
 	workspace_member_not_found: "missing",
 	workspace_owner_role_immutable: "conflict",
@@ -276,7 +281,12 @@ export class WorkspaceService {
         },
       },
     });
-    if (!membership) throw new Error("Forbidden");
+    if (!membership) {
+      throw new WorkspaceOperationError(
+        "workspace_access_denied",
+        "You do not have access to this Workspace",
+      );
+    }
 
     const context: WorkspaceActorContext = {
       userId,
@@ -288,7 +298,12 @@ export class WorkspaceService {
       pricingTier: membership.workspace.pricingTier,
 			isPersonalWorkspace: membership.workspace.personalOwnerUserId !== null,
     };
-    if (!workspaceAllowsCapability(context, capability)) throw new Error("Forbidden");
+    if (!workspaceAllowsCapability(context, capability)) {
+      throw new WorkspaceOperationError(
+        "workspace_access_denied",
+        "You do not have permission to perform this Workspace action",
+      );
+    }
     return context;
   }
 
@@ -297,7 +312,12 @@ export class WorkspaceService {
       where: { personalOwnerUserId: userId },
       select: { id: true },
     });
-    if (!workspace) throw new Error("Personal workspace not initialized");
+    if (!workspace) {
+      throw new WorkspaceOperationError(
+        "workspace_personal_not_initialized",
+        "Personal Workspace not initialized",
+      );
+    }
     return workspace.id;
   }
 
@@ -373,9 +393,17 @@ export class WorkspaceService {
     };
     const extension = types[input.contentType];
     if (!extension || !Number.isInteger(input.sizeBytes) || input.sizeBytes < 1 || input.sizeBytes > 5 * 1024 * 1024) {
-      throw new Error("Use a JPG, PNG, or WebP image up to 5 MB");
+      throw new WorkspaceOperationError(
+        "workspace_avatar_invalid",
+        "Use a JPG, PNG, or WebP image up to 5 MB",
+      );
     }
-    if (!isR2Configured()) throw new Error("R2 configuration is missing");
+    if (!isR2Configured()) {
+      throw new WorkspaceOperationError(
+        "workspace_storage_unavailable",
+        "Workspace storage is temporarily unavailable",
+      );
+    }
     const key = `workspaces/${workspaceId}/avatar/${randomUUID()}.${extension}`;
     const uploadUrl = await presignSingleUploadUrl({
       key,
@@ -391,7 +419,10 @@ export class WorkspaceService {
   ) {
     await this.requireActor(userId, workspaceId, "workspace.manage");
     if (storageKey && !storageKey.startsWith(`workspaces/${workspaceId}/avatar/`)) {
-      throw new Error("Avatar upload does not belong to this workspace");
+      throw new WorkspaceOperationError(
+        "workspace_avatar_storage_mismatch",
+        "Avatar upload does not belong to this workspace",
+      );
     }
     await requiredPrisma().workspace.update({
       where: { id: workspaceId },

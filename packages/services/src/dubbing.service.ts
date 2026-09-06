@@ -17,13 +17,39 @@ import {
   getWorkflowRunLifecycle,
 } from "./workflow-run-lifecycle";
 import { decodeClipEditorDocumentFromStorage } from "./clip-editor-document-persistence";
-import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 
+const dubbingFailureCatalog = {
+  clip_not_found: "missing",
+  dub_asset_missing: "missing",
+  dub_not_found: "missing",
+  dub_not_ready: "conflict",
+  dubbing_idempotency_key_required: "invalid",
+  dubbing_render_required: "unprocessable",
+  requires_pro_plan: "payment_required",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type DubbingFailureCode = keyof typeof dubbingFailureCatalog;
+
+export class DubbingFailureError extends ExpectedDomainFailureError<DubbingFailureCode> {
+  constructor(code: DubbingFailureCode, message: string) {
+    super({ code, kind: dubbingFailureCatalog[code], message });
+    this.name = "DubbingFailureError";
+  }
+}
+
 export class DubbingTierError extends ExpectedDomainFailureError<"requires_pro_plan"> {
   constructor() {
-    super({ code: "requires_pro_plan", kind: "payment_required", message: "Dubbing is available on the Pro plan." });
+    super({
+      code: "requires_pro_plan",
+      kind: dubbingFailureCatalog.requires_pro_plan,
+      message: "Dubbing is available on the Pro plan.",
+    });
     this.name = "DubbingTierError";
   }
 }
@@ -121,7 +147,10 @@ export class DubbingService {
     initialSeq: number;
   }> {
     if (!idempotencyKey) {
-      throw new Error("idempotency key is required");
+      throw new DubbingFailureError(
+        "dubbing_idempotency_key_required",
+        "An idempotency key is required.",
+      );
     }
 
     const prisma = requirePrisma();
@@ -148,7 +177,7 @@ export class DubbingService {
     });
 
     if (!clip) {
-      throw new Error("clip not found");
+      throw new DubbingFailureError("clip_not_found", "Clip not found.");
     }
 
     const selectedRender = clip.renders.find(
@@ -158,7 +187,10 @@ export class DubbingService {
         Boolean(render.storageKey),
     );
     if (!selectedRender) {
-      throw new Error("selected clip render is required before dubbing");
+      throw new DubbingFailureError(
+        "dubbing_render_required",
+        "Render the selected clip before dubbing.",
+      );
     }
 
     const model = process.env.OPENAI_TTS_MODEL ?? DEFAULT_TTS_MODEL;
@@ -281,15 +313,18 @@ export class DubbingService {
     });
 
     if (!dub) {
-      throw new Error("dub not found");
+      throw new DubbingFailureError("dub_not_found", "Dub not found.");
     }
     if (dub.status !== "completed") {
-      throw new Error("dub is not ready");
+      throw new DubbingFailureError("dub_not_ready", "The dub is not ready.");
     }
 
     const key = asset === "audio" ? dub.audioStorageKey : dub.renderStorageKey;
     if (!key) {
-      throw new Error(`${asset} asset is missing`);
+      throw new DubbingFailureError(
+        "dub_asset_missing",
+        `The ${asset} asset is missing.`,
+      );
     }
 
     const aspectRatio = aspectRatioFromDb(dub.aspectRatio);

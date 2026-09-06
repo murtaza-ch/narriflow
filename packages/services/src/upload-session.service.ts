@@ -600,6 +600,7 @@ export type FinalizeUploadSessionOutcome =
     };
 
 const uploadSessionFailureCatalog = {
+	quota_exceeded: "payment_required",
   upload_session_idempotency_conflict: "conflict",
   upload_session_not_found: "missing",
   upload_session_invalid_state: "conflict",
@@ -3093,7 +3094,7 @@ export class UploadSessionQuotaRefusedError extends ExpectedDomainFailureError<"
   ) {
     super({
       code: "quota_exceeded",
-      kind: "payment_required",
+      kind: uploadSessionFailureCatalog.quota_exceeded,
       message: `Monthly processing limit reached on the ${details.tier} plan (${details.limitMinutes} min/mo; ${details.usedMinutes} min used). Upgrade the workspace to keep generating.`,
       details,
     });

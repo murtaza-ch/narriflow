@@ -66,6 +66,7 @@ const visualAssetIntegrityFailureCatalog = {
   scene_visual_asset_invalid: "unprocessable",
   scene_visual_asset_range_invalid: "unprocessable",
   visual_asset_fingerprint_mismatch: "unprocessable",
+	visual_asset_in_use: "conflict",
   visual_asset_key_forbidden: "forbidden",
   visual_asset_kind_mismatch: "unprocessable",
   visual_asset_mime_mismatch: "unprocessable",
@@ -75,6 +76,7 @@ const visualAssetIntegrityFailureCatalog = {
   visual_asset_probe_failed: "unavailable",
   visual_asset_replacement_invalid: "unprocessable",
   visual_asset_size_mismatch: "unprocessable",
+	visual_asset_storage_unavailable: "unavailable",
   visual_broll_asset_invalid: "unprocessable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
@@ -89,7 +91,12 @@ export class VisualAssetIntegrityError extends ExpectedDomainFailureError<Visual
 
 export class VisualAssetReferenceError extends ExpectedDomainFailureError<"visual_asset_in_use"> {
   constructor() {
-    super({ code: "visual_asset_in_use", kind: "conflict", message: "Remove this asset from every Clip, Brand Profile, and Scene template before deleting it" });
+    super({
+      code: "visual_asset_in_use",
+      kind: visualAssetIntegrityFailureCatalog.visual_asset_in_use,
+      message:
+        "Remove this asset from every Clip, Brand Profile, and Scene template before deleting it",
+    });
     this.name = "VisualAssetReferenceError";
   }
 }
@@ -281,7 +288,9 @@ export class VisualAssetService {
   async presignUpload(scope: BrandActorScope, input: VisualAssetUploadInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = visualAssetUploadSchema.parse(input);
-    if (!isR2Configured()) throw new Error("R2 configuration is missing");
+    if (!isR2Configured()) {
+      throw new VisualAssetIntegrityError("visual_asset_storage_unavailable");
+    }
     const key = `${brandOwnerStoragePrefix(scope, "visual-assets")}${randomUUID()}.${extensionForVisual(parsed.contentType)}`;
     return { key, contentType: parsed.contentType, uploadUrl: await this.storage.presign({ key, contentType: parsed.contentType }) };
   }

@@ -31,9 +31,17 @@ type BrandWorkspaceContext = { workspaceId: string; actorUserId: string };
 const brandTemplateFailureCatalog = {
   brand_template_not_found: "missing",
   brand_template_forbidden: "forbidden",
+	brand_template_storage_unavailable: "unavailable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type BrandTemplateFailureCode = keyof typeof brandTemplateFailureCatalog;
+
+export class BrandTemplateError extends ExpectedDomainFailureError<BrandTemplateFailureCode> {
+  constructor(code: BrandTemplateFailureCode, message: string) {
+    super({ code, kind: brandTemplateFailureCatalog[code], message });
+    this.name = "BrandTemplateError";
+  }
+}
 
 function ownedTemplateWhere(userId: string, context?: BrandWorkspaceContext) {
   return context ? { workspaceId: context.workspaceId } : { userId };
@@ -432,7 +440,10 @@ export class BrandTemplateService {
   async presignLogoUpload(userId: string, input: PresignBrandLogoInput, context?: BrandWorkspaceContext) {
     const parsed = presignBrandLogoSchema.parse(input);
     if (!isR2Configured()) {
-      throw new Error("R2 configuration is missing");
+      throw new BrandTemplateError(
+        "brand_template_storage_unavailable",
+        "Brand template storage is temporarily unavailable",
+      );
     }
     const ext = parsed.contentType === "image/svg+xml"
       ? "svg"

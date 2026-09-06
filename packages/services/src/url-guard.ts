@@ -11,27 +11,31 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 
-export class UnsafeUrlError extends ExpectedDomainFailureError<"remote_url_unsafe"> {
-  constructor(public readonly reason: string) {
-    super({ code: "remote_url_unsafe", kind: "invalid", message: "The remote URL is not allowed" });
-    this.name = "UnsafeUrlError";
-  }
-}
-
-export type RemoteFetchErrorCode =
-  | "remote_download_failed"
-  | "remote_fetch_timeout"
-  | "remote_redirect_invalid"
-  | "remote_redirect_limit"
-  | "remote_response_too_large";
-
 const remoteFetchFailureCatalog = {
   remote_download_failed: "unavailable",
   remote_fetch_timeout: "unavailable",
   remote_redirect_invalid: "invalid",
   remote_redirect_limit: "invalid",
   remote_response_too_large: "unprocessable",
-} as const satisfies ExpectedDomainFailureCatalog<RemoteFetchErrorCode>;
+  remote_url_unsafe: "invalid",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type RemoteFetchErrorCode = keyof typeof remoteFetchFailureCatalog;
+
+export class UnsafeUrlError extends ExpectedDomainFailureError<
+  "remote_url_unsafe",
+  { reason: string }
+> {
+  constructor(reason: string) {
+    super({
+      code: "remote_url_unsafe",
+      kind: remoteFetchFailureCatalog.remote_url_unsafe,
+      message: "The remote URL is not allowed",
+      details: { reason },
+    });
+    this.name = "UnsafeUrlError";
+  }
+}
 
 export class RemoteFetchError extends ExpectedDomainFailureError<RemoteFetchErrorCode> {
   constructor(code: RemoteFetchErrorCode) {

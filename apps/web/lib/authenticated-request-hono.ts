@@ -241,9 +241,19 @@ export const authenticatedRequestHonoMiddleware =
   createAuthenticatedRequestHonoMiddleware();
 
 export function authenticatedRequestHonoErrorHandler(
-  error: Error,
+  _error: Error,
   c: Context,
 ): Response {
-  if (!isExpectedDomainFailure(error)) console.error(error);
+  const path = routePath(c);
+  if (isIndependentTrustHonoSurface(c.req.method, path)) {
+    console.warn(
+      JSON.stringify({
+        level: "error",
+        message: "independent_trust_hono_failure",
+        method: c.req.method,
+        path,
+      }),
+    );
+  }
   return c.text("Internal Server Error", 500);
 }

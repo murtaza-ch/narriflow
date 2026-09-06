@@ -7,8 +7,13 @@ import {
   ClipEditorRevisionConflictError,
 } from "./clip-editor-document-persistence";
 import { ContentSuiteError } from "./content-suite.service";
+import { DubbingFailureError } from "./dubbing.service";
 import { GeneratedMediaJobError } from "./generated-media";
-import { QuotaExceededError } from "./project.service";
+import {
+	ProjectNotFoundError,
+	ProjectServiceError,
+	QuotaExceededError,
+} from "./project.service";
 import { ReviewServiceError } from "./review.service";
 import { SocialServiceError } from "./social.service";
 import { WorkspaceOperationError } from "./workspace.service";
@@ -25,6 +30,15 @@ describe("typed domain failure catalogs", () => {
 		[new AutopilotError("autopilot_rule_not_found"), "missing"],
 		[new AutopilotError("autopilot_rule_limit_reached"), "conflict"],
 		[new SocialServiceError("social_post_not_found"), "missing"],
+		[new ProjectNotFoundError(), "missing"],
+		[
+			new ProjectServiceError(
+				"project_ingest_not_ready",
+				"Project ingest is not ready.",
+			),
+			"conflict",
+		],
+		[new DubbingFailureError("dub_not_found", "Dub not found."), "missing"],
 		[
 			new WorkspaceOperationError(
 				"workspace_api_requires_business",

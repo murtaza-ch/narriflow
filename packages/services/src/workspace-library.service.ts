@@ -3,7 +3,27 @@ import type { ClipAspectRatio, ClipExportStatus, SocialPlatform, SocialPostStatu
 import type { SocialPostSnapshot } from "@narriflow/validators";
 
 import { accessibleProjectWhere } from "./project-access";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 import { workspaceService } from "./workspace.service";
+
+const workspaceLibraryFailureCatalog = {
+  workspace_folder_name_invalid: "invalid",
+  workspace_folder_not_found: "missing",
+  workspace_library_project_not_found: "missing",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type WorkspaceLibraryFailureCode =
+  keyof typeof workspaceLibraryFailureCatalog;
+
+export class WorkspaceLibraryError extends ExpectedDomainFailureError<WorkspaceLibraryFailureCode> {
+  constructor(code: WorkspaceLibraryFailureCode, message: string) {
+    super({ code, kind: workspaceLibraryFailureCatalog[code], message });
+    this.name = "WorkspaceLibraryError";
+  }
+}
 
 function requiredPrisma() {
   const prisma = getPrismaClient();
@@ -18,7 +38,10 @@ function normalizedFolderName(name: string) {
 function validFolderName(name: string) {
   const trimmed = name.trim();
   if (trimmed.length < 1 || trimmed.length > 80) {
-    throw new Error("Folder names must be between 1 and 80 characters");
+    throw new WorkspaceLibraryError(
+      "workspace_folder_name_invalid",
+      "Folder names must be between 1 and 80 characters",
+    );
   }
   return trimmed;
 }
@@ -121,7 +144,12 @@ export class WorkspaceLibraryService {
       where: { id: folderId, workspaceId },
       data: { name: safeName, normalizedName: normalizedFolderName(safeName) },
     });
-    if (updated.count === 0) throw new Error("Folder not found");
+    if (updated.count === 0) {
+      throw new WorkspaceLibraryError(
+        "workspace_folder_not_found",
+        "Folder not found",
+      );
+    }
   }
 
   async deleteFolder(userId: string, workspaceId: string, folderId: string) {
@@ -132,7 +160,12 @@ export class WorkspaceLibraryService {
         where: { id: folderId, workspaceId },
         select: { id: true },
       });
-      if (!folder) throw new Error("Folder not found");
+      if (!folder) {
+        throw new WorkspaceLibraryError(
+          "workspace_folder_not_found",
+          "Folder not found",
+        );
+      }
       await tx.project.updateMany({ where: { workspaceId, folderId }, data: { folderId: null } });
       await tx.workspaceFolder.delete({ where: { id: folderId } });
     });
@@ -148,13 +181,23 @@ export class WorkspaceLibraryService {
     const prisma = requiredPrisma();
     if (folderId) {
       const folder = await prisma.workspaceFolder.findFirst({ where: { id: folderId, workspaceId } });
-      if (!folder) throw new Error("Folder not found");
+      if (!folder) {
+        throw new WorkspaceLibraryError(
+          "workspace_folder_not_found",
+          "Folder not found",
+        );
+      }
     }
     const updated = await prisma.project.updateMany({
       where: { id: projectId, workspaceId, ...accessibleProjectWhere() },
       data: { folderId, updatedByUserId: userId },
     });
-    if (updated.count === 0) throw new Error("Project not found");
+    if (updated.count === 0) {
+      throw new WorkspaceLibraryError(
+        "workspace_library_project_not_found",
+        "Project not found",
+      );
+    }
   }
 
   async listExports(

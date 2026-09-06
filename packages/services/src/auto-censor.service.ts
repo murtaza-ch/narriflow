@@ -10,18 +10,31 @@ import {
 } from "@narriflow/validators";
 import type { BrandActorScope } from "./brand-ownership";
 import { analyticsService } from "./analytics.service";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 import { hasFeature } from "./plan-features";
 import { isProgramWriteEnabled } from "./program-rollout";
 
-export class AutoCensorAccessError extends Error {
-  readonly code: "auto_censor_forbidden" | "auto_censor_entitlement_required";
+const autoCensorFailureCatalog = {
+  auto_censor_entitlement_required: "payment_required",
+  auto_censor_forbidden: "forbidden",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
 
-  constructor(code: AutoCensorAccessError["code"]) {
-    super(code === "auto_censor_forbidden"
-      ? "Auto Censor editing is not allowed"
-      : "This plan does not include Auto Censor");
+export type AutoCensorFailureCode = keyof typeof autoCensorFailureCatalog;
+
+export class AutoCensorAccessError extends ExpectedDomainFailureError<AutoCensorFailureCode> {
+  constructor(code: AutoCensorFailureCode) {
+    super({
+      code,
+      kind: autoCensorFailureCatalog[code],
+      message:
+        code === "auto_censor_forbidden"
+          ? "Auto Censor editing is not allowed"
+          : "This plan does not include Auto Censor",
+    });
     this.name = "AutoCensorAccessError";
-    this.code = code;
   }
 }
 

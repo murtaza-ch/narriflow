@@ -68,24 +68,59 @@ describe("authenticated request Hono middleware", () => {
     });
   });
 
-  test("translates typed domain failures at the middleware seam", async () => {
+  test.each([
+    ["invalid", 400],
+    ["unprocessable", 422],
+    ["forbidden", 403],
+    ["payment_required", 402],
+    ["missing", 404],
+    ["conflict", 409],
+    ["rate_limited", 429],
+    ["unavailable", 503],
+  ] as const)(
+    "translates the %s domain kind at the middleware seam",
+    async (kind, status) => {
+      const response = await testApp(() => {
+        throw new ExpectedDomainFailureError({
+          code: `example_${kind}`,
+          kind,
+          message: "Safe domain message.",
+        });
+      }).request("/api/projects");
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get("x-request-id")).toBe("hono-request-id");
+      expect(await response.json()).toEqual({
+        error: `example_${kind}`,
+        message: "Safe domain message.",
+        requestId: "hono-request-id",
+      });
+    },
+  );
+
+  test("bounds details and applies retry guidance through Hono", async () => {
+    const details = Object.fromEntries(
+      Array.from({ length: 20 }, (_, index) => [
+        `field${index}`,
+        index === 0 ? "x".repeat(300) : index,
+      ]),
+    );
     const response = await testApp(() => {
       throw new ExpectedDomainFailureError({
-        code: "resource_missing",
-        kind: "missing",
-        message: "The resource was not found.",
-        details: { lookup: "bounded" },
+        code: "provider_busy",
+        kind: "rate_limited",
+        message: "Try again soon.",
+        details,
+        retryAfterSeconds: 2.1,
       });
     }).request("/api/projects");
 
-    expect(response.status).toBe(404);
-    expect(response.headers.get("x-request-id")).toBe("hono-request-id");
-    expect(await response.json()).toEqual({
-      error: "resource_missing",
-      message: "The resource was not found.",
-      requestId: "hono-request-id",
-      details: { lookup: "bounded" },
-    });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("3");
+    const body = await response.json();
+    expect(body.retryAfterSeconds).toBe(3);
+    expect(Object.keys(body.details)).toHaveLength(16);
+    expect(body.details.field0).toHaveLength(240);
   });
 
   test("redacts unknown exceptions and keeps the diagnostic request ID", async () => {

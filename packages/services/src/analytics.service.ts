@@ -9,6 +9,24 @@ import {
   type RecordAnalyticsEventInput,
   type SocialPlatform,
 } from "@narriflow/validators";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
+
+const analyticsFailureCatalog = {
+  analytics_clip_not_found: "missing",
+  analytics_project_not_found: "missing",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type AnalyticsFailureCode = keyof typeof analyticsFailureCatalog;
+
+export class AnalyticsServiceError extends ExpectedDomainFailureError<AnalyticsFailureCode> {
+  constructor(code: AnalyticsFailureCode, message: string) {
+    super({ code, kind: analyticsFailureCatalog[code], message });
+    this.name = "AnalyticsServiceError";
+  }
+}
 
 function requirePrisma() {
   const prisma = getPrismaClient();
@@ -95,7 +113,10 @@ export class AnalyticsService {
       select: { id: true },
     });
     if (!project) {
-      throw new Error("project not found");
+      throw new AnalyticsServiceError(
+        "analytics_project_not_found",
+        "Project not found.",
+      );
     }
 
     if (parsed.clipId) {
@@ -104,7 +125,10 @@ export class AnalyticsService {
         select: { id: true },
       });
       if (!clip) {
-        throw new Error("clip not found");
+        throw new AnalyticsServiceError(
+          "analytics_clip_not_found",
+          "Clip not found.",
+        );
       }
     }
 
@@ -127,7 +151,10 @@ export class AnalyticsService {
       select: { id: true },
     });
     if (!project) {
-      throw new Error("project not found");
+      throw new AnalyticsServiceError(
+        "analytics_project_not_found",
+        "Project not found.",
+      );
     }
 
     const grouped = await prisma.projectAnalyticsEvent.groupBy({

@@ -462,6 +462,8 @@ const clipActionFailureCatalog = {
   clip_duplicate_failed: "unprocessable",
   clip_has_scheduled_posts: "conflict",
   clip_not_found: "missing",
+	clip_render_not_found: "missing",
+	clip_render_not_ready: "conflict",
   clip_selection_invalid: "unprocessable",
   clip_storage_delete_incomplete: "unavailable",
   clip_title_suggestion_failed: "unavailable",
@@ -469,8 +471,11 @@ const clipActionFailureCatalog = {
   editor_boundaries_invalid: "unprocessable",
   editor_document_empty_timeline: "unprocessable",
   motion_feature_unavailable: "forbidden",
+	no_clips_available: "unprocessable",
   openai_not_configured: "unavailable",
   scene_feature_unavailable: "forbidden",
+	project_not_found: "missing",
+	transcript_not_ready: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type ClipActionFailureCode = keyof typeof clipActionFailureCatalog;
@@ -481,6 +486,8 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
   clip_duplicate_failed: "The clip could not be duplicated",
   clip_has_scheduled_posts: "Cancel scheduled posts before deleting this clip",
   clip_not_found: "Clip not found",
+	clip_render_not_found: "Clip render not found",
+	clip_render_not_ready: "The clip has not been rendered for this aspect ratio",
   clip_selection_invalid: "Choose a valid transcript selection",
   clip_storage_delete_incomplete: "Clip storage cleanup is temporarily unavailable",
   clip_title_suggestion_failed: "Title suggestions are temporarily unavailable",
@@ -488,8 +495,11 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
   editor_boundaries_invalid: "Choose valid clip boundaries",
   editor_document_empty_timeline: "The clip timeline cannot be empty",
   motion_feature_unavailable: "Motion export is available on Creator and above",
+	no_clips_available: "No clips are available for rendering",
   openai_not_configured: "Title suggestions are temporarily unavailable",
   scene_feature_unavailable: "Scene editing is not available on this plan",
+	project_not_found: "Project not found",
+	transcript_not_ready: "The transcript is not ready",
 };
 
 export class ClipActionError extends ExpectedDomainFailureError<ClipActionFailureCode> {
@@ -1974,11 +1984,14 @@ export class ClipService {
     });
 
     if (!project) {
-      throw new Error("project not found");
+      throw new ClipActionError("project_not_found", "Project not found");
     }
 
     if (project.transcript?.status !== "completed") {
-      throw new Error("transcript is not ready");
+      throw new ClipActionError(
+				"transcript_not_ready",
+				"The transcript is not ready",
+			);
     }
 
     // Enforce plan-tier quota + per-upload length cap on this path too (the
@@ -2060,7 +2073,7 @@ export class ClipService {
     });
 
     if (!project) {
-      throw new Error("project not found");
+      throw new ClipActionError("project_not_found", "Project not found");
     }
 
     const whereClause: Prisma.ClipWhereInput = clipIds
@@ -2070,7 +2083,10 @@ export class ClipService {
     const clipsToRender = await prisma.clip.findMany({ where: whereClause });
 
     if (clipsToRender.length === 0) {
-      throw new Error("no clips available for rendering");
+      throw new ClipActionError(
+				"no_clips_available",
+				"No clips are available for rendering",
+			);
     }
 
     const workspaceTier = resolvePricingTier(
@@ -2421,10 +2437,13 @@ export class ClipService {
     }
 
     if (!render) {
-      throw new Error("clip render not found");
+      throw new ClipActionError("clip_render_not_found", "Clip render not found");
     }
 
-    throw new Error("clip has not been rendered for this aspect ratio");
+    throw new ClipActionError(
+			"clip_render_not_ready",
+			"The clip has not been rendered for this aspect ratio",
+		);
   }
 
   /**
@@ -3044,7 +3063,7 @@ export class ClipService {
       select: { autoLayoutAnalysis: true },
     });
     if (!clip) {
-      throw new Error("clip not found");
+      throw new ClipActionError("clip_not_found", "Clip not found");
     }
     return parseClipAutoLayoutAnalysis(clip.autoLayoutAnalysis);
   }
@@ -3060,7 +3079,7 @@ export class ClipService {
       select: { splitLayoutAnalysis: true },
     });
     if (!clip) {
-      throw new Error("clip not found");
+      throw new ClipActionError("clip_not_found", "Clip not found");
     }
     return parseClipSplitLayoutAnalysis(clip.splitLayoutAnalysis);
   }
@@ -3075,7 +3094,7 @@ export class ClipService {
       where: { id: clipId, projectId, project: { userId } },
       select: { splitLayoutAnalysis: true },
     });
-    if (!clip) throw new Error("clip not found");
+    if (!clip) throw new ClipActionError("clip_not_found", "Clip not found");
     return parseClipSplitLayoutOutcome(clip.splitLayoutAnalysis);
   }
 
@@ -3090,7 +3109,7 @@ export class ClipService {
       select: { layoutAnalysis: true },
     });
     if (!clip) {
-      throw new Error("clip not found");
+      throw new ClipActionError("clip_not_found", "Clip not found");
     }
     return parseClipLayoutAnalysis(clip.layoutAnalysis);
   }
@@ -3105,7 +3124,7 @@ export class ClipService {
       where: { id: clipId, projectId, project: { userId } },
       select: { layoutAnalysis: true },
     });
-    if (!clip) throw new Error("clip not found");
+    if (!clip) throw new ClipActionError("clip_not_found", "Clip not found");
     return parseClipLayoutAnalysisOutcome(clip.layoutAnalysis);
   }
 

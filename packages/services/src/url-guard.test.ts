@@ -42,7 +42,7 @@ describe("assertPublicHttpUrl", () => {
       throw new Error("expected URL rejection");
     } catch (error) {
       expect(error).toBeInstanceOf(UnsafeUrlError);
-      expect((error as UnsafeUrlError).reason).toBe(
+      expect((error as UnsafeUrlError).details?.reason).toBe(
         "credentials_not_allowed",
       );
     }
