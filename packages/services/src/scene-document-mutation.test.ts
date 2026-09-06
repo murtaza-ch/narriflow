@@ -83,6 +83,19 @@ function imageScene(id = SCENE_ID, assetId = VISUAL_ASSET_ID): SceneBlock {
   });
 }
 
+function textScene(id = SCENE_ID): SceneBlock {
+  return colorScene(id, {
+    content: {
+      kind: "text",
+      text: "Opening",
+      fontFamily: "Archivo",
+      fontAsset: null,
+      color: "#FFFFFF",
+      backgroundColor: "#000000",
+    },
+  });
+}
+
 describe("analyzeSceneDocumentMutation", () => {
   test("returns no Scene Block work for an unchanged document", () => {
     const current = baseDocument();
@@ -110,6 +123,7 @@ describe("analyzeSceneDocumentMutation", () => {
 
   test.each([
     ["scene_cards", colorScene()],
+    ["scene_cards", textScene()],
     ["scene_images", imageScene()],
     [
       "scene_videos",
@@ -221,18 +235,39 @@ describe("analyzeSceneDocumentMutation", () => {
     ).toEqual([VISUAL_ASSET_ID, SECOND_VISUAL_ASSET_ID]);
   });
 
+  test("returns only the replacement visual asset when a reference changes", () => {
+    enableSceneWrites();
+    const current = {
+      ...baseDocument(),
+      sceneBlocks: [imageScene(SCENE_ID, VISUAL_ASSET_ID)],
+    };
+    const next = {
+      ...current,
+      sceneBlocks: [imageScene(SCENE_ID, SECOND_VISUAL_ASSET_ID)],
+    };
+
+    expect(
+      analyzeSceneDocumentMutation(current, next, "creator")
+        .introducedVisualAssetIds,
+    ).toEqual([SECOND_VISUAL_ASSET_ID]);
+  });
+
+  test("does not introduce a visual asset when its reference is removed", () => {
+    enableSceneWrites();
+    const current = {
+      ...baseDocument(),
+      sceneBlocks: [imageScene(SCENE_ID, VISUAL_ASSET_ID)],
+    };
+
+    expect(
+      analyzeSceneDocumentMutation(current, baseDocument(), "creator")
+        .introducedVisualAssetIds,
+    ).toEqual([]);
+  });
+
   test("treats a changed brand-font reference as newly introduced", () => {
     enableSceneWrites();
-    const currentScene = colorScene(SCENE_ID, {
-      content: {
-        kind: "text",
-        text: "Opening",
-        fontFamily: "Archivo",
-        fontAsset: null,
-        color: "#FFFFFF",
-        backgroundColor: "#000000",
-      },
-    });
+    const currentScene = textScene();
     const nextScene = {
       ...currentScene,
       content: {
