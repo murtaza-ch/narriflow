@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   ReviewNotificationService,
   type ReviewNotificationContext,
@@ -218,4 +218,41 @@ describe("ReviewNotificationService", () => {
     ).toEqual({ retrying: true });
     expect(store.rows.get(row.id)).toMatchObject({ status: "pending", attemptCount: 0, failureCode: null });
   });
+});
+
+for (const settlement of ["sent", "pending", "failed", "context_unavailable"] as const) {
+  test(`review notification reports a lost ${settlement} settlement and continues the batch`, async () => {
+    const store = new MemoryReviewNotificationStore();
+    const row = ledger();
+    const next = ledger();
+    store.seed(row, context(row));
+    store.seed(next, context(next));
+    if (settlement === "context_unavailable") store.contexts.delete(row.id);
+    const sender = service(store, async () => ({ sent: settlement === "sent", retryable: settlement !== "failed", code: "provider_failed" }));
+    const markSent = store.markSent.bind(store);
+    const markFailed = store.markFailed.bind(store);
+    store.markSent = async (...args) => args[0] === row.id ? false : markSent(...args);
+    store.markFailed = async (...args) => args[0] === row.id ? false : markFailed(...args);
+    const warnings = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const summary = await sender.deliverDue(10, "https://app.example.test");
+      expect(summary.claimLost).toBe(1);
+      expect(summary.sent + summary.failed + summary.pending).toBe(1);
+      expect(warnings.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(expect.objectContaining({ message: "review_notification_claim_lost", ledgerId: row.id, reviewRoundId: row.reviewRoundId, kind: "round_sent" }));
+    } finally { warnings.mockRestore(); }
+  });
+}
+
+test("a late review notification failure cannot reverse a replacement's successful settlement", async () => {
+  const store = new MemoryReviewNotificationStore();
+  const row = ledger();
+  store.seed(row, context(row));
+  const replacement = new ReviewNotificationService({ store, now: () => new Date("2026-09-02T10:01:00Z"), mailer: async () => ({ sent: true, id: "current-message" }) });
+  const original = service(store, async () => {
+    await replacement.deliverDue(10, "https://app.example.test");
+    return { sent: false, retryable: false, code: "late_failure" };
+  });
+  expect(await original.deliverDue(10, "https://app.example.test")).toMatchObject({ sent: 0, failed: 0, claimLost: 1 });
+  expect(await replacement.deliverDue(10, "https://app.example.test")).toMatchObject({ scanned: 0 });
+  expect(store.rows.get(row.id)).toMatchObject({ status: "sent", providerMessageId: "current-message", failureCode: null });
 });

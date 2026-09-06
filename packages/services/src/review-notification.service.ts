@@ -87,6 +87,7 @@ export interface ReviewNotificationDeliverySummary {
   pending: number;
   failed: number;
   skipped: number;
+  claimLost: number;
 }
 
 interface ReviewNotificationDependencies {
@@ -237,7 +238,7 @@ export class ReviewNotificationService {
 
   async deliverDue(limit: number, appBaseUrl: string): Promise<ReviewNotificationDeliverySummary> {
     if (!this.enabled()) {
-      return { scanned: 0, claimed: 0, sent: 0, pending: 0, failed: 0, skipped: 0 };
+      return { scanned: 0, claimed: 0, sent: 0, pending: 0, failed: 0, skipped: 0, claimLost: 0 };
     }
     const now = this.now();
     const boundedLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
@@ -249,6 +250,7 @@ export class ReviewNotificationService {
       pending: 0,
       failed: 0,
       skipped: 0,
+      claimLost: 0,
     };
 
     for (const row of candidates) {
@@ -259,7 +261,7 @@ export class ReviewNotificationService {
 
       const context = await this.store.getContext(row.id);
       if (!context) {
-        await this.store.markFailed(
+        const settled = await this.store.markFailed(
           row.id,
           leaseExpiresAt,
           REVIEW_NOTIFICATION_MAX_ATTEMPTS,
@@ -267,7 +269,7 @@ export class ReviewNotificationService {
           true,
           "context_unavailable",
         );
-        summary.failed += 1;
+        summary[this.settlementStatus(row, "failed", settled)] += 1;
         warn("review_notification_context_unavailable", {
           ledgerId: row.id,
           reviewRoundId: row.reviewRoundId,
@@ -291,20 +293,20 @@ export class ReviewNotificationService {
       }
 
       if (outcome.sent) {
-        await this.store.markSent(
+        const settled = await this.store.markSent(
           row.id,
           leaseExpiresAt,
           outcome.id ?? null,
           this.now(),
         );
-        summary.sent += 1;
+        summary[this.settlementStatus(row, "sent", settled)] += 1;
         continue;
       }
 
       const attemptCount = row.attemptCount + 1;
       const terminal = outcome.retryable === false || attemptCount >= REVIEW_NOTIFICATION_MAX_ATTEMPTS;
       const nextAttemptAt = new Date(this.now().getTime() + this.retryDelayMs * attemptCount);
-      await this.store.markFailed(
+      const settled = await this.store.markFailed(
         row.id,
         leaseExpiresAt,
         attemptCount,
@@ -312,7 +314,7 @@ export class ReviewNotificationService {
         terminal,
         outcome.code ?? "provider_failed",
       );
-      summary[terminal ? "failed" : "pending"] += 1;
+      summary[this.settlementStatus(row, terminal ? "failed" : "pending", settled)] += 1;
       warn("review_notification_delivery_failed", {
         ledgerId: row.id,
         reviewRoundId: row.reviewRoundId,
@@ -324,6 +326,21 @@ export class ReviewNotificationService {
     }
 
     return summary;
+  }
+
+  private settlementStatus(
+    row: ReviewNotificationLedgerRow,
+    settlement: "sent" | "failed" | "pending",
+    settled: boolean,
+  ): typeof settlement | "claimLost" {
+    if (settled) return settlement;
+    warn("review_notification_claim_lost", {
+      ledgerId: row.id,
+      reviewRoundId: row.reviewRoundId,
+      kind: row.kind,
+      settlement,
+    });
+    return "claimLost";
   }
 
   async retry(

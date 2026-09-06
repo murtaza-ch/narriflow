@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -168,7 +169,23 @@ function toSnapshot(row: {
   };
 }
 
+class AutopilotClaimLost extends Error {
+  constructor(readonly ruleId: string, readonly phase: string) {
+    super("Autopilot rule ownership was lost");
+    this.name = "AutopilotClaimLost";
+  }
+}
+
+type AutopilotClaim = Readonly<{ ruleId: string; token: string }>;
+
 export class AutopilotService {
+  constructor(private readonly dependencies: {
+    fetchFeed?: typeof fetchRssFeed;
+    now?: () => Date;
+  } = {}) {}
+
+  private now() { return this.dependencies.now?.() ?? new Date(); }
+
   async listRules(
     userId: string,
     workspaceId?: string,
@@ -257,59 +274,67 @@ export class AutopilotService {
     const resetFeed = Boolean(feed);
     const futureOnly = mode === "future_only";
     const head = feed?.episodes[0] ?? null;
-    const row = await prisma.autopilotRule.update({
-      where: { id: ruleId },
-      data: {
-        ...(parsed.name !== undefined && { name: parsed.name }),
-        ...(feed && {
-          rssUrl: feed.finalUrl,
-          feedTitle: feed.title,
-          etag: feed.etag,
-          lastModified: feed.lastModified,
-        }),
-        ...(parsed.titlePrefix !== undefined && { titlePrefix: parsed.titlePrefix }),
-        ...(parsed.brandTemplateId !== undefined && {
-          brandTemplateId: parsed.brandTemplateId,
-        }),
-        ...(parsed.languageCode !== undefined && { languageCode: parsed.languageCode }),
-        ...(parsed.contentPack !== undefined && {
-          contentPack: parsed.contentPack as unknown as Prisma.InputJsonValue,
-        }),
-        ...(parsed.intervalMinutes !== undefined && {
-          intervalMinutes: parsed.intervalMinutes,
-          nextRunAt: nextRunFrom(parsed.intervalMinutes),
-        }),
-        ...(parsed.maxEpisodesPerRun !== undefined && {
-          maxEpisodesPerRun: parsed.maxEpisodesPerRun,
-        }),
-        ...(parsed.initialImportMode !== undefined && {
-          initialImportMode: parsed.initialImportMode,
-        }),
-        ...(parsed.initialImportCount !== undefined && {
-          initialImportCount: parsed.initialImportCount,
-        }),
-        ...(resetFeed && {
-          initializedAt: futureOnly ? now : null,
-          lastSeenEpisodeId: futureOnly ? head?.id ?? null : null,
-          lastSeenPublishedAt:
-            futureOnly && head?.publishedAt ? new Date(head.publishedAt) : null,
-          nextRunAt: futureOnly
-            ? nextRunFrom(parsed.intervalMinutes ?? existing.intervalMinutes)
-            : now,
-          consecutiveFailures: 0,
-          lastError: null,
-        }),
-        ...(parsed.status !== undefined && {
-          status: parsed.status,
-          leaseExpiresAt: null,
-          lastError: null,
-          consecutiveFailures: 0,
-          nextRunAt:
-            parsed.status === "active" ? now : nextRunFrom(24 * 60),
-        }),
-        ...(context && { updatedByUserId: context.actorUserId }),
-      },
-      include: { _count: { select: { episodes: true } } },
+    const row = await prisma.$transaction(async (tx) => {
+      // Revoke against the current row: a worker may claim after the initial read.
+      const current = await tx.autopilotRule.update({
+        where: { id: ruleId },
+        data: { claimToken: null, leaseExpiresAt: null },
+        select: { status: true },
+      });
+      return tx.autopilotRule.update({
+        where: { id: ruleId },
+        data: {
+          ...(current.status === "running" && { status: "active", nextRunAt: now }),
+          ...(parsed.name !== undefined && { name: parsed.name }),
+          ...(feed && {
+            rssUrl: feed.finalUrl,
+            feedTitle: feed.title,
+            etag: feed.etag,
+            lastModified: feed.lastModified,
+          }),
+          ...(parsed.titlePrefix !== undefined && { titlePrefix: parsed.titlePrefix }),
+          ...(parsed.brandTemplateId !== undefined && {
+            brandTemplateId: parsed.brandTemplateId,
+          }),
+          ...(parsed.languageCode !== undefined && { languageCode: parsed.languageCode }),
+          ...(parsed.contentPack !== undefined && {
+            contentPack: parsed.contentPack as unknown as Prisma.InputJsonValue,
+          }),
+          ...(parsed.intervalMinutes !== undefined && {
+            intervalMinutes: parsed.intervalMinutes,
+            nextRunAt: nextRunFrom(parsed.intervalMinutes),
+          }),
+          ...(parsed.maxEpisodesPerRun !== undefined && {
+            maxEpisodesPerRun: parsed.maxEpisodesPerRun,
+          }),
+          ...(parsed.initialImportMode !== undefined && {
+            initialImportMode: parsed.initialImportMode,
+          }),
+          ...(parsed.initialImportCount !== undefined && {
+            initialImportCount: parsed.initialImportCount,
+          }),
+          ...(resetFeed && {
+            initializedAt: futureOnly ? now : null,
+            lastSeenEpisodeId: futureOnly ? head?.id ?? null : null,
+            lastSeenPublishedAt:
+              futureOnly && head?.publishedAt ? new Date(head.publishedAt) : null,
+            nextRunAt: futureOnly
+              ? nextRunFrom(parsed.intervalMinutes ?? existing.intervalMinutes)
+              : now,
+            consecutiveFailures: 0,
+            lastError: null,
+          }),
+          ...(parsed.status !== undefined && {
+            status: parsed.status,
+            lastError: null,
+            consecutiveFailures: 0,
+            nextRunAt:
+              parsed.status === "active" ? now : nextRunFrom(24 * 60),
+          }),
+          ...(context && { updatedByUserId: context.actorUserId }),
+        },
+        include: { _count: { select: { episodes: true } } },
+      });
     });
     return toSnapshot(row);
   }
@@ -351,6 +376,7 @@ export class AutopilotService {
       data: {
         status: "active",
         nextRunAt: new Date(),
+        claimToken: null,
         leaseExpiresAt: null,
         lastError: null,
         consecutiveFailures: 0,
@@ -367,6 +393,7 @@ export class AutopilotService {
       where: { status: "running", leaseExpiresAt: { lte: now } },
       data: {
         status: "active",
+        claimToken: null,
         leaseExpiresAt: null,
         nextRunAt: now,
         lastError: "Previous Autopilot worker stopped before completing the run; retrying.",
@@ -375,9 +402,9 @@ export class AutopilotService {
     return result.count;
   }
 
-  async processDueRules(limit = 3): Promise<{ checked: number; imported: number }> {
+  async processDueRules(limit = 3): Promise<{ checked: number; imported: number; claimLost: number }> {
     const prisma = requirePrisma();
-    const now = new Date();
+    const now = this.now();
     await this.reapStalledRules(now);
     const due = await prisma.autopilotRule.findMany({
       where: {
@@ -392,7 +419,9 @@ export class AutopilotService {
 
     let checked = 0;
     let imported = 0;
+    let claimLost = 0;
     for (const rule of due) {
+      const claim = Object.freeze({ ruleId: rule.id, token: randomUUID() });
       const claimed = await prisma.autopilotRule.updateMany({
         where: {
           id: rule.id,
@@ -401,7 +430,8 @@ export class AutopilotService {
         },
         data: {
           status: "running",
-          leaseExpiresAt: new Date(Date.now() + AUTOPILOT_LEASE_MS),
+          claimToken: claim.token,
+          leaseExpiresAt: new Date(this.now().getTime() + AUTOPILOT_LEASE_MS),
           lastError: null,
         },
       });
@@ -409,26 +439,36 @@ export class AutopilotService {
 
       checked += 1;
       try {
-        const result = await this.processRule(rule.id);
+        const result = await this.processRule(claim);
         imported += result.imported;
       } catch (error) {
+        if (error instanceof AutopilotClaimLost) {
+          this.reportClaimLost(error);
+          claimLost += 1;
+          continue;
+        }
         const failures = rule.consecutiveFailures + 1;
         const permanent = isPermanentFeedError(error);
         const terminal = permanent || failures >= AUTOPILOT_MAX_CONSECUTIVE_FAILURES;
         const retryAt = new Date(
-          Date.now() + autopilotRetryDelayMs(failures, rule.intervalMinutes),
+          this.now().getTime() + autopilotRetryDelayMs(failures, rule.intervalMinutes),
         );
-        await prisma.autopilotRule.update({
-          where: { id: rule.id },
-          data: {
+        try {
+          await this.updateClaim(claim, "failure", {
             status: terminal ? "failed" : "active",
+            claimToken: null,
             leaseExpiresAt: null,
             consecutiveFailures: failures,
             lastError: error instanceof Error ? error.message : "Autopilot failed",
-            lastCheckedAt: new Date(),
+            lastCheckedAt: this.now(),
             nextRunAt: retryAt,
-          },
-        });
+          });
+        } catch (settlementError) {
+          if (!(settlementError instanceof AutopilotClaimLost)) throw settlementError;
+          this.reportClaimLost(settlementError);
+          claimLost += 1;
+          continue;
+        }
         console.warn(
           JSON.stringify({
             level: terminal ? "error" : "warn",
@@ -445,31 +485,46 @@ export class AutopilotService {
         );
       }
     }
-    return { checked, imported };
+    return { checked, imported, claimLost };
   }
 
-  private async processRule(ruleId: string): Promise<{ imported: number }> {
-    const prisma = requirePrisma();
-    const rule = await prisma.autopilotRule.findUnique({ where: { id: ruleId } });
-    if (!rule) throw new AutopilotError("autopilot_rule_not_found");
+  private claimWhere(claim: AutopilotClaim) {
+    return { id: claim.ruleId, status: "running" as const, claimToken: claim.token, leaseExpiresAt: { gt: this.now() } };
+  }
 
-    const feed = await fetchRssFeed(rule.rssUrl, {
+  private async updateClaim(claim: AutopilotClaim, phase: string, data: Prisma.AutopilotRuleUpdateManyMutationInput) {
+    const updated = await requirePrisma().autopilotRule.updateMany({ where: this.claimWhere(claim), data });
+    if (updated.count !== 1) throw new AutopilotClaimLost(claim.ruleId, phase);
+  }
+
+  private renewClaim(claim: AutopilotClaim) {
+    return this.updateClaim(claim, "renewal", { leaseExpiresAt: new Date(this.now().getTime() + AUTOPILOT_LEASE_MS) });
+  }
+
+  private reportClaimLost(error: AutopilotClaimLost) {
+    console.warn(JSON.stringify({ level: "warn", message: "autopilot_claim_lost", ruleId: error.ruleId, phase: error.phase }));
+  }
+
+  private async processRule(claim: AutopilotClaim): Promise<{ imported: number }> {
+    const prisma = requirePrisma();
+    const rule = await prisma.autopilotRule.findFirst({ where: this.claimWhere(claim) });
+    if (!rule) throw new AutopilotClaimLost(claim.ruleId, "read");
+
+    const feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(rule.rssUrl, {
       etag: rule.initializedAt ? rule.etag : null,
       lastModified: rule.initializedAt ? rule.lastModified : null,
     });
-    const now = new Date();
+    const now = this.now();
     if (feed.notModified) {
-      await prisma.autopilotRule.update({
-        where: { id: rule.id },
-        data: {
-          status: "active",
-          leaseExpiresAt: null,
-          lastCheckedAt: now,
-          lastSuccessAt: now,
-          nextRunAt: nextRunFrom(rule.intervalMinutes, now.getTime()),
-          lastError: null,
-          consecutiveFailures: 0,
-        },
+      await this.updateClaim(claim, "not_modified", {
+        status: "active",
+        claimToken: null,
+        leaseExpiresAt: null,
+        lastCheckedAt: now,
+        lastSuccessAt: now,
+        nextRunAt: nextRunFrom(rule.intervalMinutes, now.getTime()),
+        lastError: null,
+        consecutiveFailures: 0,
       });
       return { imported: 0 };
     }
@@ -487,6 +542,7 @@ export class AutopilotService {
 
     let imported = 0;
     for (const episode of selection.episodes) {
+      await this.renewClaim(claim);
       const result = await projectService.importResolvedRssEpisodes(
         rule.userId,
         {
@@ -506,30 +562,28 @@ export class AutopilotService {
 
     const head = feed.episodes[0] ?? null;
     const initialize = !rule.initializedAt || selection.shouldAdvanceCursor;
-    await prisma.autopilotRule.update({
-      where: { id: rule.id },
-      data: {
-        status: "active",
-        leaseExpiresAt: null,
-        initializedAt: rule.initializedAt ?? now,
-        ...(initialize && {
-          lastSeenEpisodeId: head?.id ?? rule.lastSeenEpisodeId,
-          lastSeenPublishedAt: head?.publishedAt
-            ? new Date(head.publishedAt)
-            : rule.lastSeenPublishedAt,
-        }),
-        // A backlog larger than maxEpisodesPerRun must force another full
-        // response. Saving the new validators early would yield 304 and strand
-        // the remaining unseen episodes behind the old cursor.
-        etag: selection.shouldAdvanceCursor ? feed.etag : null,
-        lastModified: selection.shouldAdvanceCursor ? feed.lastModified : null,
-        feedTitle: feed.title,
-        lastCheckedAt: now,
-        lastSuccessAt: now,
-        nextRunAt: nextRunFrom(rule.intervalMinutes, now.getTime()),
-        lastError: null,
-        consecutiveFailures: 0,
-      },
+    await this.updateClaim(claim, "success", {
+      status: "active",
+      claimToken: null,
+      leaseExpiresAt: null,
+      initializedAt: rule.initializedAt ?? now,
+      ...(initialize && {
+        lastSeenEpisodeId: head?.id ?? rule.lastSeenEpisodeId,
+        lastSeenPublishedAt: head?.publishedAt
+          ? new Date(head.publishedAt)
+          : rule.lastSeenPublishedAt,
+      }),
+      // A backlog larger than maxEpisodesPerRun must force another full
+      // response. Saving the new validators early would yield 304 and strand
+      // the remaining unseen episodes behind the old cursor.
+      etag: selection.shouldAdvanceCursor ? feed.etag : null,
+      lastModified: selection.shouldAdvanceCursor ? feed.lastModified : null,
+      feedTitle: feed.title,
+      lastCheckedAt: now,
+      lastSuccessAt: now,
+      nextRunAt: nextRunFrom(rule.intervalMinutes, now.getTime()),
+      lastError: null,
+      consecutiveFailures: 0,
     });
     return { imported };
   }

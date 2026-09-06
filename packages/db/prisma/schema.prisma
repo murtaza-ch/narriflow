@@ -981,6 +981,7 @@ model AutopilotRule {
   lastSeenPublishedAt DateTime?
   etag                String?
   lastModified        String?
+  claimToken          String?                    @db.Uuid
   leaseExpiresAt      DateTime?
   consecutiveFailures Int                        @default(0)
   status              AutopilotStatus            @default(active)

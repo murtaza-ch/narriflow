@@ -131,11 +131,13 @@ export interface ResendPendingNotificationsResult {
   pending: number;
   failed: number;
   skipped: number;
+  claimLost: number;
 }
 
 export interface EnqueueNotificationResult {
   ledgerId?: string;
   status:
+    | "claim_lost"
     | "sent"
     | "pending"
     | "claimed"
@@ -508,6 +510,7 @@ export class NotificationService {
       pending: 0,
       failed: 0,
       skipped: 0,
+      claimLost: 0,
     };
 
     for (const ledger of candidates) {
@@ -536,8 +539,9 @@ export class NotificationService {
             outcome: ledger.outcome,
           });
         }
-        await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
-        summary.skipped += 1;
+        const settled = await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
+        const status = this.settlementStatus(ledger, "skipped", settled);
+        summary[status === "claim_lost" ? "claimLost" : "skipped"] += 1;
         continue;
       }
 
@@ -548,8 +552,9 @@ export class NotificationService {
           sourceId: ledger.sourceId,
           outcome: ledger.outcome,
         });
-        await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
-        summary.skipped += 1;
+        const settled = await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
+        const status = this.settlementStatus(ledger, "skipped", settled);
+        summary[status === "claim_lost" ? "claimLost" : "skipped"] += 1;
         continue;
       }
 
@@ -561,8 +566,9 @@ export class NotificationService {
           sourceId: ledger.sourceId,
           outcome: ledger.outcome,
         });
-        await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
-        summary.skipped += 1;
+        const settled = await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
+        const status = this.settlementStatus(ledger, "skipped", settled);
+        summary[status === "claim_lost" ? "claimLost" : "skipped"] += 1;
         continue;
       }
 
@@ -579,10 +585,28 @@ export class NotificationService {
         result.status === "skipped"
       ) {
         summary[result.status] += 1;
+      } else if (result.status === "claim_lost") {
+        summary.claimLost += 1;
       }
     }
 
     return summary;
+  }
+
+  private settlementStatus(
+    ledger: NotificationLedgerRow,
+    settlement: "sent" | "pending" | "failed" | "skipped",
+    settled: boolean,
+  ): typeof settlement | "claim_lost" {
+    if (settled) return settlement;
+    structuredWarn("notification_claim_lost", {
+      ledgerId: ledger.id,
+      projectId: ledger.projectId,
+      sourceId: ledger.sourceId,
+      outcome: ledger.outcome,
+      settlement,
+    });
+    return "claim_lost";
   }
 
   private async deliverClaimed(input: {
@@ -601,8 +625,8 @@ export class NotificationService {
         sourceId: ledger.sourceId,
         outcome: ledger.outcome,
       });
-      await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
-      return { ledgerId: ledger.id, status: "skipped" };
+      const settled = await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
+      return { ledgerId: ledger.id, status: this.settlementStatus(ledger, "skipped", settled) };
     }
 
     if (!project.primaryEmail) {
@@ -612,8 +636,8 @@ export class NotificationService {
         sourceId: ledger.sourceId,
         outcome: ledger.outcome,
       });
-      await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
-      return { ledgerId: ledger.id, status: "skipped" };
+      const settled = await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
+      return { ledgerId: ledger.id, status: this.settlementStatus(ledger, "skipped", settled) };
     }
 
     if (ledger.outcome === "project_expiring" && !project.emailVerifiedAt) {
@@ -623,8 +647,8 @@ export class NotificationService {
         sourceId: ledger.sourceId,
         outcome: ledger.outcome,
       });
-      await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
-      return { ledgerId: ledger.id, status: "skipped" };
+      const settled = await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
+      return { ledgerId: ledger.id, status: this.settlementStatus(ledger, "skipped", settled) };
     }
 
     if (!this.hasResendApiKey()) {
@@ -634,8 +658,8 @@ export class NotificationService {
         sourceId: ledger.sourceId,
         outcome: ledger.outcome,
       });
-      await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
-      return { ledgerId: ledger.id, status: "skipped" };
+      const settled = await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
+      return { ledgerId: ledger.id, status: this.settlementStatus(ledger, "skipped", settled) };
     }
 
     let result: NotificationMailResult;
@@ -662,18 +686,18 @@ export class NotificationService {
     }
 
     if (result.sent) {
-      await this.store.markSent({
+      const settled = await this.store.markSent({
         id: ledger.id,
         leaseExpiresAt,
         providerMessageId: result.id ?? null,
         sentAt: this.now(),
       });
-      return { ledgerId: ledger.id, status: "sent" };
+      return { ledgerId: ledger.id, status: this.settlementStatus(ledger, "sent", settled) };
     }
 
     const attemptCount = ledger.attemptCount + 1;
     const terminal = attemptCount >= NOTIFICATION_MAX_ATTEMPTS;
-    await this.store.markDeliveryFailure({
+    const settled = await this.store.markDeliveryFailure({
       id: ledger.id,
       leaseExpiresAt,
       attemptCount,
@@ -691,7 +715,7 @@ export class NotificationService {
 
     return {
       ledgerId: ledger.id,
-      status: terminal ? "failed" : "pending",
+      status: this.settlementStatus(ledger, terminal ? "failed" : "pending", settled),
     };
   }
 }

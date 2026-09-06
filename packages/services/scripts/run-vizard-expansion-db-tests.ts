@@ -33,7 +33,7 @@ try {
   } finally {
     client.release();
   }
-  const child = Bun.spawn([process.execPath, "test", "packages/services/src/vizard-expansion.db.test.ts"], {
+  const child = Bun.spawn([process.execPath, "test", "packages/services/src/vizard-expansion.db.test.ts", "packages/services/src/autopilot.db.test.ts"], {
     cwd: root,
     env: {
       ...process.env,
@@ -47,6 +47,7 @@ try {
       NARRIFLOW_WRITES_CAMPAIGN_CREATIVE: "1",
       REVIEW_ACCESS_SECRET: "vizard-expansion-review-delivery-secret-for-tests",
       NARRIFLOW_WRITES_BRAND_PROFILES: "1",
+      NARRIFLOW_WRITES_BRAND_KIT_PROJECTION: "1",
       NARRIFLOW_WRITES_SCENE_TEMPLATES: "1",
       SOCIAL_TOKEN_ENCRYPTION_KEY: "vizard-expansion-test-encryption-key-not-a-secret",
       META_CLIENT_ID: "vizard-meta-client",

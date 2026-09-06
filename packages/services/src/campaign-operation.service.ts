@@ -56,6 +56,8 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 
+const CAMPAIGN_OPERATION_LEASE_MS = 10 * 60_000;
+
 const CAMPAIGN_OPERATION_FAILURES = {
   campaign_brand_profile_stale: "conflict",
   campaign_operation_admission_failed: "unavailable",
@@ -91,6 +93,12 @@ export class CampaignOperationError extends ExpectedDomainFailureError<CampaignO
     super({ code, kind: CAMPAIGN_OPERATION_FAILURES[code], message });
     this.name = "CampaignOperationError";
   }
+}
+
+function assertCampaignClaim(count: number, operationId: string, clipId?: string) {
+  if (count === 1) return;
+  console.warn(JSON.stringify({ level: "warn", message: "campaign_operation_claim_lost", operationId, ...(clipId && { clipId }) }));
+  throw new CampaignOperationError("campaign_operation_claim_lost", "Campaign operation ownership was lost");
 }
 
 function requirePrisma() {
@@ -834,7 +842,7 @@ export class CampaignOperationService {
         data: {
           status: "processing",
           claimToken,
-          leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
+          leaseExpiresAt: new Date(Date.now() + CAMPAIGN_OPERATION_LEASE_MS),
         },
       });
       if (claimed.count !== 1) continue;
@@ -887,12 +895,13 @@ export class CampaignOperationService {
           errorCode = "campaign_clip_stale";
         }
       }
-      await prisma.campaignOperationItem.updateMany({
+      const settled = await prisma.campaignOperationItem.updateMany({
         where: {
           operationId: operation.id,
           requestedClipId: requested.clipId,
           status: "processing",
           claimToken,
+          leaseExpiresAt: { gt: new Date() },
         },
         data: {
           status,
@@ -903,6 +912,7 @@ export class CampaignOperationService {
           leaseExpiresAt: null,
         },
       });
+      assertCampaignClaim(settled.count, operation.id, requested.clipId);
     }
 
     const grouped = await prisma.campaignOperationItem.groupBy({
@@ -976,22 +986,24 @@ export class CampaignOperationService {
       if (completedResult) return { ...completedResult, operationId: replay.id, replayed: true };
       await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", leaseExpiresAt: { lte: new Date() } }, data: { claimToken: null, leaseExpiresAt: null } });
       const claimToken = randomUUID();
-      const claimed = await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken: null }, data: { claimToken, leaseExpiresAt: new Date(Date.now() + 10 * 60_000) } });
+      const claimed = await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken: null }, data: { claimToken, leaseExpiresAt: new Date(Date.now() + CAMPAIGN_OPERATION_LEASE_MS) } });
       if (claimed.count !== 1) throw new CampaignOperationError("campaign_operation_in_progress", "Campaign operation is already in progress");
       const resumableIds = replay.items.filter((item) => item.status === "pending" || item.status === "succeeded").map((item) => item.requestedClipId);
       if (resumableIds.length === 0) throw new CampaignOperationError("campaign_operation_not_retryable", "Campaign operation has no resumable items");
       try {
         const result = await input.execute(resumableIds);
         await prisma.$transaction(async (tx) => {
-          const owned = await tx.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken }, data: { status: resumableIds.length === replay.requestedCount ? "completed" : "partial", workflowRunId: result.workflowRunId, succeededCount: resumableIds.length, ineligibleCount: replay.requestedCount - resumableIds.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
-          if (owned.count !== 1) throw new CampaignOperationError("campaign_operation_claim_lost", "Campaign operation ownership was lost");
+          const owned = await tx.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken, leaseExpiresAt: { gt: new Date() } }, data: { status: resumableIds.length === replay.requestedCount ? "completed" : "partial", workflowRunId: result.workflowRunId, succeededCount: resumableIds.length, ineligibleCount: replay.requestedCount - resumableIds.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
+          assertCampaignClaim(owned.count, replay.id);
           await tx.campaignOperationItem.updateMany({ where: { operationId: replay.id, status: "pending" }, data: { status: "succeeded", result: result as Prisma.InputJsonValue, settledAt: new Date() } });
         });
         return { ...result, operationId: replay.id, replayed: true };
       } catch (error) {
+        if (error instanceof CampaignOperationError && error.code === "campaign_operation_claim_lost") throw error;
         await prisma.$transaction(async (tx) => {
-          const owned = await tx.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken }, data: { status: "failed", failedCount: resumableIds.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
-          if (owned.count === 1) await tx.campaignOperationItem.updateMany({ where: { operationId: replay.id, status: "pending" }, data: { status: "failed", errorCode: "campaign_render_admission_failed", settledAt: new Date() } });
+          const owned = await tx.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken, leaseExpiresAt: { gt: new Date() } }, data: { status: "failed", failedCount: resumableIds.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
+          assertCampaignClaim(owned.count, replay.id);
+          await tx.campaignOperationItem.updateMany({ where: { operationId: replay.id, status: "pending" }, data: { status: "failed", errorCode: "campaign_render_admission_failed", settledAt: new Date() } });
         });
         throw error;
       }
@@ -1013,7 +1025,7 @@ export class CampaignOperationService {
 				pricingTier: input.pricingTier,
         requestedCount: normalizedIds.length,
         claimToken: operationClaimToken,
-        leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
+        leaseExpiresAt: new Date(Date.now() + CAMPAIGN_OPERATION_LEASE_MS),
         items: { create: normalizedIds.map((clipId) => ({ requestedClipId: clipId, clipId: byId.has(clipId) ? clipId : null, expectedEditorRevision: byId.get(clipId)?.editorRevision ?? null, status: byId.has(clipId) ? "pending" : "ineligible", errorCode: byId.has(clipId) ? null : "campaign_clip_not_found" })) },
       } });
     } catch (error) {
@@ -1027,21 +1039,24 @@ export class CampaignOperationService {
     }
     const eligible = normalizedIds.filter((clipId) => byId.has(clipId));
     if (eligible.length === 0) {
-      await prisma.campaignOperation.update({ where: { id: operation.id }, data: { status: "failed", ineligibleCount: normalizedIds.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
+      const owned = await prisma.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { status: "failed", ineligibleCount: normalizedIds.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
+      assertCampaignClaim(owned.count, operation.id);
       throw new CampaignOperationError("campaign_operation_no_eligible_items", "No selected clips are eligible");
     }
     try {
       const result = await input.execute(eligible);
       await prisma.$transaction(async (tx) => {
-        const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken }, data: { status: eligible.length === normalizedIds.length ? "completed" : "partial", workflowRunId: result.workflowRunId, succeededCount: eligible.length, ineligibleCount: normalizedIds.length - eligible.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
-        if (owned.count !== 1) throw new CampaignOperationError("campaign_operation_claim_lost", "Campaign operation ownership was lost");
+        const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { status: eligible.length === normalizedIds.length ? "completed" : "partial", workflowRunId: result.workflowRunId, succeededCount: eligible.length, ineligibleCount: normalizedIds.length - eligible.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
+        assertCampaignClaim(owned.count, operation.id);
         await tx.campaignOperationItem.updateMany({ where: { operationId: operation.id, status: "pending" }, data: { status: "succeeded", result: result as Prisma.InputJsonValue, settledAt: new Date() } });
       });
       return { ...result, operationId: operation.id, replayed: false };
     } catch (error) {
+      if (error instanceof CampaignOperationError && error.code === "campaign_operation_claim_lost") throw error;
       await prisma.$transaction(async (tx) => {
-        const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken }, data: { status: "failed", failedCount: eligible.length, ineligibleCount: normalizedIds.length - eligible.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
-        if (owned.count === 1) await tx.campaignOperationItem.updateMany({ where: { operationId: operation.id, status: "pending" }, data: { status: "failed", errorCode: "campaign_render_admission_failed", settledAt: new Date() } });
+        const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { status: "failed", failedCount: eligible.length, ineligibleCount: normalizedIds.length - eligible.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
+        assertCampaignClaim(owned.count, operation.id);
+        await tx.campaignOperationItem.updateMany({ where: { operationId: operation.id, status: "pending" }, data: { status: "failed", errorCode: "campaign_render_admission_failed", settledAt: new Date() } });
       });
       throw error;
     }
@@ -1237,7 +1252,7 @@ export class CampaignOperationService {
     const operationClaimToken = randomUUID();
     if (replay) {
       await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", leaseExpiresAt: { lte: new Date() } }, data: { claimToken: null, leaseExpiresAt: null } });
-      const claimed = await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken: null }, data: { claimToken: operationClaimToken, leaseExpiresAt: new Date(Date.now() + 10 * 60_000) } });
+      const claimed = await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken: null }, data: { claimToken: operationClaimToken, leaseExpiresAt: new Date(Date.now() + CAMPAIGN_OPERATION_LEASE_MS) } });
       if (claimed.count !== 1) throw new CampaignOperationError("campaign_operation_in_progress", "Campaign operation is already in progress");
     }
     const selection = await resolveExportBundleSelection(scope, input);
@@ -1253,7 +1268,7 @@ export class CampaignOperationService {
         retryOfId: scope.retryOfId ?? null,
         status: "running",
         claimToken: operationClaimToken,
-        leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
+        leaseExpiresAt: new Date(Date.now() + CAMPAIGN_OPERATION_LEASE_MS),
         items: { create: input.clips.map((item) => {
           const selected = eligible.find(({ clip }) => clip.id === item.clipId);
           const named = names.find((entry) => entry.clipId === item.clipId);
@@ -1286,7 +1301,8 @@ export class CampaignOperationService {
         code: item.code ?? "export_variant_unavailable",
       }));
     if (included.length === 0) {
-      await prisma.campaignOperation.updateMany({ where: { id: operation.id, claimToken: operationClaimToken }, data: { status: "failed", staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
+      const owned = await prisma.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { status: "failed", staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
+      assertCampaignClaim(owned.count, operation.id);
       throw new CampaignOperationError("export_bundle_empty", "No selected exports are available for this bundle");
     }
     const manifest = exportBundleManifestSchema.parse({ schemaVersion: 1, operationId: operation.id, projectId: scope.projectId, createdAt: operation.createdAt.toISOString(), included, excluded });
@@ -1295,28 +1311,31 @@ export class CampaignOperationService {
       let admitted: { id: string };
       if (this.admitExportBundleWithHandoff) {
         admitted = await this.admitExportBundleWithHandoff(admissionInput, async (tx, run) => {
+          const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { workflowRunId: run.id, staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, claimToken: null, leaseExpiresAt: null } });
+          assertCampaignClaim(owned.count, operation.id);
           await tx.exportBundle.create({ data: { operationId: operation.id, workflowRunId: run.id, manifest: manifest as Prisma.InputJsonValue, expiresAt } });
-          const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken }, data: { workflowRunId: run.id, staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, claimToken: null, leaseExpiresAt: null } });
-          if (owned.count !== 1) throw new CampaignOperationError("campaign_operation_claim_lost", "Campaign operation ownership was lost");
           return null;
         });
       } else {
         admitted = await this.admitExportBundle(admissionInput);
-        await prisma.$transaction([
-          prisma.exportBundle.create({ data: { operationId: operation.id, workflowRunId: admitted.id, manifest: manifest as Prisma.InputJsonValue, expiresAt } }),
-          prisma.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken }, data: { workflowRunId: admitted.id, staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, claimToken: null, leaseExpiresAt: null } }),
-        ]);
+        await prisma.$transaction(async (tx) => {
+          const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { workflowRunId: admitted.id, staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, claimToken: null, leaseExpiresAt: null } });
+          assertCampaignClaim(owned.count, operation.id);
+          await tx.exportBundle.create({ data: { operationId: operation.id, workflowRunId: admitted.id, manifest: manifest as Prisma.InputJsonValue, expiresAt } });
+        });
       }
       return { operationId: operation.id, workflowRunId: admitted.id, manifest, replayed: false };
     } catch (error) {
+      if (error instanceof CampaignOperationError && error.code === "campaign_operation_claim_lost") throw error;
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         const existing = await prisma.exportBundle.findUnique({ where: { operationId: operation.id } });
         if (existing) return { operationId: operation.id, workflowRunId: existing.workflowRunId, manifest: exportBundleManifestSchema.parse(existing.manifest), replayed: true };
       }
-      await prisma.$transaction([
-        prisma.campaignOperationItem.updateMany({ where: { operationId: operation.id, status: "pending" }, data: { status: "failed", errorCode: "export_bundle_admission_failed", settledAt: new Date() } }),
-        prisma.campaignOperation.updateMany({ where: { id: operation.id, claimToken: operationClaimToken }, data: { status: "failed", succeededCount: 0, failedCount: included.length, staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } }),
-      ]).catch(() => undefined);
+      await prisma.$transaction(async (tx) => {
+        const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { status: "failed", succeededCount: 0, failedCount: included.length, staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
+        assertCampaignClaim(owned.count, operation.id);
+        await tx.campaignOperationItem.updateMany({ where: { operationId: operation.id, status: "pending" }, data: { status: "failed", errorCode: "export_bundle_admission_failed", settledAt: new Date() } });
+      });
       throw error;
     }
   }
@@ -1871,7 +1890,7 @@ export class CampaignOperationService {
       const claimToken = randomUUID();
       const claimed = await prisma.campaignOperationItem.updateMany({
         where: { operationId: operation.id, requestedClipId: requested.clipId, status: "pending" },
-        data: { status: "processing", claimToken, leaseExpiresAt: new Date(Date.now() + 10 * 60_000) },
+        data: { status: "processing", claimToken, leaseExpiresAt: new Date(Date.now() + CAMPAIGN_OPERATION_LEASE_MS) },
       });
       if (claimed.count !== 1) continue;
       let status = "failed";
@@ -1942,10 +1961,11 @@ export class CampaignOperationService {
           errorCode = error.code;
         }
       }
-      await prisma.campaignOperationItem.updateMany({
-        where: { operationId: operation.id, requestedClipId: requested.clipId, status: "processing", claimToken },
+      const settled = await prisma.campaignOperationItem.updateMany({
+        where: { operationId: operation.id, requestedClipId: requested.clipId, status: "processing", claimToken, leaseExpiresAt: { gt: new Date() } },
         data: { status, errorCode, result, settledAt: new Date(), claimToken: null, leaseExpiresAt: null },
       });
+      assertCampaignClaim(settled.count, operation.id, requested.clipId);
     }
 
     const grouped = await prisma.campaignOperationItem.groupBy({
@@ -2140,7 +2160,7 @@ export class CampaignOperationService {
         data: {
           status: "processing",
           claimToken,
-          leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
+          leaseExpiresAt: new Date(Date.now() + CAMPAIGN_OPERATION_LEASE_MS),
         },
       });
       if (claimed.count !== 1) continue;
@@ -2190,12 +2210,13 @@ export class CampaignOperationService {
           errorCode = "campaign_clip_stale";
         }
       }
-      await prisma.campaignOperationItem.updateMany({
+      const settled = await prisma.campaignOperationItem.updateMany({
         where: {
           operationId: operation.id,
           requestedClipId: requested.clipId,
           status: "processing",
           claimToken,
+          leaseExpiresAt: { gt: new Date() },
         },
         data: {
           status,
@@ -2206,6 +2227,7 @@ export class CampaignOperationService {
           leaseExpiresAt: null,
         },
       });
+      assertCampaignClaim(settled.count, operation.id, requested.clipId);
     }
 
     const grouped = await prisma.campaignOperationItem.groupBy({

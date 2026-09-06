@@ -1,20 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { getPrismaClient } from "@narriflow/db/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@prisma/client";
+import { Pool } from "pg";
 import { AutopilotService } from "./autopilot.service";
 
 const describeDb =
-  process.env.RUN_RSS_DB_INTEGRATION === "1" ? describe : describe.skip;
+  process.env.ALLOW_VIZARD_EXPANSION_DB_TESTS === "1" ? describe : describe.skip;
 
 describeDb("Autopilot database concurrency and recovery", () => {
-  const prisma = getPrismaClient();
+  let prisma: PrismaClient;
+  let pool: Pool;
+  let priorPrisma: PrismaClient | undefined;
+  const prismaGlobal = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
   const suffix = randomUUID();
   let userId = "";
   let workspaceId = "";
   let ruleId = "";
 
   beforeAll(async () => {
-    if (!prisma) throw new Error("DATABASE_URL is required");
+    const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
+    const schema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;
+    if (!databaseUrl || !schema) throw new Error("Disposable Autopilot test schema is required");
+    pool = new Pool({ connectionString: databaseUrl, max: 4 });
+    prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
+    priorPrisma = prismaGlobal.narriflowPrismaClient;
+    prismaGlobal.narriflowPrismaClient = prisma;
     const user = await prisma.user.create({
       data: { clerkId: `rss-db-test-${suffix}` },
     });
@@ -42,10 +53,12 @@ describeDb("Autopilot database concurrency and recovery", () => {
   });
 
   afterAll(async () => {
+    prismaGlobal.narriflowPrismaClient = priorPrisma;
     if (prisma && userId) {
       await prisma.user.deleteMany({ where: { id: userId } });
-      await prisma.$disconnect();
     }
+    await prisma?.$disconnect();
+    await pool?.end();
   });
 
   test("concurrent admission creates exactly one project for a rule episode", async () => {
@@ -104,6 +117,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
         rssUrl: "https://feeds.example.test/expired.xml",
         contentPack: {},
         status: "running",
+        claimToken: randomUUID(),
         leaseExpiresAt: new Date(Date.now() - 60_000),
       },
     });
@@ -115,6 +129,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
         rssUrl: "https://feeds.example.test/live.xml",
         contentPack: {},
         status: "running",
+        claimToken: randomUUID(),
         leaseExpiresAt: new Date(Date.now() + 60_000),
       },
     });
@@ -126,6 +141,8 @@ describeDb("Autopilot database concurrency and recovery", () => {
     ]);
     expect(expiredAfter.status).toBe("active");
     expect(expiredAfter.leaseExpiresAt).toBeNull();
+    expect(expiredAfter.claimToken).toBeNull();
     expect(liveAfter.status).toBe("running");
+    expect(liveAfter.claimToken).toBe(live.claimToken);
   });
 });

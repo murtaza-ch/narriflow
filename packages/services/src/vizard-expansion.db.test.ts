@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { editorDocumentSchema, applyEditorAction } from "@narriflow/validators";
@@ -14,6 +14,7 @@ import { BrandFontReferenceError, brandFontService } from "./brand-font.service"
 import { clipExportService } from "./clip-export.service";
 import { prismaAssistedCopyStore } from "./assisted-social-copy.service";
 import { createAssistedSocialCopy } from "./assisted-social-copy";
+import { AutopilotService } from "./autopilot.service";
 import { bulkSocialSchedulingService } from "./bulk-social-scheduling.service";
 
 const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
@@ -32,7 +33,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 
   beforeAll(() => {
     if (!databaseUrl) throw new Error("Vizard expansion test database is required");
-    pool = new Pool({ connectionString: databaseUrl, max: 12 });
+    pool = new Pool({ connectionString: databaseUrl, max: 12, options: databaseSchema ? `-csearch_path=${databaseSchema}` : undefined });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
     priorPrisma = prismaGlobal.narriflowPrismaClient;
     prismaGlobal.narriflowPrismaClient = prisma;
@@ -112,6 +113,259 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     }, include: { variants: true } });
     return { user, workspace, project, clip, clipExport };
   }
+
+  for (const outcome of ["success", "not_modified", "failure"] as const) {
+    test(`Autopilot fences a replaced claim after feed ${outcome}`, async () => {
+      const current = await fixture(`autopilot-${outcome}`);
+      const rule = await prisma.autopilotRule.create({ data: {
+        userId: current.user.id, workspaceId: current.workspace.id,
+        name: "Claim fencing", rssUrl: "https://feeds.example.test/private",
+        contentPack: { outputTypes: ["short_clip"], clipCountTarget: 3, clipDurationSecTarget: 30, platformPlaybookVersion: "2026.2" }, nextRunAt: new Date(0),
+      } });
+      const warnings = spyOn(console, "warn").mockImplementation(() => {});
+      const sender = new AutopilotService({ fetchFeed: async () => {
+        // A user pause revokes this owner even before its lease expires.
+        await sender.updateRule(current.user.id, rule.id, { status: "paused" });
+        if (outcome === "failure") throw new Error("feed unavailable");
+        return { title: "Late feed", episodes: [], etag: "late", lastModified: null, finalUrl: rule.rssUrl, notModified: outcome === "not_modified" };
+      } });
+      try {
+        expect(await sender.processDueRules(1)).toMatchObject({ checked: 1, imported: 0, claimLost: 1 });
+        expect((await sender.listRules(current.user.id))[0]).toMatchObject({ status: "paused", consecutiveFailures: 0, lastSuccessAt: null });
+        expect(warnings.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(expect.objectContaining({ message: "autopilot_claim_lost", ruleId: rule.id }));
+      } finally { warnings.mockRestore(); await prisma.autopilotRule.delete({ where: { id: rule.id } }); }
+    });
+  }
+
+  for (const outcome of ["success", "failure"] as const) {
+    for (const loss of ["replaced", "expired"] as const) {
+      test(`Campaign Render selected reports ${loss} claims on ${outcome}`, async () => {
+        const current = await fixture(`render-${loss}-${outcome}`);
+        const request = {
+          actorUserId: current.user.id, workspaceId: current.workspace.id,
+          projectId: current.project.id, pricingTier: "business" as const,
+          idempotencyKey: randomUUID(), clipIds: [current.clip.id], resolution: "1080p" as const,
+          execute: async () => {
+            await prisma.campaignOperation.updateMany({ where: { projectId: current.project.id }, data: loss === "replaced" ? { claimToken: randomUUID() } : { leaseExpiresAt: new Date(0) } });
+            if (outcome === "failure") throw new Error("render admission unavailable");
+            return { workflowRunId: randomUUID(), acceptedAt: new Date().toISOString(), initialSeq: 1, clipCount: 1, variantCount: 1, resolution: "1080p" as const };
+          },
+        };
+        await expect(campaignOperationService.renderSelected(request)).rejects.toMatchObject({ code: "campaign_operation_claim_lost" });
+        const operation = (await campaignOperationService.listOperations({ workspaceId: current.workspace.id, projectId: current.project.id }))[0]!;
+        expect(operation).toMatchObject({ status: "running", failedCount: 0, succeededCount: 0 });
+        expect(operation.items[0]?.status).toBe("pending");
+      });
+    }
+  }
+
+  for (const action of ["motion", "style", "scene"] as const) {
+  test(`Campaign ${action} reports a lost item settlement`, async () => {
+    const current = await fixture(`${action}-claim-lost`);
+    const scope = { actorUserId: current.user.id, workspaceId: current.workspace.id, workspaceOwnerUserId: current.user.id,
+      projectId: current.project.id, pricingTier: "business" as const, role: "owner" as const, status: "active" as const, isPersonalWorkspace: false, idempotencyKey: randomUUID() };
+    const profile = await prisma.brandProfile.create({ data: { workspaceId: current.workspace.id, name: "Claim test", slug: randomUUID(), visualIdentity: {}, voiceGuidance: {}, createdByUserId: current.user.id, updatedByUserId: current.user.id } });
+    await prisma.project.update({ where: { id: current.project.id }, data: { brandProfileId: profile.id } });
+    await prisma.brandTemplate.create({ data: { name: "Claim style", workspaceId: current.workspace.id, captionPreset: {}, profileMembership: { create: { profileId: profile.id } } } });
+    const scene = await sceneTemplateService.create(scope, profile.id, { name: "Claim opener", role: "intro", makeDefault: false, definition: { schemaVersion: 1, durationSec: 3, content: { kind: "text", text: "Opening", fontFamily: "Arial", fontAsset: null, color: "#FFFFFF", backgroundColor: "#111827" }, motion: { entrance: "fade", exit: "fade" } } });
+    const style = (await campaignOperationService.getEditorActionCatalog(scope)).styles[0]!;
+    const warnings = spyOn(console, "warn").mockImplementation(() => {});
+    const extended = prisma.$extends({ query: { campaignOperationItem: {
+      async updateMany({ args, query }) {
+        if (args.where?.status === "processing" && args.where?.claimToken) {
+          await prisma.campaignOperationItem.updateMany({ where: args.where, data: { claimToken: randomUUID() } });
+        }
+        return query(args);
+      },
+    } } });
+    prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+    try {
+      const clips = [{ clipId: current.clip.id, expectedEditorRevision: 2 }];
+      const request = action === "motion"
+        ? campaignOperationService.applyMotionSelected(scope, { clips, change: { scope: "clip_transition", transition: { type: "none", durationSec: 0.4 } } })
+        : action === "style"
+          ? campaignOperationService.applyStyleSelected(scope, { clips, templateId: style.id, templateFingerprint: style.fingerprint })
+          : campaignOperationService.applySceneTemplate(scope, profile.id, scene.id, { clips, placement: "start", templateFingerprint: scene.fingerprint });
+      await expect(request).rejects.toMatchObject({ code: "campaign_operation_claim_lost" });
+      expect(warnings.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(expect.objectContaining({ message: "campaign_operation_claim_lost", clipId: current.clip.id }));
+    } finally { prismaGlobal.narriflowPrismaClient = prisma; warnings.mockRestore(); }
+  });
+  }
+
+  for (const outcome of ["success", "failure"] as const) {
+    test(`Campaign export bundle preserves the replacement owner's items after admission ${outcome}`, async () => {
+      const current = await fixture(`bundle-claim-${outcome}`);
+      const bundles = new CampaignOperationService(async ({ projectId, idempotencyKey, stage }) => {
+        await prisma.campaignOperation.updateMany({ where: { projectId }, data: { claimToken: randomUUID() } });
+        if (outcome === "failure") throw new Error("admission unavailable");
+        return prisma.workflowRun.create({ data: { projectId, idempotencyKey, stage, status: "queued" }, select: { id: true } });
+      });
+      await expect(bundles.createExportBundle({
+        actorUserId: current.user.id, workspaceId: current.workspace.id, projectId: current.project.id,
+        pricingTier: "business", role: "owner", status: "active", idempotencyKey: randomUUID(),
+      }, { clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }], aspectRatios: ["9:16"], resolution: "1080p" })).rejects.toMatchObject({ code: "campaign_operation_claim_lost" });
+      const operation = (await campaignOperationService.listOperations({ workspaceId: current.workspace.id, projectId: current.project.id }))[0]!;
+      expect(operation).toMatchObject({ status: "running", failedCount: 0, workflowRunId: null, bundle: null });
+      expect(operation.items[0]?.status).toBe("pending");
+    });
+  }
+
+  for (const action of ["render", "export"] as const) {
+    test(`Campaign ${action} reports claim loss when settling an empty selection`, async () => {
+      const current = await fixture(`empty-${action}`);
+      const replacement = randomUUID();
+      const extended = prisma.$extends({ query: { campaignOperation: {
+        async create({ args, query }) {
+          const operation = await query(args);
+          await prisma.campaignOperation.update({ where: { id: operation.id }, data: { claimToken: replacement } });
+          return operation;
+        },
+      } } });
+      prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+      const scope = { actorUserId: current.user.id, workspaceId: current.workspace.id, projectId: current.project.id, pricingTier: "business" as const, role: "owner" as const, status: "active" as const, idempotencyKey: randomUUID() };
+      try {
+        const request = action === "render"
+          ? campaignOperationService.renderSelected({ ...scope, clipIds: [randomUUID()], resolution: "1080p", execute: async () => { throw new Error("must not execute"); } })
+          : campaignOperationService.createExportBundle(scope, { clips: [{ clipId: randomUUID(), expectedEditorRevision: 3 }], aspectRatios: ["9:16"], resolution: "1080p" });
+        await expect(request).rejects.toMatchObject({ code: "campaign_operation_claim_lost" });
+        expect((await campaignOperationService.listOperations(scope))[0]).toMatchObject({ status: "running", claimToken: replacement });
+      } finally { prismaGlobal.narriflowPrismaClient = prisma; }
+    });
+  }
+
+  test("Autopilot's immutable token fences a late worker even when replacement lease dates match", async () => {
+    const current = await fixture("autopilot-immutable-token");
+    const now = new Date();
+    const rule = await prisma.autopilotRule.create({ data: {
+      userId: current.user.id, workspaceId: current.workspace.id, name: "Immutable claim", rssUrl: "https://feeds.example.test/show.xml",
+      contentPack: { outputTypes: ["short_clip"], clipCountTarget: 3, clipDurationSecTarget: 30, platformPlaybookVersion: "2026.2" }, nextRunAt: new Date(0),
+    } });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let replacementRun: ReturnType<AutopilotService["processDueRules"]> | undefined;
+    let originalToken: string | null = null;
+    let replacementToken: string | null = null;
+    const replacement = new AutopilotService({ now: () => now, fetchFeed: async () => {
+      replacementToken = (await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).claimToken;
+      entered.resolve();
+      await release.promise;
+      return { title: "Current feed", episodes: [], etag: "current", lastModified: null, finalUrl: rule.rssUrl, notModified: false };
+    } });
+    const original = new AutopilotService({ now: () => now, fetchFeed: async () => {
+      originalToken = (await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).claimToken;
+      await original.updateRule(current.user.id, rule.id, { status: "paused" });
+      await original.updateRule(current.user.id, rule.id, { status: "active" });
+      // Match eligibility to the frozen test clock after the user resumed it.
+      await prisma.autopilotRule.update({ where: { id: rule.id }, data: { nextRunAt: now } });
+      replacementRun = replacement.processDueRules(1);
+      await entered.promise;
+      return { title: "Late feed", episodes: [], etag: "late", lastModified: null, finalUrl: rule.rssUrl, notModified: false };
+    } });
+    try {
+      expect(await original.processDueRules(1)).toEqual({ checked: 1, imported: 0, claimLost: 1 });
+      expect(originalToken).toBeTruthy();
+      expect(replacementToken).toBeTruthy();
+      expect(replacementToken).not.toBe(originalToken);
+      expect((await original.listRules(current.user.id))[0]?.status).toBe("running");
+      release.resolve();
+      expect(await replacementRun).toEqual({ checked: 1, imported: 0, claimLost: 0 });
+      expect((await original.listRules(current.user.id))[0]?.feedTitle).toBe("Current feed");
+    } finally { release.resolve(); await replacementRun; await prisma.autopilotRule.delete({ where: { id: rule.id } }); }
+  });
+
+  for (const expired of [false, true]) {
+    test(`Autopilot ${expired ? "rejects an expired claim before" : "renews the same token before"} episode import`, async () => {
+      const current = await fixture(`autopilot-renew-${expired}`);
+      let now = new Date();
+      const rule = await prisma.autopilotRule.create({ data: {
+        userId: current.user.id, workspaceId: current.workspace.id, name: "Renewal", rssUrl: "https://feeds.example.test/show.xml",
+        initialImportMode: "latest", initialImportCount: 1,
+        contentPack: { outputTypes: ["short_clip"], clipCountTarget: 3, clipDurationSecTarget: 30, platformPlaybookVersion: "2026.2" }, nextRunAt: new Date(0),
+      } });
+      let claimToken: string | null = null;
+      let renewedToken: string | null = null;
+      let renewedUntil: Date | null = null;
+      const sender = new AutopilotService({ now: () => now, fetchFeed: async () => {
+        claimToken = (await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).claimToken;
+        now = new Date(now.getTime() + (expired ? 120_000 : 60_000));
+        return { title: "Feed", episodes: [{ id: "one", title: "Episode one", enclosureUrl: "https://media.example.test/one.mp3", durationSeconds: 60, publishedAt: null, mimeType: "audio/mpeg" }], etag: null, lastModified: null, finalUrl: rule.rssUrl, notModified: false };
+      } });
+      const extended = prisma.$extends({ query: { autopilotRule: { async updateMany({ args, query }) {
+        const result = await query(args);
+        if (result.count === 1 && args.where?.claimToken && args.data.leaseExpiresAt instanceof Date) {
+          const row = await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } });
+          renewedToken = row.claimToken;
+          renewedUntil = row.leaseExpiresAt;
+        }
+        return result;
+      } } } });
+      prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+      try {
+        const result = await sender.processDueRules(1);
+        expect(result.claimLost).toBe(expired ? 1 : 0);
+        expect(result.imported).toBe(expired ? 0 : 1);
+        if (!expired) {
+          expect(renewedToken).toBe(claimToken);
+          expect(renewedUntil).toEqual(new Date(now.getTime() + 120_000));
+        }
+        expect((await sender.listRules(current.user.id))[0]?.importedEpisodeCount).toBe(expired ? 0 : 1);
+      } finally { prismaGlobal.narriflowPrismaClient = prisma; await prisma.autopilotRule.delete({ where: { id: rule.id } }); }
+    });
+  }
+
+  test("an Autopilot edit revokes a claim acquired after the edit's initial read without stranding the rule", async () => {
+    const current = await fixture("autopilot-edit-race");
+    const rule = await prisma.autopilotRule.create({ data: {
+      userId: current.user.id, workspaceId: current.workspace.id, name: "Before edit", rssUrl: "https://feeds.example.test/show.xml",
+      contentPack: { outputTypes: ["short_clip"], clipCountTarget: 3, clipDurationSecTarget: 30, platformPlaybookVersion: "2026.2" }, nextRunAt: new Date(0),
+    } });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let processing: ReturnType<AutopilotService["processDueRules"]> | undefined;
+    let workerNow = new Date();
+    const worker = new AutopilotService({ now: () => workerNow, fetchFeed: async () => {
+      entered.resolve(); await release.promise;
+      return { title: "Feed", episodes: [], etag: null, lastModified: null, finalUrl: rule.rssUrl, notModified: false };
+    } });
+    const extended = prisma.$extends({ query: { autopilotRule: { async findFirst({ args, query }) {
+      const row = await query(args);
+      if (args.where?.userId === current.user.id) {
+        processing = worker.processDueRules(1);
+        await entered.promise;
+      }
+      return row;
+    } } } });
+    prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+    try {
+      const edited = await worker.updateRule(current.user.id, rule.id, { name: "After edit" });
+      expect(edited.status).toBe("active");
+      release.resolve();
+      expect(await processing).toMatchObject({ claimLost: 1 });
+      prismaGlobal.narriflowPrismaClient = prisma;
+      workerNow = new Date(edited.nextRunAt);
+      expect(await worker.processDueRules(1)).toMatchObject({ checked: 1, claimLost: 0 });
+      expect((await worker.listRules(current.user.id))[0]?.name).toBe("After edit");
+    } finally { release.resolve(); await processing; prismaGlobal.narriflowPrismaClient = prisma; await prisma.autopilotRule.delete({ where: { id: rule.id } }); }
+  });
+
+  test("a late atomic export handoff reports claim loss after a replacement has created the bundle", async () => {
+    const current = await fixture("atomic-bundle-late");
+    const scope = { actorUserId: current.user.id, workspaceId: current.workspace.id, projectId: current.project.id, pricingTier: "business" as const, role: "owner" as const, status: "active" as const, idempotencyKey: randomUUID() };
+    const input = { clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }], aspectRatios: ["9:16"], resolution: "1080p" };
+    let replacement: Awaited<ReturnType<CampaignOperationService["createExportBundle"]>> | undefined;
+    const extended = prisma.$extends({ query: { campaignOperation: { async create({ args, query }) {
+      const operation = await query(args);
+      await prisma.campaignOperation.update({ where: { id: operation.id }, data: { leaseExpiresAt: new Date(0) } });
+      replacement = await campaignOperationService.createExportBundle(scope, input);
+      return operation;
+    } } } });
+    prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+    try {
+      await expect(campaignOperationService.createExportBundle(scope, input)).rejects.toMatchObject({ code: "campaign_operation_claim_lost" });
+      expect(await campaignOperationService.listExportBundles(scope)).toMatchObject([{ workflowRunId: replacement!.workflowRunId }]);
+      expect((await campaignOperationService.listOperations(scope))[0]?.items[0]?.status).toBe("pending");
+    } finally { prismaGlobal.narriflowPrismaClient = prisma; }
+  });
 
   test("keeps assisted-copy prompts and content out of analytics metadata", async () => {
     const current = await fixture("assisted-copy-privacy");

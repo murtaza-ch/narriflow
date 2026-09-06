@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   NotificationService,
   type NotificationLedgerRow,
@@ -262,6 +262,7 @@ describe("NotificationService", () => {
       pending: 0,
       failed: 0,
       skipped: 0,
+      claimLost: 0,
     });
     expect(secondPoll.scanned).toBe(0);
     expect(sends).toBe(2);
@@ -447,4 +448,57 @@ describe("NotificationService", () => {
     expect(result.status).toBe("skipped");
     expect(sends).toBe(0);
   });
+});
+
+ test("reports a replaced notification claim instead of sent", async () => {
+  const store = new MemoryNotificationStore();
+  const warnings = spyOn(console, "warn").mockImplementation(() => {});
+  const sender = serviceWith(store, async () => {
+    await store.claim({ id: store.onlyLedger().id, now: new Date(NOW.getTime() + 300_000), leaseExpiresAt: new Date(NOW.getTime() + 600_000) });
+    return { sent: true, id: "late-message" };
+  });
+  try {
+    expect((await sender.enqueueAndSend(input)).status).toBe("claim_lost");
+    expect(warnings.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(expect.objectContaining({ message: "notification_claim_lost", ledgerId: "ledger-1", projectId: "project-1", sourceId: "run-1", outcome: "clips_ready", settlement: "sent" }));
+    expect(store.onlyLedger().status).toBe("claimed");
+  } finally { warnings.mockRestore(); }
+});
+
+for (const scenario of ["sent", "pending", "failed", "recipient", "unverified", "disabled_provider", "missing_project", "disabled_project", "invalid_outcome", "missing_input"] as const) {
+  test(`notification polling reports lost claims during ${scenario} settlement`, async () => {
+    const store = new MemoryNotificationStore();
+    const sender = serviceWith(store, async () => ({ sent: scenario === "sent", error: "provider unavailable" }), scenario !== "disabled_provider");
+    await sender.handoff(input);
+    if (scenario === "failed") store.onlyLedger().attemptCount = 2;
+    if (scenario === "recipient") store.project!.primaryEmail = null;
+    if (scenario === "unverified") {
+      store.onlyLedger().outcome = "project_expiring";
+      store.project!.emailVerifiedAt = null;
+    }
+    if (scenario === "missing_project") store.project = null;
+    if (scenario === "disabled_project") store.project!.notifyOnComplete = false;
+    if (scenario === "invalid_outcome") store.onlyLedger().outcome = "unknown";
+    // Simulate another owner settling just before this owner's compare-and-set.
+    const late = async () => { store.onlyLedger().status = "sent"; return false; };
+    store.markSent = late;
+    store.markSkipped = late;
+    store.markDeliveryFailure = late;
+    const warnings = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await sender.resendPendingNotifications(10, () => scenario === "missing_input" ? null : { deepLink: input.deepLink })).toEqual({ scanned: 1, claimed: 1, sent: 0, pending: 0, failed: 0, skipped: 0, claimLost: 1 });
+      expect(warnings.mock.calls.map(([value]) => JSON.parse(value)).filter((entry) => entry.message === "notification_claim_lost")).toHaveLength(1);
+    } finally { warnings.mockRestore(); }
+  });
+}
+
+test("a late notification failure cannot reverse a replacement's successful settlement", async () => {
+  const store = new MemoryNotificationStore();
+  const replacement = new NotificationService({ store, now: () => new Date(NOW.getTime() + 300_000), hasResendApiKey: () => true, mailer: async () => ({ sent: true, id: "current-message" }) });
+  const original = serviceWith(store, async () => {
+    await replacement.enqueueAndSend(input);
+    return { sent: false, error: "late failure" };
+  });
+  expect((await original.enqueueAndSend(input)).status).toBe("claim_lost");
+  expect((await replacement.enqueueAndSend(input)).status).toBe("sent");
+  expect(store.onlyLedger()).toMatchObject({ status: "sent", attemptCount: 0, providerMessageId: "current-message" });
 });
