@@ -2,6 +2,10 @@
 
 Narriflow turns source media into publishable short-form content through distinct intake and post-ingest processing lifecycles. This glossary fixes the language used for those domain concepts.
 
+## Product language
+
+Navigation and page titles name destinations. Use a page eyebrow only for changing context such as a Workspace, revision, or timezone. Keep a description only when it adds a fact, instruction, or consequence that the title and page body do not already state. User-facing errors explain what happened and how to recover without naming internal modules. Toast titles omit terminal punctuation; toast descriptions use it.
+
 ## Request admission
 
 **Authenticated Request Policy**:

@@ -84,7 +84,7 @@ export default async function ExportsPage({
 
   return (
     <Stack gap="8">
-      <PageHeader eyebrow="Workspace library" title="Exports" description="Every rendered delivery in this workspace, without opening its project first." />
+      <PageHeader title="Exports" />
       <form method="get" style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end",
         }}>
         <Stack gap="1" flex={{ base: "1 1 100%", md: "1 1 220px" }}>

@@ -2,9 +2,10 @@ import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react"
 import type { ReactNode } from "react"
 
 export interface PageHeaderProps {
-  /** Small caps label above the rule — the section's voice. */
+  /** Optional changing context, such as a workspace, revision, or timezone. */
   eyebrow?: string
   title: ReactNode
+  /** A useful fact or consequence that the title and page body do not repeat. */
   description?: ReactNode
   /** Right-aligned action cluster (buttons, menus). */
   actions?: ReactNode
@@ -17,10 +18,11 @@ export interface PageHeaderProps {
 /**
  * PageHeader — the one page-header rhythm in Blueline.
  *
- * Eyebrow above a 1.5px ink rule that draws in from the left (`rule-in`),
- * then title / description with actions right-aligned. Structure is drawn,
- * not boxed. Server-component friendly: pure markup + CSS animation
- * (the global reduced-motion kill-switch covers `rule-in`).
+ * Optional context above a 1.5px ink rule that draws in from the left
+ * (`rule-in`), then the title and any useful description with actions
+ * right-aligned. Structure is drawn, not boxed. Server-component friendly:
+ * pure markup + CSS animation (the global reduced-motion kill-switch covers
+ * `rule-in`).
  */
 export function PageHeader({
   eyebrow,

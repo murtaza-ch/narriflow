@@ -43,9 +43,8 @@ export default function ClipEditLoading() {
         <Bone h="13px" w="60px" />
       </Flex>
 
-      {/* Header: eyebrow + rule + title/meta */}
+      {/* Header: rule, title, dynamic description, and meta. */}
       <Box>
-        <Bone h="10px" w="34px" mb="2" />
         <Box h="1.5px" bg="border.strong" animation="rule-in" />
         <Stack gap="1.5" pt="4">
           <Bone h="30px" w="180px" />

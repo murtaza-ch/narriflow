@@ -33,7 +33,6 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
       <Stack gap="8">
         <Box animation="fade-up" animationFillMode="backwards">
           <PageHeader
-            eyebrow="Settings · Brand templates"
             title={template.name}
             description="Built-in templates are read-only. Duplicate to customize."
             actions={
@@ -51,7 +50,6 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          eyebrow="Settings · Brand templates"
           title={`Edit · ${template.name}`}
           description="Saved changes apply to new projects only. Existing clips keep their current styling."
           actions={

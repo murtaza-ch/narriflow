@@ -215,7 +215,7 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	social_account_reconnect_required:
 		"Reconnect the selected social account before creating a new scheduled post.",
 	publication_capability_version_mismatch:
-		"This post was prepared for an older publishing adapter. Create a new scheduled post.",
+		"This post was prepared with an older publishing setup. Create a new scheduled post.",
 	project_deletion_incomplete:
 		"We couldn't fully remove this project's files. Please try deleting again.",
 	ingest_retries_exhausted:
@@ -261,9 +261,9 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	campaign_motion_target_missing:
 		"This clip has no manual B-roll target. Add B-roll in Studio, then try again.",
 	campaign_motion_document_limit:
-		"This motion would exceed the clip's Editor Document limits. Adjust the clip in Studio first.",
+		"This motion exceeds this clip's editing limits. Adjust the clip in Studio first.",
 	scene_template_document_limit:
-		"This scene would exceed the clip's Editor Document limits. Adjust the clip in Studio first.",
+		"This scene exceeds this clip's editing limits. Adjust the clip in Studio first.",
 	campaign_clip_stale:
 		"This clip changed after selection. Refresh the project before retrying it.",
 	campaign_clip_not_found:

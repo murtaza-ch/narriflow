@@ -35,9 +35,7 @@ export default function HelpPage() {
   return (
     <Stack gap="8" maxW="1020px" mx="auto">
       <PageHeader
-        eyebrow="Learn"
         title="Tutorials &amp; help"
-        description="Find the fastest path from source video to published clips—and connect the tools around your workflow."
       />
       <Grid templateColumns={{ base: "1fr", md: "repeat(3, minmax(0, 1fr))" }} gap={{ base: "7", md: "6" }}>
         {GUIDES.map(({ title, description, href, action, label, icon: Icon }) => (

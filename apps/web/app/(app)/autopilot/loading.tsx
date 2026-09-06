@@ -4,14 +4,12 @@ import { Box, Flex, Skeleton, Stack } from "@chakra-ui/react";
 export default function AutopilotLoading() {
   return (
     <Stack gap="8" maxW="1080px" mx="auto">
-      {/* Page header: eyebrow · rule · title/description · action */}
+      {/* Page header: rule, title, and action. */}
       <Box>
-        <Skeleton variant="shine" height="2.5" width="20" mb="2" />
         <Box h="1.5px" bg="border.strong" />
         <Flex justify="space-between" align="flex-start" gap="4" wrap="wrap" pt="4">
           <Stack gap="1.5" flex="1" minW="0">
             <Skeleton variant="shine" height="9" width="40" />
-            <Skeleton variant="shine" height="4" width="96" maxW="full" />
           </Stack>
           <Skeleton variant="shine" height="10" width="28" borderRadius="l2" />
         </Flex>

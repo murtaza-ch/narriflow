@@ -13,9 +13,8 @@ export default async function NewBrandProfilePage() {
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          eyebrow="Brand system · New"
           title="Build a Brand Profile"
-          description="Start with the identity and voice facts a campaign should never improvise. Styles and media attach after creation."
+          description="Set the identity and voice this profile will apply to new projects. Add styles and media after creation."
           actions={<Button variant="outline" asChild><Link href="/brand-kit">Cancel</Link></Button>}
         />
       </Box>

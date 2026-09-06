@@ -108,7 +108,6 @@ export default async function McpIntegrationPage() {
   return (
     <Stack gap={{ base: "8", md: "10" }} maxW="1120px" mx="auto">
       <PageHeader
-        eyebrow="Integrations / AI clients"
         title="Connect Narriflow to AI assistants"
         description="Give an AI client controlled access to Narriflow projects, usage, and RSS autopilot through the remote Model Context Protocol server."
         actions={

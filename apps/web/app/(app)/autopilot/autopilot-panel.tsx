@@ -346,9 +346,7 @@ export function AutopilotPanel({
     <Stack gap="8" maxW="1080px" mx="auto">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          eyebrow="Automation"
           title="Autopilot"
-          description="Watch RSS feeds and automatically queue new episodes for clipping."
           actions={
             <Button onClick={() => setDialogOpen(true)}>
               <Plus size={15} strokeWidth={2} aria-hidden />

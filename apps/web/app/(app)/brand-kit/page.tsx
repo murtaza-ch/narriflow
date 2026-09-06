@@ -35,9 +35,7 @@ export default async function BrandKitPage() {
     <Stack gap="10">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          eyebrow="Brand system"
           title="Brand Profiles"
-          description="Keep each client’s identity, voice, styles, and reusable media together. Projects freeze the profile they start with."
           actions={canManage ? <Button asChild><Link href="/brand-kit/new">New profile</Link></Button> : undefined}
         />
       </Box>

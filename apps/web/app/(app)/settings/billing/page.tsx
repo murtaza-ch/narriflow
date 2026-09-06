@@ -37,9 +37,7 @@ export default async function BillingPage({
     <Stack gap="8">
       <Box {...reveal(0)}>
         <PageHeader
-          eyebrow="Settings"
           title="Billing & plans"
-          description="Manage your subscription and track your monthly processing usage."
         />
       </Box>
 

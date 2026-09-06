@@ -68,7 +68,6 @@ export default async function IntegrationsPage() {
       <PageHeader
         eyebrow={appUser.workspace.workspaceName}
         title="Integrations"
-        description="Connect Narriflow to AI assistants, publishing destinations, and workspace automation."
       />
 
       <StatBand columns={3}>

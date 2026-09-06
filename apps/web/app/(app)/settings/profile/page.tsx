@@ -9,7 +9,7 @@ export default async function ProfileSettingsPage() {
   const displayName = getDisplayName(appUser.firstName, appUser.lastName);
   return (
     <Stack gap="8">
-      <PageHeader eyebrow="Your account" title="Profile" description="Your personal identity across every Narriflow workspace." />
+      <PageHeader title="Profile" />
       <Box borderTopWidth="1px" borderColor="border" py="6">
         <Flex align="center" gap="4">
           <AccountAvatar

@@ -29,7 +29,7 @@ export default async function WorkspaceSettingsPage() {
       appUser.workspace.status === "active");
   return (
     <Stack gap="8">
-      <PageHeader eyebrow={workspace.name} title="Workspace settings" description="Identity and defaults shared by everyone in this workspace." />
+      <PageHeader eyebrow={workspace.name} title="Workspace settings" />
       <Box borderTopWidth="1px" borderColor="border" py="6">
         <AuthenticatedActionForm action={updateWorkspaceAction}>
           <Stack gap="3" maxW="520px">

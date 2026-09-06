@@ -9,7 +9,6 @@ export default function NewBrandTemplatePage() {
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          eyebrow="Settings · Brand templates"
           title="New brand template"
           description="Configure your captions, logo, and colors. Templates are applied to clips at upload."
           actions={

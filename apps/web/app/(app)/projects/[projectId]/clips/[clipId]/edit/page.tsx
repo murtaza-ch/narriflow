@@ -72,7 +72,6 @@ export default async function ClipEditPage({
         style={{ animationDelay: "60ms" }}
       >
         <PageHeader
-          eyebrow="Clip"
           title="Edit clip"
           description={clip.hookText}
           meta={

@@ -1344,7 +1344,7 @@ export function CampaignCommandBar({
                           <Flex align="center" gap="2" py="3">
                             <Spinner size="xs" />
                             <Text fontSize="xs" color="fg.muted">
-                              Reading the current Editor Documents…
+                              Reading the latest clip edits…
                             </Text>
                           </Flex>
                         ) : null}

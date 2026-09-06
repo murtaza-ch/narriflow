@@ -16,7 +16,7 @@ export default async function UsageSettingsPage() {
   );
   return (
     <Stack gap="8">
-      <PageHeader eyebrow={appUser.workspace.workspaceName} title="Usage history" description="Workspace processing consumption for the current billing month." />
+      <PageHeader eyebrow={appUser.workspace.workspaceName} title="Usage history" />
       <StatBand columns={3}>
         <StatBand.Item label="Plan" value={<Text as="span" textTransform="capitalize">{tier}</Text>} />
         <StatBand.Item label="Minutes used" value={usedMinutes} suffix={<Text textStyle="data" fontSize="13px" color="fg.muted">/ {limit}</Text>} meter={percent} />

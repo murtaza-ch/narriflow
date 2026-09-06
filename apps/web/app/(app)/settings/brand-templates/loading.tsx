@@ -3,9 +3,8 @@ import { Box, Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
 export default function BrandTemplatesLoading() {
   return (
     <Stack gap="8">
-      {/* PageHeader: eyebrow · rule · title/description · action */}
+      {/* PageHeader: rule, title/description, and action. */}
       <Box>
-        <Skeleton variant="shine" height="11px" width="60px" mb="2" />
         <Box h="1.5px" bg="border.strong" />
         <Flex align="flex-start" justify="space-between" gap="4" pt="4">
           <Stack gap="2" flex="1">

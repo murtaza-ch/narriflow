@@ -205,9 +205,8 @@ export default async function CalendarPage({
 		<Stack gap="8">
 			<CalendarLiveRefresh delayMs={liveRefreshDelay} />
 			<PageHeader
-				eyebrow="Publishing"
+				eyebrow={`Timezone · ${timezone}`}
 				title="Calendar"
-				description={`Scheduled and published workspace posts · ${timezone}`}
 				actions={
 					canPublish ? (
 						<Button asChild>

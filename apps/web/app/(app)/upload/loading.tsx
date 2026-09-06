@@ -4,13 +4,11 @@ import { Box, Flex, Skeleton, Stack } from "@chakra-ui/react";
 export default function UploadLoading() {
   return (
     <Stack gap="8" maxW="1080px" mx="auto">
-      {/* PageHeader mirror — eyebrow, 1.5px rule, 30px title line, 14px description */}
+      {/* PageHeader mirror: rule and title. */}
       <Box>
-        <Skeleton variant="shine" height="11px" width="60px" mb="2" />
         <Box h="1.5px" bg="border.strong" animation="rule-in" />
         <Stack gap="1.5" pt="4">
           <Skeleton variant="shine" height="36px" width="240px" />
-          <Skeleton variant="shine" height="20px" width="360px" />
         </Stack>
       </Box>
 

@@ -3,13 +3,11 @@ import { Box, Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
 export default function BillingLoading() {
   return (
     <Stack gap="8">
-      {/* PageHeader: eyebrow · rule · title · description */}
+      {/* PageHeader: rule and title. */}
       <Box>
-        <Skeleton variant="shine" height="11px" width="60px" mb="2" />
         <Box h="1.5px" bg="border.strong" />
         <Stack gap="2" pt="4">
           <Skeleton variant="shine" height="30px" width="220px" />
-          <Skeleton variant="shine" height="14px" width="360px" maxW="full" />
         </Stack>
       </Box>
 

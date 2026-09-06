@@ -20,9 +20,7 @@ export default async function SocialAccountsPage({
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          eyebrow="Settings"
           title="Social accounts"
-          description="Connect native OAuth accounts for scheduled posting to TikTok, YouTube Shorts, Instagram Reels, LinkedIn, and X."
         />
       </Box>
       <Box

@@ -130,6 +130,17 @@ describe("userErrorMessage", () => {
     expect(message).not.toContain("provider");
   });
 
+  test("keeps recovery copy free of internal editing and publishing terms", () => {
+    for (const code of [
+      "publication_capability_version_mismatch",
+      "campaign_motion_document_limit",
+      "scene_template_document_limit",
+    ]) {
+      const message = userErrorMessage(code);
+      expect(message).not.toMatch(/Editor Document|publishing adapter/i);
+    }
+  });
+
   test("returns null for null and undefined", () => {
     expect(userErrorMessage(null)).toBeNull();
     expect(userErrorMessage(undefined)).toBeNull();

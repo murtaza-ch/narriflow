@@ -41,7 +41,6 @@ export default async function BrandKitPage({ searchParams,
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          eyebrow="Workspace"
           title="Brand kit"
           description="Pick a style for new clips. Your default is applied to every project unless you choose a different template at upload."
           actions={canManage && tab === "templates" ? (

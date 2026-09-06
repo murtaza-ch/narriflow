@@ -251,8 +251,8 @@ function WordCorrectInput({
     if (/\s/.test(trimmed)) {
       toaster.create({
         type: "error",
-        title: "One word at a time",
-        description: "One word at a time here — edit the caption text for bigger changes.",
+        title: "Enter one word",
+        description: "Use the caption text editor for bigger changes.",
       });
       return; // Leave the input open so the user can fix it in place.
     }

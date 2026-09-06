@@ -78,9 +78,7 @@ export default function ProjectsPage({
   return (
     <Stack gap="8">
       <PageHeader
-        eyebrow="Library"
         title="Projects"
-        description="Manage imports, queue transcription, and review project progress."
         actions={
           <Suspense fallback={null}>
             <ProjectsHeaderAction />

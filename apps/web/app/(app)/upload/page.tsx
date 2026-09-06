@@ -129,9 +129,7 @@ export default async function UploadPage({
       </Flex>
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          eyebrow="Ingest"
           title="Import or upload"
-          description="Drop a video, paste a video link or RSS feed — and get clips in one click."
         />
       </Box>
       <Box
