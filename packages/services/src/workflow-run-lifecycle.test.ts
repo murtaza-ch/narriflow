@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ClipEditorDocumentPersistenceError } from "./clip-editor-document-persistence";
 import {
   WorkflowFailure,
   workflowFailureFromUnknown,
@@ -20,5 +21,24 @@ describe("Workflow Failure disposition", () => {
       "Provider rejected the request",
     );
     expect(workflowFailureFromUnknown(source)).toBe(source);
+  });
+
+  test("reads typed retryability from bounded domain details", () => {
+    expect(
+      workflowFailureFromUnknown(
+        new ClipEditorDocumentPersistenceError(
+          "editor_document_empty_timeline",
+          "The document has no timeline",
+        ),
+      ).disposition,
+    ).toBe("permanent");
+    expect(
+      workflowFailureFromUnknown(
+        new ClipEditorDocumentPersistenceError(
+          "retryable_contention",
+          "Try again",
+        ),
+      ).disposition,
+    ).toBe("retryable");
   });
 });

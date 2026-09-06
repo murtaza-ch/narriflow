@@ -24,7 +24,10 @@ import {
   presignDownloadUrl,
   presignSingleUploadUrl,
 } from "./r2-storage";
-import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 import { isUniqueConstraintError } from "./generation-sequencing";
 
 function log(
@@ -35,12 +38,21 @@ function log(
   console.warn(JSON.stringify({ level, message, ...context }));
 }
 
+const audioAssetFailureCatalog = {
+  audio_asset_not_found: "missing",
+  audio_asset_presign_failed: "unavailable",
+  audio_asset_duplicate: "conflict",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type AudioAssetFailureCode = keyof typeof audioAssetFailureCatalog;
+
 /** L3: thrown by `deleteUserAsset` when the id doesn't resolve to a live row
  *  the caller owns — lets the route map this to a clean 404 instead of the
  *  generic 400 every other service error gets. */
 export class AudioAssetNotFoundError extends ExpectedDomainFailureError<"audio_asset_not_found"> {
   constructor() {
-    super({ code: "audio_asset_not_found", kind: "missing", message: "Audio asset not found" });
+    const code = "audio_asset_not_found" satisfies AudioAssetFailureCode;
+    super({ code, kind: audioAssetFailureCatalog[code], message: "Audio asset not found" });
     this.name = "AudioAssetNotFoundError";
   }
 }
@@ -50,14 +62,16 @@ export class AudioAssetNotFoundError extends ExpectedDomainFailureError<"audio_a
  * deliberately not exposed because provider messages may contain credentials. */
 export class AudioAssetAccessError extends ExpectedDomainFailureError<"audio_asset_presign_failed"> {
   constructor() {
-    super({ code: "audio_asset_presign_failed", kind: "unavailable", message: "Audio asset access is temporarily unavailable" });
+    const code = "audio_asset_presign_failed" satisfies AudioAssetFailureCode;
+    super({ code, kind: audioAssetFailureCatalog[code], message: "Audio asset access is temporarily unavailable" });
     this.name = "AudioAssetAccessError";
   }
 }
 
 export class AudioAssetDuplicateError extends ExpectedDomainFailureError<"audio_asset_duplicate"> {
   constructor() {
-    super({ code: "audio_asset_duplicate", kind: "conflict", message: "This upload has already been added to your library" });
+    const code = "audio_asset_duplicate" satisfies AudioAssetFailureCode;
+    super({ code, kind: audioAssetFailureCatalog[code], message: "This upload has already been added to your library" });
     this.name = "AudioAssetDuplicateError";
   }
 }

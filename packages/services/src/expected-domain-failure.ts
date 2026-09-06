@@ -56,10 +56,12 @@ function boundedDetail(
   return bounded;
 }
 
-function boundedDetails(
-  details: object | undefined,
+export function boundedExpectedDomainFailureDetails(
+  details: unknown,
 ): ExpectedDomainFailureDetails | undefined {
-  if (!details) return undefined;
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return undefined;
+  }
   return boundedDetail(details, 0) as ExpectedDomainFailureDetails;
 }
 
@@ -93,7 +95,9 @@ export class ExpectedDomainFailureError<
     this.name = "ExpectedDomainFailure";
     this.code = input.code;
     this.kind = input.kind;
-    this.details = boundedDetails(input.details) as TDetails | undefined;
+    this.details = boundedExpectedDomainFailureDetails(input.details) as
+      | TDetails
+      | undefined;
     this.retryAfterSeconds = input.retryAfterSeconds
       ? Math.min(
           MAX_RETRY_AFTER_SECONDS,

@@ -24,8 +24,29 @@ import {
   validateProviderThumbnailAsset,
 } from "./thumbnail-frame-preparation";
 import { workspaceService } from "./workspace.service";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 const socialPublicationScheduling = createProductionSocialPublicationScheduling();
+
+const socialServiceFailureCatalog = {
+  social_post_not_found: "missing",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type SocialServiceFailureCode = keyof typeof socialServiceFailureCatalog;
+
+export class SocialServiceError extends ExpectedDomainFailureError<SocialServiceFailureCode> {
+  constructor(code: SocialServiceFailureCode) {
+    super({
+      code,
+      kind: socialServiceFailureCatalog[code],
+      message: "Social post not found",
+    });
+    this.name = "SocialServiceError";
+  }
+}
 
 function requirePrisma() {
   const prisma = getPrismaClient();
@@ -364,7 +385,7 @@ export class SocialService {
       select: { id: true },
     });
     if (!existing) {
-      throw new Error("social post not found");
+      throw new SocialServiceError("social_post_not_found");
     }
     await socialPublicationScheduling.cancel({
       actorUserId: workspaceContext.actorUserId,
@@ -384,7 +405,7 @@ export class SocialService {
       },
     });
     if (!row) {
-      throw new Error("social post not found");
+      throw new SocialServiceError("social_post_not_found");
     }
 
     return toSocialPostSnapshot(row);
@@ -402,7 +423,7 @@ export class SocialService {
       select: { id: true },
     });
     if (!post) {
-      throw new Error("social post not found");
+      throw new SocialServiceError("social_post_not_found");
     }
 
     return this.recordMetricsForPostId(post.id, input);
@@ -416,7 +437,7 @@ export class SocialService {
       select: { id: true, projectId: true, platform: true },
     });
     if (!post) {
-      throw new Error("social post not found");
+      throw new SocialServiceError("social_post_not_found");
     }
 
     await prisma.socialPostMetric.create({
@@ -463,7 +484,7 @@ export class SocialService {
     });
 
     if (!updated) {
-      throw new Error("social post not found");
+      throw new SocialServiceError("social_post_not_found");
     }
 
     return toSocialPostSnapshot(updated);

@@ -35,7 +35,7 @@ describe("motionDocumentMutationError", () => {
     };
 
     expect(
-      motionDocumentMutationError("free", current, transitioned)?.error,
+      motionDocumentMutationError("free", current, transitioned)?.code,
     ).toBe("motion_feature_unavailable");
     expect(
       motionDocumentMutationError("creator", current, transitioned),
@@ -47,7 +47,7 @@ describe("motionDocumentMutationError", () => {
           ...transitioned.studioEdits,
           transition: { type: "wipe-left", durationSec: 0.4 },
         },
-      })?.error,
+      })?.code,
     ).toBe("motion_feature_unavailable");
   });
 
@@ -80,7 +80,7 @@ describe("motionDocumentMutationError", () => {
     const animated = { ...current, mediaMotions: [motion] };
 
     expect(
-      motionDocumentMutationError("free", current, animated)?.error,
+      motionDocumentMutationError("free", current, animated)?.code,
     ).toBe("motion_feature_unavailable");
     expect(
       motionDocumentMutationError("free", animated, {
@@ -102,8 +102,8 @@ describe("motionDocumentMutationError", () => {
 
     expect(editorDocumentUsesMotion(animated)).toBe(true);
     expect(motionDocumentExportError("free", animated)).toMatchObject({
-      status: 403,
-      error: "motion_feature_unavailable",
+      kind: "forbidden",
+      code: "motion_feature_unavailable",
     });
     expect(motionDocumentExportError("creator", animated)).toBeNull();
   });

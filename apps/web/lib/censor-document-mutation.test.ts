@@ -52,12 +52,12 @@ describe("censorDocumentMutationError", () => {
       ...current,
       censorSegments: [{ ...current.censorSegments[0]!, enabled: false }],
     };
-    expect(censorDocumentMutationError("free", disabled, current)?.error).toBe(
+    expect(censorDocumentMutationError("free", disabled, current)?.code).toBe(
       "censor_feature_unavailable",
     );
     expect(censorDocumentMutationError("free", current, {
       ...current,
       censorSegments: [{ ...current.censorSegments[0]!, paddingSec: 0.1 }],
-    })?.error).toBe("censor_feature_unavailable");
+    })?.code).toBe("censor_feature_unavailable");
   });
 });

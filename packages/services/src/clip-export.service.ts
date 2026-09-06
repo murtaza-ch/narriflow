@@ -42,6 +42,7 @@ function requirePrisma() {
 
 const clipExportFailureCatalog = {
   clip_not_found: "missing",
+  censor_segments_stale: "unprocessable",
   editor_revision_conflict: "conflict",
   export_not_found: "missing",
   export_not_ready: "conflict",
@@ -65,7 +66,7 @@ export class ClipExportError extends ExpectedDomainFailureError<ClipExportFailur
 }
 
 export class ClipExportRevisionConflictError extends ClipExportError {
-  constructor(readonly currentRevision: number) {
+  constructor(currentRevision: number) {
     super("editor_revision_conflict", "The clip changed before export started", {
       currentRevision,
     });

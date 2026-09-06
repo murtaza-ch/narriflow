@@ -11,6 +11,7 @@ import type {
   WorkflowStatus,
 } from "@narriflow/validators";
 import { accessibleProjectWhere } from "./project-access";
+import { isExpectedDomainFailure } from "./expected-domain-failure";
 import {
   isWorkflowRedisDeliveryEnabled,
   publishPersistedWorkflowEvent,
@@ -2794,9 +2795,12 @@ export function workflowFailureFromUnknown(error: unknown): WorkflowFailure {
   const code = typeof candidate.code === "string" ? candidate.code : "workflow_unexpected_error";
   const message =
     typeof candidate.message === "string" ? candidate.message : "Unexpected workflow failure";
+  const retryable = isExpectedDomainFailure(error)
+    ? error.details?.retryable
+    : candidate.retryable;
   return new WorkflowFailure(
     code,
-    candidate.retryable === false ? "permanent" : "retryable",
+    retryable === false ? "permanent" : "retryable",
     message,
     error instanceof Error ? { cause: error } : undefined,
   );

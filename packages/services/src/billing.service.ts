@@ -13,26 +13,12 @@ import {
   type ProviderCheckoutSession,
   type ProviderSubscription,
   type WorkspaceBillingProvider,
-  type WorkspaceBillingErrorCode,
   WorkspaceBillingError,
 } from "./workspace-billing.service";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
-
-export type BillingErrorCode =
-  | WorkspaceBillingErrorCode
-  | "billing_catalog_invalid"
-  | "checkout_collection_unbounded"
-  | "checkout_payment_collection_unbounded"
-  | "customer_collection_unbounded"
-  | "customer_missing"
-  | "invalid_signature"
-  | "provider_call_budget_exhausted"
-  | "stripe_not_configured"
-  | "subscription_pagination_invalid"
-  | "webhook_not_configured";
 
 const billingFailureCatalog = {
   billing_catalog_invalid: "unavailable",
@@ -59,7 +45,9 @@ const billingFailureCatalog = {
   subscription_pagination_invalid: "unavailable",
   webhook_not_configured: "unavailable",
   workspace_not_found: "missing",
-} as const satisfies ExpectedDomainFailureCatalog<BillingErrorCode>;
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type BillingErrorCode = keyof typeof billingFailureCatalog;
 
 const billingSafeMessages: Record<BillingErrorCode, string> = {
   billing_catalog_invalid: "Billing is temporarily unavailable",

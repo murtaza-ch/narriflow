@@ -3,6 +3,7 @@ import { handle } from "hono/vercel";
 import {
   authenticatedHonoActor,
   authenticatedHonoInput,
+  authenticatedRequestHonoErrorHandler,
   authenticatedRequestHonoMiddleware,
 } from "@/lib/authenticated-request-hono";
 import {
@@ -79,8 +80,10 @@ import {
   isPexelsConfigured,
   brandTemplateService,
   clipService,
+  ClipActionError,
   clipEditorDocumentPersistence,
   clipExportService,
+  ClipExportError,
   contentSuiteService,
   dubbingService,
   projectService,
@@ -103,6 +106,8 @@ import {
   brandFontService,
   hasFeature,
   isProgramWriteEnabled,
+  ProgramWriteDisabledError,
+  type ProgramReleaseGroup,
   autoCensorService,
   thumbnailFramePreparationService,
 } from "@narriflow/services";
@@ -125,6 +130,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const app = new Hono().basePath("/api");
+app.onError(authenticatedRequestHonoErrorHandler);
 
 function sceneDocumentMutationError(pricingTier: string, current: EditorDocument, next: EditorDocument) {
   const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
@@ -133,14 +139,30 @@ function sceneDocumentMutationError(pricingTier: string, current: EditorDocument
     JSON.stringify(currentById.get(id)) !== JSON.stringify(nextById.get(id)),
   ));
   if (changed.size === 0) return null;
-  if (!hasFeature(pricingTier, "brand.scenes")) return { status: 403 as const, error: "scene_feature_unavailable", message: "Scene editing is not available on this plan" };
-  const disabled = [...changed].flatMap((id) => [currentById.get(id), nextById.get(id)]).filter((scene): scene is SceneBlock => Boolean(scene)).some((scene) => {
-    if (scene.templateSnapshot && !isProgramWriteEnabled("scene_templates")) return true;
-    if ((scene.content.kind === "text" || scene.content.kind === "color") && !isProgramWriteEnabled("scene_cards")) return true;
-    if (scene.content.kind === "image" && !isProgramWriteEnabled("scene_images")) return true;
-    return scene.content.kind === "video" && !isProgramWriteEnabled("scene_videos");
-  });
-  return disabled ? { status: 503 as const, error: "program_write_disabled", message: "This scene type is temporarily read-only" } : null;
+  if (!hasFeature(pricingTier, "brand.scenes")) {
+    return new ClipActionError(
+      "scene_feature_unavailable",
+      "Scene editing is not available on this plan",
+    );
+  }
+  const disabledGroup = [...changed]
+    .flatMap((id) => [currentById.get(id), nextById.get(id)])
+    .filter((scene): scene is SceneBlock => Boolean(scene))
+    .map(sceneProgramReleaseGroup)
+    .find((group) => group && !isProgramWriteEnabled(group));
+  return disabledGroup ? new ProgramWriteDisabledError(disabledGroup) : null;
+}
+
+function sceneProgramReleaseGroup(
+  scene: SceneBlock,
+): ProgramReleaseGroup | null {
+  if (scene.templateSnapshot) return "scene_templates";
+  if (scene.content.kind === "text" || scene.content.kind === "color") {
+    return "scene_cards";
+  }
+  if (scene.content.kind === "image") return "scene_images";
+  if (scene.content.kind === "video") return "scene_videos";
+  return null;
 }
 
 function changedSceneBlocks(current: EditorDocument, next: EditorDocument): SceneBlock[] {
@@ -897,11 +919,11 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       c.req.param("clipId"),
     );
     const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
-    if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
+    if (sceneError) throw sceneError;
     const motionError = motionDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
-    if (motionError) return c.json({ error: motionError.error, message: motionError.message }, motionError.status);
+    if (motionError) throw motionError;
     const censorError = censorDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
-    if (censorError) return c.json({ error: censorError.error, message: censorError.message }, censorError.status);
+    if (censorError) throw censorError;
     const changedScenes = changedSceneBlocks(current.document, parsed.data.document);
     const introducedScenes = introducedSceneReferences(current.document, parsed.data.document);
     const introducedAssetIds = introducedVisualAssetIds(current.document, parsed.data.document);
@@ -962,7 +984,7 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
 
   const current = await clipService.getClipEditorDocument(appUser, projectId, c.req.param("clipId"));
     const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, current.original);
-    if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
+    if (sceneError) throw sceneError;
     const mutation = await clipEditorDocumentPersistence.mutateDocument({
       actorUserId: appUser.actorUserId,
       workspaceId: appUser.workspaceId,
@@ -1477,12 +1499,7 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
       appUser.pricingTier,
       editor.document,
     );
-    if (motionError) {
-      return c.json(
-        { error: motionError.error, message: motionError.message },
-        motionError.status,
-      );
-    }
+    if (motionError) throw motionError;
     if (staleCount > 0) {
       await autoCensorService.recordEvent(
         appUser,
@@ -1490,11 +1507,11 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
         c.req.param("clipId"),
         { type: "auto_censor_export_notice", staleCount },
       ).catch(() => undefined);
-      return c.json({
-        error: "censor_segments_stale",
-        message: "Review stale Auto Censor segments before exporting",
-        details: { staleCount },
-      }, 422);
+      throw new ClipExportError(
+        "censor_segments_stale",
+        "Review stale Auto Censor segments before exporting",
+        { staleCount },
+      );
     }
     const result = await clipExportService.create(
       c.req.param("id"),

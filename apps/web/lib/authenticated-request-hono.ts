@@ -49,9 +49,15 @@ function routePath(c: Context): string {
   return path.startsWith("/api") ? path.slice(4) || "/" : path;
 }
 
-export async function authenticatedRequestHonoMiddleware(
+function replaceHonoResponse(c: Context, response: Response): Response {
+  c.res = response.clone();
+  return response;
+}
+
+async function runAuthenticatedRequestHonoMiddleware(
   c: Context,
   next: Next,
+  policy: Pick<typeof authenticatedRequestPolicy, "execute">,
 ) {
   const path = routePath(c);
   if (isIndependentTrustHonoSurface(c.req.method, path)) {
@@ -61,6 +67,7 @@ export async function authenticatedRequestHonoMiddleware(
 
   const declaration = matchBrowserSessionHonoSurface(c.req.method, path);
   if (!declaration) {
+    const requestId = crypto.randomUUID();
     console.warn(
       JSON.stringify({
         level: "error",
@@ -68,12 +75,15 @@ export async function authenticatedRequestHonoMiddleware(
         adapter: "hono",
         method: c.req.method,
         path,
+        requestId,
       }),
     );
+    c.header("X-Request-ID", requestId);
     return c.json(
       {
         error: "request_policy_missing",
         message: "This request is unavailable.",
+        requestId,
       },
       500,
     );
@@ -109,6 +119,12 @@ export async function authenticatedRequestHonoMiddleware(
           }
           throw error;
         }
+        if (c.error) {
+          if (isExpectedDomainFailure(c.error)) {
+            throw authenticatedRequestDomainFailure(c.error);
+          }
+          throw c.error;
+        }
         return applyAuthenticatedErrorResponse(c, requestId);
       };
     const diagnoseResult = async (
@@ -133,7 +149,7 @@ export async function authenticatedRequestHonoMiddleware(
         };
       };
     const result = declaration.input
-      ? await authenticatedRequestPolicy.execute({
+      ? await policy.execute({
           ...common,
           input: {
             schema: declaration.input.schema,
@@ -165,7 +181,7 @@ export async function authenticatedRequestHonoMiddleware(
           operation,
           diagnoseResult,
         })
-      : await authenticatedRequestPolicy.execute({
+      : await policy.execute({
           ...common,
           operation: async ({ actor, project, requestId }) =>
             operation({ actor, project, requestId }),
@@ -178,7 +194,10 @@ export async function authenticatedRequestHonoMiddleware(
     if (translated.retryAfterSeconds) {
       c.header("Retry-After", String(translated.retryAfterSeconds));
     }
-    return c.json(translated.body, translated.status);
+    return replaceHonoResponse(
+      c,
+      c.json(translated.body, translated.status),
+    );
   } catch (error) {
     const requestId =
       error instanceof AuthenticatedRequestUnexpectedError
@@ -195,13 +214,36 @@ export async function authenticatedRequestHonoMiddleware(
         path,
       }),
     );
-    return c.json(
-      {
-        error: "internal_error",
-        message: "Something went wrong. Try again or contact support.",
-        requestId,
-      },
-      500,
+    c.header("X-Request-ID", requestId);
+    return replaceHonoResponse(
+      c,
+      c.json(
+        {
+          error: "internal_error",
+          message: "Something went wrong. Try again or contact support.",
+          requestId,
+        },
+        500,
+      ),
     );
   }
+}
+
+export function createAuthenticatedRequestHonoMiddleware(
+  policy: Pick<typeof authenticatedRequestPolicy, "execute"> =
+    authenticatedRequestPolicy,
+) {
+  return (c: Context, next: Next) =>
+    runAuthenticatedRequestHonoMiddleware(c, next, policy);
+}
+
+export const authenticatedRequestHonoMiddleware =
+  createAuthenticatedRequestHonoMiddleware();
+
+export function authenticatedRequestHonoErrorHandler(
+  error: Error,
+  c: Context,
+): Response {
+  if (!isExpectedDomainFailure(error)) console.error(error);
+  return c.text("Internal Server Error", 500);
 }

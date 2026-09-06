@@ -1,4 +1,5 @@
 export {
+  boundedExpectedDomainFailureDetails,
   ExpectedDomainFailureError,
   isExpectedDomainFailure,
   type ExpectedDomainFailure,
@@ -19,7 +20,10 @@ export {
 } from "./audio-asset.service";
 export {
   autopilotService,
-  AutopilotService } from "./autopilot.service";
+  AutopilotError,
+  AutopilotService,
+  type AutopilotFailureCode,
+} from "./autopilot.service";
 export {
   fetchRssFeed,
   fetchRssEpisodes,
@@ -332,7 +336,10 @@ export { purgeExpiredGeneratedMediaPrompts } from "./generated-media-prisma-stor
 export { reconcileOrphanGeneratedMediaReservations } from "./generated-media-usage-ledger";
 export {
   socialService,
-  SocialService } from "./social.service";
+  SocialService,
+  SocialServiceError,
+  type SocialServiceFailureCode,
+} from "./social.service";
 export {
   createProductionSocialPublicationRuntime,
   getSocialPublicationRuntime,

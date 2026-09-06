@@ -23,7 +23,10 @@ import {
 import { brandTemplateService } from "./brand-template.service";
 import { brandProfileService } from "./brand-profile.service";
 import { projectRetentionService } from "./project-retention.service";
-import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 import {
   abortMultipartUpload,
   classifyR2StorageError,
@@ -596,30 +599,43 @@ export type FinalizeUploadSessionOutcome =
       retryAfterSeconds: number;
     };
 
+const uploadSessionFailureCatalog = {
+  upload_session_idempotency_conflict: "conflict",
+  upload_session_not_found: "missing",
+  upload_session_invalid_state: "conflict",
+  upload_session_integrity_failed: "unprocessable",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type UploadSessionFailureCode = keyof typeof uploadSessionFailureCatalog;
+
 export class UploadSessionIdempotencyConflictError extends ExpectedDomainFailureError<"upload_session_idempotency_conflict"> {
   constructor() {
-    super({ code: "upload_session_idempotency_conflict", kind: "conflict", message: "This upload key is already bound to different upload settings." });
+    const code = "upload_session_idempotency_conflict" satisfies UploadSessionFailureCode;
+    super({ code, kind: uploadSessionFailureCatalog[code], message: "This upload key is already bound to different upload settings." });
     this.name = "UploadSessionIdempotencyConflictError";
   }
 }
 
 export class UploadSessionNotFoundError extends ExpectedDomainFailureError<"upload_session_not_found"> {
   constructor() {
-    super({ code: "upload_session_not_found", kind: "missing", message: "Upload Session not found." });
+    const code = "upload_session_not_found" satisfies UploadSessionFailureCode;
+    super({ code, kind: uploadSessionFailureCatalog[code], message: "Upload Session not found." });
     this.name = "UploadSessionNotFoundError";
   }
 }
 
 export class UploadSessionInvalidStateError extends ExpectedDomainFailureError<"upload_session_invalid_state"> {
   constructor(message = "The Upload Session cannot accept that operation.") {
-    super({ code: "upload_session_invalid_state", kind: "conflict", message });
+    const code = "upload_session_invalid_state" satisfies UploadSessionFailureCode;
+    super({ code, kind: uploadSessionFailureCatalog[code], message });
     this.name = "UploadSessionInvalidStateError";
   }
 }
 
 export class UploadSessionIntegrityError extends ExpectedDomainFailureError<"upload_session_integrity_failed"> {
   constructor(message: string) {
-    super({ code: "upload_session_integrity_failed", kind: "unprocessable", message });
+    const code = "upload_session_integrity_failed" satisfies UploadSessionFailureCode;
+    super({ code, kind: uploadSessionFailureCatalog[code], message });
     this.name = "UploadSessionIntegrityError";
   }
 }

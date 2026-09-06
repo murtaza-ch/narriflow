@@ -2,6 +2,7 @@ import type {
   ExpectedDomainFailure,
   ExpectedDomainFailureKind,
 } from "@narriflow/services";
+import { boundedExpectedDomainFailureDetails } from "@narriflow/services";
 import {
   AuthenticatedRequestFailure,
   type AuthenticatedRequestFailureCategory,
@@ -112,7 +113,7 @@ export async function normalizeAuthenticatedErrorResponse(
           ];
         })
     : undefined;
-  const details = boundedHttpDetails(payload.details);
+  const details = boundedExpectedDomainFailureDetails(payload.details);
   const retryAfterSeconds =
     typeof payload.retryAfterSeconds === "number" &&
     Number.isFinite(payload.retryAfterSeconds) &&
@@ -155,35 +156,4 @@ export async function applyAuthenticatedErrorResponse(
   );
   if (response !== context.res) context.res = response.clone();
   return response;
-}
-
-function boundedHttpDetail(value: unknown, depth: number): unknown {
-  if (value === null || typeof value === "boolean") return value;
-  if (typeof value === "string") return value.slice(0, 240);
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (depth >= 4) return undefined;
-  if (Array.isArray(value)) {
-    return value
-      .slice(0, 16)
-      .flatMap((item) => {
-        const bounded = boundedHttpDetail(item, depth + 1);
-        return bounded === undefined ? [] : [bounded];
-      });
-  }
-  if (!value || typeof value !== "object") return undefined;
-  return Object.fromEntries(
-    Object.entries(value)
-      .slice(0, 16)
-      .flatMap(([key, item]) => {
-        const bounded = boundedHttpDetail(item, depth + 1);
-        return bounded === undefined ? [] : [[key, bounded]];
-      }),
-  );
-}
-
-function boundedHttpDetails(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return boundedHttpDetail(value, 0) as Record<string, unknown>;
 }

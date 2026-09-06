@@ -39,7 +39,7 @@ import {
 } from "./expected-domain-failure";
 
 export class ClipEditorRevisionConflictError extends ExpectedDomainFailureError<"editor_revision_conflict"> {
-  constructor(readonly currentRevision: number) {
+  constructor(currentRevision: number) {
     super({
       code: "editor_revision_conflict",
       kind: "conflict",
@@ -49,17 +49,6 @@ export class ClipEditorRevisionConflictError extends ExpectedDomainFailureError<
     this.name = "ClipEditorRevisionConflictError";
   }
 }
-
-export type ClipEditorDocumentPersistenceErrorCode =
-  | "clip_not_found"
-  | "project_not_found"
-  | "corrupt_stored_document"
-  | "unsupported_editor_document_version"
-  | "editor_document_invalid"
-  | "editor_boundaries_invalid"
-  | "editor_document_empty_timeline"
-  | "retryable_contention"
-  | "persistence_unavailable";
 
 const clipEditorDocumentPersistenceFailureCatalog = {
   clip_not_found: "missing",
@@ -71,22 +60,28 @@ const clipEditorDocumentPersistenceFailureCatalog = {
   editor_document_empty_timeline: "unprocessable",
   retryable_contention: "unavailable",
   persistence_unavailable: "unavailable",
-} as const satisfies ExpectedDomainFailureCatalog<ClipEditorDocumentPersistenceErrorCode>;
+} as const satisfies ExpectedDomainFailureCatalog<string>;
 
-export class ClipEditorDocumentPersistenceError extends ExpectedDomainFailureError<ClipEditorDocumentPersistenceErrorCode> {
-  readonly retryable: boolean;
+export type ClipEditorDocumentPersistenceErrorCode =
+  keyof typeof clipEditorDocumentPersistenceFailureCatalog;
 
+export class ClipEditorDocumentPersistenceError extends ExpectedDomainFailureError<
+  ClipEditorDocumentPersistenceErrorCode,
+  { retryable: boolean }
+> {
   constructor(
     code: ClipEditorDocumentPersistenceErrorCode,
     message: string,
   ) {
     const retryable =
       code === "retryable_contention" || code === "persistence_unavailable";
-    super({ code, kind: clipEditorDocumentPersistenceFailureCatalog[code], message,
-      details: retryable ? { retryable: true } : undefined,
+    super({
+      code,
+      kind: clipEditorDocumentPersistenceFailureCatalog[code],
+      message,
+      details: { retryable },
     });
     this.name = "ClipEditorDocumentPersistenceError";
-    this.retryable = retryable;
   }
 }
 

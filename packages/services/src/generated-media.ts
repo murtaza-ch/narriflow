@@ -215,11 +215,10 @@ const generatedMediaProviderFailureCatalog = {
 
 type GeneratedMediaProviderFailureCode = keyof typeof generatedMediaProviderFailureCatalog;
 
-export class GeneratedMediaProviderError extends ExpectedDomainFailureError<GeneratedMediaProviderFailureCode> {
-  readonly outcomeUnknown: boolean;
-  readonly retryable: boolean;
-  readonly retryAfterMs?: number;
-
+export class GeneratedMediaProviderError extends ExpectedDomainFailureError<
+  GeneratedMediaProviderFailureCode,
+  { outcomeUnknown: boolean; retryable: boolean }
+> {
   constructor(
     code: GeneratedMediaProviderFailureCode,
     options: { outcomeUnknown?: boolean; retryable?: boolean; retryAfterMs?: number } = {},
@@ -235,9 +234,6 @@ export class GeneratedMediaProviderError extends ExpectedDomainFailureError<Gene
       retryAfterSeconds: options.retryAfterMs ? options.retryAfterMs / 1_000 : undefined,
     });
     this.name = "GeneratedMediaProviderError";
-    this.outcomeUnknown = options.outcomeUnknown ?? false;
-    this.retryable = options.retryable ?? false;
-    this.retryAfterMs = options.retryAfterMs;
   }
 }
 
@@ -783,7 +779,7 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
         return generatedMediaPublicJob(await dependencies.store.updateClaimed(next.id, claimId, { claimId: null, claimExpiresAt: null, updatedAt: now() }));
       } catch (error) {
         if (error instanceof GeneratedMediaProviderError) {
-          if (error.outcomeUnknown) {
+          if (error.details?.outcomeUnknown) {
             return generatedMediaPublicJob(await dependencies.store.updateClaimed(record.id, claimId, {
               status: "waiting",
               outcomeUnknown: true,
@@ -793,7 +789,7 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
               updatedAt: now(),
             }));
           }
-          if (error.retryable) {
+          if (error.details?.retryable) {
             if (record.attempt >= maxAttempts) {
               const exhausted = await release(record, "failed", "generated_media_retry_exhausted");
               return generatedMediaPublicJob(await dependencies.store.updateClaimed(exhausted.id, claimId, {
@@ -804,7 +800,9 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
             }
             return generatedMediaPublicJob(await dependencies.store.updateClaimed(record.id, claimId, {
               status: "queued",
-              retryAt: new Date(now().getTime() + (error.retryAfterMs ?? 5_000)),
+              retryAt: new Date(
+                now().getTime() + (error.retryAfterSeconds ?? 5) * 1_000,
+              ),
               errorCode: error.code,
               claimId: null,
               claimExpiresAt: null,

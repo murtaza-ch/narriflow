@@ -73,8 +73,8 @@ describe("OpenAI image provider", () => {
       style: "photoreal",
     })).rejects.toMatchObject({
       code: expectedCode,
-      retryable,
-      retryAfterMs: retryable ? 2_000 : undefined,
+      details: { outcomeUnknown: false, retryable },
+      retryAfterSeconds: retryable ? 2 : undefined,
     });
   });
 
@@ -98,7 +98,7 @@ describe("OpenAI image provider", () => {
       style: "cinematic",
     })).rejects.toEqual(expect.objectContaining({
       code: "generated_media_provider_outcome_unknown",
-      outcomeUnknown: true,
+      details: { outcomeUnknown: true, retryable: false },
     }));
   });
 

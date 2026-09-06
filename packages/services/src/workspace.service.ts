@@ -9,6 +9,10 @@ import {
 } from "@narriflow/validators";
 import { hasFeature } from "./plan-features";
 import {
+	ExpectedDomainFailureError,
+	type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
+import {
   isR2Configured,
   presignDownloadUrl,
   presignSingleUploadUrl,
@@ -45,41 +49,45 @@ export const WORKSPACE_API_KEY_SCOPES = [
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
 
-export type WorkspaceOperationErrorCode =
-  | "workspace_name_invalid"
-  | "workspace_timezone_invalid"
-  | "workspace_collaboration_disabled"
-  | "workspace_invites_require_business"
-  | "workspace_admin_invite_owner_required"
-  | "workspace_invite_email_invalid"
-  | "workspace_member_already_exists"
-  | "workspace_invite_unavailable"
-  | "workspace_api_requires_business"
-  | "workspace_api_name_required"
-  | "workspace_api_scope_invalid"
-  | "workspace_paid_members_unavailable"
-  | "workspace_billing_action_required"
-  | "workspace_invite_invalid"
-  | "workspace_invite_email_mismatch"
-  | "workspace_members_unavailable"
-  | "workspace_admin_promotion_owner_required"
-  | "workspace_member_not_found"
-  | "workspace_owner_role_immutable"
-  | "workspace_admin_peer_forbidden"
-  | "workspace_owner_removal_forbidden"
-  | "workspace_creation_disabled"
-  | "workspace_user_not_found"
-  | "workspace_limit_reached"
-  | "workspace_checkout_state_invalid";
+export const workspaceOperationFailureCatalog = {
+	workspace_name_invalid: "invalid",
+	workspace_timezone_invalid: "invalid",
+	workspace_collaboration_disabled: "forbidden",
+	workspace_invites_require_business: "payment_required",
+	workspace_admin_invite_owner_required: "forbidden",
+	workspace_invite_email_invalid: "invalid",
+	workspace_member_already_exists: "conflict",
+	workspace_invite_unavailable: "unavailable",
+	workspace_api_requires_business: "payment_required",
+	workspace_api_name_required: "invalid",
+	workspace_api_scope_invalid: "invalid",
+	workspace_paid_members_unavailable: "unavailable",
+	workspace_billing_action_required: "payment_required",
+	workspace_invite_invalid: "invalid",
+	workspace_invite_email_mismatch: "forbidden",
+	workspace_members_unavailable: "unavailable",
+	workspace_admin_promotion_owner_required: "forbidden",
+	workspace_member_not_found: "missing",
+	workspace_owner_role_immutable: "conflict",
+	workspace_admin_peer_forbidden: "forbidden",
+	workspace_owner_removal_forbidden: "forbidden",
+	workspace_creation_disabled: "forbidden",
+	workspace_user_not_found: "missing",
+	workspace_limit_reached: "conflict",
+	workspace_checkout_state_invalid: "conflict",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
 
-export class WorkspaceOperationError extends Error {
-  constructor(
-    readonly code: WorkspaceOperationErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = "WorkspaceOperationError";
-  }
+export type WorkspaceOperationErrorCode =
+	keyof typeof workspaceOperationFailureCatalog;
+
+export class WorkspaceOperationError extends ExpectedDomainFailureError<WorkspaceOperationErrorCode> {
+	constructor(
+		code: WorkspaceOperationErrorCode,
+		message: string,
+	) {
+		super({ code, kind: workspaceOperationFailureCatalog[code], message });
+		this.name = "WorkspaceOperationError";
+	}
 }
 
 export function assertWorkspaceInviteEntitlement(input: {

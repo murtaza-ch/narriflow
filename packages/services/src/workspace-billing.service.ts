@@ -423,22 +423,6 @@ export interface WorkspaceCheckoutAttempt {
   expiresAt: Date | null;
 }
 
-export type WorkspaceBillingErrorCode =
-  | "billing_customer_missing"
-  | "billing_forbidden"
-  | "billing_portal_required"
-  | "checkout_attempt_conflict"
-  | "checkout_attempt_invalid"
-  | "checkout_attempt_missing"
-  | "checkout_attempt_terminal"
-  | "checkout_not_configured"
-  | "checkout_session_conflict"
-  | "customer_identity_conflict"
-  | "portal_not_configured"
-  | "price_not_configured"
-  | "seat_provider_not_configured"
-  | "workspace_not_found";
-
 const workspaceBillingFailureCatalog = {
   billing_customer_missing: "conflict",
   billing_forbidden: "forbidden",
@@ -454,7 +438,10 @@ const workspaceBillingFailureCatalog = {
   price_not_configured: "unavailable",
   seat_provider_not_configured: "unavailable",
   workspace_not_found: "missing",
-} as const satisfies ExpectedDomainFailureCatalog<WorkspaceBillingErrorCode>;
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type WorkspaceBillingErrorCode =
+  keyof typeof workspaceBillingFailureCatalog;
 
 const workspaceBillingSafeMessages: Record<WorkspaceBillingErrorCode, string> = {
   billing_customer_missing: "No billing customer is available for this workspace",

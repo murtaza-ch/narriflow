@@ -245,7 +245,7 @@ describe("Clip Editor Document Persistence", () => {
         ...scope,
         intent: { kind: "reset", baseRevision: 4 },
       }),
-    ).rejects.toMatchObject({ currentRevision: 5 });
+    ).rejects.toMatchObject({ details: { currentRevision: 5 } });
   });
 
   test("transcript intent applies to the latest document without moving boundaries", async () => {
@@ -581,7 +581,7 @@ describe("Clip Editor Document Persistence", () => {
         ...scope,
         intent: { kind: "reset", baseRevision: 2 },
       }),
-    ).rejects.toMatchObject({ currentRevision: 3 });
+    ).rejects.toMatchObject({ details: { currentRevision: 3 } });
     expect(store.inspect(scope.clipId)).toMatchObject({
       writeCount: 0,
       cleanupObligations: [],
@@ -836,7 +836,7 @@ describe("Clip Editor Document Persistence", () => {
         clipId: seed.clipId,
         intent: { kind: "reset", baseRevision: seed.revision },
       }),
-    ).rejects.toMatchObject({ currentRevision: 4 });
+    ).rejects.toMatchObject({ details: { currentRevision: 4 } });
     expect(backing.inspect(seed.clipId)).toMatchObject({
       writeCount: 1,
       state: { revision: 4, original: seed.document },

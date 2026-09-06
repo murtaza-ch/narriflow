@@ -19,11 +19,21 @@ import {
   presignDownloadUrl,
   presignSingleUploadUrl,
 } from "./r2-storage";
-import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 const FALLBACK_BUILT_IN_KEY = "karaoke";
 
 type BrandWorkspaceContext = { workspaceId: string; actorUserId: string };
+
+const brandTemplateFailureCatalog = {
+  brand_template_not_found: "missing",
+  brand_template_forbidden: "forbidden",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type BrandTemplateFailureCode = keyof typeof brandTemplateFailureCatalog;
 
 function ownedTemplateWhere(userId: string, context?: BrandWorkspaceContext) {
   return context ? { workspaceId: context.workspaceId } : { userId };
@@ -31,14 +41,16 @@ function ownedTemplateWhere(userId: string, context?: BrandWorkspaceContext) {
 
 export class BrandTemplateNotFoundError extends ExpectedDomainFailureError<"brand_template_not_found"> {
   constructor() {
-    super({ code: "brand_template_not_found", kind: "missing", message: "Brand template not found" });
+    const code = "brand_template_not_found" satisfies BrandTemplateFailureCode;
+    super({ code, kind: brandTemplateFailureCatalog[code], message: "Brand template not found" });
     this.name = "BrandTemplateNotFoundError";
   }
 }
 
 export class BrandTemplateForbiddenError extends ExpectedDomainFailureError<"brand_template_forbidden"> {
   constructor() {
-    super({ code: "brand_template_forbidden", kind: "forbidden", message: "Brand template is read-only" });
+    const code = "brand_template_forbidden" satisfies BrandTemplateFailureCode;
+    super({ code, kind: brandTemplateFailureCatalog[code], message: "Brand template is read-only" });
     this.name = "BrandTemplateForbiddenError";
   }
 }

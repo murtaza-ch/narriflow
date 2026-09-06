@@ -1,4 +1,8 @@
-import { hasFeature } from "@narriflow/services";
+import {
+  ClipActionError,
+  ClipExportError,
+  hasFeature,
+} from "@narriflow/services";
 import {
   editorDocumentUsesMotion,
   type EditorDocument,
@@ -48,11 +52,10 @@ export function motionDocumentExportError(
   if (!editorDocumentUsesMotion(document)) return null;
   return hasFeature(pricingTier, "editor.motion")
     ? null
-    : {
-        status: 403 as const,
-        error: "motion_feature_unavailable",
-        message: "Motion export is available on Creator and above",
-      };
+    : new ClipExportError(
+        "motion_feature_unavailable",
+        "Motion export is available on Creator and above",
+      );
 }
 
 export function motionDocumentMutationError(
@@ -63,9 +66,8 @@ export function motionDocumentMutationError(
   if (!activeMotionChanged(current, next)) return null;
   return hasFeature(pricingTier, "editor.motion")
     ? null
-    : {
-        status: 403 as const,
-        error: "motion_feature_unavailable",
-        message: "Motion export is available on Creator and above",
-      };
+    : new ClipActionError(
+        "motion_feature_unavailable",
+        "Motion export is available on Creator and above",
+      );
 }

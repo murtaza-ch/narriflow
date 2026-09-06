@@ -465,10 +465,12 @@ const clipActionFailureCatalog = {
   clip_selection_invalid: "unprocessable",
   clip_storage_delete_incomplete: "unavailable",
   clip_title_suggestion_failed: "unavailable",
+  censor_feature_unavailable: "forbidden",
   editor_boundaries_invalid: "unprocessable",
   editor_document_empty_timeline: "unprocessable",
   motion_feature_unavailable: "forbidden",
   openai_not_configured: "unavailable",
+  scene_feature_unavailable: "forbidden",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type ClipActionFailureCode = keyof typeof clipActionFailureCatalog;
@@ -482,10 +484,12 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
   clip_selection_invalid: "Choose a valid transcript selection",
   clip_storage_delete_incomplete: "Clip storage cleanup is temporarily unavailable",
   clip_title_suggestion_failed: "Title suggestions are temporarily unavailable",
+  censor_feature_unavailable: "Auto Censor is available on Creator and above",
   editor_boundaries_invalid: "Choose valid clip boundaries",
   editor_document_empty_timeline: "The clip timeline cannot be empty",
   motion_feature_unavailable: "Motion export is available on Creator and above",
   openai_not_configured: "Title suggestions are temporarily unavailable",
+  scene_feature_unavailable: "Scene editing is not available on this plan",
 };
 
 export class ClipActionError extends ExpectedDomainFailureError<ClipActionFailureCode> {

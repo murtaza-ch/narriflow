@@ -1,4 +1,10 @@
-import { hasFeature, isProgramWriteEnabled } from "@narriflow/services";
+import {
+  ClipActionError,
+  hasFeature,
+  isProgramWriteEnabled,
+  ProgramWriteDisabledError,
+  type ProgramReleaseGroup,
+} from "@narriflow/services";
 import type { CensorSegment, EditorDocument } from "@narriflow/validators";
 
 export function censorDocumentMutationError(
@@ -16,21 +22,29 @@ export function censorDocumentMutationError(
   });
   if (!requiresEntitlement) return null;
   if (!hasFeature(pricingTier, "editor.censoring")) {
-    return { status: 403 as const, error: "censor_feature_unavailable", message: "Auto Censor is available on Creator and above" };
+    return new ClipActionError(
+      "censor_feature_unavailable",
+      "Auto Censor is available on Creator and above",
+    );
   }
   const disabled = changedNext
     .filter((segment) => segment.enabled)
     .find((segment) => !isCensorTreatmentWriteEnabled(segment));
   return disabled
-    ? { status: 503 as const, error: "program_write_disabled", message: "This Auto Censor treatment is temporarily read-only" }
+    ? new ProgramWriteDisabledError(censorTreatmentProgramGroup(disabled))
     : null;
 }
 
-function isCensorTreatmentWriteEnabled(segment: CensorSegment): boolean {
-  const group = segment.treatment === "caption_mask"
+function censorTreatmentProgramGroup(
+  segment: CensorSegment,
+): ProgramReleaseGroup {
+  return segment.treatment === "caption_mask"
     ? "auto_censor_caption_masks"
     : segment.treatment === "mute"
       ? "auto_censor_mute"
       : "auto_censor_beep";
-  return isProgramWriteEnabled(group);
+}
+
+function isCensorTreatmentWriteEnabled(segment: CensorSegment): boolean {
+  return isProgramWriteEnabled(censorTreatmentProgramGroup(segment));
 }

@@ -128,7 +128,7 @@ export class BulkSocialSchedulingError extends ExpectedDomainFailureError<BulkSo
   constructor(
     code: BulkSocialSchedulingErrorCode,
     message: string = code,
-    readonly retryable = false,
+    retryable = false,
   ) {
     super({
       code,

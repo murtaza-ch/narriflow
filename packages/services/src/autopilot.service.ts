@@ -12,10 +12,35 @@ import {
 import { fetchRssFeed, redactUrlForDisplay, RssFeedError } from "./rss";
 import { RemoteFetchError, UnsafeUrlError } from "./url-guard";
 import { projectService } from "./project.service";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export const MAX_AUTOPILOT_RULES_PER_WORKSPACE = 10;
 export const AUTOPILOT_LEASE_MS = 2 * 60 * 1000;
 export const AUTOPILOT_MAX_CONSECUTIVE_FAILURES = 8;
+
+const autopilotFailureCatalog = {
+  autopilot_rule_limit_reached: "conflict",
+  autopilot_rule_not_found: "missing",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type AutopilotFailureCode = keyof typeof autopilotFailureCatalog;
+
+export class AutopilotError extends ExpectedDomainFailureError<AutopilotFailureCode> {
+  constructor(code: AutopilotFailureCode) {
+    super({
+      code,
+      kind: autopilotFailureCatalog[code],
+      message:
+        code === "autopilot_rule_not_found"
+          ? "Autopilot rule not found"
+          : "This workspace has reached its Autopilot rule limit",
+    });
+    this.name = "AutopilotError";
+  }
+}
 
 function requirePrisma() {
   const prisma = getPrismaClient();
@@ -170,7 +195,7 @@ export class AutopilotService {
       }),
     ]);
     if (ruleCount >= MAX_AUTOPILOT_RULES_PER_WORKSPACE) {
-      throw new Error("autopilot_rule_limit_reached");
+      throw new AutopilotError("autopilot_rule_limit_reached");
     }
 
     const prisma = requirePrisma();
@@ -224,7 +249,7 @@ export class AutopilotService {
         ...(context ? { workspaceId: context.workspaceId } : { userId }),
       },
     });
-    if (!existing) throw new Error("autopilot rule not found");
+    if (!existing) throw new AutopilotError("autopilot_rule_not_found");
 
     const feed = parsed.rssUrl ? await fetchRssFeed(parsed.rssUrl) : null;
     const mode = parsed.initialImportMode ?? existing.initialImportMode;
@@ -316,7 +341,7 @@ export class AutopilotService {
       },
       include: { _count: { select: { episodes: true } } },
     });
-    if (!existing) throw new Error("autopilot rule not found");
+    if (!existing) throw new AutopilotError("autopilot_rule_not_found");
     if (existing.status === "running" && existing.leaseExpiresAt && existing.leaseExpiresAt > new Date()) {
       return toSnapshot(existing);
     }
@@ -426,7 +451,7 @@ export class AutopilotService {
   private async processRule(ruleId: string): Promise<{ imported: number }> {
     const prisma = requirePrisma();
     const rule = await prisma.autopilotRule.findUnique({ where: { id: ruleId } });
-    if (!rule) throw new Error("autopilot rule not found");
+    if (!rule) throw new AutopilotError("autopilot_rule_not_found");
 
     const feed = await fetchRssFeed(rule.rssUrl, {
       etag: rule.initializedAt ? rule.etag : null,
