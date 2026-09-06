@@ -38,18 +38,6 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 
-export class ClipEditorRevisionConflictError extends ExpectedDomainFailureError<"editor_revision_conflict"> {
-  constructor(currentRevision: number) {
-    super({
-      code: "editor_revision_conflict",
-      kind: "conflict",
-      message: "The clip changed before the edit was saved",
-      details: { currentRevision },
-    });
-    this.name = "ClipEditorRevisionConflictError";
-  }
-}
-
 const clipEditorDocumentPersistenceFailureCatalog = {
   clip_not_found: "missing",
   project_not_found: "missing",
@@ -60,10 +48,27 @@ const clipEditorDocumentPersistenceFailureCatalog = {
   editor_document_empty_timeline: "unprocessable",
   retryable_contention: "unavailable",
   persistence_unavailable: "unavailable",
+  editor_revision_conflict: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type ClipEditorDocumentPersistenceErrorCode =
   keyof typeof clipEditorDocumentPersistenceFailureCatalog;
+
+export class ClipEditorRevisionConflictError extends ExpectedDomainFailureError<
+  ClipEditorDocumentPersistenceErrorCode,
+  { currentRevision: number }
+> {
+  constructor(currentRevision: number) {
+    const code = "editor_revision_conflict" as const;
+    super({
+      code,
+      kind: clipEditorDocumentPersistenceFailureCatalog[code],
+      message: "The clip changed before the edit was saved",
+      details: { currentRevision },
+    });
+    this.name = "ClipEditorRevisionConflictError";
+  }
+}
 
 export class ClipEditorDocumentPersistenceError extends ExpectedDomainFailureError<
   ClipEditorDocumentPersistenceErrorCode,

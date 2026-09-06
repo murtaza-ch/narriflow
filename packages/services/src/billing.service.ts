@@ -77,10 +77,7 @@ const billingSafeMessages: Record<BillingErrorCode, string> = {
 };
 
 export class BillingError extends ExpectedDomainFailureError<BillingErrorCode> {
-  constructor(
-    code: BillingErrorCode,
-    _message: string,
-  ) {
+  constructor(code: BillingErrorCode) {
     super({ code, kind: billingFailureCatalog[code], message: billingSafeMessages[code] });
     this.name = "BillingError";
   }
@@ -93,7 +90,7 @@ function getStripe(): Stripe {
   if (stripeClient) return stripeClient;
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) {
-    throw new BillingError("stripe_not_configured", "STRIPE_SECRET_KEY is not set");
+    throw new BillingError("stripe_not_configured");
   }
   stripeClient = new Stripe(key, {
     apiVersion: WORKSPACE_BILLING_STRIPE_API_VERSION,
@@ -144,7 +141,6 @@ function catalogFromEnvironment(): BillingCatalog {
           (() => {
             throw new BillingError(
               "billing_catalog_invalid",
-              `Missing base price for ${tier}/${interval}`,
             );
           })(),
         tier,
@@ -157,7 +153,6 @@ function catalogFromEnvironment(): BillingCatalog {
         (() => {
           throw new BillingError(
             "billing_catalog_invalid",
-            `Missing seat price for business/${interval}`,
           );
         })(),
       interval,
@@ -195,13 +190,11 @@ export class BillingService {
       if (!process.env.STRIPE_WEBHOOK_SECRET?.startsWith("whsec_")) {
         throw new BillingError(
           "webhook_not_configured",
-          "STRIPE_WEBHOOK_SECRET must be configured for the web process",
         );
       }
       if (!process.env.STRIPE_PORTAL_CONFIGURATION_ID?.startsWith("bpc_")) {
         throw new BillingError(
           "portal_not_configured",
-          "STRIPE_PORTAL_CONFIGURATION_ID must be configured for the web process",
         );
       }
     }
@@ -287,14 +280,13 @@ export class BillingService {
       if (calls > (this.catalog?.worker.providerCallBudget ?? 0)) {
         throw new BillingError(
           "provider_call_budget_exhausted",
-          "Workspace Billing provider call budget exhausted",
         );
       }
     };
     consumeCall();
     const customer = await stripe.customers.retrieve(customerId);
     if (customer.deleted) {
-      throw new BillingError("customer_missing", "Billing customer no longer exists");
+      throw new BillingError("customer_missing");
     }
     const subscriptions: Stripe.Subscription[] = [];
     let startingAfter: string | undefined;
@@ -313,7 +305,6 @@ export class BillingService {
       if (!startingAfter) {
         throw new BillingError(
           "subscription_pagination_invalid",
-          "Billing subscription pagination could not continue",
         );
       }
     }
@@ -348,7 +339,6 @@ export class BillingService {
           if (result.has_more) {
             throw new BillingError(
               "customer_collection_unbounded",
-              "Customer recovery needs operator attention",
             );
           }
           return result.data
@@ -375,7 +365,6 @@ export class BillingService {
           if (sessions.has_more) {
             throw new BillingError(
               "checkout_collection_unbounded",
-              "Checkout recovery needs operator attention",
             );
           }
           return sessions.data
@@ -416,7 +405,6 @@ export class BillingService {
           if (!configuration) {
             throw new BillingError(
               "portal_not_configured",
-              "The billing portal is not configured",
             );
           }
           const session = await this.stripe().billingPortal.sessions.create({
@@ -462,7 +450,7 @@ export class BillingService {
     this.validateConfiguration();
     const catalog = this.catalog;
     if (!catalog) {
-      throw new BillingError("stripe_not_configured", "STRIPE_SECRET_KEY is not set");
+      throw new BillingError("stripe_not_configured");
     }
     return createWorkspaceBillingModule({
       catalog,
@@ -513,7 +501,6 @@ export class BillingService {
       if (calls > (this.catalog?.worker.providerCallBudget ?? 0)) {
         throw new BillingError(
           "provider_call_budget_exhausted",
-          "Workspace Billing provider call budget exhausted",
         );
       }
     };
@@ -570,7 +557,6 @@ export class BillingService {
     if (payments.has_more) {
       throw new BillingError(
         "checkout_payment_collection_unbounded",
-        "Checkout payment recovery needs operator attention",
       );
     }
     let outcome: string | null = null;
@@ -617,7 +603,6 @@ export class BillingService {
     if (!secret) {
       throw new BillingError(
         "webhook_not_configured",
-        "STRIPE_WEBHOOK_SECRET is not set",
       );
     }
     let event: Stripe.Event;
@@ -630,7 +615,6 @@ export class BillingService {
     } catch {
       throw new BillingError(
         "invalid_signature",
-        "Stripe webhook signature verification failed",
       );
     }
     const object = event.data.object as unknown as Record<string, unknown>;
@@ -714,7 +698,7 @@ export class BillingService {
       return await operation();
     } catch (error) {
       if (error instanceof WorkspaceBillingError) {
-        throw new BillingError(error.code, error.message);
+        throw new BillingError(error.code);
       }
       throw error;
     }

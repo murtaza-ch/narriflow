@@ -454,7 +454,7 @@ function getClipRenderResetData(
  * A clip action that failed for a reason the user can act on, carrying the
  * `code` the API surfaces so `userErrorMessage` can render real copy instead of
  * the generic fallback. Thrown by rename/duplicate/delete/title-suggestion;
- * the older clip mutations predate this and throw plain Errors.
+ * all expected clip mutation failures share this typed contract.
  */
 const clipActionFailureCatalog = {
   clip_create_from_selection_failed: "unprocessable",
@@ -503,10 +503,7 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
 };
 
 export class ClipActionError extends ExpectedDomainFailureError<ClipActionFailureCode> {
-  constructor(
-    code: ClipActionFailureCode,
-    _message: string,
-  ) {
+  constructor(code: ClipActionFailureCode) {
     super({ code, kind: clipActionFailureCatalog[code], message: clipActionSafeMessages[code] });
     this.name = "ClipActionError";
   }
@@ -667,7 +664,6 @@ export function planCreateClipFromSelection(
   if (tokens.length === 0) {
     throw new ClipActionError(
       "clip_selection_invalid",
-      "This project's transcript has no words to create a clip from.",
     );
   }
 
@@ -735,7 +731,6 @@ export function planCreateClipFromSelection(
   if (endSec - startSec < CLIP_MIN_DURATION_SEC) {
     throw new ClipActionError(
       "clip_selection_invalid",
-      `This selection is too close to the edge of the transcript to reach the ${CLIP_MIN_DURATION_SEC}s minimum clip length.`,
     );
   }
 
@@ -1013,7 +1008,7 @@ export class ClipService {
         renders: true,
       },
     });
-    if (!clip) throw new ClipActionError("clip_not_found", "Clip not found");
+    if (!clip) throw new ClipActionError("clip_not_found");
     return toClipSnapshot(clip);
   }
 
@@ -1133,7 +1128,7 @@ export class ClipService {
     });
 
     if (!clip) {
-      throw new ClipActionError("clip_not_found", "clip not found");
+      throw new ClipActionError("clip_not_found");
     }
 
     const updated = await prisma.clip.update({
@@ -1198,7 +1193,7 @@ export class ClipService {
     });
 
     if (!clip) {
-      throw new ClipActionError("clip_not_found", "clip not found");
+      throw new ClipActionError("clip_not_found");
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
@@ -1207,7 +1202,6 @@ export class ClipService {
       // fix a missing key, so the copy must not invite a retry.
       throw new ClipActionError(
         "openai_not_configured",
-        "OPENAI_API_KEY is not configured",
       );
     }
 
@@ -1278,11 +1272,8 @@ export class ClipService {
           },
         }),
       });
-    } catch (error) {
-      throw new ClipActionError(
-        "clip_title_suggestion_failed",
-        error instanceof Error ? error.message : "OpenAI request failed",
-      );
+    } catch {
+      throw new ClipActionError("clip_title_suggestion_failed");
     }
 
     const payload = (await response.json().catch(() => null)) as { error?: { message?: string };
@@ -1292,8 +1283,6 @@ export class ClipService {
     if (!response.ok || !payload) {
       throw new ClipActionError(
         "clip_title_suggestion_failed",
-        payload?.error?.message ??
-          `OpenAI request failed with status ${response.status}`,
       );
     }
 
@@ -1301,7 +1290,6 @@ export class ClipService {
     if (!content) {
       throw new ClipActionError(
         "clip_title_suggestion_failed",
-        "Empty response from OpenAI",
       );
     }
 
@@ -1311,7 +1299,6 @@ export class ClipService {
     } catch {
       throw new ClipActionError(
         "clip_title_suggestion_failed",
-        "Model returned invalid JSON",
       );
     }
 
@@ -1319,7 +1306,6 @@ export class ClipService {
     if (!parsed.success) {
       throw new ClipActionError(
         "clip_title_suggestion_failed",
-        "Model output did not match the expected shape",
       );
     }
 
@@ -1339,7 +1325,6 @@ export class ClipService {
     if (titles.length === 0) {
       throw new ClipActionError(
         "clip_title_suggestion_failed",
-        "Model returned no usable titles",
       );
     }
 
@@ -1387,7 +1372,7 @@ export class ClipService {
     });
 
     if (!source) {
-      throw new ClipActionError("clip_not_found", "clip not found");
+      throw new ClipActionError("clip_not_found");
     }
     const sourceDocument = decodeClipEditorDocumentFromStorage(
       source,
@@ -1660,14 +1645,11 @@ export class ClipService {
       });
 
       return toClipSnapshot(snapshot);
-    } catch (error) {
+    } catch {
       // Planned destinations are admitted before copying. If persistence fails,
       // releasing the hold makes every successful or ambiguous copy recoverable
       // without relying on this process to finish a best-effort delete.
-      throw new ClipActionError(
-        "clip_duplicate_failed",
-        error instanceof Error ? error.message : "clip duplicate failed",
-      );
+      throw new ClipActionError("clip_duplicate_failed");
     }
   }
 
@@ -1742,10 +1724,10 @@ export class ClipService {
     ]);
 
     if (!source) {
-      throw new ClipActionError("clip_not_found", "clip not found");
+      throw new ClipActionError("clip_not_found");
     }
     if (!project) {
-      throw new ClipActionError("clip_not_found", "project not found");
+      throw new ClipActionError("clip_not_found");
     }
 
     const sourceDocument = decodeClipEditorDocumentFromStorage(
@@ -1846,9 +1828,6 @@ export class ClipService {
       if (error instanceof ClipActionError) throw error;
       throw new ClipActionError(
         "clip_create_from_selection_failed",
-        error instanceof Error
-          ? error.message
-          : "clip create from selection failed",
       );
     }
   }
@@ -1925,7 +1904,6 @@ export class ClipService {
             } catch {
               throw new ClipActionError(
                 "clip_delete_failed",
-                "clip delete failed",
               );
             }
           }
@@ -1940,18 +1918,16 @@ export class ClipService {
     });
 
     if (outcome.kind === "not_found") {
-      throw new ClipActionError("clip_not_found", "clip not found");
+      throw new ClipActionError("clip_not_found");
     }
     if (outcome.kind === "active_publication") {
       throw new ClipActionError(
         "clip_has_scheduled_posts",
-        "clip has scheduled or publishing social posts",
       );
     }
     if (outcome.kind === "storage_incomplete") {
       throw new ClipActionError(
         "clip_storage_delete_incomplete",
-        "clip storage deletion is incomplete",
       );
     }
   }
@@ -1984,13 +1960,12 @@ export class ClipService {
     });
 
     if (!project) {
-      throw new ClipActionError("project_not_found", "Project not found");
+      throw new ClipActionError("project_not_found");
     }
 
     if (project.transcript?.status !== "completed") {
       throw new ClipActionError(
 				"transcript_not_ready",
-				"The transcript is not ready",
 			);
     }
 
@@ -2073,7 +2048,7 @@ export class ClipService {
     });
 
     if (!project) {
-      throw new ClipActionError("project_not_found", "Project not found");
+      throw new ClipActionError("project_not_found");
     }
 
     const whereClause: Prisma.ClipWhereInput = clipIds
@@ -2085,7 +2060,6 @@ export class ClipService {
     if (clipsToRender.length === 0) {
       throw new ClipActionError(
 				"no_clips_available",
-				"No clips are available for rendering",
 			);
     }
 
@@ -2107,7 +2081,6 @@ export class ClipService {
     ) {
       throw new ClipActionError(
         "motion_feature_unavailable",
-        "Motion export is available on Creator and above",
       );
     }
 
@@ -2437,12 +2410,11 @@ export class ClipService {
     }
 
     if (!render) {
-      throw new ClipActionError("clip_render_not_found", "Clip render not found");
+      throw new ClipActionError("clip_render_not_found");
     }
 
     throw new ClipActionError(
 			"clip_render_not_ready",
-			"The clip has not been rendered for this aspect ratio",
 		);
   }
 
@@ -3063,7 +3035,7 @@ export class ClipService {
       select: { autoLayoutAnalysis: true },
     });
     if (!clip) {
-      throw new ClipActionError("clip_not_found", "Clip not found");
+      throw new ClipActionError("clip_not_found");
     }
     return parseClipAutoLayoutAnalysis(clip.autoLayoutAnalysis);
   }
@@ -3079,7 +3051,7 @@ export class ClipService {
       select: { splitLayoutAnalysis: true },
     });
     if (!clip) {
-      throw new ClipActionError("clip_not_found", "Clip not found");
+      throw new ClipActionError("clip_not_found");
     }
     return parseClipSplitLayoutAnalysis(clip.splitLayoutAnalysis);
   }
@@ -3094,7 +3066,7 @@ export class ClipService {
       where: { id: clipId, projectId, project: { userId } },
       select: { splitLayoutAnalysis: true },
     });
-    if (!clip) throw new ClipActionError("clip_not_found", "Clip not found");
+    if (!clip) throw new ClipActionError("clip_not_found");
     return parseClipSplitLayoutOutcome(clip.splitLayoutAnalysis);
   }
 
@@ -3109,7 +3081,7 @@ export class ClipService {
       select: { layoutAnalysis: true },
     });
     if (!clip) {
-      throw new ClipActionError("clip_not_found", "Clip not found");
+      throw new ClipActionError("clip_not_found");
     }
     return parseClipLayoutAnalysis(clip.layoutAnalysis);
   }
@@ -3124,7 +3096,7 @@ export class ClipService {
       where: { id: clipId, projectId, project: { userId } },
       select: { layoutAnalysis: true },
     });
-    if (!clip) throw new ClipActionError("clip_not_found", "Clip not found");
+    if (!clip) throw new ClipActionError("clip_not_found");
     return parseClipLayoutAnalysisOutcome(clip.layoutAnalysis);
   }
 

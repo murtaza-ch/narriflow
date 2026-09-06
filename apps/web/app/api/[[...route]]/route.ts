@@ -142,7 +142,6 @@ function sceneDocumentMutationError(pricingTier: string, current: EditorDocument
   if (!hasFeature(pricingTier, "brand.scenes")) {
     return new ClipActionError(
       "scene_feature_unavailable",
-      "Scene editing is not available on this plan",
     );
   }
   const disabledGroup = [...changed]

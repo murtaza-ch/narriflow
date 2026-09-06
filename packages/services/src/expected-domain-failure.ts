@@ -95,9 +95,7 @@ export class ExpectedDomainFailureError<
     this.name = "ExpectedDomainFailure";
     this.code = input.code;
     this.kind = input.kind;
-    this.details = boundedExpectedDomainFailureDetails(input.details) as
-      | TDetails
-      | undefined;
+    this.details = input.details;
     this.retryAfterSeconds = input.retryAfterSeconds
       ? Math.min(
           MAX_RETRY_AFTER_SECONDS,

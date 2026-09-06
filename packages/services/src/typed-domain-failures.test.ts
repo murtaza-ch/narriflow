@@ -26,7 +26,7 @@ describe("typed domain failure catalogs", () => {
     [new ReviewServiceError("review_round_closed", "Review round closed"), "conflict"],
     [new ClipEditorDocumentPersistenceError("editor_document_invalid", "Invalid editor document"), "unprocessable"],
     [new GeneratedMediaJobError("generated_media_daily_limit_reached"), "rate_limited"],
-    [new ContentSuiteError("database_unavailable", "Content is temporarily unavailable"), "unavailable"],
+    [new ContentSuiteError("database_unavailable"), "unavailable"],
 		[new AutopilotError("autopilot_rule_not_found"), "missing"],
 		[new AutopilotError("autopilot_rule_limit_reached"), "conflict"],
 		[new SocialServiceError("social_post_not_found"), "missing"],

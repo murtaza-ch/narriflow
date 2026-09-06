@@ -38,10 +38,7 @@ const contentSuiteSafeMessages: Record<ContentSuiteFailureCode, string> = {
 };
 
 export class ContentSuiteError extends ExpectedDomainFailureError<ContentSuiteFailureCode> {
-  constructor(
-    code: ContentSuiteFailureCode,
-    _message: string,
-  ) {
+  constructor(code: ContentSuiteFailureCode) {
     super({ code, kind: contentSuiteFailureCatalog[code], message: contentSuiteSafeMessages[code] });
     this.name = "ContentSuiteError";
   }
@@ -52,7 +49,6 @@ function requirePrisma() {
   if (!prisma) {
     throw new ContentSuiteError(
       "database_unavailable",
-      "Database client unavailable",
     );
   }
   return prisma;
@@ -204,7 +200,7 @@ export class ContentSuiteService {
       where: { id: projectId, userId },
       select: { id: true },
     });
-    if (!project) throw new ContentSuiteError("not_found", "Project not found");
+    if (!project) throw new ContentSuiteError("not_found");
 
     const rows = await prisma.contentAsset.findMany({
       where: { projectId },
@@ -229,7 +225,6 @@ export class ContentSuiteService {
     if (types.length === 0 || new Set(types).size !== types.length) {
       throw new ContentSuiteError(
         "invalid_request",
-        "Content asset types must be non-empty and unique",
       );
     }
 
@@ -241,13 +236,12 @@ export class ContentSuiteService {
         transcript: { select: { text: true, status: true, languageCode: true } },
       },
     });
-    if (!project) throw new ContentSuiteError("not_found", "Project not found");
+    if (!project) throw new ContentSuiteError("not_found");
 
     const tier = resolvePricingTier(actor.pricingTier);
     if (tier === "free") {
       throw new ContentSuiteError(
         "requires_creator_plan",
-        "Content-suite repurposing is available on Creator and Pro plans.",
       );
     }
 
@@ -255,7 +249,6 @@ export class ContentSuiteService {
     if (!transcript || transcript.status !== "completed" || !transcript.text) {
       throw new ContentSuiteError(
         "transcript_not_ready",
-        "A completed transcript is required before repurposing.",
       );
     }
 
@@ -263,7 +256,6 @@ export class ContentSuiteService {
     if (!apiKey) {
       throw new ContentSuiteError(
         "openai_not_configured",
-        "OPENAI_API_KEY is not configured",
       );
     }
 
@@ -306,8 +298,6 @@ export class ContentSuiteService {
     if (!response.ok || !payload) {
       throw new ContentSuiteError(
         "openai_request_failed",
-        (payload as { error?: { message?: string } } | null)?.error?.message ??
-          `OpenAI request failed with status ${response.status}`,
       );
     }
 
@@ -315,7 +305,6 @@ export class ContentSuiteService {
     if (!content) {
       throw new ContentSuiteError(
         "openai_request_failed",
-        "Empty response from OpenAI",
       );
     }
 
@@ -325,7 +314,6 @@ export class ContentSuiteService {
     } catch {
       throw new ContentSuiteError(
         "openai_bad_output",
-        "Model returned invalid JSON",
       );
     }
 
@@ -335,7 +323,6 @@ export class ContentSuiteService {
     if (!parsed.success) {
       throw new ContentSuiteError(
         "openai_bad_output",
-        "Model output did not match the expected shape",
       );
     }
 

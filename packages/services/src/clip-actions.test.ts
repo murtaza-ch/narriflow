@@ -386,7 +386,7 @@ describe("ClipService.deleteClip", () => {
   test("preserves the typed database failure after storage succeeds", async () => {
     const adapter = makeAdapter({
       deleteClipRow: async () => {
-        throw new ClipActionError("clip_delete_failed", "clip delete failed");
+        throw new ClipActionError("clip_delete_failed");
       },
     });
 
@@ -542,7 +542,7 @@ describe("clip title prompt", () => {
 
 describe("ClipActionError", () => {
   test("carries the code the API maps to user-facing copy", () => {
-    const error = new ClipActionError("clip_has_scheduled_posts", "2 posts");
+    const error = new ClipActionError("clip_has_scheduled_posts");
 
     expect(error).toBeInstanceOf(Error);
     expect(error.code).toBe("clip_has_scheduled_posts");

@@ -30,12 +30,13 @@ export function authenticatedRequestDomainFailure(
   failure: ExpectedDomainFailure,
 ): AuthenticatedRequestFailure {
   const transport = DOMAIN_FAILURE_HTTP[failure.kind];
+  const details = boundedExpectedDomainFailureDetails(failure.details);
   return new AuthenticatedRequestFailure({
     code: failure.code,
     category: transport.category,
     status: transport.status,
     message: failure.message,
-    ...(failure.details ? { details: failure.details } : {}),
+    ...(details ? { details } : {}),
     ...(failure.retryAfterSeconds
       ? { retryAfterSeconds: failure.retryAfterSeconds }
       : {}),

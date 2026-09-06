@@ -1,3 +1,8 @@
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
+
 export type ProgramReleaseGroup =
   | "brand_profiles"
   | "visual_assets"
@@ -73,11 +78,18 @@ export function assertCampaignActionWriteEnabled(
   }
 }
 
-export class ProgramWriteDisabledError extends ExpectedDomainFailureError<"program_write_disabled"> {
+const programRolloutFailureCatalog = {
+  program_write_disabled: "unavailable",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+type ProgramRolloutFailureCode = keyof typeof programRolloutFailureCatalog;
+
+export class ProgramWriteDisabledError extends ExpectedDomainFailureError<ProgramRolloutFailureCode> {
   constructor(readonly group: ProgramReleaseGroup) {
+    const code = "program_write_disabled" as const;
     super({
-      code: "program_write_disabled",
-      kind: "unavailable",
+      code,
+      kind: programRolloutFailureCatalog[code],
       message: "This feature is temporarily read-only",
     });
     this.name = "ProgramWriteDisabledError";
@@ -99,4 +111,3 @@ export function assertProgramWriteEnabled(
     throw new ProgramWriteDisabledError(group);
   }
 }
-import { ExpectedDomainFailureError } from "./expected-domain-failure";

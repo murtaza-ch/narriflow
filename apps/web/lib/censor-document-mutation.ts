@@ -24,7 +24,6 @@ export function censorDocumentMutationError(
   if (!hasFeature(pricingTier, "editor.censoring")) {
     return new ClipActionError(
       "censor_feature_unavailable",
-      "Auto Censor is available on Creator and above",
     );
   }
   const disabled = changedNext

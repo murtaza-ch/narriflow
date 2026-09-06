@@ -461,10 +461,7 @@ const workspaceBillingSafeMessages: Record<WorkspaceBillingErrorCode, string> = 
 };
 
 export class WorkspaceBillingError extends ExpectedDomainFailureError<WorkspaceBillingErrorCode> {
-  constructor(
-    code: WorkspaceBillingErrorCode,
-    _message: string,
-  ) {
+  constructor(code: WorkspaceBillingErrorCode) {
     super({ code, kind: workspaceBillingFailureCatalog[code], message: workspaceBillingSafeMessages[code] });
     this.name = "WorkspaceBillingError";
   }
@@ -562,7 +559,7 @@ export function createInMemoryWorkspaceBillingStore(
       const row = rows.get(workspaceId);
       const state = runtime.get(workspaceId);
       if (!row || !state) {
-        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+        throw new WorkspaceBillingError("workspace_not_found");
       }
       return {
         desired: row.desiredAdditionalSeats,
@@ -603,11 +600,10 @@ export function createInMemoryWorkspaceBillingStore(
     },
     async bindCheckoutCustomer(input) {
       const row = rows.get(input.workspaceId);
-      if (!row) throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+      if (!row) throw new WorkspaceBillingError("workspace_not_found");
       if (row.providerCustomerId && row.providerCustomerId !== input.customerId) {
         throw new WorkspaceBillingError(
           "customer_identity_conflict",
-          "Billing customer identity needs attention",
         );
       }
       row.providerCustomerId = input.customerId;
@@ -617,12 +613,11 @@ export function createInMemoryWorkspaceBillingStore(
         (candidate) => candidate.id === input.attemptId,
       );
       if (!attempt) {
-        throw new WorkspaceBillingError("checkout_attempt_missing", "Checkout attempt not found");
+        throw new WorkspaceBillingError("checkout_attempt_missing");
       }
       if (attempt.providerSessionId && attempt.providerSessionId !== input.sessionId) {
         throw new WorkspaceBillingError(
           "checkout_session_conflict",
-          "Checkout session needs attention",
         );
       }
       attempt.providerSessionId = input.sessionId;
@@ -641,7 +636,6 @@ export function createInMemoryWorkspaceBillingStore(
       ) {
         throw new WorkspaceBillingError(
           "checkout_session_conflict",
-          "Checkout session ownership could not be verified",
         );
       }
       const row = rows.get(input.workspaceId)!;
@@ -986,7 +980,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         }),
       ]);
       if (!account) {
-        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+        throw new WorkspaceBillingError("workspace_not_found");
       }
       return { desired, revision: account.seatRevision };
     },
@@ -1012,13 +1006,11 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         ) {
           throw new WorkspaceBillingError(
             "checkout_attempt_invalid",
-            "Checkout attempt has an invalid plan",
           );
         }
         if (row.interval !== "monthly" && row.interval !== "annual") {
           throw new WorkspaceBillingError(
             "checkout_attempt_invalid",
-            "Checkout attempt has an invalid interval",
           );
         }
         return {
@@ -1114,14 +1106,12 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         ) {
           throw new WorkspaceBillingError(
             "checkout_attempt_missing",
-            "Checkout attempt not found",
           );
         }
         const currentCustomerId = attempt.billingAccount.providerCustomerId;
         if (currentCustomerId && currentCustomerId !== input.customerId) {
           throw new WorkspaceBillingError(
             "customer_identity_conflict",
-            "Billing customer identity needs attention",
           );
         }
         await tx.workspaceBillingAccount.update({
@@ -1175,7 +1165,6 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         ) {
           throw new WorkspaceBillingError(
             "checkout_session_conflict",
-            "Checkout session ownership could not be verified",
           );
         }
         if (
@@ -1185,13 +1174,11 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         ) {
           throw new WorkspaceBillingError(
             "checkout_attempt_invalid",
-            "Checkout attempt has an invalid plan",
           );
         }
         if (attempt.interval !== "monthly" && attempt.interval !== "annual") {
           throw new WorkspaceBillingError(
             "checkout_attempt_invalid",
-            "Checkout attempt has an invalid interval",
           );
         }
         const claimWhere = input.reconcileAttemptId
@@ -1240,7 +1227,6 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           if (input.reconcileAttemptId) throw new WorkspaceBillingAttemptLost();
           throw new WorkspaceBillingError(
             "checkout_session_conflict",
-            "Checkout state could not be recorded",
           );
         }
         if (input.wakeReconciliation && !preservesEstablishedOutcome) {
@@ -1939,7 +1925,7 @@ export function createWorkspaceBillingModule(dependencies: {
     const startedAt = dependencies.clock.now();
     const current = await dependencies.store.readProjection(workspaceId);
     if (!current) {
-      throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+      throw new WorkspaceBillingError("workspace_not_found");
     }
     const settleNoSubscription = async (activating: boolean) => {
       if (!attemptId) throw new WorkspaceBillingAttemptLost();
@@ -2255,7 +2241,6 @@ export function createWorkspaceBillingModule(dependencies: {
           if (!dependencies.provider.createSeatItem) {
             throw new WorkspaceBillingError(
               "seat_provider_not_configured",
-              "Paid-seat synchronization is not configured",
             );
           }
           const created = await callProvider("create_seat_item", () =>
@@ -2279,7 +2264,6 @@ export function createWorkspaceBillingModule(dependencies: {
           if (!dependencies.provider.deleteSeatItem) {
             throw new WorkspaceBillingError(
               "seat_provider_not_configured",
-              "Paid-seat synchronization is not configured",
             );
           }
           await callProvider("delete_seat_item", () =>
@@ -2298,7 +2282,6 @@ export function createWorkspaceBillingModule(dependencies: {
           if (!dependencies.provider.updateSeatItem) {
             throw new WorkspaceBillingError(
               "seat_provider_not_configured",
-              "Paid-seat synchronization is not configured",
             );
           }
           await callProvider("update_seat_item", () =>
@@ -2428,7 +2411,6 @@ export function createWorkspaceBillingModule(dependencies: {
     ) {
       throw new WorkspaceBillingError(
         "checkout_not_configured",
-        "Checkout is not configured",
       );
     }
     return provider;
@@ -2442,7 +2424,6 @@ export function createWorkspaceBillingModule(dependencies: {
     if (actor?.role !== "owner") {
       throw new WorkspaceBillingError(
         "billing_forbidden",
-        "Only the Workspace owner can manage billing",
       );
     }
   };
@@ -2455,7 +2436,6 @@ export function createWorkspaceBillingModule(dependencies: {
     ) {
       throw new WorkspaceBillingError(
         "checkout_attempt_terminal",
-        "This Checkout attempt is no longer available",
       );
     }
     return {
@@ -2478,12 +2458,11 @@ export function createWorkspaceBillingModule(dependencies: {
       await requireBillingOwner(input);
       const current = await dependencies.store.readProjection(input.workspaceId);
       if (!current) {
-        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+        throw new WorkspaceBillingError("workspace_not_found");
       }
       if (current.pricingTier !== "free" && current.status !== "pending_payment") {
         throw new WorkspaceBillingError(
           "billing_portal_required",
-          "Manage the current subscription in the billing portal",
         );
       }
       const price = dependencies.catalog.basePrices.find(
@@ -2494,7 +2473,6 @@ export function createWorkspaceBillingModule(dependencies: {
       if (!price) {
         throw new WorkspaceBillingError(
           "price_not_configured",
-          "This plan is not available",
         );
       }
       const catalogVersion = `${input.targetTier}:${input.interval}:${price.priceId}`;
@@ -2506,7 +2484,6 @@ export function createWorkspaceBillingModule(dependencies: {
       if (prepared.kind === "conflict") {
         throw new WorkspaceBillingError(
           "checkout_attempt_conflict",
-          "This Checkout request was already used with different details",
         );
       }
       dependencies.diagnostics.record({
@@ -2530,7 +2507,6 @@ export function createWorkspaceBillingModule(dependencies: {
         ) {
           throw new WorkspaceBillingError(
             "checkout_session_conflict",
-            "Checkout session ownership could not be verified",
           );
         }
         const destination = checkoutDestination(session);
@@ -2562,7 +2538,6 @@ export function createWorkspaceBillingModule(dependencies: {
           });
           throw new WorkspaceBillingError(
             "customer_identity_conflict",
-            "Billing customer identity needs attention",
           );
         }
         const recoveredCustomer = matches[0]?.customerId;
@@ -2605,7 +2580,6 @@ export function createWorkspaceBillingModule(dependencies: {
       if (recovered && recovered.length > 1) {
         throw new WorkspaceBillingError(
           "checkout_session_conflict",
-          "Checkout session needs attention",
         );
       }
       const session =
@@ -2654,7 +2628,6 @@ export function createWorkspaceBillingModule(dependencies: {
       if (session.workspaceId !== input.workspaceId) {
         throw new WorkspaceBillingError(
           "checkout_session_conflict",
-          "Checkout session ownership could not be verified",
         );
       }
       const expired = session.status === "expired";
@@ -2678,7 +2651,7 @@ export function createWorkspaceBillingModule(dependencies: {
       });
       const view = await dependencies.store.readProjection(input.workspaceId);
       if (!view) {
-        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+        throw new WorkspaceBillingError("workspace_not_found");
       }
       if (expired) {
         return {
@@ -2703,13 +2676,11 @@ export function createWorkspaceBillingModule(dependencies: {
       if (!current?.providerCustomerId) {
         throw new WorkspaceBillingError(
           "billing_customer_missing",
-          "Billing setup has not created a customer yet",
         );
       }
       if (!dependencies.provider.createPortalSession) {
         throw new WorkspaceBillingError(
           "portal_not_configured",
-          "The billing portal is not configured",
         );
       }
       const portal = await callProvider("create_portal", () =>
@@ -2775,7 +2746,7 @@ export function createWorkspaceBillingModule(dependencies: {
       if (!claim) {
         const current = await dependencies.store.readProjection(workspaceId);
         if (!current) {
-          throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+          throw new WorkspaceBillingError("workspace_not_found");
         }
         return {
           kind: "unresolved",
@@ -2995,7 +2966,7 @@ export function createWorkspaceBillingModule(dependencies: {
     async inspectAccount(workspaceId: string) {
       const current = await dependencies.store.readProjection(workspaceId);
       if (!current) {
-        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+        throw new WorkspaceBillingError("workspace_not_found");
       }
       const view = billingView(current);
       const local = {

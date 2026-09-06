@@ -6,6 +6,10 @@ import {
 } from "@narriflow/validators";
 import { hasFeature, type PlanFeature } from "./plan-features";
 import { analyticsService } from "./analytics.service";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export interface BrandActorScope {
   actorUserId: string;
@@ -17,13 +21,18 @@ export interface BrandActorScope {
   isPersonalWorkspace: boolean;
 }
 
-import { ExpectedDomainFailureError } from "./expected-domain-failure";
+const brandAccessFailureCatalog = {
+  brand_forbidden: "forbidden",
+  brand_entitlement_required: "payment_required",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
 
-export class BrandAccessError extends ExpectedDomainFailureError<"brand_forbidden" | "brand_entitlement_required"> {
-  constructor(code: "brand_forbidden" | "brand_entitlement_required") {
+type BrandAccessFailureCode = keyof typeof brandAccessFailureCatalog;
+
+export class BrandAccessError extends ExpectedDomainFailureError<BrandAccessFailureCode> {
+  constructor(code: BrandAccessFailureCode) {
     super({
       code,
-      kind: code === "brand_forbidden" ? "forbidden" : "payment_required",
+      kind: brandAccessFailureCatalog[code],
       message: code === "brand_forbidden" ? "Brand management is not allowed" : "This plan does not include that brand capability",
     });
     this.name = "BrandAccessError";

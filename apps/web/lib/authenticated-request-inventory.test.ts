@@ -556,4 +556,18 @@ describe("authenticated request inventory", () => {
       for (const value of forbidden) expect(source).not.toContain(value);
     }
   });
+
+  test("main browser routes use stable literal error codes", async () => {
+    const source = await Bun.file(
+      new URL("app/api/[[...route]]/route.ts", webRoot),
+    ).text();
+    const literalErrors = [...source.matchAll(/error:\s*["']([^"']+)["']/g)].map(
+      ([, code]) => code,
+    );
+
+    expect(literalErrors.length).toBeGreaterThan(0);
+    for (const code of literalErrors) {
+      expect(code).toMatch(/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/);
+    }
+  });
 });

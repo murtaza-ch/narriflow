@@ -68,6 +68,5 @@ export function motionDocumentMutationError(
     ? null
     : new ClipActionError(
         "motion_feature_unavailable",
-        "Motion export is available on Creator and above",
       );
 }
