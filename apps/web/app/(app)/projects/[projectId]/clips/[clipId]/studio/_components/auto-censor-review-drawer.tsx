@@ -95,7 +95,7 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
     setCensorSegments,
     updateProjectCensorTerms,
     recordAutoCensorEvent,
-  } = useStudio();
+  } = useStudio("editorDocument", "editorRevision", "utterances", "clipWindow", "autoCensorPolicy", "setCensorSegments", "updateProjectCensorTerms", "recordAutoCensorEvent");
   const availableTreatment = (Object.keys(autoCensorPolicy.treatments) as AutoCensorTreatment[])
     .find((treatment) => autoCensorPolicy.treatments[treatment]);
   const firstTreatment = availableTreatment ?? "caption_mask";

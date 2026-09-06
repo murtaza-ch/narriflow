@@ -212,7 +212,7 @@ function TrackRow({
 }
 
 export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
-  const { studioEdits, setStudioEdits, endCoalesce } = useStudio();
+  const { studioEdits, setStudioEdits, endCoalesce } = useStudio("studioEdits", "setStudioEdits", "endCoalesce");
   const music = studioEdits.music;
   const { assets, moodTags, loading, error, setFavorite } = useAudioAssetList(
     "music",

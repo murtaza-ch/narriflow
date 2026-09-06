@@ -426,7 +426,7 @@ export function VideoPreview() {
     autoLayoutAnalysisStatus,
     reportCompositionPlanStatus,
     compositionPlanQaFixture,
-  } = useStudio();
+  } = useStudio("editorDocument", "motionPreview", "clipInfo", "aspectRatio", "setAspectRatio", "layoutMode", "setLayoutMode", "studioEdits", "mediaRef", "playbackClock", "setSourceAudioEnvelope", "sourceVideoUrl", "previewVideoUrl", "sourcePurged", "useOriginalSourceFallback", "setUseOriginalSourceFallback", "reloadPlayback", "activeVideoUrl", "activeOffsetSec", "brollUrl", "brollPreviewAsset", "visualAssets", "sceneFonts", "setBrollPreviewAsset", "editedTimeMap", "compositeToBaseEdited", "deselectCaption", "deselectTextLayer", "captionSelected", "selectedTextLayerId", "setStudioEdits", "endCoalesce", "isPlaying", "duration", "brandLogo", "layoutAnalysis", "layoutAnalysisFailure", "autoLayoutAnalysis", "splitLayoutAnalysis", "splitLayoutFailure", "autoLayoutAnalysisStatus", "reportCompositionPlanStatus", "compositionPlanQaFixture");
   const previewEditorDocument = useMemo(
     () => applyCompositionDocumentQaFixture(
       applyStudioMotionPreview(editorDocument, motionPreview),

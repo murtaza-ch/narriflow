@@ -146,7 +146,7 @@ export function InteractiveCaptionOverlay({
     deselectCaption,
     aspectRatio,
     endCoalesce,
-  } = useStudio();
+  } = useStudio("setCaptionPreset", "captionSelected", "selectCaption", "deselectCaption", "aspectRatio", "endCoalesce");
   const captionPreset = layer.preset;
 
   // Vizard-parity Phase C subtitle visibility toggle — hidden captions must

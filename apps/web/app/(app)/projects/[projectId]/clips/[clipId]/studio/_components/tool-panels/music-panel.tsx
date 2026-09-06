@@ -17,7 +17,7 @@ const TABS: { id: MusicPanelTab; label: string }[] = [
 ];
 
 export function MusicPanel() {
-  const { studioEdits, setStudioEdits, endCoalesce } = useStudio();
+  const { studioEdits, setStudioEdits, endCoalesce } = useStudio("studioEdits", "setStudioEdits", "endCoalesce");
   const [activeTab, setActiveTab] = useState<MusicPanelTab>("music");
   const [showUploads, setShowUploads] = useState(false);
   const [libraryVersion, setLibraryVersion] = useState(0);

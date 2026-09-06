@@ -115,7 +115,7 @@ export function GeneratedImagesPanel() {
     unregisterVisualAsset,
     utterances,
     generatedImagesCapability,
-  } = useStudio();
+  } = useStudio("aspectRatio", "brandProfileId", "clipInfo", "compositeToBaseEdited", "duration", "editedTimeMap", "editorDocument", "insertSceneBlock", "playbackClock", "registerVisualAsset", "setBrollUrl", "setStudioEdits", "transcriptSelectionRange", "unregisterVisualAsset", "utterances", "generatedImagesCapability");
   const [cueIndex, setCueIndex] = useState(0);
   const cue = clipInfo.brollCues[cueIndex] ?? null;
   const browserApi = useMemo(() => createGeneratedImagesBrowserApi(clipInfo.projectId), [clipInfo.projectId]);

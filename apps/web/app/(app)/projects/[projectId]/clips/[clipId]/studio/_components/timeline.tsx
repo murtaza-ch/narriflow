@@ -467,7 +467,7 @@ const WaveformCanvas = memo(function WaveformCanvas({
 // ─── Word chips (Vizard-parity Phase B step 15) ───────────────────────────────
 //
 // One chip per timed word, drawn on a thin row of its own. Words already
-// come fully timed off `useStudio().utterances` (the transcript panel's own
+// come fully timed off the selected Studio `utterances` field (the transcript panel's own
 // data source) — nothing new to fetch, so this stays cheap by construction.
 // `words` here is the FULL projected list (word-chips.ts's
 // `projectWordsToEdited`, computed once per utterances/editedTimeMap
@@ -491,7 +491,7 @@ const WordChipsRow = memo(function WordChipsRow({
   compositeToBaseEdited: (timeSec: number) => number;
   onSeek: (t: number) => void;
 }) {
-  const { playbackClock } = useStudio();
+  const { playbackClock } = useStudio("playbackClock");
   const elementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const activeIdRef = useRef<string | null>(null);
 
@@ -763,7 +763,7 @@ const SILENCE_MIN_SEC_RANGE = { min: 0.3, max: 3.0, step: 0.1 };
 const SILENCE_PAD_SEC_RANGE = { min: 0, max: 0.5, step: 0.05 };
 
 function RemoveSilencePopover() {
-  const { utterances, clipWindow, deletedRanges, applyRemoveSilence } = useStudio();
+  const { utterances, clipWindow, deletedRanges, applyRemoveSilence } = useStudio("utterances", "clipWindow", "deletedRanges", "applyRemoveSilence");
   const [open, setOpen] = useState(false);
   const [minSilenceSec, setMinSilenceSec] = useState(SILENCE_DEFAULT_MIN_SILENCE_SEC);
   const [padSec, setPadSec] = useState(SILENCE_DEFAULT_PAD_SEC);
@@ -1203,7 +1203,7 @@ const TimelineTimecode = memo(function TimelineTimecode({
 }: {
   duration: number;
 }) {
-  const { playbackClock } = useStudio();
+  const { playbackClock } = useStudio("playbackClock");
   const currentTime = usePlaybackTime(playbackClock);
   const safeCurrentTime = Math.min(duration, Math.max(0, currentTime));
 
@@ -1237,7 +1237,7 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
   timeToX: (time: number) => number;
   scrollRootRef: RefObject<HTMLDivElement | null>;
 }) {
-  const { playbackClock } = useStudio();
+  const { playbackClock } = useStudio("playbackClock");
   const playheadRef = useRef<HTMLDivElement>(null);
   const lastAutoScrollAtRef = useRef(0);
 
@@ -1365,7 +1365,7 @@ const TrimHandle = memo(function TrimHandle({
   pxPerSec: number;
   trackHeight: number;
 }) {
-  const { clipInfo, clipStartSec, clipEndSec, commitTrim, trimHandlesDisabled } = useStudio();
+  const { clipInfo, clipStartSec, clipEndSec, commitTrim, trimHandlesDisabled } = useStudio("clipInfo", "clipStartSec", "clipEndSec", "commitTrim", "trimHandlesDisabled");
 
   const dragRef = useRef<TrimDragState | null>(null);
   const transcriptRef = useRef<TrimTranscript | null>(null);
@@ -1620,7 +1620,7 @@ const TextLayerChip = memo(function TextLayerChip({
   baseEditedToComposite: (timeSec: number) => number;
   compositeToBaseEdited: (timeSec: number) => number;
 }) {
-  const { setStudioEdits, endCoalesce, selectTextLayer, seekTo } = useStudio();
+  const { setStudioEdits, endCoalesce, selectTextLayer, seekTo } = useStudio("setStudioEdits", "endCoalesce", "selectTextLayer", "seekTo");
   const dragRef = useRef<TextLayerDragState | null>(null);
 
   const displayStartSec = baseEditedToComposite(startSec);
@@ -1843,7 +1843,7 @@ export function Timeline() {
 		baseEditedRangeToComposite,
     compositeToBaseEdited,
     isInsertedSceneTime,
-  } = useStudio();
+  } = useStudio("isPlaying", "playbackRate", "setPlaybackRate", "togglePlay", "duration", "seekTo", "showTimeline", "setShowTimeline", "timelineSnapping", "setTimelineSnapping", "timelineZoom", "setTimelineZoom", "segments", "selectedSegmentId", "setSelectedSegmentId", "splitAtPlayhead", "deleteSelectedSegment", "activeVideoUrl", "activeOffsetSec", "activeVideoKind", "sourcePreviewId", "clipStartSec", "editedTimeMap", "deletedRanges", "revertDeletedRange", "utterances", "transcriptSelectionRange", "exportState", "waveformPeaksUrl", "studioEdits", "selectedTextLayerId", "clipInfo", "brollUrl", "brollPreviewAsset", "sceneBlocks", "baseEditedToComposite", "baseEditedRangeToComposite", "compositeToBaseEdited", "isInsertedSceneTime");
 
   const stripRef = useRef<HTMLDivElement>(null);
   const { viewport, onScroll } = useTimelineViewport(stripRef);

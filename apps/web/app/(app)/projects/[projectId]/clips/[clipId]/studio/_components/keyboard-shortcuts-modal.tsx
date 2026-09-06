@@ -53,7 +53,7 @@ function KbdTag({ children }: { children: string }) {
  * styles exclusively with mode-invariant studio.* tokens.
  */
 export function KeyboardShortcutsModal() {
-  const { showShortcuts, setShowShortcuts } = useStudio();
+  const { showShortcuts, setShowShortcuts } = useStudio("showShortcuts", "setShowShortcuts");
 
   return (
     <Dialog.Root

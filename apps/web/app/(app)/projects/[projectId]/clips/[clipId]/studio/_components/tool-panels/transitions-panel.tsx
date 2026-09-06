@@ -87,7 +87,16 @@ function SecondaryButton({ children, disabled = false, onClick }: { children: Re
 }
 
 export function TransitionsPanel() {
-  const studio = useStudio();
+  const studio = useStudio(
+    "studioEdits",
+    "setStudioEdits",
+    "clipInfo",
+    "editorDocument",
+    "setMotionPreview",
+    "sceneBlocks",
+    "updateSceneMotion",
+    "upsertMediaMotion",
+  );
   const { studioEdits, setStudioEdits, clipInfo, editorDocument, setMotionPreview } = studio;
   const [tab, setTab] = useState<MotionTab>("transition");
   const [selected, setSelected] = useState(studioEdits.transition.type);

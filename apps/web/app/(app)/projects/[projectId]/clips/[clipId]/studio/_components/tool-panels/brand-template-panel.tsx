@@ -88,7 +88,7 @@ function LogoPositionPicker({
  *  snapshot, via the same `resolveEffectiveLogoSettings` helper the worker
  *  uses for burn-in and the preview canvas uses to draw the overlay. */
 function LogoSection() {
-  const { brandLogo, studioEdits, setStudioEdits, endCoalesce } = useStudio();
+  const { brandLogo, studioEdits, setStudioEdits, endCoalesce } = useStudio("brandLogo", "studioEdits", "setStudioEdits", "endCoalesce");
 
   const updateLogo = (patch: Partial<StudioLogo>, coalesceKey?: string) =>
     setStudioEdits(
@@ -289,7 +289,7 @@ function TemplateRow({
 }
 
 export function BrandTemplatePanel() {
-  const { setCaptionPreset } = useStudio();
+  const { setCaptionPreset } = useStudio("setCaptionPreset");
   const [templates, setTemplates] = useState<BrandTemplateResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(

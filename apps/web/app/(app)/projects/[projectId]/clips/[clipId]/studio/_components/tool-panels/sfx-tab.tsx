@@ -184,7 +184,7 @@ function SfxRow({
 }
 
 export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
-  const { studioEdits, setStudioEdits, endCoalesce, playbackClock } = useStudio();
+  const { studioEdits, setStudioEdits, endCoalesce, playbackClock } = useStudio("studioEdits", "setStudioEdits", "endCoalesce", "playbackClock");
   const { assets, moodTags, loading, error, setFavorite } = useAudioAssetList("sfx", null, reloadKey);
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");

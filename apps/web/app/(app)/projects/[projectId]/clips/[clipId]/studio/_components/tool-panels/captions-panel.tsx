@@ -142,7 +142,7 @@ function ColorField({
 
 function LiveCuePreview() {
   const { captionPreset, playbackClock, utterances, clipStartSec, editedTimeMap, aspectRatio } =
-    useStudio();
+    useStudio("captionPreset", "playbackClock", "utterances", "clipStartSec", "editedTimeMap", "aspectRatio");
   const caption = useLiveCaption(playbackClock, utterances, clipStartSec, editedTimeMap);
   const reducedMotion = useReducedMotion() ?? false;
 
@@ -213,7 +213,7 @@ function LiveCuePreview() {
 // ─── Presets Grid ────────────────────────────────────────────────────────────
 
 function PresetsGrid() {
-  const { captionPreset, setCaptionPreset } = useStudio();
+  const { captionPreset, setCaptionPreset } = useStudio("captionPreset", "setCaptionPreset");
 
   // Derived, not stored: undo/redo/reset change captionPreset without going
   // through handleSelect, so a useState selection silently goes stale.
@@ -259,7 +259,7 @@ function PresetsGrid() {
 // ─── Customize Controls ──────────────────────────────────────────────────────
 
 function CustomizeControls() {
-  const { captionPreset, setCaptionPreset, endCoalesce } = useStudio();
+  const { captionPreset, setCaptionPreset, endCoalesce } = useStudio("captionPreset", "setCaptionPreset", "endCoalesce");
 
   const update = (patch: Partial<typeof captionPreset>, coalesceKey?: string) =>
     setCaptionPreset((p) => ({ ...p, ...patch }), coalesceKey);
@@ -737,7 +737,7 @@ function CustomizeControls() {
 
 export function CaptionsPanel() {
   const [activeTab, setActiveTab] = useState<"presets" | "customize">("presets");
-  const { captionPreset, clipInfo } = useStudio();
+  const { captionPreset, clipInfo } = useStudio("captionPreset", "clipInfo");
   const [applyState, setApplyState] = useState<
     "idle" | "applying" | "applied" | "error"
   >("idle");

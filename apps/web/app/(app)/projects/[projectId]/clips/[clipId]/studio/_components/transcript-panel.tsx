@@ -325,7 +325,7 @@ const EditableUtterance = memo(function EditableUtterance({
   activeWordIndex: number;
   onSeek: (editedTime: number) => void;
 }) {
-  const { editedTimeMap, captionPreset, updateWord, deletedRanges } = useStudio();
+  const { editedTimeMap, captionPreset, updateWord, deletedRanges } = useStudio("editedTimeMap", "captionPreset", "updateWord", "deletedRanges");
   const [editingWordIndex, setEditingWordIndex] = useState<number | null>(null);
 
   // Build words (with fallback for utterances without word-level timing)
@@ -548,7 +548,7 @@ const SubtitleLineEditor = memo(function SubtitleLineEditor({
     mergeSubtitleLineWithNext,
     seekTo,
     editedTimeMap,
-  } = useStudio();
+  } = useStudio("updateUtteranceText", "addSubtitleLineAfter", "deleteSubtitleLine", "mergeSubtitleLineWithNext", "seekTo", "editedTimeMap");
   const [draft, setDraft] = useState(utterance.text);
   useEffect(() => setDraft(utterance.text), [utterance.text]);
   const editedStartSec = sourceToEdited(editedTimeMap, utterance.startSec);
@@ -626,7 +626,7 @@ const SubtitleParagraphEditor = memo(function SubtitleParagraphEditor({
   indices: number[];
   utterances: TranscriptUtterance[];
 }) {
-  const { updateParagraphText } = useStudio();
+  const { updateParagraphText } = useStudio("updateParagraphText");
   const sourceText = indices.map((index) => utterances[index]?.text ?? "").join(" ").trim();
   const [draft, setDraft] = useState(sourceText);
   useEffect(() => setDraft(sourceText), [sourceText]);
@@ -802,7 +802,7 @@ export function TranscriptPanel() {
     baseEditedToComposite,
     sceneWriteCapabilities,
     sceneFonts,
-  } = useStudio();
+  } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts");
   const router = useRouter();
 
   const scrollRef = useRef<HTMLDivElement>(null);

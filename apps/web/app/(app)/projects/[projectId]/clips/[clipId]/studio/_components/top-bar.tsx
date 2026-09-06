@@ -138,7 +138,7 @@ export function TopBar() {
     saveState,
     isDocDirty,
     aspectRatio,
-  } = useStudio();
+  } = useStudio("clipInfo", "canUndo", "canRedo", "showShortcuts", "setShowShortcuts", "handleUndo", "handleRedo", "handleReset", "resetState", "canReset", "saveState", "isDocDirty", "aspectRatio");
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   return (

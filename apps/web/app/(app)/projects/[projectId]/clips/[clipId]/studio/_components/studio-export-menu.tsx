@@ -39,7 +39,7 @@ export function StudioExportMenu() {
     exportState,
     compositionPlanStatus,
     handleExport,
-  } = useStudio();
+  } = useStudio("clipInfo", "aspectRatio", "exportState", "compositionPlanStatus", "handleExport");
   const [open, setOpen] = useState(false);
   const [selection, setSelection] = useState(() => defaultSelection(aspectRatio));
   const [resolution, setResolution] = useState<"720p" | "1080p">(() =>

@@ -24,7 +24,7 @@ export function InteractiveTextLayer({
   previewWidth: number;
   videoContainerRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const { selectedTextLayerId, selectTextLayer, setStudioEdits, endCoalesce } = useStudio();
+  const { selectedTextLayerId, selectTextLayer, setStudioEdits, endCoalesce } = useStudio("selectedTextLayerId", "selectTextLayer", "setStudioEdits", "endCoalesce");
   const isSelected = selectedTextLayerId === layer.id;
 
   const [hovered, setHovered] = useState(false);

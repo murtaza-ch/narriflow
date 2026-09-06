@@ -45,7 +45,7 @@ function isValidHttpUrl(value: string): boolean {
 }
 
 export function LayoutPanel() {
-  const { studioEdits, setStudioEdits, endCoalesce, clipInfo } = useStudio();
+  const { studioEdits, setStudioEdits, endCoalesce, clipInfo } = useStudio("studioEdits", "setStudioEdits", "endCoalesce", "clipInfo");
   const background = studioEdits.background;
   const effectiveMode = resolveEffectiveFramingMode(studioEdits);
 

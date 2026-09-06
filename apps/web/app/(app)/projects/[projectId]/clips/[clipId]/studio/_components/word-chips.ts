@@ -7,7 +7,7 @@ import {
 // Vizard-parity Phase B step 15 (docs/plans/vizard-parity.md §1.5): word-level
 // chips on the subtitle/video track, plus "fit to sentence" / "fit to word"
 // zoom presets. Pure, DOM-free helpers only — timed words are already loaded
-// by the transcript panel's own `useStudio()` data, so none of this needs a
+// by the transcript panel's selected Studio data, so none of this needs a
 // new fetch; it's cheap by construction (no I/O, O(words) at worst, most
 // paths O(log n)). Rendering + the imperative active-word paint live in
 // timeline.tsx, which is the sole consumer.

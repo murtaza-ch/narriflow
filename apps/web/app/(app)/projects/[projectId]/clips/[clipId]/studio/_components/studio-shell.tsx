@@ -2,12 +2,15 @@
 
 import React, {
   createContext,
+  memo,
   useContext,
   useState,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useMemo,
+  useSyncExternalStore,
 } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Heading, Stack, Text } from "@chakra-ui/react";
@@ -88,6 +91,11 @@ import {
 } from "./studio-editing-session-react";
 import { baseEditedRangeToCompositeRanges, baseEditedToComposite, compositeToBaseEdited, insertedSceneAtCompositeTime, type StudioMotionPreview, type StudioSessionSnapshot } from "./studio-editing-session";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
+import {
+  createStudioAccess,
+  type StudioAccess,
+  type StudioKeys,
+} from "./studio-access";
 import { StudioWriteLeaseOverlay } from "./studio-write-lease-overlay";
 import {
   addSubtitleLineAfter as insertSubtitleLineAfter,
@@ -438,7 +446,7 @@ interface StudioState {
   canReset: boolean;
 }
 
-interface StudioContextValue extends StudioState {
+interface StudioFields extends StudioState {
   /** Current immutable Clip Editor Document projection owned by the session. */
   editorDocument: EditorDocument;
   motionPreview: StudioSessionSnapshot["preview"]["motion"];
@@ -646,13 +654,37 @@ interface StudioContextValue extends StudioState {
   recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
 }
 
-const StudioContext = createContext<StudioContextValue | null>(null);
+const StudioContext = createContext<StudioAccess<StudioFields> | null>(null);
 
-export function useStudio() {
-  const ctx = useContext(StudioContext);
-  if (!ctx) throw new Error("useStudio must be used within StudioShell");
-  return ctx;
+export function useStudio<const Keys extends StudioKeys<StudioFields>>(
+  ...keys: Keys
+): Readonly<Pick<StudioFields, Keys[number]>> {
+  const access = useContext(StudioContext);
+  if (!access) throw new Error("useStudio must be used within StudioShell");
+  const selection = access.select(keys);
+  return useSyncExternalStore(
+    selection.subscribe,
+    selection.getSnapshot,
+    selection.getServerSnapshot,
+  );
 }
+
+const StudioEditorTree = memo(function StudioEditorTree() {
+  return (
+    <>
+      <TopBar />
+      <Flex flex="1" overflow="hidden" position="relative">
+        <TranscriptPanel />
+        <Box flex="1" overflow="hidden" position="relative">
+          <VideoPreview />
+        </Box>
+        <ToolSidebar />
+      </Flex>
+      <Timeline />
+      <KeyboardShortcutsModal />
+    </>
+  );
+});
 
 // ─── Shell ────────────────────────────────────────────────────────────────────
 
@@ -704,7 +736,7 @@ interface StudioShellProps {
    *  no preview exists yet. */
   waveformPeaksUrl?: string | null;
   /** True when the project's source has been purged — see the doc comment
-   *  on `StudioContextValue.sourcePurged`. */
+   *  on `StudioFields.sourcePurged`. */
   sourcePurged?: boolean;
   /** Server Action that re-checks this clip's preview-proxy readiness,
    *  defined in studio/page.tsx (see its doc comment for why it's threaded
@@ -727,7 +759,7 @@ interface StudioShellProps {
    *  doc comment), or null/omitted when the project has none. */
   brandLogo?: StudioBrandLogo | null;
   /** Server-seeded screen-mode PiP layout analysis (see
-   *  `StudioContextValue.layoutAnalysis`'s doc comment), or null/omitted
+   *  `StudioFields.layoutAnalysis`'s doc comment), or null/omitted
    *  when the clip has none yet. */
   layoutAnalysis?: ClipLayoutAnalysis | null;
   autoLayoutAnalysis?: ClipAutoLayoutAnalysis | null;
@@ -2075,6 +2107,77 @@ export function StudioShell({
     };
   }, []);
 
+  const displayedSaveState: StudioSaveState =
+    sessionSafetyDegraded &&
+    (saveState === "idle" || saveState === "local" || saveState === "readonly")
+      ? "degraded"
+      : saveState;
+
+  const mapBaseEditedToComposite = useCallback(
+    (timeSec: number) => baseEditedToComposite(getStudioDocument(), timeSec),
+    [getStudioDocument],
+  );
+  const mapBaseEditedRangeToComposite = useCallback(
+    (startSec: number, endSec: number) =>
+      baseEditedRangeToCompositeRanges(
+        getStudioDocument(),
+        startSec,
+        endSec,
+      ),
+    [getStudioDocument],
+  );
+  const mapCompositeToBaseEdited = useCallback(
+    (timeSec: number) => compositeToBaseEdited(getStudioDocument(), timeSec),
+    [getStudioDocument],
+  );
+  const isInsertedSceneTime = useCallback(
+    (timeSec: number) =>
+      insertedSceneAtCompositeTime(getStudioDocument(), timeSec) !== null,
+    [getStudioDocument],
+  );
+
+  const fields: StudioFields = {
+    isPlaying, playbackRate, duration, activeTool, showTimeline, timelineSnapping, aspectRatio,
+    layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
+    captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
+    brollPreviewAsset,
+    sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy,
+    saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
+    resetState, canUndo, canRedo, canReset,
+    editorDocument: doc,
+    motionPreview: preview.motion,
+    setMotionPreview,
+    editorRevision: cloud.revision,
+    baseEditedToComposite: mapBaseEditedToComposite,
+    baseEditedRangeToComposite: mapBaseEditedRangeToComposite,
+    compositeToBaseEdited: mapCompositeToBaseEdited,
+    isInsertedSceneTime,
+    transcript: derivedTranscript, clipInfo, mediaRef, playbackClock, setSourceAudioEnvelope,
+    sourceVideoUrl, sourcePreviewId,
+    clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,
+    previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback, reloadPlayback,
+    activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
+    editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
+    brandLogo, layoutAnalysis, layoutAnalysisFailure, autoLayoutAnalysis, splitLayoutAnalysis, splitLayoutFailure, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
+    updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
+    updateWord, deleteSourceRange, applyRemoveSilence,
+    setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,
+    setLayoutMode, setShowShortcuts, setTimelineZoom,
+    setSelectedSegmentId, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
+    selectTextLayer, deselectTextLayer,
+    setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset, endCoalesce,
+    revertDeletedRange,
+    togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
+    reportCompositionPlanStatus, compositionPlanQaFixture,
+    handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
+    insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, upsertMediaMotion, deleteSceneBlock,
+    setCensorSegments, updateProjectCensorTerms, recordAutoCensorEvent,
+  };
+  const [studioAccessSource] = useState(() => createStudioAccess(fields));
+  useLayoutEffect(() => {
+    studioAccessSource.publish(fields);
+  });
+
   // Below the minimum usable width, skip the three-pane editor entirely
   // rather than rendering a transcript-less, inspector-cramped studio. All
   // hooks above have already run unconditionally, so this early return is
@@ -2121,52 +2224,8 @@ export function StudioShell({
     );
   }
 
-  const displayedSaveState: StudioSaveState =
-    sessionSafetyDegraded &&
-    (saveState === "idle" || saveState === "local" || saveState === "readonly")
-      ? "degraded"
-      : saveState;
-
-  const ctx: StudioContextValue = {
-    isPlaying, playbackRate, duration, activeTool, showTimeline, timelineSnapping, aspectRatio,
-    layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
-    captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
-    brollPreviewAsset,
-    sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy,
-    saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
-    resetState, canUndo, canRedo, canReset,
-    editorDocument: doc,
-    motionPreview: preview.motion,
-    setMotionPreview,
-    editorRevision: cloud.revision,
-    baseEditedToComposite: (timeSec) => baseEditedToComposite(doc, timeSec),
-		baseEditedRangeToComposite: (startSec, endSec) => baseEditedRangeToCompositeRanges(doc, startSec, endSec),
-    compositeToBaseEdited: (timeSec) => compositeToBaseEdited(doc, timeSec),
-    isInsertedSceneTime: (timeSec) => insertedSceneAtCompositeTime(doc, timeSec) !== null,
-    transcript: derivedTranscript, clipInfo, mediaRef, playbackClock, setSourceAudioEnvelope,
-    sourceVideoUrl, sourcePreviewId,
-    clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,
-    previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback, reloadPlayback,
-    activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
-    editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
-    brandLogo, layoutAnalysis, layoutAnalysisFailure, autoLayoutAnalysis, splitLayoutAnalysis, splitLayoutFailure, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
-    updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
-    updateWord, deleteSourceRange, applyRemoveSilence,
-    setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,
-    setLayoutMode, setShowShortcuts, setTimelineZoom,
-    setSelectedSegmentId, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
-    selectTextLayer, deselectTextLayer,
-    setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset, endCoalesce,
-    revertDeletedRange,
-    togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
-    reportCompositionPlanStatus, compositionPlanQaFixture,
-    handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
-		insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, upsertMediaMotion, deleteSceneBlock,
-    setCensorSegments, updateProjectCensorTerms, recordAutoCensorEvent,
-  };
-
   return (
-    <StudioContext.Provider value={ctx}>
+    <StudioContext.Provider value={studioAccessSource.access}>
       <Flex
         direction="column"
         h="100dvh"
@@ -2174,28 +2233,7 @@ export function StudioShell({
         overflow="hidden"
         position="relative"
       >
-        {/* Top bar */}
-        <TopBar />
-
-        {/* Main area */}
-        <Flex flex="1" overflow="hidden" position="relative">
-          {/* Transcript panel */}
-          <TranscriptPanel />
-
-          {/* Video preview */}
-          <Box flex="1" overflow="hidden" position="relative">
-            <VideoPreview />
-          </Box>
-
-          {/* Tool sidebar */}
-          <ToolSidebar />
-        </Flex>
-
-        {/* Timeline */}
-        <Timeline />
-
-        {/* Keyboard shortcuts modal */}
-        <KeyboardShortcutsModal />
+        <StudioEditorTree />
 
         <StudioWriteLeaseOverlay
           visible={draftRecoveryReady && writeOwnershipReady && !hasWriteOwnership}

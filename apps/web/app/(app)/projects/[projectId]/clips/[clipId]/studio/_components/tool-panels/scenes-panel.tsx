@@ -15,7 +15,25 @@ function sceneLabel(content: SceneContent) {
 }
 
 export function ScenesPanel() {
-  const studio = useStudio();
+  const studio = useStudio(
+    "deleteSceneBlock",
+    "duplicateSceneBlock",
+    "duration",
+    "editedTimeMap",
+    "editorDocument",
+    "insertSceneBlock",
+    "moveSceneBlock",
+    "playbackClock",
+    "replaceSceneBlock",
+    "sceneBlocks",
+    "sceneFonts",
+    "sceneTemplates",
+    "sceneWriteCapabilities",
+    "seekTo",
+    "trimSceneBlock",
+    "updateSceneMotion",
+    "visualAssets",
+  );
   const playhead = usePlaybackTime(studio.playbackClock);
   const [placement, setPlacement] = useState<"start" | "playhead" | "transcript" | "end">("playhead");
   const [text, setText] = useState("New chapter");

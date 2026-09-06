@@ -96,7 +96,7 @@ function ColorField({
   // call, so all we need to do here is close out that coalesce chain when
   // the picker closes, so a single drag lands as one undo frame instead of
   // one per pointermove.
-  const { endCoalesce } = useStudio();
+  const { endCoalesce } = useStudio("endCoalesce");
   return (
     <Box>
       <Text fontSize="11px" color="studio.fgMuted" mb="5px">{label}</Text>
@@ -149,7 +149,7 @@ function ColorField({
 // ─── Selected layer's edit form ────────────────────────────────────────────
 
 function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
-  const { setStudioEdits, endCoalesce, duration } = useStudio();
+  const { setStudioEdits, endCoalesce, duration } = useStudio("setStudioEdits", "endCoalesce", "duration");
 
   const update = (patch: Partial<StudioTextLayer>, coalesceKey?: string) => {
     setStudioEdits((prev) => ({
@@ -493,7 +493,7 @@ export function TextPanel() {
   const {
     studioEdits, setStudioEdits, playbackClock, duration,
     selectedTextLayerId, selectTextLayer, deselectTextLayer, seekTo,
-  } = useStudio();
+  } = useStudio("studioEdits", "setStudioEdits", "playbackClock", "duration", "selectedTextLayerId", "selectTextLayer", "deselectTextLayer", "seekTo");
   const [activeTab, setActiveTab] = useState<"presets" | "custom">("presets");
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [customText, setCustomText] = useState("");

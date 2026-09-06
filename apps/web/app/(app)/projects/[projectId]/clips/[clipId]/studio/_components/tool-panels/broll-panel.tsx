@@ -39,7 +39,7 @@ export function BRollPanel() {
     setBrollUrl,
     setBrollPreviewAsset,
     seekTo,
-  } = useStudio();
+  } = useStudio("clipInfo", "aspectRatio", "brollUrl", "brollPreviewAsset", "setBrollUrl", "setBrollPreviewAsset", "seekTo");
   const orientation =
     aspectRatio === "16:9"
       ? "landscape"

@@ -73,7 +73,7 @@ function PropertyRow({ label, children }: { label: string; children: React.React
  * (virality score, category, duration, format).
  */
 function ClipProperties() {
-  const { clipInfo, aspectRatio, segments } = useStudio();
+  const { clipInfo, aspectRatio, segments } = useStudio("clipInfo", "aspectRatio", "segments");
 
   return (
     <Stack gap="0" px="4" pt="2">
@@ -114,7 +114,7 @@ function ClipProperties() {
  * selected it shows the clip's properties.
  */
 export function ToolSidebar() {
-  const { activeTool, setActiveTool } = useStudio();
+  const { activeTool, setActiveTool } = useStudio("activeTool", "setActiveTool");
 
   const handleToolClick = (id: ToolId) => {
     setActiveTool(activeTool === id ? null : id);
