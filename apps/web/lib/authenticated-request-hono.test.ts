@@ -99,12 +99,15 @@ describe("authenticated request Hono middleware", () => {
   );
 
   test("bounds details and applies retry guidance through Hono", async () => {
-    const details = Object.fromEntries(
-      Array.from({ length: 20 }, (_, index) => [
-        `field${index}`,
-        index === 0 ? "x".repeat(300) : index,
-      ]),
-    );
+    const details = {
+      ["k".repeat(300)]: "value",
+      ...Object.fromEntries(
+        Array.from({ length: 20 }, (_, index) => [
+          `field${index}`,
+          index === 0 ? "x".repeat(300) : index,
+        ]),
+      ),
+    };
     const response = await testApp(() => {
       throw new ExpectedDomainFailureError({
         code: "provider_busy",
@@ -120,6 +123,7 @@ describe("authenticated request Hono middleware", () => {
     const body = await response.json();
     expect(body.retryAfterSeconds).toBe(3);
     expect(Object.keys(body.details)).toHaveLength(16);
+    expect(Object.keys(body.details)[0]).toHaveLength(80);
     expect(body.details.field0).toHaveLength(240);
   });
 

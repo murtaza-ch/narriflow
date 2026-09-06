@@ -23,6 +23,7 @@ export type ExpectedDomainFailureDetails = Record<
 
 const MAX_DETAIL_DEPTH = 4;
 const MAX_DETAIL_MEMBERS = 16;
+const MAX_DETAIL_KEY_LENGTH = 80;
 const MAX_DETAIL_STRING_LENGTH = 240;
 const MAX_RETRY_AFTER_SECONDS = 86_400;
 
@@ -45,13 +46,15 @@ function boundedDetail(
       });
   }
   if (!value || typeof value !== "object") return undefined;
-  const bounded: ExpectedDomainFailureDetails = {};
+  const bounded: ExpectedDomainFailureDetails = Object.create(null);
   for (const [key, item] of Object.entries(value).slice(
     0,
     MAX_DETAIL_MEMBERS,
   )) {
     const boundedItem = boundedDetail(item, depth + 1);
-    if (boundedItem !== undefined) bounded[key] = boundedItem;
+    if (boundedItem !== undefined) {
+      bounded[key.slice(0, MAX_DETAIL_KEY_LENGTH)] = boundedItem;
+    }
   }
   return bounded;
 }
