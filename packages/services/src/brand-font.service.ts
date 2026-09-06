@@ -29,18 +29,39 @@ import {
 } from "./r2-storage";
 import { analyticsService } from "./analytics.service";
 import { withSerializableTransaction } from "./serializable-transaction";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
-export class BrandFontIntegrityError extends Error {
-  constructor(readonly code: string) {
-    super("The uploaded font could not be verified");
+const brandFontIntegrityFailureCatalog = {
+  brand_font_collection_unsupported: "unprocessable",
+  brand_font_fingerprint_mismatch: "unprocessable",
+  brand_font_format_mismatch: "unprocessable",
+  brand_font_key_forbidden: "forbidden",
+  brand_font_malformed: "unprocessable",
+  brand_font_mime_mismatch: "unprocessable",
+  brand_font_name_invalid: "invalid",
+  brand_font_not_found: "missing",
+  brand_font_object_missing: "missing",
+  brand_font_replacement_invalid: "unprocessable",
+  brand_font_size_mismatch: "unprocessable",
+  scene_brand_font_invalid: "unprocessable",
+  scene_brand_font_profile_invalid: "unprocessable",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+type BrandFontIntegrityFailureCode = keyof typeof brandFontIntegrityFailureCatalog;
+
+export class BrandFontIntegrityError extends ExpectedDomainFailureError<BrandFontIntegrityFailureCode> {
+  constructor(code: BrandFontIntegrityFailureCode) {
+    super({ code, kind: brandFontIntegrityFailureCatalog[code], message: "The selected Brand font could not be verified" });
     this.name = "BrandFontIntegrityError";
   }
 }
 
-export class BrandFontReferenceError extends Error {
-  readonly code = "brand_font_in_use";
+export class BrandFontReferenceError extends ExpectedDomainFailureError<"brand_font_in_use"> {
   constructor() {
-    super("Remove this font from every Brand Profile and Scene template before deleting it");
+    super({ code: "brand_font_in_use", kind: "conflict", message: "Remove this font from every Brand Profile and Scene template before deleting it" });
     this.name = "BrandFontReferenceError";
   }
 }

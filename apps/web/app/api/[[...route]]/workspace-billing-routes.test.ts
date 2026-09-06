@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { BillingError } from "@narriflow/services";
 import type { WorkspaceBillingView } from "@narriflow/validators";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
 
@@ -102,25 +101,4 @@ describe("Workspace Billing HTTP routes", () => {
     expect(expired.headers.get("retry-after")).toBeNull();
   });
 
-  test("keeps provider failures typed", async () => {
-    const forbidden = createWorkspaceBillingHttpRoutes(
-      dependencies({
-        reconcileCurrentState: async () => {
-          throw new BillingError("billing_forbidden", "private detail");
-        },
-        openPortal: async () => {
-          throw new BillingError("billing_customer_missing", "private detail");
-        },
-      }),
-    );
-    expect((await forbidden.request("/reconcile", { method: "POST" })).status,
-    )
-      .toBe(403);
-    const portal = await forbidden.request("/portal", { method: "POST" });
-    expect(portal.status).toBe(409);
-    expect(await portal.json()).toEqual({
-      error: "billing_customer_missing",
-      message: "No billing customer is available for this workspace.",
-    });
-  });
 });

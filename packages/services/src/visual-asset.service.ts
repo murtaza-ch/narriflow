@@ -34,6 +34,10 @@ import {
 } from "./r2-storage";
 import { analyticsService } from "./analytics.service";
 import { withSerializableTransaction } from "./serializable-transaction";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 const execFileAsync = promisify(execFile);
 
@@ -58,17 +62,34 @@ export interface VisualAssetStorage {
   accessUrl(key: string): Promise<string>;
 }
 
-export class VisualAssetIntegrityError extends Error {
-  constructor(readonly code: string) {
-    super("The uploaded visual asset could not be verified");
+const visualAssetIntegrityFailureCatalog = {
+  scene_visual_asset_invalid: "unprocessable",
+  scene_visual_asset_range_invalid: "unprocessable",
+  visual_asset_fingerprint_mismatch: "unprocessable",
+  visual_asset_key_forbidden: "forbidden",
+  visual_asset_kind_mismatch: "unprocessable",
+  visual_asset_mime_mismatch: "unprocessable",
+  visual_asset_not_found: "missing",
+  visual_asset_not_generated: "unprocessable",
+  visual_asset_object_missing: "missing",
+  visual_asset_probe_failed: "unavailable",
+  visual_asset_replacement_invalid: "unprocessable",
+  visual_asset_size_mismatch: "unprocessable",
+  visual_broll_asset_invalid: "unprocessable",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+type VisualAssetIntegrityFailureCode = keyof typeof visualAssetIntegrityFailureCatalog;
+
+export class VisualAssetIntegrityError extends ExpectedDomainFailureError<VisualAssetIntegrityFailureCode> {
+  constructor(code: VisualAssetIntegrityFailureCode) {
+    super({ code, kind: visualAssetIntegrityFailureCatalog[code], message: "The selected visual asset could not be verified" });
     this.name = "VisualAssetIntegrityError";
   }
 }
 
-export class VisualAssetReferenceError extends Error {
-  readonly code = "visual_asset_in_use";
+export class VisualAssetReferenceError extends ExpectedDomainFailureError<"visual_asset_in_use"> {
   constructor() {
-    super("Remove this asset from every Clip, Brand Profile, and Scene template before deleting it");
+    super({ code: "visual_asset_in_use", kind: "conflict", message: "Remove this asset from every Clip, Brand Profile, and Scene template before deleting it" });
     this.name = "VisualAssetReferenceError";
   }
 }

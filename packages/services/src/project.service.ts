@@ -63,6 +63,7 @@ import {
 	type RetentionPolicyKey,
 } from "./project-retention.service";
 import { accessibleProjectWhere } from "./project-access";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import {
 	workspaceService,
 	type WorkspaceCapability,
@@ -367,33 +368,40 @@ function ingestProgress(status: IngestLifecycleStatus) {
 	return 100;
 }
 
-export class QuotaExceededError extends Error {
-	code = "quota_exceeded";
+export class QuotaExceededError extends ExpectedDomainFailureError<"quota_exceeded", {
+	tier: string;
+	limitMinutes: number;
+	usedMinutes: number;
+	requestedMinutes: number;
+}> {
 	constructor(
 		message: string,
-		public readonly details: {
+		details: {
 			tier: string;
 			limitMinutes: number;
 			usedMinutes: number;
 			requestedMinutes: number;
 		},
 	) {
-		super(message);
+		super({ code: "quota_exceeded", kind: "payment_required", message, details });
 		this.name = "QuotaExceededError";
 	}
 }
 
-export class UploadTooLongError extends Error {
-	code = "upload_too_long";
+export class UploadTooLongError extends ExpectedDomainFailureError<"upload_too_long", {
+	tier: string;
+	maxSeconds: number;
+	seconds: number;
+}> {
 	constructor(
 		message: string,
-		public readonly details: {
+		details: {
 			tier: string;
 			maxSeconds: number;
 			seconds: number;
 		},
 	) {
-		super(message);
+		super({ code: "upload_too_long", kind: "payment_required", message, details });
 		this.name = "UploadTooLongError";
 	}
 }

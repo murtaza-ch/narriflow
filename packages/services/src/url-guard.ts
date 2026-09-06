@@ -6,9 +6,14 @@ const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_REDIRECTS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-export class UnsafeUrlError extends Error {
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
+
+export class UnsafeUrlError extends ExpectedDomainFailureError<"remote_url_unsafe"> {
   constructor(public readonly reason: string) {
-    super(`unsafe_url:${reason}`);
+    super({ code: "remote_url_unsafe", kind: "invalid", message: "The remote URL is not allowed" });
     this.name = "UnsafeUrlError";
   }
 }
@@ -20,9 +25,17 @@ export type RemoteFetchErrorCode =
   | "remote_redirect_limit"
   | "remote_response_too_large";
 
-export class RemoteFetchError extends Error {
-  constructor(public readonly code: RemoteFetchErrorCode) {
-    super(code);
+const remoteFetchFailureCatalog = {
+  remote_download_failed: "unavailable",
+  remote_fetch_timeout: "unavailable",
+  remote_redirect_invalid: "invalid",
+  remote_redirect_limit: "invalid",
+  remote_response_too_large: "unprocessable",
+} as const satisfies ExpectedDomainFailureCatalog<RemoteFetchErrorCode>;
+
+export class RemoteFetchError extends ExpectedDomainFailureError<RemoteFetchErrorCode> {
+  constructor(code: RemoteFetchErrorCode) {
+    super({ code, kind: remoteFetchFailureCatalog[code], message: "The remote media could not be fetched" });
     this.name = "RemoteFetchError";
   }
 }

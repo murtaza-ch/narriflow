@@ -13,6 +13,10 @@ import {
 import { structuredSocialPublicationMetrics } from "./social-publication-observability";
 import { SOCIAL_PROVIDER_API_VERSIONS } from "./social-publication-config";
 import { socialOAuthService } from "./social-oauth.service";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 const DEFAULT_PROCESSING_DEADLINE_MS = 24 * 60 * 60_000;
 const DEFAULT_RECONCILIATION_DEADLINE_MS = 24 * 60 * 60_000;
@@ -62,17 +66,22 @@ export function allowedSocialPublicationActions(row: {
   return row.status === "failed" ? ["schedule_again"] : [];
 }
 
-export class SocialPublicationRecoveryError extends Error {
+const SOCIAL_PUBLICATION_RECOVERY_FAILURES = {
+  social_publication_not_found: "missing",
+  social_publication_transition_conflict: "conflict",
+  social_publication_recheck_unavailable: "unavailable",
+  social_publication_republish_blocked: "conflict",
+  social_publication_reference_invalid: "invalid",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type SocialPublicationRecoveryErrorCode = keyof typeof SOCIAL_PUBLICATION_RECOVERY_FAILURES;
+
+export class SocialPublicationRecoveryError extends ExpectedDomainFailureError<SocialPublicationRecoveryErrorCode> {
   constructor(
-    readonly code:
-      | "social_publication_not_found"
-      | "social_publication_transition_conflict"
-      | "social_publication_recheck_unavailable"
-      | "social_publication_republish_blocked"
-      | "social_publication_reference_invalid",
+    code: SocialPublicationRecoveryErrorCode,
     message: string,
   ) {
-    super(message);
+    super({ code, kind: SOCIAL_PUBLICATION_RECOVERY_FAILURES[code], message });
     this.name = "SocialPublicationRecoveryError";
   }
 }

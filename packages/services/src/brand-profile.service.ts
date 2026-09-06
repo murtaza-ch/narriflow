@@ -28,43 +28,39 @@ import {
 import { analyticsService } from "./analytics.service";
 import { assertProgramWriteEnabled } from "./program-rollout";
 import { headObject, presignDownloadUrl } from "./r2-storage";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 
-export class BrandProfileNotFoundError extends Error {
-  readonly code = "brand_profile_not_found";
+export class BrandProfileNotFoundError extends ExpectedDomainFailureError<"brand_profile_not_found"> {
   constructor() {
-    super("Brand Profile not found");
+    super({ code: "brand_profile_not_found", kind: "missing", message: "Brand Profile not found" });
     this.name = "BrandProfileNotFoundError";
   }
 }
 
-export class BrandProfileConflictError extends Error {
-  readonly code = "brand_profile_conflict";
+export class BrandProfileConflictError extends ExpectedDomainFailureError<"brand_profile_conflict"> {
   constructor(message = "This Brand Profile changed in another session") {
-    super(message);
+    super({ code: "brand_profile_conflict", kind: "conflict", message });
     this.name = "BrandProfileConflictError";
   }
 }
 
-export class BrandProfileReferenceError extends Error {
-  readonly code = "brand_profile_is_default";
+export class BrandProfileReferenceError extends ExpectedDomainFailureError<"brand_profile_is_default"> {
   constructor() {
-    super("Choose a different default Brand Profile before deleting this one");
+    super({ code: "brand_profile_is_default", kind: "conflict", message: "Choose a different default Brand Profile before deleting this one" });
     this.name = "BrandProfileReferenceError";
   }
 }
 
-export class BrandProfileMembershipError extends Error {
-  readonly code = "brand_profile_membership_invalid";
+export class BrandProfileMembershipError extends ExpectedDomainFailureError<"brand_profile_membership_invalid"> {
   constructor() {
-    super("The selected resource does not belong to this Brand Profile owner");
+    super({ code: "brand_profile_membership_invalid", kind: "unprocessable", message: "The selected resource does not belong to this Brand Profile owner" });
     this.name = "BrandProfileMembershipError";
   }
 }
 
-export class BrandProfileMissingAssetError extends Error {
-  readonly code = "brand_profile_asset_missing";
+export class BrandProfileMissingAssetError extends ExpectedDomainFailureError<"brand_profile_asset_missing"> {
   constructor() {
-    super("Replace missing Brand Profile assets before applying this profile");
+    super({ code: "brand_profile_asset_missing", kind: "unprocessable", message: "Replace missing Brand Profile assets before applying this profile" });
     this.name = "BrandProfileMissingAssetError";
   }
 }

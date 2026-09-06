@@ -19,6 +19,7 @@ import {
   presignDownloadUrl,
   presignSingleUploadUrl,
 } from "./r2-storage";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 
 const FALLBACK_BUILT_IN_KEY = "karaoke";
 
@@ -28,16 +29,16 @@ function ownedTemplateWhere(userId: string, context?: BrandWorkspaceContext) {
   return context ? { workspaceId: context.workspaceId } : { userId };
 }
 
-export class BrandTemplateNotFoundError extends Error {
+export class BrandTemplateNotFoundError extends ExpectedDomainFailureError<"brand_template_not_found"> {
   constructor() {
-    super("brand template not found");
+    super({ code: "brand_template_not_found", kind: "missing", message: "Brand template not found" });
     this.name = "BrandTemplateNotFoundError";
   }
 }
 
-export class BrandTemplateForbiddenError extends Error {
+export class BrandTemplateForbiddenError extends ExpectedDomainFailureError<"brand_template_forbidden"> {
   constructor() {
-    super("brand template is read-only");
+    super({ code: "brand_template_forbidden", kind: "forbidden", message: "Brand template is read-only" });
     this.name = "BrandTemplateForbiddenError";
   }
 }

@@ -8,13 +8,41 @@ import {
   type TextOutputType,
 } from "@narriflow/validators";
 import { workspaceService } from "./workspace.service";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
-export class ContentSuiteError extends Error {
+const contentSuiteFailureCatalog = {
+  database_unavailable: "unavailable",
+  invalid_request: "invalid",
+  not_found: "missing",
+  openai_bad_output: "unavailable",
+  openai_not_configured: "unavailable",
+  openai_request_failed: "unavailable",
+  requires_creator_plan: "payment_required",
+  transcript_not_ready: "conflict",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+type ContentSuiteFailureCode = keyof typeof contentSuiteFailureCatalog;
+
+const contentSuiteSafeMessages: Record<ContentSuiteFailureCode, string> = {
+  database_unavailable: "Content generation is temporarily unavailable",
+  invalid_request: "Choose at least one supported content type",
+  not_found: "Project not found",
+  openai_bad_output: "Content generation is temporarily unavailable",
+  openai_not_configured: "Content generation is temporarily unavailable",
+  openai_request_failed: "Content generation is temporarily unavailable",
+  requires_creator_plan: "Content generation is available on Creator and above",
+  transcript_not_ready: "The transcript is not ready yet",
+};
+
+export class ContentSuiteError extends ExpectedDomainFailureError<ContentSuiteFailureCode> {
   constructor(
-    public readonly code: string,
-    message: string,
+    code: ContentSuiteFailureCode,
+    _message: string,
   ) {
-    super(message);
+    super({ code, kind: contentSuiteFailureCatalog[code], message: contentSuiteSafeMessages[code] });
     this.name = "ContentSuiteError";
   }
 }

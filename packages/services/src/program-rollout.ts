@@ -73,11 +73,13 @@ export function assertCampaignActionWriteEnabled(
   }
 }
 
-export class ProgramWriteDisabledError extends Error {
-  readonly code = "program_write_disabled";
-
+export class ProgramWriteDisabledError extends ExpectedDomainFailureError<"program_write_disabled"> {
   constructor(readonly group: ProgramReleaseGroup) {
-    super("This feature is temporarily read-only");
+    super({
+      code: "program_write_disabled",
+      kind: "unavailable",
+      message: "This feature is temporarily read-only",
+    });
     this.name = "ProgramWriteDisabledError";
   }
 }
@@ -97,3 +99,4 @@ export function assertProgramWriteEnabled(
     throw new ProgramWriteDisabledError(group);
   }
 }
+import { ExpectedDomainFailureError } from "./expected-domain-failure";

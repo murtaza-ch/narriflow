@@ -17,13 +17,13 @@ import {
   getWorkflowRunLifecycle,
 } from "./workflow-run-lifecycle";
 import { decodeClipEditorDocumentFromStorage } from "./clip-editor-document-persistence";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 
 const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 
-export class DubbingTierError extends Error {
-  readonly code = "requires_pro_plan";
+export class DubbingTierError extends ExpectedDomainFailureError<"requires_pro_plan"> {
   constructor() {
-    super("Dubbing is available on the Pro plan.");
+    super({ code: "requires_pro_plan", kind: "payment_required", message: "Dubbing is available on the Pro plan." });
     this.name = "DubbingTierError";
   }
 }

@@ -23,6 +23,7 @@ import {
 import { brandTemplateService } from "./brand-template.service";
 import { brandProfileService } from "./brand-profile.service";
 import { projectRetentionService } from "./project-retention.service";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import {
   abortMultipartUpload,
   classifyR2StorageError,
@@ -595,38 +596,30 @@ export type FinalizeUploadSessionOutcome =
       retryAfterSeconds: number;
     };
 
-export class UploadSessionIdempotencyConflictError extends Error {
-  readonly code = "upload_session_idempotency_conflict";
-
+export class UploadSessionIdempotencyConflictError extends ExpectedDomainFailureError<"upload_session_idempotency_conflict"> {
   constructor() {
-    super("This upload key is already bound to different upload settings.");
+    super({ code: "upload_session_idempotency_conflict", kind: "conflict", message: "This upload key is already bound to different upload settings." });
     this.name = "UploadSessionIdempotencyConflictError";
   }
 }
 
-export class UploadSessionNotFoundError extends Error {
-  readonly code = "upload_session_not_found";
-
+export class UploadSessionNotFoundError extends ExpectedDomainFailureError<"upload_session_not_found"> {
   constructor() {
-    super("Upload Session not found.");
+    super({ code: "upload_session_not_found", kind: "missing", message: "Upload Session not found." });
     this.name = "UploadSessionNotFoundError";
   }
 }
 
-export class UploadSessionInvalidStateError extends Error {
-  readonly code = "upload_session_invalid_state";
-
+export class UploadSessionInvalidStateError extends ExpectedDomainFailureError<"upload_session_invalid_state"> {
   constructor(message = "The Upload Session cannot accept that operation.") {
-    super(message);
+    super({ code: "upload_session_invalid_state", kind: "conflict", message });
     this.name = "UploadSessionInvalidStateError";
   }
 }
 
-export class UploadSessionIntegrityError extends Error {
-  readonly code = "upload_session_integrity_failed";
-
+export class UploadSessionIntegrityError extends ExpectedDomainFailureError<"upload_session_integrity_failed"> {
   constructor(message: string) {
-    super(message);
+    super({ code: "upload_session_integrity_failed", kind: "unprocessable", message });
     this.name = "UploadSessionIntegrityError";
   }
 }
@@ -3068,20 +3061,26 @@ export function uploadSessionConfigFromEnv(
   });
 }
 
-export class UploadSessionQuotaRefusedError extends Error {
-  readonly code = "quota_exceeded";
-
+export class UploadSessionQuotaRefusedError extends ExpectedDomainFailureError<"quota_exceeded", {
+  tier: string;
+  limitMinutes: number;
+  usedMinutes: number;
+  requestedMinutes: number;
+}> {
   constructor(
-    public readonly details: {
+    details: {
       tier: string;
       limitMinutes: number;
       usedMinutes: number;
       requestedMinutes: number;
     },
   ) {
-    super(
-      `Monthly processing limit reached on the ${details.tier} plan (${details.limitMinutes} min/mo; ${details.usedMinutes} min used). Upgrade the workspace to keep generating.`,
-    );
+    super({
+      code: "quota_exceeded",
+      kind: "payment_required",
+      message: `Monthly processing limit reached on the ${details.tier} plan (${details.limitMinutes} min/mo; ${details.usedMinutes} min used). Upgrade the workspace to keep generating.`,
+      details,
+    });
     this.name = "UploadSessionQuotaRefusedError";
   }
 }

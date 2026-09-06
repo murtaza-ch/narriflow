@@ -17,13 +17,16 @@ export interface BrandActorScope {
   isPersonalWorkspace: boolean;
 }
 
-export class BrandAccessError extends Error {
-  readonly code: "brand_forbidden" | "brand_entitlement_required";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 
-  constructor(code: BrandAccessError["code"]) {
-    super(code === "brand_forbidden" ? "Brand management is not allowed" : "This plan does not include that brand capability");
+export class BrandAccessError extends ExpectedDomainFailureError<"brand_forbidden" | "brand_entitlement_required"> {
+  constructor(code: "brand_forbidden" | "brand_entitlement_required") {
+    super({
+      code,
+      kind: code === "brand_forbidden" ? "forbidden" : "payment_required",
+      message: code === "brand_forbidden" ? "Brand management is not allowed" : "This plan does not include that brand capability",
+    });
     this.name = "BrandAccessError";
-    this.code = code;
   }
 }
 

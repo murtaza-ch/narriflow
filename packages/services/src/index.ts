@@ -1,4 +1,13 @@
 export {
+  ExpectedDomainFailureError,
+  isExpectedDomainFailure,
+  type ExpectedDomainFailure,
+  type ExpectedDomainFailureCatalog,
+  type ExpectedDomainFailureDetail,
+  type ExpectedDomainFailureDetails,
+  type ExpectedDomainFailureKind,
+} from "./expected-domain-failure";
+export {
   audioAssetService,
   AudioAssetService,
   AudioAssetAccessError,

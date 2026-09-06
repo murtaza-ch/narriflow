@@ -17,6 +17,10 @@ import {
 import { hasFeature } from "./plan-features";
 import { checkRateLimit } from "./rate-limit";
 import { presignDownloadUrl } from "./r2-storage";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 const REVIEW_SESSION_TTL_SEC = 12 * 60 * 60;
 const REVIEW_COMMENT_EDIT_WINDOW_MS = 15 * 60_000;
@@ -25,9 +29,45 @@ const REVIEW_ACCESS_LIMIT = 8;
 const ARGON2ID_ALGORITHM = 2 as const;
 const localAccessAttempts = new Map<string, { count: number; resetAt: number }>();
 
-export class ReviewServiceError extends Error {
-  constructor(readonly code: string, message: string) {
-    super(message);
+const REVIEW_FAILURES = {
+  review_access_invalid: "invalid",
+  review_access_rate_limited: "rate_limited",
+  review_campaign_not_ready: "conflict",
+  review_comment_delete_forbidden: "forbidden",
+  review_comment_edit_forbidden: "forbidden",
+  review_comment_has_replies: "conflict",
+  review_comment_not_found: "missing",
+  review_context_duplicate: "invalid",
+  review_context_stale: "conflict",
+  review_delivery_configuration_invalid: "unavailable",
+  review_download_forbidden: "forbidden",
+  review_expiry_invalid: "invalid",
+  review_feature_unavailable: "forbidden",
+  review_item_not_found: "missing",
+  review_item_stale: "conflict",
+  review_items_duplicate: "invalid",
+  review_media_not_found: "missing",
+  review_origin_invalid: "invalid",
+  review_project_not_found: "missing",
+  review_recipients_limit_exceeded: "invalid",
+  review_request_invalid: "invalid",
+  review_request_too_large: "invalid",
+  review_round_closed: "conflict",
+  review_round_not_found: "missing",
+  review_route_not_found: "missing",
+  review_secret_invalid: "unavailable",
+  review_session_configuration_invalid: "unavailable",
+  review_session_invalid: "invalid",
+  review_thread_invalid: "invalid",
+  review_timecode_out_of_range: "invalid",
+  review_timecode_requires_item: "invalid",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type ReviewServiceErrorCode = keyof typeof REVIEW_FAILURES;
+
+export class ReviewServiceError extends ExpectedDomainFailureError<ReviewServiceErrorCode> {
+  constructor(code: ReviewServiceErrorCode, message: string) {
+    super({ code, kind: REVIEW_FAILURES[code], message });
     this.name = "ReviewServiceError";
   }
 }

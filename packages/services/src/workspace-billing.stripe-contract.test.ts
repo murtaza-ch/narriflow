@@ -299,7 +299,7 @@ describe("Workspace Billing Stripe adapter contracts", () => {
         stripe,
         webhookSecret,
       }),
-    ).rejects.toThrow("signature verification failed");
+    ).rejects.toThrow("The billing signature is invalid");
   });
 
   test("normalizes every registered delivery fixture without reading entitlement state", async () => {

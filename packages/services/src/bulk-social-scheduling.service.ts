@@ -326,8 +326,7 @@ function productionModule() {
         select: { ownerUserId: true },
       });
       if (!workspace) throw new BulkSocialSchedulingError("workspace_not_found");
-      try {
-        const post = await socialService.schedulePost(
+      const post = await socialService.schedulePost(
           workspace.ownerUserId,
           input.projectId,
           {
@@ -351,20 +350,11 @@ function productionModule() {
 			reviewOverrideReason: input.reviewOverrideReason,
           },
           { workspaceId: input.workspaceId, actorUserId: input.actorUserId },
-        );
-        return {
-          socialPostId: post.id,
-          status: post.status === "preparing_video" ? "preparing_video" as const : "scheduled" as const,
-        };
-      } catch (error) {
-        const code = (error as { code?: string }).code ?? "campaign_schedule_item_failed";
-        const retryable = code.includes("rate_limit") || code.includes("unavailable") || code.includes("timeout");
-        throw new BulkSocialSchedulingError(
-          code,
-          error instanceof Error ? error.message : code,
-          retryable,
-        );
-      }
+      );
+      return {
+        socialPostId: post.id,
+        status: post.status === "preparing_video" ? "preparing_video" as const : "scheduled" as const,
+      };
     },
     createId: randomUUID,
     now: () => new Date(),

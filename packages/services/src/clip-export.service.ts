@@ -23,6 +23,11 @@ import { accessibleProjectWhere } from "./project-access";
 import { headObject, presignDownloadUrl } from "./r2-storage";
 import { workspaceService } from "./workspace.service";
 import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+  type ExpectedDomainFailureDetails,
+} from "./expected-domain-failure";
+import {
   decodeClipEditorDocumentFromStorage,
   encodeClipEditorDocumentForStorage,
 } from "./clip-editor-document-persistence";
@@ -35,19 +40,35 @@ function requirePrisma() {
   return prisma;
 }
 
-export class ClipExportError extends Error {
+const clipExportFailureCatalog = {
+  clip_not_found: "missing",
+  editor_revision_conflict: "conflict",
+  export_not_found: "missing",
+  export_not_ready: "conflict",
+  export_snapshot_missing: "unprocessable",
+  motion_feature_unavailable: "forbidden",
+  scene_asset_unavailable: "unprocessable",
+  scene_font_unavailable: "unprocessable",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+type ClipExportFailureCode = keyof typeof clipExportFailureCatalog;
+
+export class ClipExportError extends ExpectedDomainFailureError<ClipExportFailureCode> {
   constructor(
-    readonly code: string,
+    code: ClipExportFailureCode,
     message: string,
+    details?: ExpectedDomainFailureDetails,
   ) {
-    super(message);
+    super({ code, kind: clipExportFailureCatalog[code], message, details });
     this.name = "ClipExportError";
   }
 }
 
 export class ClipExportRevisionConflictError extends ClipExportError {
   constructor(readonly currentRevision: number) {
-    super("editor_revision_conflict", "The clip changed before export started");
+    super("editor_revision_conflict", "The clip changed before export started", {
+      currentRevision,
+    });
     this.name = "ClipExportRevisionConflictError";
   }
 }

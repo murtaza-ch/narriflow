@@ -16,6 +16,10 @@ import {
   type WorkspaceBillingErrorCode,
   WorkspaceBillingError,
 } from "./workspace-billing.service";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export type BillingErrorCode =
   | WorkspaceBillingErrorCode
@@ -30,12 +34,66 @@ export type BillingErrorCode =
   | "subscription_pagination_invalid"
   | "webhook_not_configured";
 
-export class BillingError extends Error {
+const billingFailureCatalog = {
+  billing_catalog_invalid: "unavailable",
+  billing_customer_missing: "conflict",
+  billing_forbidden: "forbidden",
+  billing_portal_required: "conflict",
+  checkout_attempt_conflict: "conflict",
+  checkout_attempt_invalid: "invalid",
+  checkout_attempt_missing: "missing",
+  checkout_attempt_terminal: "conflict",
+  checkout_collection_unbounded: "unavailable",
+  checkout_not_configured: "unavailable",
+  checkout_payment_collection_unbounded: "unavailable",
+  checkout_session_conflict: "conflict",
+  customer_collection_unbounded: "unavailable",
+  customer_identity_conflict: "conflict",
+  customer_missing: "missing",
+  invalid_signature: "forbidden",
+  portal_not_configured: "unavailable",
+  price_not_configured: "unavailable",
+  provider_call_budget_exhausted: "unavailable",
+  seat_provider_not_configured: "unavailable",
+  stripe_not_configured: "unavailable",
+  subscription_pagination_invalid: "unavailable",
+  webhook_not_configured: "unavailable",
+  workspace_not_found: "missing",
+} as const satisfies ExpectedDomainFailureCatalog<BillingErrorCode>;
+
+const billingSafeMessages: Record<BillingErrorCode, string> = {
+  billing_catalog_invalid: "Billing is temporarily unavailable",
+  billing_customer_missing: "No billing customer is available for this workspace",
+  billing_forbidden: "Only the workspace owner can manage billing",
+  billing_portal_required: "Manage the current plan in the billing portal",
+  checkout_attempt_conflict: "This Checkout request was already used with different details",
+  checkout_attempt_invalid: "The Checkout request is invalid",
+  checkout_attempt_missing: "The Checkout request could not be found",
+  checkout_attempt_terminal: "The previous Checkout is no longer available. Start a new one safely",
+  checkout_collection_unbounded: "Billing is temporarily unavailable",
+  checkout_not_configured: "Billing is temporarily unavailable",
+  checkout_payment_collection_unbounded: "Billing is temporarily unavailable",
+  checkout_session_conflict: "Checkout ownership could not be verified. Contact support",
+  customer_collection_unbounded: "Billing is temporarily unavailable",
+  customer_identity_conflict: "The billing account needs support before it can be changed",
+  customer_missing: "The billing customer could not be found",
+  invalid_signature: "The billing signature is invalid",
+  portal_not_configured: "The billing portal is temporarily unavailable",
+  price_not_configured: "This plan is temporarily unavailable",
+  provider_call_budget_exhausted: "Billing is temporarily unavailable",
+  seat_provider_not_configured: "Seat billing is temporarily unavailable",
+  stripe_not_configured: "Billing is temporarily unavailable",
+  subscription_pagination_invalid: "Billing is temporarily unavailable",
+  webhook_not_configured: "Billing delivery is temporarily unavailable",
+  workspace_not_found: "The workspace could not be found",
+};
+
+export class BillingError extends ExpectedDomainFailureError<BillingErrorCode> {
   constructor(
-    public readonly code: BillingErrorCode,
-    message: string,
+    code: BillingErrorCode,
+    _message: string,
   ) {
-    super(message);
+    super({ code, kind: billingFailureCatalog[code], message: billingSafeMessages[code] });
     this.name = "BillingError";
   }
 }

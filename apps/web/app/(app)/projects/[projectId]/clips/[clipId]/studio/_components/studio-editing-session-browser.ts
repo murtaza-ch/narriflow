@@ -47,11 +47,14 @@ export function classifyStudioCloudResponse(
   if (status === 401 || status === 403) return { kind: "authentication-lost" };
   if (status === 404) return { kind: "missing" };
   if (status === 409) {
+    const details = isRecord(body) && isRecord(body.details)
+      ? body.details
+      : null;
     const currentRevision =
-      isRecord(body) &&
-      typeof body.currentRevision === "number" &&
-      Number.isSafeInteger(body.currentRevision)
-        ? body.currentRevision
+      details &&
+      typeof details.currentRevision === "number" &&
+      Number.isSafeInteger(details.currentRevision)
+        ? details.currentRevision
         : undefined;
     return {
       kind: "revision-conflict",

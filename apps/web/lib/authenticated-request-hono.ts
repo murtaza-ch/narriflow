@@ -1,4 +1,5 @@
 import type { Context, Next } from "hono";
+import { isExpectedDomainFailure } from "@narriflow/services";
 import {
   authenticatedRequestPolicy,
   type BrowserActorScope,
@@ -12,8 +13,9 @@ import {
   type ActiveProjectScope,
 } from "./authenticated-request-policy";
 import {
+  applyAuthenticatedErrorResponse,
+  authenticatedRequestDomainFailure,
   authenticatedRequestHttpFailure,
-  normalizeAuthenticatedErrorResponse,
 } from "./authenticated-request-http";
 import { parseAuthenticatedJsonBody } from "./authenticated-request-input";
 
@@ -99,8 +101,15 @@ export async function authenticatedRequestHonoMiddleware(
         c.set(PROJECT_KEY, project);
         if (input !== undefined) c.set(INPUT_KEY, input);
         c.header("X-Request-ID", requestId);
-        await next();
-        return normalizeAuthenticatedErrorResponse(c.res, requestId);
+        try {
+          await next();
+        } catch (error) {
+          if (isExpectedDomainFailure(error)) {
+            throw authenticatedRequestDomainFailure(error);
+          }
+          throw error;
+        }
+        return applyAuthenticatedErrorResponse(c, requestId);
       };
     const diagnoseResult = async (
       response: Response,

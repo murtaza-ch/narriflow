@@ -5,6 +5,10 @@ import type {
   SocialPlatform,
 } from "@narriflow/validators";
 import type { ThumbnailSelection } from "./thumbnail-frame-preparation";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export type BulkScheduleCopy = {
   variantId: string;
@@ -91,13 +95,47 @@ export interface BulkScheduleStore {
   settleOperation(operationId: string, now: Date): Promise<BulkScheduleOperation>;
 }
 
-export class BulkSocialSchedulingError extends Error {
+const BULK_SOCIAL_SCHEDULING_FAILURES = {
+  campaign_schedule_claim_lost: "conflict",
+  campaign_schedule_duplicate_account: "invalid",
+  campaign_schedule_duplicate_clip: "invalid",
+  campaign_schedule_clip_not_found: "missing",
+  campaign_schedule_entitlement_required: "forbidden",
+  campaign_schedule_idempotency_conflict: "conflict",
+  campaign_schedule_input_invalid: "invalid",
+  campaign_schedule_item_incomplete: "conflict",
+  campaign_schedule_item_not_found: "missing",
+  campaign_schedule_item_failed: "unavailable",
+  campaign_schedule_not_found: "missing",
+  campaign_schedule_too_many_items: "invalid",
+  publication_provider_rate_limited: "rate_limited",
+  review_approval_required: "conflict",
+  schedule_date_invalid: "invalid",
+  schedule_frequency_invalid: "invalid",
+  schedule_local_time_ambiguous: "conflict",
+  schedule_local_time_nonexistent: "invalid",
+  schedule_time_invalid: "invalid",
+  schedule_timezone_invalid: "invalid",
+  schedule_timezone_mismatch: "invalid",
+  schedule_window_invalid: "invalid",
+  social_account_expired: "forbidden",
+  workspace_not_found: "missing",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type BulkSocialSchedulingErrorCode = keyof typeof BULK_SOCIAL_SCHEDULING_FAILURES;
+
+export class BulkSocialSchedulingError extends ExpectedDomainFailureError<BulkSocialSchedulingErrorCode> {
   constructor(
-    readonly code: string,
-    message = code,
+    code: BulkSocialSchedulingErrorCode,
+    message: string = code,
     readonly retryable = false,
   ) {
-    super(message);
+    super({
+      code,
+      kind: BULK_SOCIAL_SCHEDULING_FAILURES[code],
+      message,
+      details: retryable ? { retryable: true } : undefined,
+    });
     this.name = "BulkSocialSchedulingError";
   }
 }
@@ -467,13 +505,16 @@ export function createBulkSocialScheduling(dependencies: {
             socialPostId: scheduled.socialPostId,
           });
         } catch (error) {
-          const normalized = error instanceof BulkSocialSchedulingError
-            ? error
-            : new BulkSocialSchedulingError(
-                (error as { code?: string }).code ?? "campaign_schedule_item_failed",
-                error instanceof Error ? error.message : undefined,
-                Boolean((error as { retryable?: boolean }).retryable),
-              );
+          const normalized = error instanceof ExpectedDomainFailureError
+            ? {
+                code: error.code,
+                retryable:
+                  error.kind === "rate_limited" || error.kind === "unavailable",
+              }
+            : {
+                code: "campaign_schedule_item_failed",
+                retryable: false,
+              };
           await dependencies.store.settleItem(opened.operation.id, plan.requestKey, claimed.claimToken, {
             status: normalized.retryable ? "failed" : "ineligible",
             errorCode: normalized.code,

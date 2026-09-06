@@ -3,6 +3,10 @@ import {
   SOCIAL_PROVIDER_CAPABILITIES,
   type SocialPlatform,
 } from "@narriflow/validators";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export type ThumbnailSourceKind = "uploaded" | "generated" | "extracted_frame";
 
@@ -67,9 +71,32 @@ export interface ThumbnailFrameStore {
 	requeue(id: string): Promise<ThumbnailFrameRecord>;
 }
 
-export class ThumbnailPreparationError extends Error {
-  constructor(readonly code: string, message = code) {
-    super(message);
+const THUMBNAIL_PREPARATION_FAILURES = {
+  thumbnail_asset_publication_claim_lost: "conflict",
+  thumbnail_asset_publication_in_progress: "conflict",
+  thumbnail_asset_deleted: "missing",
+  thumbnail_asset_unavailable: "missing",
+  thumbnail_claim_lost: "conflict",
+  thumbnail_export_changed: "conflict",
+  thumbnail_export_mismatch: "conflict",
+  thumbnail_entitlement_required: "forbidden",
+  thumbnail_extraction_failed: "unavailable",
+  thumbnail_extraction_invalid: "unprocessable",
+  thumbnail_fingerprint_invalid: "invalid",
+  thumbnail_frame_time_invalid: "invalid",
+  thumbnail_idempotency_conflict: "conflict",
+  thumbnail_operation_in_progress: "conflict",
+  thumbnail_operation_not_found: "missing",
+  thumbnail_provider_constraint: "unprocessable",
+  thumbnail_source_missing: "missing",
+  thumbnail_source_unsupported: "unprocessable",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type ThumbnailPreparationErrorCode = keyof typeof THUMBNAIL_PREPARATION_FAILURES;
+
+export class ThumbnailPreparationError extends ExpectedDomainFailureError<ThumbnailPreparationErrorCode> {
+  constructor(code: ThumbnailPreparationErrorCode, message: string = code) {
+    super({ code, kind: THUMBNAIL_PREPARATION_FAILURES[code], message });
     this.name = "ThumbnailPreparationError";
   }
 }

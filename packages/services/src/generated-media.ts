@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { generationAccessForTier } from "./generation-usage";
 import type { BrandActorScope } from "./brand-ownership";
 import { workspaceAllowsCapability } from "@narriflow/validators";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export type GeneratedMediaJobStatus =
   | "queued"
@@ -165,23 +169,71 @@ export type GeneratedMediaReconciliation =
   | { kind: "failed" | "rejected" | "cancelled"; code: string }
   | { kind: "retry" };
 
-export class GeneratedMediaJobError extends Error {
-  constructor(readonly code: string) {
-    super(code);
+const generatedMediaJobFailureCatalog = {
+  generated_media_cancellation_pending: "conflict",
+  generated_media_claim_lost: "conflict",
+  generated_media_concurrency_limit_reached: "rate_limited",
+  generated_media_daily_limit_reached: "rate_limited",
+  generated_media_entitlement_required: "forbidden",
+  generated_media_forbidden: "forbidden",
+  generated_media_idempotency_conflict: "conflict",
+  generated_media_idempotency_invalid: "invalid",
+  generated_media_job_not_found: "missing",
+  generated_media_origin_not_found: "missing",
+  generated_media_prompt_invalid: "invalid",
+  generated_media_provider_result_unavailable: "unavailable",
+  generated_media_reconciliation_not_required: "conflict",
+  generated_media_reconciliation_required: "conflict",
+  generated_media_source_cue_invalid: "unprocessable",
+  generated_media_source_range_invalid: "unprocessable",
+  generated_media_trial_limit_reached: "rate_limited",
+  generated_media_result_not_found: "missing",
+  generated_media_usage_reconciliation_required: "conflict",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+type GeneratedMediaJobFailureCode = keyof typeof generatedMediaJobFailureCatalog;
+
+export class GeneratedMediaJobError extends ExpectedDomainFailureError<GeneratedMediaJobFailureCode> {
+  constructor(code: GeneratedMediaJobFailureCode) {
+    super({ code, kind: generatedMediaJobFailureCatalog[code], message: "The generated media request could not be completed" });
     this.name = "GeneratedMediaJobError";
   }
 }
 
-export class GeneratedMediaProviderError extends Error {
+const generatedMediaProviderFailureCatalog = {
+  generated_media_provider_malformed_output: "unavailable",
+  generated_media_provider_not_configured: "unavailable",
+  generated_media_provider_outcome_unknown: "unavailable",
+  generated_media_provider_output_too_large: "unavailable",
+  generated_media_provider_rate_limited: "rate_limited",
+  generated_media_provider_result_unavailable: "unavailable",
+  generated_media_provider_unavailable: "unavailable",
+  generated_media_provider_validation: "unprocessable",
+  generated_media_safety_rejected: "unprocessable",
+  provider_outcome_unknown: "unavailable",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+type GeneratedMediaProviderFailureCode = keyof typeof generatedMediaProviderFailureCatalog;
+
+export class GeneratedMediaProviderError extends ExpectedDomainFailureError<GeneratedMediaProviderFailureCode> {
   readonly outcomeUnknown: boolean;
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
 
   constructor(
-    readonly code: string,
+    code: GeneratedMediaProviderFailureCode,
     options: { outcomeUnknown?: boolean; retryable?: boolean; retryAfterMs?: number } = {},
   ) {
-    super(code);
+    super({
+      code,
+      kind: generatedMediaProviderFailureCatalog[code],
+      message: "Image generation is temporarily unavailable",
+      details: {
+        outcomeUnknown: options.outcomeUnknown ?? false,
+        retryable: options.retryable ?? false,
+      },
+      retryAfterSeconds: options.retryAfterMs ? options.retryAfterMs / 1_000 : undefined,
+    });
     this.name = "GeneratedMediaProviderError";
     this.outcomeUnknown = options.outcomeUnknown ?? false;
     this.retryable = options.retryable ?? false;

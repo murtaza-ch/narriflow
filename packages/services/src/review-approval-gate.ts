@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export type ReviewApprovalPrincipal =
 	| { kind: "workspace_user"; userId: string }
@@ -56,16 +60,33 @@ type BlockedItem = {
 	reason: ReviewApprovalBlockReason;
 };
 
-export class ReviewApprovalGateError extends Error {
+const REVIEW_APPROVAL_FAILURES = {
+  review_approval_policy_mismatch: "conflict",
+  review_approval_policy_invalid: "unavailable",
+  review_approval_required: "conflict",
+  review_export_not_found: "missing",
+  review_exports_required: "invalid",
+  review_override_audit_incomplete: "unavailable",
+  review_override_forbidden: "forbidden",
+  review_override_reason_invalid: "invalid",
+  review_override_conflict: "conflict",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type ReviewApprovalGateErrorCode = keyof typeof REVIEW_APPROVAL_FAILURES;
+
+export class ReviewApprovalGateError extends ExpectedDomainFailureError<
+  ReviewApprovalGateErrorCode,
+  { roundId: string | null; items: BlockedItem[] }
+> {
 	constructor(
-		readonly code: string,
+		code: ReviewApprovalGateErrorCode,
 		message: string,
-		readonly details?: {
+		details?: {
 			roundId: string | null;
 			items: BlockedItem[];
 		},
 	) {
-		super(message);
+		super({ code, kind: REVIEW_APPROVAL_FAILURES[code], message, details });
 		this.name = "ReviewApprovalGateError";
 	}
 }

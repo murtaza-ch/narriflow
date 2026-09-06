@@ -14,10 +14,27 @@ import {
 import { assertBrandMutationAllowedWithAnalytics, brandOwnerWhere, type BrandActorScope } from "./brand-ownership";
 import { assertProgramWriteEnabled } from "./program-rollout";
 import { withSerializableTransaction } from "./serializable-transaction";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
-export class SceneTemplateError extends Error {
-  constructor(readonly code: string, message: string) {
-    super(message);
+const sceneTemplateFailureCatalog = {
+  brand_profile_not_found: "missing",
+  scene_template_asset_invalid: "unprocessable",
+  scene_template_default_feature_unavailable: "forbidden",
+  scene_template_default_role_invalid: "invalid",
+  scene_template_font_invalid: "unprocessable",
+  scene_template_not_found: "missing",
+  scene_template_profile_not_found: "missing",
+  scene_template_revision_conflict: "conflict",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+type SceneTemplateFailureCode = keyof typeof sceneTemplateFailureCatalog;
+
+export class SceneTemplateError extends ExpectedDomainFailureError<SceneTemplateFailureCode> {
+  constructor(code: SceneTemplateFailureCode, message: string) {
+    super({ code, kind: sceneTemplateFailureCatalog[code], message });
     this.name = "SceneTemplateError";
   }
 }

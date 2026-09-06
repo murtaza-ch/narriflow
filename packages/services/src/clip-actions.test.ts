@@ -546,6 +546,6 @@ describe("ClipActionError", () => {
 
     expect(error).toBeInstanceOf(Error);
     expect(error.code).toBe("clip_has_scheduled_posts");
-    expect(error.message).toBe("2 posts");
+    expect(error.message).toBe("Cancel scheduled posts before deleting this clip");
   });
 });

@@ -357,7 +357,7 @@ describe("Clip Editor Document Persistence", () => {
           brollUrl: "http://127.0.0.1/private.mp4",
         },
       }),
-    ).rejects.toThrow("unsafe_url");
+    ).rejects.toMatchObject({ code: "remote_url_unsafe", kind: "invalid" });
     expect(store.inspect(scope.clipId)?.writeCount).toBe(1);
   });
 
@@ -597,7 +597,7 @@ describe("Clip Editor Document Persistence", () => {
         ...unsafe.scope,
         intent: { kind: "reset", baseRevision: 3 },
       }),
-    ).rejects.toThrow("unsafe_url");
+    ).rejects.toMatchObject({ code: "remote_url_unsafe", kind: "invalid" });
     expect(unsafe.store.inspect(unsafe.scope.clipId)!.writeCount).toBe(0);
 
     const purged = setup(stored({ sourceStorageKey: null }));
@@ -629,7 +629,7 @@ describe("Clip Editor Document Persistence", () => {
           document: document({ studioEdits }),
         },
       }),
-    ).rejects.toThrow("unsafe_url");
+    ).rejects.toMatchObject({ code: "remote_url_unsafe", kind: "invalid" });
     expect(store.inspect(scope.clipId)!.writeCount).toBe(0);
   });
 

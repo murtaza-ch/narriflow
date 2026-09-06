@@ -5,7 +5,6 @@ import {
   grantUploadPartsSchema,
   openUploadSessionSchema,
   readUploadSessionSchema,
-  userErrorMessage,
   type DiscardUploadSessionInput,
   type FinalizeUploadSessionInput,
   type GrantUploadPartsInput,
@@ -13,11 +12,6 @@ import {
   type ReadUploadSessionInput,
 } from "@narriflow/validators";
 import {
-  UploadSessionIdempotencyConflictError,
-  UploadSessionIntegrityError,
-  UploadSessionInvalidStateError,
-  UploadSessionNotFoundError,
-  UploadSessionQuotaRefusedError,
   type DiscardUploadSessionOutcome,
   type FinalizeUploadSessionOutcome,
   type GrantUploadPartsOutcome,
@@ -80,54 +74,16 @@ export function createUploadSessionHttpRoutes(
       );
     }
 
-    try {
-      const outcome = await dependencies.service.open(
+    const outcome = await dependencies.service.open(
         appUser.actorUserId,
         parsed.data,
         appUser.workspaceId,
-      );
-      if (outcome.outcome === "reconciling") {
-        c.header("Retry-After", String(outcome.retryAfterSeconds));
-        return c.json(outcome, 202);
-      }
-      return c.json(outcome, 200);
-    } catch (error) {
-      if (error instanceof UploadSessionIdempotencyConflictError) {
-        return c.json(
-          {
-            error: error.code,
-            message: userErrorMessage(error.code),
-          },
-          409,
-        );
-      }
-      if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
-        );
-      }
-      if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
-        );
-      }
-      if (error instanceof UploadSessionIntegrityError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 422,
-        );
-      }
-      if (error instanceof UploadSessionQuotaRefusedError) {
-        return c.json(
-          { error: error.code, message: userErrorMessage(error.code), details: error.details,
-          },
-          402,
-        );
-      }
-      return c.json(
-        {
-          error: "upload_session_unavailable",
-          message: "Upload storage is temporarily unavailable.",
-        },
-        503,
-      );
+    );
+    if (outcome.outcome === "reconciling") {
+      c.header("Retry-After", String(outcome.retryAfterSeconds));
+      return c.json(outcome, 202);
     }
+    return c.json(outcome, 200);
   });
 
   routes.post("/upload-sessions/finalize", async (c) => {
@@ -142,38 +98,16 @@ export function createUploadSessionHttpRoutes(
       );
     }
 
-    try {
-      const outcome = await dependencies.service.finalize(
+    const outcome = await dependencies.service.finalize(
         appUser.actorUserId,
         parsed.data,
         appUser.workspaceId,
-      );
-      if (outcome.outcome === "reconciling") {
-        c.header("Retry-After", String(outcome.retryAfterSeconds));
-        return c.json(outcome, 202);
-      }
-      return c.json(outcome, 200);
-    } catch (error) {
-      if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
-        );
-      }
-      if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
-        );
-      }
-      if (error instanceof UploadSessionIntegrityError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 422,
-        );
-      }
-      return c.json(
-        {
-          error: "upload_session_unavailable",
-          message: "Upload verification is temporarily unavailable.",
-        },
-        503,
-      );
+    );
+    if (outcome.outcome === "reconciling") {
+      c.header("Retry-After", String(outcome.retryAfterSeconds));
+      return c.json(outcome, 202);
     }
+    return c.json(outcome, 200);
   });
 
   routes.post("/upload-sessions/grants", async (c) => {
@@ -188,32 +122,14 @@ export function createUploadSessionHttpRoutes(
       );
     }
 
-    try {
-      return c.json(
+    return c.json(
         await dependencies.service.grant(
           appUser.actorUserId,
           parsed.data,
           appUser.workspaceId,
         ),
-        200,
-      );
-    } catch (error) {
-      if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
-        );
-      }
-      if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
-        );
-      }
-      return c.json(
-        {
-          error: "upload_session_unavailable",
-          message: "Upload grants are temporarily unavailable.",
-        },
-        503,
-      );
-    }
+      200,
+    );
   });
 
   routes.post("/upload-sessions/status", async (c) => {
@@ -226,34 +142,16 @@ export function createUploadSessionHttpRoutes(
         400,
       );
     }
-    try {
-      const outcome = await dependencies.service.status(
+    const outcome = await dependencies.service.status(
         appUser.actorUserId,
         parsed.data,
         appUser.workspaceId,
-      );
-      if (outcome.outcome === "reconciling") {
-        c.header("Retry-After", String(outcome.retryAfterSeconds));
-        return c.json(outcome, 202);
-      }
-      return c.json(outcome, 200);
-    } catch (error) {
-      if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
-        );
-      }
-      if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
-        );
-      }
-      return c.json(
-        {
-          error: "upload_session_unavailable",
-          message: "Upload status is temporarily unavailable.",
-        },
-        503,
-      );
+    );
+    if (outcome.outcome === "reconciling") {
+      c.header("Retry-After", String(outcome.retryAfterSeconds));
+      return c.json(outcome, 202);
     }
+    return c.json(outcome, 200);
   });
 
   routes.post("/upload-sessions/discard", async (c) => {
@@ -266,34 +164,16 @@ export function createUploadSessionHttpRoutes(
         400,
       );
     }
-    try {
-      const outcome = await dependencies.service.discard(
+    const outcome = await dependencies.service.discard(
         appUser.actorUserId,
         parsed.data,
         appUser.workspaceId,
-      );
-      if (outcome.outcome === "compensating") {
-        c.header("Retry-After", String(outcome.retryAfterSeconds));
-        return c.json(outcome, 202);
-      }
-      return c.json(outcome, 200);
-    } catch (error) {
-      if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
-        );
-      }
-      if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
-        );
-      }
-      return c.json(
-        {
-          error: "upload_session_unavailable",
-          message: "Upload cleanup is temporarily unavailable.",
-        },
-        503,
-      );
+    );
+    if (outcome.outcome === "compensating") {
+      c.header("Retry-After", String(outcome.retryAfterSeconds));
+      return c.json(outcome, 202);
     }
+    return c.json(outcome, 200);
   });
 
   return routes;

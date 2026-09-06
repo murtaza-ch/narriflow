@@ -33,7 +33,7 @@ test("classifies retryable and terminal editor responses without conflating them
     code: "editor_document_empty_timeline",
   });
   expect(
-    classifyStudioCloudResponse(409, { currentRevision: 9 }),
+    classifyStudioCloudResponse(409, { details: { currentRevision: 9 } }),
   ).toEqual({ kind: "revision-conflict", currentRevision: 9 });
 });
 

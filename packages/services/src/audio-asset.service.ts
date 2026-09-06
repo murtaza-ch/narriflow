@@ -24,6 +24,8 @@ import {
   presignDownloadUrl,
   presignSingleUploadUrl,
 } from "./r2-storage";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import { isUniqueConstraintError } from "./generation-sequencing";
 
 function log(
   level: "info" | "error",
@@ -36,9 +38,9 @@ function log(
 /** L3: thrown by `deleteUserAsset` when the id doesn't resolve to a live row
  *  the caller owns — lets the route map this to a clean 404 instead of the
  *  generic 400 every other service error gets. */
-export class AudioAssetNotFoundError extends Error {
+export class AudioAssetNotFoundError extends ExpectedDomainFailureError<"audio_asset_not_found"> {
   constructor() {
-    super("audio asset not found");
+    super({ code: "audio_asset_not_found", kind: "missing", message: "Audio asset not found" });
     this.name = "AudioAssetNotFoundError";
   }
 }
@@ -46,12 +48,17 @@ export class AudioAssetNotFoundError extends Error {
 /** Stable render-boundary classification for a live asset whose short-lived
  * access location could not be refreshed. The underlying storage error is
  * deliberately not exposed because provider messages may contain credentials. */
-export class AudioAssetAccessError extends Error {
-  readonly code = "audio_asset_presign_failed";
-
+export class AudioAssetAccessError extends ExpectedDomainFailureError<"audio_asset_presign_failed"> {
   constructor() {
-    super("audio asset access location unavailable");
+    super({ code: "audio_asset_presign_failed", kind: "unavailable", message: "Audio asset access is temporarily unavailable" });
     this.name = "AudioAssetAccessError";
+  }
+}
+
+export class AudioAssetDuplicateError extends ExpectedDomainFailureError<"audio_asset_duplicate"> {
+  constructor() {
+    super({ code: "audio_asset_duplicate", kind: "conflict", message: "This upload has already been added to your library" });
+    this.name = "AudioAssetDuplicateError";
   }
 }
 
@@ -221,6 +228,9 @@ export class AudioAssetService {
         title: parsed.title,
         durationSec: parsed.durationSec,
       },
+    }).catch((error) => {
+      if (isUniqueConstraintError(error)) throw new AudioAssetDuplicateError();
+      throw error;
     });
     return toListRow(created);
   }

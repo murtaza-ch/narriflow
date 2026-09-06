@@ -85,6 +85,10 @@ import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
 import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
+import {
   getWorkflowRunLifecycle,
   type WorkflowAttemptRef,
 } from "./workflow-run-lifecycle";
@@ -452,12 +456,44 @@ function getClipRenderResetData(
  * the generic fallback. Thrown by rename/duplicate/delete/title-suggestion;
  * the older clip mutations predate this and throw plain Errors.
  */
-export class ClipActionError extends Error {
+const clipActionFailureCatalog = {
+  clip_create_from_selection_failed: "unprocessable",
+  clip_delete_failed: "unprocessable",
+  clip_duplicate_failed: "unprocessable",
+  clip_has_scheduled_posts: "conflict",
+  clip_not_found: "missing",
+  clip_selection_invalid: "unprocessable",
+  clip_storage_delete_incomplete: "unavailable",
+  clip_title_suggestion_failed: "unavailable",
+  editor_boundaries_invalid: "unprocessable",
+  editor_document_empty_timeline: "unprocessable",
+  motion_feature_unavailable: "forbidden",
+  openai_not_configured: "unavailable",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type ClipActionFailureCode = keyof typeof clipActionFailureCatalog;
+
+const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
+  clip_create_from_selection_failed: "The selected clip could not be created",
+  clip_delete_failed: "The clip could not be deleted",
+  clip_duplicate_failed: "The clip could not be duplicated",
+  clip_has_scheduled_posts: "Cancel scheduled posts before deleting this clip",
+  clip_not_found: "Clip not found",
+  clip_selection_invalid: "Choose a valid transcript selection",
+  clip_storage_delete_incomplete: "Clip storage cleanup is temporarily unavailable",
+  clip_title_suggestion_failed: "Title suggestions are temporarily unavailable",
+  editor_boundaries_invalid: "Choose valid clip boundaries",
+  editor_document_empty_timeline: "The clip timeline cannot be empty",
+  motion_feature_unavailable: "Motion export is available on Creator and above",
+  openai_not_configured: "Title suggestions are temporarily unavailable",
+};
+
+export class ClipActionError extends ExpectedDomainFailureError<ClipActionFailureCode> {
   constructor(
-    readonly code: string,
-    message: string,
+    code: ClipActionFailureCode,
+    _message: string,
   ) {
-    super(message);
+    super({ code, kind: clipActionFailureCatalog[code], message: clipActionSafeMessages[code] });
     this.name = "ClipActionError";
   }
 }

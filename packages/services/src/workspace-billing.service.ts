@@ -9,6 +9,10 @@ import {
 import { getPrismaClient } from "@narriflow/db/client";
 import { projectRetentionService } from "./project-retention.service";
 import { randomUUID } from "node:crypto";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export type WorkspaceBillingHealth = BillingHealth;
 
@@ -435,12 +439,46 @@ export type WorkspaceBillingErrorCode =
   | "seat_provider_not_configured"
   | "workspace_not_found";
 
-export class WorkspaceBillingError extends Error {
+const workspaceBillingFailureCatalog = {
+  billing_customer_missing: "conflict",
+  billing_forbidden: "forbidden",
+  billing_portal_required: "conflict",
+  checkout_attempt_conflict: "conflict",
+  checkout_attempt_invalid: "invalid",
+  checkout_attempt_missing: "missing",
+  checkout_attempt_terminal: "conflict",
+  checkout_not_configured: "unavailable",
+  checkout_session_conflict: "conflict",
+  customer_identity_conflict: "conflict",
+  portal_not_configured: "unavailable",
+  price_not_configured: "unavailable",
+  seat_provider_not_configured: "unavailable",
+  workspace_not_found: "missing",
+} as const satisfies ExpectedDomainFailureCatalog<WorkspaceBillingErrorCode>;
+
+const workspaceBillingSafeMessages: Record<WorkspaceBillingErrorCode, string> = {
+  billing_customer_missing: "No billing customer is available for this workspace",
+  billing_forbidden: "Only the workspace owner can manage billing",
+  billing_portal_required: "Manage the current plan in the billing portal",
+  checkout_attempt_conflict: "This Checkout request was already used with different details",
+  checkout_attempt_invalid: "The Checkout request is invalid",
+  checkout_attempt_missing: "The Checkout request could not be found",
+  checkout_attempt_terminal: "The previous Checkout is no longer available. Start a new one safely",
+  checkout_not_configured: "Billing is temporarily unavailable",
+  checkout_session_conflict: "Checkout ownership could not be verified. Contact support",
+  customer_identity_conflict: "The billing account needs support before it can be changed",
+  portal_not_configured: "The billing portal is temporarily unavailable",
+  price_not_configured: "This plan is temporarily unavailable",
+  seat_provider_not_configured: "Seat billing is temporarily unavailable",
+  workspace_not_found: "The workspace could not be found",
+};
+
+export class WorkspaceBillingError extends ExpectedDomainFailureError<WorkspaceBillingErrorCode> {
   constructor(
-    public readonly code: WorkspaceBillingErrorCode,
-    message: string,
+    code: WorkspaceBillingErrorCode,
+    _message: string,
   ) {
-    super(message);
+    super({ code, kind: workspaceBillingFailureCatalog[code], message: workspaceBillingSafeMessages[code] });
     this.name = "WorkspaceBillingError";
   }
 }

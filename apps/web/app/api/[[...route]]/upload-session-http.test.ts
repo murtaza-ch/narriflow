@@ -1,12 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  UploadSessionIdempotencyConflictError,
-  UploadSessionIntegrityError,
-  UploadSessionInvalidStateError,
-  UploadSessionNotFoundError,
-  UploadSessionQuotaRefusedError,
-} from "@narriflow/services";
-import {
   createUploadSessionHttpRoutes,
   type UploadSessionHttpDependencies,
 } from "./upload-session-http";
@@ -150,78 +143,8 @@ describe("Upload Session HTTP routes", () => {
     expect(calls[0]?.[2]).toBe(WORKSPACE_ID);
   });
 
-  test("maps open-session domain failures to stable HTTP statuses", async () => {
-    const quota = new UploadSessionQuotaRefusedError({
-      tier: "free",
-      limitMinutes: 60,
-      usedMinutes: 60,
-      requestedMinutes: 1,
-    });
-    const cases = [
-      [new UploadSessionIdempotencyConflictError(), 409],
-      [new UploadSessionInvalidStateError(), 409],
-      [new UploadSessionNotFoundError(), 404],
-      [new UploadSessionIntegrityError("mismatch"), 422],
-      [quota, 402],
-      [new Error("provider secret"), 503],
-    ] as const;
-
-    for (const [failure, expectedStatus] of cases) {
-      const base = dependencies();
-      const app = createUploadSessionHttpRoutes(
-        dependencies({
-          service: {
-            ...base.service,
-            open: async () => {
-              throw failure;
-            },
-          },
-        }),
-      );
-      const response = await app.request("/upload-sessions/open", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(OPEN_PAYLOAD),
-      });
-      expect(response.status).toBe(expectedStatus);
-      expect(JSON.stringify(await response.json())).not.toContain(
-        "provider secret",
-      );
-    }
-  });
-
-  test("validates finalization and maps its domain failures", async () => {
+  test("strictly validates finalization input", async () => {
     const payload = { sessionId: SESSION_ID, parts: [] };
-    const failures = [
-      [new UploadSessionNotFoundError(), 404],
-      [new UploadSessionInvalidStateError(), 409],
-      [new UploadSessionIntegrityError("mismatch"), 422],
-      [new Error("provider secret"), 503],
-    ] as const;
-
-    for (const [failure, expectedStatus] of failures) {
-      const base = dependencies();
-      const app = createUploadSessionHttpRoutes(
-        dependencies({
-          service: {
-            ...base.service,
-            finalize: async () => {
-              throw failure;
-            },
-          },
-        }),
-      );
-      const response = await app.request("/upload-sessions/finalize", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      expect(response.status).toBe(expectedStatus);
-      expect(JSON.stringify(await response.json())).not.toContain(
-        "provider secret",
-      );
-    }
-
     const invalidResponse = await createUploadSessionHttpRoutes(
       dependencies(),
     ).request("/upload-sessions/finalize", {

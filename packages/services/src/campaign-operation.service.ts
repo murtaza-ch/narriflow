@@ -51,10 +51,44 @@ import { presignDownloadUrl } from "./r2-storage";
 import { sceneTemplateService, SceneTemplateError } from "./scene-template.service";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { analyticsService } from "./analytics.service";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
-export class CampaignOperationError extends Error {
-  constructor(readonly code: string, message: string) {
-    super(message);
+const CAMPAIGN_OPERATION_FAILURES = {
+  campaign_brand_profile_stale: "conflict",
+  campaign_operation_admission_failed: "unavailable",
+  campaign_operation_already_retried: "conflict",
+  campaign_operation_claim_lost: "conflict",
+  campaign_operation_feature_unavailable: "forbidden",
+  campaign_operation_forbidden: "forbidden",
+  campaign_operation_idempotency_conflict: "conflict",
+  campaign_operation_in_progress: "conflict",
+  campaign_operation_no_eligible_items: "invalid",
+  campaign_operation_no_retryable_items: "invalid",
+  campaign_operation_not_found: "missing",
+  campaign_operation_not_retryable: "invalid",
+  campaign_project_brand_profile_invalid: "unprocessable",
+  campaign_project_brand_profile_missing: "invalid",
+  campaign_project_not_found: "missing",
+  campaign_style_not_member: "invalid",
+  campaign_style_stale: "conflict",
+  export_bundle_duplicate_clip: "invalid",
+  export_bundle_empty: "invalid",
+  export_bundle_expired: "invalid",
+  export_bundle_feature_unavailable: "forbidden",
+  export_bundle_not_found: "missing",
+  export_bundle_not_ready: "conflict",
+  export_bundle_retention_invalid: "unavailable",
+  scene_template_fingerprint_stale: "conflict",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type CampaignOperationErrorCode = keyof typeof CAMPAIGN_OPERATION_FAILURES;
+
+export class CampaignOperationError extends ExpectedDomainFailureError<CampaignOperationErrorCode> {
+  constructor(code: CampaignOperationErrorCode, message: string) {
+    super({ code, kind: CAMPAIGN_OPERATION_FAILURES[code], message });
     this.name = "CampaignOperationError";
   }
 }
@@ -1479,19 +1513,12 @@ export class CampaignOperationService {
     } else if (request.action === "apply_scene_template") {
       clips = request.input.clips;
       placement = request.input.placement;
-      try {
-        sceneTemplate = await sceneTemplateService.freezeForInsertion(
-          scope,
-          request.profileId,
-          request.templateId,
-          { id: randomUUID(), anchorSec: 0 },
-        );
-      } catch (error) {
-        if (error instanceof SceneTemplateError) {
-          throw new CampaignOperationError(error.code, error.message);
-        }
-        throw error;
-      }
+      sceneTemplate = await sceneTemplateService.freezeForInsertion(
+        scope,
+        request.profileId,
+        request.templateId,
+        { id: randomUUID(), anchorSec: 0 },
+      );
       if (
         sceneTemplate.templateSnapshot?.fingerprint !==
         request.input.templateFingerprint

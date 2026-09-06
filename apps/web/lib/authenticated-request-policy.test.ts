@@ -377,7 +377,12 @@ describe("Authenticated Request Policy", () => {
     });
     expect(expected).toMatchObject({
       ok: false,
-      failure: { code: "revision_conflict", status: 409 },
+      requestId: "request-1",
+      failure: {
+        code: "revision_conflict",
+        status: 409,
+        requestId: "request-1",
+      },
     });
 
     await expect(

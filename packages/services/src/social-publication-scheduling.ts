@@ -20,6 +20,10 @@ import type {
 	ReviewApprovalPrincipal,
 	ReviewApprovalResult,
 } from "./review-approval-gate";
+import {
+	ExpectedDomainFailureError,
+	type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export type FrozenPublicationState = {
 	clipExportId: string;
@@ -105,23 +109,44 @@ export interface PublicationSchedulingStore {
 	}): Promise<void>;
 }
 
-export class PublicationIntentConflictError extends Error {
-	readonly code = "publication_intent_conflict";
-
+export class PublicationIntentConflictError extends ExpectedDomainFailureError<"publication_intent_conflict"> {
 	constructor() {
-		super(
-			"The idempotency key is already bound to a different publication intent",
-		);
+		super({
+			code: "publication_intent_conflict",
+			kind: "conflict",
+			message: "The idempotency key is already bound to a different publication intent",
+		});
 		this.name = "PublicationIntentConflictError";
 	}
 }
 
-export class PublicationIntentStateError extends Error {
+const publicationIntentFailureCatalog = {
+	clip_not_found: "missing",
+	editor_revision_conflict: "conflict",
+	project_not_found: "missing",
+	publication_account_schedule_conflict: "conflict",
+	publication_already_started: "conflict",
+	publication_export_mismatch: "conflict",
+	publication_export_variant_missing: "missing",
+	publication_intent_active: "conflict",
+	publication_intent_incomplete: "unprocessable",
+	publication_media_preparation_failed: "unavailable",
+	publication_schedule_in_past: "invalid",
+	review_approval_result_incomplete: "unavailable",
+	social_account_expired: "unprocessable",
+	social_account_unavailable: "missing",
+	social_post_not_found: "missing",
+	social_provider_publishing_disabled: "unavailable",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+type PublicationIntentStateErrorCode = keyof typeof publicationIntentFailureCatalog;
+
+export class PublicationIntentStateError extends ExpectedDomainFailureError<PublicationIntentStateErrorCode> {
 	constructor(
-		readonly code: string,
+		code: PublicationIntentStateErrorCode,
 		message: string,
 	) {
-		super(message);
+		super({ code, kind: publicationIntentFailureCatalog[code], message });
 		this.name = "PublicationIntentStateError";
 	}
 }
@@ -884,7 +909,7 @@ export function createProductionSocialPublicationScheduling() {
 			}
 			if (variant.status === "failed") {
 				throw new PublicationIntentStateError(
-					variant.errorCode ?? "publication_media_preparation_failed",
+					"publication_media_preparation_failed",
 					"The exact Clip Export Variant failed to render",
 				);
 			}

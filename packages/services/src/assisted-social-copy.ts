@@ -5,6 +5,10 @@ import {
   type BrandVoiceGuidance,
   type SocialPlatform,
 } from "@narriflow/validators";
+import {
+  ExpectedDomainFailureError,
+  type ExpectedDomainFailureCatalog,
+} from "./expected-domain-failure";
 
 export const ASSISTED_COPY_PROMPT_VERSION = "assisted-social-copy-v1";
 
@@ -153,9 +157,42 @@ export interface AssistedCopyStore {
   }): Promise<AssistedCopyVariant>;
 }
 
-export class AssistedSocialCopyError extends Error {
-  constructor(readonly code: string, message = code) {
-    super(message);
+const ASSISTED_SOCIAL_COPY_FAILURES = {
+  assisted_copy_clip_not_found: "missing",
+  assisted_copy_confirmation_invalid: "invalid",
+  assisted_copy_confirmation_stale: "conflict",
+  assisted_copy_generation_in_progress: "conflict",
+  assisted_copy_generation_not_found: "missing",
+  assisted_copy_generation_failed: "unavailable",
+  assisted_copy_entitlement_required: "forbidden",
+  assisted_copy_idempotency_conflict: "conflict",
+  assisted_copy_input_invalid: "invalid",
+  assisted_copy_locked_content_missing: "invalid",
+  assisted_copy_moderation_rejected: "unprocessable",
+  assisted_copy_moderation_rate_limited: "rate_limited",
+  assisted_copy_moderation_unavailable: "unavailable",
+  assisted_copy_provider_not_configured: "unavailable",
+  assisted_copy_provider_failed: "unavailable",
+  assisted_copy_provider_output_invalid: "unavailable",
+  assisted_copy_provider_rate_limited: "rate_limited",
+  assisted_copy_provider_rejected: "unprocessable",
+  assisted_copy_provider_timeout: "unavailable",
+  assisted_copy_provider_unavailable: "unavailable",
+  assisted_copy_variant_invalid: "invalid",
+  assisted_copy_variant_not_found: "missing",
+} as const satisfies ExpectedDomainFailureCatalog<string>;
+
+export type AssistedSocialCopyErrorCode = keyof typeof ASSISTED_SOCIAL_COPY_FAILURES;
+
+function isAssistedSocialCopyErrorCode(
+  code: string,
+): code is AssistedSocialCopyErrorCode {
+  return code in ASSISTED_SOCIAL_COPY_FAILURES;
+}
+
+export class AssistedSocialCopyError extends ExpectedDomainFailureError<AssistedSocialCopyErrorCode> {
+  constructor(code: AssistedSocialCopyErrorCode, message: string = code) {
+    super({ code, kind: ASSISTED_SOCIAL_COPY_FAILURES[code], message });
     this.name = "AssistedSocialCopyError";
   }
 }
@@ -303,7 +340,10 @@ export function createAssistedSocialCopy(dependencies: {
   now(): Date;
   timeoutMs: number;
 }) {
-  async function fail(generation: AssistedCopyGeneration, code: string): Promise<never> {
+  async function fail(
+    generation: AssistedCopyGeneration,
+    code: AssistedSocialCopyErrorCode,
+  ): Promise<never> {
     await dependencies.store.settle(generation.id, {
       status: "failed",
       model: generation.model,
@@ -376,7 +416,12 @@ export function createAssistedSocialCopy(dependencies: {
         }
         if (opened.record.status === "completed") return publicGeneration(opened.record, true);
         if (opened.record.status === "failed") {
-          throw new AssistedSocialCopyError(opened.record.errorCode ?? "assisted_copy_generation_failed");
+          const storedCode = opened.record.errorCode ?? "assisted_copy_generation_failed";
+          throw new AssistedSocialCopyError(
+            isAssistedSocialCopyErrorCode(storedCode)
+              ? storedCode
+              : "assisted_copy_generation_failed",
+          );
         }
         throw new AssistedSocialCopyError("assisted_copy_generation_in_progress");
       }

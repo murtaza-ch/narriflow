@@ -45,14 +45,18 @@ export type FetchRssFeedOptions = {
   resolver?: HostResolver;
 };
 
-export class RssFeedError extends Error {
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
+
+export class RssFeedError extends ExpectedDomainFailureError<
+  "rss_invalid_xml" | "rss_unsupported_document" | "rss_no_media_episodes"
+> {
   constructor(
-    public readonly code:
+    code:
       | "rss_invalid_xml"
       | "rss_unsupported_document"
       | "rss_no_media_episodes",
   ) {
-    super(code);
+    super({ code, kind: "unprocessable", message: "The RSS feed could not be used" });
     this.name = "RssFeedError";
   }
 }

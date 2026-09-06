@@ -51,7 +51,6 @@ import {
   updateClipStudioEditsSchema,
   updateClipTitleSchema,
   updateClipTranscriptSliceSchema,
-  hasUserErrorMessage,
   userErrorMessage,
   resolvePricingTier,
   isCensorSegmentStale,
@@ -73,44 +72,24 @@ import {
 import {
   audioAssetService,
   assistedSocialCopyService,
-  AssistedSocialCopyError,
-  AudioAssetNotFoundError,
   billingService,
   analyticsService,
   autopilotService,
   searchBrollVideos,
   isPexelsConfigured,
   brandTemplateService,
-  BrandTemplateForbiddenError,
-  BrandTemplateNotFoundError,
   clipService,
   clipEditorDocumentPersistence,
   clipExportService,
-  ClipExportError,
-  ClipExportRevisionConflictError,
-  ClipActionError,
-  ClipEditorRevisionConflictError,
   contentSuiteService,
-  ContentSuiteError,
   dubbingService,
-  DubbingTierError,
-  isUniqueConstraintError,
   projectService,
-  PublicationIntentConflictError,
-  PublicationIntentStateError,
-  ReviewApprovalGateError,
-  QuotaExceededError,
-  RssFeedError,
-  RemoteFetchError,
   socialOAuthService,
   SocialOAuthError,
   socialService,
-  SocialPublicationRecoveryError,
   acceptTikTokPublicationWebhook,
   TikTokPublicationWebhookError,
-  UnsafeUrlError,
   uploadSessionService,
-  UploadTooLongError,
   workspaceLibraryService,
   workspaceService,
   type ProjectListSort,
@@ -118,21 +97,14 @@ import {
   type ProjectListStatusFilter,
   campaignOperationService,
   bulkSocialSchedulingService,
-  BulkSocialSchedulingError,
-  CampaignOperationError,
   reviewService,
   reviewNotificationService,
-  ReviewServiceError,
   visualAssetService,
-  VisualAssetIntegrityError,
   brandFontService,
-  BrandFontIntegrityError,
-  ProgramWriteDisabledError,
   hasFeature,
   isProgramWriteEnabled,
   autoCensorService,
   thumbnailFramePreparationService,
-  ThumbnailPreparationError,
 } from "@narriflow/services";
 import {
   resolveCanonicalAppOrigin,
@@ -146,10 +118,7 @@ import {
 import { createUploadSessionHttpRoutes } from "./upload-session-http";
 import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
-import { clipEditorPersistenceHttpError } from "./editor-persistence-http";
-import { clipDeleteHttpError } from "./clip-delete-http";
 import { createBrandProfileRoutes } from "./brand-profile-routes";
-import { reviewApprovalHttpStatus } from "@/lib/review-approval-http";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
@@ -280,26 +249,6 @@ app.route(
   }),
 );
 
-function errorMessage(error: unknown) {
-  if (
-    !error ||
-    typeof error !== "object" ||
-    !("code" in error) ||
-    typeof error.code !== "string"
-  ) {
-    throw error;
-  }
-  const code = error.code;
-  if (!hasUserErrorMessage(code)) throw error;
-  return userErrorMessage(code) ?? "The request could not be completed.";
-}
-
-function socialPublicationErrorStatus(error: SocialPublicationRecoveryError) {
-  if (error.code === "social_publication_not_found") return 404 as const;
-  if (error.code === "social_publication_reference_invalid") return 400 as const;
-  return 409 as const;
-}
-
 function getOAuthOrigin(requestUrl: string) {
   return resolveCanonicalAppOrigin({
     configuredOrigin: process.env.NEXT_PUBLIC_APP_URL,
@@ -315,16 +264,8 @@ app.get("/health", (c) => c.json({ ok: true, service: "narriflow-web-api" }));
 app.get("/autopilot/rules", async (c) => {
   const appUser = authenticatedHonoActor(c);
 
-  try {
-    const rules = await autopilotService.listRules(appUser.workspaceOwnerUserId, appUser.workspaceId,
-    );
-    return c.json({ rules }, 200);
-  } catch (error) {
-    return c.json(
-      { error: "autopilot_rules_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  const rules = await autopilotService.listRules(appUser.workspaceOwnerUserId, appUser.workspaceId);
+  return c.json({ rules }, 200);
 });
 
 app.post("/autopilot/rules", async (c) => {
@@ -338,19 +279,8 @@ app.post("/autopilot/rules", async (c) => {
       400);
   }
 
-  try {
-    const rule = await autopilotService.createRule(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(rule, 201);
-  } catch (error) {
-    return c.json(
-      {
-        error: "autopilot_rule_create_failed",
-        message: errorMessage(error),
-      },
-      400,
-    );
-  }
+  const rule = await autopilotService.createRule(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json(rule, 201);
 });
 
 app.patch("/autopilot/rules/:ruleId", async (c) => {
@@ -364,53 +294,31 @@ app.patch("/autopilot/rules/:ruleId", async (c) => {
       400);
   }
 
-  try {
-    const rule = await autopilotService.updateRule(
+  const rule = await autopilotService.updateRule(
       appUser.workspaceOwnerUserId,
       c.req.param("ruleId"),
       parsed.data,
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(rule, 200);
-  } catch (error) {
-    return c.json(
-      { error: "autopilot_rule_update_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(rule, 200);
 });
 
 app.delete("/autopilot/rules/:ruleId", async (c) => {
   const appUser = authenticatedHonoActor(c);
 
-  try {
-    await autopilotService.deleteRule(appUser.workspaceOwnerUserId, c.req.param("ruleId"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json({ ok: true }, 200);
-  } catch (error) {
-    return c.json(
-      { error: "autopilot_rule_delete_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  await autopilotService.deleteRule(appUser.workspaceOwnerUserId, c.req.param("ruleId"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json({ ok: true }, 200);
 });
 
 app.post("/autopilot/rules/:ruleId/run-now", async (c) => {
   const appUser = authenticatedHonoActor(c);
 
-  try {
-    const rule = await autopilotService.triggerRuleNow(
+  const rule = await autopilotService.triggerRuleNow(
       appUser.workspaceOwnerUserId,
       c.req.param("ruleId"),
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(rule, 200);
-  } catch (error) {
-    return c.json(
-      { error: "autopilot_rule_run_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(rule, 200);
 });
 
 app.get("/projects", async (c) => {
@@ -439,8 +347,7 @@ app.get("/projects", async (c) => {
     ? (sortRaw as ProjectListSort | undefined)
     : undefined;
 
-  try {
-    const page = await projectService.listProjectsWithStatsPage(appUser.actorUserId, {
+  const page = await projectService.listProjectsWithStatsPage(appUser.actorUserId, {
       limit,
       cursor,
       workspaceId: appUser.workspaceId,
@@ -450,29 +357,18 @@ app.get("/projects", async (c) => {
       source,
       sort,
     },
-    );
-    return c.json(page, 200);
-  } catch (error) {
-    return c.json(
-      { error: "project_list_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(page, 200);
 });
 
 app.get("/workspace/search", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const results = await workspaceLibraryService.search(
+  const results = await workspaceLibraryService.search(
       appUser.actorUserId,
       appUser.workspaceId,
       c.req.query("q") ?? "",
-    );
-    return c.json({ results }, 200);
-  } catch (error) {
-    return c.json({ error: "workspace_search_failed", message: errorMessage(error) }, 400,
-    );
-  }
+  );
+  return c.json({ results }, 200);
 });
 
 app.get("/workspace/exports/:exportId/download", async (c) => {
@@ -490,7 +386,7 @@ app.get("/workspace/exports/:exportId/download", async (c) => {
       )
     : exported.variants.find((candidate) => candidate.downloadUrl);
   if (!variant?.downloadUrl) {
-    return c.json({ error: "Export file is not ready" }, 409);
+    return c.json({ error: "export_file_not_ready", message: "Export file is not ready" }, 409);
   }
   return c.redirect(variant.downloadUrl, 302);
 });
@@ -498,42 +394,27 @@ app.get("/workspace/exports/:exportId/download", async (c) => {
 app.post("/workspace/avatar/presign", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const payload = await c.req.json().catch(() => ({}));
-  try {
-    const result = await workspaceService.presignAvatarUpload(
+  const result = await workspaceService.presignAvatarUpload(
       appUser.actorUserId,
       appUser.workspaceId,
       {
         contentType: String(payload.contentType ?? ""),
         sizeBytes: Number(payload.sizeBytes),
       },
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    return c.json(
-      { error: "workspace_avatar_presign_failed", message: errorMessage(error),
-      },
-      400,
-    );
-  }
+  );
+  return c.json(result, 200);
 });
 
 app.patch("/workspace/avatar", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const payload = await c.req.json().catch(() => ({}));
   const storageKey = payload.storageKey === null ? null : String(payload.storageKey ?? "");
-  try {
-    await workspaceService.setAvatar(
+  await workspaceService.setAvatar(
       appUser.actorUserId,
       appUser.workspaceId,
       storageKey || null,
-    );
-    return c.json({ ok: true }, 200);
-  } catch (error) {
-    return c.json(
-      { error: "workspace_avatar_update_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json({ ok: true }, 200);
 });
 
 app.post("/projects/:id/generate", async (c) => {
@@ -556,8 +437,7 @@ app.post("/projects/:id/generate", async (c) => {
       400);
   }
 
-  try {
-    const result = await projectService.triggerGeneration(
+  const result = await projectService.triggerGeneration(
       appUser.workspaceOwnerUserId,
       projectId,
       parsed.data,
@@ -568,24 +448,8 @@ app.post("/projects/:id/generate", async (c) => {
           actorUserId: appUser.actorUserId,
         },
       },
-    );
-    return c.json(result, 202);
-  } catch (error) {
-    if (
-      error instanceof QuotaExceededError ||
-      error instanceof UploadTooLongError
-    ) {
-      return c.json(
-        { error: error.code, message: errorMessage(error), details: error.details,
-        },
-        402,
-      );
-    }
-    return c.json(
-      { error: "generation_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(result, 202);
 });
 
 app.get("/projects/:id", async (c) => {
@@ -614,7 +478,7 @@ app.get("/projects/:id/runs/:workflowRunId", async (c) => {
   );
 
   if (!snapshot.run) {
-    return c.json({ error: "Workflow run not found" }, 404);
+    return c.json({ error: "workflow_run_not_found", message: "Workflow run not found" }, 404);
   }
 
   return c.json(snapshot, 200);
@@ -630,7 +494,7 @@ app.get("/projects/:id/transcript", async (c) => {
   );
 
   if (!transcript) {
-    return c.json({ error: "Transcript not found" }, 404);
+    return c.json({ error: "transcript_not_found", message: "Transcript not found" }, 404);
   }
 
   return c.json(transcript, 200);
@@ -649,7 +513,7 @@ app.get("/projects/:id/transcript/utterances", async (c) => {
   );
 
   if (utterances === null) {
-    return c.json({ error: "Transcript not found" }, 404);
+    return c.json({ error: "transcript_not_found", message: "Transcript not found" }, 404);
   }
 
   c.header("Cache-Control", "private, max-age=120");
@@ -666,30 +530,20 @@ app.get("/projects/:id/transcript/export", async (c) => {
   );
 
   if (!format.success) {
-    return c.json({ error: "Invalid transcript export format" }, 400);
+    return c.json({ error: "invalid_transcript_export_format", message: "Invalid transcript export format" }, 400);
   }
 
-  try {
-    const exported = await projectService.getTranscriptExport(
+  const exported = await projectService.getTranscriptExport(
       appUser.workspaceOwnerUserId,
       projectId,
       format.data,
-    );
-    c.header("Content-Type", exported.contentType);
-    c.header(
+  );
+  c.header("Content-Type", exported.contentType);
+  c.header(
       "Content-Disposition",
       `attachment; filename="${exported.fileName}"`,
-    );
-    return c.body(exported.body, 200);
-  } catch (error) {
-    return c.json(
-      {
-        error: "transcript_export_failed",
-        message: errorMessage(error),
-      },
-      400,
-    );
-  }
+  );
+  return c.body(exported.body, 200);
 });
 
 app.route(
@@ -712,32 +566,12 @@ app.post("/ingest/link", async (c) => {
       400);
   }
 
-  try {
-    const response = await projectService.queueLinkIngest(
+  const response = await projectService.queueLinkIngest(
       appUser.actorUserId,
       parsed.data,
       appUser.workspaceId,
-    );
-    return c.json(response, 202);
-  } catch (error) {
-    if (
-      error instanceof QuotaExceededError ||
-      error instanceof UploadTooLongError
-    ) {
-      return c.json(
-        { error: error.code, message: errorMessage(error), details: error.details,
-        },
-        402,
-      );
-    }
-    return c.json(
-      {
-        error: "link_ingest_failed",
-        message: errorMessage(error),
-      },
-      400,
-    );
-  }
+  );
+  return c.json(response, 202);
 });
 
 app.post("/ingest/rss/preview", async (c) => {
@@ -750,39 +584,8 @@ app.post("/ingest/rss/preview", async (c) => {
       400);
   }
 
-  try {
-    const response = await projectService.previewRssFeed(parsed.data.rssUrl);
-    return c.json(response, 200);
-  } catch (error) {
-    if (
-      !(error instanceof UnsafeUrlError) &&
-      !(error instanceof RemoteFetchError) &&
-      !(error instanceof RssFeedError)
-    ) {
-      throw error;
-    }
-    const errorCode =
-      error instanceof UnsafeUrlError
-        ? "remote_url_unsafe"
-        : error instanceof RemoteFetchError
-          ? error.code === "remote_fetch_timeout"
-            ? "remote_fetch_timeout"
-            : error.code === "remote_response_too_large"
-              ? "rss_feed_too_large"
-              : "rss_download_failed"
-          : error instanceof RssFeedError
-            ? error.code
-            : "rss_download_failed";
-    return c.json(
-      {
-        error: errorCode,
-        message: userErrorMessage(errorCode),
-      },
-      errorCode === "remote_fetch_timeout" || errorCode === "rss_download_failed"
-        ? 503
-        : 400,
-    );
-  }
+  const response = await projectService.previewRssFeed(parsed.data.rssUrl);
+  return c.json(response, 200);
 });
 
 app.post("/ingest/rss/import", async (c) => {
@@ -797,32 +600,12 @@ app.post("/ingest/rss/import", async (c) => {
       400);
   }
 
-  try {
-    const response = await projectService.importFromRss(
+  const response = await projectService.importFromRss(
       appUser.actorUserId,
       parsed.data,
       appUser.workspaceId,
-    );
-    return c.json(response, 202);
-  } catch (error) {
-    if (
-      error instanceof QuotaExceededError ||
-      error instanceof UploadTooLongError
-    ) {
-      return c.json(
-        { error: error.code, message: errorMessage(error), details: error.details,
-        },
-        402,
-      );
-    }
-    return c.json(
-      {
-        error: "rss_import_failed",
-        message: errorMessage(error),
-      },
-      400,
-    );
-  }
+  );
+  return c.json(response, 202);
 });
 
 app.get("/ingest/:projectId", async (c) => {
@@ -880,8 +663,7 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
     return c.json({ error: "invalid_input" }, 400);
   }
 
-  try {
-    const titleParsed = updateClipTitleSchema.safeParse(payload);
+  const titleParsed = updateClipTitleSchema.safeParse(payload);
     if (titleParsed.success) {
       const clip = await clipService.updateClipTitle(
         appUser.workspaceOwnerUserId,
@@ -985,51 +767,15 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
       return c.json(clip, 200);
     }
 
-    return c.json(
+  return c.json(
       {
         error: "unrecognized_clip_update",
         message:
           "Body didn't match any supported clip update (status, title, boundaries, captionPreset, transcriptSlice, brollUrl, or studioEdits).",
       },
       400,
-    );
-  } catch (error) {
-    const persistenceError = clipEditorPersistenceHttpError(error);
-    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
-    if (error instanceof ClipActionError) {
-      return c.json(
-        { error: error.code, message: errorMessage(error) },
-        error.code === "clip_not_found" ? 404 : 400,
-      );
-    }
-    return c.json(
-      { error: "clip_update_failed", message: errorMessage(error) },
-      400,
-    );
-  }
-});
-
-/**
- * Structured server-side log for a failed clip action. These routes previously
- * put the only explanation in the response body, which meant a config problem
- * and a genuine provider fault were indistinguishable in the server log.
- * `code` is included so the mapped user-facing copy can be traced back.
- */
-function logClipActionFailure(
-  message: string,
-  error: unknown,
-  context: Record<string, string>,
-) {
-  console.warn(
-    JSON.stringify({
-      level: "warn",
-      message,
-      ...context,
-      code: error instanceof ClipActionError ? error.code : "unhandled",
-      error: errorMessage(error),
-    }),
   );
-}
+});
 
 /**
  * Alternative AI-written titles for one clip. Read-only — the caller picks one
@@ -1044,32 +790,12 @@ app.post("/projects/:id/clips/:clipId/title-suggestions", async (c) => {
 
   const projectId = c.req.param("id");
 
-  try {
-    const titles = await clipService.suggestClipTitles(
+  const titles = await clipService.suggestClipTitles(
       appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
-    );
-    return c.json({ titles }, 200);
-  } catch (error) {
-    // Log server-side too. Without this the only trace of *why* a 400 happened
-    // was the response body, so a misconfigured key looked identical in the
-    // server log to a model that returned junk.
-    logClipActionFailure("clip_title_suggestions_failed", error, {
-      projectId,
-      clipId: c.req.param("clipId"),
-    });
-    if (error instanceof ClipActionError) {
-      return c.json(
-        { error: error.code, message: errorMessage(error) },
-        error.code === "clip_not_found" ? 404 : 400,
-      );
-    }
-    return c.json(
-      { error: "clip_title_suggestion_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json({ titles }, 200);
 });
 
 /**
@@ -1084,29 +810,12 @@ app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
   // from fanning out into dozens of copies.
   const projectId = c.req.param("id");
 
-  try {
-    const clip = await clipService.duplicateClip(
+  const clip = await clipService.duplicateClip(
       appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
-    );
-    return c.json(clip, 201);
-  } catch (error) {
-    logClipActionFailure("clip_duplicate_failed", error, {
-      projectId,
-      clipId: c.req.param("clipId"),
-    });
-    if (error instanceof ClipActionError) {
-      return c.json(
-        { error: error.code, message: errorMessage(error) },
-        error.code === "clip_not_found" ? 404 : 400,
-      );
-    }
-    return c.json(
-      { error: "clip_duplicate_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(clip, 201);
 });
 
 /**
@@ -1137,35 +846,13 @@ app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
     return c.json({ error: "invalid_input" }, 400);
   }
 
-  try {
-    const clip = await clipService.createClipFromSelection(
+  const clip = await clipService.createClipFromSelection(
       appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
       parsed.data,
-    );
-    return c.json(clip, 201);
-  } catch (error) {
-    logClipActionFailure("clip_create_from_selection_failed", error, {
-      projectId,
-      clipId: c.req.param("clipId"),
-    });
-    if (error instanceof ClipActionError) {
-      return c.json(
-        { error: error.code, message: errorMessage(error) },
-        error.code === "clip_selection_invalid"
-          ? 422
-          : error.code === "clip_not_found"
-            ? 404
-            : 400,
-      );
-    }
-    return c.json(
-      { error: "clip_create_from_selection_failed", message: errorMessage(error),
-      },
-      400,
-    );
-  }
+  );
+  return c.json(clip, 201);
 });
 
 /**
@@ -1182,21 +869,12 @@ app.get("/projects/:id/clips/:clipId/editor", async (c) => {
 
   const projectId = c.req.param("id");
 
-  try {
-    const result = await clipService.getClipEditorDocument(
+  const result = await clipService.getClipEditorDocument(
       appUser,
       projectId,
       c.req.param("clipId"),
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    const persistenceError = clipEditorPersistenceHttpError(error);
-    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
-    if (error instanceof ClipActionError && error.code === "clip_not_found") {
-      return c.json({ error: error.code }, 404);
-    }
-    throw error;
-  }
+  );
+  return c.json(result, 200);
 });
 
 app.put("/projects/:id/clips/:clipId/editor", async (c) => {
@@ -1213,8 +891,6 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input" }, 400);
   }
-
-  try {
     const current = await clipService.getClipEditorDocument(
       appUser,
       projectId,
@@ -1262,40 +938,6 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       { revision: mutation.revision, document: mutation.document, clip },
       200,
     );
-  } catch (error) {
-    if (error instanceof VisualAssetIntegrityError) {
-      return c.json({ error: error.code, message: "The selected Scene asset or source range is no longer valid" }, 422);
-    }
-    if (error instanceof BrandFontIntegrityError) {
-      return c.json({ error: error.code, message: "The selected Scene font is no longer valid for this Brand Profile" }, 422);
-    }
-    if (error instanceof ClipEditorRevisionConflictError) {
-      return c.json(
-        {
-          error: "editor_revision_conflict",
-          currentRevision: error.currentRevision,
-        },
-        409,
-      );
-    }
-    if (
-      error instanceof ClipActionError &&
-      (error.code === "editor_boundaries_invalid" ||
-        error.code === "editor_document_empty_timeline")
-    ) {
-      // Phase B step 13 (in-studio trim): editor_boundaries_invalid is the
-      // server-side backstop for min-duration/out-of-source-range trims —
-      // the trim handles' own drag guard should make this unreachable in
-      // practice too, same rule as the empty-timeline case above.
-      return c.json({ error: error.code }, 422);
-    }
-    const persistenceError = clipEditorPersistenceHttpError(error);
-    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
-    if (error instanceof ClipActionError && error.code === "clip_not_found") {
-      return c.json({ error: error.code }, 404);
-    }
-    throw error;
-  }
 });
 
 /**
@@ -1318,8 +960,7 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
     return c.json({ error: "invalid_input" }, 400);
   }
 
-  try {
-    const current = await clipService.getClipEditorDocument(appUser, projectId, c.req.param("clipId"));
+  const current = await clipService.getClipEditorDocument(appUser, projectId, c.req.param("clipId"));
     const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, current.original);
     if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
     const mutation = await clipEditorDocumentPersistence.mutateDocument({
@@ -1335,27 +976,10 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
       projectId,
       c.req.param("clipId"),
     );
-    return c.json(
+  return c.json(
       { revision: mutation.revision, document: mutation.document, clip },
       200,
-    );
-  } catch (error) {
-    if (error instanceof ClipEditorRevisionConflictError) {
-      return c.json(
-        {
-          error: "editor_revision_conflict",
-          currentRevision: error.currentRevision,
-        },
-        409,
-      );
-    }
-    const persistenceError = clipEditorPersistenceHttpError(error);
-    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
-    if (error instanceof ClipActionError && error.code === "clip_not_found") {
-      return c.json({ error: error.code }, 404);
-    }
-    throw error;
-  }
+  );
 });
 
 /**
@@ -1369,28 +993,12 @@ app.delete("/projects/:id/clips/:clipId", async (c) => {
 
   const projectId = c.req.param("id");
 
-  try {
-    await clipService.deleteClip(
+  await clipService.deleteClip(
       appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
-    );
-    return c.json({ ok: true }, 200);
-  } catch (error) {
-    logClipActionFailure("clip_delete_failed", error, {
-      projectId,
-      clipId: c.req.param("clipId"),
-    });
-    const translated = clipDeleteHttpError(error);
-    if (translated) return c.json(translated.body, translated.status);
-    return c.json(
-      {
-        error: "clip_delete_failed",
-        message: userErrorMessage("clip_delete_failed"),
-      },
-      400,
-    );
-  }
+  );
+  return c.json({ ok: true }, 200);
 });
 
 app.post("/projects/:id/clips/regenerate", async (c) => {
@@ -1404,8 +1012,7 @@ app.post("/projects/:id/clips/regenerate", async (c) => {
     return c.json({ error: "invalid_input", message: "Missing idempotency-key header" }, 400);
   }
 
-  try {
-    const payload = await c.req.json().catch(() => ({}));
+  const payload = await c.req.json().catch(() => ({}));
     const contentPackParsed = contentPackSchema.safeParse(
       payload?.contentPack);
     const contentPack = contentPackParsed.success
@@ -1420,13 +1027,7 @@ app.post("/projects/:id/clips/regenerate", async (c) => {
         actorUserId: appUser.actorUserId,
       },
     );
-    return c.json(result, 202);
-  } catch (error) {
-    return c.json(
-      { error: "clip_regeneration_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  return c.json(result, 202);
 });
 
 // --- Clip rendering routes ---
@@ -1451,8 +1052,7 @@ app.post("/projects/:id/clips/render", async (c) => {
       400);
   }
 
-  try {
-    const execute = (clipIds?: string[]) => clipService.triggerClipRendering(
+  const execute = (clipIds?: string[]) => clipService.triggerClipRendering(
       projectId, idempotencyKey,
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
       clipIds, parsed.data.aspectRatios, parsed.data.resolution,
@@ -1470,19 +1070,7 @@ app.post("/projects/:id/clips/render", async (c) => {
           execute,
         })
       : await execute();
-    return c.json(result, 202);
-  } catch (error) {
-    if (
-      error instanceof ClipActionError &&
-      error.code === "motion_feature_unavailable"
-    ) {
-      return c.json({ error: error.code, message: error.message }, 403);
-    }
-    return c.json(
-      { error: "clip_render_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  return c.json(result, 202);
 });
 
 app.post("/projects/:id/export-bundles", async (c) => {
@@ -1492,13 +1080,7 @@ app.post("/projects/:id/export-bundles", async (c) => {
     body: CreateExportBundleInput;
     idempotencyKey: string;
   }>(c);
-  try {
-    return c.json(await campaignOperationService.createExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey }, body), 202);
-  } catch (error) {
-    if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
-    const code = error instanceof CampaignOperationError ? error.code : "export_bundle_failed";
-    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be created" }, code.includes("conflict") ? 409 : 400);
-  }
+  return c.json(await campaignOperationService.createExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey }, body), 202);
 });
 
 app.post("/projects/:id/export-bundles/preview", async (c) => {
@@ -1507,29 +1089,13 @@ app.post("/projects/:id/export-bundles/preview", async (c) => {
     id: string;
     body: CreateExportBundleInput;
   }>(c);
-  try {
-    return c.json(await campaignOperationService.previewExportBundle({
-      workspaceId: appUser.workspaceId,
-      projectId: id,
-      pricingTier: resolvePricingTier(appUser.pricingTier),
-      role: appUser.role,
-      status: appUser.status,
-    }, body), 200);
-  } catch (error) {
-    if (error instanceof ProgramWriteDisabledError) {
-      return c.json({ error: error.code, message: error.message }, 503);
-    }
-    const code = error instanceof CampaignOperationError
-      ? error.code
-      : "export_bundle_preview_failed";
-    const status = code === "campaign_operation_forbidden" ? 403 : 400;
-    return c.json({
-      error: code,
-      message: error instanceof CampaignOperationError
-        ? error.message
-        : "Export bundle availability could not be checked",
-    }, status);
-  }
+  return c.json(await campaignOperationService.previewExportBundle({
+    workspaceId: appUser.workspaceId,
+    projectId: id,
+    pricingTier: resolvePricingTier(appUser.pricingTier),
+    role: appUser.role,
+    status: appUser.status,
+  }, body), 200);
 });
 
 app.get("/projects/:id/export-bundles", async (c) => {
@@ -1550,33 +1116,12 @@ app.post("/projects/:id/assisted-copy/generations", async (c) => {
     id: string;
     body: GenerateAssistedCopyRequest;
   }>(c);
-  try {
-    return c.json(await assistedSocialCopyService.generate({
-      actorUserId: appUser.actorUserId,
-      workspaceId: appUser.workspaceId,
-      projectId,
-      ...body,
-    }), 201);
-  } catch (error) {
-    const code = error instanceof AssistedSocialCopyError
-      ? error.code
-      : "assisted_copy_generation_failed";
-    const status = code.includes("entitlement") || code.includes("forbidden")
-      ? 403
-      : code.includes("conflict") || code.includes("in_progress")
-        ? 409
-        : code.includes("not_found")
-          ? 404
-          : code.includes("timeout") || code.includes("unavailable")
-            ? 503
-            : 400;
-    return c.json({
-      error: code,
-      message: error instanceof AssistedSocialCopyError
-        ? error.message
-        : "Social copy could not be generated",
-    }, status);
-  }
+  return c.json(await assistedSocialCopyService.generate({
+    actorUserId: appUser.actorUserId,
+    workspaceId: appUser.workspaceId,
+    projectId,
+    ...body,
+  }), 201);
 });
 
 app.post("/projects/:id/assisted-copy/variants/:variantId/confirm", async (c) => {
@@ -1586,25 +1131,13 @@ app.post("/projects/:id/assisted-copy/variants/:variantId/confirm", async (c) =>
     variantId: string;
     body: ConfirmAssistedCopyRequest;
   }>(c);
-  try {
-    return c.json(await assistedSocialCopyService.confirm({
-      actorUserId: appUser.actorUserId,
-      workspaceId: appUser.workspaceId,
-      projectId,
-      variantId,
-      ...body,
-    }), 200);
-  } catch (error) {
-    const code = error instanceof AssistedSocialCopyError
-      ? error.code
-      : "assisted_copy_confirmation_failed";
-    return c.json({
-      error: code,
-      message: error instanceof AssistedSocialCopyError
-        ? error.message
-        : "Social copy could not be confirmed",
-    }, code.includes("not_found") ? 404 : code.includes("entitlement") ? 403 : 400);
-  }
+  return c.json(await assistedSocialCopyService.confirm({
+    actorUserId: appUser.actorUserId,
+    workspaceId: appUser.workspaceId,
+    projectId,
+    variantId,
+    ...body,
+  }), 200);
 });
 
 app.post("/projects/:id/thumbnail-frames", async (c) => {
@@ -1613,24 +1146,12 @@ app.post("/projects/:id/thumbnail-frames", async (c) => {
     id: string;
     body: RequestThumbnailFrameInput;
   }>(c);
-  try {
-    return c.json(await thumbnailFramePreparationService.request({
-      actorUserId: appUser.actorUserId,
-      workspaceId: appUser.workspaceId,
-      projectId,
-      ...body,
-    }), 202);
-  } catch (error) {
-    const code = error instanceof ThumbnailPreparationError
-      ? error.code
-      : "thumbnail_frame_request_failed";
-    return c.json({
-      error: code,
-      message: error instanceof ThumbnailPreparationError
-        ? error.message
-        : "The frame could not be prepared",
-    }, code.includes("entitlement") ? 403 : code.includes("not_found") || code.includes("missing") ? 404 : 400);
-  }
+  return c.json(await thumbnailFramePreparationService.request({
+    actorUserId: appUser.actorUserId,
+    workspaceId: appUser.workspaceId,
+    projectId,
+    ...body,
+  }), 202);
 });
 
 app.get("/projects/:id/thumbnail-frames/:operationId", async (c) => {
@@ -1639,18 +1160,11 @@ app.get("/projects/:id/thumbnail-frames/:operationId", async (c) => {
     id: string;
     operationId: string;
   }>(c);
-  try {
-    return c.json(await thumbnailFramePreparationService.get(
-      appUser.workspaceId,
-      projectId,
-      operationId,
-    ), 200);
-  } catch (error) {
-    const code = error instanceof ThumbnailPreparationError
-      ? error.code
-      : "thumbnail_frame_read_failed";
-    return c.json({ error: code, message: errorMessage(error) }, code.includes("not_found") ? 404 : 400);
-  }
+  return c.json(await thumbnailFramePreparationService.get(
+    appUser.workspaceId,
+    projectId,
+    operationId,
+  ), 200);
 });
 
 app.post("/projects/:id/thumbnail-frames/:operationId/retry", async (c) => {
@@ -1659,18 +1173,11 @@ app.post("/projects/:id/thumbnail-frames/:operationId/retry", async (c) => {
     id: string;
     operationId: string;
   }>(c);
-  try {
-		return c.json(await thumbnailFramePreparationService.retry(
-			appUser.workspaceId,
-			projectId,
-			operationId,
-		), 202);
-  } catch (error) {
-    const code = error instanceof ThumbnailPreparationError
-      ? error.code
-      : "thumbnail_frame_retry_failed";
-    return c.json({ error: code, message: errorMessage(error) }, code.includes("not_found") ? 404 : code.includes("in_progress") ? 409 : 400);
-  }
+  return c.json(await thumbnailFramePreparationService.retry(
+    appUser.workspaceId,
+    projectId,
+    operationId,
+  ), 202);
 });
 
 app.post("/projects/:id/campaign-operations/schedule", async (c) => {
@@ -1679,31 +1186,18 @@ app.post("/projects/:id/campaign-operations/schedule", async (c) => {
     id: string;
     body: BulkSocialScheduleRequest;
   }>(c);
-  try {
-    return c.json(await bulkSocialSchedulingService.schedule({
-      actorUserId: appUser.actorUserId,
-      workspaceId: appUser.workspaceId,
-      projectId,
-      value: body,
-    }), 201);
-  } catch (error) {
-    const code = error instanceof BulkSocialSchedulingError
-      ? error.code
-      : "campaign_schedule_failed";
-    return c.json({
-      error: code,
-      message: error instanceof BulkSocialSchedulingError
-        ? error.message
-        : "The bulk schedule could not be created",
-    }, code.includes("entitlement") || code.includes("forbidden") ? 403 : code.includes("conflict") || code.includes("ambiguous") ? 409 : 400);
-  }
+  return c.json(await bulkSocialSchedulingService.schedule({
+    actorUserId: appUser.actorUserId,
+    workspaceId: appUser.workspaceId,
+    projectId,
+    value: body,
+  }), 201);
 });
 
 app.get("/projects/:id/campaign-operations/editor-action-catalog", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
-  try {
-    return c.json(
+  return c.json(
       await campaignOperationService.getEditorActionCatalog({
         actorUserId: appUser.actorUserId,
         workspaceId: appUser.workspaceId,
@@ -1714,24 +1208,8 @@ app.get("/projects/:id/campaign-operations/editor-action-catalog", async (c) => 
         isPersonalWorkspace: appUser.isPersonalWorkspace,
         projectId,
       }),
-      200,
-    );
-  } catch (error) {
-    const code =
-      error instanceof CampaignOperationError
-        ? error.code
-        : "campaign_editor_catalog_failed";
-    return c.json(
-      {
-        error: code,
-        message:
-          error instanceof CampaignOperationError
-            ? error.message
-            : "Campaign editor actions could not be loaded",
-      },
-      code.includes("forbidden") ? 403 : code.includes("not_found") ? 404 : 400,
-    );
-  }
+    200,
+  );
 });
 
 app.post("/projects/:id/campaign-operations/preview-editor-action", async (c) => {
@@ -1740,39 +1218,22 @@ app.post("/projects/:id/campaign-operations/preview-editor-action", async (c) =>
     id: string;
     body: PreviewCampaignEditorActionInput;
   }>(c);
-  try {
-    return c.json(
-      await campaignOperationService.previewEditorAction(
-        {
-          actorUserId: appUser.actorUserId,
-          workspaceId: appUser.workspaceId,
-          workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-          role: appUser.role,
-          status: appUser.status,
-          pricingTier: appUser.pricingTier,
-          isPersonalWorkspace: appUser.isPersonalWorkspace,
-          projectId,
-        },
-        body,
-      ),
-      200,
-    );
-  } catch (error) {
-    const code =
-      error instanceof CampaignOperationError
-        ? error.code
-        : "campaign_editor_preview_failed";
-    return c.json(
+  return c.json(
+    await campaignOperationService.previewEditorAction(
       {
-        error: code,
-        message:
-          error instanceof CampaignOperationError
-            ? error.message
-            : "The campaign action preview could not be completed",
+        actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+        role: appUser.role,
+        status: appUser.status,
+        pricingTier: appUser.pricingTier,
+        isPersonalWorkspace: appUser.isPersonalWorkspace,
+        projectId,
       },
-      code.includes("stale") ? 409 : code.includes("forbidden") ? 403 : 400,
-    );
-  }
+      body,
+    ),
+    200,
+  );
 });
 
 app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
@@ -1783,9 +1244,8 @@ app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
     idempotencyKey: string;
     retryOfId?: string;
   }>(c);
-  try {
-    return c.json(
-      await campaignOperationService.applyProjectBrandProfileSelected(
+  return c.json(
+    await campaignOperationService.applyProjectBrandProfileSelected(
         {
           actorUserId: appUser.actorUserId,
           workspaceId: appUser.workspaceId,
@@ -1800,31 +1260,8 @@ app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
         },
         body,
       ),
-      200,
-    );
-  } catch (error) {
-    if (error instanceof ProgramWriteDisabledError) {
-      return c.json({ error: error.code, message: error.message }, 503);
-    }
-    const code =
-      error instanceof CampaignOperationError
-        ? error.code
-        : "campaign_brand_profile_apply_failed";
-    return c.json(
-      {
-        error: code,
-        message:
-          error instanceof CampaignOperationError
-            ? error.message
-            : "The Project Brand Profile could not be applied",
-      },
-      code.includes("stale") || code.includes("conflict") || code.includes("already_retried")
-        ? 409
-        : code.includes("forbidden") || code.includes("feature_unavailable")
-          ? 403
-          : 400,
-    );
-  }
+    200,
+  );
 });
 
 app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
@@ -1835,9 +1272,8 @@ app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
     idempotencyKey: string;
     retryOfId?: string;
   }>(c);
-  try {
-    return c.json(
-      await campaignOperationService.applyStyleSelected(
+  return c.json(
+    await campaignOperationService.applyStyleSelected(
         {
           actorUserId: appUser.actorUserId,
           workspaceId: appUser.workspaceId,
@@ -1852,31 +1288,8 @@ app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
         },
         body,
       ),
-      200,
-    );
-  } catch (error) {
-    if (error instanceof ProgramWriteDisabledError) {
-      return c.json({ error: error.code, message: error.message }, 503);
-    }
-    const code =
-      error instanceof CampaignOperationError
-        ? error.code
-        : "campaign_style_apply_failed";
-    return c.json(
-      {
-        error: code,
-        message:
-          error instanceof CampaignOperationError
-            ? error.message
-            : "The style preset could not be applied",
-      },
-      code.includes("stale") || code.includes("conflict") || code.includes("already_retried")
-        ? 409
-        : code.includes("forbidden") || code.includes("feature_unavailable")
-          ? 403
-          : 400,
-    );
-  }
+    200,
+  );
 });
 
 app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
@@ -1887,9 +1300,8 @@ app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
     idempotencyKey: string;
     retryOfId?: string;
   }>(c);
-  try {
-    return c.json(
-      await campaignOperationService.applyMotionSelected(
+  return c.json(
+    await campaignOperationService.applyMotionSelected(
         {
           actorUserId: appUser.actorUserId,
           workspaceId: appUser.workspaceId,
@@ -1903,78 +1315,33 @@ app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
         },
         body,
       ),
-      200,
-    );
-  } catch (error) {
-    if (error instanceof ProgramWriteDisabledError) {
-      return c.json({ error: error.code, message: error.message }, 503);
-    }
-    const code =
-      error instanceof CampaignOperationError
-        ? error.code
-        : "campaign_motion_apply_failed";
-    const status = code.includes("conflict") || code.includes("already_retried")
-      ? 409
-      : code.includes("forbidden") || code.includes("feature_unavailable")
-        ? 403
-        : 400;
-    return c.json(
-      {
-        error: code,
-        message:
-          error instanceof CampaignOperationError
-            ? error.message
-            : "Motion could not be applied to the selected clips",
-      },
-      status,
-    );
-  }
+    200,
+  );
 });
 
 app.get("/projects/:id/export-bundles/:bundleId", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id: projectId, bundleId } = authenticatedHonoInput<{ id: string; bundleId: string }>(c);
-  try {
-    return c.json(await campaignOperationService.getExportBundle({ workspaceId: appUser.workspaceId, projectId }, bundleId), 200);
-  } catch (error) {
-    const code = error instanceof CampaignOperationError ? error.code : "export_bundle_read_failed";
-    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be read" }, code === "export_bundle_not_found" ? 404 : 400);
-  }
+  return c.json(await campaignOperationService.getExportBundle({ workspaceId: appUser.workspaceId, projectId }, bundleId), 200);
 });
 
 app.post("/projects/:id/export-bundles/:bundleId/retry", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id: projectId, bundleId, idempotencyKey } = authenticatedHonoInput<{ id: string; bundleId: string; idempotencyKey: string }>(c);
-  try {
-    return c.json(await campaignOperationService.retryExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey }, bundleId), 202);
-  } catch (error) {
-    const code = error instanceof CampaignOperationError ? error.code : "export_bundle_retry_failed";
-    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be retried" }, code.includes("already_retried") || code.includes("conflict") ? 409 : code.includes("not_found") ? 404 : 400);
-  }
+  return c.json(await campaignOperationService.retryExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey }, bundleId), 202);
 });
 
 app.post("/projects/:id/campaign-operations/:operationId/retry-export-bundle", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 	const { id: projectId, operationId, idempotencyKey } = authenticatedHonoInput<{ id: string; operationId: string; idempotencyKey: string }>(c);
-	try {
-		return c.json(await campaignOperationService.retryExportBundleOperation({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey }, operationId), 202);
-	} catch (error) {
-		const code = error instanceof CampaignOperationError ? error.code : "export_bundle_retry_failed";
-		return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be retried" }, code.includes("already_retried") || code.includes("conflict") ? 409 : code.includes("not_found") ? 404 : 400);
-	}
+	return c.json(await campaignOperationService.retryExportBundleOperation({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey }, operationId), 202);
 });
 
 app.get("/projects/:id/export-bundles/:bundleId/download", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id: projectId, bundleId } = authenticatedHonoInput<{ id: string; bundleId: string }>(c);
-  try {
-    const url = await campaignOperationService.getExportBundleDownload({ workspaceId: appUser.workspaceId, projectId, role: appUser.role, status: appUser.status }, bundleId);
-    return c.redirect(url, 307);
-  } catch (error) {
-    const code = error instanceof CampaignOperationError ? error.code : "export_bundle_download_failed";
-    const status = code === "campaign_operation_forbidden" ? 403 : code === "export_bundle_not_found" ? 404 : code === "export_bundle_expired" ? 410 : code === "export_bundle_not_ready" ? 409 : 400;
-    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be downloaded" }, status);
-  }
+  const url = await campaignOperationService.getExportBundleDownload({ workspaceId: appUser.workspaceId, projectId, role: appUser.role, status: appUser.status }, bundleId);
+  return c.redirect(url, 307);
 });
 
 app.post("/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/apply", async (c) => {
@@ -1987,8 +1354,7 @@ app.post("/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/ap
     idempotencyKey: string;
     retryOfId?: string;
   }>(c);
-  try {
-    const result = await campaignOperationService.applySceneTemplate({
+  const result = await campaignOperationService.applySceneTemplate({
       actorUserId: appUser.actorUserId,
       workspaceId: appUser.workspaceId,
       workspaceOwnerUserId: appUser.workspaceOwnerUserId,
@@ -2000,38 +1366,23 @@ app.post("/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/ap
       idempotencyKey,
       retryOfId,
     }, profileId, templateId, body);
-    return c.json(result, 200);
-  } catch (error) {
-    if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
-    const code = error instanceof CampaignOperationError ? error.code : "scene_template_apply_failed";
-    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Scene template could not be applied" }, code.includes("conflict") || code.includes("already_retried") ? 409 : 400);
-  }
+  return c.json(result, 200);
 });
 
 app.post("/projects/:id/review-rounds", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id, body } = authenticatedHonoInput<{ id: string; body: CreateReviewRoundInput }>(c);
-  try {
-    return c.json(await reviewService.createRound({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier) }, body), 201);
-  } catch (error) {
-    const code = error instanceof ReviewServiceError ? error.code : "review_round_create_failed";
-    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review round could not be created" }, code === "review_feature_unavailable" ? 403 : code.includes("stale") ? 409 : code.includes("not_found") ? 404 : 400);
-  }
+  return c.json(await reviewService.createRound({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier) }, body), 201);
 });
 
 app.get("/projects/:id/review-rounds", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id } = authenticatedHonoInput<{ id: string }>(c);
-  try {
-    const access = workspaceAllowsCapability(
-      { role: appUser.role, status: appUser.status },
-      "review.manage",
-    ) ? "manage" : "view";
-    return c.json(await reviewService.internalRoom(appUser.workspaceId, id, access), 200);
-  } catch (error) {
-    const code = error instanceof ReviewServiceError ? error.code : "review_rounds_read_failed";
-    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review rounds could not be loaded" }, code.includes("not_found") ? 404 : 400);
-  }
+  const access = workspaceAllowsCapability(
+    { role: appUser.role, status: appUser.status },
+    "review.manage",
+  ) ? "manage" : "view";
+  return c.json(await reviewService.internalRoom(appUser.workspaceId, id, access), 200);
 });
 
 app.post("/projects/:id/review-rounds/:roundId/invite", async (c) => {
@@ -2041,101 +1392,61 @@ app.post("/projects/:id/review-rounds/:roundId/invite", async (c) => {
     roundId: string;
     body: InviteReviewersInput;
   }>(c);
-  try {
-    return c.json(await reviewService.inviteReviewers({
+  return c.json(await reviewService.inviteReviewers({
       actorUserId: appUser.actorUserId,
       workspaceId: appUser.workspaceId,
       projectId: id,
       pricingTier: resolvePricingTier(appUser.pricingTier),
-    }, roundId, body), 200);
-  } catch (error) {
-    const code = error instanceof ReviewServiceError ? error.code : "review_invite_failed";
-    const status = code === "review_feature_unavailable"
-      ? 403
-      : code.includes("not_found")
-        ? 404
-        : code === "review_round_closed"
-          ? 409
-          : 400;
-    return c.json({
-      error: code,
-      message: error instanceof ReviewServiceError ? error.message : "Reviewers could not be invited",
-    }, status);
-  }
+  }, roundId, body), 200);
 });
 
 app.post("/projects/:id/review-rounds/:roundId/comments", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id, roundId, body } = authenticatedHonoInput<{ id: string; roundId: string; body: InternalReviewCommentInput }>(c);
-  try {
-    return c.json(await reviewService.addInternalComment({
+  return c.json(await reviewService.addInternalComment({
       actorUserId: appUser.actorUserId,
       workspaceId: appUser.workspaceId,
       projectId: id,
-    }, roundId, body), 201);
-  } catch (error) {
-    const code = error instanceof ReviewServiceError ? error.code : "review_comment_create_failed";
-    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review reply could not be saved" }, code.includes("not_found") ? 404 : 400);
-  }
+  }, roundId, body), 201);
 });
 
 app.post("/projects/:id/review-rounds/:roundId/comments/:commentId/resolve", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id, roundId, commentId } = authenticatedHonoInput<{ id: string; roundId: string; commentId: string }>(c);
-  try {
-    return c.json(await reviewService.resolveComment({
+  return c.json(await reviewService.resolveComment({
       actorUserId: appUser.actorUserId,
       workspaceId: appUser.workspaceId,
       projectId: id,
-    }, roundId, commentId, true), 200);
-  } catch (error) {
-    const code = error instanceof ReviewServiceError ? error.code : "review_comment_update_failed";
-    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review comment could not be resolved" }, code.includes("not_found") ? 404 : 400);
-  }
+  }, roundId, commentId, true), 200);
 });
 
 app.post("/projects/:id/review-rounds/:roundId/comments/:commentId/reopen", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id, roundId, commentId } = authenticatedHonoInput<{ id: string; roundId: string; commentId: string }>(c);
-  try {
-    return c.json(await reviewService.resolveComment({
+  return c.json(await reviewService.resolveComment({
       actorUserId: appUser.actorUserId,
       workspaceId: appUser.workspaceId,
       projectId: id,
-    }, roundId, commentId, false), 200);
-  } catch (error) {
-    const code = error instanceof ReviewServiceError ? error.code : "review_comment_update_failed";
-    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review comment could not be reopened" }, code.includes("not_found") ? 404 : 400);
-  }
+  }, roundId, commentId, false), 200);
 });
 
 app.post("/projects/:id/review-rounds/:roundId/notifications/retry", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id, roundId, body } = authenticatedHonoInput<{ id: string; roundId: string; body: RetryReviewNotificationInput }>(c);
-  try {
-    const result = await reviewNotificationService.retry(
+  const result = await reviewNotificationService.retry(
       { workspaceId: appUser.workspaceId, projectId: id },
       roundId,
       body.ledgerId,
-    );
-    return result.retrying
-      ? c.json(result, 200)
-      : c.json({ error: "review_notification_not_found", message: "Failed notification was not found" }, 404);
-  } catch (error) {
-    const code = error instanceof ReviewServiceError ? error.code : "review_notification_retry_failed";
-    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review notification could not be retried" }, code.includes("not_found") ? 404 : 400);
-  }
+  );
+  return result.retrying
+    ? c.json(result, 200)
+    : c.json({ error: "review_notification_not_found", message: "Failed notification was not found" }, 404);
 });
 
 app.post("/projects/:id/review-rounds/:roundId/revoke", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id, roundId } = authenticatedHonoInput<{ id: string; roundId: string }>(c);
-  try {
-    return c.json(await reviewService.revokeRound({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id }, roundId), 200);
-  } catch (error) {
-    const code = error instanceof ReviewServiceError ? error.code : "review_round_revoke_failed";
-    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review round could not be revoked" }, code.includes("not_found") ? 404 : 400);
-  }
+  return c.json(await reviewService.revokeRound({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id }, roundId), 200);
 });
 
 // --- Versioned clip exports ---
@@ -2153,8 +1464,7 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
 
-  try {
-    const editor = await clipService.getClipEditorDocument(
+  const editor = await clipService.getClipEditorDocument(
       appUser,
       c.req.param("id"),
       c.req.param("clipId"),
@@ -2183,7 +1493,7 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
       return c.json({
         error: "censor_segments_stale",
         message: "Review stale Auto Censor segments before exporting",
-        staleCount,
+        details: { staleCount },
       }, 422);
     }
     const result = await clipExportService.create(
@@ -2193,34 +1503,7 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
       idempotencyKey,
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
-    return c.json(result, result.reused && result.export.status === "ready" ? 200 : 202,
-    );
-  } catch (error) {
-    if (error instanceof ClipExportRevisionConflictError) {
-      return c.json(
-        { error: error.code, currentRevision: error.currentRevision },
-        409,
-      );
-    }
-    if (error instanceof ClipExportError) {
-      const unavailable = error.code === "scene_asset_unavailable" || error.code === "scene_font_unavailable";
-      return c.json(
-        { error: error.code, message: errorMessage(error) },
-        unavailable ? 422 : 404,
-      );
-    }
-    console.warn(
-      JSON.stringify({
-        level: "warn",
-        message: "clip_export_create_failed",
-        projectId: c.req.param("id"),
-        clipId: c.req.param("clipId"),
-        error: errorMessage(error),
-      }),
-    );
-    return c.json({ error: "clip_export_failed", message: "Could not start export" }, 500,
-    );
-  }
+  return c.json(result, result.reused && result.export.status === "ready" ? 200 : 202);
 });
 
 app.get("/projects/:id/exports/current", async (c) => {
@@ -2248,27 +1531,14 @@ app.get("/projects/:id/clips/:clipId/exports/:exportId", async (c) => {
 
 app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const result = await clipExportService.retryFailed(
+  const result = await clipExportService.retryFailed(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       c.req.param("clipId"),
       c.req.param("exportId"),
       appUser.workspaceId,
-    );
-    return c.json(result, 202);
-  } catch (error) {
-    if (!(error instanceof ClipExportError)) throw error;
-    const code = error.code;
-    return c.json(
-      { error: code, message: error.message },
-      code === "motion_feature_unavailable"
-        ? 403
-        : code === "scene_asset_unavailable" || code === "scene_font_unavailable"
-          ? 422
-          : 400,
-    );
-  }
+  );
+  return c.json(result, 202);
 });
 
 app.post("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c) => {
@@ -2279,39 +1549,27 @@ app.post("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c) 
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await clipExportService.createShareLink(
+  const result = await clipExportService.createShareLink(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       c.req.param("clipId"),
       c.req.param("exportId"),
       parsed.data.expiresInDays,
       appUser.workspaceId,
-    );
-    return c.json(result, 201, { "Cache-Control": "private, no-store" });
-  } catch (error) {
-    if (!(error instanceof ClipExportError)) throw error;
-    const code = error.code;
-    return c.json({ error: code, message: "Could not create share link" }, 400);
-  }
+  );
+  return c.json(result, 201, { "Cache-Control": "private, no-store" });
 });
 
 app.delete("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const result = await clipExportService.revokeShareLinks(
+  const result = await clipExportService.revokeShareLinks(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       c.req.param("clipId"),
       c.req.param("exportId"),
       appUser.workspaceId,
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    if (!(error instanceof ClipExportError)) throw error;
-    const code = error.code;
-    return c.json({ error: code, message: "Could not revoke share links" }, 400);
-  }
+  );
+  return c.json(result, 200);
 });
 
 app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
@@ -2323,8 +1581,7 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await clipEditorDocumentPersistence.mutateProjectSelection({
+  const result = await clipEditorDocumentPersistence.mutateProjectSelection({
       actorUserId: appUser.actorUserId,
       workspaceId: appUser.workspaceId,
       workspaceOwnerUserId: appUser.workspaceOwnerUserId,
@@ -2334,18 +1591,8 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
         kind: "set_caption_preset",
         captionPreset: parsed.data.captionPreset,
       },
-    });
-    return c.json(result, 200);
-  } catch (error) {
-    const persistenceError = clipEditorPersistenceHttpError(error);
-    if (persistenceError) {
-      return c.json(persistenceError.body, persistenceError.status);
-    }
-    return c.json(
-      { error: "apply_caption_preset_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  });
+  return c.json(result, 200);
 });
 
 app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
@@ -2357,33 +1604,22 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await clipEditorDocumentPersistence.mutateProjectSelection({
+  const result = await clipEditorDocumentPersistence.mutateProjectSelection({
       actorUserId: appUser.actorUserId,
       workspaceId: appUser.workspaceId,
       workspaceOwnerUserId: appUser.workspaceOwnerUserId,
       projectId,
       excludeClipId: parsed.data.excludeClipId,
       intent: { kind: "patch_studio_edits", patches: parsed.data.patches },
-    });
-    const firstPatch = parsed.data.patches[0]!;
+  });
+  const firstPatch = parsed.data.patches[0]!;
     const field =
       firstPatch.transition !== undefined
         ? "transition"
         : firstPatch.background !== undefined
           ? "background"
           : "framing";
-    return c.json({ ...result, field }, 200);
-  } catch (error) {
-    const persistenceError = clipEditorPersistenceHttpError(error);
-    if (persistenceError) {
-      return c.json(persistenceError.body, persistenceError.status);
-    }
-    return c.json(
-      { error: "apply_studio_edits_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  return c.json({ ...result, field }, 200);
 });
 
 // --- Stock B-roll search (Pexels) ---
@@ -2411,18 +1647,11 @@ app.get("/broll/search", async (c) => {
 app.get("/projects/:id/content-suite", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
-  try {
-    const assets = await contentSuiteService.list(
+  const assets = await contentSuiteService.list(
       appUser.workspaceOwnerUserId,
       projectId,
-    );
-    return c.json({ assets }, 200);
-  } catch (error) {
-    return c.json(
-      { error: "content_suite_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json({ assets }, 200);
 });
 
 app.post("/projects/:id/content-suite", async (c) => {
@@ -2434,72 +1663,35 @@ app.post("/projects/:id/content-suite", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const assets = await contentSuiteService.generate(
+  const assets = await contentSuiteService.generate(
       appUser.actorUserId,
       appUser.workspaceId,
       projectId,
       parsed.data.types,
-    );
-    return c.json({ assets }, 200);
-  } catch (error) {
-    if (error instanceof ContentSuiteError) {
-      if (error.code === "requires_creator_plan") {
-        return c.json(
-          { error: error.code, message: userErrorMessage(error.code) },
-          402,
-        );
-      }
-      const status = error.code === "transcript_not_ready" ? 409 : 400;
-      return c.json(
-        {
-          error: error.code,
-          message: userErrorMessage(error.code) ?? "Content could not be generated.",
-        },
-        status,
-      );
-    }
-    return c.json(
-      { error: "content_suite_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json({ assets }, 200);
 });
 
 // --- First-party analytics ---
 
 app.get("/projects/:id/analytics", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const analytics = await analyticsService.getProjectAnalytics(
+  const analytics = await analyticsService.getProjectAnalytics(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
-    );
-    return c.json(analytics, 200);
-  } catch (error) {
-    return c.json(
-      { error: "analytics_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(analytics, 200);
 });
 
 // --- Native social accounts ---
 
 app.get("/social/accounts", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const accounts = await socialOAuthService.listAccounts(
+  const accounts = await socialOAuthService.listAccounts(
       appUser.workspaceOwnerUserId,
       appUser.workspaceId,
-    );
-    return c.json({ accounts }, 200);
-  } catch (error) {
-    return c.json(
-      { error: "social_accounts_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json({ accounts }, 200);
 });
 
 app.get("/social/oauth/start/:platform", async (c) => {
@@ -2617,40 +1809,23 @@ app.post("/social/oauth/facebook-selection/:token", async (c) => {
 
 app.delete("/social/accounts/:accountId", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    await socialOAuthService.disconnectAccount(
+  await socialOAuthService.disconnectAccount(
       appUser.workspaceOwnerUserId,
       c.req.param("accountId"),
       appUser.workspaceId,
-    );
-    return c.json({ ok: true }, 200);
-  } catch (error) {
-    return c.json(
-      {
-        error: "social_account_disconnect_failed",
-        message: errorMessage(error),
-      },
-      400,
-    );
-  }
+  );
+  return c.json({ ok: true }, 200);
 });
 
 // --- Social scheduling metadata ---
 
 app.get("/projects/:id/social-posts", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const posts = await socialService.listProjectPosts(
+  const posts = await socialService.listProjectPosts(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
-    );
-    return c.json({ posts }, 200);
-  } catch (error) {
-    return c.json(
-      { error: "social_posts_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json({ posts }, 200);
 });
 
 app.post("/projects/:id/social-posts", async (c) => {
@@ -2662,8 +1837,7 @@ app.post("/projects/:id/social-posts", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const post = await socialService.schedulePost(
+  const post = await socialService.schedulePost(
       appUser.workspaceOwnerUserId,
       projectId,
       parsed.data,
@@ -2671,98 +1845,33 @@ app.post("/projects/:id/social-posts", async (c) => {
         workspaceId: appUser.workspaceId,
         actorUserId: appUser.actorUserId,
       },
-    );
-    return c.json(post, 201);
-  } catch (error) {
-    if (error instanceof ReviewApprovalGateError) {
-      const status = reviewApprovalHttpStatus(error.code);
-      if (status === null) throw error;
-      return c.json(
-        { error: error.code, message: userErrorMessage(error.code) },
-        status,
-      );
-    }
-    if (
-      error instanceof PublicationIntentConflictError ||
-      error instanceof PublicationIntentStateError
-    ) {
-      return c.json(
-        { error: error.code, message: userErrorMessage(error.code) },
-        409,
-      );
-    }
-    if (
-      error instanceof AssistedSocialCopyError ||
-      error instanceof ThumbnailPreparationError
-    ) {
-      return c.json(
-        { error: error.code, message: error.message },
-        error.code.includes("not_found") || error.code.includes("unavailable")
-          ? 404
-          : error.code.includes("stale") || error.code.includes("mismatch")
-            ? 409
-            : error.code.includes("entitlement")
-              ? 403
-              : 400,
-      );
-    }
-    return c.json(
-      { error: "social_post_schedule_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(post, 201);
 });
 
 app.delete("/projects/:id/social-posts/:postId", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const post = await socialService.cancelPost(
+  const post = await socialService.cancelPost(
       c.req.param("id"),
       c.req.param("postId"),
       {
         workspaceId: appUser.workspaceId,
         actorUserId: appUser.actorUserId,
       },
-    );
-    return c.json(post, 200);
-  } catch (error) {
-    return c.json(
-      { error: "social_post_cancel_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(post, 200);
 });
 
 app.get("/projects/:id/social-posts/:postId/publication", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    return c.json(
+  return c.json(
       await socialService.inspectPublication(
         appUser.workspaceId,
         c.req.param("postId"),
         c.req.param("id"),
       ),
-      200,
-    );
-  } catch (error) {
-    if (error instanceof SocialPublicationRecoveryError) {
-      return c.json(
-        {
-          error: error.code,
-          message:
-            userErrorMessage(error.code) ?? "Could not inspect this publication",
-        },
-        socialPublicationErrorStatus(error),
-      );
-    }
-    return c.json(
-      {
-        error: "social_publication_inspect_failed",
-        message: "Could not inspect this publication",
-      },
-      500,
-    );
-  }
+    200,
+  );
 });
 
 app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
@@ -2773,8 +1882,7 @@ app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    return c.json(
+  return c.json(
       await socialService.recheckPublication(
         appUser.workspaceId,
         appUser.actorUserId,
@@ -2782,23 +1890,8 @@ app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
         parsed.data,
         c.req.param("id"),
       ),
-      200,
-    );
-  } catch (error) {
-    if (error instanceof SocialPublicationRecoveryError) {
-      return c.json(
-        { error: error.code, message: userErrorMessage(error.code) },
-        socialPublicationErrorStatus(error),
-      );
-    }
-    return c.json(
-      {
-        error: "social_publication_recheck_failed",
-        message: "Could not recheck this publication",
-      },
-      500,
-    );
-  }
+    200,
+  );
 });
 
 app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
@@ -2809,8 +1902,7 @@ app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    return c.json(
+  return c.json(
       await socialService.confirmPublication(
         appUser.workspaceId,
         appUser.actorUserId,
@@ -2818,23 +1910,8 @@ app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
         parsed.data,
         c.req.param("id"),
       ),
-      200,
-    );
-  } catch (error) {
-    if (error instanceof SocialPublicationRecoveryError) {
-      return c.json(
-        { error: error.code, message: userErrorMessage(error.code) },
-        socialPublicationErrorStatus(error),
-      );
-    }
-    return c.json(
-      {
-        error: "social_publication_confirm_failed",
-        message: "Could not confirm this publication",
-      },
-      500,
-    );
-  }
+    200,
+  );
 });
 
 app.post("/projects/:id/social-posts/:postId/publish-again", async (c) => {
@@ -2845,8 +1922,7 @@ app.post("/projects/:id/social-posts/:postId/publish-again", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    return c.json(
+  return c.json(
       await socialService.republishPublication(
         appUser.workspaceId,
         appUser.actorUserId,
@@ -2854,23 +1930,8 @@ app.post("/projects/:id/social-posts/:postId/publish-again", async (c) => {
         parsed.data,
         c.req.param("id"),
       ),
-      201,
-    );
-  } catch (error) {
-    if (error instanceof SocialPublicationRecoveryError) {
-      return c.json(
-        { error: error.code, message: userErrorMessage(error.code) },
-        socialPublicationErrorStatus(error),
-      );
-    }
-    return c.json(
-      {
-        error: "social_publication_republish_failed",
-        message: "Could not publish this post again",
-      },
-      500,
-    );
-  }
+    201,
+  );
 });
 
 app.post("/projects/:id/social-posts/:postId/metrics", async (c) => {
@@ -2881,35 +1942,24 @@ app.post("/projects/:id/social-posts/:postId/metrics", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const post = await socialService.recordPostMetrics(
+  const post = await socialService.recordPostMetrics(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       c.req.param("postId"),
       parsed.data,
-    );
-    return c.json(post, 201);
-  } catch (error) {
-    return c.json(
-      { error: "social_post_metrics_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(post, 201);
 });
 
 // --- Voiceover dubbing ---
 
 app.get("/projects/:id/dubs", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const dubs = await dubbingService.listProjectDubs(
+  const dubs = await dubbingService.listProjectDubs(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
-    );
-    return c.json({ dubs }, 200);
-  } catch (error) {
-    return c.json({ error: "dubs_failed", message: errorMessage(error) }, 400);
-  }
+  );
+  return c.json({ dubs }, 200);
 });
 
 app.post("/projects/:id/dubs", async (c) => {
@@ -2924,27 +1974,14 @@ app.post("/projects/:id/dubs", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await dubbingService.requestClipDub(
+  const result = await dubbingService.requestClipDub(
       appUser.actorUserId,
       appUser.workspaceId,
       c.req.param("id"),
       idempotencyKey,
       parsed.data,
-    );
-    return c.json(result, 202);
-  } catch (error) {
-    if (error instanceof DubbingTierError) {
-      return c.json(
-        { error: "requires_pro_plan", message: userErrorMessage("requires_pro_plan") },
-        402,
-      );
-    }
-    return c.json(
-      { error: "dub_request_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(result, 202);
 });
 
 app.get("/projects/:id/dubs/:dubId/download", async (c) => {
@@ -2955,20 +1992,13 @@ app.get("/projects/:id/dubs/:dubId/download", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await dubbingService.getDubDownloadUrl(
+  const result = await dubbingService.getDubDownloadUrl(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       c.req.param("dubId"),
       parsed.data.asset,
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    return c.json(
-      { error: "dub_download_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(result, 200);
 });
 
 app.get("/projects/:id/clips/previews", async (c) => {
@@ -2979,19 +2009,12 @@ app.get("/projects/:id/clips/previews", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await clipService.getProjectClipPreviewUrls(
+  const result = await clipService.getProjectClipPreviewUrls(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       parsed.data.aspectRatio,
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    return c.json(
-      { error: "clip_preview_load_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(result, 200);
 });
 
 app.get("/projects/:id/clips/:clipId/download", async (c) => {
@@ -3002,20 +2025,13 @@ app.get("/projects/:id/clips/:clipId/download", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await clipService.getClipDownloadUrl(
+  const result = await clipService.getClipDownloadUrl(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       c.req.param("clipId"),
       parsed.data.aspectRatio,
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    return c.json(
-      { error: "clip_download_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.json(result, 200);
 });
 
 app.get("/projects/:id/clips/:clipId/file", async (c) => {
@@ -3034,36 +2050,14 @@ app.get("/projects/:id/clips/:clipId/file", async (c) => {
     );
   }
 
-  try {
-    const result = await clipService.getClipDownloadUrl(
+  const result = await clipService.getClipDownloadUrl(
       appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
       parsedQuery.data.aspectRatio,
-    );
-    return c.redirect(result.downloadUrl, 302);
-  } catch (error) {
-    return c.json(
-      { error: "clip_download_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
+  return c.redirect(result.downloadUrl, 302);
 });
-
-function brandTemplateErrorResponse(error: unknown) {
-  if (error instanceof BrandTemplateNotFoundError) {
-    return { status: 404 as const, body: { error: "brand_template_not_found" },
-    };
-  }
-  if (error instanceof BrandTemplateForbiddenError) {
-    return { status: 403 as const, body: { error: "brand_template_forbidden" },
-    };
-  }
-  return {
-    status: 400 as const,
-    body: { error: "brand_template_failed", message: errorMessage(error) },
-  };
-}
 
 app.get("/brand-templates", async (c) => {
   const appUser = authenticatedHonoActor(c);
@@ -3074,14 +2068,8 @@ app.get("/brand-templates", async (c) => {
 
 app.get("/brand-templates/:id", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const template = await brandTemplateService.get(appUser.workspaceOwnerUserId, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(template, 200);
-  } catch (error) {
-    const { status, body } = brandTemplateErrorResponse(error);
-    return c.json(body, status);
-  }
+  const template = await brandTemplateService.get(appUser.workspaceOwnerUserId, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json(template, 200);
 });
 
 app.post("/brand-templates", async (c) => {
@@ -3091,14 +2079,8 @@ app.post("/brand-templates", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const template = await brandTemplateService.create(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(template, 201);
-  } catch (error) {
-    const { status, body } = brandTemplateErrorResponse(error);
-    return c.json(body, status);
-  }
+  const template = await brandTemplateService.create(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json(template, 201);
 });
 
 app.patch("/brand-templates/:id", async (c) => {
@@ -3108,42 +2090,25 @@ app.patch("/brand-templates/:id", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const template = await brandTemplateService.update(
+  const template = await brandTemplateService.update(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       parsed.data,
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(template, 200);
-  } catch (error) {
-    const { status, body } = brandTemplateErrorResponse(error);
-    return c.json(body, status);
-  }
+  );
+  return c.json(template, 200);
 });
 
 app.delete("/brand-templates/:id", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    await brandTemplateService.softDelete(appUser.workspaceOwnerUserId, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json({ ok: true }, 200);
-  } catch (error) {
-    const { status, body } = brandTemplateErrorResponse(error);
-    return c.json(body, status);
-  }
+  await brandTemplateService.softDelete(appUser.workspaceOwnerUserId, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json({ ok: true }, 200);
 });
 
 app.post("/brand-templates/:id/set-default", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    await brandTemplateService.setDefault(appUser.workspaceOwnerUserId, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json({ ok: true }, 200);
-  } catch (error) {
-    const { status, body } = brandTemplateErrorResponse(error);
-    return c.json(body, status);
-  }
+  await brandTemplateService.setDefault(appUser.workspaceOwnerUserId, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json({ ok: true }, 200);
 });
 
 app.post("/brand-templates/:id/duplicate", async (c) => {
@@ -3153,18 +2118,13 @@ app.post("/brand-templates/:id/duplicate", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const template = await brandTemplateService.duplicate(
+  const template = await brandTemplateService.duplicate(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       parsed.data.name,
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(template, 201);
-  } catch (error) {
-    const { status, body } = brandTemplateErrorResponse(error);
-    return c.json(body, status);
-  }
+  );
+  return c.json(template, 201);
 });
 
 app.post("/brand-templates/logo/presign", async (c) => {
@@ -3175,33 +2135,19 @@ app.post("/brand-templates/logo/presign", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await brandTemplateService.presignLogoUpload(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    return c.json(
-      { error: "brand_template_logo_presign_failed", message: errorMessage(error),
-      },
-      400,
-    );
-  }
+  const result = await brandTemplateService.presignLogoUpload(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json(result, 200);
 });
 
 app.get("/brand-templates/:id/logo-url", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  try {
-    const url = await brandTemplateService.getLogoDownloadUrl(
+  const url = await brandTemplateService.getLogoDownloadUrl(
       appUser.workspaceOwnerUserId,
       c.req.param("id"),
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    if (!url) return c.json({ error: "brand_template_logo_missing" }, 404);
-    return c.json({ url }, 200);
-  } catch (error) {
-    const { status, body } = brandTemplateErrorResponse(error);
-    return c.json(body, status);
-  }
+  );
+  if (!url) return c.json({ error: "brand_template_logo_missing" }, 404);
+  return c.json({ url }, 200);
 });
 
 // Music/SFX library (docs/plans/vizard-parity.md "Music/SFX library").
@@ -3218,16 +2164,8 @@ app.get("/audio-assets", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await audioAssetService.listAssets(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    return c.json(
-      { error: "audio_assets_list_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  const result = await audioAssetService.listAssets(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json(result, 200);
 });
 
 app.post("/audio-assets/presign-upload", async (c) => {
@@ -3238,16 +2176,8 @@ app.post("/audio-assets/presign-upload", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const result = await audioAssetService.presignUpload(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    return c.json(
-      { error: "audio_asset_presign_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  const result = await audioAssetService.presignUpload(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json(result, 200);
 });
 
 app.post("/audio-assets", async (c) => {
@@ -3258,30 +2188,8 @@ app.post("/audio-assets", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-  try {
-    const asset = await audioAssetService.finalizeUpload(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json(asset, 201);
-  } catch (error) {
-    // L3: a double-click (or a retried finalize) racing the same presigned
-    // key finalizes twice — the second hits the `storageKey` unique
-    // constraint (P2002). That's a conflict with an existing row, not a
-    // generic 400 — surface it as such with a friendly message instead of
-    // the raw Prisma error.
-    if (isUniqueConstraintError(error)) {
-      return c.json(
-        {
-          error: "audio_asset_duplicate",
-          message: "This upload has already been added to your library.",
-        },
-        409,
-      );
-    }
-    return c.json(
-      { error: "audio_asset_finalize_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  const asset = await audioAssetService.finalizeUpload(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json(asset, 201);
 });
 
 app.get("/audio-assets/:id/playback-url", async (c) => {
@@ -3292,83 +2200,43 @@ app.get("/audio-assets/:id/playback-url", async (c) => {
   // message instead of a clean, expected one.
   const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
   if (!idParsed.success) {
-    return c.json({ error: "Invalid audio asset id" }, 400);
+    return c.json({ error: "invalid_audio_asset_id", message: "Invalid audio asset id" }, 400);
   }
-  try {
-    const source = await audioAssetService.getPlaybackSource(appUser.workspaceOwnerUserId, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    if (!source) return c.json({ error: "audio_asset_not_found" }, 404);
-    return c.json(source, 200);
-  } catch (error) {
-    return c.json(
-      { error: "audio_asset_playback_url_failed", message: errorMessage(error),
-      },
-      400,
-    );
-  }
+  const source = await audioAssetService.getPlaybackSource(appUser.workspaceOwnerUserId, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  if (!source) return c.json({ error: "audio_asset_not_found" }, 404);
+  return c.json(source, 200);
 });
 
 app.put("/audio-assets/:id/favorite", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
-  if (!idParsed.success) return c.json({ error: "Invalid audio asset id" }, 400);
-  try {
-    return c.json(
+  if (!idParsed.success) return c.json({ error: "invalid_audio_asset_id", message: "Invalid audio asset id" }, 400);
+  return c.json(
       await audioAssetService.setFavorite(appUser.workspaceOwnerUserId, idParsed.data, true, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
       ),
       200,
-    );
-  } catch (error) {
-    if (error instanceof AudioAssetNotFoundError) {
-      return c.json({ error: "audio_asset_not_found" }, 404);
-    }
-    return c.json(
-      { error: "audio_asset_favorite_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
 });
 
 app.delete("/audio-assets/:id/favorite", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
-  if (!idParsed.success) return c.json({ error: "Invalid audio asset id" }, 400);
-  try {
-    return c.json(
+  if (!idParsed.success) return c.json({ error: "invalid_audio_asset_id", message: "Invalid audio asset id" }, 400);
+  return c.json(
       await audioAssetService.setFavorite(appUser.workspaceOwnerUserId, idParsed.data, false, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
       ),
       200,
-    );
-  } catch (error) {
-    if (error instanceof AudioAssetNotFoundError) {
-      return c.json({ error: "audio_asset_not_found" }, 404);
-    }
-    return c.json(
-      { error: "audio_asset_unfavorite_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  );
 });
 
 app.delete("/audio-assets/:id", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
   if (!idParsed.success) {
-    return c.json({ error: "Invalid audio asset id" }, 400);
+    return c.json({ error: "invalid_audio_asset_id", message: "Invalid audio asset id" }, 400);
   }
-  try {
-    await audioAssetService.deleteUserAsset(appUser.workspaceOwnerUserId, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
-    return c.json({ ok: true }, 200);
-  } catch (error) {
-    if (error instanceof AudioAssetNotFoundError) {
-      return c.json({ error: "audio_asset_not_found" }, 404);
-    }
-    return c.json(
-      { error: "audio_asset_delete_failed", message: errorMessage(error) },
-      400,
-    );
-  }
+  await audioAssetService.deleteUserAsset(appUser.workspaceOwnerUserId, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  return c.json({ ok: true }, 200);
 });
 
 const honoHandler = handle(app);
