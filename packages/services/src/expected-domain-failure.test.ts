@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 
 describe("ExpectedDomainFailure", () => {
-  test("exposes a stable transport-neutral failure and bounds optional metadata", () => {
+  test("exposes a stable transport-neutral failure without changing typed metadata", () => {
     const failure = new ExpectedDomainFailureError({
       code: "review_approval_required",
       kind: "conflict",
@@ -27,11 +27,11 @@ describe("ExpectedDomainFailure", () => {
     });
     expect(failure.details).toEqual({
       roundId: "round-1",
-      items: Array.from({ length: 16 }, (_, index) => ({
+      items: Array.from({ length: 20 }, (_, index) => ({
         exportId: `export-${index}`,
         reason: "approval_required",
       })),
-      note: "x".repeat(240),
+      note: "x".repeat(300),
     });
   });
 });
