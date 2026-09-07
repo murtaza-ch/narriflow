@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { CalendarDays, Plus, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Button } from "@narriflow/ui/components/button";
@@ -185,6 +185,7 @@ export default async function CalendarPage({
 		),
 	]);
 	const timezone = workspace?.timezone ?? "UTC";
+  const todayKey = dateKey(new Date(), timezone);
 	const canPublish =
 		appUser.workspace.status === "active" &&
 		appUser.workspace.role !== "viewer";
@@ -201,6 +202,18 @@ export default async function CalendarPage({
 	});
 	const days = calendarDays(window.from, window.to, view === "month");
 	const liveRefreshDelay = socialPollDelayMs(posts, Date.now());
+  function navigationHref(offset: number, nextView = view) {
+    const target = new Date(window.from);
+    if (view === "week") target.setUTCDate(target.getUTCDate() + offset * 7);
+    else target.setUTCMonth(target.getUTCMonth() + offset);
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) if (value) query.set(key, value);
+    query.set("view", nextView);
+    query.set("month", target.toISOString().slice(0, 7));
+    query.set("date", target.toISOString().slice(0, 10));
+    return `/calendar?${query}`;
+  }
+
 	return (
 		<Stack gap="8">
 			<CalendarLiveRefresh delayMs={liveRefreshDelay} />
@@ -218,31 +231,35 @@ export default async function CalendarPage({
 					) : undefined
 				}
 			/>
-			<Flex align="center" justify="space-between" gap="3">
+			<Flex align="center" justify="space-between" gap="3" wrap="wrap">
 				<Text textStyle="title" fontSize="18px">
 					{window.label}
 				</Text>
-				<Flex gap="1">
+        <Flex gap="1" align="center" wrap="wrap">
+          <Button asChild variant="ghost" size="sm" aria-label="Previous period"><Link href={navigationHref(-1)}><ChevronLeft size={16} /></Link></Button>
+          <Button asChild variant="outline" size="sm"><Link href={`/calendar?view=${view}`}>Today</Link></Button>
+          <Button asChild variant="ghost" size="sm" aria-label="Next period"><Link href={navigationHref(1)}><ChevronRight size={16} /></Link></Button>
+
 					<Button
-						size="xs"
+						size="sm"
 						variant={view === "month" ? "outline" : "ghost"}
 						asChild
 					>
-						<Link href="/calendar?view=month">Month</Link>
+						<Link href={navigationHref(0, "month")}>Month</Link>
 					</Button>
 					<Button
-						size="xs"
+						size="sm"
 						variant={view === "week" ? "outline" : "ghost"}
 						asChild
 					>
-						<Link href="/calendar?view=week">Week</Link>
+						<Link href={navigationHref(0, "week")}>Week</Link>
 					</Button>
 					<Button
-						size="xs"
+						size="sm"
 						variant={view === "list" ? "outline" : "ghost"}
 						asChild
 					>
-						<Link href="/calendar?view=list">List</Link>
+						<Link href={navigationHref(0, "list")}>List</Link>
 					</Button>
 				</Flex>
 			</Flex>
@@ -255,7 +272,8 @@ export default async function CalendarPage({
 					alignItems: "flex-end",
 				}}
 			>
-				<input type="hidden" name="month" value={params.month ?? ""} />
+				<input type="hidden" name="date" value={params.date ?? ""} />
+        <input type="hidden" name="month" value={params.month ?? ""} />
 				<input type="hidden" name="view" value={params.view ?? "month"} />
 				<Select
 					ariaLabel="Post status"
@@ -313,17 +331,19 @@ export default async function CalendarPage({
 						})),
 					]}
 				/>
-				<Button type="submit" size="xs" variant="outline">
+				<Button type="submit" size="sm" variant="outline">
 					Apply filters
 				</Button>
 			</form>
-			{visiblePosts.length === 0 ? (
+			{visiblePosts.length === 0 && view === "list" ? (
 				<EmptyState
 					icon={<CalendarDays size={22} />}
-					title="Nothing scheduled this month"
+					title="No scheduled posts"
+          description="Schedule a clip from a project to add it to your calendar."
+          action={canPublish ? <Button asChild><Link href="/calendar/new">Schedule a post</Link></Button> : undefined}
 				/>
 			) : view === "list" ? (
-				<Stack gap="0" borderTopWidth="1px" borderColor="border">
+				<Stack gap="3">
 					{visiblePosts.map((post) => {
 						const feedback = describeSocialPost(post, Date.now());
 						return (
@@ -332,15 +352,12 @@ export default async function CalendarPage({
 								align={{ base: "flex-start", md: "center" }}
 								direction={{ base: "column", md: "row" }}
 								gap="4"
-								py="4"
-								borderBottomWidth="1px"
+								p="4"
+                bg="bg.panel"
+                borderRadius="l2"
+								borderWidth="1px"
 								borderColor="border.subtle"
 							>
-								<Box
-									w="3px"
-									alignSelf="stretch"
-									bg={statusStripe(feedback.tone)}
-								/>
 								<Stack gap="0.5" flex="1" minW="0">
 									<Text fontSize="13px" fontWeight="600" lineClamp={1}>
 										{post.caption}
@@ -372,7 +389,7 @@ export default async function CalendarPage({
 									>
 										<ActionSubmitButton
 											pendingLabel="Canceling…"
-											size="xs"
+											size="sm"
 											variant="ghost"
 										>
 											<X size={12} />
@@ -381,7 +398,7 @@ export default async function CalendarPage({
 									</AuthenticatedActionForm>
 								) : null}
 								{post.status === "needs_attention" ? (
-									<Button size="xs" variant="ghost" asChild>
+									<Button size="sm" variant="ghost" asChild>
 										<Link
 											href={`/projects/${post.projectId}?tab=publish#social-publishing`}
 										>
@@ -390,7 +407,7 @@ export default async function CalendarPage({
 									</Button>
 								) : null}
 								{post.status === "posted" && post.externalUrl ? (
-									<Button size="xs" variant="ghost" asChild>
+									<Button size="sm" variant="ghost" asChild>
 										<a href={post.externalUrl} target="_blank" rel="noreferrer">
 											View post
 										</a>
@@ -402,7 +419,9 @@ export default async function CalendarPage({
 				</Stack>
 			) : (
 				<Box
-					overflowX="auto"
+					borderRadius="l2"
+          bg="bg.panel"
+          overflowX="auto"
 					borderTopWidth="1px"
 					borderLeftWidth="1px"
 					borderColor="border"
@@ -424,6 +443,7 @@ export default async function CalendarPage({
 						))}
 						{days.map((day) => {
 							const key = dateKey(day, "UTC");
+              const isToday = key === todayKey;
 							const dayPosts = visiblePosts.filter(
 								(post) =>
 									post.scheduledFor &&
@@ -441,12 +461,19 @@ export default async function CalendarPage({
 									borderRightWidth="1px"
 									borderBottomWidth="1px"
 									borderColor="border"
-									bg={muted ? "bg.subtle" : "bg"}
+									bg={muted ? "bg" : "bg.panel"}
 								>
 									<Text
 										textStyle="data"
 										fontSize="11px"
-										color={muted ? "fg.subtle" : "fg.muted"}
+										color={isToday ? "accent.contrast" : muted ? "fg.subtle" : "fg.muted"}
+                    bg={isToday ? "accent.solid" : "transparent"}
+                    borderRadius="full"
+                    boxSize="6"
+                    display="grid"
+                    placeItems="center"
+                    aria-current={isToday ? "date" : undefined}
+                    title={isToday ? "Today" : undefined}
 									>
 										{day.getUTCDate()}
 									</Text>
@@ -458,7 +485,8 @@ export default async function CalendarPage({
 												p="2"
 												borderLeftWidth="3px"
 												borderColor={statusStripe(feedback.tone)}
-												bg="bg.subtle"
+												bg="bg.muted"
+                        borderRadius="l1"
 											>
 												<Text fontSize="11px" fontWeight="600" lineClamp={2}>
 													{post.caption}

@@ -30,7 +30,7 @@ function linkProviderLabel(provider: LinkProviderId): string {
   return LINK_PROVIDERS.find((p) => p.id === provider)?.label ?? "Link";
 }
 
-/** Failure notice: 3px danger stripe + icon + danger text. */
+/** Failure notice: Labeled danger panel with an icon. */
 function ErrorNotice({ message }: { message: string }) {
   return (
     <Flex
@@ -40,11 +40,12 @@ function ErrorNotice({ message }: { message: string }) {
       px="3"
       py="2.5"
       bg="danger.subtle"
+      borderWidth="1px"
+      borderColor="danger.muted"
       borderRadius="l2"
       position="relative"
       overflow="hidden"
     >
-      <Box position="absolute" insetInlineStart="0" top="0" bottom="0" w="3px" bg="danger.solid" />
       <Box color="danger.fg" flexShrink={0}>
         <AlertTriangle size={14} strokeWidth={2} />
       </Box>
@@ -319,7 +320,7 @@ export function CommitStep({
                 </Popover.Trigger>
                 <Portal>
                   <Popover.Positioner>
-                    <Popover.Content layerStyle="panel" boxShadow="cardHover" minW="320px" p="3">
+                    <Popover.Content minW="320px" p="3">
                       <ProcessingTimeline
                         durationSec={durationSec}
                         startSec={startSec}
@@ -380,7 +381,7 @@ export function CommitStep({
           onClick={handleCommit}
           disabled={submitting || overUploadCap || wouldExceedMonthly}
           type="button"
-          size="md"
+          size="sm"
         >
           {submitting ? (
             <>

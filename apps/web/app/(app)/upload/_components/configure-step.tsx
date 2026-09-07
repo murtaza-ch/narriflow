@@ -297,11 +297,12 @@ export function ConfigureStep({
                 px="3"
                 py="2.5"
                 bg="danger.subtle"
+      borderWidth="1px"
+      borderColor="danger.muted"
                 borderRadius="l2"
                 position="relative"
                 overflow="hidden"
               >
-                <Box position="absolute" insetInlineStart="0" top="0" bottom="0" w="3px" bg="danger.solid" />
                 <Text fontSize="12.5px" fontWeight="500" color="danger.fg">
                   {finalizeError}
                 </Text>
@@ -311,7 +312,7 @@ export function ConfigureStep({
               onClick={submitFinalize}
               disabled={ctaPhase !== "idle"}
               type="button"
-              size="md"
+              size="sm"
             >
               {ctaPhase === "waiting" ? (
                 <>

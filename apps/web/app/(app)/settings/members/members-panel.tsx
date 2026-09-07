@@ -174,7 +174,7 @@ export function MembersPanel({
 
   return (
     <Stack gap="8">
-      <Box as="form" onSubmit={submitInvite} borderTopWidth="1px" borderColor="border" py="6">
+      <Box as="form" onSubmit={submitInvite} borderWidth="1px" borderColor="border" borderRadius="l2" bg="bg.panel" p="6">
         <Stack gap="4">
           <Flex align="center" gap="2"><UserPlus size={16} /><Text fontWeight="600" fontSize="13px">Invite a member</Text></Flex>
           {!isBusiness && workspaceStatus !== "restricted" ? (
@@ -252,7 +252,7 @@ export function MembersPanel({
               )}
               {member.role !== "owner" && canManageMembers && !(actorRole === "admin" && member.role === "admin") ? (
                 <Button
-                  size="xs"
+                  size="sm"
                   variant="ghost"
                   aria-label={`Remove ${name}`}
                   onClick={() => remove(member.id, name)}
@@ -273,8 +273,8 @@ export function MembersPanel({
             <Flex key={invite.id} align="center" gap="3" py="4" borderTopWidth="1px" borderColor="border.subtle">
               <Stack gap="0" flex="1" minW="0"><Text fontSize="13px" fontWeight="550" truncate>{invite.email}</Text><Text fontSize="11px" color={new Date(invite.expiresAt) <= new Date() ? "danger.fg" : "fg.subtle"}>{new Date(invite.expiresAt) <= new Date() ? "Expired" : `Expires ${formatDate(invite.expiresAt)}`}</Text></Stack>
               <Text textStyle="eyebrow" color="fg.muted">{invite.role}</Text>
-              {canManageMembers ? <Button size="xs" variant="ghost" onClick={() => resend(invite.id)} disabled={pending}><Mail size={14} />Resend</Button> : null}
-              {canManageMembers ? <Button size="xs" variant="ghost" aria-label={`Revoke invitation for ${invite.email}`} onClick={() => revoke(invite.id)} disabled={pending}><X size={14} /></Button> : null}
+              {canManageMembers ? <Button size="sm" variant="ghost" onClick={() => resend(invite.id)} disabled={pending}><Mail size={14} />Resend</Button> : null}
+              {canManageMembers ? <Button size="sm" variant="ghost" aria-label={`Revoke invitation for ${invite.email}`} onClick={() => revoke(invite.id)} disabled={pending}><X size={14} /></Button> : null}
             </Flex>
           ))}
         </Stack>

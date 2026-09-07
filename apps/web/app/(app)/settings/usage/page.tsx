@@ -22,7 +22,7 @@ export default async function UsageSettingsPage() {
         <StatBand.Item label="Minutes used" value={usedMinutes} suffix={<Text textStyle="data" fontSize="13px" color="fg.muted">/ {limit}</Text>} meter={percent} />
         <StatBand.Item label="Remaining" value={Math.max(0, limit - usedMinutes)} suffix={<Text textStyle="data" fontSize="13px" color="fg.muted">min</Text>} />
       </StatBand>
-      <Box borderTopWidth="1px" borderColor="border" py="5">
+      <Box borderWidth="1px" borderColor="border" borderRadius="l2" bg="bg.panel" p="5">
         <Text fontSize="12px" color="fg.muted">Source minutes reset each monthly billing period.</Text>
       </Box>
     </Stack>

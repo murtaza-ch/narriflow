@@ -96,7 +96,7 @@ export function ApiKeysPanel({
         {keys.length === 0 ? <Text py="6" fontSize="13px" color="fg.muted">No API keys in this workspace.</Text> : keys.map((key) => (
           <Flex key={key.id} align="center" gap="3" py="4" borderTopWidth="1px" borderColor="border.subtle">
             <Stack gap="1" flex="1"><Text fontSize="13px" fontWeight="550">{key.name}</Text><Text fontSize="12px" color="fg.subtle" fontFamily="mono">{key.prefix}•••• · {key.lastUsedAt ? `last used ${new Date(key.lastUsedAt).toLocaleDateString()}` : "no recorded use"}</Text><Text fontSize="12px" color="fg.subtle" lineHeight="1.5">{key.scopes.join(" · ")}</Text></Stack>
-            <Button size="xs" variant="ghost" aria-label={`Revoke ${key.name}`} onClick={() => revoke(key.id)} disabled={pending}><Trash2 size={14} /></Button>
+            <Button size="sm" variant="ghost" aria-label={`Revoke ${key.name}`} onClick={() => revoke(key.id)} disabled={pending}><Trash2 size={14} /></Button>
           </Flex>
         ))}
       </Stack>

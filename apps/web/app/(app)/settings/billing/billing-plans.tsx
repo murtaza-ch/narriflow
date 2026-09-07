@@ -271,11 +271,11 @@ export function BillingPlans({
       <Box
         ref={statusRef}
         tabIndex={-1}
-        borderTopWidth="3px"
-        borderTopColor={STATUS_STRIPE[status.tone]}
-        borderBottomWidth="1px"
-        borderBottomColor="border"
-        py="5"
+        borderWidth="1px"
+        borderColor={STATUS_STRIPE[status.tone]}
+        borderRadius="l2"
+        bg="bg.panel"
+        p="5"
         outline="none"
         role="status"
         aria-live={status.live}
@@ -331,12 +331,12 @@ export function BillingPlans({
             <Text textStyle="eyebrow" color="fg.subtle">Choose a plan</Text>
             <SegmentedControl size="sm" aria-label="Billing interval" items={[{ label: "Monthly", value: "monthly" }, { label: "Annual · save ~33%", value: "annual" }]} value={interval} onValueChange={(value) => setInterval(value as BillingInterval)} />
           </Flex>
-          <Grid layerStyle="band" templateColumns={{ base: "1fr", md: `repeat(${Math.min(3, availableTiers.length)}, minmax(0, 1fr))` }} gap="0">
-            {availableTiers.map((tier, index) => {
+          <Grid layerStyle="band" templateColumns={{ base: "1fr", md: `repeat(${Math.min(3, availableTiers.length)}, minmax(0, 1fr))` }} gap="3">
+            {availableTiers.map((tier) => {
               const info = PRICING_TABLE[tier];
               const perMonth = interval === "annual" ? String(Math.round(info.annualUsd / 12)) : String(info.monthlyUsd);
               return (
-                <Stack key={tier} gap="3" py="4" px={{ base: "0", md: "5" }} borderTopWidth={{ base: index === 0 ? "0" : "1px", md: "0" }} borderLeftWidth={{ base: "0", md: index === 0 ? "0" : "1px" }} borderColor="border.subtle">
+                <Stack key={tier} gap="4" p="5" bg="bg.panel" borderWidth="1px" borderRadius="l2" borderColor={tier === "creator" ? "border.emphasized" : "border"}>
                   <Text textStyle="eyebrow" color={tier === "creator" ? "accent.fg" : "fg.subtle"}>{tier === "creator" ? "Recommended" : "Plan"}</Text>
                   <Text textStyle="title" fontSize="16px">{info.name}</Text>
                   <Flex align="baseline" gap="1"><Text textStyle="data" fontSize="28px">${perMonth}</Text><Text fontSize="12px" color="fg.muted">/mo</Text></Flex>

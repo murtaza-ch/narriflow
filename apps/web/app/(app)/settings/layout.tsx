@@ -23,8 +23,7 @@ const WORKSPACE_LINKS = [
   { label: "Members", href: "/settings/members", icon: Users },
   { label: "Social accounts", href: "/settings/social-accounts", icon: Share2 },
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
-  { label: "Usage history", href: "/settings/usage", icon: ChartNoAxesCombined,
-  },
+  { label: "Usage history", href: "/settings/usage", icon: ChartNoAxesCombined },
   { label: "Developer access", href: "/settings/api", icon: Braces },
 ] as const;
 
@@ -36,23 +35,31 @@ function SettingsGroup({
   links: ReadonlyArray<{ label: string; href: string; icon: typeof UserRound }>;
 }) {
   return (
-    <Stack gap="1">
-      <Text textStyle="eyebrow" color="fg.subtle" px="3" pt="3" pb="1.5">{label}</Text>
+    <Stack gap="1" direction={{ base: "row", lg: "column" }} flexShrink={0}>
+      <Text
+        textStyle="eyebrow"
+        color="fg.subtle"
+        px="3"
+        pt="3"
+        pb="1.5"
+        display={{ base: "none", lg: "block" }}
+      >
+        {label}
+      </Text>
       {links.map(({ label: itemLabel, href, icon: Icon }) => (
         <Box key={href} flexShrink={0}>
-          <NavLink href={href} icon={<Icon size={14} />}>{itemLabel}</NavLink>
+          <NavLink href={href} icon={<Icon size={14} />}>
+            {itemLabel}
+          </NavLink>
         </Box>
       ))}
     </Stack>
   );
 }
 
-export default async function SettingsLayout({ children,
-}: { children: React.ReactNode;
-}) {
+export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
   const appUser = await admitWorkspacePage("content.view");
-  const workspaceLinks = workspaceAllowsCapability(appUser.workspace, "api.manage",
-  )
+  const workspaceLinks = workspaceAllowsCapability(appUser.workspace, "api.manage")
     ? WORKSPACE_LINKS
     : WORKSPACE_LINKS.filter((link) => link.href !== "/settings/api");
   return (
@@ -66,6 +73,7 @@ export default async function SettingsLayout({ children,
     >
       <Box
         as="nav"
+        minW="0"
         aria-label="Settings sections"
         w={{ base: "full", lg: "220px" }}
         flexShrink={0}
@@ -79,14 +87,15 @@ export default async function SettingsLayout({ children,
           borderBottomWidth={{ base: "1px", lg: "0" }}
           borderColor="border"
           pb={{ base: "3", lg: "0" }}
-          css={{ scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" },
-          }}
+          css={{ scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}
         >
           <SettingsGroup label="Your account" links={ACCOUNT_LINKS} />
           <SettingsGroup label={appUser.workspace.workspaceName} links={workspaceLinks} />
         </Flex>
       </Box>
-      <Box flex="1" minW="0" w="full">{children}</Box>
+      <Box flex="1" minW="0" w="full">
+        {children}
+      </Box>
     </Flex>
   );
 }

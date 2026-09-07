@@ -409,7 +409,7 @@ export function AutopilotPanel({
             />
           </Box>
         ) : (
-          <Box layerStyle="band" pt="0">
+          <Box display="grid" gap="3">
             {initialRules.map((rule) => {
               const meta = STATUS_META[rule.status];
               const pending = pendingRules[rule.id];
@@ -420,8 +420,11 @@ export function AutopilotPanel({
                 <Box
                   key={rule.id}
                   position="relative"
-                  borderBottomWidth="1px"
-                  borderBottomColor="border.subtle"
+                  borderWidth="1px"
+                  borderColor="border"
+                  borderRadius="l2"
+                  bg="bg.panel"
+                  px="4"
                   transition="background 120ms ease"
                   _hover={{ bg: "bg.subtle" }}
                 >
@@ -563,7 +566,7 @@ export function AutopilotPanel({
                         }}
                       />
                       <Button
-                        size="xs"
+                        size="sm"
                         variant="outline"
                         loading={pending === "run"}
                         disabled={pending !== undefined && pending !== "run"}
@@ -608,11 +611,6 @@ export function AutopilotPanel({
           <Dialog.Positioner>
             <Dialog.Content
               maxW="480px"
-              bg="bg.panel"
-              borderWidth="1px"
-              borderColor="border"
-              borderRadius="l3"
-              boxShadow="cardHover"
             >
               <Dialog.Header
                 px="6"

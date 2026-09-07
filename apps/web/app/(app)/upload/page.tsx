@@ -72,7 +72,7 @@ async function loadLinkResumeData(
 export default async function UploadPage({
   searchParams,
 }: {
-  searchParams: Promise<{ url?: string | string[]; project?: string | string[];
+  searchParams: Promise<{ url?: string | string[]; project?: string | string[]; source?: string; mode?: string;
   }>;
 }) {
   const appUser = await admitWorkspacePage("processing.consume");
@@ -129,7 +129,8 @@ export default async function UploadPage({
       </Flex>
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          title="Import or upload"
+          title="Import a video"
+          description="Choose a source, then set up your clips and captions."
         />
       </Box>
       <Box
@@ -141,6 +142,8 @@ export default async function UploadPage({
           brandTemplates={brandTemplates}
           brandProfiles={{ items: brandProfiles, defaultId: defaultBrandProfileId }}
           initialUrl={rawUrl ?? null}
+          initialSource={params.source === "rss" ? "rss" : "auto"}
+          initialMode={params.mode === "caption_only" ? "caption_only" : "clip"}
           resumeData={resumeData}
           usageSummary={usageSummary}
         />

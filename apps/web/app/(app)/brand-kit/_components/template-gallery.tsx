@@ -76,7 +76,7 @@ function Section({ title, templates, defaultId, ownership }: SectionProps) {
       <Box layerStyle="band">
         {templates.length === 0 ? (
           <EmptyState
-            ratio={9 / 16}
+            ratio={4 / 3}
             icon={<Plus size={18} />}
             title="No saved styles yet"
             description="Duplicate a built-in below to make it yours."
@@ -222,38 +222,23 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
 
   return (
     <Stack gap="2" minW="0">
-      {/* Real 9:16 preview — footage ground, caption specimen in user style.
-          Default = selected object: accent border (label carries the state). */}
+      {/* Compact type specimen; full video positioning is shown in the style editor. */}
       <MediaWell
-        ratio={9 / 16}
+        ratio={4 / 3}
         borderColor={isDefault ? "border.accent" : "border"}
         borderWidth={isDefault ? "2px" : "1px"}
         transition="border-color 120ms ease"
       >
-        {/* Brand-color tint over graphite — user color values stay literal */}
-        <Box
-          position="absolute"
-          inset="0"
-          style={{
-            background: `linear-gradient(135deg, ${template.primaryColor}26 0%, ${template.secondaryColor}26 100%)`,
-          }}
-        />
         <Flex
           position="absolute"
           inset="0"
           px="3"
           py="6"
-          align={
-            preset.position === "top"
-              ? "flex-start"
-              : preset.position === "center"
-                ? "center"
-                : "flex-end"
-          }
+          align="center"
           justify="center"
         >
           <Text
-            fontSize="15px"
+            fontSize="18px"
             fontWeight={preset.bold ? 800 : 500}
             textAlign="center"
             lineHeight="1.15"
@@ -344,7 +329,7 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
           </Menu.Trigger>
           <Portal>
             <Menu.Positioner>
-              <Menu.Content layerStyle="panel" boxShadow="cardHover" minW="10rem" p="1">
+              <Menu.Content minW="10rem" p="1">
                 {!isDefault ? (
                   <Menu.Item
                     value="set-default"

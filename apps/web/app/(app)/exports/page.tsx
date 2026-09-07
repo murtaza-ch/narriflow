@@ -82,73 +82,75 @@ export default async function ExportsPage({
     ),
   ]);
 
+  const hasFilters = Boolean(status || params.q || params.project || params.ratio || params.from || params.to);
+
   return (
     <Stack gap="8">
-      <PageHeader title="Exports" />
+      <PageHeader title="Exports" description="Finished clips and exports in progress, all in one place." />
       <form method="get" style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end",
         }}>
         <Stack gap="1" flex={{ base: "1 1 100%", md: "1 1 220px" }}>
-          <label htmlFor="export-search"><Text as="span" textStyle="eyebrow" color="fg.subtle">Search</Text></label>
+          <label htmlFor="export-search"><Text as="span" fontSize="13px" fontWeight="500" color="fg.muted">Search</Text></label>
           <Input id="export-search" name="q" defaultValue={params.q} placeholder="Project or clip" />
         </Stack>
-        <Stack gap="1">
-          <label htmlFor="export-project"><Text as="span" textStyle="eyebrow" color="fg.subtle">Project</Text></label>
-          <Select id="export-project" name="project" ariaLabel="Export project" defaultValue={params.project ?? ""} w="220px" items={[{ value: "", label: "All projects" }, ...projects.map((project) => ({ value: project.id, label: project.title,
+        <Stack gap="1" flex={{ base: "1 1 180px", md: "0 1 220px" }} minW="0">
+          <label htmlFor="export-project"><Text as="span" fontSize="13px" fontWeight="500" color="fg.muted">Project</Text></label>
+          <Select id="export-project" name="project" ariaLabel="Export project" defaultValue={params.project ?? ""} w="full" items={[{ value: "", label: "All projects" }, ...projects.map((project) => ({ value: project.id, label: project.title,
               })),
             ]} />
         </Stack>
-        <Stack gap="1">
-          <label htmlFor="export-ratio"><Text as="span" textStyle="eyebrow" color="fg.subtle">Format</Text></label>
-          <Select id="export-ratio" name="ratio" ariaLabel="Export format" defaultValue={params.ratio ?? ""} w="150px" items={[{ value: "", label: "All formats" }, { value: "ratio_9_16", label: "9:16" }, { value: "ratio_1_1", label: "1:1" }, { value: "ratio_16_9", label: "16:9" }, { value: "ratio_4_5", label: "4:5" },
+        <Stack gap="1" flex={{ base: "1 1 120px", md: "0 1 150px" }} minW="0">
+          <label htmlFor="export-ratio"><Text as="span" fontSize="13px" fontWeight="500" color="fg.muted">Format</Text></label>
+          <Select id="export-ratio" name="ratio" ariaLabel="Export format" defaultValue={params.ratio ?? ""} w="full" items={[{ value: "", label: "All formats" }, { value: "ratio_9_16", label: "9:16" }, { value: "ratio_1_1", label: "1:1" }, { value: "ratio_16_9", label: "16:9" }, { value: "ratio_4_5", label: "4:5" },
             ]} />
         </Stack>
-        <DatePicker name="from" ariaLabel="From date" defaultValue={params.from} />
-        <DatePicker name="to" ariaLabel="To date" defaultValue={params.to} />
+        <Box flex={{ base: "1 1 140px", md: "0 1 180px" }}><DatePicker name="from" label="From date" defaultValue={params.from} width="100%" /></Box>
+        <Box flex={{ base: "1 1 140px", md: "0 1 180px" }}><DatePicker name="to" label="To date" defaultValue={params.to} width="100%" /></Box>
         {status ? <input type="hidden" name="status" value={status} /> : null}
         <input type="hidden" name="view" value={view} />
         <Button type="submit" size="sm" variant="outline">Apply</Button>
       </form>
       <Flex gap="2" wrap="wrap">
         {FILTERS.map((filter) => (
-          <Button key={filter.value} size="xs" variant={(params.status ?? "all") === filter.value ? "outline" : "ghost"} asChild>
+          <Button key={filter.value} size="sm" variant={(params.status ?? "all") === filter.value ? "outline" : "ghost"} asChild>
             <Link href={exportHref(params, "status", filter.value)}>{filter.label}</Link>
           </Button>
         ))}
         <Box flex="1" />
-        <Button size="xs" variant={view === "list" ? "outline" : "ghost"} asChild>
+        <Button size="sm" variant={view === "list" ? "outline" : "ghost"} asChild>
           <Link href={exportHref(params, "view", "list")} aria-label="List view"><List size={13} />List</Link>
         </Button>
-        <Button size="xs" variant={view === "grid" ? "outline" : "ghost"} asChild>
+        <Button size="sm" variant={view === "grid" ? "outline" : "ghost"} asChild>
           <Link href={exportHref(params, "view", "grid")} aria-label="Grid view"><Grid2X2 size={13} />Grid</Link>
         </Button>
       </Flex>
       {exports.length === 0 ? (
-        <EmptyState icon={<Film size={22} />} title="No exports here" description="Workspace exports appear here." />
+        <EmptyState icon={<Film size={22} />} title={hasFilters ? "No matching exports" : "No exports yet"} description={hasFilters ? "Try a different search, date range, or status." : "Export a clip from a project to see it here."} action={<Button asChild><Link href={hasFilters ? `/exports?view=${view}` : "/projects"}>{hasFilters ? "Clear filters" : "Browse projects"}</Link></Button>} />
       ) : view === "list" ? (
-        <Stack gap="0" borderTopWidth="1px" borderColor="border">
+        <Stack gap="3">
           {exports.map((item) => (
-            <Flex key={item.id} align={{ base: "flex-start", md: "center" }} direction={{ base: "column", md: "row" }} gap="4" py="4" borderBottomWidth="1px" borderColor="border.subtle">
-              <Box w="3px" alignSelf="stretch" bg={item.status === "ready" ? "accent.solid" : item.status === "failed" ? "danger.solid" : "border.emphasized"} />
-              <Stack gap="0.5" flex="1" minW="0">
+            <Flex key={item.id} align={{ base: "flex-start", md: "center" }} direction={{ base: "column", md: "row" }} gap="4" p="4" borderWidth="1px" borderColor="border" borderRadius="l2" bg="bg.panel">
+
+              <Stack gap="0.5" flex="1" minW="0" w={{ base: "full", md: "auto" }}>
                 <Text fontSize="13px" fontWeight="600" truncate>{item.clip.title?.trim() || item.clip.hookText}</Text>
                 <Text fontSize="11px" color="fg.subtle" truncate>{item.project.title} · {formatDateTime(item.createdAt)}</Text>
               </Stack>
-              <Flex align="center" gap="4">
-                <Text textStyle="eyebrow" color="fg.muted">{item.status.replace("_", " ")}</Text>
+              <Flex align="center" gap="3" wrap="wrap">
+                <Text fontSize="11px" px="2" py="1" borderRadius="full" bg={item.status === "ready" ? "success.subtle" : item.status === "failed" ? "danger.subtle" : "bg.muted"} color={item.status === "ready" ? "success.fg" : item.status === "failed" ? "danger.fg" : "fg.muted"}>{item.status.replaceAll("_", " ")}</Text>
                 <Flex gap="1">
                   {item.variants.filter((variant) => variant.status === "completed" && variant.storageKey,
                     ).map((variant) => (
-                    <Button key={variant.id} size="xs" variant="ghost" asChild>
+                    <Button key={variant.id} size="sm" variant="ghost" asChild>
                       <a href={`/api/workspace/exports/${item.id}/download?variant=${variant.id}`} aria-label={`Download ${ratioLabel(variant.aspectRatio)}`}><Download size={12} />{ratioLabel(variant.aspectRatio)}</a>
                     </Button>
                   ))}
                 </Flex>
                 {canRetry && (item.status === "failed" || item.status === "partial_ready") ? (
                   <AuthenticatedActionForm action={retryWorkspaceExportAction.bind(null, item.id)}>
-                    <ActionSubmitButton pendingLabel="Retrying…" size="xs" variant="ghost"><RefreshCw size={12} />Retry</ActionSubmitButton>
+                    <ActionSubmitButton pendingLabel="Retrying…" size="sm" variant="ghost"><RefreshCw size={12} />Retry</ActionSubmitButton>
                   </AuthenticatedActionForm>
                 ) : null}
-                <Button size="xs" variant="outline" asChild>
+                <Button size="sm" variant="outline" asChild>
                   <Link href={`/projects/${item.projectId}/clips/${item.clipId}/exports/${item.id}`}>Open</Link>
                 </Button>
               </Flex>
@@ -159,17 +161,17 @@ export default async function ExportsPage({
         <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))", xl: "repeat(3, minmax(0, 1fr))",
           }} gap="4">
           {exports.map((item) => (
-            <Stack key={item.id} gap="4" borderTopWidth="3px" borderColor={item.status === "ready" ? "accent.solid" : item.status === "failed" ? "danger.solid" : "border.emphasized"} bg="bg.subtle" p="5">
+            <Stack key={item.id} gap="4" borderWidth="1px" borderRadius="l3" borderColor="border" bg="bg.panel" p="5">
               <Stack gap="1" flex="1"><Text fontSize="14px" fontWeight="600" lineClamp={2}>{item.clip.title?.trim() || item.clip.hookText}</Text><Text fontSize="11px" color="fg.subtle">{item.project.title}</Text></Stack>
-              <Flex align="center" justify="space-between" gap="3"><Text textStyle="eyebrow" color="fg.muted">{item.status.replace("_", " ")}</Text><Text textStyle="data" fontSize="11px" color="fg.subtle">{formatDateTime(item.createdAt)}</Text></Flex>
+              <Flex align="center" justify="space-between" gap="3"><Text fontSize="11px" px="2" py="1" borderRadius="full" bg={item.status === "ready" ? "success.subtle" : item.status === "failed" ? "danger.subtle" : "bg.muted"} color={item.status === "ready" ? "success.fg" : item.status === "failed" ? "danger.fg" : "fg.muted"}>{item.status.replaceAll("_", " ")}</Text><Text textStyle="data" fontSize="11px" color="fg.subtle">{formatDateTime(item.createdAt)}</Text></Flex>
               <Flex gap="1" wrap="wrap">
                 {item.variants.filter((variant) => variant.status === "completed" && variant.storageKey,
                   ).map((variant) => (
-                  <Button key={variant.id} size="xs" variant="outline" asChild>
+                  <Button key={variant.id} size="sm" variant="outline" asChild>
                     <a href={`/api/workspace/exports/${item.id}/download?variant=${variant.id}`}><Download size={12} />{ratioLabel(variant.aspectRatio)}</a>
                   </Button>
                 ))}
-                <Button size="xs" variant="ghost" asChild><Link href={`/projects/${item.projectId}/clips/${item.clipId}/exports/${item.id}`}>Open details</Link></Button>
+                <Button size="sm" variant="ghost" asChild><Link href={`/projects/${item.projectId}/clips/${item.clipId}/exports/${item.id}`}>Open details</Link></Button>
               </Flex>
             </Stack>
           ))}

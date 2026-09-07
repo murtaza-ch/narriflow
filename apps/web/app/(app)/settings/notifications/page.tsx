@@ -10,10 +10,10 @@ const NOTIFICATIONS = [
 export default function NotificationSettingsPage() {
   return (
     <Stack gap="8">
-      <PageHeader title="Notifications" />
-      <Stack gap="0" borderTopWidth="1px" borderColor="border">
+      <PageHeader title="Notifications" description="Updates sent for your projects and workspace." />
+      <Stack gap="3">
         {NOTIFICATIONS.map(([title, description]) => (
-          <Box key={title} py="5" borderBottomWidth="1px" borderColor="border.subtle">
+          <Box key={title} p="5" bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l2">
             <Text fontSize="13px" fontWeight="600">{title}</Text>
             <Text fontSize="12px" color="fg.muted" mt="1">{description}</Text>
           </Box>

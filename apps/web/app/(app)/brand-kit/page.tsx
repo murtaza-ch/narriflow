@@ -35,28 +35,10 @@ export default async function BrandKitPage() {
     <Stack gap="10">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          title="Brand Profiles"
+          title="Brand kit"
+          description="Manage your brand colors, fonts, assets, and caption styles."
           actions={canManage ? <Button asChild><Link href="/brand-kit/new">New profile</Link></Button> : undefined}
         />
-      </Box>
-
-      <Box layerStyle="blueprint" borderTopWidth="1px" borderBottomWidth="1px" borderColor="border" px={{ base: "4", md: "6" }} py="4" animation="fade-up" animationFillMode="backwards" style={{ animationDelay: "45ms" }}>
-        <Grid templateColumns={{ base: "1fr", md: "1.25fr repeat(3, .75fr)" }} gap={{ base: "4", md: "0" }}>
-          <Stack gap="1" pe={{ md: "8" }}>
-            <Text textStyle="eyebrow" color="fg.subtle">Operating model</Text>
-            <Text fontFamily="display" fontWeight="650" fontSize="18px">One profile per voice. One frozen identity per project.</Text>
-          </Stack>
-          {[
-            [String(profiles.length).padStart(2, "0"), "Profiles"],
-            [String(profiles.reduce((sum, profile) => sum + profile.assets.length, 0)).padStart(2, "0"), "Visual assets"],
-            [String(profiles.reduce((sum, profile) => sum + profile.templates.length, 0)).padStart(2, "0"), "Style presets"],
-          ].map(([value, label]) => (
-            <Stack key={label} gap="1" ps={{ md: "5" }} borderInlineStartWidth={{ md: "1px" }} borderColor="border">
-              <Text textStyle="data" fontSize="22px" color="fg">{value}</Text>
-              <Text textStyle="eyebrow" color="fg.subtle">{label}</Text>
-            </Stack>
-          ))}
-        </Grid>
       </Box>
 
       <Box animation="fade-up" animationFillMode="backwards" style={{ animationDelay: "90ms" }}>
@@ -64,7 +46,7 @@ export default async function BrandKitPage() {
           <EmptyState icon={<ImageIcon size={20} />} title="No Brand Profiles yet" description="Save your brand colors, styles, and assets." />
         ) : (
           <Grid templateColumns={{ base: "1fr", lg: "repeat(2, minmax(0, 1fr))" }} gap="5">
-            {profiles.map((profile, index) => {
+            {profiles.map((profile) => {
               const defaultStyle = profile.templates.find((template) => template.id === profile.defaultTemplateId) ?? profile.templates[0];
               const displayFont = profile.fonts.find((font) => font.role === "display") ?? profile.fonts[0];
               const logo = profile.assets.find(
@@ -74,12 +56,10 @@ export default async function BrandKitPage() {
               );
               const isDefault = profile.id === defaultProfileId;
               return (
-                <Box key={profile.id} as="article" position="relative" borderTopWidth="1px" borderBottomWidth="1px" borderColor={isDefault ? "border.accent" : "border"} py="5" ps="5" pe="4" _before={{ content: '""', position: "absolute", insetInlineStart: "0", top: "0", bottom: "0", w: "3px", bg: isDefault ? "accent.solid" : "border.control" }}>
+                <Box key={profile.id} as="article" position="relative" borderWidth="1px" borderRadius="l3" bg="bg.panel" borderColor={isDefault ? "border.accent" : "border.subtle"} py="5" ps="5" pe="4">
                   <Flex align="flex-start" justify="space-between" gap="5">
                     <Stack gap="5" minW="0" flex="1">
                       <Flex align="center" gap="3">
-                        <Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text>
-                        <Box h="1px" flex="1" bg="border" />
                         {isDefault && <Flex align="center" gap="1.5" color="accent.fg"><Check size={12} /><Text textStyle="eyebrow">Default</Text></Flex>}
                       </Flex>
                       <Flex gap="3" align="center">
@@ -105,7 +85,7 @@ export default async function BrandKitPage() {
                           )}
                         </Flex>
                         <Stack gap="1" minW="0">
-                          <Text textStyle="title" fontSize="24px" lineClamp={1}>{profile.name}</Text>
+                          <Text textStyle="title" fontSize="lg" lineClamp={1}>{profile.name}</Text>
                           <Text fontSize="12.5px" color="fg.muted">{defaultStyle?.name ?? "No style selected"} · {displayFont ? `${displayFont.family} ${displayFont.weight}` : "System typography"}</Text>
                         </Stack>
                       </Flex>

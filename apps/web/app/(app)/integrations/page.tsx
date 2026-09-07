@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Flex, Grid, Stack, Text } from "@chakra-ui/react";
+import { Card, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { ArrowRight, Braces, KeyRound, Share2 } from "lucide-react";
 import { workspaceAllowsCapability } from "@narriflow/services";
 import { Button } from "@narriflow/ui/components/button";
@@ -25,14 +25,7 @@ function IntegrationRow({
   status: string;
 }) {
   return (
-    <Stack
-      as="article"
-      gap="4"
-      pt="4"
-      borderTopWidth="1.5px"
-      borderColor="border.strong"
-      minW="0"
-    >
+    <Card.Root as="article"><Card.Body gap="4">
       <Flex align="center" justify="space-between" gap="3">
         <Flex align="center" gap="2.5">
           <Icon size={17} />
@@ -47,7 +40,7 @@ function IntegrationRow({
       <Button asChild size="sm" variant="outline" alignSelf="flex-start">
         <Link href={href}>{action}<ArrowRight size={14} /></Link>
       </Button>
-    </Stack>
+    </Card.Body></Card.Root>
   );
 }
 

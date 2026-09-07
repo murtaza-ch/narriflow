@@ -132,7 +132,7 @@ export function CalendarPostForm({
   }
 
   return (
-    <Stack as="form" onSubmit={submit} gap="5" borderTopWidth="1px" borderColor="border" pt="6">
+    <Stack as="form" onSubmit={submit} gap="5" bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l2" p={{ base: "5", md: "6" }}>
       <Stack gap="1.5"><chakra.label htmlFor="calendar-clip" fontSize="12px" fontWeight="550">Workspace clip</chakra.label><Combobox id="calendar-clip" ariaLabel="Workspace clip" value={clipId} onValueChange={(value) => { const next = clips.find((item) => item.id === value); setClipId(value); setRatio(next?.aspectRatios[0] ?? "ratio_9_16"); setApprovalBlocked(false); setReviewOverrideReason(""); }} items={clipItems} placeholder="Search completed clips" /></Stack>
       <Flex gap="4" direction={{ base: "column", md: "row" }}>
         <Stack gap="1.5" flex="1"><chakra.label htmlFor="calendar-account" fontSize="12px" fontWeight="550">Social account</chakra.label><Select id="calendar-account" ariaLabel="Social account" value={accountId} onValueChange={setAccountId} items={accountItems} /></Stack>

@@ -228,7 +228,7 @@ export function SocialAccountsPanel({
       <Text textStyle="eyebrow" color="fg.subtle" mb="2">
         Platforms
       </Text>
-      <Stack gap="0" layerStyle="band" pt="0">
+      <Stack gap="3">
         {platforms.map((platform) => {
           const platformAccounts = accounts.filter(
             (account) => account.platform === platform,
@@ -239,22 +239,12 @@ export function SocialAccountsPanel({
             <Box
               key={platform}
               position="relative"
-              borderBottomWidth="1px"
+              borderWidth="1px"
               borderColor="border"
-              py="3.5"
-              pl="4"
+              borderRadius="l2"
+              bg="bg.panel"
+              p="5"
             >
-              {/* 3px status stripe — connected reads success; label carries state */}
-              <Box
-                position="absolute"
-                left="0"
-                top="3.5"
-                bottom="3.5"
-                w="3px"
-                borderRadius="full"
-                bg={isConnected ? "success.solid" : "border"}
-              />
-
               <Flex gap="3" align="flex-start">
                 <PlatformTile platform={platform} />
 
@@ -350,7 +340,7 @@ export function SocialAccountsPanel({
                       </Flex>
 
                       {canManage ? <Button
-                        size="xs"
+                        size="sm"
                         variant="ghost"
                         colorPalette="danger"
                         loading={disconnecting === account.id}

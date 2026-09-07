@@ -30,7 +30,7 @@ export default async function WorkspaceSettingsPage() {
   return (
     <Stack gap="8">
       <PageHeader eyebrow={workspace.name} title="Workspace settings" />
-      <Box borderTopWidth="1px" borderColor="border" py="6">
+      <Box borderWidth="1px" borderColor="border" borderRadius="l2" bg="bg.panel" p="6">
         <AuthenticatedActionForm action={updateWorkspaceAction}>
           <Stack gap="3" maxW="520px">
                   <label htmlFor="workspace-name"><Text as="span" fontSize="13px" fontWeight="600">Workspace name</Text></label>
@@ -45,7 +45,7 @@ export default async function WorkspaceSettingsPage() {
         </AuthenticatedActionForm>
       </Box>
       <WorkspaceAvatarControl avatarUrl={avatarUrls[appUser.workspaceId] ?? null} workspaceName={workspace.name} canManage={canManage} />
-      <Box borderTopWidth="1px" borderColor="border" py="5">
+      <Box borderWidth="1px" borderColor="border" borderRadius="l2" bg="bg.panel" p="5">
         <Text fontSize="12px" color="fg.muted">
           Status:{" "}
           <Text as="span" textTransform="capitalize" color="fg">{workspace.status.replace("_", " ")}</Text>

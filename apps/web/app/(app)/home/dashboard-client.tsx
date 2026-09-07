@@ -2,12 +2,13 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Flex, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { ArrowRight, Link2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
-import { LINK_PROVIDERS } from "@narriflow/validators";
 
-const HERO_PASTE_LINK_HINT = `${LINK_PROVIDERS.map((p) => p.label).join(" · ")} — or a podcast RSS feed`;
+
+const HERO_PASTE_LINK_HINT = "YouTube, Vimeo, and other supported video links or podcast feeds.";
 
 /**
  * Hero paste-link field — no upload logic here. Navigates to
@@ -28,37 +29,40 @@ export function HeroPasteLinkField() {
   return (
     <Stack gap="2" w="full">
       {/* Attached control group: input + button share one boundary. */}
-      <Flex asChild>
+      <Flex asChild bg="bg.muted" borderWidth="1px" borderColor="border.emphasized" borderRadius="15px" p="2" ps="4" gap="3" align="center">
         <form onSubmit={submit}>
+          <Box color="fg.subtle" flexShrink={0} display={{ base: "none", sm: "block" }}><Link2 size={18} /></Box>
           <Input
             value={url}
             onChange={(event) => setUrl(event.target.value)}
             placeholder="Paste a video link…"
+            fontSize="13px"
             aria-label="Video link"
             aria-describedby="hero-paste-link-hint"
-            size="lg"
-            h="12"
+            size="sm"
             flex="1"
-            borderEndRadius="0"
+            variant="flushed"
+            borderWidth="0"
+            bg="transparent"
+            px="0"
             position="relative"
             _focusVisible={{ zIndex: 1 }}
           />
           <Button
             type="submit"
-            size="lg"
-            h="12"
+            size="sm"
             flexShrink={0}
-            ms="-1px"
-            borderStartRadius="0"
+
             disabled={!trimmed}
           >
-            Get clips
+            Get clips <ArrowRight size={16} />
           </Button>
         </form>
       </Flex>
       <Text
         id="hero-paste-link-hint"
-        textStyle="data"
+        srOnly
+
         fontSize="11.5px"
         color="fg.subtle"
       >

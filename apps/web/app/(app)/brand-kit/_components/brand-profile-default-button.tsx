@@ -35,7 +35,7 @@ export function BrandProfileDefaultButton({ profileId }: { profileId: string }) 
   }
 
   return (
-    <Button size="xs" variant="ghost" onClick={setDefault} disabled={pending}>
+    <Button size="sm" variant="ghost" onClick={setDefault} disabled={pending}>
       <Check size={12} />
       {pending ? "Updating…" : "Make default"}
     </Button>

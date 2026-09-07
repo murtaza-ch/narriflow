@@ -48,7 +48,7 @@ export default async function BrandProfilePage({ params, searchParams }: {
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          eyebrow={`Brand Profile · ${String(profile.revision).padStart(2, "0")}`}
+          eyebrow="Brand profile"
           title={profile.name}
           description={`${profile.templates.length} styles · ${profile.assets.length} assets · ${profile.fonts.length} fonts · ${profile.approvalRule === "approval_required" ? "approval required" : "direct publish"}`}
           actions={<Button size="sm" variant="outline" asChild><Link href="/brand-kit"><ArrowLeft size={13} /> Profiles</Link></Button>}
@@ -59,7 +59,7 @@ export default async function BrandProfilePage({ params, searchParams }: {
         {SECTIONS.map((item) => (
           <Link key={item} href={`/brand-kit/${profile.id}?section=${item}`}>
             <Text px="4" py="3" textStyle="eyebrow" whiteSpace="nowrap" color={section === item ? "accent.fg" : "fg.muted"} borderBottomWidth="2px" borderColor={section === item ? "accent.solid" : "transparent"}>
-              {item}
+              {item.charAt(0).toUpperCase() + item.slice(1)}
             </Text>
           </Link>
         ))}
@@ -79,12 +79,11 @@ export default async function BrandProfilePage({ params, searchParams }: {
 
 type Profile = Awaited<ReturnType<typeof brandProfileService.get>>;
 
-function SectionHeader({ index, icon, title }: { index: string; icon: React.ReactNode; title: string }) {
+function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
     <Flex align="flex-start" gap="4" pb="5" borderBottomWidth="1px" borderColor="border">
-      <Text textStyle="data" color="fg.subtle">{index}</Text>
-      <Box color="accent.fg" pt="0.5">{icon}</Box>
-      <Text textStyle="title" fontSize="22px">{title}</Text>
+      <Box color="fg.muted" pt="0.5">{icon}</Box>
+      <Text textStyle="title" fontSize="lg">{title}</Text>
     </Flex>
   );
 }
@@ -92,7 +91,7 @@ function SectionHeader({ index, icon, title }: { index: string; icon: React.Reac
 function IdentitySection({ profile }: { profile: Profile }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="01" icon={<Shapes size={18} />} title="Identity system" />
+      <SectionHeader icon={<Shapes size={18} />} title="Colors and fonts" />
       <Grid templateColumns={{ base: "1fr", md: "1.1fr .9fr" }} gap="8">
         <Stack gap="0" borderTopWidth="1px" borderColor="border">
           {[
@@ -106,7 +105,7 @@ function IdentitySection({ profile }: { profile: Profile }) {
             </Flex>
           ))}
         </Stack>
-        <Box layerStyle="blueprint" borderTopWidth="1px" borderBottomWidth="1px" borderColor="border" p="6">
+        <Box  bg="bg.panel" borderWidth="1px" borderRadius="l2" borderColor="border" p="6">
           <Stack gap="5">
             <Text textStyle="eyebrow" color="fg.subtle">Type roles</Text>
             {profile.fonts.length ? profile.fonts.map((font) => (
@@ -125,17 +124,17 @@ function IdentitySection({ profile }: { profile: Profile }) {
 function StylesSection({ profile, selectedTemplateId }: { profile: Profile; selectedTemplateId?: string }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="02" icon={<LayoutTemplate size={18} />} title="Style presets" />
+      <SectionHeader icon={<LayoutTemplate size={18} />} title="Style presets" />
       {profile.templates.length === 0 ? <EmptyState icon={<LayoutTemplate size={18} />} title="No style presets" /> : (
         <Grid templateColumns={{ base: "1fr", md: "repeat(2, 1fr)", xl: "repeat(3, 1fr)" }} gap="4">
-          {profile.templates.map((template, index) => {
+          {profile.templates.map((template) => {
             const selected = selectedTemplateId === template.id || (!selectedTemplateId && profile.defaultTemplateId === template.id);
             return (
-              <Stack key={template.id} gap="4" borderTopWidth="1px" borderBottomWidth="1px" borderColor={selected ? "border.accent" : "border"} p="4" position="relative" _before={{ content: '""', position: "absolute", insetInlineStart: "0", top: "0", bottom: "0", w: "3px", bg: selected ? "accent.solid" : "transparent" }}>
-                <Flex align="center" gap="2"><Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text><Box h="1px" bg="border" flex="1" /><Text textStyle="eyebrow" color={selected ? "accent.fg" : "fg.subtle"}>{selected ? "Selected" : "Preset"}</Text></Flex>
-                <Text fontFamily="display" fontWeight="650" fontSize="20px">{template.name}</Text>
+              <Stack key={template.id} gap="4" borderWidth="1px" borderRadius="l2" bg="bg.panel" borderColor={selected ? "border.accent" : "border"} p="4" position="relative" _before={{ content: '""', position: "absolute", insetInlineStart: "0", top: "0", bottom: "0", w: "3px", bg: selected ? "accent.solid" : "transparent" }}>
+                <Flex align="center" gap="2"><Text textStyle="eyebrow" color={selected ? "accent.fg" : "fg.subtle"}>{selected ? "Selected" : "Preset"}</Text></Flex>
+                <Text fontFamily="display" fontWeight="500" fontSize="md">{template.name}</Text>
                 <Flex gap="2"><Box h="7px" flex="1" borderRadius="l1" style={{ background: template.primaryColor }} /><Box h="7px" flex="1" borderRadius="l1" style={{ background: template.secondaryColor }} /></Flex>
-                <Button size="xs" variant="outline" asChild><Link href={`/brand-kit/styles/${template.id}`}>Edit style</Link></Button>
+                <Button size="sm" variant="outline" asChild><Link href={`/brand-kit/styles/${template.id}`}>Edit style</Link></Button>
               </Stack>
             );
           })}
@@ -148,7 +147,7 @@ function StylesSection({ profile, selectedTemplateId }: { profile: Profile; sele
 function AssetsSection({ profile }: { profile: Profile }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="03" icon={<ImageIcon size={18} />} title="Visual assets" />
+      <SectionHeader icon={<ImageIcon size={18} />} title="Visual assets" />
       {profile.assets.length === 0 ? <EmptyState icon={<ImageIcon size={18} />} title="No visual assets" /> : (
         <Grid templateColumns={{ base: "repeat(2, 1fr)", md: "repeat(3, 1fr)", xl: "repeat(4, 1fr)" }} gap="4">
           {profile.assets.map((asset) => (
@@ -167,7 +166,7 @@ function AssetsSection({ profile }: { profile: Profile }) {
 function ScenesSection({ profileId, scenes, fonts, canManageDefaults }: { profileId: string; scenes: SceneTemplateCard[]; fonts: Profile["fonts"]; canManageDefaults: boolean }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="04" icon={<Type size={18} />} title="Scene templates" />
+      <SectionHeader icon={<Type size={18} />} title="Scene templates" />
       <SceneTemplateManager profileId={profileId} scenes={scenes} fonts={fonts.map((font) => ({ id: font.id, family: font.family, fingerprint: font.fingerprint, missing: font.missing }))} canManageDefaults={canManageDefaults} />
     </Stack>
   );
@@ -176,7 +175,7 @@ function ScenesSection({ profileId, scenes, fonts, canManageDefaults }: { profil
 function AudioSection({ profile }: { profile: Profile }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="05" icon={<AudioLines size={18} />} title="Audio references" />
+      <SectionHeader icon={<AudioLines size={18} />} title="Audio references" />
       {profile.audio.length === 0 ? <EmptyState icon={<AudioLines size={18} />} title="No referenced audio" description="Add music or sound effects from your audio library." /> : <Stack gap="0" borderTopWidth="1px" borderColor="border">{profile.audio.map((audio, index) => <Flex key={audio.id} align="center" gap="4" py="4" borderBottomWidth="1px" borderColor="border.subtle"><Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text><Text fontSize="13px" fontWeight="600" flex="1">{audio.title}</Text><Text textStyle="eyebrow" color="fg.subtle">{audio.kind}</Text><Text textStyle="data" color="fg.timecode">{formatDuration(audio.durationSec)}</Text></Flex>)}</Stack>}
     </Stack>
   );
@@ -192,7 +191,7 @@ function VoiceSection({ profile }: { profile: Profile }) {
   ];
   return (
     <Stack gap="7">
-      <SectionHeader index="06" icon={<MessageSquareText size={18} />} title="Voice guidance" />
+      <SectionHeader icon={<MessageSquareText size={18} />} title="Voice guidance" />
       <Stack gap="0" borderTopWidth="1px" borderColor="border">{rows.map(([label, value]) => <Grid key={label} templateColumns={{ base: "1fr", md: "180px 1fr" }} gap="3" py="4" borderBottomWidth="1px" borderColor="border.subtle"><Text textStyle="eyebrow" color="fg.subtle">{label}</Text><Text fontSize="13px" lineHeight="1.6">{value}</Text></Grid>)}</Stack>
     </Stack>
   );

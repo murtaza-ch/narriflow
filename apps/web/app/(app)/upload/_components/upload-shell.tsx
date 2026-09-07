@@ -10,8 +10,8 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { Box, chakra, Flex, Grid, HStack, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, Info, Upload } from "lucide-react";
+import { Box, chakra, Flex, Grid, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { AlertTriangle, Info, Upload, Link2, AudioLines } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
@@ -114,7 +114,7 @@ function SettingsBand({
   );
 }
 
-/** Failure notice: 3px danger stripe + icon + danger text — never muted small text. */
+/** Failure notice: Labeled danger panel with an icon — never muted small text. */
 function ErrorNotice({ message }: { message: string }) {
   return (
     <Flex
@@ -124,18 +124,12 @@ function ErrorNotice({ message }: { message: string }) {
       px="3"
       py="2.5"
       bg="danger.subtle"
+      borderWidth="1px"
+      borderColor="danger.muted"
       borderRadius="l2"
       position="relative"
       overflow="hidden"
     >
-      <Box
-        position="absolute"
-        insetInlineStart="0"
-        top="0"
-        bottom="0"
-        w="3px"
-        bg="danger.solid"
-      />
       <Box color="danger.fg" flexShrink={0}>
         <AlertTriangle size={14} strokeWidth={2} />
       </Box>
@@ -163,6 +157,8 @@ interface UploadShellProps {
   };
   /** Pre-fills the smart paste field (dashboard links to /upload?url=…). */
   initialUrl?: string | null;
+  initialSource?: PasteOverride;
+  initialMode?: GenerationMode;
   /** Present when the page mounted with `?project=<id>` — the link flow's
    *  Step 2 (Configure) resume, loaded and validated server-side. */
   resumeData: LinkResumeData | null;
@@ -173,6 +169,8 @@ export function UploadShell({
   brandTemplates,
   brandProfiles,
   initialUrl,
+  initialSource = "auto",
+  initialMode = "clip",
   resumeData,
   usageSummary,
 }: UploadShellProps) {
@@ -247,11 +245,11 @@ export function UploadShell({
 
   // Smart paste field
   const [pasteValue, setPasteValue] = useState(initialUrl?.trim() ?? "");
-  const [pasteOverride, setPasteOverride] = useState<PasteOverride>("auto");
+  const [pasteOverride, setPasteOverride] = useState<PasteOverride>(initialSource);
 
   // Settings state
   const [languageCode, setLanguageCode] = useState("auto");
-  const [mode, setMode] = useState<GenerationMode>("clip");
+  const [mode, setMode] = useState<GenerationMode>(initialMode);
   const [clipLength, setClipLength] = useState<ClipLengthPreset>("auto");
   const [autoHook, setAutoHook] = useState(true);
   const [specificMoments, setSpecificMoments] = useState("");
@@ -703,8 +701,8 @@ export function UploadShell({
             gap="3"
             px="12"
             py="10"
-            borderWidth="1.5px"
-            borderStyle="dashed"
+            borderWidth="1px"
+            borderStyle="solid"
             borderColor="accent.solid"
             borderRadius="l3"
             bg="bg.panel"
@@ -724,16 +722,15 @@ export function UploadShell({
       )}
 
       {!sourceChosen ? (
-        /* STEP 1 — cinematic source picker */
-        <Stack gap="8" maxW="780px" mx="auto" animation="fade-up">
-          {/* Single dashed well — one container, no double framing. */}
+        /* Source selection */
+        <Stack gap="8" maxW="820px" mx="auto" bg="bg.dialog" borderWidth="1px" borderColor="border.subtle" borderRadius="l3" p={{base:"4",md:"6"}}>
+          <Stack gap="1"><Text fontSize="xs" color="fg.subtle">New project</Text><Text as="h2" fontSize="md" fontWeight="500">Choose your source</Text></Stack>
+          <SimpleGrid columns={3} gap={{base:"2",sm:"4"}} py={{base:"0",md:"3"}}>
           <Box
             position="relative"
-            borderWidth="1.5px"
-            borderStyle="dashed"
-            borderColor={dropzoneDragOver ? "accent.solid" : "border.control"}
-            borderRadius="l3"
-            bg={dropzoneDragOver ? "accent.subtle" : "bg.subtle"}
+            borderRadius="l2"
+            outline={dropzoneDragOver ? "2px solid" : undefined}
+            outlineColor="accent.solid"
             transition="border-color 120ms ease, background 120ms ease"
             css={{
               "&:has(input:focus-visible)": {
@@ -766,40 +763,11 @@ export function UploadShell({
               if (dropped) acceptFile(dropped);
             }}
           >
-            <Flex
-              direction="column"
-              align="center"
-              justify="center"
-              gap="3"
-              px="6"
-              py="24"
-              textAlign="center"
-              pointerEvents="none"
-            >
-              <Flex
-                w="44px"
-                h="44px"
-                align="center"
-                justify="center"
-                borderRadius="l2"
-                bg="bg.panel"
-                borderWidth="1px"
-                borderColor="border"
-                color={dropzoneDragOver ? "accent.fg" : "fg.muted"}
-                transition="color 120ms ease"
-              >
-                <Upload size={18} strokeWidth={1.75} />
-              </Flex>
-              <Text textStyle="title" fontSize="16px" color="fg">
-                Drop your video here
-              </Text>
-              <Text fontSize="12.5px" color="fg.muted">
-                or click to browse
-              </Text>
-              <Text textStyle="data" fontSize="11px" color="fg.subtle">
-                MP4 · MOV · WebM · MKV · MP3 · WAV — up to 5 GB
-              </Text>
-            </Flex>
+            <Stack gap="3" pointerEvents="none">
+              <Flex h={{ base: "86px", md: "128px" }} align="center" justify="center" bg="bg.panel" borderRadius="l2" color={dropzoneDragOver ? "accent.fg" : "fg.muted"}><Upload size={28} strokeWidth={1.5} /></Flex>
+              <Text fontSize={{ base: "xs", md: "sm" }} fontWeight="500">Upload a file</Text>
+              <Text fontSize="xs" color="fg.subtle" display={{ base: "none", sm: "block" }}>Choose a video or audio file from your device.</Text>
+            </Stack>
             <input
               type="file"
               accept={FILE_ACCEPT}
@@ -819,24 +787,34 @@ export function UploadShell({
             />
           </Box>
 
+          {[{title:"Paste a link", description:"YouTube, Vimeo, or another supported video URL.", value:"link" as const, icon:Link2}, {title:"Podcast feed", description:"Choose episodes from a public RSS feed.", value:"rss" as const, icon:AudioLines}].map(({title,description,value,icon:Icon}) => (
+            <Box key={value} asChild cursor="pointer" alignSelf="start" minW="0">
+              <button type="button" aria-pressed={pasteOverride === value} onClick={() => {setPasteOverride(value); document.getElementById("import-source-url")?.focus();}}>
+                <Stack gap="3" textAlign="left">
+                  <Flex h={{ base: "86px", md: "128px" }} align="center" justify="center" bg="bg.panel" borderWidth="1px" borderColor={pasteOverride === value ? "border.control" : "transparent"} borderRadius="l2" color="fg.muted" _hover={{ bg: "bg.muted", color: "fg" }}><Icon size={28} strokeWidth={1.5}/></Flex>
+                  <Text fontSize={{ base: "xs", md: "sm" }} fontWeight="500">{title}</Text>
+                  <Text display={{base:"none",sm:"block"}} fontSize="xs" color="fg.subtle">{description}</Text>
+                </Stack>
+              </button>
+            </Box>
+          ))}
+          </SimpleGrid>
           {/* Smart paste — one field, auto-detects a provider link vs RSS */}
           <Stack gap="3">
             <Flex align="center" gap="4">
-              <Box flex="1" h="1px" bg="border" />
               <Text
                 textStyle="eyebrow"
                 fontWeight="500"
-                letterSpacing="0.14em"
                 color="fg.subtle"
               >
-                or paste a link
+                Video link or RSS feed
               </Text>
-              <Box flex="1" h="1px" bg="border" />
             </Flex>
             {/* The paste field is the primary path — attached solid Continue
                 is this view's one solid button. */}
-            <Flex>
+            <Flex gap="2" bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l2" p="2">
               <Input
+                id="import-source-url"
                 value={pasteValue}
                 onChange={(event) => setPasteValue(event.target.value)}
                 onKeyDown={(event) => {
@@ -849,14 +827,15 @@ export function UploadShell({
                 type="url"
                 aria-label="Video link or RSS URL"
                 flex="1"
-                borderEndRadius="0"
+                variant="flushed"
+                borderWidth="0"
+                px="3"
               />
               <Button
                 onClick={commitPastedLink}
                 disabled={!detectedKind || busy}
                 type="button"
-                borderStartRadius="0"
-                ms="-1px"
+
               >
                 Continue
               </Button>

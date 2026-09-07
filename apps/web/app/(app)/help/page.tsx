@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
+import { Box, Card, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { ArrowRight, Braces, Clapperboard, Share2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
@@ -39,16 +39,16 @@ export default function HelpPage() {
       />
       <Grid templateColumns={{ base: "1fr", md: "repeat(3, minmax(0, 1fr))" }} gap={{ base: "7", md: "6" }}>
         {GUIDES.map(({ title, description, href, action, label, icon: Icon }) => (
-          <Stack key={href} as="article" gap="4" pt="4" borderTopWidth="1px" borderColor="border" minW="0">
+          <Card.Root key={href} as="article" minW="0"><Card.Body gap="4">
             <Flex align="center" gap="2.5"><Icon size={16} /><Text textStyle="eyebrow" color="fg.subtle">{label}</Text></Flex>
             <Box flex="1">
-              <Text as="h2" fontSize="15px" fontWeight="650">{title}</Text>
+              <Text as="h2" fontSize="15px" fontWeight="500">{title}</Text>
               <Text fontSize="13px" lineHeight="1.65" color="fg.muted" mt="1.5">{description}</Text>
             </Box>
             <Button asChild size="sm" variant="outline" alignSelf="flex-start">
               <Link href={href}>{action}<ArrowRight size={14} /></Link>
             </Button>
-          </Stack>
+          </Card.Body></Card.Root>
         ))}
       </Grid>
     </Stack>

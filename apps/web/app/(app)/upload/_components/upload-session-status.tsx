@@ -125,8 +125,9 @@ export function UploadSessionStatusPanel({
       tabIndex={-1}
       role={snapshot.phase === "failed" ? "alert" : undefined}
       aria-atomic={snapshot.phase === "failed" ? "true" : undefined}
-      borderTopWidth="1px"
-      borderBottomWidth="1px"
+      bg="bg.panel"
+      borderRadius="l2"
+      borderWidth="1px"
       borderColor="border"
       py="3"
       ps="4"
@@ -137,20 +138,6 @@ export function UploadSessionStatusPanel({
         boxShadow: "0 0 0 2px var(--chakra-colors-accent-solid)",
       }}
     >
-      <Box
-        position="absolute"
-        insetInlineStart="0"
-        top="0"
-        bottom="0"
-        w="3px"
-        bg={
-          snapshot.phase === "failed"
-            ? "danger.solid"
-            : snapshot.phase === "queued"
-              ? "success.solid"
-              : "accent.solid"
-        }
-      />
       <Stack gap="2.5">
         <Flex align="center" justify="space-between" gap="3">
           <Text textStyle="eyebrow" color="fg">
@@ -209,7 +196,7 @@ export function UploadSessionSecondaryActions({
   return (
     <HStack gap="2">
       {snapshot.canPause && (
-        <Button type="button" variant="outline" size="md" onClick={onPause}>
+        <Button type="button" variant="outline" size="sm" onClick={onPause}>
           Pause
         </Button>
       )}
@@ -217,7 +204,7 @@ export function UploadSessionSecondaryActions({
         <Button
           type="button"
           variant="outline"
-          size="md"
+          size="sm"
           color="danger.fg"
           aria-label="Discard this upload"
           onClick={onDiscard}

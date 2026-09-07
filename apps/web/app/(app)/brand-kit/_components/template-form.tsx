@@ -386,7 +386,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
 
             {state.logoStorageKey && (
               <Button
-                size="xs"
+                size="sm"
                 variant="ghost"
                 colorPalette="danger"
                 alignSelf="flex-start"

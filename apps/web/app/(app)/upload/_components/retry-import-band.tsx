@@ -14,7 +14,7 @@ type RetryState = { ok: boolean; error: string | null };
 const initialState: RetryState = { ok: true, error: null };
 
 /**
- * Step 2's ingest-failure surface: a 3px danger stripe with the plain-
+ * Step 2's ingest-failure surface: a contained danger panel with the plain-
  * language reason, a Retry import button (the existing
  * `retryIngestFormAction` from projects/actions.ts — imported, not edited),
  * and a way out that never leaves the user stuck.
@@ -62,10 +62,11 @@ export function RetryImportBand({
       overflow="hidden"
       borderRadius="l2"
       bg="danger.subtle"
+      borderWidth="1px"
+      borderColor="danger.muted"
       px="4"
       py="3.5"
     >
-      <Box position="absolute" insetInlineStart="0" top="0" bottom="0" w="3px" bg="danger.solid" />
       <Stack gap="3">
         <Flex align="flex-start" gap="2.5">
           <Box color="danger.fg" mt="0.5" flexShrink={0}>
