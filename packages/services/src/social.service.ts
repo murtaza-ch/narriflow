@@ -11,7 +11,7 @@ import {
   type RecheckSocialPublicationInput,
   type RepublishSocialPublicationInput,
 } from "@narriflow/validators";
-import { assistedSocialCopyService } from "./assisted-social-copy.service";
+import { assistedSocialCopyService } from "./assisted-social-copy-runtime";
 import { brandOwnerWhere } from "./brand-ownership";
 import { createProductionSocialPublicationScheduling } from "./social-publication-scheduling";
 import {

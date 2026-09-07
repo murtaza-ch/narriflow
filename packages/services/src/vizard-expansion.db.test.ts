@@ -12,11 +12,11 @@ import { socialOAuthService } from "./social-oauth.service";
 import { visualAssetService } from "./visual-asset.service";
 import { BrandFontReferenceError, brandFontService } from "./brand-font.service";
 import { clipExportService } from "./clip-export.service";
-import { prismaAssistedCopyStore } from "./assisted-social-copy.service";
+import { prismaAssistedCopyStore } from "./assisted-social-copy-runtime";
 import { createAssistedSocialCopy } from "./assisted-social-copy";
 import { AutopilotService } from "./autopilot.service";
 import { dubbingService } from "./dubbing.service";
-import { bulkSocialSchedulingService } from "./bulk-social-scheduling.service";
+import { bulkSocialSchedulingService } from "./bulk-social-scheduling-runtime";
 
 const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
 const databaseSchema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;

@@ -24,7 +24,7 @@
       <header class="border-b border-slate-300 pb-8">
         <p class="lbl text-slate-500 font-mono">Narriflow · murtaza/assembly-ai · Completed 7 September 2026</p>
         <h1 class="font-serif text-4xl mt-2 tracking-tight">Architecture review — completion record</h1>
-        <p class="mt-4 text-slate-700">All eleven candidates have a final disposition. Remaining recommendations and worthwhile exploratory work are implemented; previously completed work was verified. Two naming/documentation observations and the generic Claim abstraction remain deliberately closed without additional machinery.</p>
+        <p class="mt-4 text-slate-700">All eleven candidates have a final disposition. Remaining recommendations and worthwhile exploratory work are implemented; previously completed work was verified. The smaller observations include explicit runtime filenames and a glossary/ADR guide. The generic Claim abstraction remains rejected by the deletion test.</p>
         <p class="mt-3 text-sm text-slate-600">Implementation baseline: <code>3049993da8f6305489a050b10ae20239bef11a3e</code>. The original review, corrections, and earlier completion history are preserved below.</p>
       </header>
       <section id="completion">
@@ -46,13 +46,13 @@
 <div><dt class="font-semibold">Guest review trust interface</dt><dd class="mt-1 text-sm text-slate-700">Completed: explicit method/path inventory and direct route tests cover origin checks, session admission, unknown/trailing paths, invalid JSON, and a streaming 32 KiB body limit. Existing database tests cover guest session replay, media isolation, and concurrent decisions.</dd></div>
 <div><dt class="font-semibold">Error logs</dt><dd class="mt-1 text-sm text-slate-700">Completed: production console.error sites now use structured console.warn JSON. New boundary logs retain useful IDs/status and omit arbitrary response bodies.</dd></div>
 <div><dt class="font-semibold">Dead exports</dt><dd class="mt-1 text-sm text-slate-700">Completed: removed sliceTranscriptForClip, applySpeakerLayoutOverridesToSegments, authenticatedHonoProject, and tests whose only purpose was to keep dead helpers alive.</dd></div>
-<div><dt class="font-semibold">Glossary / ADR count</dt><dd class="mt-1 text-sm text-slate-700">Closed with no change: glossary entries do not each need an ADR. Create one only for a load-bearing decision.</dd></div>
-<div><dt class="font-semibold">Service filename suffixes</dt><dd class="mt-1 text-sm text-slate-700">Closed with no change: naming feedback alone does not justify renaming working modules or adding abstraction.</dd></div>
+<div><dt class="font-semibold">Glossary / ADR count</dt><dd class="mt-1 text-sm text-slate-700">Completed: docs/adr/README.md indexes all eleven decisions, links the glossary, and records the criteria for adding an ADR. AGENTS.md points to this guide.</dd></div>
+<div><dt class="font-semibold">Service filename suffixes</dt><dd class="mt-1 text-sm text-slate-700">Completed: renamed generated-media, assisted-social-copy, bulk-social-scheduling, and thumbnail-frame-preparation production modules to *-runtime.ts and updated every import. AGENTS.md now distinguishes production wiring from domain and service implementations.</dd></div>
 <div><dt class="font-semibold">UI barrel</dt><dd class="mt-1 text-sm text-slate-700">Completed: migrated the remaining root imports to component paths and deleted the unused barrel and root package export.</dd></div>
 <div><dt class="font-semibold">Dubbing interface coverage</dt><dd class="mt-1 text-sm text-slate-700">Completed: direct worker tests cover empty work, ownership loss, individual dub failure, aggregate failure, and cleanup. The database gate directly tests request admission, render readiness, tier policy, queue idempotency, and completed reuse. Those tests caught and fixed Business-plan rejection through the shared entitlement matrix.</dd></div>
 <div><dt class="font-semibold">Keyboard trimming</dt><dd class="mt-1 text-sm text-slate-700">Completed: focusable sliders support 0.1-second arrow steps and 1-second Shift steps, shared pointer/keyboard bounds, and word snapping. Browser checks confirmed cloud save, undo, and persistence after reopening Studio.</dd></div>
 <div><dt class="font-semibold">Turbo outputs</dt><dd class="mt-1 text-sm text-slate-700">Completed: removed the coverage output contract from normal test tasks, which produce no coverage directory.</dd></div>
-</dl></section>
+</dl><p class="mt-5 text-sm text-slate-600">Smaller-observation follow-up: lint, typecheck, and all seven workspace test tasks passed after the runtime renames. The signed-in Chrome Home page loaded successfully. Independent Standards and Spec reviews each reported zero remaining findings.</p></section>
       <section id="verification" class="border-t border-slate-300 pt-8">
         <h2 class="font-serif text-2xl">Verification</h2>
         <ul class="list-disc pl-5 mt-4 space-y-2 text-sm">
@@ -747,49 +747,19 @@ flowchart LR
       </section>
 
       <section id="smaller" class="border-t border-slate-300 pt-10">
-        <h2 class="font-serif text-2xl tracking-tight">Smaller observations, rechecked</h2>
-        <p class="mt-2 text-sm text-slate-600">These are not all deepening candidates. Each note now says what the evidence supports.</p>
+        <h2 class="font-serif text-2xl tracking-tight">Smaller observations, resolved</h2>
+        <p class="mt-2 text-sm text-slate-600">Updated 7 September 2026. These cards show the current fixes rather than the original findings.</p>
         <div class="mt-6 grid sm:grid-cols-2 gap-4">
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">Route lists that must agree</p>
-            <p class="text-sm mt-2">Three route declarations overlap: the policy inventory, Hono registrations, and broad Clerk prefixes. The drift test reads two of five route-registering files, and <span class="font-mono text-xs">proxy.ts:17</span> protects stale <span class="font-mono text-xs">/api/uploads</span> instead of <span class="font-mono text-xs">/api/upload-sessions</span>.</p>
-          </div>
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">The guest review router is undeclared</p>
-            <p class="text-sm mt-2"><span class="font-mono text-xs">app/api/review/[token]/[[...review]]/route.ts</span> is 172 lines with its own cookie session and same-origin check. ADR-0009 correctly excludes public sharing from browser-session admission, but this independent trust interface has no separate inventory or direct route contract test.</p>
-          </div>
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">The error log path is unstructured</p>
-            <p class="text-sm mt-2">Current production TypeScript has 88 <span class="font-mono text-xs">console.warn</span> calls and 41 <span class="font-mono text-xs">console.error</span> calls. Most warnings are structured; four errors also emit structured JSON. This is observability cleanup, not a deepening opportunity.</p>
-          </div>
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">Dead exports kept alive by tests</p>
-            <p class="text-sm mt-2"><span class="font-mono text-xs">sliceTranscriptForClip</span> (clip.service.ts:3655) is exported through the barrel, tested, and called by nothing. Same for <span class="font-mono text-xs">applySpeakerLayoutOverridesToSegments</span> (render-clips.ts:2187), whose policy now lives in the planner, and <span class="font-mono text-xs">authenticatedHonoProject</span>, which zero handlers call.</p>
-          </div>
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">No finding: glossary terms without ADRs</p>
-            <p class="text-sm mt-2">ADRs end at 0010, but glossary concepts do not require their own ADR. Record an ADR only when a load-bearing decision needs protection from future re-litigation.</p>
-          </div>
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">One naming rule, two meanings</p>
-            <p class="text-sm mt-2">Four <span class="font-mono text-xs">X.ts</span> plus <span class="font-mono text-xs">X.service.ts</span> pairs use the suffix for production wiring, while <span class="font-mono text-xs">project.service.ts</span> is a 4,963-line implementation. This is naming feedback. Renaming alone adds no depth, locality, or leverage.</p>
-          </div>
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">The UI barrel lost, 15 to 1</p>
-            <p class="text-sm mt-2">345 deep imports of <span class="font-mono text-xs">@narriflow/ui/components/x</span> against 23 barrel imports, and the barrel is already missing <span class="font-mono text-xs">action-submit-button</span> and <span class="font-mono text-xs">menu</span>. Pick the winner and delete the loser.</p>
-          </div>
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">Untested feature slices</p>
-            <p class="text-sm mt-2">Dubbing's 601-line worker orchestration and 467-line domain wiring lack a direct interface test. The broader claim was wrong: social publication and Workflow Run behavior have extensive tests through deeper interfaces, and the real 42-line poll loop has its own tests.</p>
-          </div>
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">Keyboard paths missing on the primary edit controls</p>
-            <p class="text-sm mt-2"><span class="font-mono text-xs">TrimHandle</span> at timeline.tsx:1352 remains pointer-only, while timeline segments and interactive speaker layers have keyboard behavior. Keep this in an accessibility review, not an architecture review.</p>
-          </div>
-          <div class="border border-slate-300 bg-white rounded-lg p-4">
-            <p class="lbl text-slate-500">Turbo caches tests with nothing to restore</p>
-            <p class="text-sm mt-2">The diagnosis was backwards. Root <span class="font-mono text-xs">turbo.json</span> declares <span class="font-mono text-xs">coverage/**</span> for every test task, while normal tests do not create coverage output. Generate coverage or remove that output contract. This is build configuration cleanup.</p>
-          </div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Route inventory and Clerk protection</p><p class="text-sm mt-2">discovery follows all mounted Hono route modules and compares both directions with the inventory. Clerk protects upload-sessions and the current authenticated resource prefixes.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Guest review trust interface</p><p class="text-sm mt-2">explicit method/path inventory and direct route tests cover origin checks, session admission, unknown/trailing paths, invalid JSON, and a streaming 32 KiB body limit. Existing database tests cover guest session replay, media isolation, and concurrent decisions.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Error logs</p><p class="text-sm mt-2">production console.error sites now use structured console.warn JSON. New boundary logs retain useful IDs/status and omit arbitrary response bodies.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Dead exports</p><p class="text-sm mt-2">removed sliceTranscriptForClip, applySpeakerLayoutOverridesToSegments, authenticatedHonoProject, and tests whose only purpose was to keep dead helpers alive.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Glossary / ADR count</p><p class="text-sm mt-2">docs/adr/README.md indexes all eleven decisions, links the glossary, and records the criteria for adding an ADR. AGENTS.md points to this guide.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Service filename suffixes</p><p class="text-sm mt-2">renamed generated-media, assisted-social-copy, bulk-social-scheduling, and thumbnail-frame-preparation production modules to *-runtime.ts and updated every import. AGENTS.md now distinguishes production wiring from domain and service implementations.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · UI barrel</p><p class="text-sm mt-2">migrated the remaining root imports to component paths and deleted the unused barrel and root package export.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Dubbing interface coverage</p><p class="text-sm mt-2">direct worker tests cover empty work, ownership loss, individual dub failure, aggregate failure, and cleanup. The database gate directly tests request admission, render readiness, tier policy, queue idempotency, and completed reuse. Those tests caught and fixed Business-plan rejection through the shared entitlement matrix.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Keyboard trimming</p><p class="text-sm mt-2">focusable sliders support 0.1-second arrow steps and 1-second Shift steps, shared pointer/keyboard bounds, and word snapping. Browser checks confirmed cloud save, undo, and persistence after reopening Studio.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Turbo outputs</p><p class="text-sm mt-2">removed the coverage output contract from normal test tasks, which produce no coverage directory.</p></div>
         </div>
       </section>
 

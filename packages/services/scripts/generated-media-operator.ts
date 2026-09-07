@@ -1,5 +1,5 @@
 import { parseGeneratedMediaOperatorArgs } from "../src/generated-media-operator";
-import { generatedMediaService } from "../src/generated-media.service";
+import { generatedMediaService } from "../src/generated-media-runtime";
 
 function write(value: unknown) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
