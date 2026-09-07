@@ -1,12 +1,17 @@
 import { redirect } from "next/navigation";
-import { getCurrentAppUser } from "@narriflow/auth";
-import { Box, Flex } from "@chakra-ui/react";
-import { Sidebar } from "./_components/sidebar";
-import { MobileNav } from "./_components/mobile-nav";
-import { AccountMenu } from "./_components/account-menu";
+import { listUserWorkspaces } from "@narriflow/auth";
+import { admitOptionalWorkspacePage } from "@/lib/authenticated-request-page";
+import { Box } from "@chakra-ui/react";
+import { resolvePricingTier } from "@narriflow/validators";
+import { AppChrome } from "./_components/app-chrome";
+import { getCachedDashboardStats } from "./_components/usage";
+import { workspaceService, workspacesV1EnabledForUser,
+} from "@narriflow/services";
 
-export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const appUser = await getCurrentAppUser();
+export default async function AppLayout({ children,
+}: { children: React.ReactNode;
+}) {
+  const appUser = await admitOptionalWorkspacePage("content.view");
 
   if (!appUser) {
     redirect("/sign-in");
@@ -16,48 +21,44 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     redirect("/onboarding");
   }
 
+  const [stats, memberships] = await Promise.all([
+    getCachedDashboardStats(appUser.actorUserId, appUser.workspaceId),
+    listUserWorkspaces(appUser.actorUserId),
+  ]);
+  const avatarUrls = await workspaceService.getAvatarUrls(
+    appUser.actorUserId,
+    memberships.map((membership) => membership.workspace.id),
+  );
+  const workspaces = memberships.map(({ role, workspace }) => ({
+    id: workspace.id,
+    name: workspace.name,
+    role,
+    isPersonal: workspace.personalOwnerUserId !== null,
+    avatarUrl: avatarUrls[workspace.id] ?? null,
+  }));
+
   return (
-    <Box minH="100vh" bg="bg" color="fg">
-      {/* Desktop sidebar */}
-      <Sidebar
+    <Box minH="100dvh" bg="bg" color="fg">
+      {/* AppChrome (client) owns the sidebar/offset/mobile-nav vs. /upload
+          funnel split — see its own comment for why that needs to be one
+          pathname check rather than each piece hiding itself. */}
+      <AppChrome
         email={appUser.primaryEmail}
         firstName={appUser.firstName}
         imageUrl={appUser.imageUrl}
         lastName={appUser.lastName}
-      />
-
-      {/* Mobile nav */}
-      <MobileNav />
-
-      {/* Main content area */}
-      <Box
-        ml={{ base: "0", lg: "240px" }}
-        pt={{ base: "52px", lg: "0" }}
-        minH="100vh"
+        usedMinutes={stats.usedMinutes}
+        limitMinutes={stats.limitMinutes}
+        activeWorkspaceId={appUser.workspaceId}
+        workspaceSelectionChanged={appUser.workspaceSelectionChanged}
+        workspaceRole={appUser.workspace.role}
+        workspaceStatus={appUser.workspace.status}
+        workspaceTier={resolvePricingTier(appUser.workspace.pricingTier)}
+        workspaces={workspaces}
+        canCreateWorkspace={workspacesV1EnabledForUser(appUser.actorUserId)}
       >
-        {/* Top bar (desktop only) */}
-        <Flex
-          h="52px"
-          align="center"
-          justify="flex-end"
-          px="24px"
-          borderBottomWidth="1px"
-          borderColor="border"
-          display={{ base: "none", lg: "flex" }}
-        >
-          <AccountMenu
-            email={appUser.primaryEmail}
-            firstName={appUser.firstName}
-            imageUrl={appUser.imageUrl}
-            lastName={appUser.lastName}
-          />
-        </Flex>
-
-        {/* Page content */}
-        <Box as="main" maxW="1024px" px="24px" py="32px">
-          {children}
-        </Box>
-      </Box>
+        {children}
+      </AppChrome>
     </Box>
   );
 }

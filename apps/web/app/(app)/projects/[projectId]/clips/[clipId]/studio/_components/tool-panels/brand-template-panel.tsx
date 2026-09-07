@@ -1,217 +1,438 @@
 "use client";
 
-import { useState } from "react";
-import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor } from "@chakra-ui/react";
-import { Upload, LayoutGrid } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import NextLink from "next/link";
+import { Box, Flex, Slider, Stack, Text } from "@chakra-ui/react";
+import { AlertTriangle, Check, ImageOff, LayoutGrid } from "lucide-react";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import {
+  resolveEffectiveLogoSettings,
+  type BrandTemplateSummary,
+  type LogoPosition,
+  type StudioLogo,
+} from "@narriflow/validators";
+import { useStudio } from "../studio-shell";
 
-const POSITION_GRID = [
-  ["top-left", "top-center", "top-right"],
-  ["mid-left", "center",     "mid-right"],
-  ["bot-left", "bot-center", "bot-right"],
+interface BrandTemplateResponse {
+  builtIns: BrandTemplateSummary[];
+  mine: BrandTemplateSummary[];
+  defaultId: string | null;
+}
+
+/** 3x3 position grid, laid out to match the enum's own vertical-then-
+ *  horizontal ordering (top-left, top-center, top-right, mid-left, …). */
+const LOGO_POSITIONS: LogoPosition[] = [
+  "top-left", "top-center", "top-right",
+  "mid-left", "center", "mid-right",
+  "bot-left", "bot-center", "bot-right",
 ];
 
-const BRAND_PRESETS = [
-  { id: "minimal",   label: "Minimal",   accent: "#6366F1" },
-  { id: "bold",      label: "Bold",      accent: "#f59e0b" },
-  { id: "dark",      label: "Dark",      accent: "#1a1a1a" },
-  { id: "vibrant",   label: "Vibrant",   accent: "#ec4899" },
-];
-
-export function BrandTemplatePanel() {
-  const [logoPos, setLogoPos] = useState("bot-right");
-  const [opacity, setOpacity] = useState(80);
-  const [primaryColor, setPrimaryColor] = useState("#6366F1");
-  const [secondaryColor, setSecondaryColor] = useState("#0c0c0c");
-
+/** Mini position picker: a bordered "frame" with a dot at each of the 9
+ *  candidate spots, mirroring where the logo will actually sit on the
+ *  canvas (buildLogoOverlayPosition in render-clips.ts uses the same
+ *  left/center/right x top/mid/bottom split). */
+function LogoPositionPicker({
+  value,
+  onChange,
+}: {
+  value: LogoPosition;
+  onChange: (position: LogoPosition) => void;
+}) {
   return (
-    <Stack gap="16px" p="12px">
-      {/* Logo upload */}
-      <Box>
-        <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em" mb="8px">
-          Logo / Watermark
+    <Box
+      position="relative"
+      w="100%"
+      aspectRatio={16 / 10}
+      bg="studio.canvas"
+      borderRadius="l2"
+      borderWidth="1px"
+      borderColor="studio.border"
+    >
+      {LOGO_POSITIONS.map((position) => {
+        const [vertical, horizontal] = position.split("-");
+        const top = vertical === "top" ? "16%" : vertical === "bot" ? "84%" : "50%";
+        const left = horizontal === "left" ? "12%" : horizontal === "right" ? "88%" : "50%";
+        const selected = position === value;
+        return (
+          <Box
+            key={position}
+            as="button"
+            aria-pressed={selected}
+            aria-label={`Logo position: ${position.replace("-", " ")}`}
+            title={position.replace("-", " ")}
+            position="absolute"
+            top={top}
+            left={left}
+            transform="translate(-50%, -50%)"
+            w="14px"
+            h="14px"
+            borderRadius="full"
+            borderWidth="1.5px"
+            borderColor={selected ? "studio.accent" : "studio.borderStrong"}
+            bg={selected ? "studio.accent" : "studio.raised"}
+            cursor="pointer"
+            transition="background 120ms ease, border-color 120ms ease"
+            _hover={{ borderColor: "studio.accent" }}
+            onClick={() => onChange(position)}
+          />
+        );
+      })}
+    </Box>
+  );
+}
+
+/** Per-clip logo overrides (studioEdits.logo, vizard-parity.md Phase A step
+ *  6). The project brand snapshot stays the source of truth for the logo
+ *  ASSET (see studio/page.tsx's `brandLogo` prop) — this section only
+ *  overrides how it's shown on THIS clip; null fields inherit the
+ *  snapshot, via the same `resolveEffectiveLogoSettings` helper the worker
+ *  uses for burn-in and the preview canvas uses to draw the overlay. */
+function LogoSection() {
+  const { brandLogo, studioEdits, setStudioEdits, endCoalesce } = useStudio("brandLogo", "studioEdits", "setStudioEdits", "endCoalesce");
+
+  const updateLogo = (patch: Partial<StudioLogo>, coalesceKey?: string) =>
+    setStudioEdits(
+      (prev) => ({ ...prev, logo: { ...prev.logo, ...patch } }),
+      coalesceKey,
+    );
+
+  if (!brandLogo) {
+    return (
+      <Stack gap="8px">
+        <Text textStyle="eyebrow" color="studio.fgMuted">
+          Logo
         </Text>
         <Flex
-          direction="column"
+          align="flex-start"
+          gap="8px"
+          p="12px"
+          bg="studio.subtle"
+          borderRadius="l2"
+          borderWidth="1px"
+          borderColor="studio.border"
+        >
+          <Box color="studio.fgSubtle" flexShrink={0} mt="1px">
+            <ImageOff size={14} />
+          </Box>
+          <Stack gap="4px">
+            <Text fontSize="12px" color="studio.fgMuted">
+              This project has no logo yet.
+            </Text>
+            <NextLink href="/brand-kit" style={{ width: "fit-content" }}>
+              <Text fontSize="11px" color="studio.accentFg" fontWeight="600" _hover={{ textDecoration: "underline" }}>
+                Add one in Brand kit
+              </Text>
+            </NextLink>
+          </Stack>
+        </Flex>
+      </Stack>
+    );
+  }
+
+  const logo = studioEdits.logo;
+  const effective = resolveEffectiveLogoSettings(brandLogo, logo);
+
+  return (
+    <Stack gap="8px">
+      <Flex align="center" justify="space-between">
+        <Text textStyle="eyebrow" color="studio.fgMuted">
+          Logo
+        </Text>
+        <Flex
+          as="button"
+          aria-pressed={logo.enabled}
+          aria-label={logo.enabled ? "Hide logo on this clip" : "Show logo on this clip"}
           align="center"
           justify="center"
-          h="80px"
-          borderRadius="8px"
-          border="2px dashed #2a2a2a"
-          bg="#111"
+          h="22px"
+          px="9px"
+          borderRadius="l2"
+          borderWidth="1px"
+          borderColor={logo.enabled ? "studio.accent" : "studio.borderControl"}
+          bg={logo.enabled ? "studio.raised" : "studio.subtle"}
+          color={logo.enabled ? "studio.accentFg" : "studio.fgMuted"}
+          fontSize="10.5px"
+          fontWeight="600"
           cursor="pointer"
-          gap="6px"
-          color="#444"
-          transition="all 150ms"
-          _hover={{ bg: "#161616", borderColor: "#3a3a3a", color: "#666" }}
+          transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
+          _hover={{ borderColor: logo.enabled ? "studio.accent" : "studio.fgSubtle" }}
+          onClick={() => updateLogo({ enabled: !logo.enabled })}
         >
-          <Upload size={18} />
-          <Text fontSize="11px">Upload logo (PNG, SVG)</Text>
+          {logo.enabled ? "On" : "Off"}
         </Flex>
-      </Box>
+      </Flex>
 
-      {/* Watermark position */}
-      <Box>
-        <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em" mb="8px">
-          Position
-        </Text>
-        <Box
-          display="inline-grid"
-          style={{ gridTemplateColumns: "repeat(3, 32px)", gap: "4px" }}
-        >
-          {POSITION_GRID.flat().map((pos) => (
-            <Box
-              key={pos}
-              w="32px"
-              h="32px"
-              borderRadius="5px"
-              bg={logoPos === pos ? "rgba(99,102,241,0.2)" : "#1a1a1a"}
-              border="1px solid"
-              borderColor={logoPos === pos ? "#6366F1" : "#2a2a2a"}
-              cursor="pointer"
-              onClick={() => setLogoPos(pos)}
-              transition="all 150ms"
-              _hover={{ borderColor: "#444" }}
-            />
-          ))}
-        </Box>
-      </Box>
+      <Stack
+        gap="12px"
+        p="12px"
+        bg="studio.subtle"
+        borderRadius="l2"
+        borderWidth="1px"
+        borderColor="studio.border"
+        opacity={logo.enabled ? 1 : 0.5}
+        transition="opacity 120ms ease"
+      >
+        <LogoPositionPicker
+          value={effective.position}
+          onChange={(position) => updateLogo({ position })}
+        />
 
-      {/* Opacity */}
-      <Box>
-        <Flex align="center" justify="space-between" mb="6px">
-          <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em">
+        <Flex align="center" gap="8px">
+          <Text fontSize="11px" color="studio.fgMuted" w="46px" flexShrink={0}>
             Opacity
           </Text>
-          <Text fontSize="11px" color="#888" fontFamily="mono">{opacity}%</Text>
+          <Slider.Root
+            aria-label={["Logo opacity"]}
+            value={[effective.opacity]}
+            min={10}
+            max={100}
+            onValueChange={(event) =>
+              updateLogo({ opacity: event.value[0] ?? effective.opacity }, "logo-opacity")
+            }
+            onValueChangeEnd={endCoalesce}
+            size="sm"
+            colorPalette="accent"
+            flex="1"
+          >
+            <Slider.Control>
+              <Slider.Track>
+                <Slider.Range />
+              </Slider.Track>
+              <Slider.Thumbs />
+            </Slider.Control>
+          </Slider.Root>
+          <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
+            {effective.opacity}%
+          </Text>
         </Flex>
-        <Slider.Root
-          value={[opacity]}
-          min={10}
-          max={100}
-          onValueChange={(e) => setOpacity(e.value[0]!)}
-          size="sm"
-          colorPalette="purple"
-          w="100%"
-        >
-          <Slider.Control>
-            <Slider.Track>
-              <Slider.Range />
-            </Slider.Track>
-            <Slider.Thumbs />
-          </Slider.Control>
-        </Slider.Root>
-      </Box>
 
-      {/* Brand colors */}
-      <Box>
-        <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em" mb="8px">
-          Brand colors
-        </Text>
-        <Flex gap="12px">
-          <Box>
-            <Text fontSize="10px" color="#555" mb="5px">Primary</Text>
-            <ColorPicker.Root
-              value={parseColor(primaryColor)}
-              onValueChange={(e) => setPrimaryColor(e.value.toString("hex"))}
-              size="xs"
-            >
-              <ColorPicker.HiddenInput />
-              <ColorPicker.Control>
-                <ColorPicker.Trigger w="32px" h="32px" borderRadius="6px" border="1px solid #2a2a2a" cursor="pointer" p="2px">
-                  <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="4px" />
-                </ColorPicker.Trigger>
-              </ColorPicker.Control>
-              <Portal>
-                <ColorPicker.Positioner>
-                  <ColorPicker.Content>
-                    <ColorPicker.Area />
-                    <HStack>
-                      <ColorPicker.EyeDropper size="xs" variant="outline" />
-                      <ColorPicker.Sliders />
-                    </HStack>
-                  </ColorPicker.Content>
-                </ColorPicker.Positioner>
-              </Portal>
-            </ColorPicker.Root>
-          </Box>
-          <Box>
-            <Text fontSize="10px" color="#555" mb="5px">Secondary</Text>
-            <ColorPicker.Root
-              value={parseColor(secondaryColor)}
-              onValueChange={(e) => setSecondaryColor(e.value.toString("hex"))}
-              size="xs"
-            >
-              <ColorPicker.HiddenInput />
-              <ColorPicker.Control>
-                <ColorPicker.Trigger w="32px" h="32px" borderRadius="6px" border="1px solid #2a2a2a" cursor="pointer" p="2px">
-                  <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="4px" />
-                </ColorPicker.Trigger>
-              </ColorPicker.Control>
-              <Portal>
-                <ColorPicker.Positioner>
-                  <ColorPicker.Content>
-                    <ColorPicker.Area />
-                    <HStack>
-                      <ColorPicker.EyeDropper size="xs" variant="outline" />
-                      <ColorPicker.Sliders />
-                    </HStack>
-                  </ColorPicker.Content>
-                </ColorPicker.Positioner>
-              </Portal>
-            </ColorPicker.Root>
-          </Box>
+        <Flex align="center" gap="8px">
+          <Text fontSize="11px" color="studio.fgMuted" w="46px" flexShrink={0}>
+            Scale
+          </Text>
+          <Slider.Root
+            aria-label={["Logo scale"]}
+            value={[effective.scalePct]}
+            min={5}
+            max={40}
+            onValueChange={(event) =>
+              updateLogo({ scalePct: event.value[0] ?? effective.scalePct }, "logo-scale")
+            }
+            onValueChangeEnd={endCoalesce}
+            size="sm"
+            colorPalette="accent"
+            flex="1"
+          >
+            <Slider.Control>
+              <Slider.Track>
+                <Slider.Range />
+              </Slider.Track>
+              <Slider.Thumbs />
+            </Slider.Control>
+          </Slider.Root>
+          <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
+            {effective.scalePct}%
+          </Text>
         </Flex>
-      </Box>
+      </Stack>
+    </Stack>
+  );
+}
 
-      {/* Preset templates */}
-      <Box>
-        <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em" mb="8px">
-          Quick presets
-        </Text>
-        <Flex gap="6px" flexWrap="wrap">
-          {BRAND_PRESETS.map((p) => (
-            <Flex
-              key={p.id}
-              as="button"
-              align="center"
-              gap="6px"
-              px="10px"
-              py="6px"
-              borderRadius="6px"
-              bg="#1a1a1a"
-              border="1px solid #2a2a2a"
-              cursor="pointer"
-              fontSize="11px"
-              color="#888"
-              transition="all 150ms"
-              _hover={{ bg: "#1e1e1e", borderColor: "#333" }}
-              onClick={() => setPrimaryColor(p.accent)}
-            >
-              <Box w="10px" h="10px" borderRadius="full" bg={p.accent} />
-              {p.label}
-            </Flex>
-          ))}
-        </Flex>
-      </Box>
-
-      <Flex
-        as="button"
-        align="center"
-        justify="center"
-        h="34px"
-        borderRadius="7px"
-        bg="#6366F1"
-        color="white"
-        fontSize="12px"
-        fontWeight="600"
-        cursor="pointer"
-        gap="6px"
-        _hover={{ bg: "#4F46E5" }}
-        transition="background 150ms"
-      >
-        <LayoutGrid size={14} />
-        Apply brand template
+function TemplateRow({
+  template,
+  selected,
+  onSelect,
+}: {
+  template: BrandTemplateSummary;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <Flex
+      as="button"
+      aria-pressed={selected}
+      align="center"
+      gap="10px"
+      w="100%"
+      p="10px"
+      borderRadius="l2"
+      border="1px solid"
+      borderColor={selected ? "studio.accent" : "studio.border"}
+      bg={selected ? "studio.raised" : "studio.subtle"}
+      cursor="pointer"
+      textAlign="left"
+      transition="background 120ms ease, border-color 120ms ease"
+      _hover={{ borderColor: selected ? "studio.accent" : "studio.borderStrong" }}
+      onClick={onSelect}
+    >
+      {/* User brand colors — literal by design */}
+      <Flex flexShrink={0} gap="3px">
+        <Box w="14px" h="28px" borderRadius="4px 0 0 4px" bg={template.primaryColor} />
+        <Box w="14px" h="28px" borderRadius="0 4px 4px 0" bg={template.secondaryColor} />
       </Flex>
+      <Box minW="0" flex="1">
+        <Text fontSize="12px" fontWeight="600" color="studio.fg" truncate>
+          {template.name}
+        </Text>
+        <Text fontSize="11px" color="studio.fgMuted" mt="1px">
+          {template.captionPreset.fontName} · {template.captionPreset.position}
+        </Text>
+      </Box>
+      {selected ? (
+        <Box color="studio.accentFg" flexShrink={0}>
+          <Check size={14} />
+        </Box>
+      ) : null}
+    </Flex>
+  );
+}
+
+export function BrandTemplatePanel() {
+  const { setCaptionPreset } = useStudio("setCaptionPreset");
+  const [templates, setTemplates] = useState<BrandTemplateResponse | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const [applyState, setApplyState] = useState<
+    "idle" | "applied" | "missing"
+  >("idle");
+
+  useEffect(() => {
+    let canceled = false;
+    async function loadTemplates() {
+      setLoadState("loading");
+      try {
+        const response = await fetch("/api/brand-templates");
+        if (!response.ok) throw new Error("failed");
+        const payload = (await response.json()) as BrandTemplateResponse;
+        if (canceled) return;
+        setTemplates(payload);
+        setSelectedId(payload.defaultId ?? payload.mine[0]?.id ?? payload.builtIns[0]?.id ?? null);
+        setLoadState("ready");
+      } catch {
+        if (!canceled) setLoadState("error");
+      }
+    }
+    void loadTemplates();
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  const allTemplates = useMemo(
+    () => [...(templates?.mine ?? []), ...(templates?.builtIns ?? [])],
+    [templates],
+  );
+  const selectedTemplate = allTemplates.find((template) => template.id === selectedId);
+
+  function applyTemplate() {
+    if (!selectedTemplate) {
+      setApplyState("missing");
+      setTimeout(() => setApplyState("idle"), 2500);
+      return;
+    }
+
+    setCaptionPreset((current) => ({
+      ...current,
+      ...selectedTemplate.captionPreset,
+      positionX: current.positionX,
+      positionY: current.positionY,
+      fontSize: current.fontSize,
+    }));
+    setApplyState("applied");
+    setTimeout(() => setApplyState("idle"), 2000);
+  }
+
+  return (
+    <Stack gap="14px" p="12px">
+      <LogoSection />
+
+      {loadState === "loading" ? (
+        <Flex align="center" justify="center" h="120px" color="studio.fgMuted" gap="8px">
+          <Spinner size="xs" />
+          <Text fontSize="12px" color="studio.fgMuted">Loading templates</Text>
+        </Flex>
+      ) : null}
+
+      {loadState === "error" ? (
+        <Flex role="alert" align="center" gap="8px" p="12px" color="danger.400">
+          <AlertTriangle size={14} />
+          <Text fontSize="12px" color="danger.400">
+            Brand templates could not be loaded.
+          </Text>
+        </Flex>
+      ) : null}
+
+      {loadState === "ready" ? (
+        <>
+          {templates?.mine.length ? (
+            <Stack gap="8px">
+              <Text textStyle="eyebrow" color="studio.fgMuted">
+                My templates
+              </Text>
+              {templates.mine.map((template) => (
+                <TemplateRow
+                  key={template.id}
+                  template={template}
+                  selected={template.id === selectedId}
+                  onSelect={() => setSelectedId(template.id)}
+                />
+              ))}
+            </Stack>
+          ) : null}
+
+          {templates?.builtIns.length ? (
+            <Stack gap="8px">
+              <Text textStyle="eyebrow" color="studio.fgMuted">
+                Built-in
+              </Text>
+              {templates.builtIns.map((template) => (
+                <TemplateRow
+                  key={template.id}
+                  template={template}
+                  selected={template.id === selectedId}
+                  onSelect={() => setSelectedId(template.id)}
+                />
+              ))}
+            </Stack>
+          ) : null}
+
+          {/* Secondary action — Export owns the view's solid button */}
+          <Flex
+            as="button"
+            align="center"
+            justify="center"
+            h="34px"
+            borderRadius="l2"
+            bg="studio.raised"
+            borderWidth="1px"
+            borderColor={applyState === "missing" ? "danger.solid" : "studio.borderStrong"}
+            color={applyState === "missing" ? "danger.400" : "studio.fg"}
+            fontSize="12px"
+            fontWeight="600"
+            cursor="pointer"
+            gap="6px"
+            _hover={{ borderColor: applyState === "missing" ? "danger.solid" : "studio.fgSubtle" }}
+            transition="border-color 120ms ease, color 120ms ease"
+            onClick={applyTemplate}
+          >
+            {applyState === "applied" ? (
+              <Check size={14} />
+            ) : applyState === "missing" ? (
+              <AlertTriangle size={14} />
+            ) : (
+              <LayoutGrid size={14} />
+            )}
+            {applyState === "applied"
+              ? "Template applied"
+              : applyState === "missing"
+                ? "Choose a template"
+                : "Apply to captions"}
+          </Flex>
+        </>
+      ) : null}
     </Stack>
   );
 }

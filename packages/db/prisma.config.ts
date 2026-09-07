@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig } from "prisma/config";
 
-function readDotEnvValue(key: string) {
-  const currentValue = process.env[key]?.trim();
+function readDotEnvValue(requestedKey: string) {
+  const currentValue = process.env[requestedKey]?.trim();
 
   if (currentValue) {
     return currentValue;
@@ -30,11 +30,9 @@ function readDotEnvValue(key: string) {
       continue;
     }
 
-    const key = line.slice(0, separatorIndex).trim();
-
     const currentKey = line.slice(0, separatorIndex).trim();
 
-    if (currentKey !== key) {
+    if (currentKey !== requestedKey) {
       continue;
     }
 
@@ -48,7 +46,7 @@ function readDotEnvValue(key: string) {
     }
 
     if (value) {
-      process.env[key] = value;
+      process.env[requestedKey] = value;
       return value;
     }
   }

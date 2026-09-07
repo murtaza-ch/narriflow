@@ -103,12 +103,18 @@ export async function POST(req: Request) {
       }
     }
 
+    const logPayload = {
+      type: event.type,
+      eventId: svixId,
+      subjectId: typeof event.data.id === "string" ? event.data.id : null,
+    };
+
     await recordWebhookDeliveryLog({
       provider: "clerk",
       eventId: svixId,
       eventType: event.type,
       status: "success",
-      payload: event,
+      payload: logPayload,
     });
 
     return jsonResponse({ received: true }, 200);
@@ -119,7 +125,9 @@ export async function POST(req: Request) {
       eventType: event.type,
       status: "failed",
       payload: {
-        event,
+        type: event.type,
+        eventId: svixId,
+        subjectId: typeof event.data.id === "string" ? event.data.id : null,
         error: error instanceof Error ? error.message : "Webhook processing failed",
       },
     });

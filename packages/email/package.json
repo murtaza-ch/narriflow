@@ -9,19 +9,21 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./worker": {
+      "types": "./src/worker.ts",
+      "default": "./src/worker.ts"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "lint": "echo 'email lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "echo 'email test: no-op'",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "resend": "latest"
+    "resend": "6.19.0"
   },
   "devDependencies": {
-    "@types/node": "latest"
+    "@types/node": "26.2.0"
   }
 }

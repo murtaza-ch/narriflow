@@ -1,12 +1,18 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSignUp } from "@clerk/nextjs";
-import { Box, Heading, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Stack, Text, VStack } from "@chakra-ui/react";
+import { CircleAlert } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
+import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { AuthHeader } from "../../../components/auth-shell";
+import { FormError } from "../../_components/form-error";
 import { getClerkErrorMessage } from "../../_lib/clerk-error";
 
 const unsupportedFields = new Set(["phone_number"]);
@@ -28,6 +34,18 @@ function getInputType(field: string) {
   }
 
   return "text";
+}
+
+/** Centered spinner + caption for the transient states. */
+function PendingState({ message }: { message: string }) {
+  return (
+    <VStack gap="3" py="8" aria-live="polite">
+      <Spinner size="md" />
+      <Text fontSize="14px" color="fg.muted">
+        {message}
+      </Text>
+    </VStack>
+  );
 }
 
 export default function ContinueSignUpPage() {
@@ -117,42 +135,113 @@ export default function ContinueSignUpPage() {
     }
   }
 
-  return (
-    <Stack gap="6">
-      <Stack gap="1">
-        <Heading size="lg" fontWeight="600" letterSpacing="-0.02em">Complete your account</Heading>
-        <Text fontSize="13px" color="fg.muted">We need a few more details before creating your account.</Text>
+  // ——— Three disambiguated non-form states ———
+
+  // 1 · Loading: Clerk is still hydrating (or we're bouncing to /sign-up).
+  if (!isLoaded || !signUp || !signUp.id) {
+    return (
+      <Stack gap="7">
+        <AuthHeader eyebrow="Almost there" title="Complete your account" />
+        <PendingState message="Loading your sign-up…" />
       </Stack>
+    );
+  }
+
+  // 2 · Done: sign-up is complete, the effect above is activating the session.
+  if (signUp.status === "complete") {
+    return (
+      <Stack gap="7">
+        <AuthHeader eyebrow="Almost there" title="Account created" />
+        <PendingState message="Taking you to your workspace…" />
+      </Stack>
+    );
+  }
+
+  // 3 · Broken: loaded, not complete, but nothing left for us to ask for.
+  if (missingFields.length === 0) {
+    return (
+      <Stack gap="7">
+        <AuthHeader
+          eyebrow="Something broke"
+          title="We couldn't finish your sign-up"
+          description="Your provider returned incomplete account details."
+        />
+        <Flex justify="center">
+          <GhostFrame size="220px">
+            <Flex color="danger.fg" aria-hidden="true">
+              <CircleAlert size={20} />
+            </Flex>
+          </GhostFrame>
+        </Flex>
+        <Stack gap="3">
+          <Button asChild width="full">
+            <Link href="/sign-up">Start over</Link>
+          </Button>
+          <Text textAlign="center" fontSize="13px" color="fg.muted">
+            or{" "}
+            <Link href="/sign-in">
+              <Box
+                as="span"
+                fontWeight="500"
+                color="fg"
+                textDecoration="underline"
+                textUnderlineOffset="3px"
+                textDecorationColor="border.emphasized"
+                transition="text-decoration-color 120ms ease"
+                _hover={{ textDecorationColor: "fg" }}
+              >
+                go back to sign in
+              </Box>
+            </Link>
+          </Text>
+        </Stack>
+      </Stack>
+    );
+  }
+
+  // The form: fields Clerk still needs.
+  return (
+    <Stack gap="7">
+      <AuthHeader
+        eyebrow="Almost there"
+        title="Complete your account"
+        description="Complete your account details."
+      />
 
       <form onSubmit={onSubmit}>
-        <Stack gap="4">
-          {missingFields.length === 0 ? (
-            <Text textStyle="sm" color="fg.muted">Finalizing your sign up...</Text>
-          ) : (
-            missingFields.map((field) => (
-              <Stack gap="2" key={field}>
-                <Label htmlFor={field}>{formatLabel(field)}</Label>
-                <Input
-                  id={field}
-                  name={field}
-                  onChange={(event) =>
-                    setValues((current) => ({
-                      ...current,
-                      [field]: event.target.value,
-                    }))
-                  }
-                  required
-                  type={getInputType(field)}
-                  value={values[field] ?? ""}
-                />
-              </Stack>
-            ))
-          )}
+        <Stack gap="4" animation="fade-up">
+          {missingFields.map((field) => (
+            <Stack gap="1.5" key={field}>
+              <Label htmlFor={field} fontSize="13px" fontWeight="500">
+                {formatLabel(field)}
+              </Label>
+              <Input
+                id={field}
+                name={field}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    [field]: event.target.value,
+                  }))
+                }
+                required
+                type={getInputType(field)}
+                value={values[field] ?? ""}
+              />
+            </Stack>
+          ))}
 
-          {error ? <Text textStyle="sm" color="danger.fg">{error}</Text> : null}
+          <FormError message={error} />
 
-          <Button width="full" disabled={submitting || missingFields.length === 0} type="submit" variant="solid">
-            {submitting ? "Saving..." : "Continue"}
+          <Button width="full" disabled={submitting} type="submit" variant="solid">
+            {submitting ? (
+              <>
+                <Spinner size="xs" borderTopColor="accent.contrast" />
+                Saving…
+              </>
+            ) : (
+              "Continue"
+            )}
           </Button>
 
           <Box id="clerk-captcha" />

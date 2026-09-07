@@ -1,63 +1,125 @@
 "use client";
 
+import { useState } from "react";
 import { Box, Flex, Text, HStack } from "@chakra-ui/react";
-import {
-  ArrowLeft,
-  Undo2,
-  Redo2,
-  Keyboard,
-  ChevronDown,
-  Zap,
-  Check,
-  Loader,
-} from "lucide-react";
+import { ArrowLeft, Undo2, Redo2, Keyboard, RotateCcw } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useStudio } from "./studio-shell";
-
-const BTN = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  borderRadius: "6px",
-  cursor: "pointer",
-  transition: "background 120ms ease, color 120ms ease",
-  border: "none",
-  background: "transparent",
-  color: "#888",
-  padding: "6px",
-} as const;
-
-const BTN_HOVER = "#1e1e1e";
+import { ScoreMeter } from "@narriflow/ui/components/meter";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { formatDuration } from "@/lib/format";
+import { ClipActionsMenu } from "../../../../clip-actions-menu";
+import { useStudio, type StudioSaveState } from "./studio-shell";
+import { ResetConfirmDialog } from "./reset-confirm-dialog";
+import { StudioExportMenu } from "./studio-export-menu";
 
 function IconBtn({
   icon,
   onClick,
   disabled,
-  title,
-  size = 16,
+  label,
 }: {
   icon: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
-  title?: string;
-  size?: number;
+  label: string;
 }) {
   return (
-    <Box
+    <Flex
       as="button"
-      style={{
-        ...BTN,
-        opacity: disabled ? 0.35 : 1,
-        cursor: disabled ? "not-allowed" : "pointer",
-        width: "32px",
-        height: "32px",
-      }}
-      title={title}
+      align="center"
+      justify="center"
+      w="32px"
+      h="32px"
+      borderRadius="l1"
+      bg="transparent"
+      border="none"
+      color={disabled ? "fg.disabled" : "studio.fgMuted"}
+      cursor={disabled ? "not-allowed" : "pointer"}
+      title={label}
+      aria-label={label}
+      aria-disabled={disabled}
       onClick={disabled ? undefined : onClick}
-      _hover={disabled ? {} : { bg: BTN_HOVER, color: "#e5e5e5" }}
+      transition="background 120ms ease, color 120ms ease"
+      _hover={disabled ? {} : { bg: "studio.raised", color: "studio.fg" }}
     >
       {icon}
-    </Box>
+    </Flex>
+  );
+}
+
+/**
+ * Ambient autosave indicator — a small status dot plus micro-copy. Failures
+ * additionally surface as an error toast from the shell. 'blocked' is a
+ * distinct, non-retryable state (a 409/422 that only clears on reload) — it
+ * gets its own copy rather than falling back to the generic "Save failed" so
+ * the user knows retrying won't help.
+ */
+function AutosaveIndicator({
+  saveState,
+  isDocDirty,
+}: {
+  saveState: StudioSaveState;
+  isDocDirty: boolean;
+}) {
+  if (saveState === "saving") {
+    return (
+      <HStack gap="6px" aria-live="polite">
+        <Spinner size="xs" />
+        <Text fontSize="12px" color="studio.fgMuted">
+          Saving…
+        </Text>
+      </HStack>
+    );
+  }
+
+  const isBlocked = saveState === "blocked";
+  const isError = saveState === "error" || isBlocked;
+  const isLocal = saveState === "local";
+  const isOffline = saveState === "offline";
+  const isReadonly = saveState === "readonly";
+  const isDegraded = saveState === "degraded";
+  // Live-QA finding 2026-08-06: 'idle' alone is NOT proof the document is
+  // saved — a failed save times back to idle after 4s with the retry still
+  // pending, and the debounce window before the first PUT is also 'idle'.
+  // Claiming "Saved" while dirty is a silent-data-loss message; consult the
+  // dirty flag and say so honestly instead.
+  const idleButDirty = !isError && isDocDirty;
+  return (
+    <HStack gap="6px" aria-live="polite">
+      <Box
+        w="6px"
+        h="6px"
+        borderRadius="full"
+        bg={
+          isError
+            ? "danger.solid"
+            : isOffline || isLocal || isDegraded
+              ? "accent.solid"
+            : idleButDirty
+              ? "studio.fgSubtle"
+              : saveState === "saved"
+                ? "success.solid"
+                : "studio.fgSubtle"
+        }
+      />
+      <Text fontSize="12px" color={isError ? "danger.fg" : "studio.fgMuted"}>
+        {isBlocked
+          ? "Save needs attention"
+          : isDegraded
+            ? "Cloud safety only"
+          : isReadonly
+            ? "Read-only tab"
+          : isOffline
+            ? "Saved offline"
+          : isLocal
+            ? "Saved on this device"
+          : isError
+            ? "Save failed"
+            : idleButDirty
+              ? "Unsaved changes…"
+              : "Saved"}
+      </Text>
+    </HStack>
   );
 }
 
@@ -65,170 +127,124 @@ export function TopBar() {
   const router = useRouter();
   const {
     clipInfo,
-    undoStack,
-    redoStack,
+    canUndo,
+    canRedo,
     showShortcuts,
     setShowShortcuts,
-    handleSave,
     handleUndo,
     handleRedo,
+    handleReset,
+    resetState,
+    canReset,
     saveState,
-    credits,
-  } = useStudio();
+    isDocDirty,
+    aspectRatio,
+  } = useStudio("clipInfo", "canUndo", "canRedo", "showShortcuts", "setShowShortcuts", "handleUndo", "handleRedo", "handleReset", "resetState", "canReset", "saveState", "isDocDirty", "aspectRatio");
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   return (
     <Flex
       h="48px"
       align="center"
-      px="12px"
-      gap="4px"
-      bg="#111111"
+      px="3"
+      gap="1"
+      bg="studio.surface"
       borderBottomWidth="1px"
-      borderColor="#222222"
+      borderColor="studio.border"
       flexShrink={0}
     >
-      {/* Left: Back + Title */}
-      <HStack gap="8px" flex="1" minW="0">
+      {/* Left: back + title + clip data */}
+      <HStack gap="2" flex="1" minW="0">
         <IconBtn
           icon={<ArrowLeft size={16} />}
-          onClick={() => router.back()}
-          title="Back"
+          onClick={() => router.push(`/projects/${clipInfo.projectId}`)}
+          label="Back to project"
         />
         <Text
+          fontFamily="display"
           fontSize="13px"
-          fontWeight="500"
-          color="#e5e5e5"
+          fontWeight="600"
+          color="studio.fg"
           whiteSpace="nowrap"
           overflow="hidden"
           textOverflow="ellipsis"
-          maxW="340px"
+          maxW="300px"
         >
-          {clipInfo.title}
+          {clipInfo.clipTitle ?? clipInfo.title}
         </Text>
+
+        {/* Same overflow menu as the clip rows, so a rename is reachable from
+            wherever the title is showing. Duplicate/delete both navigate:
+            editing a copy is the point of duplicating from in here, and the
+            studio can't stay open on a clip that no longer exists. */}
+        <ClipActionsMenu
+          projectId={clipInfo.projectId}
+          clipId={clipInfo.id}
+          title={clipInfo.clipTitle}
+          fallbackTitle={clipInfo.title}
+          surface="studio"
+          onDuplicated={(clip) =>
+            router.push(`/projects/${clip.projectId}/clips/${clip.id}/studio`)
+          }
+          onDeleted={() => router.push(`/projects/${clipInfo.projectId}`)}
+        />
+
+        <Box w="1px" h="20px" bg="studio.border" mx="1" flexShrink={0} />
+
+        <HStack gap="2" flexShrink={0} display={{ base: "none", md: "flex" }}>
+          <Text textStyle="data" fontSize="12px" color="studio.timecode">
+            {formatDuration(clipInfo.duration)}
+          </Text>
+          <Text textStyle="data" fontSize="12px" color="studio.fgMuted">
+            {aspectRatio}
+          </Text>
+          <ScoreMeter score={clipInfo.viralityScore} size="sm" />
+        </HStack>
       </HStack>
 
-      {/* Right: Actions */}
-      <HStack gap="4px" flexShrink={0}>
+      {/* Right: autosave + history + shortcuts + export */}
+      <HStack gap="1" flexShrink={0}>
+        <AutosaveIndicator saveState={saveState} isDocDirty={isDocDirty} />
+
+        <Box w="1px" h="20px" bg="studio.border" mx="1" />
+
         <IconBtn
           icon={<Undo2 size={16} />}
           onClick={handleUndo}
-          disabled={undoStack.length === 0}
-          title="Undo (Ctrl+Z)"
+          disabled={!canUndo}
+          label="Undo (Ctrl+Z)"
         />
         <IconBtn
           icon={<Redo2 size={16} />}
           onClick={handleRedo}
-          disabled={redoStack.length === 0}
-          title="Redo (Ctrl+Shift+Z)"
+          disabled={!canRedo}
+          label="Redo (Ctrl+Shift+Z)"
         />
-
-        {/* Divider */}
-        <Box w="1px" h="20px" bg="#2a2a2a" mx="4px" />
-
+        <IconBtn
+          icon={<RotateCcw size={16} />}
+          onClick={() => setShowResetConfirm(true)}
+          disabled={!canReset || resetState === "resetting"}
+          label="Reset to original"
+        />
         <IconBtn
           icon={<Keyboard size={16} />}
           onClick={() => setShowShortcuts(!showShortcuts)}
-          title="Keyboard shortcuts"
+          label="Keyboard shortcuts"
         />
 
-        {/* Divider */}
-        <Box w="1px" h="20px" bg="#2a2a2a" mx="4px" />
+        <Box w="1px" h="20px" bg="studio.border" mx="1" />
 
-        {/* Save button */}
-        <button
-          onClick={handleSave}
-          disabled={saveState === "saving"}
-          style={{
-            padding: "0 12px",
-            height: "32px",
-            borderRadius: "6px",
-            border: "1px solid #2a2a2a",
-            background: "transparent",
-            color: saveState === "saved" ? "#4ade80" : "#c4c4c4",
-            fontSize: "13px",
-            fontWeight: "500",
-            cursor: saveState === "saving" ? "not-allowed" : "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            transition: "all 150ms ease",
-          }}
-          onMouseEnter={(e) => {
-            if (saveState !== "saving") {
-              (e.currentTarget as HTMLButtonElement).style.background = "#1e1e1e";
-              (e.currentTarget as HTMLButtonElement).style.color = "#e5e5e5";
-            }
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background = "transparent";
-            (e.currentTarget as HTMLButtonElement).style.color = saveState === "saved" ? "#4ade80" : "#c4c4c4";
-          }}
-        >
-          {saveState === "saving" && <Loader size={13} style={{ animation: "spin 1s linear infinite" }} />}
-          {saveState === "saved" && <Check size={13} />}
-          {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : "Save changes"}
-        </button>
-
-        {/* Export button */}
-        <Flex
-          as="button"
-          align="center"
-          gap="4px"
-          px="12px"
-          h="32px"
-          borderRadius="6px"
-          bg="#6366F1"
-          color="white"
-          fontSize="13px"
-          fontWeight="600"
-          cursor="pointer"
-          transition="background 150ms ease"
-          _hover={{ bg: "#4F46E5" }}
-        >
-          Export
-          <ChevronDown size={13} />
-        </Flex>
-
-        {/* Credits badge */}
-        <Flex
-          align="center"
-          gap="4px"
-          px="10px"
-          h="28px"
-          borderRadius="99px"
-          bg="#2a1f00"
-          border="1px solid #3d2e00"
-          ml="4px"
-        >
-          <Zap size={12} color="#f59e0b" fill="#f59e0b" />
-          <Text fontSize="12px" fontWeight="600" color="#f59e0b">
-            {credits}
-          </Text>
-        </Flex>
-
-        {/* Avatar */}
-        <Box
-          w="28px"
-          h="28px"
-          borderRadius="full"
-          bg="#6366F1"
-          ml="4px"
-          display="flex"
-          alignItems="center"
-          justifyContent="center"
-          fontSize="11px"
-          fontWeight="600"
-          color="white"
-          flexShrink={0}
-        >
-          U
-        </Box>
+        <StudioExportMenu />
       </HStack>
 
-      {/* Spin animation */}
-      <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
+      <ResetConfirmDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        confirming={resetState === "resetting"}
+        onConfirm={() => {
+          void handleReset();
+        }}
+      />
     </Flex>
   );
 }

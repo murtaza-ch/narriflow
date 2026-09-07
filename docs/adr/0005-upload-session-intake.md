@@ -1,0 +1,15 @@
+# Upload Sessions own local-file intake before a Project exists
+
+One workspace-owned Upload Session is the deep module for local-file admission, transfer planning, storage-provider recovery, exact-object verification, compensation, and atomic handoff. A durable reservation is written before provider work and binds one immutable client idempotency key within a workspace to a preallocated Project ID, actor facts, source declaration, browser fingerprint, frozen brand snapshot, and frozen generation settings. The module owns the states `initiating`, `uploading`, `finalizing`, `reconciling`, `compensating`, `queued_for_ingest`, `aborted`, `expired`, and `failed`; Hono, React, and storage adapters translate its decisions without choosing transitions.
+
+Storage keys and provider upload identifiers remain private adapter facts. Multipart admission recovers only unfinished uploads matching the session's exact unique object key, adopts the oldest deterministic candidate, and idempotently aborts duplicates. Provider lifecycle cleanup is a backstop for the final unobservable process-crash gap, not the normal recovery mechanism. Files at or below the validated 100 MiB threshold receive one Content-Type-bound PUT grant; larger files use a server-sized multipart plan. Both paths converge on one exact object probe and require the declared byte length and normalized supported media type.
+
+No Project exists while transfer is incomplete. Successful verification creates the Project, Content Pack, Upload Finalize Ingest Job, first Workflow Event, and terminal Upload Session state in one database transaction. The Ingest Job receives the already verified storage key, byte length, and content type and begins the separate ingest lifecycle described in the domain glossary.
+
+## Considered options
+
+We rejected Project-owned multipart state because it creates visible empty Projects and couples incomplete transfer to post-admission ownership; browser-owned provider IDs and object keys because they leak infrastructure identity and make recovery depend on unsafe client facts; parallel legacy and new upload routes because Narriflow is pre-production and dual behavior would obscure ownership; client-selected part counts because transfer policy belongs to the server; bucket-wide orphan discovery because exact-key recovery is sufficient and bounded; and re-probing object metadata in the ingest worker because verification is already an authoritative handoff fact.
+
+## Consequences
+
+The browser persists only a versioned Narriflow session resume record and writes its client intent before the first request. Replaying identical intent returns the same session, active transfer facts, or queued Project; changed immutable input is a typed conflict. Admission diagnostics name stable phases and dispositions without keys, provider IDs, grants, or raw errors. Mismatched session-unique objects enter idempotent compensation and cannot admit ingest. The pre-production migration resets obsolete local Upload Session rows and removes the old Project-owned start/completion routes in the same cutover.

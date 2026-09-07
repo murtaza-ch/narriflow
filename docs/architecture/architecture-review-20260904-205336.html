@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture review: Narriflow</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose", flowchart: { curve: "basis" } });
+    </script>
+    <style>
+      .seam { stroke-dasharray: 4 4; }
+      .lbl { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+      .mermaid { font-size: 13px; }
+      .stripe { box-shadow: inset 3px 0 0 currentColor; }
+      .hatch { background-image: repeating-linear-gradient(45deg, rgba(220,38,38,.12) 0 6px, transparent 6px 12px); }
+      .grid-bg { background-image: linear-gradient(rgba(15,23,42,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,.05) 1px, transparent 1px); background-size: 16px 16px; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans antialiased">
+    <main class="max-w-5xl mx-auto px-6 py-12 space-y-14">
+
+      <header class="border-b border-slate-300 pb-8">
+        <p class="lbl text-slate-500 font-mono">Narriflow · murtaza/assembly-ai · Completed 7 September 2026</p>
+        <h1 class="font-serif text-4xl mt-2 tracking-tight">Architecture review — completion record</h1>
+        <p class="mt-4 text-slate-700">All eleven candidates have a final disposition. Remaining recommendations and worthwhile exploratory work are implemented; previously completed work was verified. The smaller observations include explicit runtime filenames and a glossary/ADR guide. The generic Claim abstraction remains rejected by the deletion test.</p>
+        <p class="mt-3 text-sm text-slate-600">Implementation baseline: <code>3049993da8f6305489a050b10ae20239bef11a3e</code>. The original review, corrections, and earlier completion history are preserved below.</p>
+      </header>
+      <section id="completion">
+        <h2 class="font-serif text-2xl">Candidate decisions</h2>
+        <div class="overflow-x-auto mt-5"><table class="w-full text-sm"><thead class="bg-slate-900 text-white"><tr><th class="p-3 text-left">Candidate</th><th class="p-3 text-left">Status</th><th class="p-3 text-left">Result</th></tr></thead><tbody class="divide-y divide-slate-300">
+<tr><td class="p-3 font-mono"><a href="#c1">1</a></td><td class="p-3 text-emerald-800">Completed</td><td class="p-3">Kept ClipRenderAttempt.execute as the external boundary. Added private clip-group and audio-resolution phases. A corrupt frozen clip now fails only its own variants; cancellation and ownership loss still stop the attempt.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c2">2</a></td><td class="p-3 text-emerald-800">Previously completed; verified</td><td class="p-3">The shared Clip Composition Plan owns composition decisions and preview/export text fitting. Existing plan and real-media suites pass.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c3">3</a></td><td class="p-3 text-emerald-800">Previously completed; hardened</td><td class="p-3">One explicit Workflow Attempt lifecycle owns writes. Fixed UTC handling of raw PostgreSQL timestamps and lease comparisons; added an Asia/Karachi session regression.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c4">4</a></td><td class="p-3 text-emerald-800">Previously completed; verified</td><td class="p-3">Domain failure catalogs and bounded HTTP translation remain the shared contract. Guest review now maps the same typed failure kinds within its independent trust boundary.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c5">5</a></td><td class="p-3 text-emerald-800">Previously completed; verified</td><td class="p-3">Scene mutation policy and the directly tested clip/editor HTTP module remain the owners.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c6">6</a></td><td class="p-3 text-emerald-800">Previously completed; verified</td><td class="p-3">Actor Scope and Clip Editor Document Persistence retain workspace-member authorization and database regression coverage.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c7">7</a></td><td class="p-3 text-emerald-800">Completed before this pass</td><td class="p-3">Commit 5d050d8 split Studio Editing Session subscriptions by field. Hidden panels already did not mount; no new panel lifecycle machinery was needed.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c8">8</a></td><td class="p-3 text-emerald-800">Previously completed; verified</td><td class="p-3">WorkerProcessModule owns process cancellation, deadlines, media inspection, and scratch cleanup. Process and real-media tests pass.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c9">9</a></td><td class="p-3 text-emerald-800">Completed before this pass; refined</td><td class="p-3">Commit 8a7e60f simplified app page headers. PageHeader stays because it owns Blueline structure. Brand kit now uses style terminology and accessible form labels.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c10">10</a></td><td class="p-3 text-emerald-800">Completed in domain owners</td><td class="p-3">Claim-loss repairs remain with the domain modules. The proposed generic Claim abstraction remains rejected by the deletion test.</td></tr>
+<tr><td class="p-3 font-mono"><a href="#c11">11</a></td><td class="p-3 text-emerald-800">Completed</td><td class="p-3">Style editing lives at /brand-kit/styles/:id and returns to its owning Brand Profile. Existing forms and gallery are reused. Removed obsolete template, social, and dashboard route aliases; social loading now lives at its real route.</td></tr>
+</tbody></table></div></section>
+<section id="observation-dispositions"><h2 class="font-serif text-2xl">Smaller observations</h2><dl class="mt-5 space-y-5"><div><dt class="font-semibold">Route inventory and Clerk protection</dt><dd class="mt-1 text-sm text-slate-700">Completed: discovery follows all mounted Hono route modules and compares both directions with the inventory. Clerk protects upload-sessions and the current authenticated resource prefixes.</dd></div>
+<div><dt class="font-semibold">Guest review trust interface</dt><dd class="mt-1 text-sm text-slate-700">Completed: explicit method/path inventory and direct route tests cover origin checks, session admission, unknown/trailing paths, invalid JSON, and a streaming 32 KiB body limit. Existing database tests cover guest session replay, media isolation, and concurrent decisions.</dd></div>
+<div><dt class="font-semibold">Error logs</dt><dd class="mt-1 text-sm text-slate-700">Completed: production console.error sites now use structured console.warn JSON. New boundary logs retain useful IDs/status and omit arbitrary response bodies.</dd></div>
+<div><dt class="font-semibold">Dead exports</dt><dd class="mt-1 text-sm text-slate-700">Completed: removed sliceTranscriptForClip, applySpeakerLayoutOverridesToSegments, authenticatedHonoProject, and tests whose only purpose was to keep dead helpers alive.</dd></div>
+<div><dt class="font-semibold">Glossary / ADR count</dt><dd class="mt-1 text-sm text-slate-700">Completed: docs/adr/README.md indexes all eleven decisions, links the glossary, and records the criteria for adding an ADR. AGENTS.md points to this guide.</dd></div>
+<div><dt class="font-semibold">Service filename suffixes</dt><dd class="mt-1 text-sm text-slate-700">Completed: renamed generated-media, assisted-social-copy, bulk-social-scheduling, and thumbnail-frame-preparation production modules to *-runtime.ts and updated every import. AGENTS.md now distinguishes production wiring from domain and service implementations.</dd></div>
+<div><dt class="font-semibold">UI barrel</dt><dd class="mt-1 text-sm text-slate-700">Completed: migrated the remaining root imports to component paths and deleted the unused barrel and root package export.</dd></div>
+<div><dt class="font-semibold">Dubbing interface coverage</dt><dd class="mt-1 text-sm text-slate-700">Completed: direct worker tests cover empty work, ownership loss, individual dub failure, aggregate failure, and cleanup. The database gate directly tests request admission, render readiness, tier policy, queue idempotency, and completed reuse. Those tests caught and fixed Business-plan rejection through the shared entitlement matrix.</dd></div>
+<div><dt class="font-semibold">Keyboard trimming</dt><dd class="mt-1 text-sm text-slate-700">Completed: focusable sliders support 0.1-second arrow steps and 1-second Shift steps, shared pointer/keyboard bounds, and word snapping. Browser checks confirmed cloud save, undo, and persistence after reopening Studio.</dd></div>
+<div><dt class="font-semibold">Turbo outputs</dt><dd class="mt-1 text-sm text-slate-700">Completed: removed the coverage output contract from normal test tasks, which produce no coverage directory.</dd></div>
+</dl><p class="mt-5 text-sm text-slate-600">Smaller-observation follow-up: lint, typecheck, and all seven workspace test tasks passed after the runtime renames. The signed-in Chrome Home page loaded successfully. Independent Standards and Spec reviews each reported zero remaining findings.</p></section>
+      <section id="verification" class="border-t border-slate-300 pt-8">
+        <h2 class="font-serif text-2xl">Verification</h2>
+        <ul class="list-disc pl-5 mt-4 space-y-2 text-sm">
+          <li><code>bun run lint</code> and <code>bun run typecheck</code>: passed.</li>
+          <li><code>bun run test</code>: all seven workspace test tasks passed; 2,434 passing tests and 179 intentional skips. Database tests run separately below.</li>
+          <li>Real FFmpeg fixtures passed through ClipRenderAttempt, including composition, captions, audio, optional-asset degradation, multiple target layouts, and frozen export state.</li>
+          <li>Disposable-schema PostgreSQL gates: workflow 60; upload session 2; workspace billing 9; social publication 14; clip editor persistence 23; authenticated request policy 3; Brand Profiles 10; Vizard expansion 33. All passed (154 database tests).</li>
+          <li>Additional configured-database checks: Workflow gate 59/59 and Brand Profiles 10/10 passed. The new timezone regression was verified with the local PostgreSQL gate.</li>
+          <li>Real authenticated Chrome: created a test Brand Profile and style, edited and saved the style, reopened it, and verified Edit style → editor → Cancel returns to its owning profile. Profile membership was attached through the existing service as test setup.</li>
+          <li>Real authenticated Chrome: keyboard trim saved 42.526 → 42.626 seconds; Undo restored 42.526. Reopening Studio confirmed the original value and Saved state.</li>
+          <li id="browser-export-result">Real authenticated Chrome: the updated worker completed export bc70acac-2738-4bb8-970a-f2b06fec4050. Its 720 × 1280 video loaded at readyState 4, played beyond 8 seconds, and reported 37.287 seconds duration with no media error. An additional 1080p export also reached Ready.</li>
+        </ul>
+        <p class="mt-4 text-sm text-slate-600">Chrome used the existing signed-in workspace with clearly named test records, not a newly created identity. Test profile: Architecture QA 20260907; style: Architecture QA style verified. The Studio acceptance project and saved clip remain available for inspection.</p>
+      </section>
+      <section id="final-review" class="border-t border-slate-300 pt-8">
+        <h2 class="font-serif text-2xl">Independent code review</h2>
+        <p class="mt-3 text-sm"><strong>Standards: 0 remaining findings.</strong> Corrected the trim focus ring to use studio.accent. The reviewer rechecked the fix and the added labels, entitlement policy, and tests.</p>
+        <p class="mt-3 text-sm"><strong>Spec: 0 remaining findings.</strong> Closed the direct dubbing coverage gap with admission/idempotency and individual failure-settlement tests. The reviewer confirmed the requirements are covered.</p>
+      </section>
+      <details class="border-t border-slate-300 pt-8">
+        <summary class="cursor-pointer font-serif text-2xl">Original review and earlier implementation history</summary>
+        <p class="my-6 text-sm text-slate-600">Historical analysis follows. Its line numbers, counts, recommendations, and status badges describe earlier snapshots; the completion record above is the current disposition.</p>
+        <div class="space-y-14">
+      <header class="border-b border-slate-300 pb-8">
+        <p class="lbl text-slate-500 font-mono">Narriflow &middot; murtaza/assembly-ai &middot; 4 September 2026</p>
+        <h1 class="font-serif text-4xl mt-2 tracking-tight">Architecture review</h1>
+        <div class="mt-6 flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-600">
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-3 border border-slate-800"></span> module</span>
+          <span class="flex items-center gap-2"><svg width="26" height="8"><title>Dashed seam</title><line x1="0" y1="4" x2="26" y2="4" stroke="#475569" stroke-width="1.5" class="seam"/></svg> seam</span>
+          <span class="flex items-center gap-2"><svg width="26" height="8"><title>Leakage arrow</title><line x1="0" y1="4" x2="22" y2="4" stroke="#dc2626" stroke-width="1.5"/><path d="M22 1 L26 4 L22 7 Z" fill="#dc2626"/></svg> leakage</span>
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-3 bg-slate-900"></span> deep module</span>
+        </div>
+        <div class="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-px bg-slate-300 border border-slate-300 text-center">
+          <div class="bg-stone-50 py-3"><div class="font-mono text-2xl">0</div><div class="lbl text-slate-500">typecheck errors</div></div>
+          <div class="bg-stone-50 py-3"><div class="font-mono text-2xl">0</div><div class="lbl text-slate-500">test failures</div></div>
+          <div class="bg-stone-50 py-3"><div class="font-mono text-2xl">2</div><div class="lbl text-slate-500">TODOs repo-wide</div></div>
+          <div class="bg-stone-50 py-3"><div class="font-mono text-2xl">5</div><div class="lbl text-slate-500">as any</div></div>
+        </div>
+        <p class="mt-4 text-sm text-slate-600 max-w-2xl">Revalidated against commit <span class="font-mono text-xs">1c09f85</span> on 4 September 2026. The second pass checked every claim against current source, CONTEXT.md, ADRs, the deletion test, 229 focused tests, the full fast suite, and repository typecheck.</p>
+      </header>
+
+      <section id="validation" class="border-2 border-slate-900 bg-white rounded-lg overflow-hidden">
+        <div class="bg-slate-900 text-white px-6 py-4">
+          <p class="lbl text-slate-300">Independent validation pass</p>
+          <h2 class="font-serif text-2xl mt-1">What survived contact with the code</h2>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-px bg-slate-300 border-b border-slate-300 text-center">
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-emerald-700">6</div><div class="lbl text-slate-500">valid</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-amber-700">3</div><div class="lbl text-slate-500">partly valid</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-red-700">1</div><div class="lbl text-slate-500">rejected</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-slate-600">1</div><div class="lbl text-slate-500">not architecture</div></div>
+          <div class="bg-white py-3 col-span-2 sm:col-span-1"><div class="font-mono text-2xl">0</div><div class="lbl text-slate-500">focused test failures</div></div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-100 text-slate-600"><tr><th class="text-left px-4 py-2">candidate</th><th class="text-left px-4 py-2">verdict</th><th class="text-left px-4 py-2">correction</th></tr></thead>
+            <tbody class="divide-y divide-slate-200">
+              <tr><td class="px-4 py-2 font-mono">1</td><td class="px-4 py-2 text-amber-800">Partly valid</td><td class="px-4 py-2">Keep one Clip Render Attempt interface. The cited music path already degrades locally, and per-variant isolation already has tests.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">2</td><td class="px-4 py-2 text-emerald-800">Valid</td><td class="px-4 py-2">Confirmed preview/export text mismatch and ADR-0004 violation. Text fitting is an in-process planning concern.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">3</td><td class="px-4 py-2 text-emerald-800">Completed</td><td class="px-4 py-2">The V1/V2 split is removed. One explicit Workflow Attempt protocol now owns Workflow Run and child-artifact writes, and ADR-0001 records the pre-production cutover.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">4</td><td class="px-4 py-2 text-emerald-800">Completed</td><td class="px-4 py-2">Domain modules now own catalog-derived failures. Hono maps them to one bounded response contract with one request ID.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">5</td><td class="px-4 py-2 text-emerald-800">Completed</td><td class="px-4 py-2">Scene Block mutation policy now has a shared domain interface, and the clip PATCH plus editor routes live in a directly tested Hono module.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">6</td><td class="px-4 py-2 text-emerald-800">Valid</td><td class="px-4 py-2">The suspected member-save defect is confirmed. The 69 figure is occurrences across 62 handlers, not 69 handlers.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">7</td><td class="px-4 py-2 text-amber-800">Partly valid</td><td class="px-4 py-2">Hidden panels already do not mount. Only the 132-property Studio Editing Session subscription interface survives.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">8</td><td class="px-4 py-2 text-emerald-800">Valid</td><td class="px-4 py-2">Five execution clusters lack process-group ownership, and seven scratch cleanups can mask the causal error.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">9</td><td class="px-4 py-2 text-slate-600">Product cleanup</td><td class="px-4 py-2">The copy observations are partly real, but PageHeader passes the deletion test. This is not a deepening candidate.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">10</td><td class="px-4 py-2 text-emerald-800">Completed</td><td class="px-4 py-2">The four fencing defects are fixed in their domain owners. No generic Claim module was added.</td></tr>
+              <tr><td class="px-4 py-2 font-mono">11</td><td class="px-4 py-2 text-amber-800">Partly valid</td><td class="px-4 py-2">Split Brand Profile navigation ownership from the unrelated social re-export and dashboard alias cleanups.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="px-4 py-3 text-xs text-slate-500 border-t border-slate-200">The initial review did not run database-backed gates. Completion notes below record the later PostgreSQL verification for implemented candidates.</p>
+      </section>
+
+      <section id="candidates" class="space-y-16">
+
+      <!-- ============ C1 ============ -->
+      <article id="c1" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">1. Audit private phases inside the Clip Render Attempt</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-amber-500 text-white rounded-sm font-medium">Worth exploring</span>
+            <span class="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-sm font-mono">mixed dependencies</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">apps/worker/src/tasks/render-clips.ts:4499-7529</p>
+        <div class="mt-4 border-l-4 border-amber-500 bg-amber-50 px-4 py-3 text-sm text-amber-950"><span class="lbl text-amber-800">Validation correction</span><p class="mt-1">The 3,031-line implementation is real, but the module already has one deep external interface. Keep phase seams private. Music resolution at :6470 is caught and degraded, while per-output failures already isolate one Clip Render Variant at :7207 and :7349.</p></div>
+
+        <div class="grid md:grid-cols-2 gap-4 mt-6">
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-3">Before</p>
+            <div class="border-2 border-slate-800 rounded">
+              <div class="px-3 py-2 border-b border-slate-300 bg-slate-100 font-mono text-xs">executeClipRenderAttempt(), 3,030 lines</div>
+              <div class="p-2 space-y-px hatch">
+                <div class="bg-white/90 px-2 py-1 text-[11px] font-mono flex justify-between"><span>frozen state + brand decode</span><span class="text-slate-400">165</span></div>
+                <div class="bg-white/90 px-2 py-1 text-[11px] font-mono flex justify-between"><span>cut plan + captions</span><span class="text-slate-400">300</span></div>
+                <div class="bg-white/90 px-2 py-1 text-[11px] font-mono flex justify-between"><span>b-roll resolution</span><span class="text-slate-400">295</span></div>
+                <div class="bg-white/90 px-2 py-1 text-[11px] font-mono flex justify-between"><span>speaker evidence</span><span class="text-slate-400">270</span></div>
+                <div class="bg-white/90 px-2 py-1 text-[11px] font-mono flex justify-between"><span>screen / PiP evidence</span><span class="text-slate-400">330</span></div>
+                <div class="bg-white/90 px-2 py-1 text-[11px] font-mono flex justify-between"><span>split evidence</span><span class="text-slate-400">265</span></div>
+                <div class="bg-white/90 px-2 py-1 text-[11px] font-mono flex justify-between"><span>music + SFX + background</span><span class="text-slate-400">355</span></div>
+                <div class="bg-white/90 px-2 py-1 text-[11px] font-mono flex justify-between"><span>plan, encode, upload</span><span class="text-slate-400">600</span></div>
+              </div>
+              <div class="px-3 py-2 border-t-2 border-red-600 bg-red-50 text-[11px] font-mono text-red-800">catch &rarr; fail every variant, one code</div>
+            </div>
+            <p class="text-xs text-slate-500 mt-3">One entry point. Only uncaught shared or attempt-level failures reach the final Render Work Set catch.</p>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-3">After</p>
+            <div class="space-y-2">
+              <div class="bg-slate-900 text-white rounded px-3 py-2 font-mono text-xs">ClipRenderAttempt.execute()</div>
+              <div class="pl-4 space-y-1.5">
+                <div class="border border-slate-800 rounded px-3 py-1.5 font-mono text-[11px] flex justify-between"><span>resolveEvidence(plan, media)</span><span class="text-slate-400">1 fn</span></div>
+                <div class="border border-slate-800 rounded px-3 py-1.5 font-mono text-[11px] flex justify-between"><span>resolveAssets(plan, store)</span><span class="text-slate-400">1 fn</span></div>
+                <div class="border border-slate-800 rounded px-3 py-1.5 font-mono text-[11px] flex justify-between"><span>renderVariant(plan, target)</span><span class="text-slate-400">1 fn</span></div>
+              </div>
+              <div class="border border-emerald-600 bg-emerald-50 rounded px-3 py-2 text-[11px] font-mono text-emerald-800">per-phase failure scope &rarr; unrelated variants survive</div>
+            </div>
+            <p class="text-xs text-slate-500 mt-3">Private phase modules may improve locality, but tests should keep the Clip Render Attempt interface as their main surface.</p>
+          </div>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">Shared resolution, encoding, delivery, and settlement live in one 3,031-line implementation, which weakens locality inside an otherwise deep module.</dd></div>
+          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Keep the Clip Render Attempt interface required by ADR-0003. Use private phase modules only where a coherent internal seam passes the deletion test.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>locality inside the implementation</li><li>one external test surface remains</li><li>shared failure scope is explicit</li><li>no shallow public phase seams</li></ul></dd></div>
+        </dl>
+        <div class="mt-4 border-l-4 border-amber-500 bg-amber-50 px-4 py-3 text-sm">
+          <span class="lbl text-amber-800">ADR-0003</span>
+          <p class="mt-1 text-amber-900">The ADR requires one deep Clip Render Attempt interface and rejects public plan, execute, and settle phases. Existing tests prove local Clip Render Variant failures survive. Audit only which uncaught shared failures should reach :7461.</p>
+        </div>
+      </article>
+
+      <!-- ============ C2 ============ -->
+      <article id="c2" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">2. Move the last composition decisions into the Clip Composition Plan</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-emerald-600 text-white rounded-sm font-medium">Strong</span>
+            <span class="text-xs px-2 py-1 bg-emerald-100 text-emerald-800 rounded-sm font-mono">completed</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">packages/composition-plan/src/clip-composition-plan.ts &middot; apps/worker/src/composition-ffmpeg-adapter.ts:878 &middot; apps/web/.../studio/_components/video-preview.tsx:2127</p>
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"><span class="lbl text-emerald-800">Completed</span><p class="mt-1">Implemented in <span class="font-mono text-xs">8cfa26d</span>, <span class="font-mono text-xs">9626200</span>, and <span class="font-mono text-xs">ce87b87</span>. Clip Composition Plan v2 now owns deterministic fitted lines and dimensions; Studio and FFmpeg consume those planned values. Planner, adapter, real FFmpeg, and authenticated Chrome verification all passed.</p></div>
+
+        <div class="rounded-lg border border-slate-300 bg-white p-4 mt-6">
+          <pre class="mermaid">
+flowchart LR
+  P["Clip Composition Plan<br/>canvases, layers, crops"]
+  F["FFmpeg adapter"]
+  V["Studio preview adapter"]
+  O1["export: 107px, one line"]
+  O2["preview: 68px, wrapped"]
+  P --> F
+  P --> V
+  F -.->|"picks h/18, never wraps"| O1
+  V -.->|"picks clamp(24,5vw,68), wraps at 82%"| O2
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#991b1b;
+  classDef deep fill:#0f172a,color:#fff,stroke:#0f172a;
+  class F,V,O1,O2 leak
+  class P deep
+          </pre>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-4 mt-4">
+          <div class="rounded-lg border border-red-300 bg-red-50 p-4">
+            <p class="lbl text-red-700 mb-2">A text Scene Block, 1080x1920 canvas</p>
+            <div class="border border-red-400 rounded overflow-hidden bg-white">
+              <div class="px-2 py-1 border-b border-red-200 lbl text-red-700">preview, wraps at 82%</div>
+              <div class="px-2 py-2 text-[10px] leading-tight text-center text-slate-700">the quick brown fox jumps<br/>over the lazy dog and keeps<br/>going for four hundred more</div>
+              <div class="px-2 py-1 border-y border-red-200 lbl text-red-700">export, drawtext never wraps</div>
+              <div class="px-2 py-2 text-[10px] text-slate-700 whitespace-nowrap overflow-hidden">&lsaquo; own and keeps going for four hun &rsaquo;</div>
+            </div>
+            <p class="text-xs text-red-800 mt-3"><span class="font-mono">drawtext</span> emits one unwrapped <span class="font-mono">text=</span>, and <span class="font-mono">sceneContentSchema</span> allows 500 characters. Any card that wraps in the preview is clipped on both edges in the export. The 107 vs 68 delta is the smaller half.</p>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-2">After</p>
+            <div class="space-y-1.5 text-[11px] font-mono">
+              <div class="border border-slate-800 bg-slate-900 text-white rounded px-3 py-1.5">textRender.fontSizePx</div>
+              <div class="border border-slate-800 bg-slate-900 text-white rounded px-3 py-1.5">textRender.lines[]</div>
+              <div class="border border-slate-800 bg-slate-900 text-white rounded px-3 py-1.5">textRender.lineHeightPx, maxWidthPx</div>
+              <div class="border border-slate-800 bg-slate-900 text-white rounded px-3 py-1.5">SCENE_CONTINUITY_EPSILON_SEC exported</div>
+            </div>
+            <p class="text-xs text-slate-500 mt-3">The planner wraps and fits; both adapters render the lines they are given. It already does exactly this for the watermark at <span class="font-mono">:1769</span>.</p>
+          </div>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">The plan carries no text sizing or wrapping, so each adapter invents its own, and the export silently clips any card long enough to wrap in the preview.</dd></div>
+          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Let the planner fit and wrap the text into the plan, delete the adapter-side sizing, and add shared fixtures asserting each adapter reads the plan’s values rather than deriving its own.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>preview matches export</li><li>leverage: one policy, two adapters</li><li>0.075 duplication becomes explicit</li><li>drift becomes a test failure</li></ul></dd></div>
+        </dl>
+        <div class="mt-4 border-l-4 border-amber-500 bg-amber-50 px-4 py-3 text-sm">
+          <span class="lbl text-amber-800">ADR-0004</span>
+          <p class="mt-1 text-amber-900">This does not contradict the ADR, it enforces it. Two things that look like violations are not: <span class="font-mono text-xs">baseOnlyTarget</span> merges scenes whose base layers are byte-identical, which is a filter-graph size optimisation with identical pixels, and fps is a render-time media fact from ffprobe rather than composition policy. Both stay in the adapter.</p>
+        </div>
+      </article>
+
+      <!-- ============ C3 ============ -->
+      <article id="c3" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">3. Let the Workflow Run Lifecycle own every Workflow Run write</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-emerald-600 text-white rounded-sm font-medium">Strong</span>
+            <span class="text-xs px-2 py-1 bg-emerald-100 text-emerald-800 rounded-sm font-mono">completed</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">packages/services/src/workflow-run-lifecycle.ts &middot; apps/worker/src/workflow-attempt-executor.ts &middot; packages/db/prisma/migrations/20260905010000_single_workflow_run_lifecycle</p>
+
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"><span class="lbl text-emerald-800">Completed</span><p class="mt-1">Implemented in <span class="font-mono text-xs">237e5b0</span>, <span class="font-mono text-xs">75afe1a</span>, <span class="font-mono text-xs">e8c8841</span>, <span class="font-mono text-xs">286a681</span>, and <span class="font-mono text-xs">b05246c</span>. Claims now return one explicit attempt, every worker stage receives that attempt and its execution context, and all Workflow Run and fenced child-artifact writes live behind semantic lifecycle commands.</p></div>
+
+        <div class="rounded-lg border border-slate-300 bg-white p-4 mt-6">
+          <p class="lbl text-slate-500 mb-3">Before &middot; removed dual protocol</p>
+          <pre class="mermaid">
+flowchart TB
+  subgraph W["writers"]
+    C["clip.service.ts<br/>5 V1 requirements"]
+    D["dubbing.service.ts<br/>3 V1 requirements"]
+    PS["project.service.ts<br/>9 V1 requirements"]
+  end
+  ALS{{"AsyncLocalStorage<br/>decides V1 or V2"}}
+  L["WorkflowRunLifecycle<br/>fences on run + attempt + project"]
+  V1["inline $transaction<br/>fences on status only<br/>sets attemptId = null"]
+  T[("WorkflowRun<br/>ClipRender<br/>ClipExportVariant")]
+  C --> ALS
+  D --> ALS
+  PS --> ALS
+  ALS --> L
+  ALS -.-> V1
+  L --> T
+  V1 -.-> T
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#991b1b;
+  classDef deep fill:#0f172a,color:#fff,stroke:#0f172a;
+  class V1,ALS leak
+  class L deep
+          </pre>
+        </div>
+
+        <div class="mt-4 rounded border border-slate-300 bg-white overflow-x-auto">
+          <table class="w-full text-xs font-mono">
+            <thead class="bg-slate-100 text-slate-600"><tr><th class="text-left px-3 py-2">method name defined twice</th><th class="text-left px-3 py-2">clip.service.ts</th><th class="text-left px-3 py-2">workflow-run-lifecycle.ts</th></tr></thead>
+            <tbody class="divide-y divide-slate-200">
+              <tr><td class="px-3 py-1.5">markClipRenderVariantRendering</td><td class="px-3 py-1.5 text-slate-500">:2308</td><td class="px-3 py-1.5 text-slate-500">:1120</td></tr>
+              <tr><td class="px-3 py-1.5">completeClipRenderVariant</td><td class="px-3 py-1.5 text-slate-500">:2372</td><td class="px-3 py-1.5 text-slate-500">:1161</td></tr>
+              <tr><td class="px-3 py-1.5">failClipRenderVariant</td><td class="px-3 py-1.5 text-slate-500">:2497</td><td class="px-3 py-1.5 text-slate-500">:1225</td></tr>
+              <tr><td class="px-3 py-1.5">completeClipAutoLayoutAnalysis</td><td class="px-3 py-1.5 text-slate-500">:3181</td><td class="px-3 py-1.5 text-slate-500">:1263</td></tr>
+              <tr><td class="px-3 py-1.5">completeClipSplitLayoutAnalysis</td><td class="px-3 py-1.5 text-slate-500">:3219</td><td class="px-3 py-1.5 text-slate-500">:1293</td></tr>
+              <tr><td class="px-3 py-1.5">completeClipSplitLayoutFailure</td><td class="px-3 py-1.5 text-slate-500">:3257</td><td class="px-3 py-1.5 text-slate-500">:1319</td></tr>
+              <tr><td class="px-3 py-1.5">setClipLayoutAnalysis</td><td class="px-3 py-1.5 text-slate-500">:3515</td><td class="px-3 py-1.5 text-slate-500">:1343</td></tr>
+              <tr><td class="px-3 py-1.5">setClipLayoutAnalysisFailure</td><td class="px-3 py-1.5 text-slate-500">:3544</td><td class="px-3 py-1.5 text-slate-500">:1367</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Original problem</dt><dd class="mt-1">Clip, Dubbing, and Project modules bypassed the Workflow Run Lifecycle through V1 branches. Ambient context chose between status-only and attempt-fenced writes without making that choice visible in the interface.</dd></div>
+          <div><dt class="lbl text-slate-500">Completed scope</dt><dd class="mt-1">The V1 protocol, schema marker, compatibility exports, ambient attempt storage, duplicate service mutations, and Project Service Workflow Run branches are gone. Render, analysis, detection, dubbing, export bundles, progress, waiting, settlement, and reaping use the explicit owning attempt.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>one fencing rule, one place</li><li>8 duplicate methods removed</li><li>attempt becomes visible in signatures</li><li>WORKFLOW_RETRIES_EXHAUSTED_CODE defined once</li></ul></dd></div>
+        </dl>
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm">
+          <span class="lbl text-emerald-800">ADR-0001 reopened</span>
+          <p class="mt-1 text-emerald-950">ADR-0001 now rejects protocol-versioned bridge workers under Narriflow's pre-production policy and records the single explicit-attempt protocol. Final Standards and Spec reviews were clean. Repository lint, typecheck, fast tests, the 59-case Workflow PostgreSQL gate, Clip Editor, Social Publication, and Vizard gates all passed; authenticated Chrome acceptance completed ingest, STT, detection, ten renders, and a Spanish dub.</p>
+        </div>
+      </article>
+
+
+      <!-- ============ C4 ============ -->
+      <article id="c4" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">4. Give the API one typed failure instead of 32 substring guesses</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-emerald-600 text-white rounded-sm font-medium">Strong</span>
+            <span class="text-xs px-2 py-1 bg-emerald-100 text-emerald-800 rounded-sm font-mono">completed</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">apps/web/app/api/[[...route]]/route.ts &middot; apps/web/lib/authenticated-request-http.ts</p>
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"><span class="lbl text-emerald-800">Completed</span><p class="mt-1">Implemented in <span class="font-mono text-xs">e458b68</span>, <span class="font-mono text-xs">5078eaf</span>, <span class="font-mono text-xs">a0f9f2f</span>, <span class="font-mono text-xs">86ba8ae</span>, <span class="font-mono text-xs">a4def25</span>, and <span class="font-mono text-xs">b9b8fd4</span>. Domain modules now own catalog-derived codes and semantic kinds. Hono maps them to one allowlisted response with one request ID, bounded details, and retry guidance. Unknown errors use the redacted internal-error path, and Studio reads revision metadata from <span class="font-mono text-xs">details</span>. Lint, typecheck, fast tests, all seven PostgreSQL gates, authenticated Chrome verification, and the final Standards and Spec reviews passed.</p></div>
+
+        <div class="grid md:grid-cols-2 gap-4 mt-6">
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-3">Before</p>
+            <div class="font-mono text-[11px] leading-relaxed bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto">
+<span class="text-slate-500">// route.ts:1809, and 31 more like it</span>
+code.includes(<span class="text-amber-300">"stale"</span>) ||
+code.includes(<span class="text-amber-300">"conflict"</span>) ? <span class="text-emerald-300">409</span>
+: code.includes(<span class="text-amber-300">"forbidden"</span>) ? <span class="text-emerald-300">403</span>
+: <span class="text-emerald-300">400</span></div>
+            <div class="mt-3 space-y-1.5">
+              <p class="lbl text-slate-500">10 error mappers</p>
+              <div class="flex flex-wrap gap-1 text-[10px] font-mono">
+                <span class="px-1.5 py-0.5 bg-red-100 text-red-800 rounded-sm">brandTemplateErrorResponse</span>
+                <span class="px-1.5 py-0.5 bg-red-100 text-red-800 rounded-sm">socialPublicationErrorStatus</span>
+                <span class="px-1.5 py-0.5 bg-red-100 text-red-800 rounded-sm">clipEditorPersistenceHttpError</span>
+                <span class="px-1.5 py-0.5 bg-red-100 text-red-800 rounded-sm">clipDeleteHttpError</span>
+                <span class="px-1.5 py-0.5 bg-red-100 text-red-800 rounded-sm">workspaceBillingHttpFailure</span>
+                <span class="px-1.5 py-0.5 bg-red-100 text-red-800 rounded-sm">reviewApprovalHttpStatus</span>
+                <span class="px-1.5 py-0.5 bg-red-100 text-red-800 rounded-sm">failure &times;2</span>
+                <span class="px-1.5 py-0.5 bg-red-100 text-red-800 rounded-sm">+32 inline</span>
+              </div>
+              <p class="lbl text-slate-500 pt-2">5 body shapes</p>
+              <p class="font-mono text-[10px] text-slate-600">{error} &middot; {error,message} &middot; {error,issues} &middot; {error,message,retryable} &middot; {error,currentRevision}</p>
+            </div>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-3">After</p>
+            <div class="border-2 border-slate-800 rounded">
+              <div class="bg-slate-900 text-white px-3 py-2 font-mono text-xs">AuthenticatedRequestFailure</div>
+              <div class="p-3 font-mono text-[11px] space-y-0.5 text-slate-700">
+                <div>code</div><div>category</div><div>status</div><div>message</div><div>requestId</div><div>issues?</div><div>retryAfterSeconds?</div>
+              </div>
+              <div class="border-t border-slate-300 px-3 py-2 text-[11px] font-mono text-emerald-700 bg-emerald-50">already exists &middot; policy.ts:61-70</div>
+            </div>
+            <p class="text-xs text-slate-500 mt-3">Domain modules own stable codes. The Hono seam maps each typed domain failure once and preserves the request identifier.</p>
+          </div>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">HTTP status is derived by substring-matching service error strings at 32 sites, and one chain tests <span class="font-mono text-xs">conflict</span> before <span class="font-mono text-xs">not_found</span>, so ordering is load-bearing.</dd></div>
+          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Give each domain module a typed expected failure and map those failures through the existing Hono response contract. Do not move domain failure ownership into request admission.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>renaming a code breaks the build</li><li>one body shape for clients</li><li>delete 10 mappers</li><li>prose stops shipping as codes</li></ul></dd></div>
+        </dl>
+        <div class="mt-4 border-l-4 border-red-500 bg-red-50 px-4 py-3 text-sm">
+          <span class="lbl text-red-800">Live inconsistency</span>
+          <p class="mt-1 text-red-900">Nine route sites put five unique English messages in the <span class="font-mono text-xs">error</span> field the browser treats as a stable code, including export readiness, Workflow Run lookup, transcript lookup, and audio-asset validation.</p>
+        </div>
+      </article>
+
+      <!-- ============ C5 ============ -->
+      <article id="c5" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">5. Move domain policy out of the 110-route adapter</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-sm font-mono">done &middot; 2026-09-06</span>
+            <span class="text-xs px-2 py-1 bg-emerald-600 text-white rounded-sm font-medium">Implemented</span>
+            <span class="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-sm font-mono">mixed dependencies</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">apps/web/app/api/[[...route]]/clip-editor-http.ts &middot; packages/services/src/scene-document-mutation.ts</p>
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"><span class="lbl text-emerald-800">Completed</span><p class="mt-1">Scene Block mutation policy now lives behind <span class="font-mono text-xs">analyzeSceneDocumentMutation</span>. The clip PATCH and editor GET, PUT, and reset routes moved into a dependency-injected Hono module with direct interface tests, while preserving the existing HTTP contract and reset behavior. Implemented in <span class="font-mono text-xs">805ee2d</span> and completed in <span class="font-mono text-xs">fd270c8</span>.</p></div>
+
+        <div class="grid md:grid-cols-2 gap-4 mt-6">
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-3">Before &middot; interface mass vs implementation mass</p>
+            <div class="flex items-end gap-3 h-48">
+              <div class="flex-1 flex flex-col justify-end">
+                <div class="bg-red-200 border border-red-500 rounded-t" style="height:80%"></div>
+                <p class="lbl text-center mt-2 text-slate-600">interface<br/>110 routes</p>
+              </div>
+              <div class="flex-1 flex flex-col justify-end">
+                <div class="bg-slate-200 border border-slate-500 rounded-t" style="height:88%"></div>
+                <p class="lbl text-center mt-2 text-slate-600">impl<br/>median 21 lines</p>
+              </div>
+            </div>
+            <p class="text-xs text-slate-500 mt-3">The HTTP interface remains wide after file extraction. The useful gain is locality and a direct route test surface for each domain group.</p>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-3">After &middot; extract along the inventory's own domains</p>
+            <div class="space-y-1 font-mono text-[11px]">
+              <div class="border border-slate-800 rounded px-3 py-1.5 flex justify-between"><span>clip + editor routes</span><span class="text-slate-400">26</span></div>
+              <div class="border border-slate-800 rounded px-3 py-1.5 flex justify-between"><span>campaign + export routes</span><span class="text-slate-400">13</span></div>
+              <div class="border border-slate-800 rounded px-3 py-1.5 flex justify-between"><span>social + oauth routes</span><span class="text-slate-400">12</span></div>
+              <div class="border border-slate-800 rounded px-3 py-1.5 flex justify-between"><span>brand template routes</span><span class="text-slate-400">9</span></div>
+              <div class="border border-slate-800 rounded px-3 py-1.5 flex justify-between"><span>review round routes</span><span class="text-slate-400">8</span></div>
+              <div class="border border-slate-800 rounded px-3 py-1.5 flex justify-between"><span>audio asset routes</span><span class="text-slate-400">7</span></div>
+              <div class="border border-emerald-600 bg-emerald-50 rounded px-3 py-1.5 text-emerald-800">each testable like upload-session-http.ts</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 rounded-lg border border-emerald-300 bg-emerald-50 p-4">
+          <p class="lbl text-emerald-700 mb-2">Completed boundary</p>
+          <div class="font-mono text-[11px] text-emerald-900 space-y-0.5">
+            <div>analyzeSceneDocumentMutation &middot; packages/services</div>
+            <div>changedSceneBlocks &middot; domain result</div>
+            <div>introducedSceneReferences &middot; domain result</div>
+            <div>introducedVisualAssetIds &middot; domain result</div>
+          </div>
+          <p class="text-xs text-emerald-800 mt-2">Scene Block comparisons, entitlement checks, rollout checks, and reference discovery now execute in the shared domain layer. The Hono module translates requests, responses, and typed failures.</p>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Original problem</dt><dd class="mt-1">The single highest-churn file in the web app had no test that exercised a route, and Scene Block mutation policy was embedded in the HTTP adapter.</dd></div>
+          <div><dt class="lbl text-slate-500">Completed scope</dt><dd class="mt-1">The shared domain interface owns Scene Block mutation analysis. A directly testable Hono module owns the clip PATCH and editor GET, PUT, and reset routes without claiming to narrow the HTTP interface.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>the interface becomes the test surface</li><li>domain logic leaves the adapter</li><li>the 160-line PATCH dispatcher gets tests</li><li>locality: churn lands in one module</li></ul></dd></div>
+        </dl>
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm">
+          <span class="lbl text-emerald-800">Verified</span>
+          <p class="mt-1 text-emerald-950">Repository lint, typecheck, fast tests, and the Clip Editor persistence PostgreSQL gate passed. Authenticated Chrome acceptance covered clip-title PATCH plus Scene Block insertion, persistence, deletion, and reload. Final Standards and Spec reviews were clean.</p>
+        </div>
+      </article>
+
+      <!-- ============ C6 ============ -->
+      <article id="c6" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">6. Finish the Actor Scope cutover</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-sm font-mono">done &middot; 2026-09-05</span>
+            <span class="text-xs px-2 py-1 bg-emerald-600 text-white rounded-sm font-medium">Strong</span>
+            <span class="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-sm font-mono">local-substitutable</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">apps/web/app/api/[[...route]]/route.ts &middot; packages/services/src/project.service.ts &middot; clip-editor-document-persistence.ts:1243</p>
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"><span class="lbl text-emerald-800">Completed</span><p class="mt-1">The confirmed Clip Editor Document defect is fixed. Persistence now carries the signed-in actor, Workspace, and Workspace owner as separate facts through reads, revision checks, single saves, and bulk edits. PostgreSQL regressions cover non-owner member saves and bulk edits. Implemented in <span class="font-mono text-xs">226d2ad</span> and hardened in <span class="font-mono text-xs">92d32b3</span>.</p></div>
+
+        <div class="rounded-lg border border-slate-300 bg-white p-4 mt-6">
+          <pre class="mermaid">
+flowchart LR
+  R["browser request"]
+  P["Authenticated Request Policy<br/>resolves full Actor Scope"]
+  H["110 handlers"]
+  S["services"]
+  T[("Project")]
+  R --> P
+  P -->|"actorUserId + workspaceOwnerUserId<br/>role, status, tier"| H
+  H -.->|"workspaceOwnerUserId<br/>69 occurrences, 62 handlers"| S
+  S -->|"getProjectAccess<br/>via Actor Scope"| T
+  S -.->|"{ id, userId }<br/>owner-as-user, ~10 sites"| T
+  S -.->|"accessibleProjectWhere()<br/>present :1661, absent :1143 :1582"| T
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#991b1b;
+  classDef deep fill:#0f172a,color:#fff,stroke:#0f172a;
+  class H,S leak
+  class P deep
+          </pre>
+        </div>
+
+        <div class="mt-4 grid sm:grid-cols-3 gap-px bg-slate-300 border border-slate-300 text-center">
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-red-700">62</div><div class="lbl text-slate-500">handlers with owner-id use</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-red-700">3</div><div class="lbl text-slate-500">Project auth predicates</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-red-700">0</div><div class="lbl text-slate-500">uses of authenticatedHonoProject</div></div>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Original problem</dt><dd class="mt-1">At review time there were 69 owner-id occurrences across 62 handlers. Thirty handlers used only the owner-shaped identity, and Clip Editor Document Persistence mistook the actor for the stored Project owner.</dd></div>
+          <div><dt class="lbl text-slate-500">Completed scope</dt><dd class="mt-1">Persistence now receives explicit actor, Workspace, and Project-owner facts, with member regressions for single saves and bulk edits. The wider migration of owner-shaped service interfaces remains separate follow-up work.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>who acted survives to the service</li><li>one Project access predicate</li><li>retention gate cannot be omitted</li><li>audit trails become possible</li></ul></dd></div>
+        </dl>
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm">
+          <span class="lbl text-emerald-800">Verified</span>
+          <p class="mt-1 text-emerald-950">The persistence unit suite, Clip Editor persistence PostgreSQL gate, Vizard expansion PostgreSQL gate, repository tests, lint, and typecheck pass with the completed Actor Scope change.</p>
+        </div>
+      </article>
+
+
+      <!-- ============ C7 ============ -->
+      <article id="c7" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">7. Split the Studio Editing Session subscription interface</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-amber-500 text-white rounded-sm font-medium">Worth exploring</span>
+            <span class="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-sm font-mono">in-process</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">apps/web/app/(app)/projects/[projectId]/clips/[clipId]/studio/_components/studio-shell.tsx:2130</p>
+        <div class="mt-4 border-l-4 border-amber-500 bg-amber-50 px-4 py-3 text-sm text-amber-950"><span class="lbl text-amber-800">Half of the original finding was false</span><p class="mt-1">The Project page already guards server reads and panel contents by <span class="font-mono text-xs">activeTab</span>. Hidden panels do not mount or poll. The surviving issue is the fresh 132-property Studio context value read by every <span class="font-mono text-xs">useStudio()</span> consumer.</p></div>
+
+        <div class="grid md:grid-cols-2 gap-4 mt-6">
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-3">Rejected claim &middot; hidden panels are guarded</p>
+            <div class="border border-slate-400 rounded overflow-hidden">
+              <div class="flex text-[10px] font-mono border-b border-slate-300">
+                <span class="px-2 py-1 bg-slate-900 text-white">Clips</span>
+                <span class="px-2 py-1 text-slate-400">Repurpose</span>
+                <span class="px-2 py-1 text-slate-400">Publish</span>
+                <span class="px-2 py-1 text-slate-400">Review</span>
+                <span class="px-2 py-1 text-slate-400">+4</span>
+              </div>
+              <div class="p-2 space-y-1">
+                <div class="border border-slate-800 bg-white rounded px-2 py-1 text-[11px] font-mono">ClipsPanel &middot; visible</div>
+                <div class="border border-red-400 bg-red-50 rounded px-2 py-1 text-[11px] font-mono text-red-800">ContentSuitePanel &rarr; GET /content-suite</div>
+                <div class="border border-red-400 bg-red-50 rounded px-2 py-1 text-[11px] font-mono text-red-800">SocialSchedulingPanel &rarr; poll loop</div>
+                <div class="border border-red-400 bg-red-50 rounded px-2 py-1 text-[11px] font-mono text-red-800">ReviewPanel, Analytics, Dubbing, Transcript</div>
+              </div>
+              <div class="border-t border-emerald-600 bg-emerald-50 px-2 py-1.5 text-[11px] font-mono text-emerald-900">activeTab prevents hidden panel effects</div>
+            </div>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-3">After</p>
+            <div class="space-y-2">
+              <div class="border-2 border-slate-800 rounded px-3 py-2 font-mono text-[11px]">Studio facts snapshot</div>
+              <div class="pl-3 border-l-2 border-slate-300 py-1"><div class="border border-slate-800 bg-slate-900 text-white rounded px-3 py-1.5 font-mono text-[11px]">stable document and capability reads</div></div>
+              <div class="border-2 border-slate-800 rounded px-3 py-2 font-mono text-[11px]">live subscriptions</div>
+              <div class="pl-3 border-l-2 border-slate-300 py-1"><div class="border border-slate-800 bg-slate-900 text-white rounded px-3 py-1.5 font-mono text-[11px]">playback, selection, save state</div></div>
+            </div>
+            <p class="text-xs text-slate-500 mt-3">TimelinePlayhead at <span class="font-mono">timeline.tsx:1229</span> already escapes this way with an imperative subscribe. Generalise it.</p>
+          </div>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">Studio rebuilds one 132-property context value, so every <span class="font-mono text-xs">useStudio()</span> consumer shares one broad subscription interface.</dd></div>
+          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Split stable Studio Editing Session snapshots from live subscriptions. Do not add tab lazy-mount work for behavior the page already has.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>live updates reach fewer consumers</li><li>stable facts retain identity</li><li>playback seam already proves the shape</li><li>tests target subscription behavior</li></ul></dd></div>
+        </dl>
+      </article>
+
+      <!-- ============ C8 ============ -->
+      <article id="c8" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">8. One process module for the worker</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-emerald-600 text-white rounded-sm font-medium">Strong</span>
+            <span class="text-xs px-2 py-1 bg-emerald-100 text-emerald-800 rounded-sm font-mono">completed</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">apps/worker/src/worker-process.ts &middot; docs/adr/0011-worker-process-module.md</p>
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"><span class="lbl text-emerald-800">Completed</span><p class="mt-1">Implemented in <span class="font-mono text-xs">6f0eba4</span>, hardened in <span class="font-mono text-xs">5b78cfc</span> and <span class="font-mono text-xs">29a559f</span>. One Worker Process Module now owns process groups, deadlines, cancellation, TERM-to-KILL escalation, descendant reaping, bounded output and diagnostics, media inspection, and non-masking scratch cleanup across render, preview, transcription, dubbing, ingest, auto-layout, and export. The worker suite, repository gates, authenticated Chrome verification, and final Standards and Spec reviews passed.</p></div>
+
+        <div class="rounded-lg border border-slate-300 bg-white p-4 mt-6">
+          <pre class="mermaid">
+flowchart LR
+  A["render-process-adapter<br/>kills process groups"]
+  B["clip-preview: execCommand"]
+  C["transcribe: execCommand"]
+  D["dubbing: execCommand"]
+  E["ingest: execCommand"]
+  F["auto-layout: runOutput"]
+  S(("spawn()"))
+  A --> S
+  B -.-> S
+  C -.-> S
+  D -.-> S
+  E -.-> S
+  F -.-> S
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#991b1b;
+  classDef deep fill:#0f172a,color:#fff,stroke:#0f172a;
+  class B,C,D,E,F leak
+  class A deep
+          </pre>
+        </div>
+
+        <div class="mt-4 grid sm:grid-cols-4 gap-px bg-slate-300 border border-slate-300 text-center">
+          <div class="bg-white py-3"><div class="font-mono text-2xl">6</div><div class="lbl text-slate-500">spawn wrappers</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl">4</div><div class="lbl text-slate-500">named execCommand</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl">7</div><div class="lbl text-slate-500">ffprobe parsers</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl">9</div><div class="lbl text-slate-500">temp dir owners</div></div>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">Only one of six process-execution clusters owns process groups. The other five can leave descendants running after timeout or Workflow Attempt cancellation, and seven of nine scratch cleanups can replace the causal error.</dd></div>
+          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Promote <span class="font-mono text-xs">render-process-adapter.ts</span> to the one process module, with scratch directory lifetime and ffprobe reading behind the same interface.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>no orphaned FFmpeg children</li><li>cleanup stops masking real errors</li><li>two adapters justify the seam: spawn, fake</li><li>dubbing becomes testable</li></ul></dd></div>
+        </dl>
+        <div class="mt-4 border-l-4 border-red-500 bg-red-50 px-4 py-3 text-sm">
+          <span class="lbl text-red-800">Concrete failure</span>
+          <p class="mt-1 text-red-900"><span class="font-mono text-xs">ingest.ts:597</span> awaits a bare <span class="font-mono text-xs">rm</span> in the <span class="font-mono text-xs">finally</span> of the yt-dlp download path. An EBUSY there discards the real download failure, and the classifier then sees a filesystem error where an ingest error should be.</p>
+        </div>
+      </article>
+
+      <!-- ============ C9 ============ -->
+      <article id="c9" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">9. Copy cleanup, reclassified outside architecture</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-slate-500 text-white rounded-sm font-medium">Product cleanup</span>
+            <span class="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-sm font-mono">in-process</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">packages/ui/src/components/page-header.tsx &middot; 26 app-surface uses in 25 files &middot; packages/validators/src/error-messages.ts</p>
+        <div class="mt-4 border-l-4 border-slate-400 bg-slate-100 px-4 py-3 text-sm text-slate-800"><span class="lbl text-slate-600">Not a deepening candidate</span><p class="mt-1">PageHeader passes the deletion test because removing it spreads Blueline structure across callers. The app surface has 26 PageHeader uses in 25 files, and all provide eyebrow, title, and description. Keep this as a separate copy and UX pass.</p></div>
+
+        <div class="grid md:grid-cols-2 gap-4 mt-6">
+          <div class="rounded-lg border border-red-300 bg-white p-4">
+            <p class="lbl text-red-700 mb-3">Before &middot; /settings/profile</p>
+            <div class="grid-bg border border-slate-300 rounded p-4">
+              <p class="lbl text-slate-400">Your account</p>
+              <p class="font-serif text-2xl mt-1">Profile</p>
+              <p class="text-sm text-slate-500 mt-1">Your personal identity across every Narriflow workspace.</p>
+            </div>
+            <p class="text-xs text-red-700 mt-3">Three labels for one page. The sidebar already says Profile, and the eyebrow says the same word as the section it sits in.</p>
+            <p class="lbl text-red-700 mt-4 mb-2">And the worst toast in the app</p>
+            <div class="border border-slate-300 rounded p-3 bg-slate-50">
+              <p class="text-sm font-medium">One word at a time</p>
+              <p class="text-xs text-slate-500 mt-0.5">One word at a time here, edit the caption text for bigger changes.</p>
+            </div>
+            <p class="text-xs text-red-700 mt-2 font-mono">transcript-panel.tsx:254</p>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4">
+            <p class="lbl text-slate-500 mb-3">After</p>
+            <div class="grid-bg border border-slate-300 rounded p-4">
+              <p class="font-serif text-2xl">Profile</p>
+            </div>
+            <div class="mt-4 space-y-2 text-[11px] font-mono">
+              <div class="border border-slate-800 rounded px-3 py-1.5 flex justify-between"><span>eyebrow</span><span class="text-slate-500">dynamic context only</span></div>
+              <div class="border border-slate-800 rounded px-3 py-1.5 flex justify-between"><span>title</span><span class="text-slate-500">required</span></div>
+              <div class="border border-slate-800 rounded px-3 py-1.5 flex justify-between"><span>description</span><span class="text-slate-500">only if it adds a fact</span></div>
+            </div>
+            <p class="text-xs text-slate-500 mt-3">The interface already makes the third slot optional at <span class="font-mono">page-header.tsx:13-20</span>. Nobody takes the option.</p>
+          </div>
+        </div>
+
+        <div class="mt-4 grid sm:grid-cols-4 gap-px bg-slate-300 border border-slate-300 text-center">
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-red-700">26/26</div><div class="lbl text-slate-500">app PageHeaders with all three</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-red-700">327</div><div class="lbl text-slate-500">eyebrow labels</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-red-700">88</div><div class="lbl text-slate-500">toaster.create calls</div></div>
+          <div class="bg-white py-3"><div class="font-mono text-2xl text-red-700">4</div><div class="lbl text-slate-500">window.confirm</div></div>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">Almost every screen ships an eyebrow, a title, and a description where the title alone carries the meaning, and the error copy leaks internal nouns like Editor Document and publishing adapter to end users.</dd></div>
+          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Delete the description on the pages the sidebar already names, reserve the eyebrow for dynamic context, and give the copy one voice rule in CONTEXT.md.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>one mechanical pass, ~30 files</li><li>the interface stops inviting slop</li><li>error copy stops naming internals</li><li>voice rule is checkable</li></ul></dd></div>
+        </dl>
+        <div class="mt-4 border-l-4 border-slate-400 bg-slate-100 px-4 py-3 text-sm">
+          <span class="lbl text-slate-600">Already consistent, leave alone</span>
+          <p class="mt-1 text-slate-700">All 54 descriptions end with a period. All 74 toast titles do not. Both conventions are right. Write them down rather than re-deciding them.</p>
+        </div>
+      </article>
+
+      <!-- ============ C10 ============ -->
+      <article id="c10" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">10. Repair claim loss without a generic Claim module</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-sm font-mono">done &middot; 2026-09-07</span>
+            <span class="text-xs px-2 py-1 bg-emerald-600 text-white rounded-sm font-medium">Implemented</span>
+            <span class="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-sm font-mono">mixed dependencies</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">packages/services/src/{workflow-run-lifecycle, social-publication-attempt, media-cleanup, upload-session.service, workspace-billing.service, campaign-operation.service, notification.service, review-notification.service, autopilot.service}.ts</p>
+        <div class="mt-4 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"><span class="lbl text-emerald-800">Completed</span><p class="mt-1">Implemented in <span class="font-mono text-xs">3049993</span>. Notification and Review Notification now report rejected settlements, Autopilot uses immutable claim tokens with fenced settlement and renewal, and Campaign Operation reports claim loss through its existing domain error with one lease-duration constant. The Autopilot migration is applied. Lint, typecheck, fast tests, the relevant PostgreSQL gates, and final Standards and Spec reviews passed.</p></div>
+
+        <div class="mt-6 rounded border border-slate-300 bg-white overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead class="bg-slate-100 text-slate-600"><tr><th class="text-left px-3 py-2">owner</th><th class="text-left px-3 py-2 font-mono">lease constant</th><th class="text-left px-3 py-2 font-mono">lost-claim error</th></tr></thead>
+            <tbody class="divide-y divide-slate-200 font-mono text-[11px]">
+              <tr><td class="px-3 py-1.5">Workflow Attempt</td><td class="px-3 py-1.5">WORKFLOW_LEASE_DURATION_MS</td><td class="px-3 py-1.5">WorkflowAttemptLost</td></tr>
+              <tr><td class="px-3 py-1.5">Publication Claim</td><td class="px-3 py-1.5 text-slate-500">inline input.leaseMs</td><td class="px-3 py-1.5">PublicationClaimLostError</td></tr>
+              <tr><td class="px-3 py-1.5">Media Cleanup</td><td class="px-3 py-1.5">config.leaseMs</td><td class="px-3 py-1.5">MediaCleanupClaimLost</td></tr>
+              <tr><td class="px-3 py-1.5">Durable media copy</td><td class="px-3 py-1.5">input.leaseMs</td><td class="px-3 py-1.5">DurableMediaCopyClaimLost</td></tr>
+              <tr><td class="px-3 py-1.5">Upload Session</td><td class="px-3 py-1.5 text-slate-400">none</td><td class="px-3 py-1.5">UploadSessionAdmissionClaimLostError</td></tr>
+              <tr><td class="px-3 py-1.5">Workspace Billing</td><td class="px-3 py-1.5 text-slate-400">none</td><td class="px-3 py-1.5">WorkspaceBillingAttemptLost</td></tr>
+              <tr class="bg-emerald-50"><td class="px-3 py-1.5">Campaign Operation</td><td class="px-3 py-1.5 text-emerald-800">CAMPAIGN_OPERATION_LEASE_MS</td><td class="px-3 py-1.5 text-emerald-800">campaign_operation_claim_lost</td></tr>
+              <tr class="bg-emerald-50"><td class="px-3 py-1.5">Notification</td><td class="px-3 py-1.5">NOTIFICATION_LEASE_MS</td><td class="px-3 py-1.5 text-emerald-800">notification_claim_lost</td></tr>
+              <tr class="bg-emerald-50"><td class="px-3 py-1.5">Review notification</td><td class="px-3 py-1.5">REVIEW_NOTIFICATION_LEASE_MS</td><td class="px-3 py-1.5 text-emerald-800">review_notification_claim_lost</td></tr>
+              <tr class="bg-emerald-50"><td class="px-3 py-1.5">Autopilot</td><td class="px-3 py-1.5">AUTOPILOT_LEASE_MS</td><td class="px-3 py-1.5 text-emerald-800">AutopilotClaimLost</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">Four owners mishandle claim loss. Notification and Review notification ignore fenced settlement results, Autopilot lacks an immutable claim token, and Campaign Operation has inconsistent claim-loss handling.</dd></div>
+          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Repair those four owners through their existing interfaces. Share only private compare-and-set mechanics if repetition remains after the behavior is correct.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>losing a claim is never silent</li><li>one heartbeat rule to test</li><li>notification.service pairs collapse</li><li>leverage: one protocol, ten owners</li></ul></dd></div>
+        </dl>
+        <div class="mt-4 border-l-4 border-amber-500 bg-amber-50 px-4 py-3 text-sm">
+          <span class="lbl text-amber-800">Deletion test failed</span>
+          <p class="mt-1 text-amber-900">A shared module would need table shape, eligibility, renewal, settlement, diagnostics, and side-effect configuration. Deleting it would mostly move those facts back to the current owners, the signature of a shallow module.</p>
+        </div>
+      </article>
+
+      <!-- ============ C11 ============ -->
+      <article id="c11" class="scroll-mt-8">
+        <div class="flex items-baseline justify-between gap-4 flex-wrap">
+          <h2 class="font-serif text-2xl tracking-tight">11. Give Brand Profile ownership of style editing</h2>
+          <div class="flex gap-2 shrink-0">
+            <span class="text-xs px-2 py-1 bg-amber-500 text-white rounded-sm font-medium">Worth exploring</span>
+            <span class="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-sm font-mono">in-process</span>
+          </div>
+        </div>
+        <p class="font-mono text-sm text-slate-500 mt-2">apps/web/app/(app)/{brand-kit, settings/brand-templates, settings/social, settings/social-accounts, dashboard}</p>
+        <div class="mt-4 border-l-4 border-amber-500 bg-amber-50 px-4 py-3 text-sm text-amber-950"><span class="lbl text-amber-800">Split before acting</span><p class="mt-1">Brand Profile navigation ownership is real. The social re-export and dashboard alias are separate pass-through cleanups. The Brand Template route is reachable, its 1,166 lines do not need to move, and route-level loading fallbacks are obsolete rather than provably unreachable.</p></div>
+
+        <div class="rounded-lg border border-slate-300 bg-white p-4 mt-6">
+          <pre class="mermaid">
+flowchart LR
+  N["settings nav"]
+  SA["/settings/social-accounts<br/>one-line re-export"]
+  SO["/settings/social<br/>+ purpose-built loading.tsx"]
+  BK["/brand-kit<br/>Brand Profiles"]
+  BT["/settings/brand-templates<br/>not in nav"]
+  D["/dashboard<br/>permanentRedirect"]
+  H["/home"]
+  DL["dashboard/loading.tsx<br/>65 lines"]
+  N --> SA
+  SA -->|"re-exports"| SO
+  SO -.->|"its loading.tsx never renders"| SO
+  BK -->|"Edit style"| BT
+  BT -->|"tab bar links back"| BK
+  D --> H
+  D -.-> DL
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#991b1b;
+  class SO,BT,DL leak
+          </pre>
+        </div>
+
+        <dl class="mt-6 space-y-3 text-sm">
+          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">CONTEXT.md says a Brand Template is a style preset inside a Brand Profile, and lists Brand Template under Avoid for Brand Profile, but the app still ships both as top-level destinations that link in a circle.</dd></div>
+          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Give Brand Profile ownership of the editing destination while reusing the existing gallery and form modules. Handle the social re-export and dashboard alias as two independent deletions.</dd></div>
+          <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>one destination per concept</li><li>1,166 lines of gallery and form move</li><li>skeletons render where written</li><li>UI matches the domain language</li></ul></dd></div>
+        </dl>
+      </article>
+
+      </section>
+
+      <section id="smaller" class="border-t border-slate-300 pt-10">
+        <h2 class="font-serif text-2xl tracking-tight">Smaller observations, resolved</h2>
+        <p class="mt-2 text-sm text-slate-600">Updated 7 September 2026. These cards show the current fixes rather than the original findings.</p>
+        <div class="mt-6 grid sm:grid-cols-2 gap-4">
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Route inventory and Clerk protection</p><p class="text-sm mt-2">discovery follows all mounted Hono route modules and compares both directions with the inventory. Clerk protects upload-sessions and the current authenticated resource prefixes.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Guest review trust interface</p><p class="text-sm mt-2">explicit method/path inventory and direct route tests cover origin checks, session admission, unknown/trailing paths, invalid JSON, and a streaming 32 KiB body limit. Existing database tests cover guest session replay, media isolation, and concurrent decisions.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Error logs</p><p class="text-sm mt-2">production console.error sites now use structured console.warn JSON. New boundary logs retain useful IDs/status and omit arbitrary response bodies.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Dead exports</p><p class="text-sm mt-2">removed sliceTranscriptForClip, applySpeakerLayoutOverridesToSegments, authenticatedHonoProject, and tests whose only purpose was to keep dead helpers alive.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Glossary / ADR count</p><p class="text-sm mt-2">docs/adr/README.md indexes all eleven decisions, links the glossary, and records the criteria for adding an ADR. AGENTS.md points to this guide.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Service filename suffixes</p><p class="text-sm mt-2">renamed generated-media, assisted-social-copy, bulk-social-scheduling, and thumbnail-frame-preparation production modules to *-runtime.ts and updated every import. AGENTS.md now distinguishes production wiring from domain and service implementations.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · UI barrel</p><p class="text-sm mt-2">migrated the remaining root imports to component paths and deleted the unused barrel and root package export.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Dubbing interface coverage</p><p class="text-sm mt-2">direct worker tests cover empty work, ownership loss, individual dub failure, aggregate failure, and cleanup. The database gate directly tests request admission, render readiness, tier policy, queue idempotency, and completed reuse. Those tests caught and fixed Business-plan rejection through the shared entitlement matrix.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Keyboard trimming</p><p class="text-sm mt-2">focusable sliders support 0.1-second arrow steps and 1-second Shift steps, shared pointer/keyboard bounds, and word snapping. Browser checks confirmed cloud save, undo, and persistence after reopening Studio.</p></div>
+<div class="border border-emerald-300 bg-emerald-50 rounded-lg p-4"><p class="lbl text-emerald-800">Completed · Turbo outputs</p><p class="text-sm mt-2">removed the coverage output contract from normal test tasks, which produce no coverage directory.</p></div>
+        </div>
+      </section>
+
+      <section id="top-recommendation" class="border-t-2 border-slate-900 pt-10">
+        <p class="lbl text-emerald-700">Completed</p>
+        <div class="mt-4 rounded-lg border-2 border-emerald-700 bg-white overflow-hidden">
+          <div class="bg-emerald-700 text-white px-6 py-4">
+            <h2 class="font-serif text-2xl tracking-tight">Move the last composition decisions into the Clip Composition Plan</h2>
+            <p class="text-sm text-emerald-100 mt-1">Candidate 2 &middot; Implemented</p>
+          </div>
+          <div class="px-6 py-5 space-y-3 text-sm">
+            <p>This is a confirmed user-visible parity defect. FFmpeg <span class="font-mono text-xs">drawtext</span> does no automatic line wrapping and the adapter emits one unwrapped <span class="font-mono text-xs">text=</span>, while the preview wraps within 82% and <span class="font-mono text-xs">sceneContentSchema</span> allows 500 characters. Long cards can silently overflow the export. Existing tests prove translation and liveness, not fitted visual parity.</p>
+            <p>The change is bounded but not one field. The plan needs fitted lines, font size, line height, and maximum width, plus fixtures that both adapters translate. Plans are ephemeral, so no database migration is needed. A required interface change still deserves an explicit plan-version decision.</p>
+            <p>It also restores the seam ADR-0004 already chose. The Clip Composition Plan owns geometry policy; Studio and FFmpeg translate it.</p>
+            <p class="text-slate-600 border-l-2 border-slate-300 pl-3">Design settled in a follow-up session. Two items originally filed here turned out not to be leaks and were dropped: fps is a render-time ffprobe fact, and <span class="font-mono text-xs">baseOnlyTarget</span> coalescing is a filter-graph optimisation with identical pixels. See the Clip Composition Plan entry in CONTEXT.md.</p>
+            <p class="border-l-2 border-emerald-500 bg-emerald-50 px-3 py-2 text-emerald-950">Completed in <span class="font-mono text-xs">8cfa26d</span>, <span class="font-mono text-xs">9626200</span>, and <span class="font-mono text-xs">ce87b87</span>. The final Standards and Spec reviews reported no findings.</p>
+            <p class="pt-2"><a href="#c2" class="text-indigo-700 underline underline-offset-4">Go to completed candidate 2</a></p>
+          </div>
+        </div>
+        <div class="mt-6 grid sm:grid-cols-3 gap-4 text-sm">
+          <div class="border border-emerald-300 rounded-lg p-4 bg-emerald-50"><p class="lbl text-emerald-700">Completed</p><p class="mt-1"><a href="#c6" class="text-indigo-700 underline underline-offset-4">Candidate 6</a> fixed the non-owner Clip Editor Document defect and added its database regression coverage.</p></div>
+          <div class="border border-emerald-300 rounded-lg p-4 bg-emerald-50"><p class="lbl text-emerald-700">Completed</p><p class="mt-1"><a href="#c3" class="text-indigo-700 underline underline-offset-4">Candidate 3</a> removed the dual protocol and made one explicit Workflow Attempt lifecycle the sole Workflow Run write boundary.</p></div>
+          <div class="border border-slate-300 rounded-lg p-4 bg-white"><p class="lbl text-slate-500">Separate backlog</p><p class="mt-1"><a href="#c9" class="text-indigo-700 underline underline-offset-4">Candidate 9</a> is a product copy pass, not an architecture recommendation.</p></div>
+        </div>
+      </section>
+        </div>
+      </details>
+    </main>
+  </body>
+</html>

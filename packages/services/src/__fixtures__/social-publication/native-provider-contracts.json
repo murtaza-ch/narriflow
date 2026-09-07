@@ -1,0 +1,33 @@
+{
+  "instagram": {
+    "account": { "id": "instagram-user-1" },
+    "withinLimit": { "data": [{ "quota_usage": 1, "config": { "quota_total": 50 } }] },
+    "atLimit": { "data": [{ "quota_usage": 50, "config": { "quota_total": 50 } }] }
+  },
+  "tiktok": {
+    "providerDisabled": {
+      "data": {
+        "creator_username": "creator",
+        "privacy_level_options": ["PUBLIC_TO_EVERYONE"],
+        "comment_disabled": true,
+        "duet_disabled": true,
+        "stitch_disabled": true
+      }
+    },
+    "rateFailure": {
+      "data": {
+        "status": "FAILED",
+        "fail_reason": "spam_risk_too_many_posts"
+      }
+    }
+  },
+  "linkedin": {
+    "processing": { "status": "PROCESSING" },
+    "available": { "status": "AVAILABLE" },
+    "failed": { "status": "PROCESSING_FAILED" }
+  },
+  "x": {
+    "processing": { "data": { "processing_info": { "state": "in_progress", "check_after_secs": 7 } } },
+    "failed": { "data": { "processing_info": { "state": "failed" } } }
+  }
+}

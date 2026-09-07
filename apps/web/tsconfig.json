@@ -19,5 +19,12 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.browser.fixture.tsx",
+    "**/*.focus.fixture.tsx",
+    "scripts"
+  ]
 }

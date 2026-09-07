@@ -4,11 +4,16 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useSignIn } from "@clerk/nextjs";
-import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
+import { Spinner } from "@narriflow/ui/components/spinner";
 import { LabeledDivider } from "@narriflow/ui/components/divider";
+import { AuthHeader } from "../../../components/auth-shell";
+import { OAuthButtonRow, type OAuthStrategy } from "../../_components/oauth-buttons";
+import { PasswordInput } from "../../_components/password-input";
+import { FormError } from "../../_components/form-error";
 import { getClerkErrorMessage } from "../../_lib/clerk-error";
 
 export default function SignInPage() {
@@ -18,12 +23,20 @@ export default function SignInPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [oauthLoading, setOauthLoading] = useState<string | null>(null);
+  const [oauthLoading, setOauthLoading] = useState<OAuthStrategy | null>(null);
 
   const canSubmit = useMemo(
     () => isLoaded && email.trim().length > 0 && password.trim().length > 0 && !submitting,
     [isLoaded, email, password, submitting],
   );
+
+  function postAuthRedirect() {
+    const redirectUrl = new URLSearchParams(window.location.search).get("redirect_url");
+    if (!redirectUrl) return "/onboarding";
+    const continueUrl = new URL("/auth/continue", window.location.origin);
+    continueUrl.searchParams.set("redirect_url", redirectUrl);
+    return `${continueUrl.pathname}${continueUrl.search}`;
+  }
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,7 +52,7 @@ export default function SignInPage() {
         return;
       }
       await setActive({ session: result.createdSessionId });
-      router.push("/onboarding");
+      router.push(postAuthRedirect());
     } catch (authError) {
       setError(getClerkErrorMessage(authError, "Authentication failed. Please try again."));
     } finally {
@@ -47,7 +60,7 @@ export default function SignInPage() {
     }
   }
 
-  async function onOAuthSignIn(strategy: "oauth_google" | "oauth_facebook" | "oauth_microsoft") {
+  async function onOAuthSignIn(strategy: OAuthStrategy) {
     if (!isLoaded || !signIn) return;
 
     setError(null);
@@ -57,7 +70,7 @@ export default function SignInPage() {
       await signIn.authenticateWithRedirect({
         strategy,
         redirectUrl: "/sso-callback",
-        redirectUrlComplete: "/onboarding",
+        redirectUrlComplete: postAuthRedirect(),
       });
     } catch (authError) {
       setError(getClerkErrorMessage(authError, "Authentication failed. Please try again."));
@@ -66,20 +79,28 @@ export default function SignInPage() {
   }
 
   return (
-    <Stack gap="24px">
-      <Stack gap="4px" textAlign="center">
-        <Heading size="lg" fontWeight="600" letterSpacing="-0.02em">
-          Sign in to your account
-        </Heading>
-        <Text fontSize="13px" color="fg.muted">
-          Welcome back. Enter your credentials to continue.
-        </Text>
+    <Stack gap="7">
+      <AuthHeader
+        eyebrow="Welcome back"
+        title="Sign in to Narriflow"
+      />
+
+      <Stack gap="5">
+        <OAuthButtonRow
+          pending={oauthLoading}
+          disabled={!isLoaded || submitting}
+          onSelect={onOAuthSignIn}
+        />
+
+        <LabeledDivider label="or" />
       </Stack>
 
       <form onSubmit={onSubmit}>
-        <Stack gap="16px">
-          <Stack gap="6px">
-            <Label htmlFor="email">Email</Label>
+        <Stack gap="4">
+          <Stack gap="1.5">
+            <Label htmlFor="email" fontSize="13px" fontWeight="500">
+              Email
+            </Label>
             <Input
               autoComplete="email"
               id="email"
@@ -91,74 +112,77 @@ export default function SignInPage() {
               value={email}
             />
           </Stack>
-          <Stack gap="6px">
+          <Stack gap="1.5">
             <Flex align="center" justify="space-between">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password" fontSize="13px" fontWeight="500">
+                Password
+              </Label>
               <Link href="/forgot-password">
-                <Text fontSize="12px" color="fg.muted" _hover={{ color: "fg" }} transition="color 150ms ease">
+                <Text
+                  as="span"
+                  fontSize="12px"
+                  color="fg.muted"
+                  textDecoration="underline"
+                  textUnderlineOffset="3px"
+                  textDecorationColor="border.emphasized"
+                  transition="color 120ms ease"
+                  _hover={{ color: "fg" }}
+                >
                   Forgot password?
                 </Text>
               </Link>
             </Flex>
-            <Input
+            <PasswordInput
               autoComplete="current-password"
               id="password"
               name="password"
               onChange={(event) => setPassword(event.target.value)}
               required
-              type="password"
               value={password}
             />
           </Stack>
 
-          {error && <Text fontSize="13px" color="danger.fg">{error}</Text>}
+          <FormError message={error} />
 
           <Button width="full" disabled={!canSubmit} type="submit">
-            {submitting ? "Signing in..." : "Sign in"}
+            {submitting ? (
+              <>
+                <Spinner size="xs" borderTopColor="accent.contrast" />
+                Signing in…
+              </>
+            ) : (
+              "Sign in"
+            )}
           </Button>
         </Stack>
       </form>
 
-      <LabeledDivider label="or continue with" />
-
-      <Stack gap="8px">
-        <Button
-          disabled={Boolean(oauthLoading)}
-          onClick={() => onOAuthSignIn("oauth_google")}
-          type="button"
-          variant="outline"
-          w="full"
-        >
-          {oauthLoading === "oauth_google" ? "Connecting..." : "Google"}
-        </Button>
-        <Button
-          disabled={Boolean(oauthLoading)}
-          onClick={() => onOAuthSignIn("oauth_facebook")}
-          type="button"
-          variant="outline"
-          w="full"
-        >
-          {oauthLoading === "oauth_facebook" ? "Connecting..." : "Facebook"}
-        </Button>
-        <Button
-          disabled={Boolean(oauthLoading)}
-          onClick={() => onOAuthSignIn("oauth_microsoft")}
-          type="button"
-          variant="outline"
-          w="full"
-        >
-          {oauthLoading === "oauth_microsoft" ? "Connecting..." : "Microsoft"}
-        </Button>
-      </Stack>
-
-      <Text textAlign="center" fontSize="13px" color="fg.muted">
-        New to Narriflow?{" "}
+      <Flex
+        align="center"
+        justify="space-between"
+        pt="4"
+        borderTopWidth="1px"
+        borderTopColor="border.subtle"
+      >
+        <Text fontSize="13px" color="fg.muted">
+          New to Narriflow?
+        </Text>
         <Link href="/sign-up">
-          <Box as="span" fontWeight="500" color="fg.accent" _hover={{ textDecoration: "underline" }}>
+          <Box
+            as="span"
+            fontSize="13px"
+            fontWeight="500"
+            color="fg"
+            textDecoration="underline"
+            textUnderlineOffset="3px"
+            textDecorationColor="border.emphasized"
+            transition="text-decoration-color 120ms ease"
+            _hover={{ textDecorationColor: "fg" }}
+          >
             Create an account
           </Box>
         </Link>
-      </Text>
+      </Flex>
     </Stack>
   );
 }

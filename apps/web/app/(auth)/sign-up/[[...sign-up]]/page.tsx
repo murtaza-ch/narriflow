@@ -4,43 +4,44 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useSignUp } from "@clerk/nextjs";
-import { Box, Flex, Heading, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { OTPInput } from "@narriflow/ui/components/otp-input";
 import { LabeledDivider } from "@narriflow/ui/components/divider";
+import { AuthHeader } from "../../../components/auth-shell";
+import { OAuthButtonRow, type OAuthStrategy } from "../../_components/oauth-buttons";
+import { PasswordInput } from "../../_components/password-input";
+import { FormError } from "../../_components/form-error";
+import { ResendButton } from "../../_components/resend-button";
 import { getClerkErrorMessage } from "../../_lib/clerk-error";
+
+const CODE_LENGTH = 6;
 
 export default function SignUpPage() {
   const router = useRouter();
   const { isLoaded, signUp, setActive } = useSignUp();
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
   const [awaitingVerification, setAwaitingVerification] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [oauthLoading, setOauthLoading] = useState<string | null>(null);
+  const [oauthLoading, setOauthLoading] = useState<OAuthStrategy | null>(null);
 
   async function onCreateAccount(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!isLoaded || !signUp) return;
 
-    if (password !== confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-
     setSubmitting(true);
     setError(null);
 
     try {
+      // Names are collected later, during onboarding — the sign-up card
+      // stays a two-field form.
       await signUp.create({
-        firstName: firstName.trim() || undefined,
-        lastName: lastName.trim() || undefined,
         emailAddress: email.trim(),
         password,
       });
@@ -53,16 +54,15 @@ export default function SignUpPage() {
     }
   }
 
-  async function onVerifyEmail(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!isLoaded || !signUp) return;
+  async function verifyCode(code: string) {
+    if (!isLoaded || !signUp || submitting) return;
 
     setSubmitting(true);
     setError(null);
 
     try {
       const result = await signUp.attemptEmailAddressVerification({
-        code: verificationCode.trim(),
+        code: code.trim(),
       });
       if (result.status !== "complete") {
         setError("Verification is incomplete. Please enter the latest code.");
@@ -77,22 +77,26 @@ export default function SignUpPage() {
     }
   }
 
-  async function onResendCode() {
-    if (!isLoaded || !signUp) return;
+  async function onVerifyEmail(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await verifyCode(verificationCode);
+  }
 
-    setSubmitting(true);
+  async function onResendCode(): Promise<boolean> {
+    if (!isLoaded || !signUp) return false;
+
     setError(null);
 
     try {
       await signUp.prepareEmailAddressVerification({ strategy: "email_code" });
+      return true;
     } catch (authError) {
       setError(getClerkErrorMessage(authError, "Unable to resend code. Please try again."));
-    } finally {
-      setSubmitting(false);
+      return false;
     }
   }
 
-  async function onOAuthSignUp(strategy: "oauth_google" | "oauth_facebook" | "oauth_microsoft") {
+  async function onOAuthSignUp(strategy: OAuthStrategy) {
     if (!isLoaded || !signUp) return;
 
     setError(null);
@@ -111,80 +115,77 @@ export default function SignUpPage() {
   }
 
   return (
-    <Stack gap="24px">
-      <Stack gap="4px" textAlign="center">
-        <Heading size="lg" fontWeight="600" letterSpacing="-0.02em">
-          {awaitingVerification ? "Verify your email" : "Create your account"}
-        </Heading>
-        <Text fontSize="13px" color="fg.muted">
-          {awaitingVerification
-            ? "Enter the code we sent to your email."
-            : "Start turning long-form content into social-ready assets."}
-        </Text>
-      </Stack>
+    <Stack gap="7">
+      <AuthHeader
+        eyebrow={awaitingVerification ? "Check your inbox" : "Create account"}
+        title={awaitingVerification ? "Verify your email" : "Start clipping"}
+        description={
+          awaitingVerification ? (
+            <>
+              We sent a {CODE_LENGTH}-digit code to{" "}
+              <Box as="span" fontWeight="500" color="fg">
+                {email}
+              </Box>
+              .
+            </>
+          ) : (
+            "Clip your first upload in minutes."
+          )
+        }
+      />
 
       {awaitingVerification ? (
         <form onSubmit={onVerifyEmail}>
-          <Stack gap="16px">
-            <Stack gap="6px">
-              <Label htmlFor="verificationCode">Verification code</Label>
-              <Input
-                autoComplete="one-time-code"
-                id="verificationCode"
-                name="verificationCode"
-                onChange={(event) => setVerificationCode(event.target.value)}
-                placeholder="Enter code from your email"
-                required
+          <Stack gap="4" animation="fade-up">
+            <Flex justify="center" py="2">
+              <OTPInput
+                length={CODE_LENGTH}
                 value={verificationCode}
+                onValueChange={setVerificationCode}
+                onComplete={(code) => void verifyCode(code)}
+                autoFocus
+                disabled={submitting}
               />
-              <Text fontSize="12px" color="fg.muted">
-                We sent a code to <Box as="span" fontWeight="500" color="fg">{email}</Box>.
-              </Text>
-            </Stack>
-
-            {error && <Text fontSize="13px" color="danger.fg">{error}</Text>}
-
-            <Flex gap="8px">
-              <Button flex="1" disabled={submitting || verificationCode.trim().length === 0} type="submit">
-                {submitting ? "Verifying..." : "Verify email"}
-              </Button>
-              <Button disabled={submitting} onClick={onResendCode} type="button" variant="outline">
-                Resend
-              </Button>
             </Flex>
+
+            <FormError message={error} />
+
+            <Button
+              width="full"
+              disabled={submitting || verificationCode.trim().length < CODE_LENGTH}
+              type="submit"
+            >
+              {submitting ? (
+                <>
+                  <Spinner size="xs" borderTopColor="accent.contrast" />
+                  Verifying…
+                </>
+              ) : (
+                "Verify email"
+              )}
+            </Button>
+
+            <ResendButton onResend={onResendCode} disabled={submitting} />
           </Stack>
         </form>
       ) : (
-        <>
-          <form onSubmit={onCreateAccount}>
-            <Stack gap="16px">
-              <SimpleGrid columns={{ base: 1, sm: 2 }} gap="16px">
-                <Stack gap="6px">
-                  <Label htmlFor="firstName">First name</Label>
-                  <Input
-                    autoComplete="given-name"
-                    id="firstName"
-                    name="firstName"
-                    onChange={(event) => setFirstName(event.target.value)}
-                    type="text"
-                    value={firstName}
-                  />
-                </Stack>
-                <Stack gap="6px">
-                  <Label htmlFor="lastName">Last name</Label>
-                  <Input
-                    autoComplete="family-name"
-                    id="lastName"
-                    name="lastName"
-                    onChange={(event) => setLastName(event.target.value)}
-                    type="text"
-                    value={lastName}
-                  />
-                </Stack>
-              </SimpleGrid>
+        <Stack gap="7" animation="fade-up">
+          <Stack gap="5">
+            <OAuthButtonRow
+              pending={oauthLoading}
+              disabled={!isLoaded || submitting}
+              onSelect={onOAuthSignUp}
+            />
 
-              <Stack gap="6px">
-                <Label htmlFor="email">Email</Label>
+            <LabeledDivider label="or" />
+          </Stack>
+
+          <form onSubmit={onCreateAccount}>
+            <Stack gap="4">
+              <Stack gap="1.5">
+                <Label htmlFor="email" fontSize="13px" fontWeight="500">
+                  Email
+                </Label>
                 <Input
                   autoComplete="email"
                   id="email"
@@ -197,88 +198,72 @@ export default function SignUpPage() {
                 />
               </Stack>
 
-              <Stack gap="6px">
-                <Label htmlFor="password">Password</Label>
-                <Input
+              <Stack gap="1.5">
+                <Label htmlFor="password" fontSize="13px" fontWeight="500">
+                  Password
+                </Label>
+                <PasswordInput
                   autoComplete="new-password"
                   id="password"
                   name="password"
                   onChange={(event) => setPassword(event.target.value)}
                   required
-                  type="password"
                   value={password}
                 />
+                <Text fontSize="12px" color="fg.subtle">
+                  At least 8 characters.
+                </Text>
               </Stack>
 
-              <Stack gap="6px">
-                <Label htmlFor="confirmPassword">Confirm password</Label>
-                <Input
-                  autoComplete="new-password"
-                  id="confirmPassword"
-                  name="confirmPassword"
-                  onChange={(event) => setConfirmPassword(event.target.value)}
-                  required
-                  type="password"
-                  value={confirmPassword}
-                />
-              </Stack>
-
-              {error && <Text fontSize="13px" color="danger.fg">{error}</Text>}
+              <FormError message={error} />
 
               <Button
                 width="full"
-                disabled={submitting || email.trim().length === 0 || password.trim().length === 0 || confirmPassword.length === 0}
+                disabled={submitting || email.trim().length === 0 || password.trim().length === 0}
                 type="submit"
               >
-                {submitting ? "Creating account..." : "Create account"}
+                {submitting ? (
+                  <>
+                    <Spinner size="xs" borderTopColor="accent.contrast" />
+                    Creating account…
+                  </>
+                ) : (
+                  "Create account"
+                )}
               </Button>
 
               <Box id="clerk-captcha" />
             </Stack>
           </form>
-
-          <LabeledDivider label="or continue with" />
-
-          <Stack gap="8px">
-            <Button
-              disabled={Boolean(oauthLoading)}
-              onClick={() => onOAuthSignUp("oauth_google")}
-              type="button"
-              variant="outline"
-              w="full"
-            >
-              {oauthLoading === "oauth_google" ? "Connecting..." : "Google"}
-            </Button>
-            <Button
-              disabled={Boolean(oauthLoading)}
-              onClick={() => onOAuthSignUp("oauth_facebook")}
-              type="button"
-              variant="outline"
-              w="full"
-            >
-              {oauthLoading === "oauth_facebook" ? "Connecting..." : "Facebook"}
-            </Button>
-            <Button
-              disabled={Boolean(oauthLoading)}
-              onClick={() => onOAuthSignUp("oauth_microsoft")}
-              type="button"
-              variant="outline"
-              w="full"
-            >
-              {oauthLoading === "oauth_microsoft" ? "Connecting..." : "Microsoft"}
-            </Button>
-          </Stack>
-        </>
+        </Stack>
       )}
 
-      <Text textAlign="center" fontSize="13px" color="fg.muted">
-        Already have an account?{" "}
+      <Flex
+        align="center"
+        justify="space-between"
+        pt="4"
+        borderTopWidth="1px"
+        borderTopColor="border.subtle"
+      >
+        <Text fontSize="13px" color="fg.muted">
+          Already have an account?
+        </Text>
         <Link href="/sign-in">
-          <Box as="span" fontWeight="500" color="fg.accent" _hover={{ textDecoration: "underline" }}>
+          <Box
+            as="span"
+            fontSize="13px"
+            fontWeight="500"
+            color="fg"
+            textDecoration="underline"
+            textUnderlineOffset="3px"
+            textDecorationColor="border.emphasized"
+            transition="text-decoration-color 120ms ease"
+            _hover={{ textDecorationColor: "fg" }}
+          >
             Sign in
           </Box>
         </Link>
-      </Text>
+      </Flex>
     </Stack>
   );
 }

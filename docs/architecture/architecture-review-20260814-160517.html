@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture review — Narriflow</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: "neutral",
+        securityLevel: "loose",
+        flowchart: { curve: "basis", htmlLabels: true }
+      });
+    </script>
+    <style>
+      :root { color-scheme: light; }
+      html { scroll-behavior: smooth; }
+      body { text-rendering: optimizeLegibility; }
+      .seam { border-style: dashed; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); color: white; }
+      .leak { color: #b91c1c; border-color: #fca5a5; background: #fff7f7; }
+      .diagram { min-height: 292px; }
+      .hairline { background-image: linear-gradient(to right, #cbd5e1 1px, transparent 1px), linear-gradient(to bottom, #cbd5e1 1px, transparent 1px); background-size: 24px 24px; }
+      .codepath { overflow-wrap: anywhere; }
+      .mermaid { min-width: 100%; }
+      .mass-interface { background: #fef2f2; border: 2px solid #ef4444; }
+      .mass-implementation { background: #f8fafc; border: 1px solid #cbd5e1; }
+      @media print {
+        .break-card { break-inside: avoid; }
+        body.bg-stone-50 { background: white; }
+      }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans">
+    <main class="max-w-6xl mx-auto px-6 py-12 space-y-12">
+      <header class="space-y-7 border-b border-slate-300 pb-8">
+        <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p class="text-xs uppercase tracking-[0.25em] text-indigo-700 font-semibold">Architecture review</p>
+            <h1 class="mt-2 text-4xl md:text-5xl font-serif tracking-tight">Narriflow</h1>
+          </div>
+          <div class="text-sm text-slate-600 md:text-right">
+            <div>14 August 2026 · evidence refreshed 30 August 2026</div>
+            <div>Hot-path + critical-path audit</div>
+            <div class="mt-1 font-semibold text-emerald-700">Updated: all nine recommendations and all remaining architecture findings are complete</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-5 border-y border-slate-300 bg-white">
+          <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl"><span class="text-emerald-700">9</span>/9</div><div class="text-xs uppercase tracking-wider text-slate-500">Completed</div></div>
+          <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">7,104</div><div class="text-xs uppercase tracking-wider text-slate-500">Largest source</div></div>
+          <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">79</div><div class="text-xs uppercase tracking-wider text-slate-500">HTTP handlers</div></div>
+          <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">169</div><div class="text-xs uppercase tracking-wider text-slate-500">Test files</div></div>
+          <div class="p-4 col-span-2 md:col-span-1"><div class="font-mono text-2xl text-emerald-700">Green</div><div class="text-xs uppercase tracking-wider text-slate-500">Current checks</div></div>
+        </div>
+
+        <div class="flex flex-wrap gap-x-6 gap-y-3 text-xs uppercase tracking-wider text-slate-600">
+          <span class="inline-flex items-center gap-2"><span class="h-4 w-6 border border-slate-500 bg-white"></span> module</span>
+          <span class="inline-flex items-center gap-2"><span class="h-4 w-6 border-2 border-dashed border-slate-500 bg-white"></span> seam</span>
+          <span class="inline-flex items-center gap-2"><span class="h-0.5 w-7 bg-red-600"></span> leakage</span>
+          <span class="inline-flex items-center gap-2"><span class="h-4 w-6 bg-slate-900"></span> deep module</span>
+          <span class="normal-case tracking-normal text-emerald-700">All nine architecture recommendations are complete.</span>
+        </div>
+      </header>
+
+      <nav class="border border-slate-200 bg-white p-5">
+        <div class="text-xs uppercase tracking-widest text-slate-500 mb-3">Jump to candidate</div>
+        <ol class="grid md:grid-cols-3 gap-x-6 gap-y-2 text-sm">
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#workflow">✓ 1. Workflow Run lifecycle — completed</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#studio">✓ 2. Studio Editing Session — completed</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#render">✓ 3. Clip Render Attempt — completed</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#composition">✓ 4. Clip Composition Plan — completed</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#upload">✓ 5. Upload Session intake — completed</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#billing">✓ 6. Workspace Billing — completed</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#social">✓ 7. Social Publication Attempt — completed</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#editor-doc">✓ 8. Clip Editor Document — completed</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#request-policy">✓ 9. Authenticated request policy — completed</a></li>
+        </ol>
+      </nav>
+
+      <section id="candidates" class="space-y-12">
+        <article id="workflow" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
+          <div class="p-6 md:p-8 space-y-6">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div><div class="text-xs uppercase tracking-widest text-slate-500">01</div><h2 class="text-3xl font-serif mt-1">Deepen Workflow Run lifecycle ownership</h2></div>
+              <div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-sky-100 text-sky-800 px-3 py-1 text-xs font-semibold">local-substitutable</span></div>
+            </div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 14 August 2026</div>
+              <p class="mt-2">Workflow Run admission, claiming, attempt fencing, heartbeat, retry, completion, failure, reaping, child artifact writes, and transactional outbox publication now live behind one lifecycle module. Stale attempts are rejected without changing state.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ PostgreSQL concurrency suite: 19/19</li>
+                <li>✓ Production migration applied and validated</li>
+                <li>✓ Clean 48-migration deploy chain verified</li>
+                <li>✓ Commits: <code>fef3d5a</code>, <code>2a4be00</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">packages/services/src/project.service.ts:3100, 3190, 3672, 3710, 3855, 4033, 4908<br>apps/worker/src/tasks/{transcribe,detect-clips,render-clips,dubbing}.ts</div>
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-4">
+                <div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-2">Before · status is mistaken for ownership</div>
+                <pre class="mermaid">
+flowchart TB
+  A[Worker attempt A] -->|heartbeat| R[(Workflow Run: running)]
+  X[Reaper] -->|running → queued| R
+  B[Worker attempt B] -->|queued → running| R
+  A -->|stale complete / fail| R
+  B -->|complete / fail| R
+  R --> E[Workflow event]
+  classDef danger fill:#fff1f2,stroke:#dc2626,stroke-width:2px;
+  class A,R danger;
+                </pre>
+              </div>
+              <div class="diagram rounded-lg border border-slate-800 deep p-4">
+                <div class="text-xs uppercase tracking-widest text-slate-300 font-semibold mb-2">After · attempt identity owns every transition</div>
+                <pre class="mermaid">
+flowchart TB
+  A[Claimed attempt] --> W[Deep Workflow Run module]
+  H[Heartbeat] --> W
+  O[Outcome] --> W
+  X[Reaper] --> W
+  W -->|legal transition| R[(Workflow Run)]
+  W -->|same settlement| E[Workflow event]
+  W -.reject stale attempt.-> S[No state change]
+  classDef deep fill:#111827,color:#fff,stroke:#94a3b8,stroke-width:2px;
+  class W deep;
+                </pre>
+              </div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6 text-sm">
+              <div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>The Project module accepts reaped-but-still-alive workers, yet failure and several completion paths do not fence by attempt identity.</p></div>
+              <div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Concentrate claim identity, heartbeat, retry, completion, failure, reaping, and event publication in one deep Workflow Run module.</p></div>
+              <div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Deleting it would spread transition legality and stale-attempt rules across every worker caller.</p></div>
+            </div>
+            <ul class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+              <li class="border-l-2 border-indigo-500 pl-2">locality: one transition owner</li><li class="border-l-2 border-indigo-500 pl-2">leverage: every worker stage</li><li class="border-l-2 border-indigo-500 pl-2">tests hit one interface</li><li class="border-l-2 border-indigo-500 pl-2">stale attempts become harmless</li>
+            </ul>
+            <div class="rounded-md bg-emerald-50 border border-emerald-300 px-4 py-3 text-sm text-emerald-900"><strong>Resolved correctness risk:</strong> a stale attempt can no longer settle a newer running attempt after reap → requeue → reclaim.</div>
+          </div>
+        </article>
+
+        <article id="studio" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
+          <div class="p-6 md:p-8 space-y-6">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div><div class="text-xs uppercase tracking-widest text-slate-500">02</div><h2 class="text-3xl font-serif mt-1">Deepen the Studio Editing Session</h2></div>
+              <div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-violet-100 text-violet-800 px-3 py-1 text-xs font-semibold">ports &amp; adapters</span></div>
+            </div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 15 August 2026</div>
+              <p class="mt-2">Document/history ownership, Device Draft recovery, writer handoff and fencing, single-flight cloud checkpointing and retry, revision convergence, proxy and analysis eligibility, source-anchored playback, and browser lifecycle coordination now live behind the public Studio Editing Session interface. React is a focused selector and presentation adapter.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ Seven dependency-ordered tracer tickets completed</li>
+                <li>✓ Deterministic session and browser-adapter suites pass</li>
+                <li>✓ Cooperative and forced multi-tab takeover verified in Chrome</li>
+                <li>✓ Commit range: <code>0421fea</code> … <code>34681ff</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">apps/web/.../studio/_components/studio-shell.tsx:308–575, 657–3090<br>save-queue.ts · local-editor-draft.ts · unified-editor-history.ts</div>
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-5 flex flex-col gap-2">
+                <div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-1">Before · wide interface, call-site protocol</div>
+                <div class="mass-interface rounded p-3 text-center text-xs uppercase tracking-wider">218-line Studio context · ~73 fields/actions</div>
+                <div class="grid grid-cols-3 gap-2 text-center text-[11px]">
+                  <div class="border bg-white p-3">18 effects</div><div class="border bg-white p-3">save refs</div><div class="border bg-white p-3">playback refs</div>
+                  <div class="border bg-white p-3">cloud fetch</div><div class="border bg-white p-3">IndexedDB</div><div class="border bg-white p-3">tab locks</div>
+                </div>
+                <div class="grid grid-cols-3 gap-2 text-center text-[10px] text-slate-500"><div class="border border-dashed p-2">save queue</div><div class="border border-dashed p-2">draft merge</div><div class="border border-dashed p-2">history</div></div>
+                <div class="text-center text-xs text-red-700">Bugs live in orchestration between helpers.</div>
+              </div>
+              <div class="diagram rounded-lg border border-slate-800 deep p-5 flex flex-col">
+                <div class="text-xs uppercase tracking-widest text-slate-300 font-semibold">After · protocol behind one seam</div>
+                <div class="mt-6 rounded border-2 border-white/70 p-4 flex-1">
+                  <div class="bg-white text-slate-900 rounded px-3 py-2 text-center text-xs uppercase tracking-wider">Small session interface</div>
+                  <div class="mt-4 grid grid-cols-2 gap-2 text-[11px] text-slate-200 text-center">
+                    <div class="border border-slate-500 p-3">document + history</div><div class="border border-slate-500 p-3">write ownership</div>
+                    <div class="border border-slate-500 p-3">local/cloud convergence</div><div class="border border-slate-500 p-3">playback reconciliation</div>
+                  </div>
+                </div>
+                <div class="mt-3 flex justify-between text-[10px] text-slate-300"><span>React adapter</span><span>browser/test adapters</span></div>
+              </div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6 text-sm">
+              <div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>Rendering, edit intent, local durability, cloud revision merging, retry, proxy invalidation, and playback have poor locality inside one React module.</p></div>
+              <div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Make React an adapter; move the editing protocol and session state behind one deep module seam.</p></div>
+              <div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Deleting a helper moves a tiny table; deleting the session module redistributes the whole protocol.</p></div>
+            </div>
+            <ul class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"><li class="border-l-2 border-indigo-500 pl-2">locality: protocol in one module</li><li class="border-l-2 border-indigo-500 pl-2">leverage: all Studio views</li><li class="border-l-2 border-indigo-500 pl-2">tests exercise real sequencing</li><li class="border-l-2 border-indigo-500 pl-2">React interface shrinks</li></ul>
+          </div>
+        </article>
+
+        <article id="render" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
+          <div class="p-6 md:p-8 space-y-6">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div><div class="text-xs uppercase tracking-widest text-slate-500">03</div><h2 class="text-3xl font-serif mt-1">Deepen the Clip Render Attempt</h2></div>
+              <div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-rose-100 text-rose-800 px-3 py-1 text-xs font-semibold">mock</span></div>
+            </div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 26 August 2026</div>
+              <p class="mt-2"><code>ClipRenderAttempt.execute</code> now owns the frozen work set and rendering state, required-source resolution, media commands, optional-asset fallbacks, guarded uploads, fenced persistence, settlement, notifications, and cleanup. The worker caller supplies only the owned Workflow Attempt and its abort signal.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ Eleven dependency-ordered implementation tickets completed</li>
+                <li>✓ 646 worker tests and 2,174 assertions passed</li>
+                <li>✓ 57-test disposable PostgreSQL recovery drill passed</li>
+                <li>✓ Commit range: <code>87bc87e</code> … <code>9d40995</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">apps/worker/src/tasks/render-clips.ts · ClipRenderAttempt.execute<br>apps/worker/src/tasks/clip-render-attempt.test.ts · clip-render-attempt-core-paths.test.ts</div>
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-4">
+                <div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-3">Before · helper tests surround orchestration</div>
+                <div class="grid grid-cols-4 gap-2 text-[10px] text-center">
+                  <div class="border bg-white p-2">captions</div><div class="border bg-white p-2">crop</div><div class="border bg-white p-2">audio</div><div class="border bg-white p-2">layout</div>
+                  <div class="border bg-white p-2">B-roll</div><div class="border bg-white p-2">watermark</div><div class="border bg-white p-2">queue</div><div class="border bg-white p-2">download</div>
+                </div>
+                <div class="mt-4 rounded border-2 border-red-500 bg-white p-5 text-center"><div class="font-mono text-3xl">2,199</div><div class="text-xs uppercase tracking-wider">line main orchestration</div><div class="mt-2 text-xs text-red-700">No test drives it end-to-end.</div></div>
+                <div class="mt-3 flex justify-around text-[10px] text-slate-500"><span>28 exported functions</span><span>21 env reads</span><span>3 encode branches</span></div>
+              </div>
+              <div class="diagram rounded-lg border border-slate-800 deep p-4">
+                <div class="text-xs uppercase tracking-widest text-slate-300 font-semibold mb-2">After · attempt is the test surface</div>
+                <pre class="mermaid">
+flowchart TB
+  J[Render work] --> A[Deep Render Attempt module]
+  A --> P[Canonical attempt plan]
+  P --> C[Command adapter]
+  P --> S[Storage adapter]
+  P --> M[Media adapter]
+  C --> A
+  S --> A
+  M --> A
+  A --> O[Variant + run outcome]
+  classDef deep fill:#111827,color:#fff,stroke:#cbd5e1,stroke-width:2px;
+  class A deep;
+                </pre>
+              </div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6 text-sm"><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>Pure FFmpeg builders are testable; asset resolution → encode → upload → guarded persistence → settlement is not.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Resolve and execute one canonical Render Attempt behind a small interface; keep process, storage, and media seams internal.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Deleting builders moves strings; deleting the attempt module spreads lifecycle obligations across every encode path.</p></div></div>
+            <ul class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"><li class="border-l-2 border-indigo-500 pl-2">interface is the test surface</li><li class="border-l-2 border-indigo-500 pl-2">locality: settlement stays atomic</li><li class="border-l-2 border-indigo-500 pl-2">leverage: all render modes</li><li class="border-l-2 border-indigo-500 pl-2">env becomes validated input</li></ul>
+          </div>
+        </article>
+
+        <article id="composition" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
+          <div class="p-6 md:p-8 space-y-6">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div class="text-xs uppercase tracking-widest text-slate-500">04</div><h2 class="text-3xl font-serif mt-1">Deepen a shared Clip Composition Plan</h2></div><div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">in-process</span></div></div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 27 August 2026</div>
+              <p class="mt-2">One versioned Clip Composition Plan now owns base layout, B-roll precedence, timed visual layers, edited-time audio, evidence eligibility, fidelity, and typed degradation. Studio and FFmpeg translate the same ready plan. Unknown plan or evidence versions fail before browser adoption, evidence writes, or command execution.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ Eleven dependency-ordered implementation tickets completed</li>
+                <li>✓ 162 worker contract tests and 111 web adapter tests passed</li>
+                <li>✓ Chrome exports covered Center, Auto, Split, Screen, B-roll, edited, and audio-only paths</li>
+                <li>✓ Completion commit: <code>6df0da6</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">packages/composition-plan/src/clip-composition-plan.ts<br>apps/web/.../studio/_components/{video-preview,composition-preview-adapter}.ts(x)<br>apps/worker/src/{composition-ffmpeg-adapter,render-process-adapter}.ts · tasks/render-clips.ts</div>
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-5">
+                <div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-5">Before · same policy, two implementations</div>
+                <div class="grid grid-cols-2 gap-4 h-48">
+                  <div class="border-2 border-red-300 bg-white p-3 text-center"><div class="text-xs uppercase tracking-wider">Preview</div><div class="mt-4 text-[11px] text-slate-600">CSS crops<br>layout precedence<br>screen/split gates<br>audio timing</div></div>
+                  <div class="border-2 border-red-300 bg-white p-3 text-center"><div class="text-xs uppercase tracking-wider">Renderer</div><div class="mt-4 text-[11px] text-slate-600">FFmpeg crops<br>layout precedence<br>screen/split gates<br>audio timing</div></div>
+                </div>
+                <div class="mt-3 text-center text-xs text-red-700">8% and 40% constants copied by hand.</div>
+              </div>
+              <div class="diagram rounded-lg border border-slate-800 deep p-5">
+                <div class="text-xs uppercase tracking-widest text-slate-300 font-semibold mb-4">After · plan once, adapt twice</div>
+                <div class="rounded border-2 border-white/70 p-4 text-center"><div class="bg-white text-slate-900 rounded p-3 text-xs uppercase tracking-wider">Deep Composition Plan module</div><div class="mt-3 text-[11px] text-slate-300">precedence · normalized geometry · timing · fallbacks</div></div>
+                <div class="my-5 border-t border-dashed border-slate-400 relative"><span class="absolute left-1/2 -translate-x-1/2 -top-2.5 bg-slate-800 px-2 text-[10px]">seam</span></div>
+                <div class="grid grid-cols-2 gap-4 text-center text-xs"><div class="border border-slate-400 p-4">Web preview adapter</div><div class="border border-slate-400 p-4">FFmpeg adapter</div></div>
+              </div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6 text-sm"><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>Preview and burn-in interpret the same Studio edits, while deterministic geometry and fallback policy are copied across adapters.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Concentrate platform-neutral composition decisions in one deep in-process module; let CSS and FFmpeg translate the result.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Deleting it recreates the full precedence and geometry policy in both adapters.</p></div></div>
+            <ul class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"><li class="border-l-2 border-indigo-500 pl-2">locality: parity policy once</li><li class="border-l-2 border-indigo-500 pl-2">leverage: two real adapters</li><li class="border-l-2 border-indigo-500 pl-2">copied fixtures disappear</li><li class="border-l-2 border-indigo-500 pl-2">drift becomes impossible</li></ul>
+          </div>
+        </article>
+
+        <article id="upload" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
+          <div class="p-6 md:p-8 space-y-6">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div class="text-xs uppercase tracking-widest text-slate-500">05</div><h2 class="text-3xl font-serif mt-1">Deepen Upload Session intake and reconciliation</h2></div><div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">provider-backed</span></div></div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 28 August 2026</div>
+              <p class="mt-2">One Upload Session module now owns admission, transfer planning, grants, resume, finalization, compensation, reconciliation, expiry, and the atomic Project and Ingest Job handoff. Hono, React, browser transfer, Prisma, R2, and worker maintenance remain adapters.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ 72 module, 28 browser-adapter, 10 Hono, and 5 React contract tests passed</li>
+                <li>✓ Live isolated R2 suite: 16/16 with 68 assertions</li>
+                <li>✓ All 54 migrations plus 77 PostgreSQL assertions passed</li>
+                <li>✓ Standards and Spec review: zero findings · completion commit: <code>768584a</code></li>
+              </ul>
+              <a class="mt-3 inline-block underline" href="./upload-session-completion-evidence.md">Review the reproducible completion evidence.</a>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">packages/services/src/upload-session.service.ts<br>apps/web/app/(app)/upload/_lib/upload-session-browser.ts · apps/web/app/api/[[...route]]/upload-session-http.ts</div>
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-4"><div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-2">Before · partial states escape ownership</div><pre class="mermaid">
+sequenceDiagram
+  participant H as HTTP adapter
+  participant P as Project module
+  participant D as Postgres
+  participant R as R2
+  H->>P: start / complete
+  P->>D: create Project
+  P->>R: start multipart
+  P->>D: create Upload Session
+  Note over D,R: failure can strand either side
+  P->>R: complete multipart
+  P->>D: queue ingest
+  Note over H,P: reconciliation_required is a dead end
+              </pre></div>
+              <div class="diagram rounded-lg border border-slate-800 deep p-4"><div class="text-xs uppercase tracking-widest text-slate-300 font-semibold mb-2">After · every partial state converges</div><pre class="mermaid">
+stateDiagram-v2
+  [*] --> Initiating
+  Initiating --> Uploading
+  Initiating --> Compensating
+  Uploading --> Finalizing
+  Finalizing --> QueuedForIngest
+  Finalizing --> Reconciling
+  Reconciling --> QueuedForIngest
+  Reconciling --> Compensating
+  Compensating --> [*]
+              </pre></div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6 text-sm"><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>Project creation, R2 multipart state, Upload Session persistence, Content Pack creation, and ingest admission span non-atomic side effects.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Make one deep Upload Session module own start, resume, finalize, compensate, reconcile, and handoff to ingest.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Deleting it redistributes provider-state knowledge across Project and HTTP adapters.</p></div></div>
+            <ul class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"><li class="border-l-2 border-indigo-500 pl-2">locality: partial states owned</li><li class="border-l-2 border-indigo-500 pl-2">leverage: upload retries converge</li><li class="border-l-2 border-indigo-500 pl-2">failure injection becomes natural</li><li class="border-l-2 border-indigo-500 pl-2">ingest handoff stays idempotent</li></ul>
+          </div>
+        </article>
+
+        <article id="billing" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
+          <div class="p-6 md:p-8 space-y-6">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div class="text-xs uppercase tracking-widest text-slate-500">06</div><h2 class="text-3xl font-serif mt-1">Deepen Workspace Billing synchronization</h2></div><div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">provider-backed</span></div></div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 28 August 2026</div>
+              <p class="mt-2">One Workspace Billing module now owns Stripe delivery acceptance, current-state reconciliation, customer and Checkout recovery, entitlement projection, retention, paid seats, retry, and operator attention. Hono, React, membership, worker, Prisma, and Stripe remain adapters.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ Focused billing and Stripe contract suites: 33/33</li>
+                <li>✓ Live Stripe test-mode contract: 22 assertions</li>
+                <li>✓ Disposable PostgreSQL drill: 9/9 with 41 assertions</li>
+                <li>✓ Standards and Spec review: zero findings · completion commit: <code>7328ec0</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">packages/services/src/workspace-billing.service.ts · packages/services/src/billing.service.ts<br>apps/web/app/api/[[...route]]/workspace-billing-http.ts · packages/db/prisma/schema.prisma</div>
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-4"><div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-2">Before · ordering heuristic, split reconciliation</div><pre class="mermaid">
+flowchart TB
+  W[Stripe webhook] --> S[Billing singleton]
+  C[Checkout return] --> S
+  T[Seat update] --> S
+  S --> X[Stripe calls]
+  S --> D[(Workspace + User)]
+  S --> R[Retention transition]
+  E[Reconcile job] --> X
+  E --> D
+  N[Event.created seconds] -.ordering.-> S
+  classDef danger fill:#fff1f2,stroke:#dc2626,stroke-width:2px;
+  class N,S danger;
+              </pre></div>
+              <div class="diagram rounded-lg border border-slate-800 deep p-4"><div class="text-xs uppercase tracking-widest text-slate-300 font-semibold mb-2">After · synchronization owns delivery and recovery</div><pre class="mermaid">
+flowchart TB
+  I[Billing inputs] --> B[Deep Workspace Billing module]
+  B --> L[(Stripe event ledger)]
+  B --> A[Stripe adapter]
+  B --> D[(Workspace state)]
+  B --> R[Retention state]
+  A --> B
+  B --> O[Reconciled outcome]
+  classDef deep fill:#111827,color:#fff,stroke:#cbd5e1,stroke-width:2px;
+  class B deep;
+              </pre></div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6 text-sm"><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>The Stripe path does not use the existing webhook ledger; equal-second events, customer creation, and seat updates can cross Stripe/Postgres without durable ownership.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Concentrate delivery idempotency, ordering, tier/retention transitions, customer identity, seats, and reconciliation in one deep module.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Deleting it spreads Stripe ordering and Workspace entitlement knowledge across routes and jobs.</p></div></div>
+            <ul class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"><li class="border-l-2 border-indigo-500 pl-2">locality: one billing truth</li><li class="border-l-2 border-indigo-500 pl-2">leverage: webhook and checkout</li><li class="border-l-2 border-indigo-500 pl-2">duplicate delivery is testable</li><li class="border-l-2 border-indigo-500 pl-2">recovery is first-class</li></ul>
+          </div>
+        </article>
+
+        <article id="social" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
+          <div class="p-6 md:p-8 space-y-6">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div class="text-xs uppercase tracking-widest text-slate-500">07</div><h2 class="text-3xl font-serif mt-1">Deepen the Social Publication Attempt</h2></div><div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">provider-backed</span></div></div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 29 August 2026</div>
+              <p class="mt-2">One Social Publication Attempt module now owns frozen intent, claims, provider checkpoints and receipts, reconciliation, bounded recovery, duplicate containment, and operator decisions across the supported social platforms. Hono, MCP, React, the worker, Prisma, and provider APIs remain adapters.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ Durable checkpoints and receipts fence crash recovery and replay</li>
+                <li>✓ Provider reconciliation preserves uncertainty and retry guidance</li>
+                <li>✓ Recheck, manual confirmation, and Publish again use typed audited boundaries</li>
+                <li>✓ Implementation commits: <code>44f1eaa</code>, <code>8c66577</code> · tickets closed in <code>466b297</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">packages/services/src/social-publication-attempt.ts · packages/services/src/social-publication-native-platforms.ts<br>apps/worker/src/tasks/social-publisher.ts · packages/db/prisma/schema.prisma</div>
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-4"><div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-2">Before · one switch, irreversible providers</div><pre class="mermaid">
+flowchart TB
+  Q[Claim scheduled post] --> S{platform switch}
+  S --> Y[YouTube]
+  S --> I[Instagram]
+  S --> T[TikTok]
+  S --> L[LinkedIn]
+  S --> X[X]
+  S --> W[Webhook]
+  Y & I & T & L & X & W --> P[Mark posted]
+  F[Crash after provider accepts] -.-> R[Reaper marks failed]
+  R -.retry can duplicate.-> S
+              </pre></div>
+              <div class="diagram rounded-lg border border-slate-800 deep p-4"><div class="text-xs uppercase tracking-widest text-slate-300 font-semibold mb-2">After · real adapter seam + explicit uncertainty</div><pre class="mermaid">
+flowchart TB
+  Q[Claimed publication] --> A[Deep Publication Attempt module]
+  A --> P[Platform port]
+  P --> Y[Six production adapters]
+  P --> M[Contract-test adapter]
+  Y --> O[accepted / pending / failed / unknown]
+  M --> O
+  O --> A
+  A --> R[Persist receipt or reconcile]
+  classDef deep fill:#111827,color:#fff,stroke:#cbd5e1,stroke-width:2px;
+  class A deep;
+              </pre></div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6 text-sm"><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>Six true external adapters share one 1,002-line implementation, while provider acceptance and database settlement can separate around a crash.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Own one Publication Attempt with explicit provider outcomes, receipts, reconciliation, and platform adapters behind a real seam.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Deleting it spreads ambiguous-acceptance and retry rules across every platform adapter and worker loop.</p></div></div>
+            <ul class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"><li class="border-l-2 border-indigo-500 pl-2">two-plus adapters justify seam</li><li class="border-l-2 border-indigo-500 pl-2">unknown is explicit outcome</li><li class="border-l-2 border-indigo-500 pl-2">provider contracts become tests</li><li class="border-l-2 border-indigo-500 pl-2">duplicate posts are contained</li></ul>
+          </div>
+        </article>
+
+        <article id="editor-doc" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
+          <div class="p-6 md:p-8 space-y-6">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div class="text-xs uppercase tracking-widest text-slate-500">08</div><h2 class="text-3xl font-serif mt-1">Deepen Clip Editor Document persistence</h2></div><div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-sky-100 text-sky-800 px-3 py-1 text-xs font-semibold">local-substitutable</span></div></div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 29 August 2026</div>
+              <p class="mt-2">One Clip Editor Document Persistence module now owns canonical encoding and decoding, revision-fenced full, field, Reset, and project-selection mutations, immutable original capture, derived-state invalidation, cleanup obligations, and redacted diagnostics. Hono, Studio, export preparation, and the render worker remain adapters and consumers.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ Presentation, timeline, full-document, and Reset paths use typed persistence intents</li>
+                <li>✓ Apply-to-all settles one validated project selection atomically with exact no-op behavior</li>
+                <li>✓ Deterministic, PostgreSQL, worker, and authenticated-browser verification passed</li>
+                <li>✓ Implementation: <code>24b40c1</code> · review fixes through <code>06dad89</code> · tickets closed in <code>acf32ee</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">packages/services/src/clip-editor-document-persistence.ts<br>apps/web/app/api/[[...route]]/editor-persistence-http.ts · apps/worker/src/tasks/render-clips.ts</div>
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-5"><div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-4">Before · each mutation remembers invariants</div><div class="grid grid-cols-2 gap-2 text-xs text-center"><div class="border bg-white p-3">save document</div><div class="border bg-white p-3">reset original</div><div class="border bg-white p-3">change bounds</div><div class="border bg-white p-3">change B-roll</div><div class="border bg-white p-3">change Studio edits</div><div class="border bg-white p-3">bulk apply</div></div><div class="mt-4 grid grid-cols-4 gap-1 text-[9px] text-center text-red-700"><div>revision</div><div>renders</div><div>preview</div><div>analysis</div></div><svg viewBox="0 0 400 60" class="w-full h-16"><title>Repeated editor mutations share invariants</title><path d="M40 5 C80 50, 320 50, 360 5" fill="none" stroke="#dc2626" stroke-width="3"/><path d="M80 5 C120 45, 280 45, 320 5" fill="none" stroke="#dc2626" stroke-width="2"/><path d="M120 5 C150 40, 250 40, 280 5" fill="none" stroke="#dc2626" stroke-width="2"/></svg></div>
+              <div class="diagram rounded-lg border border-slate-800 deep p-5"><div class="text-xs uppercase tracking-widest text-slate-300 font-semibold mb-4">After · persistence obligations are internal</div><div class="rounded border-2 border-white/70 p-4 h-52 flex flex-col"><div class="bg-white text-slate-900 rounded p-3 text-center text-xs uppercase tracking-wider">Small document-mutation interface</div><div class="grid grid-cols-2 gap-2 mt-4 text-[11px] text-center text-slate-200"><div class="border border-slate-500 p-3">revision + canonicalization</div><div class="border border-slate-500 p-3">transaction</div><div class="border border-slate-500 p-3">render/preview invalidation</div><div class="border border-slate-500 p-3">cleanup + diagnostics</div></div></div></div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6 text-sm"><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>Revision ownership and downstream invalidation are repeated across mutation paths; pure planners test decisions but not persistence obligations.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Place every persisted Editor Document mutation and its cleanup obligations behind one deep module seam.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Deleting planners moves logic; deleting the document module spreads revision and invalidation rules across five-plus callers.</p></div></div>
+            <ul class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"><li class="border-l-2 border-indigo-500 pl-2">locality: invalidation once</li><li class="border-l-2 border-indigo-500 pl-2">leverage: every edit path</li><li class="border-l-2 border-indigo-500 pl-2">cleanup failures become visible</li><li class="border-l-2 border-indigo-500 pl-2">tests cross database seam</li></ul>
+          </div>
+        </article>
+
+        <article id="request-policy" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
+          <div class="p-6 md:p-8 space-y-6">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div class="text-xs uppercase tracking-widest text-slate-500">09</div><h2 class="text-3xl font-serif mt-1">Deepen authenticated request policy</h2></div><div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-violet-100 text-violet-800 px-3 py-1 text-xs font-semibold">ports &amp; adapters</span></div></div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 29 August 2026</div>
+              <p class="mt-2">One Authenticated Request Policy now owns signed-in identity, active Workspace capability checks, Project lifecycle admission, strict input validation, rate limits, typed failures, request IDs, and safe diagnostics. Hono routes, Server Actions, pages, and workflow streams use explicit adapters.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ Actor identity and Workspace owner identity remain separate throughout each request</li>
+                <li>✓ Every browser-session route, action, page, and stream declares exact admission metadata</li>
+                <li>✓ PostgreSQL admission, production build, focused policy tests, and authenticated browser verification passed</li>
+                <li>✓ Implementation and review fixes: <code>01255b1</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">apps/web/lib/authenticated-request-policy.ts · apps/web/lib/authenticated-request-policy.server.ts<br>apps/web/lib/authenticated-request-hono.ts · apps/web/lib/authenticated-request-action.ts · apps/web/lib/authenticated-request-page.ts</div>
+            <div class="grid md:grid-cols-2 gap-5">
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-5"><div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-4">Before · repeated policy in thin handlers</div><div class="space-y-2 text-[11px]"><div class="flex gap-2"><span class="w-16">Handler 1</span><div class="flex-1 grid grid-cols-4 gap-1 text-center"><span class="border p-2 bg-white">actor</span><span class="border p-2 bg-white">access</span><span class="border p-2 bg-white">parse</span><span class="border p-2 bg-white">errors</span></div></div><div class="flex gap-2"><span class="w-16">Handler 2</span><div class="flex-1 grid grid-cols-4 gap-1 text-center"><span class="border p-2 bg-white">actor</span><span class="border p-2 bg-white">access</span><span class="border p-2 bg-white">parse</span><span class="border p-2 bg-white">errors</span></div></div><div class="flex gap-2"><span class="w-16">… ×77</span><div class="flex-1 grid grid-cols-4 gap-1 text-center"><span class="border p-2 bg-white">actor</span><span class="border p-2 bg-white">access</span><span class="border p-2 bg-white">parse</span><span class="border p-2 bg-white">errors</span></div></div></div><div class="mt-5 text-center text-xs text-red-700">Owner identity and actor identity coexist.</div></div>
+              <div class="diagram rounded-lg border border-slate-800 deep p-5"><div class="text-xs uppercase tracking-widest text-slate-300 font-semibold mb-3">After · adapters stay shallow, policy becomes deep</div><div class="grid grid-cols-2 gap-4 text-center text-xs"><div class="border border-slate-400 p-4">Hono adapter</div><div class="border border-slate-400 p-4">Server Action adapter</div></div><div class="my-5 border-t border-dashed border-slate-400"></div><div class="rounded border-2 border-white/70 p-5 text-center"><div class="bg-white text-slate-900 rounded p-3 text-xs uppercase tracking-wider">Deep request-policy module</div><div class="mt-3 text-[11px] text-slate-300">actor · Workspace capability · Project lifecycle · domain errors</div></div></div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6 text-sm"><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>Actor resolution, Workspace capability, Project access, validation, and error translation are reconstructed throughout the HTTP adapter.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Keep HTTP handlers shallow; concentrate repeated authenticated request policy behind one interface shared with server actions.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Splitting route files fails; deleting a real policy module recreates the same knowledge across two adapters.</p></div></div>
+            <ul class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"><li class="border-l-2 border-indigo-500 pl-2">locality: authorization policy once</li><li class="border-l-2 border-indigo-500 pl-2">leverage: two request adapters</li><li class="border-l-2 border-indigo-500 pl-2">string errors stop leaking</li><li class="border-l-2 border-indigo-500 pl-2">table tests replace repetition</li></ul>
+          </div>
+        </article>
+      </section>
+
+      <section id="practices" class="space-y-5 scroll-mt-6">
+        <div><p class="text-xs uppercase tracking-[0.25em] text-indigo-700 font-semibold">Programming practice ledger</p><h2 class="text-4xl font-serif mt-2">Evidence beyond file size</h2></div>
+        <div class="overflow-hidden rounded-xl border border-slate-300 bg-white">
+          <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] text-xs uppercase tracking-wider bg-slate-900 text-white"><div class="p-3">Priority</div><div class="p-3">Practice</div><div class="p-3 hidden md:block">Evidence and consequence</div></div>
+          <div class="divide-y divide-slate-200 text-sm">
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Unfenced Workflow Run settlement</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Closed by attempt-owned lifecycle transitions and PostgreSQL concurrency coverage. Stale attempts now produce no state change.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Studio protocol ownership</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Closed by the public Studio Editing Session, deterministic browser adapters, session-interface behavior tests, and live multi-tab takeover verification.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Ambiguous social acceptance</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Closed by attempt-owned claims, durable provider checkpoints and receipts, explicit uncertainty, reconciliation, and duplicate-risk recovery controls.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Stripe delivery lacked ledger use</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Closed by exact raw-body delivery acceptance, durable event identity, wake-only handlers, current-provider-state reconciliation, and shuffled-delivery tests.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Upload side effects lacked compensation</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The Upload Session module now owns provider compensation, reconciliation, expiry, and atomic ingest handoff. Live R2 and PostgreSQL failure drills cover the provider and persistence boundaries.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Stripe side effects lacked full recovery</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Stable operation keys, exact metadata recovery, fenced reconciliation, and Stripe and PostgreSQL failure drills now cover customer, Checkout, subscription, and seat uncertainty.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Critical orchestration is helper-tested</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">All nine recommendations now run through public interfaces. Authenticated Request Policy coverage includes exact inventory checks, PostgreSQL admission tests, stream reauthorization, Server Actions, pages, and browser recovery.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Clip Editor Document persistence type safety was bypassed</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">All document-owned JSON now crosses one canonical codec, and post-creation writes have one typed persistence owner. Unrelated analysis and provider payload conversions remain outside this seam.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Identity had dual semantics</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Actor Scope now names the signed-in App User as <code>actorUserId</code> and keeps Workspace ID, owner ID, role, status, tier, and selection state in separate fields. The ambiguous legacy helper was deleted.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Media deletion lacked recoverable settlement</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Clip deletion now fails closed and remains retryable. One fenced Media Cleanup module durably covers editor mutations, detected-Clip replacement, and duplicate-copy compensation without exposing storage details.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Stringly typed error contracts</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Browser-session adapters now translate stable error codes into bounded transport responses and recovery instructions. Unknown failures receive a request ID without exposing provider or stack details.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Equality policy was repeated outside document persistence</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The validators module now owns typed, field-aware Clip Editor Document and normalized deleted-range equality. Studio history, convergence, drafts, Reset, derived-media eligibility, and canonical persistence use that one policy without changing generic draft merge or unrelated fingerprints.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Action safety was disabled with any</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The obsolete safe-action wrapper and duplicate project action module were deleted. Server Actions now use typed Workspace, Project, or signed-in policy adapters with strict schemas.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Render configuration was ad hoc</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The worker parses render-affecting environment values once into immutable validated configuration. Invalid numeric and enum values fail startup.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Quality scripts overstated coverage</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The root lint command is the repository-wide Biome check, no-op tasks are excluded from success totals, fast tests state their database boundary, and CI gates all six isolated PostgreSQL invariant suites.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Obsolete editor-persistence navigation</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The cutover removed stale Clip Service mutation helpers, planners, comments, and shallow orchestration tests after equivalent persistence-interface coverage landed.</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="verification" class="rounded-xl border border-slate-300 bg-white p-6 md:p-8">
+        <div class="grid md:grid-cols-4 gap-6">
+          <div><div class="text-xs uppercase tracking-wider text-slate-500">Typecheck</div><div class="mt-2 text-emerald-700 font-mono">12/12 passed</div></div>
+          <div><div class="text-xs uppercase tracking-wider text-slate-500">Tests</div><div class="mt-2 text-emerald-700 font-mono">169 files · fast aggregate + 6 DB gates</div></div>
+          <div><div class="text-xs uppercase tracking-wider text-slate-500">Biome</div><div class="mt-2 text-emerald-700 font-mono">737 files clean</div></div>
+          <div><div class="text-xs uppercase tracking-wider text-slate-500">Completed updates</div><div class="mt-2 text-emerald-700 text-sm">All nine recommendations and the media recovery, verification, and typed document equality findings are closed.</div></div>
+        </div>
+      </section>
+
+      <section id="top-recommendation" class="scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-slate-950 text-white p-8 md:p-10">
+        <div class="text-xs uppercase tracking-[0.25em] text-emerald-300">Latest completed recommendation</div>
+        <a href="#request-policy" class="block mt-3 text-3xl md:text-4xl font-serif underline decoration-emerald-400 underline-offset-8">✓ Deepen authenticated request policy</a>
+        <p class="mt-5 text-emerald-100 max-w-3xl">Completed with one policy module owning identity, Workspace capability, Project admission, strict input, typed failures, request IDs, and diagnostics across four browser-session adapters.</p>
+        <div class="mt-8 border-t border-slate-700 pt-7 text-sm text-slate-300">All nine recommendations in this review are complete.</div>
+      </section>
+    </main>
+  </body>
+</html>

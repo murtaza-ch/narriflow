@@ -10,9 +10,7 @@
   },
   "scripts": {
     "build": "echo 'config build: no-op'",
-    "lint": "echo 'config lint: no-op'",
     "typecheck": "echo 'config typecheck: no-op'",
-    "test": "echo 'config test: no-op'",
     "clean": "echo 'config clean: no-op'"
   }
 }

@@ -1,0 +1,26 @@
+{
+  "_README": "Curated Music/SFX library operations catalog (docs/plans/vizard-parity.md \"Music/SFX library\"). Content must be sourced ONLY from the YouTube Audio Library's no-attribution tracks and Pixabay — never NCS-style packs (documented Content-ID false-positive risk even when a pack is labeled royalty-free). User-facing copy describing this library must say 'royalty-free', never 'monetization-safe' or 'no Content ID claims' — even providers with strong licensing terms cannot guarantee that. Populating this catalog and the corresponding database/R2 records with real tracks/SFX (target: ~120-200 music tracks across 6-10 mood tags, 30-60 SFX) is a content/ops task, not a code task — the entries below are placeholders only, and their storageKey values do not point at real R2 objects.",
+  "tracks": [
+    {
+      "kind": "music",
+      "storageKey": "audio-library/music/placeholder-upbeat-01.mp3",
+      "title": "PLACEHOLDER — Upbeat Pop Bed",
+      "moodTags": ["upbeat"],
+      "durationSec": 120
+    },
+    {
+      "kind": "music",
+      "storageKey": "audio-library/music/placeholder-chill-01.mp3",
+      "title": "PLACEHOLDER — Chill Lo-Fi Bed",
+      "moodTags": ["chill", "lofi"],
+      "durationSec": 150
+    },
+    {
+      "kind": "sfx",
+      "storageKey": "audio-library/sfx/placeholder-whoosh-01.mp3",
+      "title": "PLACEHOLDER — Whoosh Transition",
+      "moodTags": ["transition"],
+      "durationSec": 1
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+import { Stack } from "@chakra-ui/react";
+import { PageHeader } from "@narriflow/ui/components/page-header";
+import { billingService, workspaceService } from "@narriflow/services";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
+import { MembersPanel } from "./members-panel";
+
+export default async function MembersSettingsPage() {
+  const appUser = await admitWorkspacePage("content.view");
+  const [data, billingView] = await Promise.all([
+    workspaceService.listMembers(appUser.actorUserId, appUser.workspaceId),
+    billingService.readBillingState(appUser.workspaceId),
+  ]);
+  return (
+    <Stack gap="8">
+      <PageHeader eyebrow={appUser.workspace.workspaceName} title="Members" />
+      <MembersPanel
+        actorRole={appUser.workspace.role}
+        isBusiness={billingView.plan === "business"}
+        workspaceStatus={appUser.workspace.status}
+        billingView={billingView}
+        members={data.members.map((member) => ({ ...member, joinedAt: member.joinedAt.toISOString(),
+        }))}
+        invites={data.invites.map((invite) => ({ ...invite, expiresAt: invite.expiresAt.toISOString(), createdAt: invite.createdAt.toISOString(),
+        }))}
+      />
+    </Stack>
+  );
+}

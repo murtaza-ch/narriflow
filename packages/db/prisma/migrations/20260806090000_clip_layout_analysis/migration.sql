@@ -1,0 +1,22 @@
+-- Screen-mode layout analysis (vizard-parity.md element-segmentation spike,
+-- landed fc5acb1): persists the worker's pip_detect.py/classifyScreencast/
+-- selectPipRect pass over a clip's source range, so the render path can stop
+-- re-running detection on every render/output and the studio preview can
+-- show the true facecam PiP crop instead of a face-centered band guess.
+--
+-- Stores the versioned envelope from clipLayoutAnalysisSchema (validators),
+-- not the raw pip_detect.py candidate list — only the SELECTED, post-gate
+-- pipRect is durable. NULL means "never analyzed"; a non-NULL envelope with
+-- pipRect: null means "analyzed, not screencast-like / no qualifying rect".
+--
+-- Additive + nullable: existing rows keep working, and the render path falls
+-- back to re-detecting (or the pre-PiP face-centered band) when this is NULL.
+--
+-- M1 (adversarial review): DEPLOY-ORDER — apply this migration BEFORE
+-- deploying code that reads `layoutAnalysis`. The Prisma client generated
+-- against a schema that includes this column selects it on every unscoped
+-- `Clip` read (getClipEditorDocument, the render pipeline's clip fetch,
+-- etc.), not just the screen-mode PiP path — deploying that code against a
+-- database that hasn't run this migration yet breaks ALL clip reads, not
+-- just PiP-related ones. Total blast radius, not feature-local.
+ALTER TABLE "Clip" ADD COLUMN "layoutAnalysis" JSONB;

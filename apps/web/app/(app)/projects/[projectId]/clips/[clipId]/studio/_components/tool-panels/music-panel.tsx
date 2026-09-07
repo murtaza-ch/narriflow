@@ -1,170 +1,167 @@
 "use client";
 
 import { useState } from "react";
-import { Box, Flex, Text, Stack, Input, Slider } from "@chakra-ui/react";
-import { Search, Play, Pause, Music, Volume2 } from "lucide-react";
+import { Box, Flex, Slider, Stack, Text } from "@chakra-ui/react";
+import { ArrowLeft, Upload, Volume2, VolumeX } from "lucide-react";
+import { useStudio } from "../studio-shell";
+import { usePreviewPlayer } from "./audio-library";
+import { MusicTab } from "./music-tab";
+import { SfxTab } from "./sfx-tab";
+import { UploadsTab } from "./uploads-tab";
 
-const GENRES = ["Upbeat", "Cinematic", "Chill", "Dramatic", "Electronic", "Acoustic"];
+type MusicPanelTab = "music" | "sfx";
 
-const TRACKS = [
-  { id: "1", title: "Summer Vibes",    duration: "2:34", bpm: 128, genre: "Upbeat" },
-  { id: "2", title: "Epic Moment",     duration: "3:12", bpm: 96,  genre: "Cinematic" },
-  { id: "3", title: "Lo-fi Afternoon", duration: "4:01", bpm: 85,  genre: "Chill" },
-  { id: "4", title: "Rising Action",   duration: "2:48", bpm: 110, genre: "Dramatic" },
-  { id: "5", title: "Synthwave Night", duration: "3:22", bpm: 120, genre: "Electronic" },
-  { id: "6", title: "Acoustic Dream",  duration: "3:45", bpm: 75,  genre: "Acoustic" },
+const TABS: { id: MusicPanelTab; label: string }[] = [
+  { id: "music", label: "Music" },
+  { id: "sfx", label: "Sound effects" },
 ];
 
 export function MusicPanel() {
-  const [query, setQuery] = useState("");
-  const [activeGenre, setActiveGenre] = useState<string | null>(null);
-  const [playingId, setPlayingId] = useState<string | null>(null);
-  const [volume, setVolume] = useState(70);
+  const { studioEdits, setStudioEdits, endCoalesce } = useStudio("studioEdits", "setStudioEdits", "endCoalesce");
+  const [activeTab, setActiveTab] = useState<MusicPanelTab>("music");
+  const [showUploads, setShowUploads] = useState(false);
+  const [libraryVersion, setLibraryVersion] = useState(0);
+  const player = usePreviewPlayer();
+  const sourceAudio = studioEdits.sourceAudio;
 
-  const filtered = TRACKS.filter((t) => {
-    const matchQ = t.title.toLowerCase().includes(query.toLowerCase());
-    const matchG = activeGenre ? t.genre === activeGenre : true;
-    return matchQ && matchG;
-  });
+  const updateSourceAudio = (patch: Partial<typeof sourceAudio>, coalesceKey?: string) =>
+    setStudioEdits(
+      (prev) => ({ ...prev, sourceAudio: { ...prev.sourceAudio, ...patch } }),
+      coalesceKey,
+    );
+
+  const chooseTab = (tab: MusicPanelTab) => {
+    setActiveTab(tab);
+    setShowUploads(false);
+  };
 
   return (
     <Stack gap="0">
-      {/* Search */}
-      <Box p="12px" pb="8px">
-        <Flex
-          align="center"
-          gap="8px"
-          px="10px"
-          h="34px"
-          borderRadius="7px"
-          bg="#1a1a1a"
-          border="1px solid #2a2a2a"
-        >
-          <Search size={13} color="#555" />
-          <Input
-            placeholder="Search music..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            size="xs"
-            flex="1"
-            fontSize="12px"
-            color="#ccc"
-            css={{ border: "none", outline: "none", background: "transparent", boxShadow: "none" }}
-            _placeholder={{ color: "#555" }}
-          />
-        </Flex>
-      </Box>
+      {/* biome-ignore lint/a11y/useMediaCaption: private library previews contain no dialogue. */}
+      <audio ref={player.audioRef} preload="metadata" style={{ display: "none" }} />
 
-      {/* Genre chips */}
-      <Box
-        overflowX="auto"
+      <Flex
         px="12px"
-        pb="8px"
-        css={{
-          "&::-webkit-scrollbar": { display: "none" },
-        }}
+        h="43px"
+        align="end"
+        gap="20px"
+        borderBottomWidth="1px"
+        borderColor="studio.border"
+        role="tablist"
+        aria-label="Music library"
       >
-        <Flex gap="5px" w="max-content">
-          {GENRES.map((g) => (
-            <Box
-              key={g}
-              as="button"
-              px="10px"
-              py="4px"
-              borderRadius="99px"
-              bg={activeGenre === g ? "rgba(99,102,241,0.15)" : "#1a1a1a"}
-              border="1px solid"
-              borderColor={activeGenre === g ? "#6366F1" : "#2a2a2a"}
-              color={activeGenre === g ? "#a5b4fc" : "#666"}
-              fontSize="11px"
-              fontWeight="500"
-              cursor="pointer"
-              onClick={() => setActiveGenre(activeGenre === g ? null : g)}
-              whiteSpace="nowrap"
-              transition="all 150ms"
-            >
-              {g}
-            </Box>
-          ))}
-        </Flex>
-      </Box>
-
-      {/* Track list */}
-      <Stack gap="2px" px="12px" pb="12px">
-        {filtered.map((track) => {
-          const isPlaying = playingId === track.id;
+        {TABS.map((tab) => {
+          const selected = !showUploads && activeTab === tab.id;
           return (
             <Flex
-              key={track.id}
+              key={tab.id}
+              as="button"
+              role="tab"
+              aria-selected={selected}
               align="center"
-              gap="10px"
-              px="10px"
-              py="9px"
-              borderRadius="7px"
-              bg={isPlaying ? "rgba(99,102,241,0.08)" : "transparent"}
-              border="1px solid"
-              borderColor={isPlaying ? "#6366F1" : "transparent"}
+              h="43px"
+              pt="2px"
+              borderBottomWidth="2px"
+              borderColor={selected ? "studio.accent" : "transparent"}
+              color={selected ? "studio.fg" : "studio.fgMuted"}
+              fontSize="12px"
+              fontWeight={selected ? "600" : "500"}
               cursor="pointer"
-              transition="all 150ms"
-              _hover={{ bg: "#1a1a1a" }}
-              onClick={() => setPlayingId(isPlaying ? null : track.id)}
+              transition="border-color 120ms ease, color 120ms ease"
+              onClick={() => chooseTab(tab.id)}
             >
-              <Flex
-                w="28px"
-                h="28px"
-                align="center"
-                justify="center"
-                borderRadius="full"
-                bg={isPlaying ? "#6366F1" : "#1e1e1e"}
-                flexShrink={0}
-                transition="all 150ms"
-              >
-                {isPlaying
-                  ? <Pause size={12} color="white" />
-                  : <Play size={12} color="#888" />
-                }
-              </Flex>
-              <Box flex="1" minW="0">
-                <Text fontSize="12px" fontWeight="500" color={isPlaying ? "#a5b4fc" : "#ccc"} overflow="hidden" whiteSpace="nowrap" textOverflow="ellipsis">
-                  {track.title}
-                </Text>
-                <Text fontSize="10px" color="#555">
-                  {track.bpm} BPM · {track.genre}
-                </Text>
-              </Box>
-              <Text fontSize="11px" color="#555" fontFamily="mono">
-                {track.duration}
-              </Text>
+              {tab.label}
             </Flex>
           );
         })}
+      </Flex>
 
-        {filtered.length === 0 && (
-          <Flex direction="column" align="center" py="24px" gap="8px">
-            <Music size={24} color="#333" />
-            <Text fontSize="12px" color="#444">No tracks found</Text>
+      {showUploads ? (
+        <Box>
+          <Flex px="12px" pt="12px" align="center" justify="space-between">
+            <Flex
+              as="button"
+              align="center"
+              gap="6px"
+              color="studio.fgMuted"
+              fontSize="11px"
+              fontWeight="600"
+              cursor="pointer"
+              _hover={{ color: "studio.fg" }}
+              onClick={() => setShowUploads(false)}
+            >
+              <ArrowLeft size={13} /> Back to library
+            </Flex>
+            <Flex align="center" gap="6px" color="studio.fgMuted">
+              <Upload size={13} />
+              <Text textStyle="eyebrow">Uploads</Text>
+            </Flex>
           </Flex>
-        )}
-      </Stack>
+          <UploadsTab
+            reloadKey={libraryVersion}
+            onLibraryChange={() => setLibraryVersion((version) => version + 1)}
+          />
+        </Box>
+      ) : activeTab === "music" ? (
+        <MusicTab
+          reloadKey={libraryVersion}
+          player={player}
+          onOpenUploads={() => setShowUploads(true)}
+        />
+      ) : (
+        <SfxTab
+          reloadKey={libraryVersion}
+          player={player}
+          onOpenUploads={() => setShowUploads(true)}
+        />
+      )}
 
-      {/* Volume control */}
-      <Box
-        mx="12px"
-        mb="12px"
-        p="12px"
-        bg="#1a1a1a"
-        borderRadius="8px"
-        border="1px solid #252525"
-      >
-        <Flex align="center" gap="8px">
-          <Volume2 size={14} color="#555" />
+      <Box px="12px" pb="12px" pt="4px">
+        <Flex align="center" justify="space-between" mb="7px">
+          <Text textStyle="eyebrow" color="studio.fgMuted">
+            Source audio
+          </Text>
+          <Flex
+            as="button"
+            aria-pressed={sourceAudio.muted}
+            aria-label={sourceAudio.muted ? "Unmute source audio" : "Mute source audio"}
+            align="center"
+            gap="5px"
+            color={sourceAudio.muted ? "studio.danger" : "studio.fgMuted"}
+            fontSize="10.5px"
+            fontWeight="600"
+            cursor="pointer"
+            _hover={{ color: sourceAudio.muted ? "studio.danger" : "studio.fg" }}
+            onClick={() => updateSourceAudio({ muted: !sourceAudio.muted })}
+          >
+            {sourceAudio.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+            {sourceAudio.muted ? "Muted" : "Original"}
+          </Flex>
+        </Flex>
+        <Flex
+          align="center"
+          gap="9px"
+          p="10px"
+          bg="studio.subtle"
+          borderWidth="1px"
+          borderColor="studio.border"
+          borderRadius="l2"
+        >
           <Slider.Root
-            value={[volume]}
+            aria-label={["Source audio volume"]}
+            value={[sourceAudio.volume]}
             min={0}
             max={100}
-            onValueChange={(e) => setVolume(e.value[0]!)}
+            disabled={sourceAudio.muted}
+            onValueChange={(event) =>
+              updateSourceAudio(
+                { volume: event.value[0] ?? sourceAudio.volume },
+                "source-audio-volume",
+              )
+            }
+            onValueChangeEnd={endCoalesce}
             size="sm"
-            colorPalette="purple"
+            colorPalette="accent"
             flex="1"
           >
             <Slider.Control>
@@ -174,8 +171,8 @@ export function MusicPanel() {
               <Slider.Thumbs />
             </Slider.Control>
           </Slider.Root>
-          <Text fontSize="11px" color="#666" fontFamily="mono" w="28px" textAlign="right">
-            {volume}%
+          <Text textStyle="data" fontSize="10.5px" color="studio.fgMuted" w="34px" textAlign="right">
+            {sourceAudio.volume}%
           </Text>
         </Flex>
       </Box>

@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+
+      - name: Frozen install
+        run: bun ci
+
+      - name: Biome
+        run: bun run lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test
+
+      - name: Production dependency audit
+        run: bun run audit:production
+
+      - name: Production build
+        run: bun run build
+
+  postgres-invariants:
+    name: PostgreSQL / ${{ matrix.domain }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - domain: Workflow Run
+            command: test:workflow:db
+          - domain: Upload Session
+            command: test:upload-session:db
+          - domain: Workspace Billing
+            command: test:workspace-billing:db
+          - domain: Social Publication Attempt
+            command: test:social-publication:db
+          - domain: Clip Editor Document Persistence
+            command: test:clip-editor-persistence:db
+          - domain: Authenticated Request Policy
+            command: test:authenticated-request-policy:db
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: narriflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d narriflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/narriflow_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/narriflow_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+
+      - name: Frozen install
+        run: bun ci
+
+      - name: Run ${{ matrix.domain }} invariants
+        run: bun run ${{ matrix.command }}

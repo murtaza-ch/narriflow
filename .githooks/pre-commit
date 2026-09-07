@@ -1,0 +1,8 @@
+#!/bin/sh
+# Pre-commit: run Biome on staged JS/TS files. Fast, staged-only.
+staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(ts|tsx|js|jsx|json)$' || true)
+[ -z "$staged" ] && exit 0
+echo "$staged" | xargs bunx @biomejs/biome check --no-errors-on-unmatched || {
+  echo "\nBiome found issues in staged files. Fix them or run: bunx @biomejs/biome check --write <files>"
+  exit 1
+}

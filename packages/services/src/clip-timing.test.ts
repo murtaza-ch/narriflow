@@ -5,7 +5,7 @@ import {
   normalizeTranscriptSliceForClip,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-import { sliceTranscriptForClip } from "./clip.service";
+import { computePacingScore } from "./clip.service";
 
 const warningUtterance: TranscriptUtterance = {
   index: 0,
@@ -32,6 +32,38 @@ const warningUtterance: TranscriptUtterance = {
     { word: "planet.", startSec: 27.52, endSec: 28.2, confidence: 0.94 },
   ],
 };
+
+function makeMarketWindowUtterances(durationSec: number): TranscriptUtterance[] {
+  const utterances: TranscriptUtterance[] = [];
+
+  for (let start = 0; start < durationSec; start += 2) {
+    const words = [0, 1]
+      .map((offset) => start + offset)
+      .filter((second) => second < durationSec)
+      .map((second) => {
+        const isSentenceEnd = second % 10 === 9;
+        return {
+          word: `word${second}${isSentenceEnd ? "." : ""}`,
+          startSec: second,
+          endSec: second + 0.5,
+          confidence: 0.98,
+        };
+      });
+
+    utterances.push({
+      index: utterances.length,
+      speaker: 0,
+      speakerLabel: "Speaker 1",
+      startSec: words[0]!.startSec,
+      endSec: words[words.length - 1]!.endSec,
+      text: words.map((word) => word.word).join(" "),
+      confidence: 0.98,
+      words,
+    });
+  }
+
+  return utterances;
+}
 
 describe("clip timing normalization", () => {
   test("extends a clipped ending to complete the active sentence", () => {
@@ -76,11 +108,49 @@ describe("clip timing normalization", () => {
     expect(effective.endSec).toBe(28.45);
   });
 
-  test("service sliceTranscriptForClip uses clamped word-level slicing", () => {
-    const slice = sliceTranscriptForClip([warningUtterance], 25.19, 25.79);
+  test("market-window timing repairs tiny AssemblyAI-style ranges into a usable clip", () => {
+    const effective = getEffectiveClipTiming({
+      utterances: makeMarketWindowUtterances(70),
+      startSec: 8.2,
+      endSec: 9.4,
+      sourceDurationSec: 70,
+      minDurationSec: 15,
+      preferredMinDurationSec: 30,
+      preferredMaxDurationSec: 75,
+      maxDurationSec: 90,
+    });
 
-    expect(slice[0]!.text).toBe("warning if");
-    expect(slice[0]!.startSec).toBe(25.2);
-    expect(slice[0]!.endSec).toBe(25.78);
+    expect(effective.startSec).toBe(0);
+    expect(effective.durationSec).toBeGreaterThanOrEqual(30);
+    expect(effective.durationSec).toBeLessThanOrEqual(75);
+    expect(effective.transcriptSlice.length).toBeGreaterThan(10);
+    expect(effective.transcriptSlice.at(-1)?.text).toContain("word39.");
+  });
+
+
+});
+
+describe("computePacingScore speaker turns", () => {
+  const makeSentence = (index: number, speaker: number): TranscriptUtterance => ({
+    index,
+    speaker,
+    speakerLabel: `Speaker ${speaker + 1}`,
+    startSec: index * 4,
+    endSec: index * 4 + 3,
+    text: "seven words are spoken in this sentence",
+    confidence: 0.9,
+    words: [],
+  });
+
+  test("monologue: many sentence rows count as ONE turn and get the neutral midpoint", () => {
+    const utterances = Array.from({ length: 10 }, (_, i) => makeSentence(i, 0));
+    // 70 words / 40s = 1.75wps -> +10; monologue midpoint -> +15
+    expect(computePacingScore(utterances, 40)).toBe(75);
+  });
+
+  test("conversation: turns come from adjacent speaker changes, not row count", () => {
+    const utterances = Array.from({ length: 10 }, (_, i) => makeSentence(i, i % 2));
+    // 10 speaker changes over 40s = 15/min -> +10; wps 1.75 -> +10
+    expect(computePacingScore(utterances, 40)).toBe(70);
   });
 });

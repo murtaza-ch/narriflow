@@ -3,13 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
   "exports": {
-    ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
-    },
     "./provider": "./src/provider.tsx",
     "./theme": "./src/theme.ts",
     "./components/*": "./src/components/*.tsx",
@@ -17,20 +11,21 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "lint": "echo 'ui lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "echo 'ui test: no-op'",
+    "test": "bun test",
     "clean": "rm -rf dist"
   },
   "peerDependencies": {
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "next": "^16.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "next": "^16.3.0",
     "framer-motion": "^12.0.0"
   },
   "dependencies": {
-    "@chakra-ui/react": "latest",
-    "@emotion/react": "latest",
+    "@internationalized/date": "3.12.0",
+    "@chakra-ui/react": "3.34.0",
+    "@emotion/cache": "11.14.0",
+    "@emotion/react": "11.14.0",
     "@hookform/resolvers": "^5.2.2",
     "lucide-react": "^0.577.0",
     "next-themes": "^0.4.6",
@@ -38,7 +33,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/react": "latest",
-    "@types/react-dom": "latest"
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4"
   }
 }

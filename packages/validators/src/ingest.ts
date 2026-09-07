@@ -1,29 +1,8 @@
 import { z } from "zod";
 
-function isYoutubeUrl(value: string) {
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase();
-    return (
-      host === "youtu.be" ||
-      host.endsWith("youtube.com") ||
-      host.endsWith("youtube-nocookie.com")
-    );
-  } catch {
-    return false;
-  }
-}
-
-export const youtubeIngestSchema = z.object({
-  title: z.string().min(1).max(200).optional(),
-  youtubeUrl: z.string().url().refine(isYoutubeUrl, {
-    message: "youtubeUrl must be a valid YouTube URL",
-  }),
-});
-
 export const rssPreviewSchema = z.object({
   rssUrl: z.string().url(),
-});
+}).strict();
 
 export const rssEpisodeSchema = z.object({
   id: z.string().min(1),
@@ -36,9 +15,13 @@ export const rssEpisodeSchema = z.object({
 
 export const rssImportSchema = z.object({
   rssUrl: z.string().url(),
-  episodes: z.array(rssEpisodeSchema).min(1).max(25),
+  // Feed data is authoritative on the server. Clients select stable IDs from
+  // preview rather than submitting enclosure URLs, titles, or durations.
+  episodeIds: z.array(z.string().min(1).max(128)).min(1).max(1),
+  commitToken: z.string().uuid().optional(),
   titlePrefix: z.string().min(1).max(100).optional(),
-});
+  brandTemplateId: z.string().uuid().nullable().optional(),
+}).strict();
 
 export const ingestStatusSchema = z.enum([
   "pending",
@@ -50,7 +33,6 @@ export const ingestStatusSchema = z.enum([
   "failed",
 ]);
 
-export type YoutubeIngestInput = z.infer<typeof youtubeIngestSchema>;
 export type RssPreviewInput = z.infer<typeof rssPreviewSchema>;
 export type RssEpisodeInput = z.infer<typeof rssEpisodeSchema>;
 export type RssImportInput = z.infer<typeof rssImportSchema>;

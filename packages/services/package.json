@@ -21,22 +21,32 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "lint": "echo 'services lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test",
+    "billing:operator": "bun scripts/workspace-billing-operator.ts",
+    "generated-media:operator": "bun scripts/generated-media-operator.ts",
+    "social-publication:operator": "bun scripts/social-publication-operator.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.923.0",
     "@aws-sdk/s3-request-presigner": "^3.923.0",
     "@narriflow/db": "workspace:*",
+    "@narriflow/email": "workspace:*",
     "@narriflow/validators": "workspace:*",
+    "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "^7.4.2",
-    "fast-xml-parser": "^5.2.5",
+    "fast-xml-parser": "^5.10.1",
+    "fontkit": "2.0.4",
     "ioredis": "^5.9.3",
-    "resend": "latest"
+    "sharp": "^0.35.3",
+    "stripe": "^22.5.0"
   },
   "devDependencies": {
-    "@types/node": "latest"
+    "@prisma/adapter-pg": "7.7.0",
+    "@types/fontkit": "2.0.8",
+    "@types/node": "26.2.0",
+    "@types/pg": "8.15.5",
+    "pg": "8.16.3"
   }
 }

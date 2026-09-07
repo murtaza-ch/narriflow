@@ -1,0 +1,331 @@
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getPrismaClient } from "@narriflow/db/client";
+import {
+	claimDueSocialPublicationAttempts,
+	createSocialPublicationAttempt,
+	heartbeatSocialPublicationClaim,
+	prismaSocialPublicationAttemptStore,
+	type OwnedPublicationAttempt,
+} from "./social-publication-attempt";
+import { createPublicationCheckpointCipher } from "./social-publication-checkpoint-cipher";
+import { parseSocialPublicationConfig } from "./social-publication-config";
+import { createNativePublicationPlatformRegistry } from "./social-publication-native-platforms";
+import type { NativePublicationThumbnail } from "./social-publication-native-platforms";
+import {
+	PublicationPlatformExecutionError,
+	type PublicationPlatformInput,
+} from "./social-publication-platform";
+import {
+	createFetchPublicationWebhookTransport,
+	createPublicationWebhookPlatform,
+	type PublicationWebhookMedia,
+} from "./social-publication-webhook";
+import {
+	downloadObjectToFile,
+	headObject,
+	presignDownloadUrl,
+} from "./r2-storage";
+import { socialOAuthService } from "./social-oauth.service";
+import { structuredSocialPublicationMetrics } from "./social-publication-observability";
+import { createYouTubeReceiptEnricher } from "./youtube-receipt-enrichment";
+
+async function materializeMedia(input: PublicationPlatformInput["media"]) {
+	const directory = await mkdtemp(join(tmpdir(), "narriflow-publication-"));
+	const path = join(directory, input.fileName);
+	try {
+		await downloadObjectToFile({ key: input.storageKey, filePath: path });
+		const facts = await stat(path);
+		if (facts.size !== input.sizeBytes) {
+			throw new Error(
+				"Frozen Publication State byte length does not match stored media",
+			);
+		}
+		return {
+			sizeBytes: facts.size,
+			fileName: input.fileName,
+			async blob(start = 0, endExclusive = facts.size) {
+				const bun = (
+					globalThis as unknown as {
+						Bun: { file(filePath: string): Blob };
+					}
+				).Bun;
+				return bun.file(path).slice(start, endExclusive, input.contentType);
+			},
+			async cleanup() {
+				await rm(directory, { recursive: true, force: true });
+			},
+		};
+	} catch (error) {
+		await rm(directory, { recursive: true, force: true }).catch(
+			() => undefined,
+		);
+		throw error;
+	}
+}
+
+async function resolveThumbnail(input: NativePublicationThumbnail) {
+	const prisma = getPrismaClient();
+	if (!prisma) throw new Error("Database client unavailable");
+	const asset = await prisma.visualAsset.findFirst({
+		where: {
+			id: input.assetId,
+			fingerprint: input.fingerprint,
+			kind: "image",
+			deletedAt: null,
+		},
+		select: {
+			id: true,
+			storageKey: true,
+			contentType: true,
+			sizeBytes: true,
+		},
+	});
+	if (!asset) {
+		throw new PublicationPlatformExecutionError(
+			"publication_thumbnail_missing",
+			"preparation",
+			"The exact frozen publication thumbnail is unavailable",
+		);
+	}
+	return asset;
+}
+
+function thumbnailFileName(asset: { id: string; contentType: string }) {
+	const extension = asset.contentType === "image/jpeg"
+		? "jpg"
+		: asset.contentType === "image/png"
+			? "png"
+			: asset.contentType === "image/webp"
+				? "webp"
+				: null;
+	if (!extension) {
+		throw new PublicationPlatformExecutionError(
+			"publication_thumbnail_type_invalid",
+			"preparation",
+			"The frozen publication thumbnail format is unsupported",
+		);
+	}
+	return `${asset.id}.${extension}`;
+}
+
+async function materializeThumbnail(input: NativePublicationThumbnail) {
+	const asset = await resolveThumbnail(input);
+	const directory = await mkdtemp(join(tmpdir(), "narriflow-thumbnail-"));
+	const fileName = thumbnailFileName(asset);
+	const path = join(/* turbopackIgnore: true */ directory, fileName);
+	try {
+		await downloadObjectToFile({ key: asset.storageKey, filePath: path });
+		const facts = await stat(/* turbopackIgnore: true */ path);
+		if (BigInt(facts.size) !== asset.sizeBytes) {
+			throw new PublicationPlatformExecutionError(
+				"publication_thumbnail_changed",
+				"preparation",
+				"The exact frozen publication thumbnail no longer matches storage",
+			);
+		}
+		return {
+			sizeBytes: facts.size,
+			fileName,
+			contentType: asset.contentType,
+			async blob(start = 0, endExclusive = facts.size) {
+				const bun = (globalThis as unknown as { Bun: { file(filePath: string): Blob } }).Bun;
+				return bun.file(path).slice(start, endExclusive, asset.contentType);
+			},
+			async cleanup() {
+				await rm(directory, { recursive: true, force: true });
+			},
+		};
+	} catch (error) {
+		await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+		throw error;
+	}
+}
+
+export function createVerifiedPublicationWebhookMedia(dependencies: {
+	head: typeof headObject;
+	presign: typeof presignDownloadUrl;
+	deadlineMs: number;
+	clock: { now(): Date };
+}): PublicationWebhookMedia {
+	return {
+		async createScopedAccess(input) {
+			try {
+				const object = await dependencies.head(input.storageKey);
+				if (object.sizeBytes !== input.sizeBytes) {
+					throw new PublicationPlatformExecutionError(
+						"publication_frozen_media_missing",
+						"preparation",
+						"The exact frozen publication media is unavailable",
+					);
+				}
+			} catch (error) {
+				if (error instanceof PublicationPlatformExecutionError) throw error;
+				const code =
+					error !== null && typeof error === "object" && "name" in error
+						? String(error.name)
+						: "";
+				if (code === "NoSuchKey" || code === "NotFound") {
+					throw new PublicationPlatformExecutionError(
+						"publication_frozen_media_missing",
+						"preparation",
+						"The exact frozen publication media is unavailable",
+					);
+				}
+				throw error;
+			}
+			const expiresInSeconds = Math.ceil(
+				dependencies.deadlineMs / 1000 + 15 * 60,
+			);
+			return {
+				url: await dependencies.presign({
+					key: input.storageKey,
+					fileName: input.fileName,
+					expiresIn: expiresInSeconds,
+				}),
+				expiresAt: new Date(
+					dependencies.clock.now().getTime() + expiresInSeconds * 1000,
+				),
+			};
+		},
+	};
+}
+
+export function createProductionSocialPublicationRuntime(
+	environment: Record<string, string | undefined> = process.env,
+) {
+	const config = parseSocialPublicationConfig(environment);
+	const native = createNativePublicationPlatformRegistry({
+		fetch,
+		media: {
+			materialize: materializeMedia,
+			createScopedAccess: (media) =>
+				presignDownloadUrl({
+					key: media.storageKey,
+					fileName: media.fileName,
+					expiresIn: 2 * 60 * 60,
+				}),
+		},
+		thumbnails: {
+			materialize: materializeThumbnail,
+			async createScopedAccess(input) {
+				const asset = await resolveThumbnail(input);
+				return presignDownloadUrl({
+					key: asset.storageKey,
+					fileName: thumbnailFileName(asset),
+					expiresIn: 2 * 60 * 60,
+				});
+			},
+		},
+		clock: { now: () => new Date() },
+		metrics: structuredSocialPublicationMetrics,
+		config: {
+			youtubeApiVersion: config.providers.youtubeApiVersion,
+			youtubeChunkBytes: config.providers.youtubeChunkBytes,
+			metaGraphVersion: config.providers.metaGraphVersion,
+			facebookReelsPublishingEnabled:
+				config.providers.facebookReelsPublishingEnabled,
+			linkedInVersion: config.providers.linkedInVersion,
+			instagramPollAttempts: config.providers.instagramPollAttempts,
+			instagramPollIntervalMs: config.providers.instagramPollIntervalMs,
+			tiktokPollIntervalMs: config.providers.tiktokPollIntervalMs,
+			tiktokChunkBytes: config.providers.tiktokChunkBytes,
+			tiktokApiVersion: config.providers.tiktokApiVersion,
+			xApiVersion: config.providers.xApiVersion,
+			xChunkBytes: config.providers.xChunkBytes,
+			xMaxMediaBytes: config.providers.xMaxMediaBytes,
+			xRateLimitRetryFloorMs: config.providers.xRateLimitRetryFloorMs,
+			xReconciliationMaxPages:
+				config.providers.xReconciliationMaxPages,
+		},
+	});
+	const webhook = config.webhook
+		? createPublicationWebhookPlatform({
+				config: config.webhook,
+				transport: createFetchPublicationWebhookTransport(),
+				media: createVerifiedPublicationWebhookMedia({
+					head: headObject,
+					presign: presignDownloadUrl,
+					deadlineMs: config.webhook.deadlineMs,
+					clock: { now: () => new Date() },
+				}),
+				clock: { now: () => new Date() },
+			})
+		: null;
+	const platforms = {
+		get(
+			platform: PublicationPlatformInput["platform"],
+			channel: "native" | "webhook" = "native",
+		) {
+			if (channel === "webhook") {
+				if (!webhook) {
+					throw new Error("Publication webhook is not configured");
+				}
+				return webhook;
+			}
+			return native.get(platform);
+		},
+	};
+	const enrichAccepted = createYouTubeReceiptEnricher({
+		fetch,
+		metrics: structuredSocialPublicationMetrics,
+	});
+	const attempt = createSocialPublicationAttempt({
+		store: prismaSocialPublicationAttemptStore,
+		platforms,
+		credentials: {
+			load: (accountId) => socialOAuthService.getPublishAccount(accountId),
+		},
+		checkpointCipher: createPublicationCheckpointCipher(config.checkpointKey),
+		clock: { now: () => new Date() },
+		diagnostics: {
+			record(event) {
+				console.warn(
+					JSON.stringify({ ...event, ts: new Date().toISOString() }),
+				);
+			},
+		},
+		metrics: structuredSocialPublicationMetrics,
+		retry: { ...config.retry, random: Math.random },
+		providerCallBudget: config.worker.providerCallBudget,
+		processingDeadlineMs: config.worker.processingDeadlineMs,
+		reconciliationDeadlineMs: config.worker.reconciliationDeadlineMs,
+	});
+	return {
+		config,
+		attempt,
+		enrichAccepted,
+		claimDue(claimantId: string, now = new Date()) {
+			return claimDueSocialPublicationAttempts({
+				claimantId,
+				now,
+				config: {
+					batchSize: config.worker.batchSize,
+					leaseMs: config.worker.leaseMs,
+					processingDeadlineMs: config.worker.processingDeadlineMs,
+					reconciliationDeadlineMs: config.worker.reconciliationDeadlineMs,
+					providerCallBudget: config.worker.providerCallBudget,
+				},
+				metrics: structuredSocialPublicationMetrics,
+			});
+		},
+		heartbeat(owned: OwnedPublicationAttempt, now = new Date()) {
+			return heartbeatSocialPublicationClaim({
+				owned,
+				now,
+				leaseMs: config.worker.leaseMs,
+				metrics: structuredSocialPublicationMetrics,
+			});
+		},
+	};
+}
+
+let productionRuntime:
+	| ReturnType<typeof createProductionSocialPublicationRuntime>
+	| undefined;
+
+export function getSocialPublicationRuntime() {
+	productionRuntime ??= createProductionSocialPublicationRuntime();
+	return productionRuntime;
+}

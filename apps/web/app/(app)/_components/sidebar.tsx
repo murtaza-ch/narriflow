@@ -1,119 +1,110 @@
 "use client";
 
 import Link from "next/link";
-import { Box, Stack, Flex, Text } from "@chakra-ui/react";
-import { LayoutDashboard, FolderOpen, Upload, Settings } from "lucide-react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { CircleHelp, Plus, Sparkles } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
 import { NavLink } from "@narriflow/ui/components/nav-link";
-import { useColorMode } from "@narriflow/ui/components/color-mode";
-import { Sun, Moon } from "lucide-react";
+import { Meter } from "@narriflow/ui/components/meter";
+import { Button } from "@narriflow/ui/components/button";
+import { NAV_ITEMS } from "./nav-items";
+import { usagePalette } from "./usage-palette";
+import { WorkspaceSwitcher, type WorkspaceSwitcherItem } from "./workspace-switcher";
 
 interface SidebarProps {
   email: string | null;
   firstName: string | null;
   lastName: string | null;
   imageUrl: string | null;
+  usedMinutes: number;
+  limitMinutes: number;
+  activeWorkspaceId: string;
+  workspaces: WorkspaceSwitcherItem[];
+  canCreate: boolean;
+  canCreateWorkspace: boolean;
 }
 
-export function Sidebar({ email, firstName, lastName }: SidebarProps) {
-  const { colorMode, toggleColorMode } = useColorMode();
-  const displayName = [firstName, lastName].filter(Boolean).join(" ") || "Account";
+export function Sidebar({
+  usedMinutes,
+  limitMinutes,
+  activeWorkspaceId,
+  workspaces,
+  canCreate,
+  canCreateWorkspace,
+}: SidebarProps) {
+  const usagePct = limitMinutes > 0 ? Math.min(100, (usedMinutes / limitMinutes) * 100) : 0;
+  const palette = usagePalette(usagePct);
 
   return (
-    <Box
+    <Flex
       as="aside"
       w="240px"
-      h="100vh"
+      h="100dvh"
       position="fixed"
       top="0"
       left="0"
+      display={{ base: "none", lg: "flex" }}
+      direction="column"
       borderRightWidth="1px"
       borderColor="border"
-      bg="bg"
-      display={{ base: "none", lg: "flex" }}
-      flexDirection="column"
       zIndex="30"
     >
-      {/* Logo */}
-      <Flex h="52px" align="center" px="16px" flexShrink={0}>
-        <Link href="/dashboard">
+      {/* Logo — hairline aligns with the content top bar */}
+      <Flex
+        h="48px"
+        align="center"
+        px="5"
+        flexShrink={0}
+        borderBottomWidth="1px"
+        borderColor="border.subtle"
+      >
+        <Link href="/home" aria-label="Narriflow home">
           <Logo size="md" />
         </Link>
       </Flex>
 
-      {/* Navigation */}
-      <Stack flex="1" px="8px" pt="8px" gap="2">
-        <NavLink href="/dashboard" icon={<LayoutDashboard size={18} />}>
-          Dashboard
-        </NavLink>
-        <NavLink href="/projects" icon={<FolderOpen size={18} />}>
-          Projects
-        </NavLink>
-        <NavLink href="/upload" icon={<Upload size={18} />}>
-          Upload
-        </NavLink>
+      <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} canCreateWorkspace={canCreateWorkspace} />
+
+      {/* Navigation — single IA source */}
+      <Stack as="nav" flex="1" px="3" py="4" gap="0.5" overflowY="auto">
+        {canCreate ? (
+          <Button asChild size="sm" mb="3" w="full">
+            <Link href="/upload"><Plus size={15} />New project</Link>
+          </Button>
+        ) : null}
+        {NAV_ITEMS.map(({ label, href, icon: Icon }) => (
+          <NavLink key={href} href={href} icon={<Icon size={16} />}>
+            {label}
+          </NavLink>
+        ))}
+        <Box flex="1" minH="6" />
+        <NavLink href="/whats-new" icon={<Sparkles size={16} />}>What&apos;s new</NavLink>
+        <NavLink href="/help" icon={<CircleHelp size={16} />}>Tutorials &amp; help</NavLink>
       </Stack>
 
-      {/* Bottom section */}
-      <Stack px="8px" pb="12px" gap="2" borderTopWidth="1px" borderColor="border" pt="8px">
-        <NavLink href="/settings" icon={<Settings size={18} />}>
-          Settings
-        </NavLink>
-        <Flex
-          as="button"
-          onClick={toggleColorMode}
-          align="center"
-          gap="8px"
-          px="12px"
-          py="8px"
-          borderRadius="8px"
-          fontSize="13px"
-          color="fg.muted"
-          fontWeight="400"
-          cursor="pointer"
-          transition="all 150ms ease"
-          _hover={{ bg: "bg.subtle", color: "fg" }}
-        >
-          {colorMode === "light" ? <Moon size={18} /> : <Sun size={18} />}
-          <Text>{colorMode === "light" ? "Dark mode" : "Light mode"}</Text>
-        </Flex>
-
-        {/* Account info */}
-        <Flex
-          align="center"
-          gap="8px"
-          px="12px"
-          py="8px"
-          borderTopWidth="1px"
-          borderColor="border"
-          mt="4px"
-          pt="12px"
-        >
-          <Box
-            w="28px"
-            h="28px"
-            borderRadius="full"
-            bg="accent.subtle"
-            display="flex"
-            alignItems="center"
-            justifyContent="center"
-            fontSize="11px"
-            fontWeight="600"
-            color="fg.accent"
-            flexShrink={0}
-          >
-            {(firstName?.charAt(0) ?? email?.charAt(0) ?? "U").toUpperCase()}
-          </Box>
-          <Stack gap="0" overflow="hidden">
-            <Text fontSize="13px" fontWeight="500" color="fg" truncate>
-              {displayName}
+      {/* Usage mini-meter */}
+      <Box px="3" py="3" borderTopWidth="1px" borderColor="border.subtle" flexShrink={0}>
+        <Box px="2.5" pt="1" pb="3">
+          <Flex align="baseline" justify="space-between" gap="3" mb="1.5">
+            <Text textStyle="eyebrow" color="fg.subtle">
+              Usage
             </Text>
-            <Text fontSize="11px" color="fg.subtle" truncate>
-              {email ?? ""}
+            <Text
+              textStyle="data"
+              fontSize="12px"
+              color={palette === "accent" ? "fg.muted" : `${palette}.fg`}
+            >
+              {Math.round(usedMinutes)}/{Math.round(limitMinutes)} min
             </Text>
-          </Stack>
-        </Flex>
-      </Stack>
-    </Box>
+          </Flex>
+          <Meter
+            value={usagePct}
+            palette={palette}
+            showValue={false}
+            aria-label="Monthly processing minutes used"
+          />
+        </Box>
+      </Box>
+    </Flex>
   );
 }

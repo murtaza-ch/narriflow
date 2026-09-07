@@ -13,17 +13,17 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "lint": "echo 'auth lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "echo 'auth test: no-op'",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@clerk/nextjs": "^6.38.2",
+    "@clerk/nextjs": "^6.39.5",
     "@narriflow/db": "workspace:*",
-    "@prisma/client": "^7.4.2"
+    "@narriflow/validators": "workspace:*",
+    "@prisma/client": "^7.4.2",
+    "next": "16.3.0"
   },
   "devDependencies": {
-    "@types/node": "latest"
+    "@types/node": "26.2.0"
   }
 }

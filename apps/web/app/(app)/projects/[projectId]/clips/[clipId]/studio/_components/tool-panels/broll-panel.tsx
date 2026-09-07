@@ -1,142 +1,487 @@
 "use client";
 
-import { useState } from "react";
-import { Box, Flex, Text, Stack, Input } from "@chakra-ui/react";
-import { Search, Film, Library, Globe } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Box, Flex, Text, Stack, Input, SimpleGrid } from "@chakra-ui/react";
+import { Search, Film, Check, X, AlertTriangle, Play, Sparkles } from "lucide-react";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { brollQueryForClip, planBrollCutaways } from "@narriflow/validators";
+import { formatDuration } from "@/lib/format";
+import { useStudio } from "../studio-shell";
+import { manualBrollPreviewWindow } from "../broll-preview";
+import { GeneratedImagesPanel } from "./generated-images-panel";
 
-const MOCK_SUGGESTIONS = [
-  { id: "1", ts: "0s", desc: "Black SHERP all-terrain vehicle drives over dirt mound, kicking up dust." },
-  { id: "2", ts: "0s", desc: "SHERP drives through shallow floodwaters approaching flooded property." },
-  { id: "3", ts: "0.2s", desc: "People unload packages of bottled water from the back of the SHERP." },
-  { id: "4", ts: "0s", desc: "Wide shot of SHERP parked next to pickup truck for size comparison." },
-  { id: "5", ts: "0s", desc: "Aerial view of SHERP navigating through dense forest terrain." },
-];
+interface BrollResult {
+  id: number;
+  image: string;
+  width: number;
+  height: number;
+  durationSec: number;
+  downloadUrl: string;
+  authorName?: string | null;
+  authorUrl?: string | null;
+  pageUrl?: string | null;
+}
 
-const TABS = [
-  { id: "suggestions", label: "Suggestions", icon: <Film size={13} /> },
-  { id: "library",     label: "Library",     icon: <Library size={13} /> },
-  { id: "stock",       label: "Stock",       icon: <Globe size={13} /> },
-];
+const INPUT_RESET = {
+  border: "none",
+  outline: "none",
+  background: "transparent",
+  boxShadow: "none",
+  caretColor: "var(--chakra-colors-studio-accent)",
+} as const;
 
 export function BRollPanel() {
-  const [activeTab, setActiveTab] = useState("suggestions");
-  const [query, setQuery] = useState("");
+  const {
+    clipInfo,
+    aspectRatio,
+    brollUrl,
+    brollPreviewAsset,
+    setBrollUrl,
+    setBrollPreviewAsset,
+    seekTo,
+  } = useStudio("clipInfo", "aspectRatio", "brollUrl", "brollPreviewAsset", "setBrollUrl", "setBrollPreviewAsset", "seekTo");
+  const orientation =
+    aspectRatio === "16:9"
+      ? "landscape"
+      : aspectRatio === "1:1"
+        ? "square"
+        : "portrait";
 
-  const filtered = MOCK_SUGGESTIONS.filter((s) =>
-    s.desc.toLowerCase().includes(query.toLowerCase()),
+  // Fix: this used to prefill with the raw clip title (a full sentence),
+  // which made for a useless first search ("How to scale a SaaS startup in
+  // 2026" as a literal Pexels query). Derive a short visual query instead —
+  // the same query-builder the render pipeline itself falls back to.
+  const derivedQuery = useMemo(
+    () =>
+      clipInfo.brollCues[0]?.query.trim() ||
+      brollQueryForClip(clipInfo.title, null),
+    [clipInfo.brollCues, clipInfo.title],
+  );
+
+  const [sourceMode, setSourceMode] = useState<"stock" | "generate">("stock");
+  const [query, setQuery] = useState(derivedQuery ?? "");
+  const [results, setResults] = useState<BrollResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [configured, setConfigured] = useState(true);
+  const [previewId, setPreviewId] = useState<number | null>(null);
+  const didInit = useRef(false);
+
+  const selectedAsset =
+    brollPreviewAsset?.url === brollUrl ? brollPreviewAsset : null;
+  const selectedWindow = useMemo(
+    () =>
+      brollUrl
+        ? manualBrollPreviewWindow(
+            clipInfo.duration,
+            selectedAsset?.durationSec,
+          )
+        : null,
+    [brollUrl, clipInfo.duration, selectedAsset?.durationSec],
+  );
+
+  // Use the exact detection cues consumed by the worker. Existing clips with
+  // no cues retain the keyword fallback, but cue-rich clips no longer show
+  // the same irrelevant query in every planned row.
+  const plannedCutaways = useMemo(
+    () => planBrollCutaways(clipInfo.duration, clipInfo.brollCues, derivedQuery),
+    [clipInfo.brollCues, clipInfo.duration, derivedQuery],
+  );
+
+  const runSearch = useCallback(
+    async (q: string) => {
+      if (!q.trim()) {
+        setResults([]);
+        setError(null);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(
+          `/api/broll/search?query=${encodeURIComponent(q)}&orientation=${orientation}`,
+        );
+        const json = (await res.json()) as {
+          configured?: boolean;
+          results?: BrollResult[];
+          error?: string;
+        };
+        if (!res.ok) throw new Error(json.error ?? "Search failed");
+        setConfigured(json.configured !== false);
+        setResults(json.results ?? []);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Search failed");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [orientation],
+  );
+
+  // Auto-suggest from the derived query on first open.
+  useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
+    if (query.trim()) void runSearch(query);
+  }, [query, runSearch]);
+
+  // Dispatches through the editor document reducer (undoable, autosaved in
+  // the background) instead of PATCHing directly — the applied URL is
+  // validated server-side (assertPublicHttpUrl) when the autosave PUT lands;
+  // a rejection surfaces via the shell's general autosave error toast.
+  const apply = useCallback(
+    (result: BrollResult | null) => {
+      setError(null);
+      setBrollUrl(result?.downloadUrl ?? null);
+      setBrollPreviewAsset(
+        result
+          ? {
+              url: result.downloadUrl,
+              durationSec: result.durationSec,
+              posterUrl: result.image,
+              authorName: result.authorName ?? null,
+              pageUrl: result.pageUrl ?? null,
+            }
+          : null,
+      );
+    },
+    [setBrollPreviewAsset, setBrollUrl],
   );
 
   return (
     <Stack gap="0" h="100%">
-      {/* Search */}
-      <Box p="12px" pb="8px">
+      <Flex gap="6px" p="12px" pb="8px">
+        {([
+          { id: "stock", label: "Stock library", icon: <Film size={12} /> },
+          { id: "generate", label: "Generate", icon: <Sparkles size={12} /> },
+        ] as const).map((source) => {
+          const active = sourceMode === source.id;
+          return (
+            <Flex
+              key={source.id}
+              as="button"
+              aria-pressed={active}
+              align="center"
+              justify="center"
+              gap="5px"
+              flex="1"
+              h="30px"
+              borderRadius="l2"
+              bg={active ? "studio.raised" : "studio.subtle"}
+              borderWidth="1px"
+              borderColor={active ? "studio.accent" : "studio.border"}
+              color={active ? "studio.accentFg" : "studio.fgMuted"}
+              fontSize="11px"
+              fontWeight="600"
+              cursor="pointer"
+              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
+              onClick={() => setSourceMode(source.id)}
+            >
+              {source.icon}
+              {source.label}
+            </Flex>
+          );
+        })}
+      </Flex>
+
+      {sourceMode === "generate" ? (
+        <GeneratedImagesPanel />
+      ) : (
+      <>
+      <Box px="12px" pb="8px">
         <Flex
           align="center"
           gap="8px"
           px="10px"
           h="34px"
-          borderRadius="7px"
-          bg="#1a1a1a"
-          border="1px solid #2a2a2a"
+          borderRadius="l2"
+          bg="studio.subtle"
+          borderWidth="1px"
+          borderColor="studio.borderControl"
+          _focusWithin={{ borderColor: "studio.ring" }}
+          transition="border-color 120ms ease"
         >
-          <Search size={13} color="#555" />
+          <Box color="studio.fgSubtle" flexShrink={0}>
+            <Search size={13} />
+          </Box>
           <Input
-            placeholder="Search B-Roll..."
+            aria-label="Search stock B-roll"
+            placeholder="Search Pexels videos…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void runSearch(query);
+            }}
             size="xs"
             flex="1"
             fontSize="12px"
-            color="#ccc"
-            css={{ border: "none", outline: "none", background: "transparent", boxShadow: "none", caretColor: "#6366F1" }}
-            _placeholder={{ color: "#555" }}
+            color="studio.fg"
+            css={INPUT_RESET}
+            _placeholder={{ color: "studio.fgSubtle" }}
           />
+          {loading ? (
+            <Spinner size="xs" />
+          ) : (
+            <Text textStyle="eyebrow" fontSize="8px" color="studio.fgSubtle">
+              Pexels
+            </Text>
+          )}
         </Flex>
       </Box>
 
-      {/* Tabs */}
-      <Flex px="12px" gap="4px" mb="8px">
-        {TABS.map((tab) => (
-          <Flex
-            key={tab.id}
+      {/* Selected indicator — success stripe + label, never hue alone */}
+      {brollUrl ? (
+        <Flex
+          mx="12px"
+          mb="8px"
+          pl="10px"
+          pr="10px"
+          py="8px"
+          borderRadius="l2"
+          bg="success.950"
+          borderWidth="1px"
+          borderColor="success.800"
+          borderLeftWidth="3px"
+          borderLeftColor="success.400"
+          align="center"
+          justify="space-between"
+        >
+          <Flex align="center" gap="6px" color="success.400" minW="0">
+            <Check size={13} />
+            <Stack gap="0" minW="0">
+              <Text fontSize="11px" color="success.400" fontWeight="600">
+                B-roll applied
+              </Text>
+              {selectedWindow ? (
+                <Text textStyle="data" fontSize="10px" color="studio.timecode">
+                  {formatDuration(selectedWindow.startSec)}–{formatDuration(selectedWindow.endSec)} · {(selectedWindow.endSec - selectedWindow.startSec).toFixed(1)}s
+                </Text>
+              ) : null}
+              {selectedAsset?.authorName ? (
+                <Text fontSize="10px" color="studio.fgMuted" truncate>
+                  Video by {selectedAsset.authorName} · Pexels
+                </Text>
+              ) : null}
+            </Stack>
+          </Flex>
+          <Box
             as="button"
-            align="center"
-            gap="5px"
-            px="10px"
-            py="6px"
-            borderRadius="6px"
-            bg={activeTab === tab.id ? "#1e1e1e" : "transparent"}
-            border="1px solid"
-            borderColor={activeTab === tab.id ? "#2a2a2a" : "transparent"}
-            color={activeTab === tab.id ? "#ccc" : "#555"}
+            aria-label="Remove B-roll"
+            color="studio.fgMuted"
             cursor="pointer"
-            fontSize="11px"
-            fontWeight="500"
-            onClick={() => setActiveTab(tab.id)}
-            transition="all 150ms"
+            _hover={{ color: "studio.fg" }}
+            transition="color 120ms ease"
+            flexShrink={0}
+            onClick={() => apply(null)}
           >
-            {tab.icon}
-            {tab.label}
-          </Flex>
-        ))}
-      </Flex>
+            <X size={13} />
+          </Box>
+        </Flex>
+      ) : plannedCutaways.length > 0 ? (
+        <Box mx="12px" mb="8px" px="10px" py="8px" borderRadius="l2" bg="studio.subtle" borderWidth="1px" borderColor="studio.border">
+          <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
+            Planned automatic cutaways
+          </Text>
+          <Stack gap="4px">
+            {plannedCutaways.map((cutaway, index) => (
+              <Flex
+                key={`${cutaway.startSec}-${index}`}
+                as="button"
+                aria-label={`Preview automatic cutaway ${index + 1}, ${cutaway.query}, at ${formatDuration(cutaway.startSec)}`}
+                title={cutaway.query}
+                align="center"
+                justify="space-between"
+                gap="8px"
+                w="100%"
+                cursor="pointer"
+                borderRadius="l1"
+                _hover={{ bg: "studio.raised" }}
+                onClick={() => seekTo(cutaway.startSec)}
+              >
+                <Text fontSize="11px" color="studio.fgSubtle" flexShrink={0}>
+                  Cutaway {index + 1}
+                </Text>
+                <Text
+                  textStyle="data"
+                  fontSize="11px"
+                  color="studio.timecode"
+                  flexShrink={0}
+                >
+                  {formatDuration(cutaway.startSec)}–{formatDuration(cutaway.endSec)}
+                </Text>
+                <Text fontSize="11px" color="studio.fgMuted" truncate flex="1" textAlign="right">
+                  {cutaway.query}
+                </Text>
+              </Flex>
+            ))}
+          </Stack>
+        </Box>
+      ) : null}
 
-      {/* Content */}
-      <Stack gap="6px" px="12px" pb="12px" overflowY="auto" flex="1">
-        {activeTab === "suggestions" && filtered.map((item) => (
-          <Flex
-            key={item.id}
-            gap="10px"
-            p="10px"
-            borderRadius="8px"
-            bg="#1a1a1a"
-            border="1px solid #252525"
-            cursor="pointer"
-            align="flex-start"
-            transition="all 150ms"
-            _hover={{ bg: "#1e1e1e", borderColor: "#333" }}
-          >
-            {/* Thumbnail placeholder */}
-            <Box
-              w="52px"
-              h="36px"
-              borderRadius="5px"
-              bg="#262626"
-              border="1px solid #333"
-              flexShrink={0}
-              display="flex"
-              alignItems="center"
-              justifyContent="center"
-            >
-              <Film size={14} color="#444" />
-            </Box>
-            <Box flex="1" minW="0">
-              <Text fontSize="10px" fontFamily="mono" color="#6366F1" fontWeight="600" mb="2px">
-                {item.ts}
-              </Text>
-              <Text fontSize="11px" color="#777" lineHeight="1.4" style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" } as React.CSSProperties}>
-                {item.desc}
-              </Text>
-            </Box>
-          </Flex>
-        ))}
+      {error ? (
+        <Flex role="alert" px="12px" pb="8px" align="center" gap="6px" color="danger.400">
+          <AlertTriangle size={12} />
+          <Text fontSize="11px" color="danger.400">
+            {error}
+          </Text>
+        </Flex>
+      ) : null}
 
-        {activeTab !== "suggestions" && (
-          <Flex
-            direction="column"
-            align="center"
-            justify="center"
-            py="32px"
-            gap="8px"
-            color="#333"
-          >
-            <Library size={28} />
-            <Text fontSize="12px" color="#444" textAlign="center">
-              {activeTab === "library" ? "Your uploaded media will appear here" : "Stock footage coming soon"}
-            </Text>
-          </Flex>
+      {/* Results */}
+      <Box flex="1" overflowY="auto" px="12px" pb="12px">
+        {!configured ? (
+          <EmptyHint text="Stock B-roll search isn't available on your workspace yet." />
+        ) : results.length === 0 && !loading ? (
+          <EmptyHint text="No results. Try a different keyword." />
+        ) : (
+          <SimpleGrid columns={2} gap="8px">
+            {results.map((result) => {
+              const isSelected = brollUrl === result.downloadUrl;
+              const isPreviewing = previewId === result.id;
+              return (
+                <Box
+                  key={result.id}
+                  position="relative"
+                  borderRadius="l2"
+                  overflow="hidden"
+                  borderWidth="2px"
+                  borderColor={isSelected ? "success.400" : "transparent"}
+                  onMouseEnter={() => setPreviewId(result.id)}
+                  onMouseLeave={() => setPreviewId((current) => (current === result.id ? null : current))}
+                  _hover={{ borderColor: isSelected ? "success.400" : "studio.accent" }}
+                  transition="border-color 120ms ease"
+                >
+                  <Box
+                    as="button"
+                    aria-label={`Use this B-roll clip (${result.durationSec}s)`}
+                    aria-pressed={isSelected}
+                    cursor="pointer"
+                    display="block"
+                    w="100%"
+                    onClick={() => apply(result)}
+                  >
+                    {isPreviewing ? (
+                      // eslint-disable-next-line jsx-a11y/media-has-caption
+                      <video
+                        src={result.downloadUrl}
+                        poster={result.image}
+                        autoPlay
+                        muted
+                        loop
+                        playsInline
+                        preload="none"
+                        style={{
+                          width: "100%",
+                          height: "84px",
+                          objectFit: "cover",
+                          display: "block",
+                          background: "black",
+                        }}
+                      />
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={result.image}
+                        alt=""
+                        style={{
+                          width: "100%",
+                          height: "84px",
+                          objectFit: "cover",
+                          display: "block",
+                        }}
+                      />
+                    )}
+                  </Box>
+
+                  <Flex
+                    position="absolute"
+                    top="4px"
+                    right="4px"
+                    w="20px"
+                    h="20px"
+                    align="center"
+                    justify="center"
+                    borderRadius="l1"
+                    bg="rgba(0,0,0,0.55)"
+                    color="white"
+                    cursor="pointer"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setPreviewId((current) => (current === result.id ? null : result.id));
+                    }}
+                    aria-label={isPreviewing ? "Stop preview" : "Preview this clip"}
+                    role="button"
+                  >
+                    <Play size={11} fill={isPreviewing ? "currentColor" : "none"} />
+                  </Flex>
+
+                  <Flex
+                    position="absolute"
+                    bottom="0"
+                    left="0"
+                    right="0"
+                    px="6px"
+                    py="3px"
+                    justify="space-between"
+                    align="center"
+                    bg="rgba(0,0,0,0.6)"
+                  >
+                    <Stack gap="0" minW="0">
+                      <Text textStyle="data" fontSize="10px" color="studio.fg">
+                        {result.durationSec}s
+                      </Text>
+                      {result.authorName ? (
+                        <Text fontSize="9px" color="studio.fgMuted" truncate maxW="90px">
+                          {result.authorName}
+                        </Text>
+                      ) : null}
+                    </Stack>
+                    {isSelected ? (
+                      <Box color="success.400" flexShrink={0}>
+                        <Check size={11} />
+                      </Box>
+                    ) : null}
+                  </Flex>
+                </Box>
+              );
+            })}
+          </SimpleGrid>
         )}
-      </Stack>
+      </Box>
+      </>
+      )}
     </Stack>
+  );
+}
+
+function EmptyHint({ text }: { text: string }) {
+  return (
+    <Flex
+      direction="column"
+      align="center"
+      justify="center"
+      py="32px"
+      px="16px"
+      gap="10px"
+      color="studio.fgSubtle"
+    >
+      {/* Ghost frame — the Blueline empty signature, graphite-tuned */}
+      <Flex
+        w="88px"
+        aspectRatio={16 / 9}
+        align="center"
+        justify="center"
+        borderWidth="1px"
+        borderStyle="dashed"
+        borderColor="studio.borderStrong"
+        borderRadius="l1"
+      >
+        <Film size={18} strokeWidth={1.5} />
+      </Flex>
+      <Text fontSize="12px" color="studio.fgMuted" textAlign="center" lineHeight="1.5">
+        {text}
+      </Text>
+    </Flex>
   );
 }
