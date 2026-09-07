@@ -15,7 +15,7 @@ import React, {
 import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Monitor } from "lucide-react";
-import { toaster } from "@narriflow/ui";
+import { toaster } from "@narriflow/ui/components/toaster";
 import type { GeneratedImageCapability } from "@narriflow/services";
 import {
   compositionAssetRef,

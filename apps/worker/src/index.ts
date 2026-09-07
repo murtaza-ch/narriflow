@@ -254,7 +254,7 @@ async function reapStalledRunsIfDue() {
 			);
 		}
 	} catch (error) {
-		console.error(
+		console.warn(
 			JSON.stringify({
 				level: "error",
 				message: "reaper_failed",
@@ -308,7 +308,7 @@ function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
 			processedCount += processed;
 		},
 		onFailure: (error, consecutiveFailures) => {
-			console.error(
+			console.warn(
 				JSON.stringify({
 					level: "error",
 					message: "worker_poll_failed",
@@ -320,7 +320,7 @@ function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
 			);
 		},
 		onFailureLimit: (consecutiveFailures) => {
-			console.error(
+			console.warn(
 				JSON.stringify({
 					level: "error",
 					message: "worker_poll_failures_exceeded",

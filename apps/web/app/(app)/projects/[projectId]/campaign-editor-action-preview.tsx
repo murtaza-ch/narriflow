@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Box, Flex, NativeSelect, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, Check, LayoutTemplate, Palette, Sparkles } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
-import { Spinner } from "@narriflow/ui";
+import { Spinner } from "@narriflow/ui/components/spinner";
 import { userErrorMessage } from "@narriflow/validators";
 import {
   buildApplyProjectBrandProfileSelectedInput,

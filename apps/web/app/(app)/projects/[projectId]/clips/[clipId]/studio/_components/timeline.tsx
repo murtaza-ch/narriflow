@@ -2,7 +2,8 @@
 
 import { memo, useRef, useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 import { Box, Flex, Text, Slider, Popover, Portal, Stack } from "@chakra-ui/react";
-import { Button, toaster } from "@narriflow/ui";
+import { Button } from "@narriflow/ui/components/button";
+import { toaster } from "@narriflow/ui/components/toaster";
 import {
   Eye,
   EyeOff,
@@ -32,6 +33,7 @@ import {
 import type { EditedTimeMap, SourceRange, TranscriptUtterance } from "@narriflow/validators";
 import type { ClipPreviewPeaks } from "@narriflow/services";
 import { useStudio } from "./studio-shell";
+import { resolveTrimPosition } from "./trim-control";
 import { usePlaybackTime } from "./playback-clock";
 import { deletedRangesToCutMarkers, projectSegmentToEdited, type CutMarker } from "./edited-timeline";
 import { loadClipPreviewPeaks, sampleAmplitudeAtSourceTime } from "./waveform-peaks";
@@ -44,7 +46,6 @@ import {
 import {
   loadTrimTranscript,
   prefetchTrimTranscript,
-  nearestWordBoundary,
   type TrimTranscript,
 } from "./trim-transcript-cache";
 import {
@@ -1427,47 +1428,11 @@ const TrimHandle = memo(function TrimHandle({
       const transcript = transcriptRef.current;
       const sourceCeilingSec = transcript ? transcript.sourceDurationSec : Number.POSITIVE_INFINITY;
 
-      if (side === "start") {
-        // Finding 3 (Phase B closing review): the server now rejects a
-        // boundary save whose duration exceeds CLIP_MAX_DURATION_SEC
-        // (packages/validators/src/clip.ts) the same way it already rejects
-        // one under CLIP_MIN_DURATION_SEC — the handle must refuse to drag
-        // past it too, mirroring CLIP_MIN_DURATION_SEC's existing clamp
-        // right below.
-        const minStartForMaxDurationSec = drag.grabEndSec - CLIP_MAX_DURATION_SEC;
-        let candidate = drag.grabStartSec + deltaSec;
-        candidate = Math.max(
-          0,
-          minStartForMaxDurationSec,
-          Math.min(candidate, drag.grabEndSec - CLIP_MIN_DURATION_SEC),
-        );
-        if (transcript) {
-          candidate = nearestWordBoundary(transcript.words, candidate, "start");
-          candidate = Math.max(
-            0,
-            minStartForMaxDurationSec,
-            Math.min(candidate, drag.grabEndSec - CLIP_MIN_DURATION_SEC),
-          );
-        }
-        drag.candidateSec = candidate;
-      } else {
-        const maxEndForMaxDurationSec = drag.grabStartSec + CLIP_MAX_DURATION_SEC;
-        let candidate = drag.grabEndSec + deltaSec;
-        candidate = Math.min(
-          sourceCeilingSec,
-          maxEndForMaxDurationSec,
-          Math.max(candidate, drag.grabStartSec + CLIP_MIN_DURATION_SEC),
-        );
-        if (transcript) {
-          candidate = nearestWordBoundary(transcript.words, candidate, "end");
-          candidate = Math.min(
-            sourceCeilingSec,
-            maxEndForMaxDurationSec,
-            Math.max(candidate, drag.grabStartSec + CLIP_MIN_DURATION_SEC),
-          );
-        }
-        drag.candidateSec = candidate;
-      }
+      drag.candidateSec = resolveTrimPosition({
+        side, startSec: drag.grabStartSec, endSec: drag.grabEndSec,
+        candidateSec: (side === "start" ? drag.grabStartSec : drag.grabEndSec) + deltaSec,
+        sourceDurationSec: sourceCeilingSec, words: transcript?.words,
+      });
 
       paintDrag(dxPx, drag);
     },
@@ -1521,9 +1486,48 @@ const TrimHandle = memo(function TrimHandle({
     endDrag();
   }, [endDrag]);
 
+  const keyboardTrimPending = useRef(false);
+  const handleKeyDown = async (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const direction = event.key === "ArrowRight" || event.key === "ArrowUp" ? 1
+      : event.key === "ArrowLeft" || event.key === "ArrowDown" ? -1 : 0;
+    if (!direction || event.altKey || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (trimHandlesDisabled || keyboardTrimPending.current || dragRef.current) return;
+    keyboardTrimPending.current = true;
+    try {
+      const transcript = await loadTrimTranscript(clipInfo.projectId);
+      transcriptRef.current = transcript;
+      const current = side === "start" ? clipStartSec : clipEndSec;
+      const next = resolveTrimPosition({ side, startSec: clipStartSec, endSec: clipEndSec,
+        candidateSec: current + direction * (event.shiftKey ? 1 : 0.1),
+        sourceDurationSec: transcript.sourceDurationSec,
+      });
+      if (Math.abs(next - current) < TRIM_COMMIT_EPSILON_SEC / 2) return;
+      await commitTrim(side === "start" ? next : clipStartSec, side === "end" ? next : clipEndSec);
+    } catch {
+      toaster.create({ type: "error", title: "Trim failed",
+        description: "Couldn't load the transcript for this trim. Try again." });
+    } finally {
+      keyboardTrimPending.current = false;
+    }
+  };
+
   return (
     <Box
       ref={gripRef}
+      role="slider"
+      tabIndex={trimHandlesDisabled ? -1 : 0}
+      aria-label={side === "start" ? "Trim clip start" : "Trim clip end"}
+      aria-disabled={trimHandlesDisabled}
+      aria-orientation="horizontal"
+      aria-valuemin={side === "start" ? Math.max(0, clipEndSec - CLIP_MAX_DURATION_SEC) : clipStartSec + CLIP_MIN_DURATION_SEC}
+      aria-valuemax={side === "start" ? clipEndSec - CLIP_MIN_DURATION_SEC : Math.min(transcriptRef.current?.sourceDurationSec ?? Infinity, clipStartSec + CLIP_MAX_DURATION_SEC)}
+      aria-valuenow={side === "start" ? clipStartSec : clipEndSec}
+      aria-valuetext={`${(side === "start" ? clipStartSec : clipEndSec).toFixed(2)} seconds`}
+      title="Arrow keys trim by 0.1 seconds; Shift + arrow trims by 1 second"
+      onKeyDown={handleKeyDown}
+      _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent", outlineOffset: "2px" }}
       position="absolute"
       top="0"
       style={{

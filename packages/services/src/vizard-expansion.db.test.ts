@@ -15,6 +15,7 @@ import { clipExportService } from "./clip-export.service";
 import { prismaAssistedCopyStore } from "./assisted-social-copy.service";
 import { createAssistedSocialCopy } from "./assisted-social-copy";
 import { AutopilotService } from "./autopilot.service";
+import { dubbingService } from "./dubbing.service";
 import { bulkSocialSchedulingService } from "./bulk-social-scheduling.service";
 
 const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
@@ -113,6 +114,31 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     }, include: { variants: true } });
     return { user, workspace, project, clip, clipExport };
   }
+
+  test("dubbing admission enforces render readiness and reuses an idempotent queue request", async () => {
+    const current = await fixture("dubbing-admission");
+    const input = { clipId: current.clip.id, aspectRatio: "9:16" as const, targetLanguageCode: "es" as const, voice: "marin" as const };
+    const request = (key: string) => dubbingService.requestClipDub(current.user.id, current.workspace.id, current.project.id, key, input);
+    await expect(request("")).rejects.toMatchObject({ code: "dubbing_idempotency_key_required" });
+    await expect(request("before-render")).rejects.toMatchObject({ code: "dubbing_render_required" });
+    expect(await prisma.clipDub.count({ where: { projectId: current.project.id } })).toBe(0);
+    await prisma.workspace.update({ where: { id: current.workspace.id }, data: { pricingTier: "creator" } });
+    await expect(request("creator-denied")).rejects.toMatchObject({ code: "requires_pro_plan" });
+    await prisma.workspace.update({ where: { id: current.workspace.id }, data: { pricingTier: "business" } });
+    await prisma.clipRender.create({ data: { clipId: current.clip.id, aspectRatio: "ratio_9_16", status: "completed", storageKey: "fixtures/dubbing/base.mp4" } });
+    const first = await request("same-request");
+    const replay = await request("same-request");
+    expect(first.dub.status).toBe("queued");
+    expect(replay.dub.id).toBe(first.dub.id);
+    expect(replay.workflowRunId).toBe(first.workflowRunId);
+    expect(await prisma.clipDub.count({ where: { projectId: current.project.id } })).toBe(1);
+    expect(await prisma.workflowRun.count({ where: { projectId: current.project.id, stage: "dubbing" } })).toBe(1);
+    await prisma.clipDub.update({ where: { id: first.dub.id }, data: { status: "completed", completedAt: new Date() } });
+    const completed = await request("completed-replay");
+    expect(completed.dub.id).toBe(first.dub.id);
+    expect(completed.workflowRunId).toBeNull();
+    expect(await prisma.workflowRun.count({ where: { projectId: current.project.id, stage: "dubbing" } })).toBe(1);
+  });
 
   for (const outcome of ["success", "not_modified", "failure"] as const) {
     test(`Autopilot fences a replaced claim after feed ${outcome}`, async () => {

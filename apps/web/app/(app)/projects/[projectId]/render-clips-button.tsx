@@ -121,7 +121,7 @@ export function RenderClipsButton({
 
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        console.error("render_clips_failed", response.status, body);
+        console.warn(JSON.stringify({ level: "error", message: "render_clips_failed", status: response.status }));
         setError(
           userErrorMessage(body?.error) ??
             "Could not start rendering. Please try again.",
@@ -135,7 +135,7 @@ export function RenderClipsButton({
         router.refresh();
       });
     } catch (err) {
-      console.error("render_clips_failed", err);
+      console.warn(JSON.stringify({ level: "error", message: "render_clips_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
       setError("Could not start rendering. Please try again.");
     } finally {
       setSubmitting(false);

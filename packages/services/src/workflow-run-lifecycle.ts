@@ -362,8 +362,10 @@ export class WorkflowRunLifecycle {
   }
 
   private async databaseNow(tx: TransactionClient): Promise<Date> {
+    // Prisma adapters decode raw timestamps as UTC. Return a UTC wall-clock
+    // timestamp explicitly so a database session timezone cannot shift leases.
     const databaseClock = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
-      SELECT CURRENT_TIMESTAMP AS "databaseNow"
+      SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') AS "databaseNow"
     `;
     const databaseNow = databaseClock[0]?.databaseNow;
     if (!databaseNow) throw new Error("Database clock unavailable");
@@ -501,7 +503,7 @@ export class WorkflowRunLifecycle {
         ${workflowRunId}::uuid, ${input.projectId}::uuid,
         ${input.idempotencyKey}, ${input.stage}, 'queued', 0, 0,
         ${input.contentPackId ?? null}::uuid,
-        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'), (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       )
       ON CONFLICT ("projectId", "idempotencyKey") DO NOTHING
       RETURNING "id"
@@ -892,16 +894,16 @@ export class WorkflowRunLifecycle {
     const updated = await this.prisma.$executeRaw`
       UPDATE "WorkflowRun"
       SET
-        "heartbeatAt" = CURRENT_TIMESTAMP,
-        "leaseExpiresAt" = CURRENT_TIMESTAMP + (${this.leaseDurationMs} * INTERVAL '1 millisecond'),
-        "updatedAt" = CURRENT_TIMESTAMP
+        "heartbeatAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+        "leaseExpiresAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + (${this.leaseDurationMs} * INTERVAL '1 millisecond'),
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       WHERE "id" = ${attempt.workflowRunId}
         AND "projectId" = ${attempt.projectId}::uuid
         AND "stage" = ${attempt.stage}
         AND "status" = 'running'
         AND "attemptId" = ${attempt.attemptId}::uuid
         AND "leaseOwner" = ${this.leaseOwner}
-        AND "leaseExpiresAt" > CURRENT_TIMESTAMP
+        AND "leaseExpiresAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
     `;
     if (updated === 0) throw new WorkflowAttemptLost(attempt);
   }
@@ -919,7 +921,7 @@ export class WorkflowRunLifecycle {
           OR (
             "status" = 'running'
             AND "leaseOwner" = ${this.leaseOwner}
-            AND "leaseExpiresAt" > CURRENT_TIMESTAMP
+            AND "leaseExpiresAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
           )
         )
       LIMIT 1
@@ -1142,7 +1144,7 @@ export class WorkflowRunLifecycle {
         AND "attemptId" = ${attempt.attemptId}::uuid
         AND "stage" = ${expectedStage}
         AND "leaseOwner" = ${this.leaseOwner}
-        AND "leaseExpiresAt" > CURRENT_TIMESTAMP
+        AND "leaseExpiresAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       FOR UPDATE
     `;
     if (owned.length === 0) throw new WorkflowAttemptLost(attempt);
@@ -2615,7 +2617,7 @@ export class WorkflowRunLifecycle {
   async reapExpiredAttempts(): Promise<number> {
     const databaseClock = await this.prisma.$queryRaw<
       Array<{ databaseNow: Date }>
-    >`SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
+    >`SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') AS "databaseNow"`;
     const now = databaseClock[0]?.databaseNow;
     if (!now) throw new Error("Database clock unavailable");
     const expired = await this.prisma.workflowRun.findMany({

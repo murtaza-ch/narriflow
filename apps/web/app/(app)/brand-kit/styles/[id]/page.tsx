@@ -6,9 +6,10 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import {
   brandTemplateService,
+  brandProfileService,
   BrandTemplateNotFoundError,
 } from "@narriflow/services";
-import { TemplateForm } from "../_components/template-form";
+import { TemplateForm } from "../../_components/template-form";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -28,16 +29,19 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
     throw error;
   }
 
+  const profileId = await brandProfileService.resolveProfileForTemplate(appUser, id);
+  const returnHref = profileId ? `/brand-kit/${profileId}?section=styles&template=${id}` : "/brand-kit";
+
   if (template.isBuiltIn) {
     return (
       <Stack gap="8">
         <Box animation="fade-up" animationFillMode="backwards">
           <PageHeader
             title={template.name}
-            description="Built-in templates are read-only. Duplicate to customize."
+            description="Built-in styles are read-only. Duplicate to customize."
             actions={
               <Button variant="outline" colorPalette="gray" asChild>
-                <Link href="/brand-kit">Back</Link>
+                <Link href={returnHref}>Back</Link>
               </Button>
             }
           />
@@ -54,7 +58,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
           description="Saved changes apply to new projects only. Existing clips keep their current styling."
           actions={
             <Button variant="outline" colorPalette="gray" asChild>
-              <Link href="/brand-kit">Cancel</Link>
+              <Link href={returnHref}>Cancel</Link>
             </Button>
           }
         />

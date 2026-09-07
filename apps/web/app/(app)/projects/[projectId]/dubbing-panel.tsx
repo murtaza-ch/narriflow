@@ -165,7 +165,7 @@ export function DubbingPanel({
 
       startTransition(() => router.refresh());
     } catch (err) {
-      console.error("request_dub_failed", err);
+      console.warn(JSON.stringify({ level: "error", message: "request_dub_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
       setMessage("Could not queue dub. Please try again.");
     } finally {
       setSubmitting(false);
@@ -185,7 +185,7 @@ export function DubbingPanel({
       const payload: unknown = await response.json().catch(() => null);
       const downloadUrl = downloadUrlFromPayload(payload);
       if (!response.ok || !downloadUrl) {
-        console.error("dub_download_failed", response.status);
+        console.warn(JSON.stringify({ level: "error", message: "dub_download_failed", status: response.status }));
         setMessage(
           apiErrorCopy(payload, "Could not prepare this download. Please try again."),
         );
@@ -194,7 +194,7 @@ export function DubbingPanel({
 
       window.location.assign(downloadUrl);
     } catch {
-      console.error("dub_download_failed");
+      console.warn(JSON.stringify({ level: "error", message: "dub_download_failed" }));
       setMessage("Could not prepare this download. Please try again.");
     } finally {
       setDownloadingAsset((current) =>

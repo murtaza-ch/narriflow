@@ -301,13 +301,23 @@ export async function muxDubbedVideo(params: {
   });
 }
 
+interface DubbingPersistence {
+  getPendingDubs: typeof dubbingService.getPendingDubsForProject;
+  lifecycle: Pick<ReturnType<typeof getWorkflowRunLifecycle>,
+    "markDubProcessing" | "completeDub" | "failDub" | "completeDubbing" | "failAttempt">;
+}
+
 export async function processDubbingRun(
   attempt: ClaimedWorkflowAttempt,
   context: WorkflowAttemptContext,
   workerProcess: WorkerProcessModule = productionWorkerProcessModule,
+  persistence?: DubbingPersistence,
 ) {
   return workerProcess.withScratchDirectory("narriflow-dub-", (tempDir) =>
-    processDubbingRunInScratch(attempt, context, workerProcess, tempDir),
+    processDubbingRunInScratch(attempt, context, workerProcess, tempDir, persistence ?? {
+      getPendingDubs: (projectId) => dubbingService.getPendingDubsForProject(projectId),
+      lifecycle: getWorkflowRunLifecycle(),
+    }),
   );
 }
 
@@ -316,10 +326,11 @@ async function processDubbingRunInScratch(
   context: WorkflowAttemptContext,
   workerProcess: WorkerProcessModule,
   tempDir: string,
+  persistence: DubbingPersistence,
 ) {
   const run = { ...attempt, id: attempt.workflowRunId };
   const { signal } = context;
-  const lifecycle = getWorkflowRunLifecycle();
+  const { lifecycle } = persistence;
   signal?.throwIfAborted();
   log("info", "dubbing_run_started", {
     workflowRunId: run.id,
@@ -327,8 +338,7 @@ async function processDubbingRunInScratch(
   });
 
   try {
-    const apiKey = getRequiredOpenAIApiKey();
-    const pendingDubs = await dubbingService.getPendingDubsForProject(
+    const pendingDubs = await persistence.getPendingDubs(
       run.projectId,
     );
 
@@ -380,6 +390,7 @@ async function processDubbingRunInScratch(
 
         await context.reportProgress(Math.min(25, 10 + index * 5));
 
+        const apiKey = getRequiredOpenAIApiKey();
         const translatedText = await translateForDub({
           apiKey,
           sourceLanguageCode,

@@ -2832,7 +2832,7 @@ export class ProjectService {
 			// retry action on the project page (queueTranscriptionFormAction →
 			// triggerGeneration), so surface this loudly at error level rather than
 			// swallowing it as a warning.
-			console.error(
+			console.warn(
 				JSON.stringify({
 					level: "error",
 					message: "trigger_generation_after_ingest_failed",

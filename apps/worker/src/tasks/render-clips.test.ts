@@ -28,7 +28,6 @@ import {
   buildFreeTierPostProcessArgs,
   buildSingleVideoArgs as buildSingleVideoArgsWithPlan,
   clipRenderAttemptStorageKey,
-  applySpeakerLayoutOverridesToSegments,
   decidePipUsage,
   decideScreenFallback,
   decideSplitFallback,
@@ -46,7 +45,6 @@ import {
 } from "./render-clips";
 import { buildClipCutPlan } from "./cut-plan";
 import { escapeDrawtextText } from "../ffmpeg-text";
-import type { SplitLayoutSegment } from "./two-up";
 
 type SingleVideoArgs = Parameters<typeof buildSingleVideoArgsWithPlan>[0];
 type BrollVideoArgs = Parameters<typeof buildBrollVideoArgsWithPlan>[0];
@@ -1032,110 +1030,6 @@ describe("layoutAnalysisMatchesWindow (PiP persistence packet B — window-match
   test("a custom epsilon widens or narrows the tolerance", () => {
     expect(layoutAnalysisMatchesWindow(analysis, 12.6, 30, 0.2)).toBe(true);
     expect(layoutAnalysisMatchesWindow(analysis, 12.51, 30, 0)).toBe(false);
-  });
-});
-
-describe("applySpeakerLayoutOverridesToSegments", () => {
-  const segments: SplitLayoutSegment[] = [
-    {
-      startSec: 0,
-      endSec: 5,
-      layout: "two-up",
-      topCxNorm: 0.25,
-      bottomCxNorm: 0.75,
-    },
-  ];
-
-  test("maps the matching aspect's independent layer frames and crops into the render plan", () => {
-    const result = applySpeakerLayoutOverridesToSegments(
-      segments,
-      [
-        {
-          id: "scene-1",
-          aspectRatio: "9:16",
-          startSec: 0,
-          endSec: 5,
-          layout: "two-up",
-          layers: [
-            {
-              role: "top",
-              frameX: 0.1,
-              frameY: 0.05,
-              frameWidth: 0.8,
-              frameHeight: 0.4,
-              rotationDeg: 3,
-              cropCxNorm: 0.3,
-              cropCyNorm: 0.45,
-              cropZoom: 1.4,
-            },
-            {
-              role: "bottom",
-              frameX: 0,
-              frameY: 0.5,
-              frameWidth: 1,
-              frameHeight: 0.5,
-              rotationDeg: 0,
-              cropCxNorm: 0.7,
-              cropCyNorm: 0.55,
-              cropZoom: 1.2,
-            },
-          ],
-        },
-      ],
-      "9:16",
-    );
-
-    expect(result).not.toBe(segments);
-    expect(result[0]).toMatchObject({
-      topCxNorm: 0.3,
-      topCyNorm: 0.45,
-      topZoom: 1.4,
-      topFrame: { x: 0.1, y: 0.05, width: 0.8, height: 0.4, rotationDeg: 3 },
-      bottomCxNorm: 0.7,
-      bottomCyNorm: 0.55,
-      bottomZoom: 1.2,
-    });
-  });
-
-  test("keeps the fast-path plan reference when no override matches the output aspect", () => {
-    const result = applySpeakerLayoutOverridesToSegments(
-      segments,
-      [
-        {
-          id: "scene-1",
-          aspectRatio: "9:16",
-          startSec: 0,
-          endSec: 5,
-          layout: "two-up",
-          layers: [
-            {
-              role: "top",
-              frameX: 0,
-              frameY: 0,
-              frameWidth: 1,
-              frameHeight: 0.5,
-              rotationDeg: 0,
-              cropCxNorm: 0.25,
-              cropCyNorm: 0.5,
-              cropZoom: 1,
-            },
-            {
-              role: "bottom",
-              frameX: 0,
-              frameY: 0.5,
-              frameWidth: 1,
-              frameHeight: 0.5,
-              rotationDeg: 0,
-              cropCxNorm: 0.75,
-              cropCyNorm: 0.5,
-              cropZoom: 1,
-            },
-          ],
-        },
-      ],
-      "1:1",
-    );
-    expect(result).toBe(segments);
   });
 });
 

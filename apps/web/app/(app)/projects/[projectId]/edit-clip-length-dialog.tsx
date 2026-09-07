@@ -346,7 +346,7 @@ export function EditClipLengthDialog(props: {
         );
       })
       .catch((err) => {
-        console.error("clip_length_transcript_load_failed", err);
+        console.warn(JSON.stringify({ level: "error", message: "clip_length_transcript_load_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
         if (!cancelled) {
           setLoadError("Could not load the transcript.");
           loadStartedRef.current = false; // allow retry on reopen
@@ -651,7 +651,7 @@ export function EditClipLengthDialog(props: {
       );
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        console.error("clip_length_save_failed", response.status, body);
+        console.warn(JSON.stringify({ level: "error", message: "clip_length_save_failed", status: response.status }));
         setSaveError(
           userErrorMessage(body?.error) ?? "Could not save the new clip length.",
         );
@@ -677,7 +677,7 @@ export function EditClipLengthDialog(props: {
         );
         if (!renderResponse.ok) {
           const body = await renderResponse.json().catch(() => null);
-          console.error("clip_length_reframe_queue_failed", renderResponse.status, body);
+          console.warn(JSON.stringify({ level: "error", message: "clip_length_reframe_queue_failed", status: renderResponse.status }));
           // The trim itself saved — surface the queue failure without
           // closing so the user can retry from the row's Render button.
           setSaveError(
@@ -691,7 +691,7 @@ export function EditClipLengthDialog(props: {
       props.onOpenChange(false);
       startTransition(() => router.refresh());
     } catch (err) {
-      console.error("clip_length_save_failed", err);
+      console.warn(JSON.stringify({ level: "error", message: "clip_length_save_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
       setSaveError("Could not save the new clip length.");
     } finally {
       setSaving(false);

@@ -69,20 +69,20 @@ export function BrandProfileCreateForm() {
       <Grid templateColumns={{ base: "1fr", lg: "1fr 1fr" }} gap="8">
         <Stack gap="5">
           <Box borderTopWidth="1px" borderColor="border" pt="4"><Text textStyle="title" fontSize="21px">Identity</Text></Box>
-          <Field label="Profile name"><Input value={name} onChange={(event) => { const next = event.currentTarget.value; setName(next); if (!slugEdited) setSlug(slugify(next)); }} maxLength={80} placeholder="Northstar Coffee" /></Field>
-          <Field label="URL slug"><Input value={slug} onChange={(event) => { setSlugEdited(true); setSlug(slugify(event.currentTarget.value)); }} maxLength={80} fontFamily="mono" /></Field>
+          <Field label="Profile name"><Input aria-label="Profile name" value={name} onChange={(event) => { const next = event.currentTarget.value; setName(next); if (!slugEdited) setSlug(slugify(next)); }} maxLength={80} placeholder="Northstar Coffee" /></Field>
+          <Field label="URL slug"><Input aria-label="URL slug" value={slug} onChange={(event) => { setSlugEdited(true); setSlug(slugify(event.currentTarget.value)); }} maxLength={80} fontFamily="mono" /></Field>
           <Grid templateColumns="repeat(3, 1fr)" gap="3">
-            {[{ label: "Primary", value: primaryColor, set: setPrimaryColor }, { label: "Secondary", value: secondaryColor, set: setSecondaryColor }, { label: "Signal", value: accentColor, set: setAccentColor }].map((color) => <Field key={color.label} label={color.label}><Input type="color" value={color.value} onChange={(event) => color.set(event.currentTarget.value.toUpperCase())} p="1" /></Field>)}
+            {[{ label: "Primary", value: primaryColor, set: setPrimaryColor }, { label: "Secondary", value: secondaryColor, set: setSecondaryColor }, { label: "Signal", value: accentColor, set: setAccentColor }].map((color) => <Field key={color.label} label={color.label}><Input type="color" aria-label={color.label} value={color.value} onChange={(event) => color.set(event.currentTarget.value.toUpperCase())} p="1" /></Field>)}
           </Grid>
-          <Field label="Publishing rule"><Select items={[{ label: "Direct publish", value: "none" }, { label: "Approval required", value: "approval_required" }]} value={approvalRule} onValueChange={setApprovalRule} /></Field>
+          <Field label="Publishing rule"><Select ariaLabel="Publishing rule" items={[{ label: "Direct publish", value: "none" }, { label: "Approval required", value: "approval_required" }]} value={approvalRule} onValueChange={setApprovalRule} /></Field>
         </Stack>
         <Stack gap="5">
           <Box borderTopWidth="1px" borderColor="border" pt="4"><Text textStyle="title" fontSize="21px">Voice</Text></Box>
-          <Field label="Audience"><Textarea value={audience} onChange={(event) => setAudience(event.currentTarget.value)} maxLength={500} resize="vertical" placeholder="Who should this brand sound like it understands?" /></Field>
-          <Field label="Tone · comma separated"><Input value={tone} onChange={(event) => setTone(event.currentTarget.value)} placeholder="warm, specific, practical" /></Field>
-          <Field label="Preferred terms"><Input value={preferredTerms} onChange={(event) => setPreferredTerms(event.currentTarget.value)} placeholder="coffee bar, seasonal menu" /></Field>
-          <Field label="Blocked terms"><Input value={blockedTerms} onChange={(event) => setBlockedTerms(event.currentTarget.value)} placeholder="cheap, viral hack" /></Field>
-          <Field label="Hashtag guidance"><Textarea value={hashtagGuidance} onChange={(event) => setHashtagGuidance(event.currentTarget.value)} maxLength={500} resize="vertical" placeholder="Use two local tags and one campaign tag." /></Field>
+          <Field label="Audience"><Textarea aria-label="Audience" value={audience} onChange={(event) => setAudience(event.currentTarget.value)} maxLength={500} resize="vertical" placeholder="Who should this brand sound like it understands?" /></Field>
+          <Field label="Tone · comma separated"><Input aria-label="Tone · comma separated" value={tone} onChange={(event) => setTone(event.currentTarget.value)} placeholder="warm, specific, practical" /></Field>
+          <Field label="Preferred terms"><Input aria-label="Preferred terms" value={preferredTerms} onChange={(event) => setPreferredTerms(event.currentTarget.value)} placeholder="coffee bar, seasonal menu" /></Field>
+          <Field label="Blocked terms"><Input aria-label="Blocked terms" value={blockedTerms} onChange={(event) => setBlockedTerms(event.currentTarget.value)} placeholder="cheap, viral hack" /></Field>
+          <Field label="Hashtag guidance"><Textarea aria-label="Hashtag guidance" value={hashtagGuidance} onChange={(event) => setHashtagGuidance(event.currentTarget.value)} maxLength={500} resize="vertical" placeholder="Use two local tags and one campaign tag." /></Field>
         </Stack>
       </Grid>
       <Box borderTopWidth="1px" borderColor="border" pt="5"><Button onClick={submit} disabled={!valid || pending}>{pending ? "Creating…" : "Create Brand Profile"}</Button></Box>

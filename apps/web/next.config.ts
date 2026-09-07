@@ -25,10 +25,7 @@ const nextConfig: NextConfig = {
   },
   async redirects() {
     return [
-      { source: "/dashboard", destination: "/home", permanent: true },
       { source: "/settings", destination: "/settings/profile", permanent: true },
-      { source: "/settings/brand-templates", destination: "/brand-kit", permanent: true },
-      { source: "/settings/social", destination: "/settings/social-accounts", permanent: true },
     ];
   },
   async headers() {

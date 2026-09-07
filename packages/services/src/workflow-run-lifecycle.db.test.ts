@@ -2593,6 +2593,28 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(await lifecycle.reapExpiredAttempts()).toBe(0);
   });
 
+  test("Workflow Attempt deadlines do not shift with the database session timezone", async () => {
+    await fixture();
+    const offsetPool = new Pool({ connectionString: databaseUrl,
+      options: "-c timezone=Asia/Karachi", max: 1 });
+    const offsetPrisma = new PrismaClient({ adapter: new PrismaPg(offsetPool,
+      databaseSchema ? { schema: databaseSchema } : undefined) });
+    try {
+      const lifecycle = new WorkflowRunLifecycle({ prisma: offsetPrisma,
+        leaseOwner: randomUUID(), leaseDurationMs: 10_000, heartbeatIntervalMs: 1_000 });
+      const attempt = await lifecycle.claim("dubbing");
+      if (!attempt) throw new Error("claim missing");
+      const remaining = attempt.leaseExpiresAt.getTime() - Date.now();
+      expect(remaining).toBeGreaterThan(0);
+      expect(remaining).toBeLessThanOrEqual(10_000);
+      await lifecycle.heartbeat(attempt);
+      expect(await lifecycle.reapExpiredAttempts()).toBe(0);
+    } finally {
+      await offsetPrisma.$disconnect();
+      await offsetPool.end();
+    }
+  });
+
   test("a lease renewed after reaper discovery wins the expiry compare-and-set", async () => {
     const { run } = await fixture();
     const lifecycle = new WorkflowRunLifecycle({

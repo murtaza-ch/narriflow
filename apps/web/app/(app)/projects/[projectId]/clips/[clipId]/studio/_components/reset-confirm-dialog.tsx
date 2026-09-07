@@ -1,7 +1,7 @@
 "use client";
 
 import { Dialog, Flex, Portal, Stack, Text } from "@chakra-ui/react";
-import { Button } from "@narriflow/ui";
+import { Button } from "@narriflow/ui/components/button";
 
 /**
  * Confirmation for Reset-to-original (vizard-parity.md Phase A step 4) — a

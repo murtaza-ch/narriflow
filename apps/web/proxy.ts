@@ -2,7 +2,6 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
 const isProtectedRoute = createRouteMatcher([
-  "/dashboard(.*)",
   "/home(.*)",
   "/projects(.*)",
   "/exports(.*)",
@@ -14,7 +13,7 @@ const isProtectedRoute = createRouteMatcher([
   "/upload(.*)",
   "/onboarding(.*)",
   "/api/projects(.*)",
-  "/api/uploads(.*)",
+  "/api/upload-sessions(.*)",
   "/api/ingest(.*)",
   "/api/stream(.*)",
   "/api/workspace(.*)",
@@ -23,6 +22,10 @@ const isProtectedRoute = createRouteMatcher([
   "/api/social(.*)",
   "/api/brand-templates(.*)",
   "/api/audio-assets(.*)",
+  "/api/brand-profiles(.*)",
+  "/api/brand-fonts(.*)",
+  "/api/visual-assets(.*)",
+  "/api/generated-media(.*)",
 ]);
 
 const isAuthRoute = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)", "/forgot-password(.*)"]);

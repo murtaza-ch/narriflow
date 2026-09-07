@@ -15,7 +15,7 @@ export default function AppError({
   reset: () => void;
 }) {
   useEffect(() => {
-    console.error("app_error_boundary", error);
+    console.warn(JSON.stringify({ level: "error", message: "app_error_boundary", errorName: error instanceof Error ? error.name : "UnknownError" }));
   }, [error]);
 
   return (

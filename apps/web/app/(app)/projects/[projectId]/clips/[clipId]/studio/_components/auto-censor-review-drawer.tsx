@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Box, Button, Checkbox, Flex, Input, NativeSelect, Stack, Text } from "@chakra-ui/react";
 import { Check, Plus, Search, ShieldCheck, X } from "lucide-react";
-import { toaster } from "@narriflow/ui";
+import { toaster } from "@narriflow/ui/components/toaster";
 import {
   AUTO_CENSOR_POLICY_VERSION,
   autoCensorWordId,

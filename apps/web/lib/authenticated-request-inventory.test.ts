@@ -26,6 +26,23 @@ async function globModules(pattern: string): Promise<string[]> {
   return modules.sort();
 }
 
+// Follow the app's actual mounts so extracted routes cannot escape the drift check.
+async function registeredHonoRoutes(module: URL, prefix = ""): Promise<string[]> {
+  const source = await Bun.file(module).text();
+  const routes = [...source.matchAll(/(?:app|routes)\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g)]
+    .map(([, method, path]) => `${method!.toUpperCase()} ${prefix}${path}`);
+  const imports = new Map<string, string>();
+  for (const [, names, path] of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*["'](\.\/[^"']+)["']/g)) {
+    for (const name of names!.split(",")) imports.set(name.trim(), path!);
+  }
+  for (const [, mount, factory] of source.matchAll(/app\.route\(\s*["']([^"']+)["'],\s*(\w+)\(/g)) {
+    const path = imports.get(factory!);
+    if (!path) throw new Error(`Undeclared Hono mount: ${factory}`);
+    routes.push(...await registeredHonoRoutes(new URL(`${path}.ts`, module), `${prefix}${mount === "/" ? "" : mount}`));
+  }
+  return routes;
+}
+
 function hasModifier(
   node: ts.Node,
   kind: ts.SyntaxKind.ExportKeyword | ts.SyntaxKind.AsyncKeyword,
@@ -353,58 +370,17 @@ describe("authenticated request inventory", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  test("declares every route registered by the browser Hono app", async () => {
-    const source = (
-      await Promise.all([
-        "app/api/[[...route]]/route.ts",
-        "app/api/[[...route]]/brand-profile-routes.ts",
-        "app/api/[[...route]]/clip-editor-http.ts",
-      ].map((module) => Bun.file(new URL(module, webRoot)).text()))
-    ).join("\n");
-    const registered = source.matchAll(
-      /(?:app|routes)\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g,
-    );
-    for (const [, method, path] of registered) {
-      expect(
-        matchBrowserSessionHonoSurface(method ?? "", path ?? "") ??
-          (isIndependentTrustHonoSurface(method ?? "", path ?? "")
-            ? { independent: true }
-            : null),
-      ).not.toBeNull();
-    }
+  test("the proxy protects the Upload Session destination", async () => {
+    const source = await Bun.file(new URL("proxy.ts", webRoot)).text();
+    expect(source).toContain('"/api/upload-sessions(.*)"');
+    expect(source).not.toContain('"/api/uploads(.*)"');
   });
 
-  test("registers every main-app inventory declaration", async () => {
-    const source = (
-      await Promise.all([
-        "app/api/[[...route]]/route.ts",
-        "app/api/[[...route]]/clip-editor-http.ts",
-      ].map((module) => Bun.file(new URL(module, webRoot)).text()))
-    ).join("\n");
-    const registered = new Set(
-      [...source.matchAll(/(?:app|routes)\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g)].map(
-        ([, method, path]) => `${method?.toUpperCase()} ${path}`,
-      ),
-    );
-    const extractedPrefixes = [
-      "/upload-sessions/",
-      "/billing/",
-      "/brand-profiles",
-      "/visual-assets",
-      "/generated-media",
-      "/projects/:projectId/generated-media",
-      "/brand-fonts",
-    ];
-    const expected = [
-      ...browserSessionHonoSurfaces.filter(
-        ({ path }) => !extractedPrefixes.some((prefix) => path.startsWith(prefix)),
-      ),
-      ...independentTrustHonoSurfaces.filter(
-        ({ path }) => path !== "/webhooks/stripe",
-      ),
-    ].map(({ method, path }) => `${method} ${path}`);
-
-    expect(expected.filter((route) => !registered.has(route))).toEqual([]);
+  test("the mounted Hono routes and policy inventory agree in both directions", async () => {
+    const registered = await registeredHonoRoutes(new URL("app/api/[[...route]]/route.ts", webRoot));
+    const expected = [...browserSessionHonoSurfaces, ...independentTrustHonoSurfaces]
+      .map(({ method, path }) => `${method} ${path}`);
+    expect(registered.sort()).toEqual(expected.sort());
   });
 
   test("inventories every action, page admission, and long-lived stream through the approved adapters", async () => {

@@ -5,7 +5,7 @@ import {
   normalizeTranscriptSliceForClip,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-import { computePacingScore, sliceTranscriptForClip } from "./clip.service";
+import { computePacingScore } from "./clip.service";
 
 const warningUtterance: TranscriptUtterance = {
   index: 0,
@@ -127,13 +127,7 @@ describe("clip timing normalization", () => {
     expect(effective.transcriptSlice.at(-1)?.text).toContain("word39.");
   });
 
-  test("service sliceTranscriptForClip uses clamped word-level slicing", () => {
-    const slice = sliceTranscriptForClip([warningUtterance], 25.19, 25.79);
 
-    expect(slice[0]!.text).toBe("warning if");
-    expect(slice[0]!.startSec).toBe(25.2);
-    expect(slice[0]!.endSec).toBe(25.78);
-  });
 });
 
 describe("computePacingScore speaker turns", () => {

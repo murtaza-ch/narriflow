@@ -26,7 +26,7 @@ import {
 import {
   createBrandTemplateAction,
   updateBrandTemplateAction,
-} from "../actions";
+} from "../style-actions";
 import {
   authenticatedRequestFailureMessage,
   isAuthenticatedActionFailure,
@@ -103,7 +103,7 @@ function defaultCaption(): CaptionPreset {
 
 function defaultInput(): BrandTemplateInput {
   return {
-    name: "Untitled template",
+    name: "Untitled style",
     captionPreset: defaultCaption(),
     logoStorageKey: null,
     logoPosition: "bot-right",
@@ -242,7 +242,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
     setError(null);
     const parsed = brandTemplateInputSchema.safeParse(state);
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message ?? "Invalid template");
+      setError(parsed.error.issues[0]?.message ?? "Invalid style");
       return;
     }
     startTransition(async () => {
@@ -256,13 +256,13 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
               description: authenticatedRequestFailureMessage(
                 created,
                 window.location.pathname,
-                "The template could not be created.",
+                "The style could not be created.",
               ),
             });
             return;
           }
-          toaster.create({ type: "success", title: "Template created" });
-          router.push(`/brand-kit/${created.id}`);
+          toaster.create({ type: "success", title: "Style created" });
+          router.push(`/brand-kit/styles/${created.id}`);
         } else if (initialTemplate) {
           const updated = await updateBrandTemplateAction(initialTemplate.id, parsed.data);
           if (isAuthenticatedActionFailure(updated)) {
@@ -272,12 +272,12 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
               description: authenticatedRequestFailureMessage(
                 updated,
                 window.location.pathname,
-                "The template could not be saved.",
+                "The style could not be saved.",
               ),
             });
             return;
           }
-          toaster.create({ type: "success", title: "Template saved" });
+          toaster.create({ type: "success", title: "Style saved" });
           router.refresh();
         }
       } catch (submitError) {
@@ -304,6 +304,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
         <FormSection title="Identity">
           <FieldGroup label="Name">
             <Input
+              aria-label="Style name"
               value={state.name}
               onChange={(event) => update("name", event.target.value)}
               placeholder="My brand"
@@ -581,7 +582,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
           pt="5"
         >
           <Button loading={pending} onClick={handleSubmit}>
-            {mode === "create" ? "Create template" : "Save changes"}
+            {mode === "create" ? "Create style" : "Save changes"}
           </Button>
         </Flex>
       </Stack>

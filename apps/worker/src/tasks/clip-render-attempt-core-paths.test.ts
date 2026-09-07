@@ -1003,6 +1003,28 @@ for (const fixture of topologyFixtures) {
   });
 }
 
+test("ClipRenderAttempt isolates a corrupt frozen clip from independent clips", async () => {
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    variants: [
+      { id: "variant-corrupt", clipId: "clip-corrupt", clipIndex: 0,
+        aspectRatio: "ratio_9_16",
+        exportVariant: { exportId: "export-corrupt", watermark: false },
+        clipSnapshot: clipFixture({ hasStudioEdit: false, overrides: {
+          deletedRanges: [{ startSec: 2, endSec: 12 }],
+        } }),
+      },
+      { id: "variant-healthy", clipId: "clip-healthy", clipIndex: 1,
+        aspectRatio: "ratio_9_16" },
+    ],
+  });
+  await expect(harness.clipRenderAttempt.execute(harness.attempt,
+    attemptContext(new AbortController().signal))).resolves.toMatchObject({
+      status: "partial", succeeded: 1, failed: 1,
+    });
+});
+
+
 test("ClipRenderAttempt isolates resource probe failure from rendering and settlement", async () => {
   const harness = createCoreRenderPathTracer({
     topology: "single-video",

@@ -145,11 +145,11 @@ export function ProjectEventsProvider({
     const onWorkflowUpdate = (event: MessageEvent<string>) => {
       const parsed = parseWorkflowEventMessage(event.data);
       if (!parsed) {
-        console.error("workflow_event_invalid");
+        console.warn(JSON.stringify({ level: "error", message: "workflow_event_invalid" }));
         return;
       }
       if (parsed.projectId !== projectId) {
-        console.error("workflow_event_project_mismatch");
+        console.warn(JSON.stringify({ level: "error", message: "workflow_event_project_mismatch" }));
         return;
       }
       if (

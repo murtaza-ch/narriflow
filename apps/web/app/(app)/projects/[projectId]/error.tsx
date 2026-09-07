@@ -15,7 +15,7 @@ export default function ProjectError({
   reset: () => void;
 }) {
   useEffect(() => {
-    console.error("project_error_boundary", error);
+    console.warn(JSON.stringify({ level: "error", message: "project_error_boundary", errorName: error instanceof Error ? error.name : "UnknownError" }));
   }, [error]);
 
   return (

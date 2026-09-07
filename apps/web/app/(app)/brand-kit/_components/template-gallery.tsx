@@ -15,7 +15,7 @@ import {
   deleteBrandTemplateAction,
   duplicateBrandTemplateAction,
   setDefaultBrandTemplateAction,
-} from "../actions";
+} from "../style-actions";
 import {
   authenticatedActionResultMessage,
   isAuthenticatedActionFailure,
@@ -43,9 +43,9 @@ export function TemplateGallery({
   defaultId,
 }: TemplateGalleryProps) {
   return (
-    <Stack gap="8" role="radiogroup" aria-label="Default template">
+    <Stack gap="8" role="radiogroup" aria-label="Default style">
       <Section
-        title="Your templates"
+        title="Your styles"
         templates={mine}
         defaultId={defaultId}
         ownership="mine"
@@ -78,7 +78,7 @@ function Section({ title, templates, defaultId, ownership }: SectionProps) {
           <EmptyState
             ratio={9 / 16}
             icon={<Plus size={18} />}
-            title="No saved templates yet"
+            title="No saved styles yet"
             description="Duplicate a built-in below to make it yours."
           />
         ) : (
@@ -130,14 +130,14 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
             title: "Could not set default",
             description: authenticatedActionResultMessage(
               result,
-              "The default template could not be changed.",
+              "The default style could not be changed.",
             ),
           });
           return;
         }
         toaster.create({
           type: "success",
-          title: "Default template updated",
+          title: "Default style updated",
           description: `New projects will use "${template.name}".`,
         });
       } catch (error) {
@@ -161,10 +161,10 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
         if (isAuthenticatedActionFailure(result)) {
           toaster.create({
             type: "error",
-            title: "Could not duplicate template",
+            title: "Could not duplicate style",
             description: authenticatedActionResultMessage(
               result,
-              "The template could not be duplicated.",
+              "The style could not be duplicated.",
             ),
           });
           setPendingAction(null);
@@ -174,7 +174,7 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
         setPendingAction(null);
         toaster.create({
           type: "error",
-          title: "Could not duplicate template",
+          title: "Could not duplicate style",
           description: "Please try again.",
         });
       }
@@ -196,20 +196,20 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
         if (isAuthenticatedActionFailure(result)) {
           toaster.create({
             type: "error",
-            title: "Could not delete template",
+            title: "Could not delete style",
             description: authenticatedActionResultMessage(
               result,
-              "The template could not be deleted.",
+              "The style could not be deleted.",
             ),
           });
           return;
         }
-        toaster.create({ type: "success", title: "Template deleted" });
+        toaster.create({ type: "success", title: "Style deleted" });
       } catch (error) {
         if (isNextRedirect(error)) throw error;
         toaster.create({
           type: "error",
-          title: "Could not delete template",
+          title: "Could not delete style",
           description: "Please try again.",
         });
       } finally {
@@ -285,7 +285,7 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
           type="button"
           role="radio"
           aria-checked={isDefault}
-          aria-label={`Use "${template.name}" as default template`}
+          aria-label={`Use "${template.name}" as default style`}
           display="inline-flex"
           alignItems="center"
           gap="1.5"
@@ -373,7 +373,7 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
                 </Menu.Item>
                 {ownership === "mine" ? (
                   <Menu.Item value="edit" fontSize="13px" gap="2" borderRadius="l1" asChild>
-                    <Link href={`/brand-kit/${template.id}`}>
+                    <Link href={`/brand-kit/styles/${template.id}`}>
                       <Pencil size={13} />
                       Edit
                     </Link>

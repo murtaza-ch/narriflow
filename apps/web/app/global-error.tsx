@@ -15,7 +15,7 @@ export default function GlobalError({
   reset: () => void;
 }) {
   useEffect(() => {
-    console.error("global_error_boundary", error);
+    console.warn(JSON.stringify({ level: "error", message: "global_error_boundary", errorName: error instanceof Error ? error.name : "UnknownError" }));
   }, [error]);
 
   return (

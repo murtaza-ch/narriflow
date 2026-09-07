@@ -27,7 +27,6 @@ import {
   getEffectiveClipTiming,
   editorDocumentUsesMotion,
   isBrandDefaultCaptionPresetId,
-  normalizeTranscriptSliceForClip,
   parseClipAutoLayoutAnalysis,
   parseClipSplitLayoutAnalysis,
   parseClipSplitLayoutFailure,
@@ -3156,16 +3155,6 @@ export class ClipService {
       renders: renderRows,
     });
   }
-}
-
-// --- Scoring utilities ---
-
-export function sliceTranscriptForClip(
-  utterances: TranscriptUtterance[],
-  startSec: number,
-  endSec: number,
-): TranscriptUtterance[] {
-  return normalizeTranscriptSliceForClip(utterances, startSec, endSec);
 }
 
 export const clipService = new ClipService();

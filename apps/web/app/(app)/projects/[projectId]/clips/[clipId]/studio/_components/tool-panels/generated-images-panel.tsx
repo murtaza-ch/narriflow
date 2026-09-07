@@ -19,7 +19,8 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { Spinner, toaster } from "@narriflow/ui";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { toaster } from "@narriflow/ui/components/toaster";
 import type { GeneratedImageUsageSummary } from "@narriflow/services";
 import type { StudioVisualAsset } from "../studio-shell";
 import { useStudio } from "../studio-shell";

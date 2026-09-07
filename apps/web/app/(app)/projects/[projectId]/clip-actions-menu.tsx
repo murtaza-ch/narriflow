@@ -111,7 +111,7 @@ export function ClipActionsMenu({
 
     if (!response.ok) {
       const payload: unknown = await response.json().catch(() => null);
-      console.error("clip_rename_failed", response.status);
+      console.warn(JSON.stringify({ level: "error", message: "clip_rename_failed", status: response.status }));
       throw new Error(
         clipActionErrorCopy(payload, "Could not rename this clip."),
       );
@@ -174,7 +174,7 @@ export function ClipActionsMenu({
       if (!isCurrent()) return;
 
       if (!response.ok) {
-        console.error("clip_title_suggestions_failed", response.status);
+        console.warn(JSON.stringify({ level: "error", message: "clip_title_suggestions_failed", status: response.status }));
         setSuggestError(
           clipActionErrorCopy(payload, "Could not come up with title ideas."),
         );
@@ -183,7 +183,7 @@ export function ClipActionsMenu({
 
       const titles = titleSuggestionsFromPayload(payload);
       if (!titles) {
-        console.error("clip_title_suggestions_invalid_response");
+        console.warn(JSON.stringify({ level: "error", message: "clip_title_suggestions_invalid_response" }));
         setSuggestError("Could not come up with title ideas.");
         return;
       }
@@ -191,7 +191,7 @@ export function ClipActionsMenu({
     } catch (error) {
       // An abort is a deliberate cancel, not a failure to report.
       if ((error as Error)?.name === "AbortError" || !isCurrent()) return;
-      console.error("clip_title_suggestions_failed");
+      console.warn(JSON.stringify({ level: "error", message: "clip_title_suggestions_failed" }));
       setSuggestError("Could not come up with title ideas.");
     } finally {
       if (isCurrent()) setSuggestLoading(false);
@@ -242,7 +242,7 @@ export function ClipActionsMenu({
       const payload: unknown = await response.json().catch(() => null);
 
       if (!response.ok) {
-        console.error("clip_duplicate_failed", response.status);
+        console.warn(JSON.stringify({ level: "error", message: "clip_duplicate_failed", status: response.status }));
         toaster.create({
           type: "error",
           title: "Could not duplicate clip",
@@ -263,7 +263,7 @@ export function ClipActionsMenu({
       }
       startTransition(() => router.refresh());
     } catch {
-      console.error("clip_duplicate_failed");
+      console.warn(JSON.stringify({ level: "error", message: "clip_duplicate_failed" }));
       toaster.create({
         type: "error",
         title: "Could not duplicate clip",
@@ -284,7 +284,7 @@ export function ClipActionsMenu({
 
       if (!response.ok) {
         const payload: unknown = await response.json().catch(() => null);
-        console.error("clip_delete_failed", response.status);
+        console.warn(JSON.stringify({ level: "error", message: "clip_delete_failed", status: response.status }));
         toaster.create({
           type: "error",
           title: "Could not delete clip",
@@ -302,7 +302,7 @@ export function ClipActionsMenu({
       }
       startTransition(() => router.refresh());
     } catch {
-      console.error("clip_delete_failed");
+      console.warn(JSON.stringify({ level: "error", message: "clip_delete_failed" }));
       toaster.create({
         type: "error",
         title: "Could not delete clip",

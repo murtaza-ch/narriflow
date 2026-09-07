@@ -7,7 +7,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
-import { TemplateGallery } from "../settings/brand-templates/_components/template-gallery";
+import { TemplateGallery } from "./_components/template-gallery";
 import { BrandProfileDefaultButton } from "./_components/brand-profile-default-button";
 
 export default async function BrandKitPage() {
@@ -133,10 +133,10 @@ export default async function BrandKitPage() {
 
       <Box as="section" borderTopWidth="1px" borderColor="border" pt="7">
         <Stack gap="1" mb="5">
-          <Text textStyle="eyebrow" color="fg.subtle">Compatibility library</Text>
-          <Text fontSize="13px" color="fg.muted">Built-in templates and unattached styles remain available without creating new profile data.</Text>
+          <Flex justify="space-between" align="center"><Text textStyle="eyebrow" color="fg.subtle">Style library</Text><Button size="sm" variant="outline" asChild><Link href="/brand-kit/styles/new">New style</Link></Button></Flex>
+          <Text fontSize="13px" color="fg.muted">Start with a built-in style or customize a saved preset.</Text>
         </Stack>
-        <TemplateGallery builtIns={templates.builtIns} mine={profiles.length ? [] : templates.mine} defaultId={templates.defaultId} />
+        <TemplateGallery builtIns={templates.builtIns} mine={templates.mine.filter((template) => !profiles.some((profile) => profile.templates.some((style) => style.id === template.id)))} defaultId={templates.defaultId} />
       </Box>
     </Stack>
   );

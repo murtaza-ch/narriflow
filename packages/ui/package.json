@@ -3,13 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
   "exports": {
-    ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
-    },
     "./provider": "./src/provider.tsx",
     "./theme": "./src/theme.ts",
     "./components/*": "./src/components/*.tsx",

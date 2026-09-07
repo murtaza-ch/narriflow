@@ -2,7 +2,8 @@
 
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { Check, Download, ShieldCheck } from "lucide-react";
-import { Button, MediaWell } from "@narriflow/ui";
+import { Button } from "@narriflow/ui/components/button";
+import { MediaWell } from "@narriflow/ui/components/media-well";
 import type { ClipExportSnapshot } from "@narriflow/validators";
 import { formatDateTime, formatDuration } from "@/lib/format";
 

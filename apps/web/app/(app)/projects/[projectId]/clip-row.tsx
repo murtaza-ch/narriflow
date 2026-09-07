@@ -336,7 +336,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
             }
             return;
           }
-          console.error("clip_preview_load_failed", result.status);
+          console.warn(JSON.stringify({ level: "error", message: "clip_preview_load_failed", status: result.status }));
           if (!cancelled) {
             setPreviewUrl(null);
             setPreviewError(
@@ -357,7 +357,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
 
         const descriptor = clipMediaDescriptorFromPayload(payload);
         if (!descriptor) {
-          console.error("clip_preview_load_failed_invalid_response");
+          console.warn(JSON.stringify({ level: "error", message: "clip_preview_load_failed_invalid_response" }));
           if (!cancelled) {
             setPreviewUrl(null);
             setPreviewError("Could not load this preview.");
@@ -371,7 +371,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
           setPreviewOffsetSec(descriptor.previewStartSec);
         }
       } catch {
-        console.error("clip_preview_load_failed");
+        console.warn(JSON.stringify({ level: "error", message: "clip_preview_load_failed" }));
         if (!cancelled) {
           setPreviewUrl(null);
           setPreviewError("Could not load this preview.");
@@ -410,12 +410,12 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
       const payload: unknown = await response.json().catch(() => null);
 
       if (!response.ok) {
-        console.error("clip_render_queue_failed", response.status);
+        console.warn(JSON.stringify({ level: "error", message: "clip_render_queue_failed", status: response.status }));
         setActionError(apiErrorCopy(payload, "Could not queue this render."));
         return;
       }
       if (!isRenderQueueResponse(payload)) {
-        console.error("clip_render_queue_invalid_response");
+        console.warn(JSON.stringify({ level: "error", message: "clip_render_queue_invalid_response" }));
         setActionError("The render may have queued, but the response was incomplete.");
         return;
       }
@@ -423,7 +423,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
       accepted = true;
       startTransition(() => router.refresh());
     } catch {
-      console.error("clip_render_queue_failed");
+      console.warn(JSON.stringify({ level: "error", message: "clip_render_queue_failed" }));
       setActionError("Could not queue this render.");
     } finally {
       if (!accepted) {

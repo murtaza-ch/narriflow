@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { Box, Flex, Menu, Portal, Text } from "@chakra-ui/react";
-import { Spinner } from "@narriflow/ui";
+import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,

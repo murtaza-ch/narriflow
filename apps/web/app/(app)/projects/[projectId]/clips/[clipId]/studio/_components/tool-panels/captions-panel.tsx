@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid } from "@chakra-ui/react";
 import { Bold, Droplet, Type, AlignCenter, MoveUp, MoveDown, Zap, Smile, Captions, Quote } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
-import { toaster } from "@narriflow/ui";
+import { toaster } from "@narriflow/ui/components/toaster";
 import { clipAspectRatioOptions } from "@narriflow/validators";
 import { useStudio } from "../studio-shell";
 import { CaptionCue, resolveCaptionFontFamily, useLiveCaption } from "../caption-style-engine";

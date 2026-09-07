@@ -1,7 +1,7 @@
 import { Box, Flex, Grid, Image, Stack, Text } from "@chakra-ui/react";
 import { ArrowLeft, AudioLines, ImageIcon, LayoutTemplate, MessageSquareText, Shapes, Type } from "lucide-react";
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { brandProfileService, BrandProfileNotFoundError, sceneTemplateService } from "@narriflow/services";
 import { sceneTemplateDefinitionSchema } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
@@ -10,7 +10,6 @@ import { MediaWell } from "@narriflow/ui/components/media-well";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { formatDuration } from "@/lib/format";
-import LegacyTemplatePage from "../../settings/brand-templates/[id]/page";
 import { SceneTemplateManager, type SceneTemplateCard } from "./scene-template-manager";
 
 const SECTIONS = ["identity", "styles", "assets", "scenes", "audio", "voice"] as const;
@@ -35,9 +34,7 @@ export default async function BrandProfilePage({ params, searchParams }: {
     profile = await brandProfileService.get(scope, id);
   } catch (error) {
     if (!(error instanceof BrandProfileNotFoundError)) throw error;
-    const profileId = await brandProfileService.resolveProfileForTemplate(scope, id);
-    if (profileId) redirect(`/brand-kit/${profileId}?section=styles&template=${id}`);
-    return LegacyTemplatePage({ params: Promise.resolve({ id }) });
+    notFound();
   }
   const section: Section = SECTIONS.includes(query.section as Section) ? query.section as Section : "identity";
   const sceneRows = section === "scenes" ? await sceneTemplateService.list(scope, profile.id) : [];
@@ -128,8 +125,8 @@ function IdentitySection({ profile }: { profile: Profile }) {
 function StylesSection({ profile, selectedTemplateId }: { profile: Profile; selectedTemplateId?: string }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="02" icon={<LayoutTemplate size={18} />} title="Style presets" description="Existing Brand Template IDs remain stable inside this profile." />
-      {profile.templates.length === 0 ? <EmptyState icon={<LayoutTemplate size={18} />} title="No style presets" description="Attach a custom Brand Template to make it available for new projects." /> : (
+      <SectionHeader index="02" icon={<LayoutTemplate size={18} />} title="Style presets" description="Reusable caption, logo, and color settings for new projects." />
+      {profile.templates.length === 0 ? <EmptyState icon={<LayoutTemplate size={18} />} title="No style presets" description="Add a style preset to use these settings for new projects." /> : (
         <Grid templateColumns={{ base: "1fr", md: "repeat(2, 1fr)", xl: "repeat(3, 1fr)" }} gap="4">
           {profile.templates.map((template, index) => {
             const selected = selectedTemplateId === template.id || (!selectedTemplateId && profile.defaultTemplateId === template.id);
@@ -138,7 +135,7 @@ function StylesSection({ profile, selectedTemplateId }: { profile: Profile; sele
                 <Flex align="center" gap="2"><Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text><Box h="1px" bg="border" flex="1" /><Text textStyle="eyebrow" color={selected ? "accent.fg" : "fg.subtle"}>{selected ? "Selected" : "Preset"}</Text></Flex>
                 <Text fontFamily="display" fontWeight="650" fontSize="20px">{template.name}</Text>
                 <Flex gap="2"><Box h="7px" flex="1" borderRadius="l1" style={{ background: template.primaryColor }} /><Box h="7px" flex="1" borderRadius="l1" style={{ background: template.secondaryColor }} /></Flex>
-                <Button size="xs" variant="outline" asChild><Link href={`/settings/brand-templates/${template.id}`}>Edit style</Link></Button>
+                <Button size="xs" variant="outline" asChild><Link href={`/brand-kit/styles/${template.id}`}>Edit style</Link></Button>
               </Stack>
             );
           })}
@@ -151,8 +148,8 @@ function StylesSection({ profile, selectedTemplateId }: { profile: Profile; sele
 function AssetsSection({ profile }: { profile: Profile }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="03" icon={<ImageIcon size={18} />} title="Visual assets" description="Reusable images and video remain private; access locations are short-lived." />
-      {profile.assets.length === 0 ? <EmptyState icon={<ImageIcon size={18} />} title="No visual assets" description="Uploads appear here after visual-asset writes are enabled for this release group." /> : (
+      <SectionHeader index="03" icon={<ImageIcon size={18} />} title="Visual assets" description="Reusable images and videos for this brand." />
+      {profile.assets.length === 0 ? <EmptyState icon={<ImageIcon size={18} />} title="No visual assets" description="Add images or videos to reuse them in your clips." /> : (
         <Grid templateColumns={{ base: "repeat(2, 1fr)", md: "repeat(3, 1fr)", xl: "repeat(4, 1fr)" }} gap="4">
           {profile.assets.map((asset) => (
             <Stack key={asset.id} gap="2">
@@ -170,7 +167,7 @@ function AssetsSection({ profile }: { profile: Profile }) {
 function ScenesSection({ profileId, scenes, fonts, canManageDefaults }: { profileId: string; scenes: SceneTemplateCard[]; fonts: Profile["fonts"]; canManageDefaults: boolean }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="04" icon={<Type size={18} />} title="Scene templates" description="Bounded intros, outros, and cards will live here without creating a second editor." />
+      <SectionHeader index="04" icon={<Type size={18} />} title="Scene templates" description="Save intros, outros, and cards to reuse in your clips." />
       <SceneTemplateManager profileId={profileId} scenes={scenes} fonts={fonts.map((font) => ({ id: font.id, family: font.family, fingerprint: font.fingerprint, missing: font.missing }))} canManageDefaults={canManageDefaults} />
     </Stack>
   );
@@ -179,8 +176,8 @@ function ScenesSection({ profileId, scenes, fonts, canManageDefaults }: { profil
 function AudioSection({ profile }: { profile: Profile }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="05" icon={<AudioLines size={18} />} title="Audio references" description="The existing Audio Asset library stays authoritative; profiles only reference rows." />
-      {profile.audio.length === 0 ? <EmptyState icon={<AudioLines size={18} />} title="No referenced audio" description="Attach existing music or sound effects without copying their storage or metadata." /> : <Stack gap="0" borderTopWidth="1px" borderColor="border">{profile.audio.map((audio, index) => <Flex key={audio.id} align="center" gap="4" py="4" borderBottomWidth="1px" borderColor="border.subtle"><Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text><Text fontSize="13px" fontWeight="600" flex="1">{audio.title}</Text><Text textStyle="eyebrow" color="fg.subtle">{audio.kind}</Text><Text textStyle="data" color="fg.timecode">{formatDuration(audio.durationSec)}</Text></Flex>)}</Stack>}
+      <SectionHeader index="05" icon={<AudioLines size={18} />} title="Audio references" description="Music and sound effects saved for this brand." />
+      {profile.audio.length === 0 ? <EmptyState icon={<AudioLines size={18} />} title="No referenced audio" description="Add music or sound effects from your audio library." /> : <Stack gap="0" borderTopWidth="1px" borderColor="border">{profile.audio.map((audio, index) => <Flex key={audio.id} align="center" gap="4" py="4" borderBottomWidth="1px" borderColor="border.subtle"><Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text><Text fontSize="13px" fontWeight="600" flex="1">{audio.title}</Text><Text textStyle="eyebrow" color="fg.subtle">{audio.kind}</Text><Text textStyle="data" color="fg.timecode">{formatDuration(audio.durationSec)}</Text></Flex>)}</Stack>}
     </Stack>
   );
 }

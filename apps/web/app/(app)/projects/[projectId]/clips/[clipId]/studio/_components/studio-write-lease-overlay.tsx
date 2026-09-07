@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
-import { Button } from "@narriflow/ui";
+import { Button } from "@narriflow/ui/components/button";
 
 export function StudioWriteLeaseOverlay({
   visible,

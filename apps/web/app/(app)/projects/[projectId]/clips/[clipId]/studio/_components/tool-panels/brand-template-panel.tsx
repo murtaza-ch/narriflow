@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import NextLink from "next/link";
 import { Box, Flex, Slider, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, Check, ImageOff, LayoutGrid } from "lucide-react";
-import { Spinner } from "@narriflow/ui";
+import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   resolveEffectiveLogoSettings,
   type BrandTemplateSummary,

@@ -103,3 +103,8 @@ describe("hasFeature (PLAN_FEATURES matrix)", () => {
     expect(hasFeature("starter", "campaign.operations")).toBe(false);
   });
 });
+
+test("dubbing is included in Pro and Business but not Free or Creator", () => {
+  for (const tier of ["free", "creator"]) expect(hasFeature(tier, "dubbing")).toBe(false);
+  for (const tier of ["pro", "business"]) expect(hasFeature(tier, "dubbing")).toBe(true);
+});

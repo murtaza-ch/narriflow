@@ -124,7 +124,6 @@ export {
   computePacingScore,
   computePlatformScore,
   computeViralityScore,
-  sliceTranscriptForClip,
   type ClipPendingPreview,
   type ClipPendingAutoLayoutAnalysis,
   type ClipDuplicationStorageAdapter,

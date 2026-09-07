@@ -30,12 +30,6 @@ export function authenticatedHonoActor(c: Context): BrowserActorScope {
   return actor;
 }
 
-export function authenticatedHonoProject(
-  c: Context,
-): ActiveProjectScope | null {
-  return (c.get(PROJECT_KEY) as ActiveProjectScope | null | undefined) ?? null;
-}
-
 export function authenticatedHonoInput<T>(c: Context): T {
   const input = c.get(INPUT_KEY) as T | undefined;
   if (input === undefined) {

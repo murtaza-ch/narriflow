@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Text, Stack, Input, SimpleGrid } from "@chakra-ui/react";
 import { Search, Film, Check, X, AlertTriangle, Play, Sparkles } from "lucide-react";
-import { Spinner } from "@narriflow/ui";
+import { Spinner } from "@narriflow/ui/components/spinner";
 import { brollQueryForClip, planBrollCutaways } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";

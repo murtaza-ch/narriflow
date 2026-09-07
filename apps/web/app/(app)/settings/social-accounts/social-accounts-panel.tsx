@@ -180,7 +180,7 @@ export function SocialAccountsPanel({
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        console.error("social_disconnect_failed", response.status, body);
+        console.warn(JSON.stringify({ level: "error", message: "social_disconnect_failed", status: response.status }));
         toaster.create({
           type: "error",
           title: "Could not disconnect",
@@ -197,7 +197,7 @@ export function SocialAccountsPanel({
       });
       startTransition(() => router.refresh());
     } catch (err) {
-      console.error("social_disconnect_failed", err);
+      console.warn(JSON.stringify({ level: "error", message: "social_disconnect_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
       toaster.create({
         type: "error",
         title: "Could not disconnect",

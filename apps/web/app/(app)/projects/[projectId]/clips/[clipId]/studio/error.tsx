@@ -17,7 +17,7 @@ export default function StudioError({
   const projectId = typeof params?.projectId === "string" ? params.projectId : null;
 
   useEffect(() => {
-    console.error("studio_error_boundary", error);
+    console.warn(JSON.stringify({ level: "error", message: "studio_error_boundary", errorName: error instanceof Error ? error.name : "UnknownError" }));
   }, [error]);
 
   return (

@@ -49,7 +49,7 @@ describe("Workspace billing direct cutover", () => {
     const sources = [
       "apps/web/next.config.ts",
       "apps/web/app/(app)/home/page.tsx",
-      "apps/web/app/(app)/dashboard/dashboard-client.tsx",
+      "apps/web/app/(app)/home/dashboard-client.tsx",
       "apps/web/app/(app)/_components/account-menu.tsx",
       "apps/web/app/(app)/_components/app-chrome.tsx",
       "apps/web/app/(app)/_components/plan-limit-notice.tsx",

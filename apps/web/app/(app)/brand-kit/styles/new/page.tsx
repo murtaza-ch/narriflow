@@ -2,15 +2,15 @@ import { Box, Stack } from "@chakra-ui/react";
 import Link from "next/link";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { TemplateForm } from "../_components/template-form";
+import { TemplateForm } from "../../_components/template-form";
 
 export default function NewBrandTemplatePage() {
   return (
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          title="New brand template"
-          description="Configure your captions, logo, and colors. Templates are applied to clips at upload."
+          title="New style"
+          description="Configure your captions, logo, and colors. Styles are applied to clips at upload."
           actions={
             <Button variant="outline" colorPalette="gray" asChild>
               <Link href="/brand-kit">Cancel</Link>

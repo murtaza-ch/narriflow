@@ -1,7 +1,7 @@
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { isRetentionEnforcementActive, projectService,
 } from "@narriflow/services";
-import { DashboardView } from "../dashboard/dashboard-view";
+import { DashboardView } from "./dashboard-view";
 
 const RECENT_PROJECTS_LIMIT = 8;
 

@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Box, Flex, NativeSelect, Slider, Stack, Text } from "@chakra-ui/react";
 import { Layers, Move, Sparkles, Zap } from "lucide-react";
-import { toaster } from "@narriflow/ui";
+import { toaster } from "@narriflow/ui/components/toaster";
 import type { MediaMotion, SceneMotion } from "@narriflow/validators";
 import {
   MOTION_ENTRANCE_OPTIONS,

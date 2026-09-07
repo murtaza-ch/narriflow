@@ -307,7 +307,7 @@ export function SocialSchedulingPanel({
       } catch (error) {
         if (stopped) return;
         failures += 1;
-        console.error("social_posts_poll_failed", error);
+        console.warn(JSON.stringify({ level: "error", message: "social_posts_poll_failed", errorName: error instanceof Error ? error.name : "UnknownError" }));
         if (failures >= STALE_AFTER_FAILURES) setStatusStale(true);
         queueNext(livePostsRef.current);
       }
@@ -450,7 +450,7 @@ export function SocialSchedulingPanel({
 			requestAnimationFrame(() => noticeRef.current?.focus());
 			return;
 		}
-        console.error("schedule_post_failed", response.status, payload);
+        console.warn(JSON.stringify({ level: "error", message: "schedule_post_failed", status: response.status }));
         setNotice({
           tone: "danger",
           text: actionErrorText(payload, "Could not schedule post."),
@@ -475,7 +475,7 @@ export function SocialSchedulingPanel({
       applyPosts([...livePostsRef.current, created.data]);
       startTransition(() => router.refresh());
     } catch (err) {
-      console.error("schedule_post_failed", err);
+      console.warn(JSON.stringify({ level: "error", message: "schedule_post_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
       setNotice({
         tone: "danger",
         text: "Could not schedule post. Please try again.",
@@ -503,7 +503,7 @@ export function SocialSchedulingPanel({
           message?: string;
           error?: string;
         } | null;
-        console.error("cancel_post_failed", response.status, payload);
+        console.warn(JSON.stringify({ level: "error", message: "cancel_post_failed", status: response.status }));
         setNotice({
           tone: "danger",
           text: actionErrorText(
@@ -528,7 +528,7 @@ export function SocialSchedulingPanel({
       setNotice({ tone: "success", text: "Post canceled." });
       startTransition(() => router.refresh());
     } catch (err) {
-      console.error("cancel_post_failed", err);
+      console.warn(JSON.stringify({ level: "error", message: "cancel_post_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
       setNotice({
         tone: "danger",
         text: "Could not cancel this post. Please try again.",

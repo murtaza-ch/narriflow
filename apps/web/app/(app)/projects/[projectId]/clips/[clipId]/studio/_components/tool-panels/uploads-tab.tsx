@@ -3,7 +3,8 @@
 import { useMemo, useState } from "react";
 import { Box, Flex, Text, Stack, chakra } from "@chakra-ui/react";
 import { AlertTriangle, Music2, Trash2, Upload as UploadIcon } from "lucide-react";
-import { Spinner, toaster } from "@narriflow/ui";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { toaster } from "@narriflow/ui/components/toaster";
 import { AUDIO_UPLOAD_MAX_BYTES, type AudioAssetKindInput } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
 import { useAudioAssetList, type AudioAssetListRow } from "./audio-library";

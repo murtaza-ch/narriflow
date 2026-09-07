@@ -14,7 +14,7 @@
     "build": "turbo run build",
     "lint": "biome check .",
     "typecheck": "turbo run typecheck",
-    "test": "bun -e 'console.log(\"Fast tests exclude disposable-schema PostgreSQL invariants; run the six test:*:db commands separately.\")' && turbo run test",
+    "test": "bun -e 'console.log(\"Fast tests exclude disposable-schema PostgreSQL invariants; run the test:*:db commands separately.\")' && turbo run test",
     "test:workflow:db": "bun packages/services/scripts/run-workflow-db-tests.ts",
     "test:upload-session:db": "bun packages/services/scripts/run-upload-session-db-tests.ts",
     "test:workspace-billing:db": "bun packages/services/scripts/run-workspace-billing-db-tests.ts",

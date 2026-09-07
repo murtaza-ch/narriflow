@@ -74,7 +74,6 @@ import {
   parseClipLayoutAnalysis,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
-  resolveSpeakerLayoutScene,
   SCREEN_LAYOUT_ENGINE_VERSION,
   sourceRangeToEdited,
   sourceToEdited,
@@ -91,7 +90,6 @@ import type {
   EditorDocument,
   EditedTimeMap,
   StudioEdits,
-  StudioSpeakerLayoutOverride,
   TranscriptUtterance,
 } from "@narriflow/validators";
 import { buildClipCutPlan, type ClipCutPlan } from "./cut-plan";
@@ -111,7 +109,6 @@ import {
   remapMultiFaceSamplesForCutPlan,
   type BuildSplitLayoutPlanResult,
   type MultiFaceSample,
-  type SplitLayoutSegment,
 } from "./two-up";
 import {
   classifyScreencast,
@@ -2304,65 +2301,6 @@ export function decideSplitFallback(params: {
     return "no_two_up_segments";
   }
   return null;
-}
-
-/** Applies aspect-specific Studio speaker-layer edits to the derived AI plan
- * without mutating the persisted analysis. Unedited scenes retain their
- * original references and stay on the established fast crop/vstack path. */
-export function applySpeakerLayoutOverridesToSegments(
-  segments: SplitLayoutSegment[],
-  overrides: StudioSpeakerLayoutOverride[],
-  aspectRatio: ClipAspectRatio,
-): SplitLayoutSegment[] {
-  if (overrides.length === 0) return segments;
-  let changed = false;
-  const resolved = segments.map((segment) => {
-    const scene = resolveSpeakerLayoutScene(segment, overrides, aspectRatio);
-    if (!scene.overrideId) return segment;
-    changed = true;
-    if (segment.layout === "single") {
-      const layer = scene.layers.find((candidate) => candidate.role === "single")!;
-      return {
-        ...segment,
-        cxNorm: layer.cropCxNorm,
-        cyNorm: layer.cropCyNorm,
-        zoom: layer.cropZoom,
-        frame: {
-          x: layer.frameX,
-          y: layer.frameY,
-          width: layer.frameWidth,
-          height: layer.frameHeight,
-          rotationDeg: layer.rotationDeg,
-        },
-      };
-    }
-    const top = scene.layers.find((candidate) => candidate.role === "top")!;
-    const bottom = scene.layers.find((candidate) => candidate.role === "bottom")!;
-    return {
-      ...segment,
-      topCxNorm: top.cropCxNorm,
-      topCyNorm: top.cropCyNorm,
-      topZoom: top.cropZoom,
-      bottomCxNorm: bottom.cropCxNorm,
-      bottomCyNorm: bottom.cropCyNorm,
-      bottomZoom: bottom.cropZoom,
-      topFrame: {
-        x: top.frameX,
-        y: top.frameY,
-        width: top.frameWidth,
-        height: top.frameHeight,
-        rotationDeg: top.rotationDeg,
-      },
-      bottomFrame: {
-        x: bottom.frameX,
-        y: bottom.frameY,
-        width: bottom.frameWidth,
-        height: bottom.frameHeight,
-        rotationDeg: bottom.rotationDeg,
-      },
-    };
-  });
-  return changed ? resolved : segments;
 }
 
 function formatSrtTimestamp(seconds: number): string {
@@ -4732,6 +4670,2728 @@ async function executeClipRenderAttempt(
   );
 }
 
+async function resolveClipAudioAssets(input: {
+  run: WorkflowRunJob;
+  clip: { id: string };
+  frozenState: FrozenRenderingState;
+  studioEdits: StudioEdits;
+  clipDurationSec: number;
+  tempDir: string;
+  touchedOptionalAssetClasses: Set<OptionalAssetClass>;
+}) {
+  const { run, clip, frozenState, studioEdits, clipDurationSec, tempDir,
+    touchedOptionalAssetClasses } = input;
+  let musicPlan: ResolvedMusicAsset | null = null;
+  // Library asset (vizard-parity.md "Music/SFX library" —
+  // `studioMusicSchema.assetId`) wins over the pasted `url` at render
+  // time — same precedence the schema's own doc comment documents.
+  // Resolution failure (deleted row, DB hiccup) is treated exactly like
+  // a failed download below: log and skip music entirely, never fail
+  // the whole clip (the existing `music_download_failed` policy this
+  // mirrors never actually fails the clip either — see the catch below,
+  // which only logs).
+  let musicUrl: string | null = null;
+  let musicDurationSec: number | undefined;
+  // M6 (vizard-parity.md "Music/SFX library"): an AudioAsset-resolved
+  // music track already passed the AUDIO_UPLOAD_MAX_BYTES gate once at
+  // upload time (or is a curated row seeded well under it) — downloading
+  // it back down for a render must not silently inherit the much larger
+  // 250MB pasted-URL/B-roll budget. A pasted `url` (no assetId) predates
+  // this change and keeps the original 250MB policy.
+  let musicUrlIsAssetResolved = false;
+  if (studioEdits.music.assetId) {
+    try {
+      const resolved = await currentRenderAdapters().audioAsset.resolveRenderSource(
+        frozenState.userId,
+        studioEdits.music.assetId,
+        frozenState.workspaceId,
+      );
+      musicUrl = resolved?.url ?? null;
+      musicDurationSec = resolved?.durationSec;
+      musicUrlIsAssetResolved = Boolean(resolved);
+      if (!resolved) {
+        diagnoseOptionalAssetFallback({
+          assetClass: "music",
+          phase: "lookup",
+          failureCode: "music_asset_unavailable",
+          context: { workflowRunId: run.id, clipId: clip.id },
+        });
+      }
+    } catch (error) {
+      rethrowRenderControlFlow(error);
+      const accessFailure = optionalAccessFailure(error, "music");
+      diagnoseOptionalAssetFallback({
+        assetClass: "music",
+        ...accessFailure,
+        context: { workflowRunId: run.id, clipId: clip.id },
+      });
+    }
+  } else {
+    musicUrl = studioEdits.music.url;
+  }
+
+  if (musicUrl) {
+    let musicUrlSafe = false;
+    try {
+      assertPublicHttpUrl(musicUrl);
+      musicUrlSafe = true;
+    } catch {
+      diagnoseOptionalAssetFallback({
+        assetClass: "music",
+        phase: "lookup",
+        failureCode: "music_url_rejected",
+        context: { workflowRunId: run.id, clipId: clip.id },
+      });
+    }
+    if (musicUrlSafe) {
+      touchedOptionalAssetClasses.add("music");
+      const musicPath = join(tempDir, `music-${clip.id}.bin`);
+      try {
+        await currentRenderAdapters().optionalAssets.downloadUrlToFile(
+          musicUrl,
+          musicPath,
+          "music_download_failed",
+          musicUrlIsAssetResolved ? { maxBytes: AUDIO_UPLOAD_MAX_BYTES } : undefined,
+        );
+        const decodable =
+          await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+            musicPath,
+            "audio",
+          );
+        if (decodable) {
+          musicPlan = {
+            path: musicPath,
+            ref: compositionAssetRef("music", studioEdits.music.assetId ?? musicUrl),
+            durationSec: musicDurationSec,
+          };
+        } else {
+          diagnoseOptionalAssetFallback({
+            assetClass: "music",
+            phase: "decode",
+            failureCode: "music_media_invalid",
+            context: { workflowRunId: run.id, clipId: clip.id },
+          });
+        }
+      } catch (error) {
+        rethrowRenderControlFlow(error);
+        diagnoseOptionalAssetFallback({
+          assetClass: "music",
+          phase: "download",
+          failureCode: "music_download_failed",
+          context: { workflowRunId: run.id, clipId: clip.id },
+        });
+      }
+    }
+  }
+
+  // One-shot SFX placements (vizard-parity.md "Music/SFX library" —
+  // `studioEdits.sfx[]`). Each placement is resolved/downloaded
+  // independently and best-effort: a single bad placement is skipped
+  // (logged) rather than failing every other placement or the whole
+  // clip, mirroring the music download policy above.
+  const sfxPlans: ResolvedSfxAsset[] = [];
+  for (const placement of studioEdits.sfx) {
+    if (placement.startSec >= clipDurationSec) {
+      log("info", "clip_sfx_skipped_beyond_duration", {
+        workflowRunId: run.id,
+        clipId: clip.id,
+        sfxId: placement.id,
+        startSec: placement.startSec,
+        clipDurationSec,
+      });
+      continue;
+    }
+
+    let sfxUrl: string | null = null;
+    let sfxDurationSec: number | null = null;
+    try {
+      const resolved = await currentRenderAdapters().audioAsset.resolveRenderSource(
+        frozenState.userId,
+        placement.assetId,
+        frozenState.workspaceId,
+      );
+      sfxUrl = resolved?.url ?? null;
+      sfxDurationSec = resolved?.durationSec ?? null;
+      if (!resolved) {
+        diagnoseOptionalAssetFallback({
+          assetClass: "sound_effect",
+          phase: "lookup",
+          failureCode: "sound_effect_asset_unavailable",
+          context: {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            sfxId: placement.id,
+          },
+        });
+      }
+    } catch (error) {
+      rethrowRenderControlFlow(error);
+      const accessFailure = optionalAccessFailure(error, "sound_effect");
+      diagnoseOptionalAssetFallback({
+        assetClass: "sound_effect",
+        ...accessFailure,
+        context: {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          sfxId: placement.id,
+        },
+      });
+    }
+    if (!sfxUrl) continue;
+
+    let sfxUrlSafe = false;
+    try {
+      assertPublicHttpUrl(sfxUrl);
+      sfxUrlSafe = true;
+    } catch (error) {
+      rethrowRenderControlFlow(error);
+      diagnoseOptionalAssetFallback({
+        assetClass: "sound_effect",
+        phase: "lookup",
+        failureCode: "sound_effect_url_rejected",
+        context: {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          sfxId: placement.id,
+        },
+      });
+    }
+    if (!sfxUrlSafe) continue;
+
+    const sfxPath = join(tempDir, `sfx-${clip.id}-${placement.id}.bin`);
+    touchedOptionalAssetClasses.add("sound_effect");
+    try {
+      // M6: SFX placements are always resolved through an AudioAsset
+      // (`assetId` is required by `studioSfxPlacementSchema`) — bounded
+      // by the same AUDIO_UPLOAD_MAX_BYTES the upload gate enforced,
+      // not the larger 250MB B-roll/pasted-URL budget.
+      await currentRenderAdapters().optionalAssets.downloadUrlToFile(
+        sfxUrl,
+        sfxPath,
+        "sfx_download_failed",
+        {
+          maxBytes: AUDIO_UPLOAD_MAX_BYTES,
+        },
+      );
+      const decodable =
+        await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+          sfxPath,
+          "audio",
+        );
+      if (decodable && sfxDurationSec && sfxDurationSec > 0) {
+        sfxPlans.push({
+          path: sfxPath,
+          id: placement.id,
+          ref: compositionAssetRef("sound-effect", placement.assetId),
+          durationSec: sfxDurationSec,
+        });
+      } else {
+        diagnoseOptionalAssetFallback({
+          assetClass: "sound_effect",
+          phase: "decode",
+          failureCode: "sound_effect_media_invalid",
+          context: {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            sfxId: placement.id,
+          },
+        });
+      }
+    } catch (error) {
+      rethrowRenderControlFlow(error);
+      diagnoseOptionalAssetFallback({
+        assetClass: "sound_effect",
+        phase: "download",
+        failureCode: "sound_effect_download_failed",
+        context: {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          sfxId: placement.id,
+        },
+      });
+    }
+  }
+
+  return { musicPlan, sfxPlans };
+}
+
+// Private clip-group phase. Frozen revisions share evidence and assets; their
+// failures affect only the variants in this group. Source and settlement failures
+// remain owned by the enclosing Clip Render Attempt.
+async function renderClipGroup(input: {
+  run: WorkflowRunJob;
+  attempt: ClipRenderingWorkflowAttempt;
+  renderGroup: FrozenRenderingState["pendingRenders"];
+  frozenState: FrozenRenderingState;
+  probe: SourceProbe;
+  sourcePath: string;
+  tempDir: string;
+  brandLogo: LogoOverlay | null;
+  brandLogoWasRequested: boolean;
+  touchedOptionalAssetClasses: Set<OptionalAssetClass>;
+  motionAnalyticsByRenderId: Map<string, MotionRenderAnalyticsMetadata>;
+  applyWatermark: boolean;
+  scheduleUpload(output: PendingRenderOutput, metadata: {
+    clipDurationSec: number;
+    brollCredits?: string | null;
+    encodeMs: number;
+    motionAnalytics: MotionRenderAnalyticsMetadata;
+  }): void;
+}) {
+  const { run, attempt, renderGroup, frozenState, probe, sourcePath,
+    tempDir, brandLogo, brandLogoWasRequested, touchedOptionalAssetClasses,
+    motionAnalyticsByRenderId, applyWatermark, scheduleUpload } = input;
+  const storedClip = renderGroup[0]!.clipSnapshot ?? renderGroup[0]!.clip;
+  const editorDocument = decodeClipEditorDocumentFromStorage(
+    storedClip,
+    frozenState.sourceDurationSeconds,
+  );
+  let motionAnalytics = motionRenderAnalyticsMetadata(editorDocument, {
+    applyScope: "clip",
+    renderOutcome: "completed",
+  });
+  // Export-bound rows carry a complete frozen rendering snapshot. This
+  // metadata view deliberately excludes document decoding: every
+  // document-owned field above crossed the canonical persistence codec.
+  const clip = renderGroup[0]!.clipSnapshot
+    ? (renderGroup[0]!.clipSnapshot as unknown as (typeof renderGroup)[number]["clip"])
+    : renderGroup[0]!.clip;
+  const effective = resolveRenderTimingForClip({
+    llmModel: clip.llmModel,
+    utterances: editorDocument.transcriptSlice,
+    startSec: editorDocument.clipStartSec,
+    endSec: editorDocument.clipEndSec,
+  });
+  const clipStartSec = effective.startSec;
+  const clipEndSec = effective.endSec;
+  const utterances = effective.transcriptSlice;
+
+  const deletedRanges = editorDocument.deletedRanges;
+  const cutPlan = buildClipCutPlan(deletedRanges, {
+    startSec: clipStartSec,
+    endSec: clipEndSec,
+  });
+  if (cutPlan.droppedSliverCount > 0) {
+    log("info", "clip_cut_plan_slivers_dropped", {
+      workflowRunId: run.id,
+      clipId: clip.id,
+      droppedSliverCount: cutPlan.droppedSliverCount,
+    });
+  }
+  // Every downstream duration-dependent consumer (captions, text layers,
+  // transitions, music, B-roll cutaway planning, the audiogram
+  // waveform/background, and the final `-t` output bound) reads THIS
+  // value — the edited (post-cut) duration when the clip has real cuts,
+  // otherwise the exact original `effective.durationSec` (not
+  // `cutPlan.editedDurationSec`, which is ms-rounded — keeping the raw
+  // value for the untouched common case is what makes the no-deletions
+  // render byte-identical to before this change).
+  const clipDurationSec = cutPlan.isUncut
+    ? effective.durationSec
+    : cutPlan.editedDurationSec;
+  const initialResourceMeasurement =
+    measureCompositionResourceSafely() ?? resourceMeasurementFallback;
+  const compositionResources = {
+    planVersion: null as number | null,
+    planFingerprint: null as string | null,
+    requestedMode: null as CompositionMode | null,
+    effectiveModes: [] as CompositionMode[],
+    sceneCount: 0,
+    visualLayerCount: 0,
+    planningDurationMs: 0,
+    analysisRequestKeys: new Set<string>(),
+    analysisExecutionCount: 0,
+    detectorExecutionCount: 0,
+    extractedSegmentCount: 0,
+    commandCount: 0,
+    sourceDecodeCount: 0,
+    commandBytes: 0,
+    encodeDurationMs: 0,
+    peakRssBytes: initialResourceMeasurement.rssBytes,
+    peakRssScope: initialResourceMeasurement.scope,
+  };
+  const recordCompositionCommand = (args: readonly string[]): void => {
+    compositionResources.commandCount += 1;
+    compositionResources.commandBytes += commandSizeBytes("ffmpeg", args);
+    const measurement = measureCompositionResourceSafely();
+    if (measurement) {
+      compositionResources.peakRssScope = measurement.scope;
+      recordCompositionResourceSample(measurement.rssBytes);
+    }
+  };
+  const recordCompositionResourceSample = (rssBytes: number): void => {
+    compositionResources.peakRssBytes = Math.max(
+      compositionResources.peakRssBytes,
+      rssBytes,
+    );
+  };
+  const recordCompositionSourceDecodeCompleted = (): void => {
+    compositionResources.sourceDecodeCount += 1;
+  };
+  const recordCompositionEncodeCompleted = (startedAtMs: number): number => {
+    const durationMs = Math.max(0, currentTimeMs() - startedAtMs);
+    compositionResources.encodeDurationMs += durationMs;
+    const measurement = measureCompositionResourceSafely();
+    if (measurement) {
+      compositionResources.peakRssScope = measurement.scope;
+      recordCompositionResourceSample(measurement.rssBytes);
+    }
+    return durationMs;
+  };
+  let sharedAnalysisSegmentPromise: ReturnType<
+    ClipRenderAttemptAdapters["analysis"]["extractFaceDetectionSegment"]
+  > | null = null;
+  const getSharedAnalysisSegment = () => {
+    if (!sharedAnalysisSegmentPromise) {
+      sharedAnalysisSegmentPromise = currentRenderAdapters()
+        .analysis.extractFaceDetectionSegment({
+          sourcePath,
+          tempDir,
+          clipId: clip.id,
+          workflowRunId: run.id,
+          clipStartSec,
+          durationSec: effective.durationSec,
+        })
+        .then((segment) => {
+          if (segment && segment.path !== sourcePath) {
+            compositionResources.extractedSegmentCount += 1;
+          }
+          return segment;
+        })
+        .catch((error) => {
+          rethrowRenderControlFlow(error);
+          log("error", "clip_reframe_segment_extract_failed", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            ...mediaAnalysisDiagnostic({
+              analysisMode: "segment_extraction",
+              fallbackMode: "composition_plan",
+              failureCode: "analysis_input_unavailable",
+            }),
+          });
+          return null;
+        });
+    }
+    return sharedAnalysisSegmentPromise;
+  };
+  // Time map used by the audio-only subtitle path and by the composition
+  // planner to retime source-absolute words onto the edited timeline.
+  const captionTimeMap = cutPlan.isUncut ? null : cutPlan.map;
+
+  const captionPreset = editorDocument.captionPreset;
+  const studioEdits = editorDocument.studioEdits;
+
+  // Per-clip effective logo: this clip's studioEdits.logo override
+  // merged over the project-wide brandLogo (frozen snapshot + already
+  // -downloaded file). `null` whenever there's no logo asset at all, or
+  // this clip's override disables it.
+  const logo = resolveClipLogoOverlay(brandLogo, studioEdits.logo);
+  const plannedLogoSettings = brandLogo
+    ? resolveEffectiveLogoSettings(
+        {
+          position: brandLogo.position,
+          opacity: brandLogo.opacity,
+          scalePct: brandLogo.scalePct,
+        },
+        studioEdits.logo,
+      )
+    : null;
+
+  // SRT remains only for audio-only, no-preset audiograms. Video captions
+  // are serialized from the Composition Plan after planning below.
+  let srtPath: string | null = null;
+  if (!probe.hasVideo && utterances.length > 0) {
+    const srtContent = generateSrtFromSlice(
+      utterances,
+      clipStartSec,
+      undefined,
+      captionTimeMap,
+    );
+    if (srtContent.length > 0) {
+      srtPath = join(tempDir, `clip-${clip.id}.srt`);
+      await currentRenderAdapters().workspace.writeFile(srtPath, srtContent, "utf-8");
+    }
+  }
+
+  const outputs: PendingRenderOutput[] = renderGroup.map((render) => {
+    const aspectRatio =
+      clipAspectRatioFromDb[clipAspectRatioDbSchema.parse(render.aspectRatio)];
+    const slug =
+      clipAspectRatioOptions.find((option) => option.value === aspectRatio)?.slug ?? "9x16";
+    // Tolerant parse, same fallback as clip.service's
+    // toClipRenderVariantSnapshot — a row written before this column
+    // existed (or an unexpected value) degrades to the column's own DB
+    // default rather than failing the whole clip.
+    const resolution =
+      clipRenderResolutionSchema.safeParse(render.resolution).data ?? "1080p";
+
+    return {
+      clipRenderId: render.id,
+      clipId: clip.id,
+      clipIndex: clip.index,
+      aspectRatio,
+      outputPath: join(tempDir, `clip-${clip.id}-${render.id}-${slug}.mp4`),
+      storageKey: render.exportVariant
+        ? clipExportAttemptStorageKey({
+            projectId: run.projectId,
+            exportId: render.exportVariant.exportId,
+            variantId: render.exportVariantId!,
+            aspectRatioSlug: slug,
+            attemptId: attempt.attemptId,
+          })
+        : clipRenderAttemptStorageKey(
+            run.projectId,
+            clip.id,
+            slug,
+            attempt.attemptId,
+          ),
+      resolution,
+      watermark: render.exportVariant?.watermark ?? applyWatermark,
+    };
+  });
+  for (const output of outputs) {
+    motionAnalyticsByRenderId.set(output.clipRenderId, motionAnalytics);
+  }
+
+  // Claim the variants before every terminal branch. Lifecycle failure
+  // settlement is fenced to rows owned by this render attempt; failing a
+  // still-pending row is intentionally rejected as stale.
+  await Promise.all(
+    outputs.map((output) =>
+      currentRenderAdapters().clip.markClipRenderVariantRendering(
+        attempt,
+        output.clipRenderId,
+      ),
+    ),
+  );
+
+  // Guard (vizard-parity Phase B step 7): deletedRanges covering the
+  // whole clip window (or leaving only sub-50ms slivers) leaves nothing
+  // renderable. Fail every variant in this group with a structured error
+  // instead of ever attempting a zero/near-zero-duration encode, and
+  // skip straight to the next clip group.
+  if (cutPlan.isEmpty) {
+    log("error", "clip_cut_plan_empty", {
+      workflowRunId: run.id,
+      clipId: clip.id,
+      clipIndex: clip.index,
+      deletedRangeCount: deletedRanges.length,
+    });
+    await Promise.all(
+      outputs.map((output) =>
+        currentRenderAdapters().clip.failClipRenderVariant(
+          attempt,
+          output.clipRenderId,
+          "clip_cut_plan_empty",
+          "permanent",
+          { ...motionAnalytics, renderOutcome: "failed" },
+        ),
+      ),
+    );
+    return;
+  }
+
+  // Per-aspect-ratio ASS files carry the full styled, word-synced captions.
+  // Generated whenever a caption preset is present (positions are resolution
+  // dependent, so one file per output).
+  if (!probe.hasVideo && utterances.length > 0) {
+    for (const output of outputs) {
+      const assContent = generateAssFromSlice(
+        utterances,
+        clipStartSec,
+        output.aspectRatio,
+        captionPreset,
+        captionTimeMap,
+      );
+      if (assContent.length > 0) {
+        const assPath = join(
+          tempDir,
+          `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}.ass`,
+        );
+        await currentRenderAdapters().workspace.writeFile(
+          assPath,
+          assContent,
+          "utf-8",
+        );
+        output.subtitlePath = assPath;
+      }
+    }
+
+  }
+
+  // Stock B-roll: when a Pexels key is set, plan 2-4 recurring cutaways
+  // (driven by the detection LLM's cues when present on the clip, else
+  // the keyword-derived query spaced evenly across the clip) — a single
+  // cutaway reads as accidental and is a known quality complaint about
+  // competitors. Best-effort: any failure renders normally without
+  // B-roll. The studio picker's explicit choice, when present, always
+  // wins and stays a single cutaway — a user who hand-picked one asset
+  // didn't ask to see it repeated.
+  let brollPlan: BrollPlan | null = null;
+  const brollEnabled =
+    currentRenderConfig().pexelsConfigured &&
+    currentRenderConfig().brollEnabled;
+  const userBrollUrl = editorDocument.brollUrl;
+  if (
+    (brollEnabled || userBrollUrl) &&
+    probe.hasVideo &&
+    clipDurationSec >= 12
+  ) {
+    let safeUserBrollUrl: string | null = null;
+    if (userBrollUrl) {
+      try {
+        assertPublicHttpUrl(userBrollUrl);
+        safeUserBrollUrl = userBrollUrl;
+      } catch {
+        diagnoseOptionalAssetFallback({
+          assetClass: "broll",
+          phase: "lookup",
+          failureCode: "broll_url_rejected",
+          context: { workflowRunId: run.id, clipId: clip.id },
+        });
+      }
+    }
+
+    if (safeUserBrollUrl) {
+      touchedOptionalAssetClasses.add("broll");
+      const brollPath = join(tempDir, `broll-${clip.id}-manual.mp4`);
+      try {
+        await currentRenderAdapters().optionalAssets.downloadUrlToFile(
+          safeUserBrollUrl,
+          brollPath,
+          "broll_download_failed",
+        );
+        const decodable =
+          await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+            brollPath,
+            "video",
+          );
+        if (!decodable) {
+          diagnoseOptionalAssetFallback({
+            assetClass: "broll",
+            phase: "decode",
+            failureCode: "broll_media_invalid",
+            context: { workflowRunId: run.id, clipId: clip.id },
+          });
+        } else {
+          // A manual pick has no reported duration — probe the downloaded
+          // file so the cutaway window (and therefore the B-roll input's
+          // own -t trim in buildBrollVideoArgs) is sized against real
+          // footage rather than a guess.
+          const effectiveDurationSec =
+            await currentRenderAdapters().optionalAssets.probeMediaDurationSec(
+              brollPath,
+            );
+          const window =
+            effectiveDurationSec !== null
+              ? planBrollWindow(clipDurationSec, effectiveDurationSec)
+              : null;
+
+          if (window) {
+            brollPlan = {
+              cutaways: [
+                {
+                  ref: compositionAssetRef("broll", safeUserBrollUrl),
+                  path: brollPath,
+                  window,
+                },
+              ],
+              credits: [],
+            };
+            log("info", "clip_broll_selected", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              source: "studio_pick",
+              cutawayCount: 1,
+              brollDurationSec: effectiveDurationSec,
+            });
+          } else {
+            diagnoseOptionalAssetFallback({
+              assetClass: "broll",
+              phase: "probe",
+              failureCode: "broll_media_unusable",
+              context: { workflowRunId: run.id, clipId: clip.id },
+            });
+          }
+        }
+      } catch (error) {
+        rethrowRenderControlFlow(error);
+        brollPlan = null;
+        diagnoseOptionalAssetFallback({
+          assetClass: "broll",
+          phase: "download",
+          failureCode: "broll_download_failed",
+          context: {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            source: "studio_pick",
+          },
+        });
+      }
+    } else {
+      // Auto path: consume LLM-provided cues when the clip carries them
+      // (optional column — absent on existing rows and any clip not yet
+      // produced by a detect-clips.ts that writes it), else fall back to
+      // the keyword-derived query for every auto-placed slot.
+      const rawBrollCues = (clip as { brollCues?: unknown }).brollCues;
+      const brollCuesParsed = rawBrollCues
+        ? brollCuesArraySchema.safeParse(rawBrollCues)
+        : null;
+      if (brollCuesParsed && !brollCuesParsed.success) {
+        diagnoseOptionalAssetFallback({
+          assetClass: "broll",
+          phase: "parse",
+          failureCode: "broll_cues_invalid",
+          context: { workflowRunId: run.id, clipId: clip.id },
+        });
+      }
+      const rawCues: BrollCueInput[] | null =
+        brollCuesParsed?.success && brollCuesParsed.data.length > 0
+          ? brollCuesParsed.data
+          : null;
+      // Fix #2: brollCues[].atSec are uncut clip-relative seconds, but
+      // clipDurationSec/planBrollCutaways below operate on the edited
+      // (post-cut) timeline once deletedRanges are in play — remap
+      // through the same cutPlan.map every other cut-concat consumer
+      // (captions, reframe) uses, dropping cues whose moment was cut.
+      const remappedCues = remapBrollCuesForCutPlan(
+        rawCues,
+        cutPlan,
+        clipStartSec,
+      );
+      const cues: BrollCueInput[] | null =
+        remappedCues && remappedCues.length > 0 ? remappedCues : null;
+
+      const category = clip.category as ClipCategory;
+      const fallbackQuery = brollQueryForClip(
+        clip.title,
+        clip.hookText,
+        category,
+      );
+      const broaderFallbackQuery =
+        CATEGORY_BROLL_FALLBACK_QUERY[category] ?? null;
+
+      if (cues || fallbackQuery) {
+        const orientation = dominantPexelsOrientation(
+          outputs.map((o) => o.aspectRatio),
+        );
+        const targetWidth = orientation === "landscape" ? 1920 : 1080;
+        const targetHeight = orientation === "landscape" ? 1080 : 1920;
+
+        try {
+          const resolvedCutaways =
+            await currentRenderAdapters().optionalAssets.resolveBrollCutaways({
+              clipDurationSec,
+              cues,
+              fallbackQuery,
+              broaderFallbackQuery,
+              orientation,
+              targetWidth,
+              targetHeight,
+            });
+
+          const cutaways: BrollCutaway[] = [];
+          const credits: BrollPlan["credits"] = [];
+
+          for (const [index, resolved] of resolvedCutaways.entries()) {
+            try {
+              touchedOptionalAssetClasses.add("broll");
+              let brollPath =
+                await currentRenderAdapters().optionalAssets.getCachedBrollAssetPath(
+                  resolved.downloadUrl,
+                  currentRenderConfig().brollAssetCacheTtlMs,
+                );
+              let downloadedForCache = false;
+              if (!brollPath) {
+                const downloadedPath = join(
+                  tempDir,
+                  `broll-${clip.id}-${index}.mp4`,
+                );
+                await currentRenderAdapters().optionalAssets.downloadUrlToFile(
+                  resolved.downloadUrl,
+                  downloadedPath,
+                  "broll_download_failed",
+                );
+                brollPath = downloadedPath;
+                downloadedForCache = true;
+              }
+              const decodable =
+                await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+                  brollPath,
+                  "video",
+                );
+              if (!decodable) {
+                diagnoseOptionalAssetFallback({
+                  assetClass: "broll",
+                  phase: "decode",
+                  failureCode: "broll_media_invalid",
+                  context: {
+                    workflowRunId: run.id,
+                    clipId: clip.id,
+                    query: resolved.query,
+                  },
+                });
+                continue;
+              }
+              if (downloadedForCache) {
+                try {
+                  await currentRenderAdapters().optionalAssets.saveBrollAssetToCache(
+                    resolved.downloadUrl,
+                    brollPath,
+                  );
+                } catch (error) {
+                  rethrowRenderControlFlow(error);
+                  diagnoseOptionalAssetFallback({
+                    assetClass: "broll",
+                    phase: "cleanup",
+                    failureCode: "broll_cache_write_failed",
+                    context: {
+                      workflowRunId: run.id,
+                      clipId: clip.id,
+                      query: resolved.query,
+                    },
+                  });
+                }
+              }
+              cutaways.push({
+                ref: compositionAssetRef("broll", resolved.downloadUrl),
+                path: brollPath,
+                window: {
+                  startSec: resolved.startSec,
+                  endSec: resolved.endSec,
+                },
+              });
+              credits.push({
+                query: resolved.query,
+                startSec: resolved.startSec,
+                endSec: resolved.endSec,
+                authorName: resolved.attribution.authorName,
+                authorUrl: resolved.attribution.authorUrl,
+                pageUrl: resolved.attribution.pageUrl,
+              });
+            } catch (error) {
+              rethrowRenderControlFlow(error);
+              diagnoseOptionalAssetFallback({
+                assetClass: "broll",
+                phase: "download",
+                failureCode: "broll_download_failed",
+                context: {
+                  workflowRunId: run.id,
+                  clipId: clip.id,
+                  query: resolved.query,
+                },
+              });
+            }
+          }
+
+          if (cutaways.length > 0) {
+            brollPlan = { cutaways, credits };
+            log("info", "clip_broll_selected", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              source: cues ? "cues" : "auto",
+              cutawayCount: cutaways.length,
+              credits,
+            });
+          }
+        } catch (error) {
+          rethrowRenderControlFlow(error);
+          diagnoseOptionalAssetFallback({
+            assetClass: "broll",
+            phase: "lookup",
+            failureCode: "broll_provider_unavailable",
+            context: {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              source: "auto",
+            },
+          });
+        }
+      }
+    }
+  }
+
+  // Auto framing (layout-engine wiring, deferred from the gate above so
+  // the B-roll decision is known). Two tiers:
+  //   1. Layout engine (default, `WORKER_LAYOUT_ENGINE=0` reverts):
+  //      multi-face detection + scene cuts + diarized words -> a
+  //      segment-based plan (per-shot solo crops with vertical framing/
+  //      zoom, stable two-up splits for multi-face shots) rendered
+  //      through the same `split` machinery packet B landed. Falls back
+  //      to tier 2 whenever the footage has no dynamic structure (the
+  //      detection is unavailable. The exact plan is persisted and reused
+  //      by the studio, making preview and export one contract.
+  // Missing or unavailable evidence remains planner input and produces
+  // an explicit Center fallback.
+  const layoutEngineEnabled = currentRenderConfig().layoutEngineEnabled;
+  const compositionSourceIdentity = compositionAssetRef(
+    "source",
+    run.projectId,
+  );
+  const compositionDocument: EditorDocument = {
+    ...editorDocument,
+    clipStartSec,
+    clipEndSec,
+    captionPreset,
+    transcriptSlice: utterances,
+    studioEdits,
+    brollUrl: editorDocument.brollUrl,
+    deletedRanges,
+  };
+  const sceneAssetReferences = [...new Map([
+    ...compositionDocument.sceneBlocks.flatMap((block) =>
+      block.content.kind === "image" || block.content.kind === "video"
+        ? [[block.content.asset.id, { ...block.content.asset, kind: block.content.kind }] as const]
+        : [],
+    ),
+    ...studioEdits.visualBroll.map((placement) =>
+      [placement.asset.id, { ...placement.asset, kind: "image" as const }] as const,
+    ),
+  ]).values()];
+  const sceneFontReferences = [...new Map(
+    compositionDocument.sceneBlocks.flatMap((block) =>
+      block.content.kind === "text" && block.content.fontAsset
+        ? [[block.content.fontAsset.id, {
+            ...block.content.fontAsset,
+            family: block.content.fontFamily,
+          }] as const]
+        : [],
+    ),
+  ).values()];
+  const resolvedSceneAssets: Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }> = {};
+  const resolvedSceneFonts: Record<string, string> = {};
+  const prisma = sceneAssetReferences.length > 0 || sceneFontReferences.length > 0
+    ? getPrismaClient()
+    : null;
+  if ((sceneAssetReferences.length > 0 || sceneFontReferences.length > 0) && !prisma) {
+    throw new WorkflowWorkerError("scene_asset_database_unavailable", "Scene assets cannot be resolved", "retryable");
+  }
+  const workspace = prisma && run.project.workspaceId
+    ? await prisma.workspace.findUnique({
+        where: { id: run.project.workspaceId },
+        select: { personalOwnerUserId: true, pricingTier: true },
+      })
+    : null;
+  const sceneOwnerWhere = sceneAssetOwnerWhere({
+    projectUserId: run.project.userId,
+    workspaceId: run.project.workspaceId,
+    workspace,
+  });
+  if (sceneAssetReferences.length > 0 && prisma) {
+    const assets = await prisma.visualAsset.findMany({
+      where: {
+        id: { in: sceneAssetReferences.map((asset) => asset.id) },
+        ...sceneOwnerWhere,
+      },
+      select: {
+        id: true,
+        kind: true,
+        fingerprint: true,
+        storageKey: true,
+      },
+    });
+    const byId = new Map(assets.map((asset) => [asset.id, asset]));
+    for (const reference of sceneAssetReferences) {
+      const asset = byId.get(reference.id);
+      if (!asset || asset.fingerprint !== reference.fingerprint || asset.kind !== reference.kind) {
+        throw new WorkflowWorkerError("scene_asset_unavailable", "An inserted scene asset is missing or changed", "permanent");
+      }
+      const path = join(tempDir, `scene-${asset.id}${extname(asset.storageKey) || (asset.kind === "image" ? ".png" : ".mp4")}`);
+      await currentRenderAdapters().storage.downloadObjectToFile({
+        key: asset.storageKey,
+        filePath: path,
+        signal: renderStorageSignal(),
+      });
+      const decodable = await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+        path,
+        asset.kind,
+      );
+      if (!decodable)
+        throw new WorkflowWorkerError(
+          "scene_asset_invalid",
+          "An inserted scene asset is not decodable",
+          "permanent",
+        );
+      const sceneProbe = asset.kind === "video" ? await probeSource(path) : null;
+      if (sceneProbe) {
+        const sceneDurationSec = await probeMediaDurationSec(path);
+        const invalidRange = compositionDocument.sceneBlocks.some(
+          (block) =>
+            block.content.kind === "video" &&
+            block.content.asset.id === asset.id &&
+            (sceneDurationSec === null ||
+              block.content.sourceEndSec > sceneDurationSec + 0.05),
+        );
+        if (invalidRange || sceneDurationSec === null) {
+          throw new WorkflowWorkerError(
+            "scene_asset_range_invalid",
+            "An inserted video scene exceeds its source duration",
+            "permanent",
+          );
+        }
+      }
+      resolvedSceneAssets[
+        compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`)
+      ] = {
+        path,
+        kind: asset.kind,
+        hasAudio: sceneProbe?.hasAudio ?? false,
+      };
+    }
+  }
+  if (sceneFontReferences.length > 0 && prisma) {
+    const fonts = await prisma.brandFont.findMany({
+      where: {
+        id: { in: sceneFontReferences.map((font) => font.id) },
+        ...sceneOwnerWhere,
+      },
+      select: {
+        id: true,
+        family: true,
+        fingerprint: true,
+        storageKey: true,
+        format: true,
+      },
+    });
+    const byId = new Map(fonts.map((font) => [font.id, font]));
+    for (const reference of sceneFontReferences) {
+      const font = byId.get(reference.id);
+      if (
+        !font ||
+        font.fingerprint !== reference.fingerprint ||
+        font.family !== reference.family
+      ) {
+        throw new WorkflowWorkerError(
+          "scene_font_unavailable",
+          "An inserted scene font is missing or changed",
+          "permanent",
+        );
+      }
+      const path = join(
+        tempDir,
+        `scene-font-${font.id}.${font.format.toLowerCase()}`,
+      );
+      await currentRenderAdapters().storage.downloadObjectToFile({
+        key: font.storageKey,
+        filePath: path,
+        signal: renderStorageSignal(),
+      });
+      resolvedSceneFonts[
+        compositionAssetRef("brand_font", `${font.id}:${font.fingerprint}`)
+      ] = path;
+    }
+  }
+  const sceneVisualAvailability = Object.fromEntries(
+    compositionDocument.sceneBlocks.flatMap((scene) =>
+      scene.content.kind === "image" || scene.content.kind === "video"
+        ? [[scene.id, {
+            state: "available" as const,
+            ref: compositionAssetRef(
+              "visual_asset",
+              `${scene.content.asset.id}:${scene.content.asset.fingerprint}`,
+            ),
+          }]]
+        : [],
+    ),
+  );
+  const sceneFontAvailability = Object.fromEntries(
+    compositionDocument.sceneBlocks.flatMap((scene) =>
+      scene.content.kind === "text" && scene.content.fontAsset
+        ? [[scene.id, {
+            state: "available" as const,
+            ref: compositionAssetRef(
+              "brand_font",
+              `${scene.content.fontAsset.id}:${scene.content.fontAsset.fingerprint}`,
+            ),
+          }]]
+        : [],
+    ),
+  );
+  const persistedAutoLayout = parseClipAutoLayoutAnalysis(
+    clip.autoLayoutAnalysis,
+  );
+  const persistedAutoLayoutEligible = Boolean(
+    layoutEngineEnabled &&
+      persistedAutoLayout &&
+      persistedAutoLayout.engine === "shot-layout-v1" &&
+      persistedAutoLayout.sourceIdentity === compositionSourceIdentity &&
+      clipAutoLayoutMatchesInputs(persistedAutoLayout, {
+        clipStartSec,
+        clipEndSec,
+        deletedRanges,
+      }) &&
+      Math.abs(persistedAutoLayout.editedDurationSec - clipDurationSec) <=
+        0.075,
+  );
+  let automaticLayoutAnalysisForPlan: ClipAutoLayoutAnalysis | null =
+    persistedAutoLayoutEligible ? persistedAutoLayout : null;
+  const automaticLayoutEvidenceFailure: "failed" | "disabled" =
+    layoutEngineEnabled ? "failed" : "disabled";
+  let automaticLayoutEvidenceSource:
+    | "durable"
+    | "analysis"
+    | "failed"
+    | "disabled" = persistedAutoLayoutEligible
+    ? "durable"
+    : automaticLayoutEvidenceFailure;
+  const automaticEvidenceProbe =
+    probe.hasVideo &&
+    resolveEffectiveFramingMode(studioEdits) === "auto"
+      ? planClipComposition({
+          document: compositionDocument,
+          source: {
+            identity: compositionSourceIdentity,
+            kind: "video",
+            width: probe.width,
+            height: probe.height,
+          },
+          evidence: {
+            automaticLayout: automaticLayoutAnalysisForPlan
+              ? {
+                  state: "available",
+                  value: {
+                    sourceIdentity: compositionSourceIdentity,
+                    inputFingerprint: automaticLayoutInputFingerprint({
+                      sourceIdentity: compositionSourceIdentity,
+                      clipStartSec,
+                      clipEndSec,
+                      deletedRanges,
+                      engineVersion: "shot-layout-v1",
+                    }),
+                    engineVersion: "shot-layout-v1",
+                    analysis: automaticLayoutAnalysisForPlan,
+                  },
+                }
+              : {
+                  state: layoutEngineEnabled ? "missing" : "disabled",
+                },
+          },
+          assets: {
+            backgroundImage: { state: "missing" },
+            sceneVisuals: sceneVisualAvailability,
+            sceneFonts: sceneFontAvailability,
+          },
+          capabilities: {
+            automaticSpeakerLayout: layoutEngineEnabled,
+            automaticSpeakerEngineVersion: "shot-layout-v1",
+          },
+          targets: outputs.map((output) => {
+            const target = aspectRatioConfig.get(output.aspectRatio)!;
+            return {
+              id: output.clipRenderId,
+              aspectRatio: output.aspectRatio,
+              width: target.width,
+              height: target.height,
+            };
+          }),
+        })
+      : null;
+  const automaticEvidenceRequested = Boolean(
+    automaticEvidenceProbe &&
+      automaticEvidenceProbe.status !== "invalid" &&
+      automaticEvidenceProbe.plan.evidenceRequests.length > 0,
+  );
+  if (automaticEvidenceRequested) {
+    if (
+      automaticEvidenceProbe &&
+      automaticEvidenceProbe.status !== "invalid"
+    ) {
+      for (const request of automaticEvidenceProbe.plan.evidenceRequests) {
+        compositionResources.analysisRequestKeys.add(request.key);
+      }
+    }
+    compositionResources.analysisExecutionCount += 1;
+    let engineHandled = false;
+    if (persistedAutoLayoutEligible && persistedAutoLayout) {
+      automaticLayoutAnalysisForPlan = persistedAutoLayout;
+      engineHandled = true;
+      log("info", "clip_layout_plan_reused", {
+        workflowRunId: run.id,
+        clipId: clip.id,
+        ...mediaAnalysisDiagnostic({
+          analysisMode: "layout_engine",
+          selectedMode: "persisted_shot_layout",
+        }),
+        segmentCount: persistedAutoLayout.segments.length,
+        twoUpSegmentCount: persistedAutoLayout.twoUpSegmentCount,
+        analyzedAtISO: persistedAutoLayout.analyzedAtISO,
+      });
+    }
+
+    // Detection deliberately scans the full uncut clip. It only runs on
+    // a persisted-plan miss; the normal render path is now a cheap read.
+    const detectInput = !engineHandled
+      ? await getSharedAnalysisSegment()
+      : null;
+
+    if (!engineHandled && layoutEngineEnabled && detectInput) {
+      compositionResources.detectorExecutionCount += 2;
+      const [multiDetection, sceneCuts] = await Promise.all([
+        currentRenderAdapters().analysis.detectMultiFacePath({
+          sourcePath: detectInput.path,
+          startSec: detectInput.startSec,
+          durationSec: effective.durationSec,
+        }),
+        currentRenderAdapters().analysis.detectSceneCuts({
+          sourcePath: detectInput.path,
+          startSec: detectInput.startSec,
+          durationSec: effective.durationSec,
+          workflowRunId: run.id,
+          clipId: clip.id,
+        }),
+      ]);
+
+      if (multiDetection) {
+        const remappedSamples = remapMultiFaceSamplesForCutPlan(
+          multiDetection.samples,
+          cutPlan,
+          clipStartSec,
+        );
+        const remappedCuts = remapSceneCutsForCutPlan(sceneCuts, cutPlan, clipStartSec);
+        const words = speechWordsFromUtterances(
+          utterances,
+          cutPlan,
+          clipStartSec,
+          clipEndSec,
+        );
+        const planBase = {
+          samples: remappedSamples,
+          sceneCuts: remappedCuts,
+          words,
+          durationSec: clipDurationSec,
+          // Resolution-aware zoom ceiling (adversarial review M4): the
+          // 9:16 base crop of a 16:9 source is already a ~1.78x
+          // upscale, so zoom multiplies it — a 1080p source at zoom
+          // 1.4 lands at ~2.5x and visibly softens. Spend zoom budget
+          // only where the pixels exist.
+          options: {
+            frameOptions: {
+              maxZoom:
+                probe.height >= 1440 ? 1.4 : probe.height >= 1080 ? 1.25 : 1.1,
+            },
+            activeSpeakerCuts: false,
+          },
+        };
+        const fullPlan = buildAutoLayoutPlan({
+          ...planBase,
+          allowTwoUp: true,
+        });
+        const noSplitPlan = buildAutoLayoutPlan({
+          ...planBase,
+          allowTwoUp: false,
+        });
+
+        const envelope: ClipAutoLayoutAnalysis =
+          clipAutoLayoutAnalysisSchema.parse({
+            version: 1,
+            engine: "shot-layout-v1",
+            sourceIdentity: compositionSourceIdentity,
+            analyzedAtISO: new Date(currentTimeMs()).toISOString(),
+            clipStartSec,
+            clipEndSec,
+            deletedRanges,
+            editedDurationSec: clipDurationSec,
+            sourceWidth: probe.width,
+            sourceHeight: probe.height,
+            segments: fullPlan.segments,
+            noSplitSegments: noSplitPlan.segments,
+            shotCount: fullPlan.shotCount,
+            soloShotCount: fullPlan.soloShotCount,
+            multiShotCount: fullPlan.multiShotCount,
+            twoUpSegmentCount: fullPlan.twoUpSegmentCount,
+            speakerCount: fullPlan.speakerCount,
+            mappedSpeakerCount: fullPlan.mappedSpeakerCount,
+          });
+        automaticLayoutAnalysisForPlan = envelope;
+        automaticLayoutEvidenceSource = "analysis";
+        if (clip.previewStorageKey) {
+          await currentRenderAdapters()
+            .clip
+            .completeClipAutoLayoutAnalysis(attempt, clip.id, envelope, {
+              editorRevision: clip.editorRevision,
+              previewStorageKey: clip.previewStorageKey,
+            })
+            .catch((error) => {
+              rethrowRenderControlFlow(error);
+              log("error", "clip_auto_layout_analysis_persist_failed", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                ...mediaAnalysisDiagnostic({
+                  analysisMode: "layout_engine",
+                  fallbackMode: "render_without_persisted_analysis",
+                  failureCode: "analysis_persist_failed",
+                }),
+              });
+            });
+        }
+
+        if (fullPlan.segments.length > 0) {
+          engineHandled = true;
+          log("info", "clip_layout_plan_applied", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            ...mediaAnalysisDiagnostic({
+              analysisMode: "layout_engine",
+              selectedMode: "shot_layout",
+            }),
+            segmentCount: fullPlan.segments.length,
+            twoUpSegmentCount: fullPlan.twoUpSegmentCount,
+            shotCount: fullPlan.shotCount,
+            soloShotCount: fullPlan.soloShotCount,
+            multiShotCount: fullPlan.multiShotCount,
+            speakerCount: fullPlan.speakerCount,
+            mappedSpeakerCount: fullPlan.mappedSpeakerCount,
+            sceneCutCount: remappedCuts.length,
+          });
+        } else {
+          // Detection completed but found no trustworthy face structure.
+          // Treat that as a conclusive centered-layout analysis instead
+          // of paying for a second detector pass on every render.
+          log("info", "clip_layout_plan_fallback", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            ...mediaAnalysisDiagnostic({
+              analysisMode: "layout_engine",
+              fallbackMode: "center_crop",
+              failureCode: "no_trustworthy_faces",
+            }),
+            reason: "no_trustworthy_faces",
+            shotCount: fullPlan.shotCount,
+            soloShotCount: fullPlan.soloShotCount,
+            multiShotCount: fullPlan.multiShotCount,
+            speakerCount: fullPlan.speakerCount,
+          });
+          engineHandled = true;
+        }
+      } else {
+        log("info", "clip_layout_plan_fallback", {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          ...mediaAnalysisDiagnostic({
+            analysisMode: "layout_engine",
+            fallbackMode: "composition_plan",
+            failureCode: "analysis_unavailable",
+          }),
+          reason: "detection_unavailable",
+        });
+      }
+    }
+  }
+
+  let splitLayoutEvidenceForPlan: CompositionEvidenceAvailability<
+    SplitLayoutEvidence,
+    SplitLayoutFailureReason
+  > = {
+    state: "missing",
+  };
+  let screenLayoutEvidenceForPlan: CompositionEvidenceAvailability<
+    ScreenLayoutEvidence,
+    ScreenLayoutFailureReason
+  > = {
+    state: "missing",
+  };
+
+  // Resolve the evidence needed by the shared planner for Screen mode.
+  const screenLayoutEnabled = currentRenderConfig().screenLayoutEnabled;
+  const isScreenMode =
+    resolveEffectiveFramingMode(studioEdits) === "screen" && probe.hasVideo;
+  if (isScreenMode) {
+    if (!screenLayoutEnabled) {
+      screenLayoutEvidenceForPlan = { state: "disabled" };
+      log("info", "clip_screen_fallback", {
+        workflowRunId: run.id,
+        clipId: clip.id,
+        ...mediaAnalysisDiagnostic({
+          analysisMode: "screen_layout",
+          fallbackMode: "composition_plan",
+          failureCode: "analysis_disabled",
+        }),
+        reason: "disabled",
+      });
+    } else {
+      const screenFallbackReason = decideScreenFallback({
+        hasBrollPlan: Boolean(brollPlan),
+      });
+
+      if (screenFallbackReason) {
+        screenLayoutEvidenceForPlan = {
+          state: "failed",
+          reason: screenFallbackReason,
+        };
+        log("info", "clip_screen_fallback", {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          ...mediaAnalysisDiagnostic({
+            analysisMode: "screen_layout",
+            fallbackMode: "composition_plan",
+            failureCode: screenFallbackReason,
+          }),
+          reason: screenFallbackReason,
+        });
+      } else {
+        const screenEngineVersion = SCREEN_LAYOUT_ENGINE_VERSION;
+        const screenFingerprint = screenLayoutInputFingerprint({
+          sourceIdentity: compositionSourceIdentity,
+          clipStartSec,
+          clipEndSec,
+          deletedRanges,
+          engineVersion: screenEngineVersion,
+        });
+        const persistedAnalysisRaw = parseClipLayoutAnalysis(
+          clip.layoutAnalysis,
+        );
+        const persistedAnalysis =
+          persistedAnalysisRaw !== null &&
+          layoutAnalysisMatchesWindow(
+            persistedAnalysisRaw,
+            clipStartSec,
+            effective.durationSec,
+          ) &&
+          persistedAnalysisRaw.engine === screenEngineVersion &&
+          persistedAnalysisRaw.sourceIdentity === compositionSourceIdentity &&
+          persistedAnalysisRaw.inputFingerprint === screenFingerprint
+            ? persistedAnalysisRaw
+            : null;
+        const reuseExactScreenPlan = persistedAnalysis !== null;
+        if (!reuseExactScreenPlan) {
+          compositionResources.analysisRequestKeys.add(
+            `screen-layout:${screenFingerprint}`,
+          );
+          compositionResources.analysisExecutionCount += 1;
+        }
+        // Real screen layout: element segmentation v1 (vizard-parity.md's
+        // element-segmentation spike) tries the actual facecam PiP
+        // rectangle FIRST — only when the source is screencast-like
+        // (`classifyScreencast`), a corner-adjacent, compact motion blob
+        // was actually found (`selectPipRect`), AND H2 (adversarial
+        // review) a face is confirmed to actually sit inside it
+        // (`confirmsFaceInRect`) does this win; every other case (a
+        // genuine talking-head source — motion segmentation's own
+        // measured false positive is a hand gesture near the frame edge
+        // reading as a corner-adjacent compact blob — a frozen/still
+        // facecam that motion segmentation can't see, no python/opencv/
+        // numpy) falls straight through to the pre-existing whole-frame
+        // single-face detection below, byte-identical to before this
+        // packet. Both detectors share the SAME extracted segment
+        // (`detectInput`) — no reason to extract it twice.
+        const detectInput = reuseExactScreenPlan
+          ? null
+          : await getSharedAnalysisSegment();
+
+        // PiP persistence packet B (read-before-detect): a persisted
+        // `Clip.layoutAnalysis` envelope whose detection window still
+        // matches THIS render's `clipStartSec`/`effective.durationSec`
+        // (`layoutAnalysisMatchesWindow`) means `pip_detect.py` already
+        // ran for this exact source range — reuse its
+        // movingPxFrac/insufficientSamples/pipRect instead of paying for
+        // the script again. A window mismatch (most commonly a trim
+        // moving `clipStartSec`/
+        // `endSec`) is the envelope's own invalidation — see that
+        // function's doc comment — so the stale value is simply never
+        // read here, not explicitly deleted.
+        // The read-before-detect decision lives in `resolvePipAnalysis`.
+        // The identity-complete envelope is persisted below only after
+        // both PiP and face-band facts are conclusive.
+        if (!reuseExactScreenPlan && detectInput) {
+          compositionResources.detectorExecutionCount += 1;
+        }
+        const resolvedPip = reuseExactScreenPlan
+          ? {
+              detectionResult: {
+                movingPxFrac: persistedAnalysis.movingPxFrac,
+                insufficientSamples: persistedAnalysis.insufficientSamples,
+                candidates: [],
+              },
+              selectedRect: persistedAnalysis.pipRect,
+              candidateCount: persistedAnalysis.pipRect ? 1 : 0,
+              analysisSource: "persisted" as const,
+            }
+          : await resolvePipAnalysis({
+              persisted: persistedAnalysis,
+              detectInput,
+              startSec: clipStartSec,
+              durationSec: effective.durationSec,
+              detect: currentRenderAdapters().analysis.detectPipPath,
+            });
+        const { detectionResult, selectedRect, candidateCount, analysisSource } =
+          resolvedPip;
+
+        // Face detection runs on the same segment both to confirm a new
+        // PiP candidate and to support the whole-frame speaker fallback.
+        // An exact v2 plan already contains both decisions, so reusing it
+        // deliberately skips this pass and cannot downgrade durable
+        // evidence after a transient detector failure.
+        if (detectInput) {
+          compositionResources.detectorExecutionCount += 1;
+        }
+        const detection = detectInput
+          ? await currentRenderAdapters().analysis.detectFacePath({
+              sourcePath: detectInput.path,
+              startSec: detectInput.startSec,
+              durationSec: effective.durationSec,
+              logContext: { workflowRunId: run.id, clipId: clip.id },
+            })
+          : null;
+        const faceConfirmed = confirmsFaceInRect(detection?.samples ?? null, selectedRect);
+
+        const pipUsageBase: DecidePipUsageParams = {
+          segmentExtracted: reuseExactScreenPlan || Boolean(detectInput),
+          detection: detectionResult,
+          selectedRect,
+          faceConfirmed: reuseExactScreenPlan
+            ? persistedAnalysis.pipUsable
+            : faceConfirmed,
+          screencastThreshold: currentRenderConfig().pipMotionThreshold,
+        };
+        // Clip-level evidence gate. Target-specific geometry is resolved
+        // later by the composition planner.
+        const clipLevelPipDecision = reuseExactScreenPlan
+          ? {
+              useRect: persistedAnalysis.pipUsable,
+              reason: persistedAnalysis.pipUsable
+                ? ("ok" as const)
+                : ("no_candidate" as const),
+            }
+          : decidePipUsage(pipUsageBase);
+        const pipRect = clipLevelPipDecision.useRect ? selectedRect : null;
+
+        if (pipRect) {
+          log("info", "clip_screen_pip_selected", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            ...mediaAnalysisDiagnostic({
+              analysisMode: "picture_in_picture",
+              selectedMode: "pip_crop",
+            }),
+            movingPxFrac: detectionResult?.movingPxFrac ?? null,
+            rect: pipRect,
+            analysisSource,
+          });
+        } else {
+          log("info", "clip_screen_pip_fallback", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            ...mediaAnalysisDiagnostic({
+              analysisMode: "picture_in_picture",
+              fallbackMode: "speaker_band",
+              failureCode: clipLevelPipDecision.reason,
+            }),
+            reason: clipLevelPipDecision.reason,
+            movingPxFrac: detectionResult?.movingPxFrac ?? null,
+            candidateCount,
+            analysisSource,
+          });
+        }
+
+        const faceBandSegments = reuseExactScreenPlan
+          ? persistedAnalysis.faceBandSegments
+          : faceBandSegmentsForCompositionPlan({
+              samples: detection?.samples ?? null,
+              cutPlan,
+              clipStartSec,
+              editedDurationSec: clipDurationSec,
+            });
+        const screenAnalysisConclusive =
+          reuseExactScreenPlan || Boolean(detectionResult && detection);
+        if (!screenAnalysisConclusive) {
+          const failureReason = detectionResult
+            ? "analysis_unavailable"
+            : "detection_unavailable";
+          screenLayoutEvidenceForPlan = {
+            state: "failed",
+            reason: failureReason,
+          };
+          const failure = clipLayoutAnalysisFailureSchema.parse({
+            version: 2,
+            engine: screenEngineVersion,
+            state: "failed",
+            sourceIdentity: compositionSourceIdentity,
+            inputFingerprint: screenFingerprint,
+            analyzedAtISO: new Date(currentTimeMs()).toISOString(),
+            reason: failureReason,
+          });
+          if (clip.previewStorageKey) {
+            try {
+              await currentRenderAdapters().clip.setClipLayoutAnalysisFailure(
+                attempt,
+                clip.id,
+                failure,
+                {
+                  editorRevision: clip.editorRevision,
+                  previewStorageKey: clip.previewStorageKey,
+                },
+              );
+            } catch (persistError) {
+              rethrowRenderControlFlow(persistError);
+              log("error", "clip_screen_layout_failure_persist_failed", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                reason: failureReason,
+              });
+            }
+          }
+        } else if (persistedAnalysis === null) {
+          const screenEnvelope = clipLayoutAnalysisV2Schema.parse({
+            version: 2,
+            engine: screenEngineVersion,
+            sourceIdentity: compositionSourceIdentity,
+            inputFingerprint: screenFingerprint,
+            analyzedAtISO: new Date(currentTimeMs()).toISOString(),
+            sourceStartSec: clipStartSec,
+            sourceDurationSec: effective.durationSec,
+            clipStartSec,
+            clipEndSec,
+            movingPxFrac: detectionResult?.movingPxFrac ?? null,
+            insufficientSamples:
+              detectionResult?.insufficientSamples ?? false,
+            pipRect: selectedRect,
+            pipUsable: clipLevelPipDecision.useRect,
+            sourceWidth: probe.width,
+            sourceHeight: probe.height,
+            deletedRanges,
+            faceBandSegments,
+          });
+          if (clip.previewStorageKey) {
+            try {
+              await currentRenderAdapters().clip.setClipLayoutAnalysis(
+                attempt,
+                clip.id,
+                screenEnvelope,
+                {
+                  editorRevision: clip.editorRevision,
+                  previewStorageKey: clip.previewStorageKey,
+                },
+              );
+            } catch (persistError) {
+              rethrowRenderControlFlow(persistError);
+              log("error", "clip_screen_layout_analysis_persist_failed", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                ...mediaAnalysisDiagnostic({
+                  analysisMode: "screen_layout",
+                  fallbackMode: "render_without_persisted_analysis",
+                  failureCode: "analysis_persist_failed",
+                }),
+              });
+            }
+          }
+        }
+        if (screenAnalysisConclusive) {
+          screenLayoutEvidenceForPlan = {
+            state: "available",
+            value: {
+              sourceIdentity: compositionSourceIdentity,
+              inputFingerprint: screenFingerprint,
+              engineVersion: screenEngineVersion,
+              source:
+                analysisSource === "persisted" ? "durable-pip" : "analysis",
+              pictureInPicture: pipRect
+                ? {
+                    state: "confirmed",
+                    rect: {
+                      x: pipRect.x,
+                      y: pipRect.y,
+                      width: pipRect.w,
+                      height: pipRect.h,
+                    },
+                  }
+                : { state: "unavailable" },
+              faceBand: faceBandSegments
+                ? { state: "available", segments: faceBandSegments }
+                : { state: "unavailable" },
+            },
+          };
+        }
+        if (screenAnalysisConclusive && !pipRect && !faceBandSegments) {
+          log("info", "clip_screen_bottom_center_fallback", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            ...mediaAnalysisDiagnostic({
+              analysisMode: "screen_layout",
+              fallbackMode: "center_crop",
+              failureCode: detection
+                ? "no_face_detected"
+                : "analysis_unavailable",
+            }),
+            reason: detection ? "no_face_detected" : "detection_unavailable",
+          });
+        }
+      }
+    }
+  }
+
+  // Resolve the evidence needed by the shared planner for Split mode.
+  const splitEnabled = currentRenderConfig().splitEnabled;
+  const isSplitMode =
+    resolveEffectiveFramingMode(studioEdits) === "split" && probe.hasVideo;
+  if (isSplitMode) {
+    // L1 (adversarial review): the WORKER_SPLIT=0 kill switch gets its
+    // own fallback reason ("disabled") instead of masquerading as
+    // "detection_unavailable" — it never even attempts detection, which
+    // is a materially different situation to log/debug from "detection
+    // ran and failed." Short-circuits before `decideSplitFallback` is
+    // even called (that function has no way to distinguish "disabled"
+    // from "detection never ran for another reason" from its params
+    // alone).
+    if (!splitEnabled) {
+      splitLayoutEvidenceForPlan = { state: "disabled" };
+      log("info", "clip_split_fallback", {
+        workflowRunId: run.id,
+        clipId: clip.id,
+        ...mediaAnalysisDiagnostic({
+          analysisMode: "split_layout",
+          fallbackMode: "composition_plan",
+          failureCode: "analysis_disabled",
+        }),
+        reason: "disabled",
+      });
+    } else {
+      const splitEngineVersion = "explicit-split-v1";
+      const splitFingerprint = splitLayoutInputFingerprint({
+        sourceIdentity: compositionSourceIdentity,
+        clipStartSec,
+        clipEndSec,
+        deletedRanges,
+        engineVersion: splitEngineVersion,
+      });
+      const persistedSplitAnalysis = parseClipSplitLayoutAnalysis(
+        clip.splitLayoutAnalysis,
+      );
+      const reusableSplitAnalysis =
+        !brollPlan &&
+        persistedSplitAnalysis?.sourceIdentity === compositionSourceIdentity &&
+        persistedSplitAnalysis.sourceWidth === probe.width &&
+        persistedSplitAnalysis.sourceHeight === probe.height &&
+        clipAutoLayoutMatchesInputs(persistedSplitAnalysis, {
+          clipStartSec,
+          clipEndSec,
+          deletedRanges,
+        }) &&
+        Math.abs(
+          persistedSplitAnalysis.editedDurationSec - clipDurationSec,
+        ) <= 0.075
+          ? persistedSplitAnalysis
+          : null;
+      let detectionAvailable = false;
+      let plan: BuildSplitLayoutPlanResult | null = null;
+      let multiDetection: { samples: MultiFaceSample[] } | null = null;
+
+      if (reusableSplitAnalysis) {
+        detectionAvailable = true;
+        plan = {
+          segments: reusableSplitAnalysis.segments,
+          clusterCount: reusableSplitAnalysis.speakerCount,
+          cappedFromSegmentCount: null,
+        };
+      } else if (!brollPlan) {
+        compositionResources.analysisRequestKeys.add(
+          `split-speaker-layout:${splitFingerprint}`,
+        );
+        compositionResources.analysisExecutionCount += 1;
+        const detectInput = await getSharedAnalysisSegment();
+        // Same source<->edited timeline contract as the single-face path
+        // above: detection scans the full uncut clip window in
+        // elapsed-uncut-source seconds; `remapMultiFaceSamplesForCutPlan`
+        // drops samples inside a cut and remaps the rest onto the edited
+        // timeline used by `buildSplitLayoutPlan` and the shared planner.
+        if (detectInput) {
+          compositionResources.detectorExecutionCount += 1;
+        }
+        multiDetection = detectInput
+          ? await currentRenderAdapters().analysis.detectMultiFacePath({
+              sourcePath: detectInput.path,
+              startSec: detectInput.startSec,
+              durationSec: effective.durationSec,
+              logContext: { workflowRunId: run.id, clipId: clip.id },
+            })
+          : null;
+        detectionAvailable = Boolean(multiDetection);
+        if (multiDetection) {
+          const remapped = remapMultiFaceSamplesForCutPlan(
+            multiDetection.samples,
+            cutPlan,
+            clipStartSec,
+          );
+          plan = buildSplitLayoutPlan(remapped, clipDurationSec);
+        }
+      }
+
+      const fallbackReason = decideSplitFallback({
+        hasBrollPlan: Boolean(brollPlan),
+        detectionAvailable,
+        plan,
+      });
+
+      if (fallbackReason) {
+        splitLayoutEvidenceForPlan = {
+          state: "failed",
+          reason: fallbackReason,
+        };
+        if (fallbackReason !== "broll_conflict" && clip.previewStorageKey) {
+          const failure = clipSplitLayoutFailureSchema.parse({
+            version: 1,
+            engine: splitEngineVersion,
+            state: "failed",
+            sourceIdentity: compositionSourceIdentity,
+            inputFingerprint: splitFingerprint,
+            analyzedAtISO: new Date(currentTimeMs()).toISOString(),
+            reason: fallbackReason,
+          });
+          await currentRenderAdapters()
+            .clip.completeClipSplitLayoutFailure(attempt, clip.id, failure, {
+              editorRevision: clip.editorRevision,
+              previewStorageKey: clip.previewStorageKey,
+            })
+            .catch((error) => {
+              rethrowRenderControlFlow(error);
+              log("error", "clip_split_layout_failure_persist_failed", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                reason: fallbackReason,
+              });
+            });
+        }
+        log("info", "clip_split_fallback", {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          ...mediaAnalysisDiagnostic({
+            analysisMode: "split_layout",
+            fallbackMode: "composition_plan",
+            failureCode: fallbackReason,
+          }),
+          reason: fallbackReason,
+        });
+      } else if (plan) {
+        const fallbackSegments = reusableSplitAnalysis
+          ? reusableSplitAnalysis.noSplitSegments
+          : (faceBandSegmentsForCompositionPlan({
+              samples: multiDetection
+                ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
+                : null,
+              cutPlan,
+              clipStartSec,
+              editedDurationSec: clipDurationSec,
+            }) ?? [
+              {
+                startSec: 0,
+                endSec: clipDurationSec,
+                layout: "single" as const,
+                cxNorm: 0.5,
+                cyNorm: 0.5,
+                zoom: 1,
+              },
+            ]);
+        const explicitSegments: ClipAutoLayoutSegment[] = plan.segments.map(
+          (segment) =>
+            segment.layout === "single"
+              ? {
+                  startSec: segment.startSec,
+                  endSec: segment.endSec,
+                  layout: "single" as const,
+                  cxNorm: segment.cxNorm,
+                  cyNorm: segment.cyNorm ?? 0.5,
+                  zoom: segment.zoom ?? 1,
+                }
+              : {
+                  startSec: segment.startSec,
+                  endSec: segment.endSec,
+                  layout: "two-up" as const,
+                  topCxNorm: segment.topCxNorm,
+                  bottomCxNorm: segment.bottomCxNorm,
+                  topCyNorm: segment.topCyNorm ?? 0.5,
+                  bottomCyNorm: segment.bottomCyNorm ?? 0.5,
+                  topZoom: segment.topZoom ?? 1,
+                  bottomZoom: segment.bottomZoom ?? 1,
+                },
+        );
+        splitLayoutEvidenceForPlan = {
+          state: "available",
+          value: {
+            sourceIdentity: compositionSourceIdentity,
+            inputFingerprint: splitFingerprint,
+            engineVersion: splitEngineVersion,
+            source: reusableSplitAnalysis
+              ? "durable-explicit"
+              : "explicit-detector",
+            segments: explicitSegments,
+            fallbackSegments,
+          },
+        };
+        const twoUpSegmentCount = explicitSegments.filter(
+          (segment) => segment.layout === "two-up",
+        ).length;
+        // The shared scene envelope is also the browser's durable Split
+        // evidence. Its explicit engine discriminator prevents an Auto
+        // consumer from silently treating detector-specific scenes as a
+        // shot-layout result when the user switches modes later.
+        const splitPreviewEnvelope = parseClipSplitLayoutAnalysis({
+          version: 1,
+          engine: "explicit-split-v1",
+          sourceIdentity: compositionSourceIdentity,
+          analyzedAtISO: new Date(currentTimeMs()).toISOString(),
+          clipStartSec,
+          clipEndSec,
+          deletedRanges,
+          editedDurationSec: clipDurationSec,
+          sourceWidth: probe.width,
+          sourceHeight: probe.height,
+          segments: explicitSegments,
+          noSplitSegments: fallbackSegments,
+          shotCount: explicitSegments.length,
+          soloShotCount: explicitSegments.length - twoUpSegmentCount,
+          multiShotCount: twoUpSegmentCount,
+          twoUpSegmentCount,
+          speakerCount: plan.clusterCount,
+          mappedSpeakerCount: plan.clusterCount,
+        });
+        if (!splitPreviewEnvelope) {
+          throw new Error("invalid_split_layout_analysis");
+        }
+        if (!reusableSplitAnalysis && clip.previewStorageKey) {
+          await currentRenderAdapters()
+            .clip
+            .completeClipSplitLayoutAnalysis(
+              attempt,
+              clip.id,
+              splitPreviewEnvelope,
+              {
+              editorRevision: clip.editorRevision,
+              previewStorageKey: clip.previewStorageKey,
+              },
+            )
+            .catch((error) => {
+              rethrowRenderControlFlow(error);
+              log("error", "clip_split_layout_analysis_persist_failed", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                ...mediaAnalysisDiagnostic({
+                  analysisMode: "split_layout",
+                  fallbackMode: "render_without_persisted_analysis",
+                  failureCode: "analysis_persist_failed",
+                }),
+              });
+            });
+        }
+        if (plan.cappedFromSegmentCount) {
+          log("info", "clip_split_segments_capped", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            originalSegmentCount: plan.cappedFromSegmentCount,
+            cappedTo: plan.segments.length,
+          });
+        }
+        log("info", "clip_split_applied", {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          ...mediaAnalysisDiagnostic({
+            analysisMode: "split_layout",
+            selectedMode: "two_up",
+          }),
+          segmentCount: plan.segments.length,
+          clusterCount: plan.clusterCount,
+        });
+
+      }
+    }
+  }
+
+  const { musicPlan, sfxPlans } = await resolveClipAudioAssets({
+    run, clip, frozenState, studioEdits, clipDurationSec, tempDir,
+    touchedOptionalAssetClasses,
+  });
+
+  // Canvas background (vizard-parity Phase C item 2): mirrors the music
+  // plan above — resolve once per clip, downloading the background image
+  // (if any) to a local file so the per-output builders never touch the
+  // network themselves. A bad/unsafe image URL, a failed download, or a
+  // downloaded file that ffprobe can't find a decodable video/image
+  // stream in (e.g. the URL 200s with an HTML page instead of an image)
+  // degrades to the solid-color fallback (black if no color was chosen
+  // either) rather than failing the render — same "best effort, never
+  // fail the clip" policy the music/B-roll downloads follow.
+  //
+  // Gated on the resolved effective mode (Phase C-2 stage 1), not the
+  // raw `background.mode`, so this can't drift from the reframe-skip
+  // gate above or the builder branch below — they're all
+  // `resolveEffectiveFramingMode(studioEdits) === "fit"` by definition
+  // (`background.mode !== "off"` always wins as "fit"), so this reads
+  // identically to before for every existing clip. This stays a plain
+  // `=== "fit"` check, not an exhaustive switch — a split clip
+  // (background off) leaves `backgroundPlan` null exactly like center
+  // does today, and instead of falling through to the plain
+  // crop-to-fill builder path, `buildSingleVideoArgs`/`buildBrollVideoArgs`
+  // check `params.split` (built from `splitPlan` above, split packet B)
+  // BEFORE the crop-to-fill fallback — see those builders' `else if`
+  // branch order.
+  let backgroundPlan: BackgroundPlan | null = null;
+  if (resolveEffectiveFramingMode(studioEdits) === "fit") {
+    const fallbackColor = studioEdits.background.color ?? "#000000";
+    backgroundPlan = {
+      mode: "color",
+      color: fallbackColor,
+      imagePath: null,
+    };
+
+    if (studioEdits.background.mode === "image" && studioEdits.background.imageUrl) {
+      let imageUrlSafe = false;
+      try {
+        assertPublicHttpUrl(studioEdits.background.imageUrl);
+        imageUrlSafe = true;
+      } catch {
+        diagnoseOptionalAssetFallback({
+          assetClass: "background",
+          phase: "lookup",
+          failureCode: "background_image_url_rejected",
+          context: { workflowRunId: run.id, clipId: clip.id },
+        });
+      }
+      if (imageUrlSafe) {
+        touchedOptionalAssetClasses.add("background");
+        const backgroundImagePath = join(tempDir, `background-${clip.id}.bin`);
+        try {
+          await currentRenderAdapters().optionalAssets.downloadUrlToFile(
+            studioEdits.background.imageUrl,
+            backgroundImagePath,
+            "background_image_download_failed",
+          );
+          const probeDecodable =
+            await currentRenderAdapters().optionalAssets.probeBackgroundImageDecodable(
+              backgroundImagePath,
+            );
+          const decodable =
+            probeDecodable &&
+            (await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+              backgroundImagePath,
+              "image",
+            ));
+          if (!decodable) {
+            diagnoseOptionalAssetFallback({
+              assetClass: "background",
+              phase: probeDecodable ? "decode" : "probe",
+              failureCode: probeDecodable
+                ? "background_image_decode_failed"
+                : "background_image_invalid",
+              context: { workflowRunId: run.id, clipId: clip.id },
+            });
+          }
+          backgroundPlan = resolveBackgroundPlanForDownloadedImage({
+            decodable,
+            color: fallbackColor,
+            imagePath: backgroundImagePath,
+          });
+        } catch (error) {
+          rethrowRenderControlFlow(error);
+          diagnoseOptionalAssetFallback({
+            assetClass: "background",
+            phase: "download",
+            failureCode: "background_image_download_failed",
+            context: { workflowRunId: run.id, clipId: clip.id },
+          });
+          // backgroundPlan stays the color fallback set above.
+        }
+      }
+    }
+  }
+
+  const optionalCommandAssets: Array<{
+    assetClass: OptionalAssetClass;
+    failureCode: string;
+  }> = [
+    ...(logo
+      ? [
+          {
+            assetClass: "logo" as const,
+            failureCode: "brand_logo_command_failed",
+          },
+        ]
+      : []),
+    ...(brollPlan || studioEdits.visualBroll.length > 0
+      ? [
+          {
+            assetClass: "broll" as const,
+            failureCode: "broll_command_failed",
+          },
+        ]
+      : []),
+    ...(musicPlan
+      ? [
+          {
+            assetClass: "music" as const,
+            failureCode: "music_mix_failed",
+          },
+        ]
+      : []),
+    ...(sfxPlans.length > 0
+      ? [
+          {
+            assetClass: "sound_effect" as const,
+            failureCode: "sound_effect_mix_failed",
+          },
+        ]
+      : []),
+    ...(backgroundPlan?.mode === "image"
+      ? [
+          {
+            assetClass: "background" as const,
+            failureCode: "background_image_command_failed",
+          },
+        ]
+      : []),
+  ];
+  const fallbackBackgroundPlan: BackgroundPlan | null =
+    backgroundPlan?.mode === "image"
+      ? { mode: "color", color: backgroundPlan.color, imagePath: null }
+      : backgroundPlan;
+
+  const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
+  let plannedAudio: BoundCompositionAudioRenderRequest | null = null;
+  let fallbackAudio: BoundCompositionAudioRenderRequest | null = null;
+  let compositionPlan: ClipCompositionPlan | null = null;
+  let fallbackCompositionPlan: ClipCompositionPlan | null = null;
+  {
+    const planWithAssetAvailability = (
+      backgroundImage:
+        | { state: "missing" | "failed" }
+        | { state: "available"; ref: string },
+      availability: {
+        broll?: boolean;
+        logo?: boolean;
+        music?: boolean;
+        soundEffects?: boolean;
+      } = {},
+    ) => {
+      const visualBrollAvailable = studioEdits.visualBroll.every((placement) =>
+        Boolean(
+          resolvedSceneAssets[
+            compositionAssetRef(
+              "visual_asset",
+              `${placement.asset.id}:${placement.asset.fingerprint}`,
+            )
+          ],
+        ),
+      );
+      const brollAvailable =
+        availability.broll ?? (Boolean(brollPlan) || visualBrollAvailable);
+      const logoAvailable = availability.logo ?? Boolean(brandLogo);
+      const musicAvailable = availability.music ?? Boolean(musicPlan);
+      const soundEffectsAvailable = availability.soundEffects ?? sfxPlans.length > 0;
+      return planClipComposition({
+        document: compositionDocument,
+        source: {
+          identity: compositionSourceIdentity,
+          kind: probe.hasVideo ? "video" : "audio",
+          width: probe.hasVideo ? probe.width : 0,
+          height: probe.hasVideo ? probe.height : 0,
+          hasAudio: probe.hasAudio,
+        },
+        evidence: {
+          automaticLayout: automaticLayoutAnalysisForPlan
+            ? {
+                state: "available",
+                value: {
+                  sourceIdentity: compositionSourceIdentity,
+                  inputFingerprint: automaticLayoutInputFingerprint({
+                    sourceIdentity: compositionSourceIdentity,
+                    clipStartSec,
+                    clipEndSec,
+                    deletedRanges,
+                    engineVersion: "shot-layout-v1",
+                  }),
+                  engineVersion: "shot-layout-v1",
+                  analysis: automaticLayoutAnalysisForPlan,
+                },
+              }
+            : { state: automaticLayoutEvidenceFailure },
+          splitLayout: splitLayoutEvidenceForPlan,
+          screenLayout: screenLayoutEvidenceForPlan,
+        },
+        assets: {
+          backgroundImage,
+          sceneVisuals: sceneVisualAvailability,
+          sceneFonts: sceneFontAvailability,
+          ...(studioEdits.music.assetId || studioEdits.music.url
+            ? {
+                music: musicAvailable && musicPlan?.ref
+                  ? {
+                      state: "available" as const,
+                      ref: musicPlan.ref,
+                      durationSec: musicPlan.durationSec,
+                    }
+                  : { state: "failed" as const },
+              }
+            : {}),
+          soundEffects: Object.fromEntries(
+            studioEdits.sfx.map((placement) => {
+              const resolved = soundEffectsAvailable
+                ? sfxPlans.find(
+                    (candidate) => candidate.id === placement.id,
+                  )
+                : undefined;
+              return [
+                placement.id,
+                resolved?.ref
+                  ? {
+                      state: "available" as const,
+                      ref: resolved.ref,
+                      durationSec: resolved.durationSec,
+                    }
+                  : { state: "failed" as const },
+              ];
+            }),
+          ),
+          ...(studioEdits.visualBroll.length > 0 && brollAvailable
+            ? {
+                broll: {
+                  state: "available" as const,
+                  placements: studioEdits.visualBroll.map((placement) => ({
+                    id: placement.id,
+                    ref: compositionAssetRef("visual_asset", `${placement.asset.id}:${placement.asset.fingerprint}`),
+                    kind: "image" as const,
+                    startSec: placement.startSec,
+                    endSec: placement.endSec,
+                  })),
+                },
+              }
+            : brollPlan && brollAvailable
+            ? {
+                broll: {
+                  state: "available" as const,
+                  placements: brollPlan.cutaways.map((cutaway, index) => ({
+                    id: `cutaway-${index}`,
+                    ref: cutaway.ref,
+                    startSec: cutaway.window.startSec,
+                    endSec: cutaway.window.endSec,
+                  })),
+                },
+              }
+            : userBrollUrl || brollPlan || studioEdits.visualBroll.length > 0
+              ? { broll: { state: "failed" as const } }
+              : {}),
+          ...(brandLogo && logoAvailable && plannedLogoSettings
+            ? {
+                logo: {
+                  state: "available" as const,
+                  ref: brandLogo.ref,
+                  settings: plannedLogoSettings,
+                },
+              }
+            : brandLogoWasRequested
+              ? { logo: { state: "failed" as const } }
+              : {}),
+        },
+        capabilities: {
+          automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
+          automaticSpeakerEngineVersion: "shot-layout-v1",
+          explicitSplitLayout: currentRenderConfig().splitEnabled,
+          splitEngineVersion: "explicit-split-v1",
+          screenLayout: currentRenderConfig().screenLayoutEnabled,
+          screenEngineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
+        },
+        targets: outputs.map((output) => {
+          const target = aspectRatioConfig.get(output.aspectRatio)!;
+          return {
+            id: output.clipRenderId,
+            aspectRatio: output.aspectRatio,
+            width: target.width,
+            height: target.height,
+            outputTreatment: {
+              resolution: output.resolution,
+              watermark: output.watermark,
+            },
+          };
+        }),
+      });
+    };
+    const backgroundImageAvailability =
+      requestedCompositionMode === "fit" &&
+      backgroundPlan?.mode === "image" &&
+      backgroundPlan.imagePath &&
+      studioEdits.background.imageUrl
+        ? {
+            state: "available" as const,
+            ref: compositionAssetRef(
+              "background",
+              studioEdits.background.imageUrl,
+            ),
+          }
+        : requestedCompositionMode === "fit" &&
+            studioEdits.background.mode === "image"
+          ? ({ state: "failed" } as const)
+          : ({ state: "missing" } as const);
+    const planningStartedAtMs = currentTimeMs();
+    const planned = planWithAssetAvailability(
+      backgroundImageAvailability,
+    );
+    const planningDurationMs = Math.max(
+      0,
+      currentTimeMs() - planningStartedAtMs,
+    );
+    if (planned.status === "invalid") {
+      throw new WorkflowWorkerError(
+        planned.error.code,
+        `Clip Composition Plan rejected ${planned.error.code}`,
+        "permanent",
+      );
+    }
+    compositionResources.planVersion = planned.plan.version;
+    compositionResources.planFingerprint = planned.plan.fingerprint;
+    compositionResources.requestedMode = requestedCompositionMode;
+    compositionResources.effectiveModes = planned.plan.targets.map(
+      (target) => target.effectiveMode,
+    );
+    compositionResources.planningDurationMs = planningDurationMs;
+    const sceneCount = planned.plan.targets.reduce(
+      (count, target) => count + target.scenes.length,
+      0,
+    );
+    const visualLayerCount = planned.plan.targets.reduce(
+      (count, target) => count + target.visualLayers.length,
+      0,
+    );
+    compositionResources.sceneCount = sceneCount;
+    compositionResources.visualLayerCount = visualLayerCount;
+    const compositionEvidenceDiagnostics =
+      requestedCompositionMode === "auto"
+        ? {
+            source: automaticLayoutEvidenceSource,
+            version: automaticLayoutAnalysisForPlan?.version ?? null,
+          }
+        : requestedCompositionMode === "split" &&
+            splitLayoutEvidenceForPlan.state === "available"
+          ? {
+              source: splitLayoutEvidenceForPlan.value.source,
+              version: splitLayoutEvidenceForPlan.value.engineVersion,
+            }
+          : requestedCompositionMode === "screen" &&
+              screenLayoutEvidenceForPlan.state === "available"
+            ? {
+                source: screenLayoutEvidenceForPlan.value.source,
+                version: screenLayoutEvidenceForPlan.value.engineVersion,
+              }
+            : { source: null, version: null };
+    log("info", "clip_composition_plan", {
+      workflowRunId: run.id,
+      clipId: clip.id,
+      adapter: "ffmpeg",
+      planVersion: planned.plan.version,
+      planFingerprint: planned.plan.fingerprint,
+      planFidelity: planned.plan.fidelity,
+      audioScheduleFingerprint: planned.plan.audioSchedule.fingerprint,
+      audioSchedule: {
+        sourceAvailable: planned.plan.audioSchedule.source.available,
+        musicIncluded: Boolean(planned.plan.audioSchedule.music),
+        duckingWindowCount:
+          planned.plan.audioSchedule.music?.ducking.windows.length ?? 0,
+        soundEffectCount:
+          planned.plan.audioSchedule.soundEffects.length,
+      },
+      planningDurationMs,
+      requestedMode: requestedCompositionMode,
+      evidenceSource: compositionEvidenceDiagnostics.source,
+      evidenceVersion: compositionEvidenceDiagnostics.version,
+      evidenceRequestCount: planned.plan.evidenceRequests.length,
+      effectiveModes: planned.plan.targets.map(
+        (target) => target.effectiveMode,
+      ),
+      targets: planned.plan.targets.map((target) => ({
+        id: target.id,
+        aspectRatio: target.aspectRatio,
+        canvas: target.canvas,
+        scenes: target.scenes.map((scene) => ({
+          startSec: scene.startSec,
+          endSec: scene.endSec,
+          layerKinds: scene.layers.map((layer) => layer.kind),
+        })),
+        visualLayerKinds: target.visualLayers.map((layer) => layer.kind),
+      })),
+      sceneCount,
+      visualLayerCount,
+      noticeCodes: planned.plan.notices.map((notice) => notice.code),
+      optionalDegradationCount: planned.plan.notices.filter(
+        (notice) => notice.fidelity === "degraded",
+      ).length,
+    });
+    compositionPlan = planned.plan;
+    motionAnalytics = motionRenderAnalyticsMetadata(compositionDocument, {
+      applyScope: "clip",
+      fallbackCodes: planned.plan.notices
+        .map((notice) => notice.code)
+        .filter((code) => code.includes("motion")),
+      renderOutcome: "completed",
+    });
+    for (const output of outputs) {
+      motionAnalyticsByRenderId.set(output.clipRenderId, motionAnalytics);
+    }
+    plannedAudio = bindCompositionPlanAudioInputs(
+      compileCompositionPlanAudioSchedule(compositionPlan),
+      {
+        music:
+          musicPlan
+            ? { sourceRef: musicPlan.ref, path: musicPlan.path }
+            : null,
+        soundEffects: sfxPlans.map((effect) => ({
+          id: effect.id,
+          sourceRef: effect.ref,
+          path: effect.path,
+        })),
+      },
+    );
+    for (const output of outputs) {
+      const target = compositionPlan.targets.find(
+        (candidate) => candidate.id === output.clipRenderId,
+      );
+      if (!target) {
+        throw new WorkflowWorkerError(
+          "invalid_clip_composition_plan",
+          `Clip Composition Plan target missing for ${output.clipRenderId}`,
+          "permanent",
+        );
+      }
+      const assContent = generateAssFromCompositionCaptionLayers({
+        layers: target.visualLayers.filter(
+          (layer): layer is CompositionCaptionVisualLayer =>
+            layer.kind === "caption",
+        ),
+        canvas: target.canvas,
+      });
+      if (assContent.length > 0) {
+        const assPath = join(
+          tempDir,
+          `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}.ass`,
+        );
+        await currentRenderAdapters().workspace.writeFile(
+          assPath,
+          assContent,
+          "utf-8",
+        );
+        output.subtitlePath = assPath;
+      }
+    }
+    if (optionalCommandAssets.length > 0) {
+      const fallbackPlan = planWithAssetAvailability(
+        backgroundImageAvailability.state === "available"
+          ? { state: "failed" }
+          : backgroundImageAvailability,
+        {
+          broll: false,
+          logo: false,
+          music: false,
+          soundEffects: false,
+        },
+      );
+      if (fallbackPlan.status !== "invalid") {
+        fallbackCompositionPlan = fallbackPlan.plan;
+        fallbackAudio = bindCompositionPlanAudioInputs(
+          compileCompositionPlanAudioSchedule(fallbackPlan.plan),
+          {},
+        );
+      }
+    }
+  }
+
+  if (!probe.hasVideo) {
+    if (!compositionPlan || !plannedAudio) {
+      throw new WorkflowWorkerError(
+        "clip_composition_plan_missing",
+        "Audio-only render requires a Clip Composition Plan",
+        "permanent",
+      );
+    }
+    for (const output of outputs) {
+      try {
+        const compositionForOutput = {
+          plan: compositionPlan,
+          targetId: output.clipRenderId,
+        };
+        const fallbackCompositionForOutput =
+          fallbackCompositionPlan && fallbackAudio
+            ? {
+                plan: fallbackCompositionPlan,
+                targetId: output.clipRenderId,
+              }
+            : null;
+        const audioOptionalAssets = optionalCommandAssets.filter(
+          ({ assetClass }) =>
+            assetClass === "logo" ||
+            assetClass === "music" ||
+            assetClass === "sound_effect",
+        );
+        const ffmpegArgs = buildAudiogramArgs({
+          sourcePath,
+          outputPath: output.outputPath,
+          startSec: clipStartSec,
+          endSec: clipEndSec,
+          aspectRatio: output.aspectRatio,
+          composition: compositionForOutput,
+          clipDurationSec,
+          srtPath: output.subtitlePath ?? srtPath,
+          logo,
+          audio: plannedAudio,
+          cutPlan,
+          resolvedSceneAssets,
+          resolvedSceneFonts,
+        });
+
+        const encodeStartedAtMs = currentTimeMs();
+        await executeRenderCommandWithOptionalFallback({
+          primaryArgs: ffmpegArgs,
+          fallbackArgs:
+            fallbackCompositionForOutput &&
+            fallbackAudio &&
+            audioOptionalAssets.length > 0
+              ? () =>
+                  buildAudiogramArgs({
+                    sourcePath,
+                    outputPath: output.outputPath,
+                    startSec: clipStartSec,
+                    endSec: clipEndSec,
+                    aspectRatio: output.aspectRatio,
+                    composition: fallbackCompositionForOutput,
+                    clipDurationSec,
+                    srtPath: output.subtitlePath ?? srtPath,
+                    logo: null,
+                    audio: fallbackAudio,
+                    cutPlan,
+                    resolvedSceneAssets,
+                    resolvedSceneFonts,
+                  })
+              : undefined,
+          optionalAssets: audioOptionalAssets,
+          context: {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            clipRenderId: output.clipRenderId,
+          },
+          recordCommand: recordCompositionCommand,
+          recordSourceDecodeCompleted:
+            recordCompositionSourceDecodeCompleted,
+          recordResourceSample: recordCompositionResourceSample,
+        });
+        const encodeDurationMs =
+          recordCompositionEncodeCompleted(encodeStartedAtMs);
+        // Upload runs in the bounded background queue (overlaps the next
+        // clip's work). The stale-discard/`persisted` counting and the
+        // upload-failure variant marking both live in `scheduleUpload`;
+        // this catch now only ever sees ENCODE failures.
+        scheduleUpload(output, {
+          clipDurationSec,
+          encodeMs: encodeDurationMs,
+          motionAnalytics,
+        });
+      } catch (error) {
+        rethrowWorkflowAttemptLost(error);
+        rethrowRenderCancellation(error);
+        const errorCode =
+          error instanceof WorkflowFailure
+            ? error.code
+            : "ffmpeg_render_failed";
+
+        await currentRenderAdapters().clip.failClipRenderVariant(
+          attempt,
+          output.clipRenderId,
+          errorCode,
+          error instanceof WorkflowFailure
+            ? error.disposition
+            : "retryable",
+          { ...motionAnalytics, renderOutcome: "failed" },
+        );
+
+        log("error", "clip_render_variant_failed", {
+          workflowRunId: run.id,
+          clipId: output.clipId,
+          clipRenderId: output.clipRenderId,
+          clipIndex: output.clipIndex,
+          aspectRatio: output.aspectRatio,
+          code: errorCode,
+          message:
+            error instanceof Error ? error.message : "Unknown render error",
+        });
+      }
+    }
+  } else {
+    // Every video output is compiled from the shared composition plan.
+    const plan = brollPlan;
+    const brollCredits =
+      plan && plan.credits.length > 0 ? JSON.stringify(plan.credits) : null;
+    for (const output of outputs) {
+      if (!compositionPlan || !plannedAudio) {
+        throw new WorkflowWorkerError(
+          "clip_composition_plan_missing",
+          "Video render requires a Clip Composition Plan",
+          "permanent",
+        );
+      }
+      const compositionForOutput = {
+        plan: compositionPlan,
+        targetId: output.clipRenderId,
+      };
+      const optionalAssetFallbackPlan =
+        fallbackCompositionPlan ?? compositionPlan;
+      const fallbackCompositionForOutput = {
+        plan: optionalAssetFallbackPlan,
+        targetId: output.clipRenderId,
+      };
+      try {
+        const resolvedBrollAssets = {
+          ...Object.fromEntries(
+            plan?.cutaways.map((cutaway) => [cutaway.ref, cutaway.path]) ?? [],
+          ),
+          ...Object.fromEntries(studioEdits.visualBroll.flatMap((placement) => {
+            const ref = compositionAssetRef("visual_asset", `${placement.asset.id}:${placement.asset.fingerprint}`);
+            const asset = resolvedSceneAssets[ref];
+            return asset ? [[ref, asset.path] as const] : [];
+          })),
+        };
+        const ffmpegArgs = Object.keys(resolvedBrollAssets).length > 0
+          ? buildBrollVideoArgs({
+              sourcePath,
+              resolvedBrollAssets,
+              outputPath: output.outputPath,
+              startSec: clipStartSec,
+              endSec: clipEndSec,
+              aspectRatio: output.aspectRatio,
+              probe,
+              srtPath: output.subtitlePath ?? srtPath,
+              logo,
+              composition: compositionForOutput,
+              audio: plannedAudio,
+              background: backgroundPlan,
+              cutPlan,
+              resolvedSceneAssets,
+              resolvedSceneFonts,
+            })
+          : buildSingleVideoArgs({
+              sourcePath,
+              outputPath: output.outputPath,
+              startSec: clipStartSec,
+              endSec: clipEndSec,
+              aspectRatio: output.aspectRatio,
+              probe,
+              srtPath: output.subtitlePath ?? srtPath,
+              logo,
+              composition: compositionForOutput,
+              audio: plannedAudio,
+              background: backgroundPlan,
+              cutPlan,
+              resolvedSceneAssets,
+              resolvedSceneFonts,
+            });
+        const encodeStartedAtMs = currentTimeMs();
+        const commandMode = await executeRenderCommandWithOptionalFallback({
+          primaryArgs: ffmpegArgs,
+          fallbackArgs:
+            optionalCommandAssets.length > 0
+              ? () =>
+                  buildSingleVideoArgs({
+                    sourcePath,
+                    outputPath: output.outputPath,
+                    startSec: clipStartSec,
+                    endSec: clipEndSec,
+                    aspectRatio: output.aspectRatio,
+                    probe,
+                    srtPath: output.subtitlePath ?? srtPath,
+                    logo: null,
+                    composition: fallbackCompositionForOutput,
+                    audio: fallbackAudio ?? plannedAudio,
+                    background: fallbackBackgroundPlan,
+                    cutPlan,
+                    resolvedSceneAssets,
+                    resolvedSceneFonts,
+                  })
+              : undefined,
+          optionalAssets: optionalCommandAssets,
+          context: {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            clipRenderId: output.clipRenderId,
+          },
+          recordCommand: recordCompositionCommand,
+          recordSourceDecodeCompleted:
+            recordCompositionSourceDecodeCompleted,
+          recordResourceSample: recordCompositionResourceSample,
+        });
+        const encodeDurationMs =
+          recordCompositionEncodeCompleted(encodeStartedAtMs);
+        // Bounded background upload — see `scheduleUpload`. This catch
+        // now only ever sees encode/build failures.
+        scheduleUpload(output, {
+          clipDurationSec,
+          brollCredits:
+            commandMode === "primary" ? brollCredits : null,
+          encodeMs: encodeDurationMs,
+          motionAnalytics,
+        });
+      } catch (error) {
+        rethrowWorkflowAttemptLost(error);
+        rethrowRenderCancellation(error);
+        const contractFailure = compositionContractFailure(error);
+        const renderFailure =
+          error instanceof WorkflowFailure ? error : contractFailure;
+        const errorCode =
+          renderFailure
+            ? renderFailure.code
+            : "ffmpeg_render_failed";
+        await currentRenderAdapters().clip.failClipRenderVariant(
+          attempt,
+          output.clipRenderId,
+          errorCode,
+          renderFailure
+            ? renderFailure.disposition
+            : "retryable",
+          { ...motionAnalytics, renderOutcome: "failed" },
+        );
+        log("error", "clip_render_variant_failed", {
+          workflowRunId: run.id,
+          clipId: output.clipId,
+          clipRenderId: output.clipRenderId,
+          clipIndex: output.clipIndex,
+          aspectRatio: output.aspectRatio,
+          code: errorCode,
+          message:
+            error instanceof Error ? error.message : "Unknown render error",
+        });
+      }
+    }
+  }
+
+  const finalResourceMeasurement = measureCompositionResourceSafely();
+  if (finalResourceMeasurement) {
+    compositionResources.peakRssScope = finalResourceMeasurement.scope;
+    recordCompositionResourceSample(finalResourceMeasurement.rssBytes);
+  }
+  log("info", "clip_composition_resources", {
+    workflowRunId: run.id,
+    clipId: clip.id,
+    planVersion: compositionResources.planVersion,
+    planFingerprint: compositionResources.planFingerprint,
+    requestedMode: compositionResources.requestedMode,
+    effectiveModes: compositionResources.effectiveModes,
+    sceneCount: compositionResources.sceneCount,
+    visualLayerCount: compositionResources.visualLayerCount,
+    commandGrouping: "independent",
+    targetCount: outputs.length,
+    analysisRequestCount:
+      compositionResources.analysisRequestKeys.size,
+    analysisRequestKeys: [
+      ...compositionResources.analysisRequestKeys,
+    ].sort(),
+    analysisExecutionCount:
+      compositionResources.analysisExecutionCount,
+    detectorExecutionCount:
+      compositionResources.detectorExecutionCount,
+    extractedSegmentCount:
+      compositionResources.extractedSegmentCount,
+    commandCount: compositionResources.commandCount,
+    sourceDecodeCount: compositionResources.sourceDecodeCount,
+    commandBytes: compositionResources.commandBytes,
+    planningDurationMs: compositionResources.planningDurationMs,
+    encodeDurationMs: compositionResources.encodeDurationMs,
+    peakRssBytes: compositionResources.peakRssBytes,
+    peakRssScope: compositionResources.peakRssScope,
+  });
+
+}
+
 async function executeClipRenderAttemptInScratch(params: {
   run: WorkflowRunJob;
   signal: AbortSignal;
@@ -4986,2683 +7646,29 @@ async function executeClipRenderAttemptInScratch(params: {
     for (let clipGroupIndex = 0; clipGroupIndex < clipGroups.length; clipGroupIndex++) {
       signal?.throwIfAborted();
       const renderGroup = clipGroups[clipGroupIndex]!;
-      const storedClip = renderGroup[0]!.clipSnapshot ?? renderGroup[0]!.clip;
-      const editorDocument = decodeClipEditorDocumentFromStorage(
-        storedClip,
-        frozenState.sourceDurationSeconds,
-      );
-      let motionAnalytics = motionRenderAnalyticsMetadata(editorDocument, {
-        applyScope: "clip",
-        renderOutcome: "completed",
-      });
-      // Export-bound rows carry a complete frozen rendering snapshot. This
-      // metadata view deliberately excludes document decoding: every
-      // document-owned field above crossed the canonical persistence codec.
-      const clip = renderGroup[0]!.clipSnapshot
-        ? (renderGroup[0]!.clipSnapshot as unknown as (typeof renderGroup)[number]["clip"])
-        : renderGroup[0]!.clip;
-      const effective = resolveRenderTimingForClip({
-        llmModel: clip.llmModel,
-        utterances: editorDocument.transcriptSlice,
-        startSec: editorDocument.clipStartSec,
-        endSec: editorDocument.clipEndSec,
-      });
-      const clipStartSec = effective.startSec;
-      const clipEndSec = effective.endSec;
-      const utterances = effective.transcriptSlice;
-
-      const deletedRanges = editorDocument.deletedRanges;
-      const cutPlan = buildClipCutPlan(deletedRanges, {
-        startSec: clipStartSec,
-        endSec: clipEndSec,
-      });
-      if (cutPlan.droppedSliverCount > 0) {
-        log("info", "clip_cut_plan_slivers_dropped", {
-          workflowRunId: run.id,
-          clipId: clip.id,
-          droppedSliverCount: cutPlan.droppedSliverCount,
+      try {
+        await renderClipGroup({ run, attempt, renderGroup, frozenState,
+          probe, sourcePath, tempDir, brandLogo, brandLogoWasRequested,
+          touchedOptionalAssetClasses, motionAnalyticsByRenderId, applyWatermark,
+          scheduleUpload });
+      } catch (error) {
+        rethrowRenderControlFlow(error);
+        // Any delivery already scheduled must settle before failure writes.
+        await uploadQueue.drain();
+        signal.throwIfAborted();
+        const failure = workflowFailureFromUnknown(error);
+        for (const render of renderGroup) {
+          await currentRenderAdapters().clip.markClipRenderVariantRendering(attempt, render.id);
+          const motionAnalytics = motionAnalyticsByRenderId.get(render.id);
+          await currentRenderAdapters().clip.failClipRenderVariant(attempt,
+            render.id, failure.code, failure.disposition,
+            motionAnalytics ? { ...motionAnalytics, renderOutcome: "failed" } : undefined);
+        }
+        log("error", "clip_render_group_failed", {
+          workflowRunId: run.id, clipId: renderGroup[0]!.clipId,
+          failureCode: failure.code, disposition: failure.disposition,
         });
       }
-      // Every downstream duration-dependent consumer (captions, text layers,
-      // transitions, music, B-roll cutaway planning, the audiogram
-      // waveform/background, and the final `-t` output bound) reads THIS
-      // value — the edited (post-cut) duration when the clip has real cuts,
-      // otherwise the exact original `effective.durationSec` (not
-      // `cutPlan.editedDurationSec`, which is ms-rounded — keeping the raw
-      // value for the untouched common case is what makes the no-deletions
-      // render byte-identical to before this change).
-      const clipDurationSec = cutPlan.isUncut
-        ? effective.durationSec
-        : cutPlan.editedDurationSec;
-      const initialResourceMeasurement =
-        measureCompositionResourceSafely() ?? resourceMeasurementFallback;
-      const compositionResources = {
-        planVersion: null as number | null,
-        planFingerprint: null as string | null,
-        requestedMode: null as CompositionMode | null,
-        effectiveModes: [] as CompositionMode[],
-        sceneCount: 0,
-        visualLayerCount: 0,
-        planningDurationMs: 0,
-        analysisRequestKeys: new Set<string>(),
-        analysisExecutionCount: 0,
-        detectorExecutionCount: 0,
-        extractedSegmentCount: 0,
-        commandCount: 0,
-        sourceDecodeCount: 0,
-        commandBytes: 0,
-        encodeDurationMs: 0,
-        peakRssBytes: initialResourceMeasurement.rssBytes,
-        peakRssScope: initialResourceMeasurement.scope,
-      };
-      const recordCompositionCommand = (args: readonly string[]): void => {
-        compositionResources.commandCount += 1;
-        compositionResources.commandBytes += commandSizeBytes("ffmpeg", args);
-        const measurement = measureCompositionResourceSafely();
-        if (measurement) {
-          compositionResources.peakRssScope = measurement.scope;
-          recordCompositionResourceSample(measurement.rssBytes);
-        }
-      };
-      const recordCompositionResourceSample = (rssBytes: number): void => {
-        compositionResources.peakRssBytes = Math.max(
-          compositionResources.peakRssBytes,
-          rssBytes,
-        );
-      };
-      const recordCompositionSourceDecodeCompleted = (): void => {
-        compositionResources.sourceDecodeCount += 1;
-      };
-      const recordCompositionEncodeCompleted = (startedAtMs: number): number => {
-        const durationMs = Math.max(0, currentTimeMs() - startedAtMs);
-        compositionResources.encodeDurationMs += durationMs;
-        const measurement = measureCompositionResourceSafely();
-        if (measurement) {
-          compositionResources.peakRssScope = measurement.scope;
-          recordCompositionResourceSample(measurement.rssBytes);
-        }
-        return durationMs;
-      };
-      let sharedAnalysisSegmentPromise: ReturnType<
-        ClipRenderAttemptAdapters["analysis"]["extractFaceDetectionSegment"]
-      > | null = null;
-      const getSharedAnalysisSegment = () => {
-        if (!sharedAnalysisSegmentPromise) {
-          sharedAnalysisSegmentPromise = currentRenderAdapters()
-            .analysis.extractFaceDetectionSegment({
-              sourcePath,
-              tempDir,
-              clipId: clip.id,
-              workflowRunId: run.id,
-              clipStartSec,
-              durationSec: effective.durationSec,
-            })
-            .then((segment) => {
-              if (segment && segment.path !== sourcePath) {
-                compositionResources.extractedSegmentCount += 1;
-              }
-              return segment;
-            })
-            .catch((error) => {
-              rethrowRenderControlFlow(error);
-              log("error", "clip_reframe_segment_extract_failed", {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                ...mediaAnalysisDiagnostic({
-                  analysisMode: "segment_extraction",
-                  fallbackMode: "composition_plan",
-                  failureCode: "analysis_input_unavailable",
-                }),
-              });
-              return null;
-            });
-        }
-        return sharedAnalysisSegmentPromise;
-      };
-      // Time map used by the audio-only subtitle path and by the composition
-      // planner to retime source-absolute words onto the edited timeline.
-      const captionTimeMap = cutPlan.isUncut ? null : cutPlan.map;
-
-      const captionPreset = editorDocument.captionPreset;
-      const studioEdits = editorDocument.studioEdits;
-
-      // Per-clip effective logo: this clip's studioEdits.logo override
-      // merged over the project-wide brandLogo (frozen snapshot + already
-      // -downloaded file). `null` whenever there's no logo asset at all, or
-      // this clip's override disables it.
-      const logo = resolveClipLogoOverlay(brandLogo, studioEdits.logo);
-      const plannedLogoSettings = brandLogo
-        ? resolveEffectiveLogoSettings(
-            {
-              position: brandLogo.position,
-              opacity: brandLogo.opacity,
-              scalePct: brandLogo.scalePct,
-            },
-            studioEdits.logo,
-          )
-        : null;
-
-      // SRT remains only for audio-only, no-preset audiograms. Video captions
-      // are serialized from the Composition Plan after planning below.
-      let srtPath: string | null = null;
-      if (!probe.hasVideo && utterances.length > 0) {
-        const srtContent = generateSrtFromSlice(
-          utterances,
-          clipStartSec,
-          undefined,
-          captionTimeMap,
-        );
-        if (srtContent.length > 0) {
-          srtPath = join(tempDir, `clip-${clip.id}.srt`);
-          await currentRenderAdapters().workspace.writeFile(srtPath, srtContent, "utf-8");
-        }
-      }
-
-      const outputs: PendingRenderOutput[] = renderGroup.map((render) => {
-        const aspectRatio =
-          clipAspectRatioFromDb[clipAspectRatioDbSchema.parse(render.aspectRatio)];
-        const slug =
-          clipAspectRatioOptions.find((option) => option.value === aspectRatio)?.slug ?? "9x16";
-        // Tolerant parse, same fallback as clip.service's
-        // toClipRenderVariantSnapshot — a row written before this column
-        // existed (or an unexpected value) degrades to the column's own DB
-        // default rather than failing the whole clip.
-        const resolution =
-          clipRenderResolutionSchema.safeParse(render.resolution).data ?? "1080p";
-
-        return {
-          clipRenderId: render.id,
-          clipId: clip.id,
-          clipIndex: clip.index,
-          aspectRatio,
-          outputPath: join(tempDir, `clip-${clip.id}-${render.id}-${slug}.mp4`),
-          storageKey: render.exportVariant
-            ? clipExportAttemptStorageKey({
-                projectId: run.projectId,
-                exportId: render.exportVariant.exportId,
-                variantId: render.exportVariantId!,
-                aspectRatioSlug: slug,
-                attemptId: attempt.attemptId,
-              })
-            : clipRenderAttemptStorageKey(
-                run.projectId,
-                clip.id,
-                slug,
-                attempt.attemptId,
-              ),
-          resolution,
-          watermark: render.exportVariant?.watermark ?? applyWatermark,
-        };
-      });
-      for (const output of outputs) {
-        motionAnalyticsByRenderId.set(output.clipRenderId, motionAnalytics);
-      }
-
-      // Claim the variants before every terminal branch. Lifecycle failure
-      // settlement is fenced to rows owned by this render attempt; failing a
-      // still-pending row is intentionally rejected as stale.
-      await Promise.all(
-        outputs.map((output) =>
-          currentRenderAdapters().clip.markClipRenderVariantRendering(
-            attempt,
-            output.clipRenderId,
-          ),
-        ),
-      );
-
-      // Guard (vizard-parity Phase B step 7): deletedRanges covering the
-      // whole clip window (or leaving only sub-50ms slivers) leaves nothing
-      // renderable. Fail every variant in this group with a structured error
-      // instead of ever attempting a zero/near-zero-duration encode, and
-      // skip straight to the next clip group.
-      if (cutPlan.isEmpty) {
-        log("error", "clip_cut_plan_empty", {
-          workflowRunId: run.id,
-          clipId: clip.id,
-          clipIndex: clip.index,
-          deletedRangeCount: deletedRanges.length,
-        });
-        await Promise.all(
-          outputs.map((output) =>
-            currentRenderAdapters().clip.failClipRenderVariant(
-              attempt,
-              output.clipRenderId,
-              "clip_cut_plan_empty",
-              "permanent",
-              { ...motionAnalytics, renderOutcome: "failed" },
-            ),
-          ),
-        );
-        const progress =
-          10 + Math.round(((clipGroupIndex + 1) / clipGroups.length) * 80);
-        await currentRenderAdapters().project.reportProgress(attempt, progress);
-        continue;
-      }
-
-      // Per-aspect-ratio ASS files carry the full styled, word-synced captions.
-      // Generated whenever a caption preset is present (positions are resolution
-      // dependent, so one file per output).
-      if (!probe.hasVideo && utterances.length > 0) {
-        for (const output of outputs) {
-          const assContent = generateAssFromSlice(
-            utterances,
-            clipStartSec,
-            output.aspectRatio,
-            captionPreset,
-            captionTimeMap,
-          );
-          if (assContent.length > 0) {
-            const assPath = join(
-              tempDir,
-              `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}.ass`,
-            );
-            await currentRenderAdapters().workspace.writeFile(
-              assPath,
-              assContent,
-              "utf-8",
-            );
-            output.subtitlePath = assPath;
-          }
-        }
-
-      }
-
-      // Stock B-roll: when a Pexels key is set, plan 2-4 recurring cutaways
-      // (driven by the detection LLM's cues when present on the clip, else
-      // the keyword-derived query spaced evenly across the clip) — a single
-      // cutaway reads as accidental and is a known quality complaint about
-      // competitors. Best-effort: any failure renders normally without
-      // B-roll. The studio picker's explicit choice, when present, always
-      // wins and stays a single cutaway — a user who hand-picked one asset
-      // didn't ask to see it repeated.
-      let brollPlan: BrollPlan | null = null;
-      const brollEnabled =
-        currentRenderConfig().pexelsConfigured &&
-        currentRenderConfig().brollEnabled;
-      const userBrollUrl = editorDocument.brollUrl;
-      if (
-        (brollEnabled || userBrollUrl) &&
-        probe.hasVideo &&
-        clipDurationSec >= 12
-      ) {
-        let safeUserBrollUrl: string | null = null;
-        if (userBrollUrl) {
-          try {
-            assertPublicHttpUrl(userBrollUrl);
-            safeUserBrollUrl = userBrollUrl;
-          } catch {
-            diagnoseOptionalAssetFallback({
-              assetClass: "broll",
-              phase: "lookup",
-              failureCode: "broll_url_rejected",
-              context: { workflowRunId: run.id, clipId: clip.id },
-            });
-          }
-        }
-
-        if (safeUserBrollUrl) {
-          touchedOptionalAssetClasses.add("broll");
-          const brollPath = join(tempDir, `broll-${clip.id}-manual.mp4`);
-          try {
-            await currentRenderAdapters().optionalAssets.downloadUrlToFile(
-              safeUserBrollUrl,
-              brollPath,
-              "broll_download_failed",
-            );
-            const decodable =
-              await currentRenderAdapters().optionalAssets.validateOptionalMedia(
-                brollPath,
-                "video",
-              );
-            if (!decodable) {
-              diagnoseOptionalAssetFallback({
-                assetClass: "broll",
-                phase: "decode",
-                failureCode: "broll_media_invalid",
-                context: { workflowRunId: run.id, clipId: clip.id },
-              });
-            } else {
-              // A manual pick has no reported duration — probe the downloaded
-              // file so the cutaway window (and therefore the B-roll input's
-              // own -t trim in buildBrollVideoArgs) is sized against real
-              // footage rather than a guess.
-              const effectiveDurationSec =
-                await currentRenderAdapters().optionalAssets.probeMediaDurationSec(
-                  brollPath,
-                );
-              const window =
-                effectiveDurationSec !== null
-                  ? planBrollWindow(clipDurationSec, effectiveDurationSec)
-                  : null;
-
-              if (window) {
-                brollPlan = {
-                  cutaways: [
-                    {
-                      ref: compositionAssetRef("broll", safeUserBrollUrl),
-                      path: brollPath,
-                      window,
-                    },
-                  ],
-                  credits: [],
-                };
-                log("info", "clip_broll_selected", {
-                  workflowRunId: run.id,
-                  clipId: clip.id,
-                  source: "studio_pick",
-                  cutawayCount: 1,
-                  brollDurationSec: effectiveDurationSec,
-                });
-              } else {
-                diagnoseOptionalAssetFallback({
-                  assetClass: "broll",
-                  phase: "probe",
-                  failureCode: "broll_media_unusable",
-                  context: { workflowRunId: run.id, clipId: clip.id },
-                });
-              }
-            }
-          } catch (error) {
-            rethrowRenderControlFlow(error);
-            brollPlan = null;
-            diagnoseOptionalAssetFallback({
-              assetClass: "broll",
-              phase: "download",
-              failureCode: "broll_download_failed",
-              context: {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                source: "studio_pick",
-              },
-            });
-          }
-        } else {
-          // Auto path: consume LLM-provided cues when the clip carries them
-          // (optional column — absent on existing rows and any clip not yet
-          // produced by a detect-clips.ts that writes it), else fall back to
-          // the keyword-derived query for every auto-placed slot.
-          const rawBrollCues = (clip as { brollCues?: unknown }).brollCues;
-          const brollCuesParsed = rawBrollCues
-            ? brollCuesArraySchema.safeParse(rawBrollCues)
-            : null;
-          if (brollCuesParsed && !brollCuesParsed.success) {
-            diagnoseOptionalAssetFallback({
-              assetClass: "broll",
-              phase: "parse",
-              failureCode: "broll_cues_invalid",
-              context: { workflowRunId: run.id, clipId: clip.id },
-            });
-          }
-          const rawCues: BrollCueInput[] | null =
-            brollCuesParsed?.success && brollCuesParsed.data.length > 0
-              ? brollCuesParsed.data
-              : null;
-          // Fix #2: brollCues[].atSec are uncut clip-relative seconds, but
-          // clipDurationSec/planBrollCutaways below operate on the edited
-          // (post-cut) timeline once deletedRanges are in play — remap
-          // through the same cutPlan.map every other cut-concat consumer
-          // (captions, reframe) uses, dropping cues whose moment was cut.
-          const remappedCues = remapBrollCuesForCutPlan(
-            rawCues,
-            cutPlan,
-            clipStartSec,
-          );
-          const cues: BrollCueInput[] | null =
-            remappedCues && remappedCues.length > 0 ? remappedCues : null;
-
-          const category = clip.category as ClipCategory;
-          const fallbackQuery = brollQueryForClip(
-            clip.title,
-            clip.hookText,
-            category,
-          );
-          const broaderFallbackQuery =
-            CATEGORY_BROLL_FALLBACK_QUERY[category] ?? null;
-
-          if (cues || fallbackQuery) {
-            const orientation = dominantPexelsOrientation(
-              outputs.map((o) => o.aspectRatio),
-            );
-            const targetWidth = orientation === "landscape" ? 1920 : 1080;
-            const targetHeight = orientation === "landscape" ? 1080 : 1920;
-
-            try {
-              const resolvedCutaways =
-                await currentRenderAdapters().optionalAssets.resolveBrollCutaways({
-                  clipDurationSec,
-                  cues,
-                  fallbackQuery,
-                  broaderFallbackQuery,
-                  orientation,
-                  targetWidth,
-                  targetHeight,
-                });
-
-              const cutaways: BrollCutaway[] = [];
-              const credits: BrollPlan["credits"] = [];
-
-              for (const [index, resolved] of resolvedCutaways.entries()) {
-                try {
-                  touchedOptionalAssetClasses.add("broll");
-                  let brollPath =
-                    await currentRenderAdapters().optionalAssets.getCachedBrollAssetPath(
-                      resolved.downloadUrl,
-                      currentRenderConfig().brollAssetCacheTtlMs,
-                    );
-                  let downloadedForCache = false;
-                  if (!brollPath) {
-                    const downloadedPath = join(
-                      tempDir,
-                      `broll-${clip.id}-${index}.mp4`,
-                    );
-                    await currentRenderAdapters().optionalAssets.downloadUrlToFile(
-                      resolved.downloadUrl,
-                      downloadedPath,
-                      "broll_download_failed",
-                    );
-                    brollPath = downloadedPath;
-                    downloadedForCache = true;
-                  }
-                  const decodable =
-                    await currentRenderAdapters().optionalAssets.validateOptionalMedia(
-                      brollPath,
-                      "video",
-                    );
-                  if (!decodable) {
-                    diagnoseOptionalAssetFallback({
-                      assetClass: "broll",
-                      phase: "decode",
-                      failureCode: "broll_media_invalid",
-                      context: {
-                        workflowRunId: run.id,
-                        clipId: clip.id,
-                        query: resolved.query,
-                      },
-                    });
-                    continue;
-                  }
-                  if (downloadedForCache) {
-                    try {
-                      await currentRenderAdapters().optionalAssets.saveBrollAssetToCache(
-                        resolved.downloadUrl,
-                        brollPath,
-                      );
-                    } catch (error) {
-                      rethrowRenderControlFlow(error);
-                      diagnoseOptionalAssetFallback({
-                        assetClass: "broll",
-                        phase: "cleanup",
-                        failureCode: "broll_cache_write_failed",
-                        context: {
-                          workflowRunId: run.id,
-                          clipId: clip.id,
-                          query: resolved.query,
-                        },
-                      });
-                    }
-                  }
-                  cutaways.push({
-                    ref: compositionAssetRef("broll", resolved.downloadUrl),
-                    path: brollPath,
-                    window: {
-                      startSec: resolved.startSec,
-                      endSec: resolved.endSec,
-                    },
-                  });
-                  credits.push({
-                    query: resolved.query,
-                    startSec: resolved.startSec,
-                    endSec: resolved.endSec,
-                    authorName: resolved.attribution.authorName,
-                    authorUrl: resolved.attribution.authorUrl,
-                    pageUrl: resolved.attribution.pageUrl,
-                  });
-                } catch (error) {
-                  rethrowRenderControlFlow(error);
-                  diagnoseOptionalAssetFallback({
-                    assetClass: "broll",
-                    phase: "download",
-                    failureCode: "broll_download_failed",
-                    context: {
-                      workflowRunId: run.id,
-                      clipId: clip.id,
-                      query: resolved.query,
-                    },
-                  });
-                }
-              }
-
-              if (cutaways.length > 0) {
-                brollPlan = { cutaways, credits };
-                log("info", "clip_broll_selected", {
-                  workflowRunId: run.id,
-                  clipId: clip.id,
-                  source: cues ? "cues" : "auto",
-                  cutawayCount: cutaways.length,
-                  credits,
-                });
-              }
-            } catch (error) {
-              rethrowRenderControlFlow(error);
-              diagnoseOptionalAssetFallback({
-                assetClass: "broll",
-                phase: "lookup",
-                failureCode: "broll_provider_unavailable",
-                context: {
-                  workflowRunId: run.id,
-                  clipId: clip.id,
-                  source: "auto",
-                },
-              });
-            }
-          }
-        }
-      }
-
-      // Auto framing (layout-engine wiring, deferred from the gate above so
-      // the B-roll decision is known). Two tiers:
-      //   1. Layout engine (default, `WORKER_LAYOUT_ENGINE=0` reverts):
-      //      multi-face detection + scene cuts + diarized words -> a
-      //      segment-based plan (per-shot solo crops with vertical framing/
-      //      zoom, stable two-up splits for multi-face shots) rendered
-      //      through the same `split` machinery packet B landed. Falls back
-      //      to tier 2 whenever the footage has no dynamic structure (the
-      //      detection is unavailable. The exact plan is persisted and reused
-      //      by the studio, making preview and export one contract.
-      // Missing or unavailable evidence remains planner input and produces
-      // an explicit Center fallback.
-      const layoutEngineEnabled = currentRenderConfig().layoutEngineEnabled;
-      const compositionSourceIdentity = compositionAssetRef(
-        "source",
-        run.projectId,
-      );
-      const compositionDocument: EditorDocument = {
-        ...editorDocument,
-        clipStartSec,
-        clipEndSec,
-        captionPreset,
-        transcriptSlice: utterances,
-        studioEdits,
-        brollUrl: editorDocument.brollUrl,
-        deletedRanges,
-      };
-      const sceneAssetReferences = [...new Map([
-        ...compositionDocument.sceneBlocks.flatMap((block) =>
-          block.content.kind === "image" || block.content.kind === "video"
-            ? [[block.content.asset.id, { ...block.content.asset, kind: block.content.kind }] as const]
-            : [],
-        ),
-        ...studioEdits.visualBroll.map((placement) =>
-          [placement.asset.id, { ...placement.asset, kind: "image" as const }] as const,
-        ),
-      ]).values()];
-      const sceneFontReferences = [...new Map(
-        compositionDocument.sceneBlocks.flatMap((block) =>
-          block.content.kind === "text" && block.content.fontAsset
-            ? [[block.content.fontAsset.id, {
-                ...block.content.fontAsset,
-                family: block.content.fontFamily,
-              }] as const]
-            : [],
-        ),
-      ).values()];
-      const resolvedSceneAssets: Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }> = {};
-      const resolvedSceneFonts: Record<string, string> = {};
-      const prisma = sceneAssetReferences.length > 0 || sceneFontReferences.length > 0
-        ? getPrismaClient()
-        : null;
-      if ((sceneAssetReferences.length > 0 || sceneFontReferences.length > 0) && !prisma) {
-        throw new WorkflowWorkerError("scene_asset_database_unavailable", "Scene assets cannot be resolved", "retryable");
-      }
-      const workspace = prisma && run.project.workspaceId
-        ? await prisma.workspace.findUnique({
-            where: { id: run.project.workspaceId },
-            select: { personalOwnerUserId: true, pricingTier: true },
-          })
-        : null;
-      const sceneOwnerWhere = sceneAssetOwnerWhere({
-        projectUserId: run.project.userId,
-        workspaceId: run.project.workspaceId,
-        workspace,
-      });
-      if (sceneAssetReferences.length > 0 && prisma) {
-        const assets = await prisma.visualAsset.findMany({
-          where: {
-            id: { in: sceneAssetReferences.map((asset) => asset.id) },
-            ...sceneOwnerWhere,
-          },
-          select: {
-            id: true,
-            kind: true,
-            fingerprint: true,
-            storageKey: true,
-          },
-        });
-        const byId = new Map(assets.map((asset) => [asset.id, asset]));
-        for (const reference of sceneAssetReferences) {
-          const asset = byId.get(reference.id);
-          if (!asset || asset.fingerprint !== reference.fingerprint || asset.kind !== reference.kind) {
-            throw new WorkflowWorkerError("scene_asset_unavailable", "An inserted scene asset is missing or changed", "permanent");
-          }
-          const path = join(tempDir, `scene-${asset.id}${extname(asset.storageKey) || (asset.kind === "image" ? ".png" : ".mp4")}`);
-          await currentRenderAdapters().storage.downloadObjectToFile({
-            key: asset.storageKey,
-            filePath: path,
-            signal: renderStorageSignal(),
-          });
-          const decodable = await currentRenderAdapters().optionalAssets.validateOptionalMedia(
-            path,
-            asset.kind,
-          );
-          if (!decodable)
-            throw new WorkflowWorkerError(
-              "scene_asset_invalid",
-              "An inserted scene asset is not decodable",
-              "permanent",
-            );
-          const sceneProbe = asset.kind === "video" ? await probeSource(path) : null;
-          if (sceneProbe) {
-            const sceneDurationSec = await probeMediaDurationSec(path);
-            const invalidRange = compositionDocument.sceneBlocks.some(
-              (block) =>
-                block.content.kind === "video" &&
-                block.content.asset.id === asset.id &&
-                (sceneDurationSec === null ||
-                  block.content.sourceEndSec > sceneDurationSec + 0.05),
-            );
-            if (invalidRange || sceneDurationSec === null) {
-              throw new WorkflowWorkerError(
-                "scene_asset_range_invalid",
-                "An inserted video scene exceeds its source duration",
-                "permanent",
-              );
-            }
-          }
-          resolvedSceneAssets[
-            compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`)
-          ] = {
-            path,
-            kind: asset.kind,
-            hasAudio: sceneProbe?.hasAudio ?? false,
-          };
-        }
-      }
-      if (sceneFontReferences.length > 0 && prisma) {
-        const fonts = await prisma.brandFont.findMany({
-          where: {
-            id: { in: sceneFontReferences.map((font) => font.id) },
-            ...sceneOwnerWhere,
-          },
-          select: {
-            id: true,
-            family: true,
-            fingerprint: true,
-            storageKey: true,
-            format: true,
-          },
-        });
-        const byId = new Map(fonts.map((font) => [font.id, font]));
-        for (const reference of sceneFontReferences) {
-          const font = byId.get(reference.id);
-          if (
-            !font ||
-            font.fingerprint !== reference.fingerprint ||
-            font.family !== reference.family
-          ) {
-            throw new WorkflowWorkerError(
-              "scene_font_unavailable",
-              "An inserted scene font is missing or changed",
-              "permanent",
-            );
-          }
-          const path = join(
-            tempDir,
-            `scene-font-${font.id}.${font.format.toLowerCase()}`,
-          );
-          await currentRenderAdapters().storage.downloadObjectToFile({
-            key: font.storageKey,
-            filePath: path,
-            signal: renderStorageSignal(),
-          });
-          resolvedSceneFonts[
-            compositionAssetRef("brand_font", `${font.id}:${font.fingerprint}`)
-          ] = path;
-        }
-      }
-      const sceneVisualAvailability = Object.fromEntries(
-        compositionDocument.sceneBlocks.flatMap((scene) =>
-          scene.content.kind === "image" || scene.content.kind === "video"
-            ? [[scene.id, {
-                state: "available" as const,
-                ref: compositionAssetRef(
-                  "visual_asset",
-                  `${scene.content.asset.id}:${scene.content.asset.fingerprint}`,
-                ),
-              }]]
-            : [],
-        ),
-      );
-      const sceneFontAvailability = Object.fromEntries(
-        compositionDocument.sceneBlocks.flatMap((scene) =>
-          scene.content.kind === "text" && scene.content.fontAsset
-            ? [[scene.id, {
-                state: "available" as const,
-                ref: compositionAssetRef(
-                  "brand_font",
-                  `${scene.content.fontAsset.id}:${scene.content.fontAsset.fingerprint}`,
-                ),
-              }]]
-            : [],
-        ),
-      );
-      const persistedAutoLayout = parseClipAutoLayoutAnalysis(
-        clip.autoLayoutAnalysis,
-      );
-      const persistedAutoLayoutEligible = Boolean(
-        layoutEngineEnabled &&
-          persistedAutoLayout &&
-          persistedAutoLayout.engine === "shot-layout-v1" &&
-          persistedAutoLayout.sourceIdentity === compositionSourceIdentity &&
-          clipAutoLayoutMatchesInputs(persistedAutoLayout, {
-            clipStartSec,
-            clipEndSec,
-            deletedRanges,
-          }) &&
-          Math.abs(persistedAutoLayout.editedDurationSec - clipDurationSec) <=
-            0.075,
-      );
-      let automaticLayoutAnalysisForPlan: ClipAutoLayoutAnalysis | null =
-        persistedAutoLayoutEligible ? persistedAutoLayout : null;
-      const automaticLayoutEvidenceFailure: "failed" | "disabled" =
-        layoutEngineEnabled ? "failed" : "disabled";
-      let automaticLayoutEvidenceSource:
-        | "durable"
-        | "analysis"
-        | "failed"
-        | "disabled" = persistedAutoLayoutEligible
-        ? "durable"
-        : automaticLayoutEvidenceFailure;
-      const automaticEvidenceProbe =
-        probe.hasVideo &&
-        resolveEffectiveFramingMode(studioEdits) === "auto"
-          ? planClipComposition({
-              document: compositionDocument,
-              source: {
-                identity: compositionSourceIdentity,
-                kind: "video",
-                width: probe.width,
-                height: probe.height,
-              },
-              evidence: {
-                automaticLayout: automaticLayoutAnalysisForPlan
-                  ? {
-                      state: "available",
-                      value: {
-                        sourceIdentity: compositionSourceIdentity,
-                        inputFingerprint: automaticLayoutInputFingerprint({
-                          sourceIdentity: compositionSourceIdentity,
-                          clipStartSec,
-                          clipEndSec,
-                          deletedRanges,
-                          engineVersion: "shot-layout-v1",
-                        }),
-                        engineVersion: "shot-layout-v1",
-                        analysis: automaticLayoutAnalysisForPlan,
-                      },
-                    }
-                  : {
-                      state: layoutEngineEnabled ? "missing" : "disabled",
-                    },
-              },
-              assets: {
-                backgroundImage: { state: "missing" },
-                sceneVisuals: sceneVisualAvailability,
-                sceneFonts: sceneFontAvailability,
-              },
-              capabilities: {
-                automaticSpeakerLayout: layoutEngineEnabled,
-                automaticSpeakerEngineVersion: "shot-layout-v1",
-              },
-              targets: outputs.map((output) => {
-                const target = aspectRatioConfig.get(output.aspectRatio)!;
-                return {
-                  id: output.clipRenderId,
-                  aspectRatio: output.aspectRatio,
-                  width: target.width,
-                  height: target.height,
-                };
-              }),
-            })
-          : null;
-      const automaticEvidenceRequested = Boolean(
-        automaticEvidenceProbe &&
-          automaticEvidenceProbe.status !== "invalid" &&
-          automaticEvidenceProbe.plan.evidenceRequests.length > 0,
-      );
-      if (automaticEvidenceRequested) {
-        if (
-          automaticEvidenceProbe &&
-          automaticEvidenceProbe.status !== "invalid"
-        ) {
-          for (const request of automaticEvidenceProbe.plan.evidenceRequests) {
-            compositionResources.analysisRequestKeys.add(request.key);
-          }
-        }
-        compositionResources.analysisExecutionCount += 1;
-        let engineHandled = false;
-        if (persistedAutoLayoutEligible && persistedAutoLayout) {
-          automaticLayoutAnalysisForPlan = persistedAutoLayout;
-          engineHandled = true;
-          log("info", "clip_layout_plan_reused", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            ...mediaAnalysisDiagnostic({
-              analysisMode: "layout_engine",
-              selectedMode: "persisted_shot_layout",
-            }),
-            segmentCount: persistedAutoLayout.segments.length,
-            twoUpSegmentCount: persistedAutoLayout.twoUpSegmentCount,
-            analyzedAtISO: persistedAutoLayout.analyzedAtISO,
-          });
-        }
-
-        // Detection deliberately scans the full uncut clip. It only runs on
-        // a persisted-plan miss; the normal render path is now a cheap read.
-        const detectInput = !engineHandled
-          ? await getSharedAnalysisSegment()
-          : null;
-
-        if (!engineHandled && layoutEngineEnabled && detectInput) {
-          compositionResources.detectorExecutionCount += 2;
-          const [multiDetection, sceneCuts] = await Promise.all([
-            currentRenderAdapters().analysis.detectMultiFacePath({
-              sourcePath: detectInput.path,
-              startSec: detectInput.startSec,
-              durationSec: effective.durationSec,
-            }),
-            currentRenderAdapters().analysis.detectSceneCuts({
-              sourcePath: detectInput.path,
-              startSec: detectInput.startSec,
-              durationSec: effective.durationSec,
-              workflowRunId: run.id,
-              clipId: clip.id,
-            }),
-          ]);
-
-          if (multiDetection) {
-            const remappedSamples = remapMultiFaceSamplesForCutPlan(
-              multiDetection.samples,
-              cutPlan,
-              clipStartSec,
-            );
-            const remappedCuts = remapSceneCutsForCutPlan(sceneCuts, cutPlan, clipStartSec);
-            const words = speechWordsFromUtterances(
-              utterances,
-              cutPlan,
-              clipStartSec,
-              clipEndSec,
-            );
-            const planBase = {
-              samples: remappedSamples,
-              sceneCuts: remappedCuts,
-              words,
-              durationSec: clipDurationSec,
-              // Resolution-aware zoom ceiling (adversarial review M4): the
-              // 9:16 base crop of a 16:9 source is already a ~1.78x
-              // upscale, so zoom multiplies it — a 1080p source at zoom
-              // 1.4 lands at ~2.5x and visibly softens. Spend zoom budget
-              // only where the pixels exist.
-              options: {
-                frameOptions: {
-                  maxZoom:
-                    probe.height >= 1440 ? 1.4 : probe.height >= 1080 ? 1.25 : 1.1,
-                },
-                activeSpeakerCuts: false,
-              },
-            };
-            const fullPlan = buildAutoLayoutPlan({
-              ...planBase,
-              allowTwoUp: true,
-            });
-            const noSplitPlan = buildAutoLayoutPlan({
-              ...planBase,
-              allowTwoUp: false,
-            });
-
-            const envelope: ClipAutoLayoutAnalysis =
-              clipAutoLayoutAnalysisSchema.parse({
-                version: 1,
-                engine: "shot-layout-v1",
-                sourceIdentity: compositionSourceIdentity,
-                analyzedAtISO: new Date(currentTimeMs()).toISOString(),
-                clipStartSec,
-                clipEndSec,
-                deletedRanges,
-                editedDurationSec: clipDurationSec,
-                sourceWidth: probe.width,
-                sourceHeight: probe.height,
-                segments: fullPlan.segments,
-                noSplitSegments: noSplitPlan.segments,
-                shotCount: fullPlan.shotCount,
-                soloShotCount: fullPlan.soloShotCount,
-                multiShotCount: fullPlan.multiShotCount,
-                twoUpSegmentCount: fullPlan.twoUpSegmentCount,
-                speakerCount: fullPlan.speakerCount,
-                mappedSpeakerCount: fullPlan.mappedSpeakerCount,
-              });
-            automaticLayoutAnalysisForPlan = envelope;
-            automaticLayoutEvidenceSource = "analysis";
-            if (clip.previewStorageKey) {
-              await currentRenderAdapters()
-                .clip
-                .completeClipAutoLayoutAnalysis(attempt, clip.id, envelope, {
-                  editorRevision: clip.editorRevision,
-                  previewStorageKey: clip.previewStorageKey,
-                })
-                .catch((error) => {
-                  rethrowRenderControlFlow(error);
-                  log("error", "clip_auto_layout_analysis_persist_failed", {
-                    workflowRunId: run.id,
-                    clipId: clip.id,
-                    ...mediaAnalysisDiagnostic({
-                      analysisMode: "layout_engine",
-                      fallbackMode: "render_without_persisted_analysis",
-                      failureCode: "analysis_persist_failed",
-                    }),
-                  });
-                });
-            }
-
-            if (fullPlan.segments.length > 0) {
-              engineHandled = true;
-              log("info", "clip_layout_plan_applied", {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                ...mediaAnalysisDiagnostic({
-                  analysisMode: "layout_engine",
-                  selectedMode: "shot_layout",
-                }),
-                segmentCount: fullPlan.segments.length,
-                twoUpSegmentCount: fullPlan.twoUpSegmentCount,
-                shotCount: fullPlan.shotCount,
-                soloShotCount: fullPlan.soloShotCount,
-                multiShotCount: fullPlan.multiShotCount,
-                speakerCount: fullPlan.speakerCount,
-                mappedSpeakerCount: fullPlan.mappedSpeakerCount,
-                sceneCutCount: remappedCuts.length,
-              });
-            } else {
-              // Detection completed but found no trustworthy face structure.
-              // Treat that as a conclusive centered-layout analysis instead
-              // of paying for a second detector pass on every render.
-              log("info", "clip_layout_plan_fallback", {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                ...mediaAnalysisDiagnostic({
-                  analysisMode: "layout_engine",
-                  fallbackMode: "center_crop",
-                  failureCode: "no_trustworthy_faces",
-                }),
-                reason: "no_trustworthy_faces",
-                shotCount: fullPlan.shotCount,
-                soloShotCount: fullPlan.soloShotCount,
-                multiShotCount: fullPlan.multiShotCount,
-                speakerCount: fullPlan.speakerCount,
-              });
-              engineHandled = true;
-            }
-          } else {
-            log("info", "clip_layout_plan_fallback", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              ...mediaAnalysisDiagnostic({
-                analysisMode: "layout_engine",
-                fallbackMode: "composition_plan",
-                failureCode: "analysis_unavailable",
-              }),
-              reason: "detection_unavailable",
-            });
-          }
-        }
-      }
-
-      let splitLayoutEvidenceForPlan: CompositionEvidenceAvailability<
-        SplitLayoutEvidence,
-        SplitLayoutFailureReason
-      > = {
-        state: "missing",
-      };
-      let screenLayoutEvidenceForPlan: CompositionEvidenceAvailability<
-        ScreenLayoutEvidence,
-        ScreenLayoutFailureReason
-      > = {
-        state: "missing",
-      };
-
-      // Resolve the evidence needed by the shared planner for Screen mode.
-      const screenLayoutEnabled = currentRenderConfig().screenLayoutEnabled;
-      const isScreenMode =
-        resolveEffectiveFramingMode(studioEdits) === "screen" && probe.hasVideo;
-      if (isScreenMode) {
-        if (!screenLayoutEnabled) {
-          screenLayoutEvidenceForPlan = { state: "disabled" };
-          log("info", "clip_screen_fallback", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            ...mediaAnalysisDiagnostic({
-              analysisMode: "screen_layout",
-              fallbackMode: "composition_plan",
-              failureCode: "analysis_disabled",
-            }),
-            reason: "disabled",
-          });
-        } else {
-          const screenFallbackReason = decideScreenFallback({
-            hasBrollPlan: Boolean(brollPlan),
-          });
-
-          if (screenFallbackReason) {
-            screenLayoutEvidenceForPlan = {
-              state: "failed",
-              reason: screenFallbackReason,
-            };
-            log("info", "clip_screen_fallback", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              ...mediaAnalysisDiagnostic({
-                analysisMode: "screen_layout",
-                fallbackMode: "composition_plan",
-                failureCode: screenFallbackReason,
-              }),
-              reason: screenFallbackReason,
-            });
-          } else {
-            const screenEngineVersion = SCREEN_LAYOUT_ENGINE_VERSION;
-            const screenFingerprint = screenLayoutInputFingerprint({
-              sourceIdentity: compositionSourceIdentity,
-              clipStartSec,
-              clipEndSec,
-              deletedRanges,
-              engineVersion: screenEngineVersion,
-            });
-            const persistedAnalysisRaw = parseClipLayoutAnalysis(
-              clip.layoutAnalysis,
-            );
-            const persistedAnalysis =
-              persistedAnalysisRaw !== null &&
-              layoutAnalysisMatchesWindow(
-                persistedAnalysisRaw,
-                clipStartSec,
-                effective.durationSec,
-              ) &&
-              persistedAnalysisRaw.engine === screenEngineVersion &&
-              persistedAnalysisRaw.sourceIdentity === compositionSourceIdentity &&
-              persistedAnalysisRaw.inputFingerprint === screenFingerprint
-                ? persistedAnalysisRaw
-                : null;
-            const reuseExactScreenPlan = persistedAnalysis !== null;
-            if (!reuseExactScreenPlan) {
-              compositionResources.analysisRequestKeys.add(
-                `screen-layout:${screenFingerprint}`,
-              );
-              compositionResources.analysisExecutionCount += 1;
-            }
-            // Real screen layout: element segmentation v1 (vizard-parity.md's
-            // element-segmentation spike) tries the actual facecam PiP
-            // rectangle FIRST — only when the source is screencast-like
-            // (`classifyScreencast`), a corner-adjacent, compact motion blob
-            // was actually found (`selectPipRect`), AND H2 (adversarial
-            // review) a face is confirmed to actually sit inside it
-            // (`confirmsFaceInRect`) does this win; every other case (a
-            // genuine talking-head source — motion segmentation's own
-            // measured false positive is a hand gesture near the frame edge
-            // reading as a corner-adjacent compact blob — a frozen/still
-            // facecam that motion segmentation can't see, no python/opencv/
-            // numpy) falls straight through to the pre-existing whole-frame
-            // single-face detection below, byte-identical to before this
-            // packet. Both detectors share the SAME extracted segment
-            // (`detectInput`) — no reason to extract it twice.
-            const detectInput = reuseExactScreenPlan
-              ? null
-              : await getSharedAnalysisSegment();
-
-            // PiP persistence packet B (read-before-detect): a persisted
-            // `Clip.layoutAnalysis` envelope whose detection window still
-            // matches THIS render's `clipStartSec`/`effective.durationSec`
-            // (`layoutAnalysisMatchesWindow`) means `pip_detect.py` already
-            // ran for this exact source range — reuse its
-            // movingPxFrac/insufficientSamples/pipRect instead of paying for
-            // the script again. A window mismatch (most commonly a trim
-            // moving `clipStartSec`/
-            // `endSec`) is the envelope's own invalidation — see that
-            // function's doc comment — so the stale value is simply never
-            // read here, not explicitly deleted.
-            // The read-before-detect decision lives in `resolvePipAnalysis`.
-            // The identity-complete envelope is persisted below only after
-            // both PiP and face-band facts are conclusive.
-            if (!reuseExactScreenPlan && detectInput) {
-              compositionResources.detectorExecutionCount += 1;
-            }
-            const resolvedPip = reuseExactScreenPlan
-              ? {
-                  detectionResult: {
-                    movingPxFrac: persistedAnalysis.movingPxFrac,
-                    insufficientSamples: persistedAnalysis.insufficientSamples,
-                    candidates: [],
-                  },
-                  selectedRect: persistedAnalysis.pipRect,
-                  candidateCount: persistedAnalysis.pipRect ? 1 : 0,
-                  analysisSource: "persisted" as const,
-                }
-              : await resolvePipAnalysis({
-                  persisted: persistedAnalysis,
-                  detectInput,
-                  startSec: clipStartSec,
-                  durationSec: effective.durationSec,
-                  detect: currentRenderAdapters().analysis.detectPipPath,
-                });
-            const { detectionResult, selectedRect, candidateCount, analysisSource } =
-              resolvedPip;
-
-            // Face detection runs on the same segment both to confirm a new
-            // PiP candidate and to support the whole-frame speaker fallback.
-            // An exact v2 plan already contains both decisions, so reusing it
-            // deliberately skips this pass and cannot downgrade durable
-            // evidence after a transient detector failure.
-            if (detectInput) {
-              compositionResources.detectorExecutionCount += 1;
-            }
-            const detection = detectInput
-              ? await currentRenderAdapters().analysis.detectFacePath({
-                  sourcePath: detectInput.path,
-                  startSec: detectInput.startSec,
-                  durationSec: effective.durationSec,
-                  logContext: { workflowRunId: run.id, clipId: clip.id },
-                })
-              : null;
-            const faceConfirmed = confirmsFaceInRect(detection?.samples ?? null, selectedRect);
-
-            const pipUsageBase: DecidePipUsageParams = {
-              segmentExtracted: reuseExactScreenPlan || Boolean(detectInput),
-              detection: detectionResult,
-              selectedRect,
-              faceConfirmed: reuseExactScreenPlan
-                ? persistedAnalysis.pipUsable
-                : faceConfirmed,
-              screencastThreshold: currentRenderConfig().pipMotionThreshold,
-            };
-            // Clip-level evidence gate. Target-specific geometry is resolved
-            // later by the composition planner.
-            const clipLevelPipDecision = reuseExactScreenPlan
-              ? {
-                  useRect: persistedAnalysis.pipUsable,
-                  reason: persistedAnalysis.pipUsable
-                    ? ("ok" as const)
-                    : ("no_candidate" as const),
-                }
-              : decidePipUsage(pipUsageBase);
-            const pipRect = clipLevelPipDecision.useRect ? selectedRect : null;
-
-            if (pipRect) {
-              log("info", "clip_screen_pip_selected", {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                ...mediaAnalysisDiagnostic({
-                  analysisMode: "picture_in_picture",
-                  selectedMode: "pip_crop",
-                }),
-                movingPxFrac: detectionResult?.movingPxFrac ?? null,
-                rect: pipRect,
-                analysisSource,
-              });
-            } else {
-              log("info", "clip_screen_pip_fallback", {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                ...mediaAnalysisDiagnostic({
-                  analysisMode: "picture_in_picture",
-                  fallbackMode: "speaker_band",
-                  failureCode: clipLevelPipDecision.reason,
-                }),
-                reason: clipLevelPipDecision.reason,
-                movingPxFrac: detectionResult?.movingPxFrac ?? null,
-                candidateCount,
-                analysisSource,
-              });
-            }
-
-            const faceBandSegments = reuseExactScreenPlan
-              ? persistedAnalysis.faceBandSegments
-              : faceBandSegmentsForCompositionPlan({
-                  samples: detection?.samples ?? null,
-                  cutPlan,
-                  clipStartSec,
-                  editedDurationSec: clipDurationSec,
-                });
-            const screenAnalysisConclusive =
-              reuseExactScreenPlan || Boolean(detectionResult && detection);
-            if (!screenAnalysisConclusive) {
-              const failureReason = detectionResult
-                ? "analysis_unavailable"
-                : "detection_unavailable";
-              screenLayoutEvidenceForPlan = {
-                state: "failed",
-                reason: failureReason,
-              };
-              const failure = clipLayoutAnalysisFailureSchema.parse({
-                version: 2,
-                engine: screenEngineVersion,
-                state: "failed",
-                sourceIdentity: compositionSourceIdentity,
-                inputFingerprint: screenFingerprint,
-                analyzedAtISO: new Date(currentTimeMs()).toISOString(),
-                reason: failureReason,
-              });
-              if (clip.previewStorageKey) {
-                try {
-                  await currentRenderAdapters().clip.setClipLayoutAnalysisFailure(
-                    attempt,
-                    clip.id,
-                    failure,
-                    {
-                      editorRevision: clip.editorRevision,
-                      previewStorageKey: clip.previewStorageKey,
-                    },
-                  );
-                } catch (persistError) {
-                  rethrowRenderControlFlow(persistError);
-                  log("error", "clip_screen_layout_failure_persist_failed", {
-                    workflowRunId: run.id,
-                    clipId: clip.id,
-                    reason: failureReason,
-                  });
-                }
-              }
-            } else if (persistedAnalysis === null) {
-              const screenEnvelope = clipLayoutAnalysisV2Schema.parse({
-                version: 2,
-                engine: screenEngineVersion,
-                sourceIdentity: compositionSourceIdentity,
-                inputFingerprint: screenFingerprint,
-                analyzedAtISO: new Date(currentTimeMs()).toISOString(),
-                sourceStartSec: clipStartSec,
-                sourceDurationSec: effective.durationSec,
-                clipStartSec,
-                clipEndSec,
-                movingPxFrac: detectionResult?.movingPxFrac ?? null,
-                insufficientSamples:
-                  detectionResult?.insufficientSamples ?? false,
-                pipRect: selectedRect,
-                pipUsable: clipLevelPipDecision.useRect,
-                sourceWidth: probe.width,
-                sourceHeight: probe.height,
-                deletedRanges,
-                faceBandSegments,
-              });
-              if (clip.previewStorageKey) {
-                try {
-                  await currentRenderAdapters().clip.setClipLayoutAnalysis(
-                    attempt,
-                    clip.id,
-                    screenEnvelope,
-                    {
-                      editorRevision: clip.editorRevision,
-                      previewStorageKey: clip.previewStorageKey,
-                    },
-                  );
-                } catch (persistError) {
-                  rethrowRenderControlFlow(persistError);
-                  log("error", "clip_screen_layout_analysis_persist_failed", {
-                    workflowRunId: run.id,
-                    clipId: clip.id,
-                    ...mediaAnalysisDiagnostic({
-                      analysisMode: "screen_layout",
-                      fallbackMode: "render_without_persisted_analysis",
-                      failureCode: "analysis_persist_failed",
-                    }),
-                  });
-                }
-              }
-            }
-            if (screenAnalysisConclusive) {
-              screenLayoutEvidenceForPlan = {
-                state: "available",
-                value: {
-                  sourceIdentity: compositionSourceIdentity,
-                  inputFingerprint: screenFingerprint,
-                  engineVersion: screenEngineVersion,
-                  source:
-                    analysisSource === "persisted" ? "durable-pip" : "analysis",
-                  pictureInPicture: pipRect
-                    ? {
-                        state: "confirmed",
-                        rect: {
-                          x: pipRect.x,
-                          y: pipRect.y,
-                          width: pipRect.w,
-                          height: pipRect.h,
-                        },
-                      }
-                    : { state: "unavailable" },
-                  faceBand: faceBandSegments
-                    ? { state: "available", segments: faceBandSegments }
-                    : { state: "unavailable" },
-                },
-              };
-            }
-            if (screenAnalysisConclusive && !pipRect && !faceBandSegments) {
-              log("info", "clip_screen_bottom_center_fallback", {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                ...mediaAnalysisDiagnostic({
-                  analysisMode: "screen_layout",
-                  fallbackMode: "center_crop",
-                  failureCode: detection
-                    ? "no_face_detected"
-                    : "analysis_unavailable",
-                }),
-                reason: detection ? "no_face_detected" : "detection_unavailable",
-              });
-            }
-          }
-        }
-      }
-
-      // Resolve the evidence needed by the shared planner for Split mode.
-      const splitEnabled = currentRenderConfig().splitEnabled;
-      const isSplitMode =
-        resolveEffectiveFramingMode(studioEdits) === "split" && probe.hasVideo;
-      if (isSplitMode) {
-        // L1 (adversarial review): the WORKER_SPLIT=0 kill switch gets its
-        // own fallback reason ("disabled") instead of masquerading as
-        // "detection_unavailable" — it never even attempts detection, which
-        // is a materially different situation to log/debug from "detection
-        // ran and failed." Short-circuits before `decideSplitFallback` is
-        // even called (that function has no way to distinguish "disabled"
-        // from "detection never ran for another reason" from its params
-        // alone).
-        if (!splitEnabled) {
-          splitLayoutEvidenceForPlan = { state: "disabled" };
-          log("info", "clip_split_fallback", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            ...mediaAnalysisDiagnostic({
-              analysisMode: "split_layout",
-              fallbackMode: "composition_plan",
-              failureCode: "analysis_disabled",
-            }),
-            reason: "disabled",
-          });
-        } else {
-          const splitEngineVersion = "explicit-split-v1";
-          const splitFingerprint = splitLayoutInputFingerprint({
-            sourceIdentity: compositionSourceIdentity,
-            clipStartSec,
-            clipEndSec,
-            deletedRanges,
-            engineVersion: splitEngineVersion,
-          });
-          const persistedSplitAnalysis = parseClipSplitLayoutAnalysis(
-            clip.splitLayoutAnalysis,
-          );
-          const reusableSplitAnalysis =
-            !brollPlan &&
-            persistedSplitAnalysis?.sourceIdentity === compositionSourceIdentity &&
-            persistedSplitAnalysis.sourceWidth === probe.width &&
-            persistedSplitAnalysis.sourceHeight === probe.height &&
-            clipAutoLayoutMatchesInputs(persistedSplitAnalysis, {
-              clipStartSec,
-              clipEndSec,
-              deletedRanges,
-            }) &&
-            Math.abs(
-              persistedSplitAnalysis.editedDurationSec - clipDurationSec,
-            ) <= 0.075
-              ? persistedSplitAnalysis
-              : null;
-          let detectionAvailable = false;
-          let plan: BuildSplitLayoutPlanResult | null = null;
-          let multiDetection: { samples: MultiFaceSample[] } | null = null;
-
-          if (reusableSplitAnalysis) {
-            detectionAvailable = true;
-            plan = {
-              segments: reusableSplitAnalysis.segments,
-              clusterCount: reusableSplitAnalysis.speakerCount,
-              cappedFromSegmentCount: null,
-            };
-          } else if (!brollPlan) {
-            compositionResources.analysisRequestKeys.add(
-              `split-speaker-layout:${splitFingerprint}`,
-            );
-            compositionResources.analysisExecutionCount += 1;
-            const detectInput = await getSharedAnalysisSegment();
-            // Same source<->edited timeline contract as the single-face path
-            // above: detection scans the full uncut clip window in
-            // elapsed-uncut-source seconds; `remapMultiFaceSamplesForCutPlan`
-            // drops samples inside a cut and remaps the rest onto the edited
-            // timeline used by `buildSplitLayoutPlan` and the shared planner.
-            if (detectInput) {
-              compositionResources.detectorExecutionCount += 1;
-            }
-            multiDetection = detectInput
-              ? await currentRenderAdapters().analysis.detectMultiFacePath({
-                  sourcePath: detectInput.path,
-                  startSec: detectInput.startSec,
-                  durationSec: effective.durationSec,
-                  logContext: { workflowRunId: run.id, clipId: clip.id },
-                })
-              : null;
-            detectionAvailable = Boolean(multiDetection);
-            if (multiDetection) {
-              const remapped = remapMultiFaceSamplesForCutPlan(
-                multiDetection.samples,
-                cutPlan,
-                clipStartSec,
-              );
-              plan = buildSplitLayoutPlan(remapped, clipDurationSec);
-            }
-          }
-
-          const fallbackReason = decideSplitFallback({
-            hasBrollPlan: Boolean(brollPlan),
-            detectionAvailable,
-            plan,
-          });
-
-          if (fallbackReason) {
-            splitLayoutEvidenceForPlan = {
-              state: "failed",
-              reason: fallbackReason,
-            };
-            if (fallbackReason !== "broll_conflict" && clip.previewStorageKey) {
-              const failure = clipSplitLayoutFailureSchema.parse({
-                version: 1,
-                engine: splitEngineVersion,
-                state: "failed",
-                sourceIdentity: compositionSourceIdentity,
-                inputFingerprint: splitFingerprint,
-                analyzedAtISO: new Date(currentTimeMs()).toISOString(),
-                reason: fallbackReason,
-              });
-              await currentRenderAdapters()
-                .clip.completeClipSplitLayoutFailure(attempt, clip.id, failure, {
-                  editorRevision: clip.editorRevision,
-                  previewStorageKey: clip.previewStorageKey,
-                })
-                .catch((error) => {
-                  rethrowRenderControlFlow(error);
-                  log("error", "clip_split_layout_failure_persist_failed", {
-                    workflowRunId: run.id,
-                    clipId: clip.id,
-                    reason: fallbackReason,
-                  });
-                });
-            }
-            log("info", "clip_split_fallback", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              ...mediaAnalysisDiagnostic({
-                analysisMode: "split_layout",
-                fallbackMode: "composition_plan",
-                failureCode: fallbackReason,
-              }),
-              reason: fallbackReason,
-            });
-          } else if (plan) {
-            const fallbackSegments = reusableSplitAnalysis
-              ? reusableSplitAnalysis.noSplitSegments
-              : (faceBandSegmentsForCompositionPlan({
-                  samples: multiDetection
-                    ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
-                    : null,
-                  cutPlan,
-                  clipStartSec,
-                  editedDurationSec: clipDurationSec,
-                }) ?? [
-                  {
-                    startSec: 0,
-                    endSec: clipDurationSec,
-                    layout: "single" as const,
-                    cxNorm: 0.5,
-                    cyNorm: 0.5,
-                    zoom: 1,
-                  },
-                ]);
-            const explicitSegments: ClipAutoLayoutSegment[] = plan.segments.map(
-              (segment) =>
-                segment.layout === "single"
-                  ? {
-                      startSec: segment.startSec,
-                      endSec: segment.endSec,
-                      layout: "single" as const,
-                      cxNorm: segment.cxNorm,
-                      cyNorm: segment.cyNorm ?? 0.5,
-                      zoom: segment.zoom ?? 1,
-                    }
-                  : {
-                      startSec: segment.startSec,
-                      endSec: segment.endSec,
-                      layout: "two-up" as const,
-                      topCxNorm: segment.topCxNorm,
-                      bottomCxNorm: segment.bottomCxNorm,
-                      topCyNorm: segment.topCyNorm ?? 0.5,
-                      bottomCyNorm: segment.bottomCyNorm ?? 0.5,
-                      topZoom: segment.topZoom ?? 1,
-                      bottomZoom: segment.bottomZoom ?? 1,
-                    },
-            );
-            splitLayoutEvidenceForPlan = {
-              state: "available",
-              value: {
-                sourceIdentity: compositionSourceIdentity,
-                inputFingerprint: splitFingerprint,
-                engineVersion: splitEngineVersion,
-                source: reusableSplitAnalysis
-                  ? "durable-explicit"
-                  : "explicit-detector",
-                segments: explicitSegments,
-                fallbackSegments,
-              },
-            };
-            const twoUpSegmentCount = explicitSegments.filter(
-              (segment) => segment.layout === "two-up",
-            ).length;
-            // The shared scene envelope is also the browser's durable Split
-            // evidence. Its explicit engine discriminator prevents an Auto
-            // consumer from silently treating detector-specific scenes as a
-            // shot-layout result when the user switches modes later.
-            const splitPreviewEnvelope = parseClipSplitLayoutAnalysis({
-              version: 1,
-              engine: "explicit-split-v1",
-              sourceIdentity: compositionSourceIdentity,
-              analyzedAtISO: new Date(currentTimeMs()).toISOString(),
-              clipStartSec,
-              clipEndSec,
-              deletedRanges,
-              editedDurationSec: clipDurationSec,
-              sourceWidth: probe.width,
-              sourceHeight: probe.height,
-              segments: explicitSegments,
-              noSplitSegments: fallbackSegments,
-              shotCount: explicitSegments.length,
-              soloShotCount: explicitSegments.length - twoUpSegmentCount,
-              multiShotCount: twoUpSegmentCount,
-              twoUpSegmentCount,
-              speakerCount: plan.clusterCount,
-              mappedSpeakerCount: plan.clusterCount,
-            });
-            if (!splitPreviewEnvelope) {
-              throw new Error("invalid_split_layout_analysis");
-            }
-            if (!reusableSplitAnalysis && clip.previewStorageKey) {
-              await currentRenderAdapters()
-                .clip
-                .completeClipSplitLayoutAnalysis(
-                  attempt,
-                  clip.id,
-                  splitPreviewEnvelope,
-                  {
-                  editorRevision: clip.editorRevision,
-                  previewStorageKey: clip.previewStorageKey,
-                  },
-                )
-                .catch((error) => {
-                  rethrowRenderControlFlow(error);
-                  log("error", "clip_split_layout_analysis_persist_failed", {
-                    workflowRunId: run.id,
-                    clipId: clip.id,
-                    ...mediaAnalysisDiagnostic({
-                      analysisMode: "split_layout",
-                      fallbackMode: "render_without_persisted_analysis",
-                      failureCode: "analysis_persist_failed",
-                    }),
-                  });
-                });
-            }
-            if (plan.cappedFromSegmentCount) {
-              log("info", "clip_split_segments_capped", {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                originalSegmentCount: plan.cappedFromSegmentCount,
-                cappedTo: plan.segments.length,
-              });
-            }
-            log("info", "clip_split_applied", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              ...mediaAnalysisDiagnostic({
-                analysisMode: "split_layout",
-                selectedMode: "two_up",
-              }),
-              segmentCount: plan.segments.length,
-              clusterCount: plan.clusterCount,
-            });
-
-          }
-        }
-      }
-
-      let musicPlan: ResolvedMusicAsset | null = null;
-      // Library asset (vizard-parity.md "Music/SFX library" —
-      // `studioMusicSchema.assetId`) wins over the pasted `url` at render
-      // time — same precedence the schema's own doc comment documents.
-      // Resolution failure (deleted row, DB hiccup) is treated exactly like
-      // a failed download below: log and skip music entirely, never fail
-      // the whole clip (the existing `music_download_failed` policy this
-      // mirrors never actually fails the clip either — see the catch below,
-      // which only logs).
-      let musicUrl: string | null = null;
-      let musicDurationSec: number | undefined;
-      // M6 (vizard-parity.md "Music/SFX library"): an AudioAsset-resolved
-      // music track already passed the AUDIO_UPLOAD_MAX_BYTES gate once at
-      // upload time (or is a curated row seeded well under it) — downloading
-      // it back down for a render must not silently inherit the much larger
-      // 250MB pasted-URL/B-roll budget. A pasted `url` (no assetId) predates
-      // this change and keeps the original 250MB policy.
-      let musicUrlIsAssetResolved = false;
-      if (studioEdits.music.assetId) {
-        try {
-          const resolved = await currentRenderAdapters().audioAsset.resolveRenderSource(
-            frozenState.userId,
-            studioEdits.music.assetId,
-            frozenState.workspaceId,
-          );
-          musicUrl = resolved?.url ?? null;
-          musicDurationSec = resolved?.durationSec;
-          musicUrlIsAssetResolved = Boolean(resolved);
-          if (!resolved) {
-            diagnoseOptionalAssetFallback({
-              assetClass: "music",
-              phase: "lookup",
-              failureCode: "music_asset_unavailable",
-              context: { workflowRunId: run.id, clipId: clip.id },
-            });
-          }
-        } catch (error) {
-          rethrowRenderControlFlow(error);
-          const accessFailure = optionalAccessFailure(error, "music");
-          diagnoseOptionalAssetFallback({
-            assetClass: "music",
-            ...accessFailure,
-            context: { workflowRunId: run.id, clipId: clip.id },
-          });
-        }
-      } else {
-        musicUrl = studioEdits.music.url;
-      }
-
-      if (musicUrl) {
-        let musicUrlSafe = false;
-        try {
-          assertPublicHttpUrl(musicUrl);
-          musicUrlSafe = true;
-        } catch {
-          diagnoseOptionalAssetFallback({
-            assetClass: "music",
-            phase: "lookup",
-            failureCode: "music_url_rejected",
-            context: { workflowRunId: run.id, clipId: clip.id },
-          });
-        }
-        if (musicUrlSafe) {
-          touchedOptionalAssetClasses.add("music");
-          const musicPath = join(tempDir, `music-${clip.id}.bin`);
-          try {
-            await currentRenderAdapters().optionalAssets.downloadUrlToFile(
-              musicUrl,
-              musicPath,
-              "music_download_failed",
-              musicUrlIsAssetResolved ? { maxBytes: AUDIO_UPLOAD_MAX_BYTES } : undefined,
-            );
-            const decodable =
-              await currentRenderAdapters().optionalAssets.validateOptionalMedia(
-                musicPath,
-                "audio",
-              );
-            if (decodable) {
-              musicPlan = {
-                path: musicPath,
-                ref: compositionAssetRef("music", studioEdits.music.assetId ?? musicUrl),
-                durationSec: musicDurationSec,
-              };
-            } else {
-              diagnoseOptionalAssetFallback({
-                assetClass: "music",
-                phase: "decode",
-                failureCode: "music_media_invalid",
-                context: { workflowRunId: run.id, clipId: clip.id },
-              });
-            }
-          } catch (error) {
-            rethrowRenderControlFlow(error);
-            diagnoseOptionalAssetFallback({
-              assetClass: "music",
-              phase: "download",
-              failureCode: "music_download_failed",
-              context: { workflowRunId: run.id, clipId: clip.id },
-            });
-          }
-        }
-      }
-
-      // One-shot SFX placements (vizard-parity.md "Music/SFX library" —
-      // `studioEdits.sfx[]`). Each placement is resolved/downloaded
-      // independently and best-effort: a single bad placement is skipped
-      // (logged) rather than failing every other placement or the whole
-      // clip, mirroring the music download policy above.
-      const sfxPlans: ResolvedSfxAsset[] = [];
-      for (const placement of studioEdits.sfx) {
-        if (placement.startSec >= clipDurationSec) {
-          log("info", "clip_sfx_skipped_beyond_duration", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            sfxId: placement.id,
-            startSec: placement.startSec,
-            clipDurationSec,
-          });
-          continue;
-        }
-
-        let sfxUrl: string | null = null;
-        let sfxDurationSec: number | null = null;
-        try {
-          const resolved = await currentRenderAdapters().audioAsset.resolveRenderSource(
-            frozenState.userId,
-            placement.assetId,
-            frozenState.workspaceId,
-          );
-          sfxUrl = resolved?.url ?? null;
-          sfxDurationSec = resolved?.durationSec ?? null;
-          if (!resolved) {
-            diagnoseOptionalAssetFallback({
-              assetClass: "sound_effect",
-              phase: "lookup",
-              failureCode: "sound_effect_asset_unavailable",
-              context: {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                sfxId: placement.id,
-              },
-            });
-          }
-        } catch (error) {
-          rethrowRenderControlFlow(error);
-          const accessFailure = optionalAccessFailure(error, "sound_effect");
-          diagnoseOptionalAssetFallback({
-            assetClass: "sound_effect",
-            ...accessFailure,
-            context: {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              sfxId: placement.id,
-            },
-          });
-        }
-        if (!sfxUrl) continue;
-
-        let sfxUrlSafe = false;
-        try {
-          assertPublicHttpUrl(sfxUrl);
-          sfxUrlSafe = true;
-        } catch (error) {
-          rethrowRenderControlFlow(error);
-          diagnoseOptionalAssetFallback({
-            assetClass: "sound_effect",
-            phase: "lookup",
-            failureCode: "sound_effect_url_rejected",
-            context: {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              sfxId: placement.id,
-            },
-          });
-        }
-        if (!sfxUrlSafe) continue;
-
-        const sfxPath = join(tempDir, `sfx-${clip.id}-${placement.id}.bin`);
-        touchedOptionalAssetClasses.add("sound_effect");
-        try {
-          // M6: SFX placements are always resolved through an AudioAsset
-          // (`assetId` is required by `studioSfxPlacementSchema`) — bounded
-          // by the same AUDIO_UPLOAD_MAX_BYTES the upload gate enforced,
-          // not the larger 250MB B-roll/pasted-URL budget.
-          await currentRenderAdapters().optionalAssets.downloadUrlToFile(
-            sfxUrl,
-            sfxPath,
-            "sfx_download_failed",
-            {
-              maxBytes: AUDIO_UPLOAD_MAX_BYTES,
-            },
-          );
-          const decodable =
-            await currentRenderAdapters().optionalAssets.validateOptionalMedia(
-              sfxPath,
-              "audio",
-            );
-          if (decodable && sfxDurationSec && sfxDurationSec > 0) {
-            sfxPlans.push({
-              path: sfxPath,
-              id: placement.id,
-              ref: compositionAssetRef("sound-effect", placement.assetId),
-              durationSec: sfxDurationSec,
-            });
-          } else {
-            diagnoseOptionalAssetFallback({
-              assetClass: "sound_effect",
-              phase: "decode",
-              failureCode: "sound_effect_media_invalid",
-              context: {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                sfxId: placement.id,
-              },
-            });
-          }
-        } catch (error) {
-          rethrowRenderControlFlow(error);
-          diagnoseOptionalAssetFallback({
-            assetClass: "sound_effect",
-            phase: "download",
-            failureCode: "sound_effect_download_failed",
-            context: {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              sfxId: placement.id,
-            },
-          });
-        }
-      }
-
-      // Canvas background (vizard-parity Phase C item 2): mirrors the music
-      // plan above — resolve once per clip, downloading the background image
-      // (if any) to a local file so the per-output builders never touch the
-      // network themselves. A bad/unsafe image URL, a failed download, or a
-      // downloaded file that ffprobe can't find a decodable video/image
-      // stream in (e.g. the URL 200s with an HTML page instead of an image)
-      // degrades to the solid-color fallback (black if no color was chosen
-      // either) rather than failing the render — same "best effort, never
-      // fail the clip" policy the music/B-roll downloads follow.
-      //
-      // Gated on the resolved effective mode (Phase C-2 stage 1), not the
-      // raw `background.mode`, so this can't drift from the reframe-skip
-      // gate above or the builder branch below — they're all
-      // `resolveEffectiveFramingMode(studioEdits) === "fit"` by definition
-      // (`background.mode !== "off"` always wins as "fit"), so this reads
-      // identically to before for every existing clip. This stays a plain
-      // `=== "fit"` check, not an exhaustive switch — a split clip
-      // (background off) leaves `backgroundPlan` null exactly like center
-      // does today, and instead of falling through to the plain
-      // crop-to-fill builder path, `buildSingleVideoArgs`/`buildBrollVideoArgs`
-      // check `params.split` (built from `splitPlan` above, split packet B)
-      // BEFORE the crop-to-fill fallback — see those builders' `else if`
-      // branch order.
-      let backgroundPlan: BackgroundPlan | null = null;
-      if (resolveEffectiveFramingMode(studioEdits) === "fit") {
-        const fallbackColor = studioEdits.background.color ?? "#000000";
-        backgroundPlan = {
-          mode: "color",
-          color: fallbackColor,
-          imagePath: null,
-        };
-
-        if (studioEdits.background.mode === "image" && studioEdits.background.imageUrl) {
-          let imageUrlSafe = false;
-          try {
-            assertPublicHttpUrl(studioEdits.background.imageUrl);
-            imageUrlSafe = true;
-          } catch {
-            diagnoseOptionalAssetFallback({
-              assetClass: "background",
-              phase: "lookup",
-              failureCode: "background_image_url_rejected",
-              context: { workflowRunId: run.id, clipId: clip.id },
-            });
-          }
-          if (imageUrlSafe) {
-            touchedOptionalAssetClasses.add("background");
-            const backgroundImagePath = join(tempDir, `background-${clip.id}.bin`);
-            try {
-              await currentRenderAdapters().optionalAssets.downloadUrlToFile(
-                studioEdits.background.imageUrl,
-                backgroundImagePath,
-                "background_image_download_failed",
-              );
-              const probeDecodable =
-                await currentRenderAdapters().optionalAssets.probeBackgroundImageDecodable(
-                  backgroundImagePath,
-                );
-              const decodable =
-                probeDecodable &&
-                (await currentRenderAdapters().optionalAssets.validateOptionalMedia(
-                  backgroundImagePath,
-                  "image",
-                ));
-              if (!decodable) {
-                diagnoseOptionalAssetFallback({
-                  assetClass: "background",
-                  phase: probeDecodable ? "decode" : "probe",
-                  failureCode: probeDecodable
-                    ? "background_image_decode_failed"
-                    : "background_image_invalid",
-                  context: { workflowRunId: run.id, clipId: clip.id },
-                });
-              }
-              backgroundPlan = resolveBackgroundPlanForDownloadedImage({
-                decodable,
-                color: fallbackColor,
-                imagePath: backgroundImagePath,
-              });
-            } catch (error) {
-              rethrowRenderControlFlow(error);
-              diagnoseOptionalAssetFallback({
-                assetClass: "background",
-                phase: "download",
-                failureCode: "background_image_download_failed",
-                context: { workflowRunId: run.id, clipId: clip.id },
-              });
-              // backgroundPlan stays the color fallback set above.
-            }
-          }
-        }
-      }
-
-      const optionalCommandAssets: Array<{
-        assetClass: OptionalAssetClass;
-        failureCode: string;
-      }> = [
-        ...(logo
-          ? [
-              {
-                assetClass: "logo" as const,
-                failureCode: "brand_logo_command_failed",
-              },
-            ]
-          : []),
-        ...(brollPlan || studioEdits.visualBroll.length > 0
-          ? [
-              {
-                assetClass: "broll" as const,
-                failureCode: "broll_command_failed",
-              },
-            ]
-          : []),
-        ...(musicPlan
-          ? [
-              {
-                assetClass: "music" as const,
-                failureCode: "music_mix_failed",
-              },
-            ]
-          : []),
-        ...(sfxPlans.length > 0
-          ? [
-              {
-                assetClass: "sound_effect" as const,
-                failureCode: "sound_effect_mix_failed",
-              },
-            ]
-          : []),
-        ...(backgroundPlan?.mode === "image"
-          ? [
-              {
-                assetClass: "background" as const,
-                failureCode: "background_image_command_failed",
-              },
-            ]
-          : []),
-      ];
-      const fallbackBackgroundPlan: BackgroundPlan | null =
-        backgroundPlan?.mode === "image"
-          ? { mode: "color", color: backgroundPlan.color, imagePath: null }
-          : backgroundPlan;
-
-      const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
-      let plannedAudio: BoundCompositionAudioRenderRequest | null = null;
-      let fallbackAudio: BoundCompositionAudioRenderRequest | null = null;
-      let compositionPlan: ClipCompositionPlan | null = null;
-      let fallbackCompositionPlan: ClipCompositionPlan | null = null;
-      {
-        const planWithAssetAvailability = (
-          backgroundImage:
-            | { state: "missing" | "failed" }
-            | { state: "available"; ref: string },
-          availability: {
-            broll?: boolean;
-            logo?: boolean;
-            music?: boolean;
-            soundEffects?: boolean;
-          } = {},
-        ) => {
-          const visualBrollAvailable = studioEdits.visualBroll.every((placement) =>
-            Boolean(
-              resolvedSceneAssets[
-                compositionAssetRef(
-                  "visual_asset",
-                  `${placement.asset.id}:${placement.asset.fingerprint}`,
-                )
-              ],
-            ),
-          );
-          const brollAvailable =
-            availability.broll ?? (Boolean(brollPlan) || visualBrollAvailable);
-          const logoAvailable = availability.logo ?? Boolean(brandLogo);
-          const musicAvailable = availability.music ?? Boolean(musicPlan);
-          const soundEffectsAvailable = availability.soundEffects ?? sfxPlans.length > 0;
-          return planClipComposition({
-            document: compositionDocument,
-            source: {
-              identity: compositionSourceIdentity,
-              kind: probe.hasVideo ? "video" : "audio",
-              width: probe.hasVideo ? probe.width : 0,
-              height: probe.hasVideo ? probe.height : 0,
-              hasAudio: probe.hasAudio,
-            },
-            evidence: {
-              automaticLayout: automaticLayoutAnalysisForPlan
-                ? {
-                    state: "available",
-                    value: {
-                      sourceIdentity: compositionSourceIdentity,
-                      inputFingerprint: automaticLayoutInputFingerprint({
-                        sourceIdentity: compositionSourceIdentity,
-                        clipStartSec,
-                        clipEndSec,
-                        deletedRanges,
-                        engineVersion: "shot-layout-v1",
-                      }),
-                      engineVersion: "shot-layout-v1",
-                      analysis: automaticLayoutAnalysisForPlan,
-                    },
-                  }
-                : { state: automaticLayoutEvidenceFailure },
-              splitLayout: splitLayoutEvidenceForPlan,
-              screenLayout: screenLayoutEvidenceForPlan,
-            },
-            assets: {
-              backgroundImage,
-              sceneVisuals: sceneVisualAvailability,
-              sceneFonts: sceneFontAvailability,
-              ...(studioEdits.music.assetId || studioEdits.music.url
-                ? {
-                    music: musicAvailable && musicPlan?.ref
-                      ? {
-                          state: "available" as const,
-                          ref: musicPlan.ref,
-                          durationSec: musicPlan.durationSec,
-                        }
-                      : { state: "failed" as const },
-                  }
-                : {}),
-              soundEffects: Object.fromEntries(
-                studioEdits.sfx.map((placement) => {
-                  const resolved = soundEffectsAvailable
-                    ? sfxPlans.find(
-                        (candidate) => candidate.id === placement.id,
-                      )
-                    : undefined;
-                  return [
-                    placement.id,
-                    resolved?.ref
-                      ? {
-                          state: "available" as const,
-                          ref: resolved.ref,
-                          durationSec: resolved.durationSec,
-                        }
-                      : { state: "failed" as const },
-                  ];
-                }),
-              ),
-              ...(studioEdits.visualBroll.length > 0 && brollAvailable
-                ? {
-                    broll: {
-                      state: "available" as const,
-                      placements: studioEdits.visualBroll.map((placement) => ({
-                        id: placement.id,
-                        ref: compositionAssetRef("visual_asset", `${placement.asset.id}:${placement.asset.fingerprint}`),
-                        kind: "image" as const,
-                        startSec: placement.startSec,
-                        endSec: placement.endSec,
-                      })),
-                    },
-                  }
-                : brollPlan && brollAvailable
-                ? {
-                    broll: {
-                      state: "available" as const,
-                      placements: brollPlan.cutaways.map((cutaway, index) => ({
-                        id: `cutaway-${index}`,
-                        ref: cutaway.ref,
-                        startSec: cutaway.window.startSec,
-                        endSec: cutaway.window.endSec,
-                      })),
-                    },
-                  }
-                : userBrollUrl || brollPlan || studioEdits.visualBroll.length > 0
-                  ? { broll: { state: "failed" as const } }
-                  : {}),
-              ...(brandLogo && logoAvailable && plannedLogoSettings
-                ? {
-                    logo: {
-                      state: "available" as const,
-                      ref: brandLogo.ref,
-                      settings: plannedLogoSettings,
-                    },
-                  }
-                : brandLogoWasRequested
-                  ? { logo: { state: "failed" as const } }
-                  : {}),
-            },
-            capabilities: {
-              automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
-              automaticSpeakerEngineVersion: "shot-layout-v1",
-              explicitSplitLayout: currentRenderConfig().splitEnabled,
-              splitEngineVersion: "explicit-split-v1",
-              screenLayout: currentRenderConfig().screenLayoutEnabled,
-              screenEngineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
-            },
-            targets: outputs.map((output) => {
-              const target = aspectRatioConfig.get(output.aspectRatio)!;
-              return {
-                id: output.clipRenderId,
-                aspectRatio: output.aspectRatio,
-                width: target.width,
-                height: target.height,
-                outputTreatment: {
-                  resolution: output.resolution,
-                  watermark: output.watermark,
-                },
-              };
-            }),
-          });
-        };
-        const backgroundImageAvailability =
-          requestedCompositionMode === "fit" &&
-          backgroundPlan?.mode === "image" &&
-          backgroundPlan.imagePath &&
-          studioEdits.background.imageUrl
-            ? {
-                state: "available" as const,
-                ref: compositionAssetRef(
-                  "background",
-                  studioEdits.background.imageUrl,
-                ),
-              }
-            : requestedCompositionMode === "fit" &&
-                studioEdits.background.mode === "image"
-              ? ({ state: "failed" } as const)
-              : ({ state: "missing" } as const);
-        const planningStartedAtMs = currentTimeMs();
-        const planned = planWithAssetAvailability(
-          backgroundImageAvailability,
-        );
-        const planningDurationMs = Math.max(
-          0,
-          currentTimeMs() - planningStartedAtMs,
-        );
-        if (planned.status === "invalid") {
-          throw new WorkflowWorkerError(
-            planned.error.code,
-            `Clip Composition Plan rejected ${planned.error.code}`,
-            "permanent",
-          );
-        }
-        compositionResources.planVersion = planned.plan.version;
-        compositionResources.planFingerprint = planned.plan.fingerprint;
-        compositionResources.requestedMode = requestedCompositionMode;
-        compositionResources.effectiveModes = planned.plan.targets.map(
-          (target) => target.effectiveMode,
-        );
-        compositionResources.planningDurationMs = planningDurationMs;
-        const sceneCount = planned.plan.targets.reduce(
-          (count, target) => count + target.scenes.length,
-          0,
-        );
-        const visualLayerCount = planned.plan.targets.reduce(
-          (count, target) => count + target.visualLayers.length,
-          0,
-        );
-        compositionResources.sceneCount = sceneCount;
-        compositionResources.visualLayerCount = visualLayerCount;
-        const compositionEvidenceDiagnostics =
-          requestedCompositionMode === "auto"
-            ? {
-                source: automaticLayoutEvidenceSource,
-                version: automaticLayoutAnalysisForPlan?.version ?? null,
-              }
-            : requestedCompositionMode === "split" &&
-                splitLayoutEvidenceForPlan.state === "available"
-              ? {
-                  source: splitLayoutEvidenceForPlan.value.source,
-                  version: splitLayoutEvidenceForPlan.value.engineVersion,
-                }
-              : requestedCompositionMode === "screen" &&
-                  screenLayoutEvidenceForPlan.state === "available"
-                ? {
-                    source: screenLayoutEvidenceForPlan.value.source,
-                    version: screenLayoutEvidenceForPlan.value.engineVersion,
-                  }
-                : { source: null, version: null };
-        log("info", "clip_composition_plan", {
-          workflowRunId: run.id,
-          clipId: clip.id,
-          adapter: "ffmpeg",
-          planVersion: planned.plan.version,
-          planFingerprint: planned.plan.fingerprint,
-          planFidelity: planned.plan.fidelity,
-          audioScheduleFingerprint: planned.plan.audioSchedule.fingerprint,
-          audioSchedule: {
-            sourceAvailable: planned.plan.audioSchedule.source.available,
-            musicIncluded: Boolean(planned.plan.audioSchedule.music),
-            duckingWindowCount:
-              planned.plan.audioSchedule.music?.ducking.windows.length ?? 0,
-            soundEffectCount:
-              planned.plan.audioSchedule.soundEffects.length,
-          },
-          planningDurationMs,
-          requestedMode: requestedCompositionMode,
-          evidenceSource: compositionEvidenceDiagnostics.source,
-          evidenceVersion: compositionEvidenceDiagnostics.version,
-          evidenceRequestCount: planned.plan.evidenceRequests.length,
-          effectiveModes: planned.plan.targets.map(
-            (target) => target.effectiveMode,
-          ),
-          targets: planned.plan.targets.map((target) => ({
-            id: target.id,
-            aspectRatio: target.aspectRatio,
-            canvas: target.canvas,
-            scenes: target.scenes.map((scene) => ({
-              startSec: scene.startSec,
-              endSec: scene.endSec,
-              layerKinds: scene.layers.map((layer) => layer.kind),
-            })),
-            visualLayerKinds: target.visualLayers.map((layer) => layer.kind),
-          })),
-          sceneCount,
-          visualLayerCount,
-          noticeCodes: planned.plan.notices.map((notice) => notice.code),
-          optionalDegradationCount: planned.plan.notices.filter(
-            (notice) => notice.fidelity === "degraded",
-          ).length,
-        });
-        compositionPlan = planned.plan;
-        motionAnalytics = motionRenderAnalyticsMetadata(compositionDocument, {
-          applyScope: "clip",
-          fallbackCodes: planned.plan.notices
-            .map((notice) => notice.code)
-            .filter((code) => code.includes("motion")),
-          renderOutcome: "completed",
-        });
-        for (const output of outputs) {
-          motionAnalyticsByRenderId.set(output.clipRenderId, motionAnalytics);
-        }
-        plannedAudio = bindCompositionPlanAudioInputs(
-          compileCompositionPlanAudioSchedule(compositionPlan),
-          {
-            music:
-              musicPlan
-                ? { sourceRef: musicPlan.ref, path: musicPlan.path }
-                : null,
-            soundEffects: sfxPlans.map((effect) => ({
-              id: effect.id,
-              sourceRef: effect.ref,
-              path: effect.path,
-            })),
-          },
-        );
-        for (const output of outputs) {
-          const target = compositionPlan.targets.find(
-            (candidate) => candidate.id === output.clipRenderId,
-          );
-          if (!target) {
-            throw new WorkflowWorkerError(
-              "invalid_clip_composition_plan",
-              `Clip Composition Plan target missing for ${output.clipRenderId}`,
-              "permanent",
-            );
-          }
-          const assContent = generateAssFromCompositionCaptionLayers({
-            layers: target.visualLayers.filter(
-              (layer): layer is CompositionCaptionVisualLayer =>
-                layer.kind === "caption",
-            ),
-            canvas: target.canvas,
-          });
-          if (assContent.length > 0) {
-            const assPath = join(
-              tempDir,
-              `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}.ass`,
-            );
-            await currentRenderAdapters().workspace.writeFile(
-              assPath,
-              assContent,
-              "utf-8",
-            );
-            output.subtitlePath = assPath;
-          }
-        }
-        if (optionalCommandAssets.length > 0) {
-          const fallbackPlan = planWithAssetAvailability(
-            backgroundImageAvailability.state === "available"
-              ? { state: "failed" }
-              : backgroundImageAvailability,
-            {
-              broll: false,
-              logo: false,
-              music: false,
-              soundEffects: false,
-            },
-          );
-          if (fallbackPlan.status !== "invalid") {
-            fallbackCompositionPlan = fallbackPlan.plan;
-            fallbackAudio = bindCompositionPlanAudioInputs(
-              compileCompositionPlanAudioSchedule(fallbackPlan.plan),
-              {},
-            );
-          }
-        }
-      }
-
-      if (!probe.hasVideo) {
-        if (!compositionPlan || !plannedAudio) {
-          throw new WorkflowWorkerError(
-            "clip_composition_plan_missing",
-            "Audio-only render requires a Clip Composition Plan",
-            "permanent",
-          );
-        }
-        for (const output of outputs) {
-          try {
-            const compositionForOutput = {
-              plan: compositionPlan,
-              targetId: output.clipRenderId,
-            };
-            const fallbackCompositionForOutput =
-              fallbackCompositionPlan && fallbackAudio
-                ? {
-                    plan: fallbackCompositionPlan,
-                    targetId: output.clipRenderId,
-                  }
-                : null;
-            const audioOptionalAssets = optionalCommandAssets.filter(
-              ({ assetClass }) =>
-                assetClass === "logo" ||
-                assetClass === "music" ||
-                assetClass === "sound_effect",
-            );
-            const ffmpegArgs = buildAudiogramArgs({
-              sourcePath,
-              outputPath: output.outputPath,
-              startSec: clipStartSec,
-              endSec: clipEndSec,
-              aspectRatio: output.aspectRatio,
-              composition: compositionForOutput,
-              clipDurationSec,
-              srtPath: output.subtitlePath ?? srtPath,
-              logo,
-              audio: plannedAudio,
-              cutPlan,
-              resolvedSceneAssets,
-              resolvedSceneFonts,
-            });
-
-            const encodeStartedAtMs = currentTimeMs();
-            await executeRenderCommandWithOptionalFallback({
-              primaryArgs: ffmpegArgs,
-              fallbackArgs:
-                fallbackCompositionForOutput &&
-                fallbackAudio &&
-                audioOptionalAssets.length > 0
-                  ? () =>
-                      buildAudiogramArgs({
-                        sourcePath,
-                        outputPath: output.outputPath,
-                        startSec: clipStartSec,
-                        endSec: clipEndSec,
-                        aspectRatio: output.aspectRatio,
-                        composition: fallbackCompositionForOutput,
-                        clipDurationSec,
-                        srtPath: output.subtitlePath ?? srtPath,
-                        logo: null,
-                        audio: fallbackAudio,
-                        cutPlan,
-                        resolvedSceneAssets,
-                        resolvedSceneFonts,
-                      })
-                  : undefined,
-              optionalAssets: audioOptionalAssets,
-              context: {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                clipRenderId: output.clipRenderId,
-              },
-              recordCommand: recordCompositionCommand,
-              recordSourceDecodeCompleted:
-                recordCompositionSourceDecodeCompleted,
-              recordResourceSample: recordCompositionResourceSample,
-            });
-            const encodeDurationMs =
-              recordCompositionEncodeCompleted(encodeStartedAtMs);
-            // Upload runs in the bounded background queue (overlaps the next
-            // clip's work). The stale-discard/`persisted` counting and the
-            // upload-failure variant marking both live in `scheduleUpload`;
-            // this catch now only ever sees ENCODE failures.
-            scheduleUpload(output, {
-              clipDurationSec,
-              encodeMs: encodeDurationMs,
-              motionAnalytics,
-            });
-          } catch (error) {
-            rethrowWorkflowAttemptLost(error);
-            rethrowRenderCancellation(error);
-            const errorCode =
-              error instanceof WorkflowFailure
-                ? error.code
-                : "ffmpeg_render_failed";
-
-            await currentRenderAdapters().clip.failClipRenderVariant(
-              attempt,
-              output.clipRenderId,
-              errorCode,
-              error instanceof WorkflowFailure
-                ? error.disposition
-                : "retryable",
-              { ...motionAnalytics, renderOutcome: "failed" },
-            );
-
-            log("error", "clip_render_variant_failed", {
-              workflowRunId: run.id,
-              clipId: output.clipId,
-              clipRenderId: output.clipRenderId,
-              clipIndex: output.clipIndex,
-              aspectRatio: output.aspectRatio,
-              code: errorCode,
-              message:
-                error instanceof Error ? error.message : "Unknown render error",
-            });
-          }
-        }
-      } else {
-        // Every video output is compiled from the shared composition plan.
-        const plan = brollPlan;
-        const brollCredits =
-          plan && plan.credits.length > 0 ? JSON.stringify(plan.credits) : null;
-        for (const output of outputs) {
-          if (!compositionPlan || !plannedAudio) {
-            throw new WorkflowWorkerError(
-              "clip_composition_plan_missing",
-              "Video render requires a Clip Composition Plan",
-              "permanent",
-            );
-          }
-          const compositionForOutput = {
-            plan: compositionPlan,
-            targetId: output.clipRenderId,
-          };
-          const optionalAssetFallbackPlan =
-            fallbackCompositionPlan ?? compositionPlan;
-          const fallbackCompositionForOutput = {
-            plan: optionalAssetFallbackPlan,
-            targetId: output.clipRenderId,
-          };
-          try {
-            const resolvedBrollAssets = {
-              ...Object.fromEntries(
-                plan?.cutaways.map((cutaway) => [cutaway.ref, cutaway.path]) ?? [],
-              ),
-              ...Object.fromEntries(studioEdits.visualBroll.flatMap((placement) => {
-                const ref = compositionAssetRef("visual_asset", `${placement.asset.id}:${placement.asset.fingerprint}`);
-                const asset = resolvedSceneAssets[ref];
-                return asset ? [[ref, asset.path] as const] : [];
-              })),
-            };
-            const ffmpegArgs = Object.keys(resolvedBrollAssets).length > 0
-              ? buildBrollVideoArgs({
-                  sourcePath,
-                  resolvedBrollAssets,
-                  outputPath: output.outputPath,
-                  startSec: clipStartSec,
-                  endSec: clipEndSec,
-                  aspectRatio: output.aspectRatio,
-                  probe,
-                  srtPath: output.subtitlePath ?? srtPath,
-                  logo,
-                  composition: compositionForOutput,
-                  audio: plannedAudio,
-                  background: backgroundPlan,
-                  cutPlan,
-                  resolvedSceneAssets,
-                  resolvedSceneFonts,
-                })
-              : buildSingleVideoArgs({
-                  sourcePath,
-                  outputPath: output.outputPath,
-                  startSec: clipStartSec,
-                  endSec: clipEndSec,
-                  aspectRatio: output.aspectRatio,
-                  probe,
-                  srtPath: output.subtitlePath ?? srtPath,
-                  logo,
-                  composition: compositionForOutput,
-                  audio: plannedAudio,
-                  background: backgroundPlan,
-                  cutPlan,
-                  resolvedSceneAssets,
-                  resolvedSceneFonts,
-                });
-            const encodeStartedAtMs = currentTimeMs();
-            const commandMode = await executeRenderCommandWithOptionalFallback({
-              primaryArgs: ffmpegArgs,
-              fallbackArgs:
-                optionalCommandAssets.length > 0
-                  ? () =>
-                      buildSingleVideoArgs({
-                        sourcePath,
-                        outputPath: output.outputPath,
-                        startSec: clipStartSec,
-                        endSec: clipEndSec,
-                        aspectRatio: output.aspectRatio,
-                        probe,
-                        srtPath: output.subtitlePath ?? srtPath,
-                        logo: null,
-                        composition: fallbackCompositionForOutput,
-                        audio: fallbackAudio ?? plannedAudio,
-                        background: fallbackBackgroundPlan,
-                        cutPlan,
-                        resolvedSceneAssets,
-                        resolvedSceneFonts,
-                      })
-                  : undefined,
-              optionalAssets: optionalCommandAssets,
-              context: {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                clipRenderId: output.clipRenderId,
-              },
-              recordCommand: recordCompositionCommand,
-              recordSourceDecodeCompleted:
-                recordCompositionSourceDecodeCompleted,
-              recordResourceSample: recordCompositionResourceSample,
-            });
-            const encodeDurationMs =
-              recordCompositionEncodeCompleted(encodeStartedAtMs);
-            // Bounded background upload — see `scheduleUpload`. This catch
-            // now only ever sees encode/build failures.
-            scheduleUpload(output, {
-              clipDurationSec,
-              brollCredits:
-                commandMode === "primary" ? brollCredits : null,
-              encodeMs: encodeDurationMs,
-              motionAnalytics,
-            });
-          } catch (error) {
-            rethrowWorkflowAttemptLost(error);
-            rethrowRenderCancellation(error);
-            const contractFailure = compositionContractFailure(error);
-            const renderFailure =
-              error instanceof WorkflowFailure ? error : contractFailure;
-            const errorCode =
-              renderFailure
-                ? renderFailure.code
-                : "ffmpeg_render_failed";
-            await currentRenderAdapters().clip.failClipRenderVariant(
-              attempt,
-              output.clipRenderId,
-              errorCode,
-              renderFailure
-                ? renderFailure.disposition
-                : "retryable",
-              { ...motionAnalytics, renderOutcome: "failed" },
-            );
-            log("error", "clip_render_variant_failed", {
-              workflowRunId: run.id,
-              clipId: output.clipId,
-              clipRenderId: output.clipRenderId,
-              clipIndex: output.clipIndex,
-              aspectRatio: output.aspectRatio,
-              code: errorCode,
-              message:
-                error instanceof Error ? error.message : "Unknown render error",
-            });
-          }
-        }
-      }
-
-      const finalResourceMeasurement = measureCompositionResourceSafely();
-      if (finalResourceMeasurement) {
-        compositionResources.peakRssScope = finalResourceMeasurement.scope;
-        recordCompositionResourceSample(finalResourceMeasurement.rssBytes);
-      }
-      log("info", "clip_composition_resources", {
-        workflowRunId: run.id,
-        clipId: clip.id,
-        planVersion: compositionResources.planVersion,
-        planFingerprint: compositionResources.planFingerprint,
-        requestedMode: compositionResources.requestedMode,
-        effectiveModes: compositionResources.effectiveModes,
-        sceneCount: compositionResources.sceneCount,
-        visualLayerCount: compositionResources.visualLayerCount,
-        commandGrouping: "independent",
-        targetCount: outputs.length,
-        analysisRequestCount:
-          compositionResources.analysisRequestKeys.size,
-        analysisRequestKeys: [
-          ...compositionResources.analysisRequestKeys,
-        ].sort(),
-        analysisExecutionCount:
-          compositionResources.analysisExecutionCount,
-        detectorExecutionCount:
-          compositionResources.detectorExecutionCount,
-        extractedSegmentCount:
-          compositionResources.extractedSegmentCount,
-        commandCount: compositionResources.commandCount,
-        sourceDecodeCount: compositionResources.sourceDecodeCount,
-        commandBytes: compositionResources.commandBytes,
-        planningDurationMs: compositionResources.planningDurationMs,
-        encodeDurationMs: compositionResources.encodeDurationMs,
-        peakRssBytes: compositionResources.peakRssBytes,
-        peakRssScope: compositionResources.peakRssScope,
-      });
 
       const progress = 10 + Math.round(((clipGroupIndex + 1) / clipGroups.length) * 80);
       await currentRenderAdapters().project.reportProgress(attempt, progress);

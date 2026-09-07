@@ -4,11 +4,11 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioToDb,
   requestClipDubSchema,
-  resolvePricingTier,
   type ClipAspectRatio,
   type ClipDubSnapshot,
   type RequestClipDubInput,
 } from "@narriflow/validators";
+import { hasFeature } from "./plan-features";
 import { analyticsService } from "./analytics.service";
 import { presignDownloadUrl } from "./r2-storage";
 import { getLastWorkflowSeq } from "./workflow.service";
@@ -48,7 +48,7 @@ export class DubbingTierError extends ExpectedDomainFailureError<"requires_pro_p
     super({
       code: "requires_pro_plan",
       kind: dubbingFailureCatalog.requires_pro_plan,
-      message: "Dubbing is available on the Pro plan.",
+      message: "Dubbing is available on Pro and Business plans.",
     });
     this.name = "DubbingTierError";
   }
@@ -159,8 +159,7 @@ export class DubbingService {
       workspaceId,
       "processing.consume",
     );
-    const tier = resolvePricingTier(actor.pricingTier);
-    if (tier !== "pro") {
+    if (!hasFeature(actor.pricingTier, "dubbing")) {
       throw new DubbingTierError();
     }
 

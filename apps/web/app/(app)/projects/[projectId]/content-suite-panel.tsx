@@ -112,7 +112,7 @@ export function ContentSuitePanel({
         }
         if (json.assets) setAssets(json.assets);
       } catch (err) {
-        console.error("content_suite_load_failed", err);
+        console.warn(JSON.stringify({ level: "error", message: "content_suite_load_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
         if (!cancelled) setError("Could not load repurposed content.");
       } finally {
         if (!cancelled) setLoading(false);

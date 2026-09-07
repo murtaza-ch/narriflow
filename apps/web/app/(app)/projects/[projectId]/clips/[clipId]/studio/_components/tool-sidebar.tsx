@@ -12,7 +12,7 @@ import {
   X,
   PanelsTopLeft,
 } from "lucide-react";
-import { ScoreMeter } from "@narriflow/ui";
+import { ScoreMeter } from "@narriflow/ui/components/meter";
 import { formatDuration } from "@/lib/format";
 import { useStudio } from "./studio-shell";
 import type { ToolId } from "./studio-shell";

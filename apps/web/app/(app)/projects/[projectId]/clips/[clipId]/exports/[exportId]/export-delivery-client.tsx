@@ -22,8 +22,11 @@ import {
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
-import { Button, MediaWell, Progress, Spinner, StatusBadge,
-} from "@narriflow/ui";
+import { Button } from "@narriflow/ui/components/button";
+import { MediaWell } from "@narriflow/ui/components/media-well";
+import { Progress } from "@narriflow/ui/components/progress";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import type { ClipExportSnapshot } from "@narriflow/validators";
 import { formatDateTime, formatDuration } from "@/lib/format";
 import {

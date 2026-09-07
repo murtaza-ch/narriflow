@@ -4,7 +4,7 @@ import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
 import { Combine, Copy, Plus, PanelsTopLeft, Scissors, ShieldCheck, Trash2, Undo2 } from "lucide-react";
-import { toaster } from "@narriflow/ui";
+import { toaster } from "@narriflow/ui/components/toaster";
 import { editedToSource, sourceToEdited, userErrorMessage } from "@narriflow/validators";
 import type {
   ClipSnapshot,

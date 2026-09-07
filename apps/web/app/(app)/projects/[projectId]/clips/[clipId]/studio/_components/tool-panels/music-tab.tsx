@@ -17,7 +17,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { toaster } from "@narriflow/ui";
+import { toaster } from "@narriflow/ui/components/toaster";
 import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
 import {

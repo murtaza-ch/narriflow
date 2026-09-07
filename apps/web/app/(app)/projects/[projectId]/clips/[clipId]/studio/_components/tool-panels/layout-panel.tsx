@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Box, Flex, Text, Stack, Input, Checkbox } from "@chakra-ui/react";
 import { Palette, ImageIcon, Link2, AlertTriangle } from "lucide-react";
-import { toaster } from "@narriflow/ui";
+import { toaster } from "@narriflow/ui/components/toaster";
 import { useStudio } from "../studio-shell";
 import {
   resolveEffectiveFramingMode,

@@ -5,17 +5,15 @@ import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "framer-motion";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { Check, Info, RotateCcw } from "lucide-react";
-import {
-  Button,
-  ColorSwatchField,
-  PhoneFrame,
-  SegmentedControl,
-  Select,
-  Slider,
-  Spinner,
-  Switch,
-  toaster,
-} from "@narriflow/ui";
+import { Button } from "@narriflow/ui/components/button";
+import { ColorSwatchField } from "@narriflow/ui/components/color-swatch-field";
+import { PhoneFrame } from "@narriflow/ui/components/phone-frame";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
+import { Select } from "@narriflow/ui/components/select";
+import { Slider } from "@narriflow/ui/components/slider";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { Switch } from "@narriflow/ui/components/switch";
+import { toaster } from "@narriflow/ui/components/toaster";
 import {
   CAPTION_CHUNK_SIZE,
   CAPTION_POSITION_Y_DEFAULTS,

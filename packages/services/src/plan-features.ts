@@ -16,7 +16,8 @@ export type PlanFeature =
   | "export.bundles"
   | "review.rooms"
   | "generated.images"
-  | "generated.video";
+  | "generated.video"
+  | "dubbing";
 
 const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
   free: {
@@ -36,6 +37,7 @@ const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
     "review.rooms": false,
     "generated.images": true,
     "generated.video": false,
+    "dubbing": false,
   },
   creator: {
     "export.1080p": true,
@@ -54,6 +56,7 @@ const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
     "review.rooms": false,
     "generated.images": true,
     "generated.video": false,
+    "dubbing": false,
   },
   pro: {
     "export.1080p": true,
@@ -72,6 +75,7 @@ const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
     "review.rooms": false,
     "generated.images": true,
     "generated.video": true,
+    "dubbing": true,
   },
   business: {
     "export.1080p": true,
@@ -90,6 +94,7 @@ const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
     "review.rooms": true,
     "generated.images": true,
     "generated.video": true,
+    "dubbing": true,
   },
 };
 
