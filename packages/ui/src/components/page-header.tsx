@@ -11,26 +11,17 @@ export interface PageHeaderProps {
   actions?: ReactNode
   /** Row of chips/stats rendered under the title block. */
   meta?: ReactNode
-  /** Draw the 1.5px ink top-rule (default true). */
+  /** Optional separator for pages that need one. */
   rule?: boolean
 }
 
-/**
- * PageHeader — the one page-header rhythm in Blueline.
- *
- * Optional context above a 1.5px ink rule that draws in from the left
- * (`rule-in`), then the title and any useful description with actions
- * right-aligned. Structure is drawn, not boxed. Server-component friendly:
- * pure markup + CSS animation (the global reduced-motion kill-switch covers
- * `rule-in`).
- */
 export function PageHeader({
   eyebrow,
   title,
   description,
   actions,
   meta,
-  rule = true,
+  rule = false,
 }: PageHeaderProps) {
   return (
     <Box as="header" w="full">
@@ -45,9 +36,10 @@ export function PageHeader({
         justify="space-between"
         gap="4"
         wrap="wrap"
+        direction={{ base: "column", sm: "row" }}
         pt={rule ? "4" : "0"}
       >
-        <Stack gap="1.5" flex="1" minW="0">
+        <Stack gap="1.5" flex="1" minW="0" w={{ base: "full", sm: "auto" }}>
           <Heading as="h1" textStyle="title" fontSize={{ base: "24px", md: "30px" }}>
             {title}
           </Heading>
@@ -63,7 +55,7 @@ export function PageHeader({
           )}
         </Stack>
         {actions && (
-          <Flex align="center" gap="2" flexShrink={0}>
+          <Flex align="center" gap="2" flexShrink={0} wrap="wrap" maxW="full">
             {actions}
           </Flex>
         )}

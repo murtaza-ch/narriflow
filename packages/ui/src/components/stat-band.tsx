@@ -8,11 +8,6 @@ export interface StatBandProps extends GridProps {
   children: ReactNode
 }
 
-/**
- * StatBand — KPI/definition rows drawn as a band: heavy 1.5px ink top-rule,
- * hairline column dividers, mono numerals. No wrapper box, no cards.
- * Compose with `StatBand.Item`. Server-component friendly.
- */
 function StatBandRoot({ columns = 4, children, ...rest }: StatBandProps) {
   return (
     <Grid
@@ -85,7 +80,9 @@ function StatBandItem({ label, value, meter, meterPalette, suffix }: StatBandIte
       </Text>
       <HStack align="baseline" gap="1.5">
         <Text
-          textStyle="data"
+          fontFamily="body"
+          fontWeight="500"
+          fontVariantNumeric="tabular-nums"
           fontSize={{ base: "26px", md: "28px" }}
           lineHeight="1.15"
           color="fg"

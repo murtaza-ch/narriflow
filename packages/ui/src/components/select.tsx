@@ -15,11 +15,6 @@ export interface SelectOption {
 
 type SelectSize = "sm" | "md"
 
-const triggerHeights: Record<SelectSize, string> = {
-  sm: "8",
-  md: "9",
-}
-
 export interface SelectProps
   extends Omit<
     ChakraSelect.RootProps<SelectOption>,
@@ -41,7 +36,7 @@ export interface SelectProps
 }
 
 /**
- * Blueline single-value Select on Chakra v3 Select (list collection).
+ * Single-value Select on Chakra v3 Select (list collection).
  * Trigger is a bordered bg.panel control; the dropdown is a true card.
  */
 export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
@@ -54,7 +49,7 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
       placeholder = "Select…",
       label,
       ariaLabel,
-      size = "md",
+      size = "sm",
       ...rest
     } = props
 
@@ -72,8 +67,9 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
     return (
       <ChakraSelect.Root
         ref={ref}
+        size={size}
         collection={collection}
-        value={value === undefined ? undefined : value ? [value] : []}
+        value={value === undefined ? undefined : [value]}
         defaultValue={
           defaultValue === undefined ? undefined : [defaultValue]
         }
@@ -95,16 +91,6 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
         <ChakraSelect.Control>
           <ChakraSelect.Trigger
             aria-label={ariaLabel}
-            h={triggerHeights[size]}
-            px="2.5"
-            bg="bg.panel"
-            borderWidth="1px"
-            borderColor="border.control"
-            borderRadius="l2"
-            fontSize="13.5px"
-            color="fg"
-            cursor="pointer"
-            transition="border-color 120ms ease, background 120ms ease"
             _hover={{ borderColor: "border.emphasized" }}
             _disabled={{ cursor: "not-allowed", color: "fg.disabled" }}
           >
@@ -120,23 +106,14 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
         <Portal>
           <ChakraSelect.Positioner>
             <ChakraSelect.Content
-              bg="bg.panel"
-              borderWidth="1px"
-              borderColor="border"
-              borderRadius="l3"
-              boxShadow="card"
               p="1"
             >
               {items.map((item) => (
                 <ChakraSelect.Item
                   key={item.value}
                   item={item}
-                  fontSize="13.5px"
                   px="2"
                   py="1.5"
-                  borderRadius="l1"
-                  cursor="pointer"
-                  color="fg"
                   _highlighted={{ bg: "bg.subtle" }}
                   _disabled={{ color: "fg.disabled", cursor: "not-allowed" }}
                 >

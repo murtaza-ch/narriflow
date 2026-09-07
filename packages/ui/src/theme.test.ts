@@ -1,15 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { system } from "./theme";
 
-/**
- * NOTE ON EXECUTION: packages/ui's `test` script is currently a deliberate
- * no-op (`echo 'ui test: no-op'`), so this file isn't part of `bun run test`
- * yet — but it runs correctly today via a direct `bun test` in this package,
- * and starts contributing the moment that script is wired up. Written now
- * because the studio.danger contrast guarantee below is exactly the kind of
- * thing that should fail loudly if it ever regresses.
- */
-
 function resolvedColor(name: string): string {
   const token = system.tokens.getByName(`colors.${name}`);
   if (!token) throw new Error(`Missing semantic token: colors.${name}`);
@@ -40,8 +31,7 @@ function contrastRatio(hexA: string, hexB: string): number {
 
 // ─── studio.* mode-invariance ───────────────────────────────────────────────
 //
-// Every studio.* semantic token must resolve to exactly one value (Blueline:
-// "studio editor chrome is permanently graphite, mode-invariant") — unlike
+// Every studio.* semantic token must resolve to one value, unlike
 // bg.*/fg.*/danger.* etc., which are intentionally { _light, _dark } pairs.
 
 describe("studio.* tokens stay mode-invariant", () => {
@@ -57,8 +47,8 @@ describe("studio.* tokens stay mode-invariant", () => {
 // ─── studio.scrim ────────────────────────────────────────────────────────────
 
 describe("studio.scrim", () => {
-  test("is exactly the rgba(14, 16, 19, 0.72) literal previously duplicated per-file", () => {
-    expect(resolvedColor("studio.scrim")).toBe("rgba(14, 16, 19, 0.72)");
+  test("is exactly the rgba(16, 16, 16, 0.72) literal previously duplicated per-file", () => {
+    expect(resolvedColor("studio.scrim")).toBe("rgba(16, 16, 16, 0.72)");
   });
 
   test("its rgb triplet matches studio.canvas at 0.72 alpha (the comment's claim, checked)", () => {
@@ -111,5 +101,52 @@ describe("studio.dangerBorder contrast (WCAG 1.4.11, non-text)", () => {
     for (const surface of ["studio.canvas", "studio.subtle", "studio.surface", "studio.raised"]) {
       expect(contrastRatio(dangerBorder, resolvedColor(surface))).toBeGreaterThanOrEqual(3);
     }
+  });
+});
+
+
+describe("dashboard text contrast", () => {
+  for (const mode of ["_light", "_dark"] as const) {
+    test(`${mode}: body and secondary text remain readable on every surface`, () => {
+      const color = (name: string) => {
+        const token = system.tokens.getByName(`colors.${name}`)!;
+        const conditions = token.extensions.conditions as Record<string, string>;
+        const value = conditions[mode] ?? String(token.value);
+        const reference = value.match(/^\{colors\.(.+)\}$/);
+        return reference ? resolvedColor(reference[1]!) : value;
+      };
+      for (const surface of ["bg", "bg.panel", "bg.dialog", "bg.raised", "bg.sidebar"]) {
+        for (const foreground of ["fg", "fg.muted", "fg.subtle"]) {
+          expect(contrastRatio(color(foreground), color(surface))).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+      for (const palette of ["brand", "accent"]) {
+        expect(contrastRatio(color(`${palette}.solid`), color(`${palette}.contrast`))).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+  }
+});
+
+// Check the resolved recipes, including Chakra's inherited size/text styles.
+// A matching height alone previously hid a larger Select font in toolbars.
+describe("single-line control consistency", () => {
+  test("standard buttons, fields, and filters resolve to the same dimensions", () => {
+    const styles = [
+      system.cva(system.getRecipe("button"))({ size: "sm" }),
+      system.cva(system.getRecipe("input"))({ size: "sm" }),
+      system.sva(system.getSlotRecipe("select"))({ size: "sm" }).trigger,
+      system.sva(system.getSlotRecipe("nativeSelect"))({ size: "sm" }).field,
+      system.sva(system.getSlotRecipe("datePicker"))({ size: "sm" }).input,
+      system.sva(system.getSlotRecipe("numberInput"))({ size: "sm" }).input,
+    ];
+    for (const style of styles) {
+      const resolved = style?.["@layer recipes"] as Record<string, unknown>;
+      expect(resolved.height).toBe("var(--chakra-sizes-9)");
+      expect(resolved.fontSize).toBe("13px");
+      expect(resolved.borderRadius).toBe("var(--chakra-radii-l2)");
+    }
+    const segmented = system.sva(system.getSlotRecipe("segmentGroup"))({ size: "sm" });
+    expect((segmented.root?.["@layer recipes"] as Record<string, unknown>).height).toBe("var(--chakra-sizes-9)");
+    expect((segmented.item?.["@layer recipes"] as Record<string, unknown>).fontSize).toBe("13px");
   });
 });

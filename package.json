@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "postinstall": "bun --filter @narriflow/db prisma:generate",
+    "postinstall": "bun --filter @narriflow/db prisma:generate && bun --filter @narriflow/ui typegen",
     "prepare": "git config core.hooksPath .githooks || true",
     "dev": "turbo run dev --parallel --filter=!@narriflow/mcp-server",
     "dev:mcp": "bun --filter @narriflow/mcp-server dev",

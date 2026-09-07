@@ -108,7 +108,7 @@ export function ScoreMeter({ score, size = "md", showLabel = false }: ScoreMeter
   const colors = getScoreColors(clamped)
 
   return (
-    <Stack display="inline-flex" gap="1" align="flex-start">
+    <Stack display="inline-flex" gap="1" align="flex-start" role="img" aria-label={`Virality score: ${Math.round(clamped)} out of 100`} title={`Virality score: ${Math.round(clamped)} / 100`}>
       <Text
         textStyle="data"
         fontWeight="600"

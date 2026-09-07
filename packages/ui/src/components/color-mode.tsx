@@ -18,13 +18,7 @@ interface ColorModeContextValue {
 }
 
 const ColorModeContext = createContext<ColorModeContextValue | null>(null)
-const STORAGE_KEY = "theme"
-
-function systemColorMode(): ColorMode {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light"
-}
+const STORAGE_KEY = "narriflow-color-mode"
 
 function storedColorMode(): ColorMode {
   try {
@@ -33,7 +27,7 @@ function storedColorMode(): ColorMode {
   } catch {
     // Storage may be unavailable in hardened/private browsing contexts.
   }
-  return systemColorMode()
+  return "dark"
 }
 
 function applyColorMode(mode: ColorMode) {
@@ -52,7 +46,7 @@ export function ColorModeProvider({ children }: { children: React.ReactNode }) {
   // Keep the server and first client render deterministic. The root bootstrap
   // script applies the visual mode before hydration, and this state catches up
   // immediately after mount without producing a hydration mismatch.
-  const [colorMode, setCurrentColorMode] = useState<ColorMode>("light")
+  const [colorMode, setCurrentColorMode] = useState<ColorMode>("dark")
 
   const setColorMode = useCallback((mode: ColorMode) => {
     try {
@@ -73,23 +67,10 @@ export function ColorModeProvider({ children }: { children: React.ReactNode }) {
     const onStorage = (event: StorageEvent) => {
       if (event.key === STORAGE_KEY) syncPreference()
     }
-    const media = window.matchMedia("(prefers-color-scheme: dark)")
-    const onSystemChange = () => {
-      try {
-        const stored = window.localStorage.getItem(STORAGE_KEY)
-        if (stored === "light" || stored === "dark") return
-      } catch {
-        // Fall through to the current system preference.
-      }
-      syncPreference()
-    }
-
     syncPreference()
     window.addEventListener("storage", onStorage)
-    media.addEventListener("change", onSystemChange)
     return () => {
       window.removeEventListener("storage", onStorage)
-      media.removeEventListener("change", onSystemChange)
     }
   }, [])
 

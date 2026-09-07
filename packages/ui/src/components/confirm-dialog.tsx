@@ -52,11 +52,6 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         <Dialog.Positioner>
           <Dialog.Content
             maxW="sm"
-            bg="bg.panel"
-            borderWidth="1px"
-            borderColor="border"
-            borderRadius="l3"
-            boxShadow="card"
           >
             <Dialog.Header pt="5" pb="0" px="5">
               <Dialog.Title
