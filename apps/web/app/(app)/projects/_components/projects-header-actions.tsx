@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Flex, Input, Popover, Portal, Stack, Text } from "@chakra-ui/react";
-import { FolderPlus } from "lucide-react";
+import { FolderPlus, Plus } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { createFolderAction } from "../actions";
 import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
@@ -103,7 +103,10 @@ export function ProjectsHeaderActions({
       ) : null}
       {canCreate ? (
         <Button size="sm" asChild>
-          <Link href="/upload">New upload</Link>
+          <Link href="/upload">
+            <Plus size={14} aria-hidden="true" />
+            New Project
+          </Link>
         </Button>
       ) : null}
     </Flex>
