@@ -3,9 +3,10 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { Box, Flex, Text } from "@chakra-ui/react";
+import { Box, chakra, Flex, Text } from "@chakra-ui/react";
 import { Gauge, UserPlus } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
+import { Logo } from "@narriflow/ui/components/logo";
 import { Sidebar } from "./sidebar";
 import { MobileNav } from "./mobile-nav";
 import { AccountMenu } from "./account-menu";
@@ -112,8 +113,6 @@ function DesktopTopBar({
       justify="space-between"
       gap="2"
       px="6"
-      borderBottomWidth="1px"
-      borderColor="border.subtle"
       display={{ base: "none", lg: "flex" }}
       flexShrink={0}
     >
@@ -149,25 +148,30 @@ function FocusedTopBar({
   firstName,
   lastName,
   imageUrl,
-}: Pick<AppChromeProps, "email" | "firstName" | "lastName" | "imageUrl">) {
+  usedMinutes,
+  limitMinutes,
+}: Pick<AppChromeProps, "email" | "firstName" | "lastName" | "imageUrl" | "usedMinutes" | "limitMinutes">) {
   return (
     <Flex
-      h="64px"
+      h="60px"
       align="center"
-      justify="flex-end"
+      justify="space-between"
       gap="2"
       px={{ base: "4", md: "8" }}
-      borderBottomWidth="1px"
-      borderColor="border.subtle"
       flexShrink={0}
     >
-      <ThemeToggle />
-      <AccountMenu
-        email={email}
-        firstName={firstName}
-        imageUrl={imageUrl}
-        lastName={lastName}
-      />
+      <Link href="/home" aria-label="Narriflow home">
+        <Logo size="md" />
+      </Link>
+      <Flex align="center" gap="2">
+        <Link href="/settings/usage">
+          <Text fontSize="12px" color="fg.muted" mr={{ base: "0", sm: "3" }} whiteSpace="nowrap">
+            <chakra.span fontWeight="600" color="fg">{Math.max(0, limitMinutes - usedMinutes).toLocaleString()}</chakra.span> min left
+          </Text>
+        </Link>
+        <ThemeToggle />
+        <AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />
+      </Flex>
     </Flex>
   );
 }
@@ -176,8 +180,7 @@ function FocusedTopBar({
  * Owns the pathname-based split between the normal app shell (fixed
  * sidebar + its 240px content offset + mobile nav bar) and the /upload
  * funnel, which is a focused, Vizard-style flow with no nav chrome — the
- * upload page renders its own back link + usage line in place of the
- * sidebar.
+ * focused top bar provides the home link and remaining usage.
  *
  * This used to be a `usePathname` early-return inside Sidebar itself, which
  * only hid the sidebar's own markup: AppLayout's `ml`/`pt` content offset
@@ -214,6 +217,8 @@ export function AppChrome({
     return (
       <Flex direction="column" minH="100dvh">
         <FocusedTopBar
+          usedMinutes={usedMinutes}
+          limitMinutes={limitMinutes}
           email={email}
           firstName={firstName}
           lastName={lastName}
@@ -222,7 +227,7 @@ export function AppChrome({
         {workspaceSelectionChanged ? (
           <WorkspaceChangedNotice workspaceId={activeWorkspaceId} />
         ) : null}
-        <Box as="main" flex="1" w="full" maxW="1400px" mx="auto" px={{ base: "4", md: "10" }} py={{ base: "6", md: "11" }} css={{ "@media (min-width: 1600px)": { paddingTop: "55px" } }}>
+        <Box as="main" flex="1" w="full" maxW="1400px" mx="auto" px={{ base: "4", md: "10" }} py={{ base: "5", md: "6" }}>
           {children}
         </Box>
       </Flex>

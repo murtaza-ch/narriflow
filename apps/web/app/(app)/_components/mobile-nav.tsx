@@ -84,8 +84,6 @@ export function MobileNav({
           align="center"
           justify="space-between"
           px="4"
-          borderBottomWidth="1px"
-          borderColor="border"
           bg="bg/85"
           backdropFilter="blur(12px)"
           position="fixed"
@@ -126,8 +124,6 @@ export function MobileNav({
                 align="center"
                 justify="space-between"
                 px="4"
-                borderBottomWidth="1px"
-                borderColor="border.subtle"
                 flexShrink={0}
               >
                 <Logo size="sm" />
