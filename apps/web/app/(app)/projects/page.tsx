@@ -191,7 +191,6 @@ async function ProjectsData({
         <EmptyState
           icon={<FolderOpen size={22} strokeWidth={1.5} />}
           title="No projects yet"
-          description="Import your first piece of content to get started."
           action={canCreate ? (
             <Button size="sm" variant="outline" asChild>
               <Link href="/upload">Start upload</Link>

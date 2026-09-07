@@ -368,7 +368,7 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
         </Box>
       ) : null}
 
-      {data.rounds.length === 0 && !creating ? <EmptyState title="No review rounds yet" description={canManage ? "Select ready exports and send a private room to collect timecoded feedback and approvals." : "A review round has not been sent yet."} /> : null}
+      {data.rounds.length === 0 && !creating ? <EmptyState title="No review rounds yet" description={canManage ? "Share exports for feedback and approval." : "No exports shared for review."} /> : null}
 
       {data.rounds.length > 0 ? (
         <Flex align="start" direction={{ base: "column", lg: "row" }} gap="6">

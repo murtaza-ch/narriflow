@@ -24,7 +24,7 @@ export function AnalyticsPanel({
       <EmptyState
         icon={<BarChart3 size={22} aria-hidden />}
         title="No activity yet"
-        description="Renders, downloads, dubs and social publishing will be counted here as this project moves through the pipeline."
+        description="Render, download, dubbing, and publishing activity appears here."
       />
     );
   }

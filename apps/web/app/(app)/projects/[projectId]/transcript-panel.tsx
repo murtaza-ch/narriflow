@@ -18,7 +18,7 @@ export function TranscriptPanel({
       <EmptyState
         icon={<FileText size={22} aria-hidden />}
         title="No transcript yet"
-        description="Start transcription once ingest is ready. Speaker labels and subtitle exports arrive with it."
+        description="Transcribe your video to view and export subtitles."
       />
     );
   }

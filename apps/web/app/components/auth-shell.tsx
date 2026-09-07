@@ -87,10 +87,6 @@ export function AuthShell({ children, maxW = "420px", footer }: AuthShellProps) 
               <br />
               Social-ready clips out.
             </Text>
-            <Text fontSize="14px" color="fg.muted" lineHeight="1.6">
-              Narriflow finds the moments worth posting, captions them, and
-              scores every clip for virality.
-            </Text>
           </Stack>
 
           {/* Caption-preview vignette — a quiet echo of the product output */}

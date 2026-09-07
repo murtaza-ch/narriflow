@@ -83,7 +83,6 @@ export default function SignInPage() {
       <AuthHeader
         eyebrow="Welcome back"
         title="Sign in to Narriflow"
-        description="Pick up where your last clip left off."
       />
 
       <Stack gap="5">

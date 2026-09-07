@@ -929,7 +929,7 @@ function ExportQueue() {
             maxW="34ch"
             lineHeight="1.65"
           >
-            One honest metric: a minute of source media equals one processing minute. No credit math.
+            One source minute equals one processing minute.
           </Text>
         </Flex>
 

@@ -390,7 +390,7 @@ export function AutopilotPanel({
             <EmptyState
               icon={<Rss size={20} strokeWidth={1.75} />}
               title="No autopilot rules yet"
-              description="Point a rule at an RSS feed and new episodes will be imported and clipped automatically."
+              description="Add an RSS feed to clip new episodes automatically."
               action={
                 /* Header owns the solid CTA — this is a quiet accent link. */
                 <Button

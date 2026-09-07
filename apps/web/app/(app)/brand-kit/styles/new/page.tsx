@@ -10,7 +10,7 @@ export default function NewBrandTemplatePage() {
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
           title="New style"
-          description="Configure your captions, logo, and colors. Styles are applied to clips at upload."
+          description="Styles apply when you import a video."
           actions={
             <Button variant="outline" colorPalette="gray" asChild>
               <Link href="/brand-kit">Cancel</Link>

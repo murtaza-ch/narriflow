@@ -321,7 +321,6 @@ export default async function CalendarPage({
 				<EmptyState
 					icon={<CalendarDays size={22} />}
 					title="Nothing scheduled this month"
-					description="Select a workspace clip to plan your next post."
 				/>
 			) : view === "list" ? (
 				<Stack gap="0" borderTopWidth="1px" borderColor="border">

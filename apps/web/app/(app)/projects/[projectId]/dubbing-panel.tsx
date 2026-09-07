@@ -399,7 +399,7 @@ export function DubbingPanel({
           <EmptyState
             icon={<Mic2 size={22} aria-hidden />}
             title="No dubs yet"
-            description="Translate your best clip into another language — narration is generated over the finished render."
+            description="Add translated narration to a rendered clip."
             ratio={9 / 16}
           />
         )}

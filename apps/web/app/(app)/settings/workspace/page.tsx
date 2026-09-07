@@ -35,10 +35,9 @@ export default async function WorkspaceSettingsPage() {
           <Stack gap="3" maxW="520px">
                   <label htmlFor="workspace-name"><Text as="span" fontSize="13px" fontWeight="600">Workspace name</Text></label>
             <Input id="workspace-name" name="name" defaultValue={workspace.name} maxLength={80} disabled={!canManage} />
-            <Text fontSize="11px" color="fg.subtle">Shown in the workspace switcher and invitations.</Text>
                   <label htmlFor="workspace-timezone"><Text as="span" fontSize="13px" fontWeight="600">Timezone</Text></label>
             <Combobox id="workspace-timezone" name="timezone" ariaLabel="Workspace timezone" defaultValue={workspace.timezone} items={TIMEZONE_ITEMS} placeholder="Search timezones" disabled={!canManage} />
-            <Text fontSize="11px" color="fg.subtle">Used by Calendar labels and publishing defaults. Search and select an IANA timezone.</Text>
+            <Text fontSize="11px" color="fg.subtle">Used for the calendar and publishing defaults.</Text>
             {canManage ? (
               <ActionSubmitButton pendingLabel="Saving…" size="sm" alignSelf="flex-start">Save workspace</ActionSubmitButton>
             ) : null}

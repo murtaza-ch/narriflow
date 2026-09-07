@@ -26,7 +26,7 @@ export default async function ProfileSettingsPage() {
       </Box>
       <Box borderTopWidth="1px" borderColor="border" py="5">
         <Text fontSize="13px" color="fg.muted">
-          Name, email, password, and connected sign-in methods are managed securely through your Narriflow authentication profile.
+          Your authentication profile manages your name, email, password, and sign-in methods.
         </Text>
       </Box>
     </Stack>

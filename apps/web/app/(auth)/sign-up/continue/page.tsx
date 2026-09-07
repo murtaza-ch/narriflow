@@ -164,7 +164,7 @@ export default function ContinueSignUpPage() {
         <AuthHeader
           eyebrow="Something broke"
           title="We couldn't finish your sign-up"
-          description="Your provider didn't return everything we need, and there's nothing more to fill in here."
+          description="Your provider returned incomplete account details."
         />
         <Flex justify="center">
           <GhostFrame size="220px">
@@ -205,7 +205,7 @@ export default function ContinueSignUpPage() {
       <AuthHeader
         eyebrow="Almost there"
         title="Complete your account"
-        description="We need a few more details before creating your account."
+        description="Complete your account details."
       />
 
       <form onSubmit={onSubmit}>

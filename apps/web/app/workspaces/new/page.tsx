@@ -15,7 +15,7 @@ export default async function NewWorkspacePage() {
         <PageHeader
           eyebrow="Workspaces"
           title="Create a Business workspace"
-          description="Create a separate collaborative space with independent billing, shared usage, and role-based access."
+          description="Separate projects, members, and billing."
         />
         <CreateWorkspaceForm />
       </Stack>

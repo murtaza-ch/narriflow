@@ -706,8 +706,7 @@ function Repurpose() {
               The transcript keeps giving.
             </Text>
             <Text fontSize="15px" color="fg.muted" lineHeight="1.7" maxW="52ch">
-              The same word-level transcript that cuts your clips also writes the rest of
-              the week&apos;s content — structured, editable, and ready to schedule.
+              Draft posts and show notes from your transcript.
             </Text>
           </Stack>
 
@@ -766,8 +765,7 @@ function Pricing() {
             </Text>
           </Stack>
           <Text fontSize="14px" color="fg.muted" maxW="36ch" lineHeight="1.65">
-            One honest metric: a minute of source media equals one processing minute. No
-            credit math.
+            One source minute equals one processing minute.
           </Text>
         </Flex>
 

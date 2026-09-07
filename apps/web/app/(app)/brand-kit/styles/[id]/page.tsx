@@ -55,7 +55,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
           title={`Edit · ${template.name}`}
-          description="Saved changes apply to new projects only. Existing clips keep their current styling."
+          description="Changes apply to new projects only."
           actions={
             <Button variant="outline" colorPalette="gray" asChild>
               <Link href={returnHref}>Cancel</Link>

@@ -28,7 +28,7 @@ export default function ProjectError({
             </Flex>
           }
           title="We couldn't load this project"
-          description="Something went wrong while loading this project. Try again — if it keeps happening, contact support."
+          description="Try again. If loading still fails, contact support."
           action={<Button onClick={reset}>Try again</Button>}
         />
         <Link href="/projects">

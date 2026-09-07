@@ -72,9 +72,9 @@ export function ApiKeysPanel({
         <Stack gap="3">
           <Flex align="center" gap="2"><KeyRound size={16} /><Text fontSize="14px" fontWeight="600">Create workspace API key</Text></Flex>
           <Text fontSize="13px" lineHeight="1.6" color="fg.muted">
-            Keys are workspace-bound credentials for unattended API or MCP clients. Personal OAuth connections are managed by each member in their AI client.
+            Workspace keys connect automated API or MCP clients.
           </Text>
-          {!isBusiness ? <Text fontSize="13px" color="fg.muted">API key creation requires an active Business workspace. Upgrade from Subscription, or review the MCP guide before upgrading.</Text> : (
+          {!isBusiness ? <Text fontSize="13px" color="fg.muted">API keys require an active Business workspace.</Text> : (
             <Stack gap="3">
               <Flex gap="3" direction={{ base: "column", md: "row" }}><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Key name, e.g. Claude Desktop" maxLength={80} required /><Button type="submit" size="sm" disabled={pending}>{pending ? <Spinner size="xs" /> : <Plus size={14} />}Create key</Button></Flex>
               <Checkbox checked={allowAutopilotWrites} onCheckedChange={setAllowAutopilotWrites}>

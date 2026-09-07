@@ -140,7 +140,6 @@ export function DashboardView({
             <EmptyState
               icon={<FolderOpen size={22} strokeWidth={1.5} />}
               title="No projects yet"
-              description="Paste a link or upload a file above to get your first clips."
             />
           ) : (
             <SimpleGrid columns={{ base: 1, sm: 2, lg: 3, "2xl": 4 }} gap="5">

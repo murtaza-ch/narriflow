@@ -23,7 +23,7 @@ export default async function UsageSettingsPage() {
         <StatBand.Item label="Remaining" value={Math.max(0, limit - usedMinutes)} suffix={<Text textStyle="data" fontSize="13px" color="fg.muted">min</Text>} />
       </StatBand>
       <Box borderTopWidth="1px" borderColor="border" py="5">
-        <Text fontSize="12px" color="fg.muted">Usage is calculated from source-media duration and resets at the start of each monthly billing period.</Text>
+        <Text fontSize="12px" color="fg.muted">Source minutes reset each monthly billing period.</Text>
       </Box>
     </Stack>
   );

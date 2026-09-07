@@ -225,9 +225,6 @@ export function ConfigureStep({
                 <Text fontSize="13px" color="fg">
                   Auto-render after detection
                 </Text>
-                <Text fontSize="11px" color="fg.muted">
-                  Render variants as soon as clips are found.
-                </Text>
               </Box>
               <Switch
                 checked={autoRenderClips}

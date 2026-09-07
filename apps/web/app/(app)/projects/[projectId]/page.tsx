@@ -914,7 +914,7 @@ export default async function ProjectDetailPage({
             ) : (
               <EmptyState
                 title="Transcript required"
-                description="Repurposing turns the finished transcript into a blog post, X thread, LinkedIn post, show notes and quote cards. Complete transcription first."
+                description="Complete transcription to generate posts and show notes."
               />
             )
           ) : null}

@@ -13,7 +13,7 @@ export default function BlogPostNotFound() {
         <EmptyState
           icon={<FileText size={22} strokeWidth={1.5} />}
           title="Nothing published here yet"
-          description="This post doesn't exist — or hasn't been written. The product, meanwhile, is very much live."
+          description="This post is unavailable."
           action={
             <Button asChild variant="outline" size="sm">
               <Link href="/">Back to the homepage</Link>

@@ -736,12 +736,12 @@ function Banner() {
 /* -------------------------------- process ---------------------------------- */
 
 const PROCESS = [
-  { n: "01", title: "Upload anything", body: "Drop a file, paste a YouTube link, or point the RSS autopilot at your feed — new episodes queue themselves." },
-  { n: "02", title: "Transcription", body: "Word-level speech-to-text builds the timing backbone every caption, cut and score relies on." },
-  { n: "03", title: "Moment detection", body: "AI reads the whole transcript and scores every clip-worthy moment 0–100, so you only render the winners." },
-  { n: "04", title: "Rendering", body: "Captions burn in exactly as previewed — 12 presets, 9 animation styles, every aspect ratio, auto-reframed around the speaker." },
-  { n: "05", title: "Repurposing", body: "The same transcript drafts a blog post, an X thread, a LinkedIn post, show notes and quote cards." },
-  { n: "06", title: "Publishing", body: "Schedule straight to TikTok, Shorts, Reels, LinkedIn and X — then watch views, likes and shares roll back in." },
+  { n: "01", title: "Upload anything", body: "Upload a file, paste a YouTube link, or connect an RSS feed." },
+  { n: "02", title: "Transcription", body: "Transcribe speech with word-by-word timing." },
+  { n: "03", title: "Moment detection", body: "Find moments scored 0–100 for virality." },
+  { n: "04", title: "Rendering", body: "Render captions and reframe clips around the speaker." },
+  { n: "05", title: "Repurposing", body: "Draft posts, show notes, and quote cards from your transcript." },
+  { n: "06", title: "Publishing", body: "Schedule posts to TikTok, Shorts, Reels, LinkedIn, and X." },
 ];
 
 function Process() {

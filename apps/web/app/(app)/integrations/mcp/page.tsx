@@ -109,7 +109,7 @@ export default async function McpIntegrationPage() {
     <Stack gap={{ base: "8", md: "10" }} maxW="1120px" mx="auto">
       <PageHeader
         title="Connect Narriflow to AI assistants"
-        description="Give an AI client controlled access to Narriflow projects, usage, and RSS autopilot through the remote Model Context Protocol server."
+        description="Connect your AI client to projects, usage, and RSS autopilot."
         actions={
           <Button asChild size="sm" variant="outline">
             <Link href="/integrations"><ArrowLeft size={14} />All integrations</Link>
@@ -155,7 +155,7 @@ export default async function McpIntegrationPage() {
         <SectionHeading
           eyebrow="01 / Remote endpoint"
           title="Use one URL in every supported client"
-          description="Narriflow exposes a remote Streamable HTTP MCP server. A successful setup is confirmed inside your AI client; this dashboard does not track or imply a live client session."
+          description="Confirm the connection in your AI client."
         />
         <CopyControl value={mcpUrl} label="Copy URL" />
         <Flex align="flex-start" gap="2" color="fg.muted">
@@ -168,7 +168,7 @@ export default async function McpIntegrationPage() {
         <SectionHeading
           eyebrow="02 / Authentication"
           title="Choose identity for people; keys for automation"
-          description="The methods are intentionally separate. Connecting yourself never creates or exposes a shared workspace credential."
+          description="Personal connections do not share workspace credentials."
         />
         <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))" }} gap="6">
           <InfoColumn icon={UserRound} title="Personal OAuth connection">
@@ -189,7 +189,7 @@ export default async function McpIntegrationPage() {
         <SectionHeading
           eyebrow="03 / Client setup"
           title="Add Narriflow to your preferred AI client"
-          description="Labels can move between client releases. In every case, choose a remote or Streamable HTTP server and use the endpoint above."
+          description="Choose a remote or Streamable HTTP server with the endpoint above."
         />
         <Grid templateColumns={{ base: "1fr", lg: "repeat(2, minmax(0, 1fr))" }} gap={{ base: "7", lg: "6" }}>
           <ClientCard
@@ -248,7 +248,7 @@ export default async function McpIntegrationPage() {
         <SectionHeading
           eyebrow="04 / Available tools"
           title="Read by default; write only on clear intent"
-          description="Narriflow advertises tool behavior to compatible clients. Write tools can start downstream imports or processing, so assistants should call them only after an explicit request."
+          description="Write tools can start imports or processing. Use them only when requested."
         />
         <Stack gap="0" borderTopWidth="1.5px" borderColor="border.strong">
           {TOOLS.map((tool) => (

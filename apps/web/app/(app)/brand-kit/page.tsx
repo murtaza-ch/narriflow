@@ -61,7 +61,7 @@ export default async function BrandKitPage() {
 
       <Box animation="fade-up" animationFillMode="backwards" style={{ animationDelay: "90ms" }}>
         {profiles.length === 0 ? (
-          <EmptyState icon={<ImageIcon size={20} />} title="No Brand Profiles yet" description="Create a profile to organize your visual identity, reusable assets, and style presets." />
+          <EmptyState icon={<ImageIcon size={20} />} title="No Brand Profiles yet" description="Save your brand colors, styles, and assets." />
         ) : (
           <Grid templateColumns={{ base: "1fr", lg: "repeat(2, minmax(0, 1fr))" }} gap="5">
             {profiles.map((profile, index) => {

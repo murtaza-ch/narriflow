@@ -881,7 +881,7 @@ function PricingBento() {
           A minute in is a minute metered.
         </Text>
         <Text fontSize="14px" color="fg.muted" maxW="52ch">
-          One honest metric: a minute of source media equals one processing minute. No credit math.
+          One source minute equals one processing minute.
         </Text>
       </Stack>
 

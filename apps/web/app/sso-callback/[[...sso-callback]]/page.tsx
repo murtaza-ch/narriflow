@@ -28,7 +28,7 @@ export default function SSOCallbackPage() {
           <AuthHeader
             eyebrow="Connection stalled"
             title="This is taking too long"
-            description="Your provider didn't finish signing you in. Try again, or head back and use another method."
+            description="Sign-in failed. Try again or use another method."
           />
           <Flex justify="center">
             <GhostFrame size="220px">

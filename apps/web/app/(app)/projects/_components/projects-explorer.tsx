@@ -345,7 +345,7 @@ export function ProjectsExplorer({
         <EmptyState
           icon={<Inbox size={22} strokeWidth={1.5} />}
           title="No projects match your filters"
-          description="Try a broader search or remove a filter to see more results."
+          description="Try another search or clear filters."
           action={
             hasActiveFilters ? (
               <Button size="sm" variant="outline" onClick={clearFilters}>

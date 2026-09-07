@@ -14,7 +14,7 @@ export default async function NewBrandProfilePage() {
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
           title="Build a Brand Profile"
-          description="Set the identity and voice this profile will apply to new projects. Add styles and media after creation."
+          description="Applies to new projects. Add styles and media next."
           actions={<Button variant="outline" asChild><Link href="/brand-kit">Cancel</Link></Button>}
         />
       </Box>

@@ -123,7 +123,7 @@ export default async function ExportsPage({
         </Button>
       </Flex>
       {exports.length === 0 ? (
-        <EmptyState icon={<Film size={22} />} title="No exports here" description="Completed and in-progress clip exports will appear across the workspace." />
+        <EmptyState icon={<Film size={22} />} title="No exports here" description="Workspace exports appear here." />
       ) : view === "list" ? (
         <Stack gap="0" borderTopWidth="1px" borderColor="border">
           {exports.map((item) => (

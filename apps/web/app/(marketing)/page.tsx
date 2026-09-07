@@ -37,12 +37,12 @@ const PIPELINE_STAGES = [
   {
     key: "ingest",
     title: "Ingest",
-    description: "Upload a recording or paste a YouTube link. Audio extracted, media probed.",
+    description: "Upload a recording or paste a YouTube link.",
   },
   {
     key: "stt",
     title: "Transcribe",
-    description: "Word-level speech-to-text — the timing backbone for every caption.",
+    description: "Transcribe speech with word-by-word timing.",
   },
   {
     key: "moment_detection",
@@ -458,8 +458,7 @@ export default function MarketingHomePage() {
         <SectionHeading
           id="pipeline"
           eyebrow="How it works"
-          title="Five stages. Zero timelines to babysit."
-          description="The same worker pipeline that powers the app, drawn end to end. Drop a recording at stage one; collect scheduled posts at stage five."
+          title="From recording to published clips."
         />
 
         <Grid
@@ -490,8 +489,7 @@ export default function MarketingHomePage() {
       <Box mx="auto" w="full" maxW="1200px" px="6" pt={{ base: "16", md: "24" }}>
         <SectionHeading
           eyebrow="Caption presets"
-          title="Twelve styles, rendered honestly."
-          description="These tiles run on the exact preset definitions the renderer burns in — same colors, same casing, same word-by-word timing."
+          title="Twelve caption styles."
         />
         <Box mt="10">
           <PresetStrip />

@@ -1147,7 +1147,7 @@ export function SocialSchedulingPanel({
           <EmptyState
             icon={<Send size={22} aria-hidden />}
             title="Nothing scheduled yet"
-          description="Schedule a clip to a connected account — Narriflow prepares the exact frozen video and lists its outcome here."
+          description="Schedule a clip to a connected account."
             ratio={9 / 16}
           />
         )}

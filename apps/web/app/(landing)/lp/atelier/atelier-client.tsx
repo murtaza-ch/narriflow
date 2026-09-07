@@ -101,8 +101,7 @@ function Hero() {
           From one recording.
         </Text>
         <Text data-lux fontSize={{ base: "16px", md: "19px" }} color="fg.muted" maxW="46ch" lineHeight="1.65" style={{ opacity: 0 }}>
-          Narriflow finds the moments worth posting, scores them for virality, and
-          captions them word for word. Under five minutes of your time.
+          Find, score, and caption moments worth posting.
         </Text>
         <HStack data-lux gap="5" pt="2" style={{ opacity: 0 }}>
           <Button size="lg" px="8" asChild>
@@ -289,8 +288,7 @@ function Repurpose() {
               It writes, too.
             </Text>
             <Text fontSize={{ base: "15px", md: "17px" }} color="fg.muted" lineHeight="1.7" maxW="44ch">
-              The same transcript that cuts your clips drafts the rest of the week —
-              structured, editable, ready to schedule.
+              Draft posts and show notes from your transcript.
             </Text>
           </Stack>
           <Stack gap="0">
@@ -377,8 +375,7 @@ function Pricing() {
           A minute in is a minute metered.
         </Text>
         <Text fontSize="15px" color="fg.muted" maxW="44ch" lineHeight="1.65">
-          One honest metric — a minute of source media equals one processing minute.
-          No credits, no surprises.
+          One source minute equals one processing minute.
         </Text>
       </Stack>
 

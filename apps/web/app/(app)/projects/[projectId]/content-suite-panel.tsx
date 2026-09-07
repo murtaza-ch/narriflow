@@ -206,7 +206,7 @@ export function ContentSuitePanel({
           <EmptyState
             icon={<FileText size={22} aria-hidden />}
             title="No repurposed content yet"
-            description="Generate a full pack from your transcript in one click — blog post, X thread, LinkedIn post, show notes and quote cards."
+            description="Turn your transcript into posts, show notes, and quote cards."
           />
         ) : null}
 

@@ -79,12 +79,12 @@ export default async function BrandProfilePage({ params, searchParams }: {
 
 type Profile = Awaited<ReturnType<typeof brandProfileService.get>>;
 
-function SectionHeader({ index, icon, title, description }: { index: string; icon: React.ReactNode; title: string; description: string }) {
+function SectionHeader({ index, icon, title }: { index: string; icon: React.ReactNode; title: string }) {
   return (
     <Flex align="flex-start" gap="4" pb="5" borderBottomWidth="1px" borderColor="border">
       <Text textStyle="data" color="fg.subtle">{index}</Text>
       <Box color="accent.fg" pt="0.5">{icon}</Box>
-      <Stack gap="1"><Text textStyle="title" fontSize="22px">{title}</Text><Text fontSize="13px" color="fg.muted">{description}</Text></Stack>
+      <Text textStyle="title" fontSize="22px">{title}</Text>
     </Flex>
   );
 }
@@ -92,7 +92,7 @@ function SectionHeader({ index, icon, title, description }: { index: string; ico
 function IdentitySection({ profile }: { profile: Profile }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="01" icon={<Shapes size={18} />} title="Identity system" description="The stable visual facts frozen into each new project." />
+      <SectionHeader index="01" icon={<Shapes size={18} />} title="Identity system" />
       <Grid templateColumns={{ base: "1fr", md: "1.1fr .9fr" }} gap="8">
         <Stack gap="0" borderTopWidth="1px" borderColor="border">
           {[
@@ -125,8 +125,8 @@ function IdentitySection({ profile }: { profile: Profile }) {
 function StylesSection({ profile, selectedTemplateId }: { profile: Profile; selectedTemplateId?: string }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="02" icon={<LayoutTemplate size={18} />} title="Style presets" description="Reusable caption, logo, and color settings for new projects." />
-      {profile.templates.length === 0 ? <EmptyState icon={<LayoutTemplate size={18} />} title="No style presets" description="Add a style preset to use these settings for new projects." /> : (
+      <SectionHeader index="02" icon={<LayoutTemplate size={18} />} title="Style presets" />
+      {profile.templates.length === 0 ? <EmptyState icon={<LayoutTemplate size={18} />} title="No style presets" /> : (
         <Grid templateColumns={{ base: "1fr", md: "repeat(2, 1fr)", xl: "repeat(3, 1fr)" }} gap="4">
           {profile.templates.map((template, index) => {
             const selected = selectedTemplateId === template.id || (!selectedTemplateId && profile.defaultTemplateId === template.id);
@@ -148,8 +148,8 @@ function StylesSection({ profile, selectedTemplateId }: { profile: Profile; sele
 function AssetsSection({ profile }: { profile: Profile }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="03" icon={<ImageIcon size={18} />} title="Visual assets" description="Reusable images and videos for this brand." />
-      {profile.assets.length === 0 ? <EmptyState icon={<ImageIcon size={18} />} title="No visual assets" description="Add images or videos to reuse them in your clips." /> : (
+      <SectionHeader index="03" icon={<ImageIcon size={18} />} title="Visual assets" />
+      {profile.assets.length === 0 ? <EmptyState icon={<ImageIcon size={18} />} title="No visual assets" /> : (
         <Grid templateColumns={{ base: "repeat(2, 1fr)", md: "repeat(3, 1fr)", xl: "repeat(4, 1fr)" }} gap="4">
           {profile.assets.map((asset) => (
             <Stack key={asset.id} gap="2">
@@ -167,7 +167,7 @@ function AssetsSection({ profile }: { profile: Profile }) {
 function ScenesSection({ profileId, scenes, fonts, canManageDefaults }: { profileId: string; scenes: SceneTemplateCard[]; fonts: Profile["fonts"]; canManageDefaults: boolean }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="04" icon={<Type size={18} />} title="Scene templates" description="Save intros, outros, and cards to reuse in your clips." />
+      <SectionHeader index="04" icon={<Type size={18} />} title="Scene templates" />
       <SceneTemplateManager profileId={profileId} scenes={scenes} fonts={fonts.map((font) => ({ id: font.id, family: font.family, fingerprint: font.fingerprint, missing: font.missing }))} canManageDefaults={canManageDefaults} />
     </Stack>
   );
@@ -176,7 +176,7 @@ function ScenesSection({ profileId, scenes, fonts, canManageDefaults }: { profil
 function AudioSection({ profile }: { profile: Profile }) {
   return (
     <Stack gap="7">
-      <SectionHeader index="05" icon={<AudioLines size={18} />} title="Audio references" description="Music and sound effects saved for this brand." />
+      <SectionHeader index="05" icon={<AudioLines size={18} />} title="Audio references" />
       {profile.audio.length === 0 ? <EmptyState icon={<AudioLines size={18} />} title="No referenced audio" description="Add music or sound effects from your audio library." /> : <Stack gap="0" borderTopWidth="1px" borderColor="border">{profile.audio.map((audio, index) => <Flex key={audio.id} align="center" gap="4" py="4" borderBottomWidth="1px" borderColor="border.subtle"><Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text><Text fontSize="13px" fontWeight="600" flex="1">{audio.title}</Text><Text textStyle="eyebrow" color="fg.subtle">{audio.kind}</Text><Text textStyle="data" color="fg.timecode">{formatDuration(audio.durationSec)}</Text></Flex>)}</Stack>}
     </Stack>
   );
@@ -192,7 +192,7 @@ function VoiceSection({ profile }: { profile: Profile }) {
   ];
   return (
     <Stack gap="7">
-      <SectionHeader index="06" icon={<MessageSquareText size={18} />} title="Voice guidance" description="Reusable writing constraints for assisted copy and campaign delivery." />
+      <SectionHeader index="06" icon={<MessageSquareText size={18} />} title="Voice guidance" />
       <Stack gap="0" borderTopWidth="1px" borderColor="border">{rows.map(([label, value]) => <Grid key={label} templateColumns={{ base: "1fr", md: "180px 1fr" }} gap="3" py="4" borderBottomWidth="1px" borderColor="border.subtle"><Text textStyle="eyebrow" color="fg.subtle">{label}</Text><Text fontSize="13px" lineHeight="1.6">{value}</Text></Grid>)}</Stack>
     </Stack>
   );
