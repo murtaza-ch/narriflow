@@ -59,8 +59,25 @@ function commitErrorCode(error: unknown): string {
 }
 
 export type CommitLinkImportResult =
-  | { ok: true; projectId: string }
+  | { ok: true; projectId: string; title: string }
   | { ok: false; code: string; message: string };
+
+async function fetchYoutubeTitle(url: string): Promise<string | null> {
+  if (detectLinkProvider(url) !== "youtube") return null;
+
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const response = await fetch(oembedUrl, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) return null;
+    const payload = (await response.json()) as { title?: unknown };
+    const title = typeof payload.title === "string" ? payload.title.trim() : "";
+    return title || null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Step 1 (Commit) for the link-first split: creates the project + ingest
@@ -81,9 +98,10 @@ export async function commitLinkImportAction(input: {
 }): Promise<CommitLinkImportResult> {
   return executeWorkspaceAction("processing.consume", async (appUser) => {
   try {
+    const title = input.title?.trim() || (await fetchYoutubeTitle(input.url));
     const ingest = await projectService.queueLinkIngest(appUser.actorUserId, {
       url: input.url,
-      title: input.title || undefined,
+      title: title || undefined,
       brandTemplateId: input.brandTemplateId,
       brandProfileId: input.brandProfileId,
       commitToken: input.commitToken,
@@ -94,7 +112,11 @@ export async function commitLinkImportAction(input: {
     }, appUser.workspaceId,
     );
     revalidatePath(`/projects/${ingest.project.id}`);
-    return { ok: true, projectId: ingest.project.id };
+    return {
+      ok: true,
+      projectId: ingest.project.id,
+      title: ingest.project.title,
+    };
   } catch (error) {
     const code = commitErrorCode(error);
     return {
@@ -197,22 +219,7 @@ export async function fetchYoutubeMetadataAction(
   url: string,
 ): Promise<{ title: string | null } | AuthenticatedActionFailure> {
   return executeWorkspaceAction("content.view", async () => {
-
-  if (detectLinkProvider(url) !== "youtube") {
-    return { title: null };
-  }
-
-  try {
-    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
-    const response = await fetch(oembedUrl, { signal: AbortSignal.timeout(3000),
-    });
-    if (!response.ok) return { title: null };
-    const payload = (await response.json()) as { title?: unknown };
-    const title = typeof payload.title === "string" ? payload.title.trim() : "";
-    return { title: title || null };
-  } catch {
-    return { title: null };
-  }
+    return { title: await fetchYoutubeTitle(url) };
   });
 }
 

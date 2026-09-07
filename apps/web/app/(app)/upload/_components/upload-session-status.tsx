@@ -127,8 +127,6 @@ export function UploadSessionStatusPanel({
       aria-atomic={snapshot.phase === "failed" ? "true" : undefined}
       bg="bg.panel"
       borderRadius="l2"
-      borderWidth="1px"
-      borderColor="border"
       py="3"
       ps="4"
       pe="3"

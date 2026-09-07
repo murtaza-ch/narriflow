@@ -84,6 +84,7 @@ export function BrandTemplatePicker({
             const profile = profiles.find((candidate) => candidate.id === profileId);
             onChange(profile?.defaultTemplateId ?? null);
           }}
+          ariaLabel="Brand profile"
           placeholder="Select Brand Profile"
           size="sm"
         />
@@ -93,6 +94,7 @@ export function BrandTemplatePicker({
           onValueChange={(next) =>
             onChange(next && next !== SYSTEM_DEFAULT_VALUE ? next : null)
           }
+          ariaLabel="Brand template"
           placeholder="Select style preset"
           size="sm"
         />

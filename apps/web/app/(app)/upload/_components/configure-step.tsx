@@ -2,11 +2,10 @@
 
 import { useEffect, useEffectEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Box, chakra, Flex, Stack, Text } from "@chakra-ui/react";
-import { Info } from "lucide-react";
+import { chakra, Flex, Stack, Text } from "@chakra-ui/react";
+import { Sparkles, ArrowRight } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { Textarea } from "@narriflow/ui/components/textarea";
 import type {
   CaptionPresetId,
   ClipLengthPreset,
@@ -14,20 +13,23 @@ import type {
   ContentPack,
   GenerationMode,
 } from "@narriflow/validators";
-import { Switch } from "@narriflow/ui/components/switch";
-import { finalizeLinkConfigureAction, saveGenerationDraftAction } from "../actions";
+import {
+  fetchYoutubeMetadataAction,
+  finalizeLinkConfigureAction,
+  saveGenerationDraftAction,
+} from "../actions";
+import { isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
 import {
   buildLinkContentPack,
   type LinkConfigureState,
 } from "../_lib/link-content-pack";
-import { useIngestStream, type IngestStageStatus } from "../_lib/use-ingest-stream";
-import { AdvancedSettings } from "./advanced-settings";
-import { AspectRatioSelect } from "./aspect-ratio-select";
-import { CaptionPresetGallery } from "./caption-preset-gallery";
-import { ClipLengthChips } from "./clip-length-chips";
+import {
+  useIngestStream,
+  type IngestStageStatus,
+} from "../_lib/use-ingest-stream";
+import { ClipStyleSettings } from "./clip-style-settings";
 import { ImportPill } from "./import-pill";
 import { RetryImportBand } from "./retry-import-band";
-import { SettingsBand } from "./settings-band";
 
 type DefaultAspectRatio = ContentPack["defaultAspectRatio"];
 type CtaPhase = "idle" | "submitting" | "waiting";
@@ -35,7 +37,6 @@ type CtaPhase = "idle" | "submitting" | "waiting";
 interface ConfigureStepProps {
   projectId: string;
   title: string;
-  sourceProvider: string | null;
   sourceMediaUrl: string;
   initialIngestStatus: IngestStageStatus;
   initialIngestErrorCode: string | null;
@@ -47,7 +48,6 @@ interface ConfigureStepProps {
 export function ConfigureStep({
   projectId,
   title,
-  sourceProvider,
   sourceMediaUrl,
   initialIngestStatus,
   initialIngestErrorCode,
@@ -67,22 +67,51 @@ export function ConfigureStep({
   const [captionPreset, setCaptionPreset] = useState<CaptionPresetId>(
     initialStep2.captionPreset,
   );
-  const [defaultAspectRatio, setDefaultAspectRatio] = useState<DefaultAspectRatio>(
-    initialStep2.defaultAspectRatio,
-  );
+  const [defaultAspectRatio, setDefaultAspectRatio] =
+    useState<DefaultAspectRatio>(initialStep2.defaultAspectRatio);
   const [autoHook, setAutoHook] = useState(initialStep2.autoHook);
-  const [autoRenderClips, setAutoRenderClips] = useState(initialStep2.autoRenderClips);
-  const [specificMoments, setSpecificMoments] = useState(initialStep2.specificMoments);
+  const [autoRenderClips, setAutoRenderClips] = useState(
+    initialStep2.autoRenderClips,
+  );
+  const [specificMoments, setSpecificMoments] = useState(
+    initialStep2.specificMoments,
+  );
   const [platformTargets, setPlatformTargets] = useState<ClipPlatformTarget[]>(
     initialStep2.platformTargets,
   );
-  const [clipCountTarget, setClipCountTarget] = useState(initialStep2.clipCountTarget);
-  const [toneConstraints, setToneConstraints] = useState(initialStep2.toneConstraints);
+  const [clipCountTarget, setClipCountTarget] = useState(
+    initialStep2.clipCountTarget,
+  );
+  const [toneConstraints, setToneConstraints] = useState(
+    initialStep2.toneConstraints,
+  );
 
   const [ctaPhase, setCtaPhase] = useState<CtaPhase>("idle");
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
   const [saveDraftError, setSaveDraftError] = useState<string | null>(null);
+  const [displayTitle, setDisplayTitle] = useState(title);
+
+  useEffect(() => {
+    if (title !== "Link Import") return;
+
+    let cancelled = false;
+    fetchYoutubeMetadataAction(sourceMediaUrl)
+      .then((result) => {
+        if (
+          cancelled ||
+          isAuthenticatedActionFailure(result) ||
+          !result.title
+        )
+          return;
+        setDisplayTitle(result.title);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceMediaUrl, title]);
 
   // Same builder finalize uses, kept as one ContentPack the "finish later"
   // paths and the CTA both read from — a user who never touches these
@@ -184,101 +213,41 @@ export function ConfigureStep({
   const ingestFailed = ingestStream.ingestStatus === "failed";
 
   return (
-    <Stack gap="6" maxW="720px" mx="auto" animation="fade-up">
+    <Stack gap="5" maxW="860px" mx="auto" animation="fade-up">
       <ImportPill
-        title={title}
-        sourceProvider={sourceProvider}
+        title={displayTitle}
         sourceMediaUrl={sourceMediaUrl}
         ingestStatus={ingestStream.ingestStatus}
       />
-
-      {mode === "clip" && (
-        <SettingsBand eyebrow="Clip length">
-          <ClipLengthChips value={clipLengthPreset} onChange={setClipLengthPreset} />
-        </SettingsBand>
-      )}
-
-      <SettingsBand eyebrow="Caption preset">
-        <CaptionPresetGallery value={captionPreset} onChange={setCaptionPreset} />
-      </SettingsBand>
-
-      <SettingsBand eyebrow="Aspect ratio">
-        <AspectRatioSelect value={defaultAspectRatio} onChange={setDefaultAspectRatio} />
-      </SettingsBand>
-
-      {mode === "clip" ? (
-        <SettingsBand eyebrow="Options">
-          <Stack gap="3.5">
-            <Flex align="center" justify="space-between" gap="3">
-              <Box>
-                <Text fontSize="13px" color="fg">
-                  Auto-hook
-                </Text>
-                <Text fontSize="11px" color="fg.muted">
-                  Prefer clips that open with a strong hook.
-                </Text>
-              </Box>
-              <Switch checked={autoHook} onCheckedChange={setAutoHook} inputProps={{ name: "autoHook" }} />
-            </Flex>
-            <Flex align="center" justify="space-between" gap="3">
-              <Box>
-                <Text fontSize="13px" color="fg">
-                  Auto-render after detection
-                </Text>
-              </Box>
-              <Switch
-                checked={autoRenderClips}
-                onCheckedChange={setAutoRenderClips}
-                inputProps={{ name: "autoRenderClips" }}
-              />
-            </Flex>
-          </Stack>
-        </SettingsBand>
-      ) : (
-        <SettingsBand eyebrow="Options">
-          <Flex gap="2" align="flex-start">
-            <Box color="fg.subtle" mt="0.5" flexShrink={0}>
-              <Info size={13} strokeWidth={2} />
-            </Box>
-            <Text fontSize="12px" color="fg.muted" lineHeight="1.5">
-              We transcribe your full video, then render it at original
-              length with burned-in captions. No clipping.
-            </Text>
-          </Flex>
-        </SettingsBand>
-      )}
-
-      {mode === "clip" && (
-        <SettingsBand eyebrow="Find clip moment">
-          <Textarea
-            name="specificMoments"
-            value={specificMoments}
-            onChange={(event) => setSpecificMoments(event.target.value)}
-            placeholder="e.g. When he builds the hero section"
-            rows={3}
-            maxLength={500}
-            fontSize="13px"
-          />
-          <Text textStyle="data" fontSize="11px" color="fg.subtle" mt="1">
-            {specificMoments.length}/500 · optional
-          </Text>
-        </SettingsBand>
-      )}
-
-      {mode === "clip" && (
-        <Box>
-          <AdvancedSettings
-            platformTargets={platformTargets}
-            onPlatformTargetsChange={setPlatformTargets}
-            clipCountTarget={clipCountTarget}
-            onClipCountTargetChange={setClipCountTarget}
-            toneConstraints={toneConstraints}
-            onToneConstraintsChange={setToneConstraints}
-          />
-        </Box>
-      )}
-
-      <Stack gap="3" pt="1">
+      <ClipStyleSettings
+        mode={mode}
+        defaultAspectRatio={defaultAspectRatio}
+        setDefaultAspectRatio={setDefaultAspectRatio}
+        clipLengthPreset={clipLengthPreset}
+        setClipLengthPreset={setClipLengthPreset}
+        captionPreset={captionPreset}
+        setCaptionPreset={setCaptionPreset}
+        autoHook={autoHook}
+        setAutoHook={setAutoHook}
+        autoRenderClips={autoRenderClips}
+        setAutoRenderClips={setAutoRenderClips}
+        specificMoments={specificMoments}
+        setSpecificMoments={setSpecificMoments}
+        platformTargets={platformTargets}
+        setPlatformTargets={setPlatformTargets}
+        clipCountTarget={clipCountTarget}
+        setClipCountTarget={setClipCountTarget}
+        toneConstraints={toneConstraints}
+        setToneConstraints={setToneConstraints}
+      />
+      <Stack
+        gap="2.5"
+        position="sticky"
+        bottom="0"
+        zIndex="10"
+        bg="bg"
+        py="4"
+      >
         {ingestFailed ? (
           <RetryImportBand
             projectId={projectId}
@@ -297,8 +266,8 @@ export function ConfigureStep({
                 px="3"
                 py="2.5"
                 bg="danger.subtle"
-      borderWidth="1px"
-      borderColor="danger.muted"
+                borderWidth="1px"
+                borderColor="danger.muted"
                 borderRadius="l2"
                 position="relative"
                 overflow="hidden"
@@ -312,7 +281,14 @@ export function ConfigureStep({
               onClick={submitFinalize}
               disabled={ctaPhase !== "idle"}
               type="button"
-              size="sm"
+              size="md"
+              h="46px"
+              w="full"
+              maxW="400px"
+              mx="auto"
+              rounded="xl"
+              bg="accent.solid"
+              color="accent.contrast"
             >
               {ctaPhase === "waiting" ? (
                 <>
@@ -325,11 +301,15 @@ export function ConfigureStep({
                   <Text ms="1.5">Working…</Text>
                 </>
               ) : (
-                "Get AI clips"
+                <>
+                  <Sparkles size={16} />
+                  {mode === "clip" ? "Get AI clips" : "Create captioned video"}
+                  <ArrowRight size={16} />
+                </>
               )}
             </Button>
             <Text fontSize="11px" color="fg.subtle" textAlign="center">
-              You can leave this page —{" "}
+              Need more time?{" "}
               <chakra.button
                 type="button"
                 onClick={handleSaveAndFinishLater}
@@ -341,7 +321,7 @@ export function ConfigureStep({
                 opacity={savingDraft ? 0.6 : 1}
                 _hover={savingDraft ? undefined : { color: "fg.muted" }}
               >
-                {savingDraft ? "saving…" : "finish this later"}
+                {savingDraft ? "saving…" : "Save and finish later"}
               </chakra.button>
               .
             </Text>

@@ -74,7 +74,9 @@ function readBoolean(formData: FormData, key: string, fallback: boolean) {
 }
 
 function readCaptionPreset(formData: FormData): CaptionPresetId {
-  const raw = String(formData.get("captionPreset") ?? BRAND_DEFAULT_CAPTION_PRESET_ID);
+  const raw = String(
+    formData.get("captionPreset") ?? BRAND_DEFAULT_CAPTION_PRESET_ID,
+  );
   const parsed = captionPresetIdSchema.safeParse(raw);
   return parsed.success ? parsed.data : BRAND_DEFAULT_CAPTION_PRESET_ID;
 }
@@ -97,16 +99,28 @@ export function readContentPackFromForm(formData: FormData): ContentPack {
   // (used by the existing project-page Advanced panel power-user inputs).
   const useExplicit = preset === "auto";
   const clipDurationSecTarget = useExplicit
-    ? readNumber(formData, "clipDurationSecTarget", presetRange.clipDurationSecTarget)
+    ? readNumber(
+        formData,
+        "clipDurationSecTarget",
+        presetRange.clipDurationSecTarget,
+      )
     : presetRange.clipDurationSecTarget;
   const minDurationSec = useExplicit
     ? readNumber(formData, "minDurationSec", presetRange.minDurationSec)
     : presetRange.minDurationSec;
   const preferredMinDurationSec = useExplicit
-    ? readNumber(formData, "preferredMinDurationSec", presetRange.preferredMinDurationSec)
+    ? readNumber(
+        formData,
+        "preferredMinDurationSec",
+        presetRange.preferredMinDurationSec,
+      )
     : presetRange.preferredMinDurationSec;
   const preferredMaxDurationSec = useExplicit
-    ? readNumber(formData, "preferredMaxDurationSec", presetRange.preferredMaxDurationSec)
+    ? readNumber(
+        formData,
+        "preferredMaxDurationSec",
+        presetRange.preferredMaxDurationSec,
+      )
     : presetRange.preferredMaxDurationSec;
   const maxDurationSec = useExplicit
     ? readNumber(formData, "maxDurationSec", presetRange.maxDurationSec)
@@ -136,10 +150,16 @@ export function readContentPackFromForm(formData: FormData): ContentPack {
     captionPreset: readCaptionPreset(formData),
     mode: readMode(formData),
     autoHook: readBoolean(formData, "autoHook", true),
-    specificMoments: String(formData.get("specificMoments") ?? "").slice(0, 500),
+    specificMoments: String(formData.get("specificMoments") ?? "").slice(
+      0,
+      500,
+    ),
     processingStartSec: readNullableNumber(formData, "processingStartSec"),
     processingEndSec: readNullableNumber(formData, "processingEndSec"),
     clipLengthPreset: preset,
+    defaultAspectRatio:
+      formData.get("defaultAspectRatio") ??
+      defaultContentPack.defaultAspectRatio,
   });
 }
 
@@ -159,6 +179,8 @@ export type UploadSettingsFormInput = {
   processingEndSec: number | null;
   captionPreset: CaptionPresetId;
   brandTemplateId: string | null;
+  brandProfileId?: string | null;
+  defaultAspectRatio?: ContentPack["defaultAspectRatio"];
   clipCountTarget: number;
   platformTargets: ClipPlatformTarget[];
   autoRenderClips: boolean;
@@ -171,7 +193,10 @@ export function buildUploadSettingsFormData(input: UploadSettingsFormInput) {
   formData.set("mode", input.mode);
   formData.set("clipLengthPreset", input.clipLengthPreset);
   formData.set("captionPreset", input.captionPreset);
-  if (input.autoHook) formData.set("autoHook", "on");
+  formData.set("autoHook", String(input.autoHook));
+  formData.set("defaultAspectRatio", input.defaultAspectRatio ?? "9:16");
+  if (input.brandProfileId)
+    formData.set("brandProfileId", input.brandProfileId);
   formData.set("specificMoments", input.specificMoments);
   if (input.processingStartSec !== null) {
     formData.set("processingStartSec", String(input.processingStartSec));
@@ -186,7 +211,7 @@ export function buildUploadSettingsFormData(input: UploadSettingsFormInput) {
   for (const target of input.platformTargets) {
     formData.append("platformTargets", target);
   }
-  if (input.autoRenderClips) formData.set("autoRenderClips", "on");
+  formData.set("autoRenderClips", String(input.autoRenderClips));
   formData.set("toneConstraints", input.toneConstraints);
   return formData;
 }

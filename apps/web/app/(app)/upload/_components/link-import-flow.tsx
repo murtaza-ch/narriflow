@@ -55,7 +55,6 @@ interface LinkImportFlowProps {
   /** Present when the page mounted with `?project=<id>` — skips Step 1
    *  entirely and rehydrates Step 2 from the server-loaded draft. */
   resumeData: LinkResumeData | null;
-  onChangeSource: () => void;
 }
 
 function step2StateFromContentPack(contentPack: ContentPack): LinkConfigureState {
@@ -87,7 +86,6 @@ export function LinkImportFlow({
   brandProfiles,
   usageSummary,
   resumeData,
-  onChangeSource,
 }: LinkImportFlowProps) {
   const router = useRouter();
   const [step, setStep] = useState<"commit" | "configure">(
@@ -118,9 +116,6 @@ export function LinkImportFlow({
   const [sourceMediaUrl, setSourceMediaUrl] = useState(
     resumeData?.sourceMediaUrl ?? linkUrl,
   );
-  const [sourceProvider, setSourceProvider] = useState<string | null>(
-    resumeData?.sourceProvider ?? linkProvider,
-  );
 
   // Minted once per Step-1 render, never regenerated across re-renders of
   // this component — a resumed (Step-2) mount never needs one at all.
@@ -141,7 +136,6 @@ export function LinkImportFlow({
       processingEndSec: result.processingEndSec,
     }));
     setSourceMediaUrl(linkUrl);
-    setSourceProvider(linkProvider);
     setIngestStatus("queued");
     setIngestErrorCode(null);
     setStep("configure");
@@ -158,7 +152,6 @@ export function LinkImportFlow({
         usageSummary={usageSummary}
         commitToken={commitTokenRef.current}
         onCommitted={handleCommitted}
-        onChangeSource={onChangeSource}
       />
     );
   }
@@ -167,7 +160,6 @@ export function LinkImportFlow({
     <ConfigureStep
       projectId={projectId}
       title={title}
-      sourceProvider={sourceProvider}
       sourceMediaUrl={sourceMediaUrl}
       initialIngestStatus={ingestStatus}
       initialIngestErrorCode={ingestErrorCode}

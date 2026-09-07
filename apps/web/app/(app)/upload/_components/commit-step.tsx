@@ -1,34 +1,47 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Box, chakra, Flex, Portal, Popover, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, Clock, Link2 } from "lucide-react";
+import {
+  Box,
+  chakra,
+  Flex,
+  Portal,
+  Popover,
+  Stack,
+  Text,
+} from "@chakra-ui/react";
+import {
+  AlertTriangle,
+  Clock,
+  Link2,
+  ArrowRight,
+  ChevronDown,
+  Sparkles,
+} from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   isProcessingQuotaExceeded,
-  LINK_PROVIDERS,
   processingMinutesFromSeconds,
   type BrandTemplateSummary,
   type GenerationMode,
   type LinkProviderId,
 } from "@narriflow/validators";
 import { formatTimecode } from "@/lib/format";
-import { extractYoutubeId, youtubeThumbnailUrl } from "../../projects/_lib/youtube";
+import {
+  extractYoutubeId,
+  youtubeThumbnailUrl,
+} from "../../projects/_lib/youtube";
 import { ProcessingTimeline } from "../../_shared/processing-timeline";
 import { BrandTemplatePicker } from "./brand-template-picker";
 import { LanguageSelect } from "./language-select";
-import { ModeTabs } from "./mode-tabs";
+import { Switch } from "@narriflow/ui/components/switch";
 import { VideoPreview } from "./video-preview";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { fetchYoutubeMetadataAction, commitLinkImportAction } from "../actions";
 import { isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
-
-function linkProviderLabel(provider: LinkProviderId): string {
-  return LINK_PROVIDERS.find((p) => p.id === provider)?.label ?? "Link";
-}
 
 /** Failure notice: Labeled danger panel with an icon. */
 function ErrorNotice({ message }: { message: string }) {
@@ -92,7 +105,6 @@ interface CommitStepProps {
   usageSummary: UsageSummary;
   commitToken: string;
   onCommitted: (result: CommitStepResult) => void;
-  onChangeSource: () => void;
 }
 
 export function CommitStep({
@@ -103,7 +115,6 @@ export function CommitStep({
   usageSummary,
   commitToken,
   onCommitted,
-  onChangeSource,
 }: CommitStepProps) {
   const [title, setTitle] = useState("");
   const titleTouchedRef = useRef(false);
@@ -128,7 +139,8 @@ export function CommitStep({
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const youtubeId = linkProvider === "youtube" ? extractYoutubeId(linkUrl) : null;
+  const youtubeId =
+    linkProvider === "youtube" ? extractYoutubeId(linkUrl) : null;
 
   // YouTube oEmbed prefill — server-side fetch, ~3s timeout, silent fallback.
   useEffect(() => {
@@ -141,7 +153,8 @@ export function CommitStep({
           titleTouchedRef.current ||
           isAuthenticatedActionFailure(result) ||
           !result.title
-        ) return;
+        )
+          return;
         setTitle(result.title);
       })
       .catch(() => {
@@ -168,9 +181,13 @@ export function CommitStep({
   const estimatedMinutes = hasKnownDuration
     ? processingMinutesFromSeconds(durationSec)
     : null;
-  const minutesLeft = Math.max(0, usageSummary.limitMinutes - usageSummary.usedMinutes);
+  const minutesLeft = Math.max(
+    0,
+    usageSummary.limitMinutes - usageSummary.usedMinutes,
+  );
 
-  const overUploadCap = hasKnownDuration && (durationSec as number) > usageSummary.maxUploadSeconds;
+  const overUploadCap =
+    hasKnownDuration && (durationSec as number) > usageSummary.maxUploadSeconds;
   const wouldExceedMonthly =
     hasKnownDuration &&
     isProcessingQuotaExceeded({
@@ -213,7 +230,7 @@ export function CommitStep({
     }
     onCommitted({
       projectId: result.projectId,
-      title: title.trim() || "Link Import",
+      title: result.title,
       languageCode,
       mode,
       processingStartSec,
@@ -222,181 +239,222 @@ export function CommitStep({
   }
 
   return (
-    <Stack gap="6" maxW="640px" mx="auto" animation="fade-up">
-      {/* Hidden YouTube IFrame duration probe — existing probe from
+    <Stack gap="5" maxW="480px" mx="auto" animation="fade-up">
+      <Stack
+        gap="5"
+        bg="bg.panel"
+        rounded="2xl"
+        p={{ base: "4", md: "6" }}
+      >
+        {/* Hidden YouTube IFrame duration probe — existing probe from
           video-preview.tsx, mounted off-screen so it never affects layout;
           the visible metadata card below draws its own thumbnail/title. */}
-      {youtubeId && (
-        <Box position="absolute" w="1px" h="1px" overflow="hidden" opacity="0" pointerEvents="none" aria-hidden>
-          <VideoPreview
-            source={{ kind: "link", url: linkUrl, provider: "youtube" }}
-            onDurationKnown={handleDurationKnown}
-            durationSec={durationSec}
-          />
-        </Box>
-      )}
+        {youtubeId && (
+          <Box
+            position="absolute"
+            w="1px"
+            h="1px"
+            overflow="hidden"
+            opacity="0"
+            pointerEvents="none"
+            aria-hidden
+          >
+            <VideoPreview
+              source={{ kind: "link", url: linkUrl, provider: "youtube" }}
+              onDurationKnown={handleDurationKnown}
+              durationSec={durationSec}
+            />
+          </Box>
+        )}
 
-      <Flex align="center" justify="space-between">
-        <Text textStyle="eyebrow" color="fg.subtle">
-          Step 1 · Import
-        </Text>
-        <chakra.button
-          type="button"
-          onClick={onChangeSource}
-          disabled={submitting}
-          fontSize="12px"
-          color="fg"
-          textDecoration="underline"
-          textUnderlineOffset="2px"
-          cursor="pointer"
-          transition="color 120ms ease"
-          _hover={{ color: "fg.muted" }}
-          _disabled={{ color: "fg.disabled", cursor: "not-allowed" }}
-        >
-          Change source
-        </chakra.button>
-      </Flex>
-
-      {/* Metadata card */}
-      <Box layerStyle="band">
-        <Flex gap="4" align="flex-start">
-          <MediaWell ratio={16 / 9} w={{ base: "120px", sm: "180px" }} flexShrink={0}>
-            {youtubeId ? (
-              <img
-                src={youtubeThumbnailUrl(youtubeId, "hq")}
-                alt=""
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
+        {/* Metadata card */}
+        <Box bg="bg.subtle" rounded="xl" p="3">
+          <Flex gap="3" align="center">
+            <MediaWell
+              ratio={16 / 9}
+              w={{ base: "80px", sm: "96px" }}
+              flexShrink={0}
+            >
+              {youtubeId ? (
+                <img
+                  src={youtubeThumbnailUrl(youtubeId, "hq")}
+                  alt=""
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                  }}
+                />
+              ) : (
+                <Flex
+                  align="center"
+                  justify="center"
+                  position="absolute"
+                  inset="0"
+                  color="studio.fgMuted"
+                >
+                  <Link2 size={20} strokeWidth={1.75} />
+                </Flex>
+              )}
+            </MediaWell>
+            <Flex flex="1" minW="0" gap="3" align="center" wrap={{ base: "wrap", sm: "nowrap" }}>
+              <Input
+                value={title}
+                onChange={(event) => {
+                  titleTouchedRef.current = true;
+                  setTitle(event.target.value);
+                }}
+                placeholder="Give your project a name"
+                aria-label="Project title"
+                size="sm"
+                flex="1"
+                minW="120px"
+                variant="flushed"
+                borderWidth="0"
+                _focusVisible={{
+                  outline: "2px solid",
+                  outlineColor: "accent.solid",
+                  outlineOffset: "2px",
+                  boxShadow: "none",
                 }}
               />
-            ) : (
-              <Flex align="center" justify="center" position="absolute" inset="0" color="studio.fgMuted">
-                <Link2 size={20} strokeWidth={1.75} />
-              </Flex>
-            )}
-          </MediaWell>
-          <Stack flex="1" minW="0" gap="2">
-            <Text textStyle="eyebrow" color="fg.subtle">
-              {linkProviderLabel(linkProvider)}
-            </Text>
-            <Input
-              value={title}
-              onChange={(event) => {
-                titleTouchedRef.current = true;
-                setTitle(event.target.value);
-              }}
-              placeholder="Episode 45 — Founder interview"
-              aria-label="Project title"
-              size="sm"
-            />
-            {youtubeId ? (
-              <Popover.Root positioning={{ placement: "bottom-start" }}>
-                <Popover.Trigger asChild>
-                  <chakra.button
-                    type="button"
-                    display="inline-flex"
-                    alignItems="center"
-                    gap="1.5"
-                    alignSelf="flex-start"
-                    px="2.5"
-                    py="1"
-                    borderRadius="l1"
-                    borderWidth="1px"
-                    borderColor="border.control"
-                    bg="bg.subtle"
-                    cursor="pointer"
-                    transition="border-color 120ms ease"
-                    _hover={{ borderColor: "border.emphasized" }}
-                  >
-                    <Clock size={11} strokeWidth={1.75} />
-                    <Text textStyle="data" fontSize="11px" color="fg">
-                      {hasKnownDuration ? formatTimecode(durationSec as number) : "Detecting…"}
-                    </Text>
-                  </chakra.button>
-                </Popover.Trigger>
-                <Portal>
-                  <Popover.Positioner>
-                    <Popover.Content minW="320px" p="3">
-                      <ProcessingTimeline
-                        durationSec={durationSec}
-                        startSec={startSec}
-                        endSec={endSec}
-                        disabled={!hasKnownDuration}
-                        hasSource={true}
-                        onChange={(s, e) => {
-                          setStartSec(s);
-                          setEndSec(e);
-                        }}
-                      />
-                    </Popover.Content>
-                  </Popover.Positioner>
-                </Portal>
-              </Popover.Root>
-            ) : (
-              <Text fontSize="11.5px" color="fg.muted" lineHeight="1.5">
-                Details appear after import — the video is fetched and its
-                duration detected during processing.
-              </Text>
-            )}
-          </Stack>
-        </Flex>
-      </Box>
+              {youtubeId ? (
+                <Popover.Root positioning={{ placement: "bottom-start" }}>
+                  <Popover.Trigger asChild>
+                    <chakra.button
+                      type="button"
+                      display="inline-flex"
+                      alignItems="center"
+                      gap="1.5"
+                      flexShrink={0}
+                      px="2.5"
+                      py="1"
+                      borderRadius="l1"
+                      borderWidth="1px"
+                      borderColor="border.control"
+                      bg="bg.subtle"
+                      cursor="pointer"
+                      transition="border-color 120ms ease"
+                      _hover={{ borderColor: "border.emphasized" }}
+                    >
+                      <Clock size={12} strokeWidth={1.75} />
+                      <Text textStyle="data" fontSize="11px" color="fg">
+                        {hasKnownDuration
+                          ? formatTimecode(durationSec as number)
+                          : "Detecting…"}
+                      </Text>
+                      <ChevronDown size={12} />
+                    </chakra.button>
+                  </Popover.Trigger>
+                  <Portal>
+                    <Popover.Positioner>
+                      <Popover.Content minW="320px" p="3">
+                        <ProcessingTimeline
+                          durationSec={durationSec}
+                          startSec={startSec}
+                          endSec={endSec}
+                          disabled={!hasKnownDuration}
+                          hasSource={true}
+                          onChange={(s, e) => {
+                            setStartSec(s);
+                            setEndSec(e);
+                          }}
+                        />
+                      </Popover.Content>
+                    </Popover.Positioner>
+                  </Portal>
+                </Popover.Root>
+              ) : (
+                <Text fontSize="11.5px" color="fg.muted" lineHeight="1.5">
+                  Details appear after import — the video is fetched and its
+                  duration detected during processing.
+                </Text>
+              )}
+            </Flex>
+          </Flex>
+        </Box>
 
-      {/* BrandTemplatePicker draws its own "Brand template" eyebrow + Manage link. */}
-      <Box layerStyle="band">
-        <BrandTemplatePicker
-          builtIns={brandTemplates.builtIns}
-          mine={brandTemplates.mine}
-          value={brandTemplateId}
-          onChange={setBrandTemplateId}
-          profiles={brandProfiles.items}
-          profileValue={brandProfileId}
-          onProfileChange={setBrandProfileId}
-        />
-      </Box>
-
-      <Flex gap="4" wrap="wrap">
-        <Box flex="1" minW="180px">
-          <Text textStyle="eyebrow" color="fg.subtle" mb="2">
-            Speech language
-          </Text>
+        <Stack gap="3">
           <LanguageSelect value={languageCode} onChange={setLanguageCode} />
-        </Box>
-        <Box flex="1" minW="180px">
-          <Text textStyle="eyebrow" color="fg.subtle" mb="2">
-            Mode
-          </Text>
-          <ModeTabs value={mode} onChange={setMode} />
-        </Box>
-      </Flex>
+          <Switch
+            checked={mode === "clip"}
+            onCheckedChange={(checked) => setMode(checked ? "clip" : "caption_only")}
+            inputProps={{ "aria-label": "Get AI clips" }}
+            display="flex"
+            flexDirection="row-reverse"
+            justifyContent="space-between"
+            w="full"
+            minH="40px"
+            px="3"
+            py="2"
+            borderWidth="1px"
+            borderColor="border"
+            rounded="l2"
+            bg="bg.panel"
+          >
+            <Flex align="center" gap="2">
+              <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
+              Get AI clips
+            </Flex>
+          </Switch>
+        </Stack>
 
-      <Stack gap="2.5">
-        {planLimitMessage && <PlanLimitNotice message={planLimitMessage} />}
-        {errorMessage && <ErrorNotice message={errorMessage} />}
-        <Button
-          onClick={handleCommit}
-          disabled={submitting || overUploadCap || wouldExceedMonthly}
-          type="button"
-          size="sm"
-        >
-          {submitting ? (
-            <>
-              <Spinner size="xs" borderTopColor="accent.contrast" />
-              <Text ms="1.5">Working…</Text>
-            </>
-          ) : (
-            "Import & continue"
-          )}
-        </Button>
-        <Text fontSize="11px" color="fg.subtle" textAlign="center">
-          {hasKnownDuration
-            ? `Counts ~${estimatedMinutes} min against your plan · ${minutesLeft} of ${usageSummary.limitMinutes} min left`
-            : `Usage confirmed after import · ${minutesLeft} of ${usageSummary.limitMinutes} min left`}
-        </Text>
+        <chakra.details borderTopWidth="1px" borderColor="border.subtle" pt="4">
+          <chakra.summary
+            display="flex"
+            alignItems="center"
+            justifyContent="space-between"
+            cursor="pointer"
+            fontSize="13px"
+            fontWeight="500"
+          >
+            Brand preferences <ChevronDown size={15} />
+          </chakra.summary>
+          <Box pt="4">
+            <BrandTemplatePicker
+              builtIns={brandTemplates.builtIns}
+              mine={brandTemplates.mine}
+              value={brandTemplateId}
+              onChange={setBrandTemplateId}
+              profiles={brandProfiles.items}
+              profileValue={brandProfileId}
+              onProfileChange={setBrandProfileId}
+            />
+          </Box>
+        </chakra.details>
+
+        <Stack gap="2.5">
+          {planLimitMessage && <PlanLimitNotice message={planLimitMessage} />}
+          {errorMessage && <ErrorNotice message={errorMessage} />}
+          <Button
+            onClick={handleCommit}
+            disabled={submitting || overUploadCap || wouldExceedMonthly}
+            type="button"
+            size="md"
+            h="46px"
+            rounded="xl"
+            bg="accent.solid"
+            color="accent.contrast"
+          >
+            {submitting ? (
+              <>
+                <Spinner size="xs" borderTopColor="accent.contrast" />
+                <Text ms="1.5">Working…</Text>
+              </>
+            ) : (
+              <>
+                Import & continue <ArrowRight size={16} />
+              </>
+            )}
+          </Button>
+          <Text fontSize="11px" color="fg.subtle" textAlign="center">
+            {hasKnownDuration
+              ? `Counts ~${estimatedMinutes} min against your plan · ${minutesLeft} of ${usageSummary.limitMinutes} min left`
+              : `Usage confirmed after import · ${minutesLeft} of ${usageSummary.limitMinutes} min left`}
+          </Text>
+        </Stack>
       </Stack>
     </Stack>
   );

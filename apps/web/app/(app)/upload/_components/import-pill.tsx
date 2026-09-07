@@ -4,24 +4,28 @@ import { Box, Flex, Text } from "@chakra-ui/react";
 import { Link2 } from "lucide-react";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { ingestStageWord, type IngestStageStatus } from "../_lib/use-ingest-stream";
-import { extractYoutubeId, youtubeThumbnailUrl } from "../../projects/_lib/youtube";
+import {
+  ingestStageWord,
+  type IngestStageStatus,
+} from "../_lib/use-ingest-stream";
+import {
+  extractYoutubeId,
+  youtubeThumbnailUrl,
+} from "../../projects/_lib/youtube";
 
-/** Compact pinned pill: thumb + title + ingest stage words only — no
+/** Compact pinned pill: thumbnail, title, and ingest stage only — no
  *  percentage, no download-speed detail (those are deferred, real
  *  worker/yt-dlp work, not UI). */
 export function ImportPill({
   title,
-  sourceProvider,
   sourceMediaUrl,
   ingestStatus,
 }: {
   title: string;
-  sourceProvider: string | null;
   sourceMediaUrl: string;
   ingestStatus: IngestStageStatus;
 }) {
-  const youtubeId = sourceProvider === "youtube" ? extractYoutubeId(sourceMediaUrl) : null;
+  const youtubeId = extractYoutubeId(sourceMediaUrl);
   const stageWord = ingestStageWord(ingestStatus);
   const isTerminal = ingestStatus === "ready" || ingestStatus === "failed";
 
@@ -29,12 +33,16 @@ export function ImportPill({
     <Flex
       align="center"
       gap="3"
-      layerStyle="well"
+      bg="bg.subtle"
       px="3"
-      py="2"
-      borderRadius="l2"
+      py="2.5"
+      borderRadius="xl"
     >
-      <MediaWell ratio={1} w="36px" flexShrink={0}>
+      <MediaWell
+        ratio={16 / 9}
+        w={{ base: "72px", sm: "80px" }}
+        flexShrink={0}
+      >
         {youtubeId ? (
           <img
             src={youtubeThumbnailUrl(youtubeId, "hq")}
@@ -64,7 +72,16 @@ export function ImportPill({
           {title || "Link import"}
         </Text>
       </Box>
-      <Flex align="center" gap="1.5" flexShrink={0}>
+      <Flex
+        role="status"
+        align="center"
+        gap="1.5"
+        flexShrink={0}
+        px="2.5"
+        py="1"
+        rounded="full"
+        bg="bg.panel"
+      >
         {!isTerminal && <Spinner size="xs" />}
         <Text
           textStyle="eyebrow"

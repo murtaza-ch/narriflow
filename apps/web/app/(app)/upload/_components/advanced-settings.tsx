@@ -23,13 +23,7 @@ interface AdvancedSettingsProps {
   onToneConstraintsChange: (value: string) => void;
 }
 
-/**
- * Step 2's "Advanced" disclosure: platform targets, clip count, tone.
- * Deliberately a standalone component (not a fork of the file/RSS
- * ClipSettingsForm advanced section) — clip length, auto-hook, auto-render,
- * and specific moments are promoted to their own top-level Configure bands
- * for the link path, so the shared component's grouping no longer applies.
- */
+/** Optional generation preferences shared by every import source. */
 export function AdvancedSettings({
   platformTargets,
   onPlatformTargetsChange,

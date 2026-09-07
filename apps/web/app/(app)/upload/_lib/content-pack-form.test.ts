@@ -86,3 +86,15 @@ describe("content pack form parsing", () => {
     ).toThrow();
   });
 });
+
+test("local upload preserves aspect ratio and an explicitly disabled hook", () => {
+  const context = buildUploadGenerationContext(baseInput({defaultAspectRatio: "1:1", autoHook: false, autoRenderClips: false}));
+  expect(context.contentPack.defaultAspectRatio).toBe("1:1");
+  expect(context.contentPack.autoHook).toBe(false);
+  expect(context.contentPack.autoRenderClips).toBe(false);
+});
+
+test("RSS form carries the selected brand profile", () => {
+  const form = buildUploadSettingsFormData(baseInput({brandProfileId: "brand-profile-id"}));
+  expect(form.get("brandProfileId")).toBe("brand-profile-id");
+});

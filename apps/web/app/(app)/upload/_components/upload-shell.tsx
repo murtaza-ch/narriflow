@@ -7,11 +7,18 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { Box, chakra, Flex, Grid, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, Info, Upload, Link2, AudioLines } from "lucide-react";
+import { Box, chakra, Flex, Grid, HStack, Stack, Text } from "@chakra-ui/react";
+import {
+  AlertTriangle,
+  Upload,
+  Link2,
+  AudioLines,
+  ArrowRight,
+  ChevronDown,
+  Clock,
+} from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
@@ -24,6 +31,7 @@ import type {
   ClipLengthPreset,
   ClipPlatformTarget,
   GenerationMode,
+  ContentPack,
   LinkProviderId,
 } from "@narriflow/validators";
 import {
@@ -31,7 +39,7 @@ import {
   detectLinkProvider,
   LINK_PROVIDERS,
 } from "@narriflow/validators";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatTimecode } from "@/lib/format";
 import {
   authenticatedRequestFailureMessage,
   classifyAuthenticatedRequestFailure,
@@ -40,10 +48,9 @@ import {
 import { LanguageSelect } from "./language-select";
 import { ModeTabs } from "./mode-tabs";
 import { ProcessingTimeline } from "../../_shared/processing-timeline";
-import { ClipSettingsForm } from "./clip-settings-form";
-import { CaptionPresetSelect } from "../../_shared/caption-preset-select";
+import { ClipStyleSettings } from "./clip-style-settings";
+import { SourceSetupFlow } from "./source-setup-flow";
 import { VideoPreview } from "./video-preview";
-import { RecommendationCard } from "./recommendation-card";
 import { BrandTemplatePicker } from "./brand-template-picker";
 import {
   focusUploadSessionStatusForPhase,
@@ -54,9 +61,7 @@ import {
   buildUploadGenerationContext,
   buildUploadSettingsFormData,
 } from "../_lib/content-pack-form";
-import {
-  safelyGetUploadResumeStorage,
-} from "../_lib/upload-resume";
+import { safelyGetUploadResumeStorage } from "../_lib/upload-resume";
 import { createUploadSessionBrowserAdapter } from "../_lib/upload-session-browser";
 import { generateFromRssAction } from "../actions";
 import {
@@ -75,7 +80,9 @@ const FILE_ACCEPT =
   "video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac";
 
 /** Human-readable labels for the supported providers, joined for hints. */
-const LINK_PROVIDER_LABELS_JOINED = LINK_PROVIDERS.map((p) => p.label).join(" · ");
+const LINK_PROVIDER_LABELS_JOINED = LINK_PROVIDERS.map((p) => p.label).join(
+  " · ",
+);
 
 function linkProviderLabel(provider: LinkProviderId): string {
   return LINK_PROVIDERS.find((p) => p.id === provider)?.label ?? "Link";
@@ -95,25 +102,6 @@ type RssEpisode = {
 };
 
 /** Section band: eyebrow above a 1.5px ink top-rule, content below. */
-function SettingsBand({
-  eyebrow,
-  children,
-}: {
-  eyebrow?: string;
-  children: ReactNode;
-}) {
-  return (
-    <Box>
-      {eyebrow && (
-        <Text textStyle="eyebrow" color="fg.subtle" mb="2">
-          {eyebrow}
-        </Text>
-      )}
-      <Box layerStyle="band">{children}</Box>
-    </Box>
-  );
-}
-
 /** Failure notice: Labeled danger panel with an icon — never muted small text. */
 function ErrorNotice({ message }: { message: string }) {
   return (
@@ -195,7 +183,9 @@ export function UploadShell({
   const confirmUploadUnload = uploadAdapter.shouldConfirmUnload();
 
   // A recognized ?url= commits straight to a chosen source; anything else pre-fills the paste field.
-  const initialLinkProvider = initialUrl ? detectLinkProvider(initialUrl.trim()) : null;
+  const initialLinkProvider = initialUrl
+    ? detectLinkProvider(initialUrl.trim())
+    : null;
   const initialLinkUrl = initialLinkProvider ? initialUrl!.trim() : "";
 
   // Source state
@@ -245,7 +235,8 @@ export function UploadShell({
 
   // Smart paste field
   const [pasteValue, setPasteValue] = useState(initialUrl?.trim() ?? "");
-  const [pasteOverride, setPasteOverride] = useState<PasteOverride>(initialSource);
+  const [pasteOverride, setPasteOverride] =
+    useState<PasteOverride>(initialSource);
 
   // Settings state
   const [languageCode, setLanguageCode] = useState("auto");
@@ -333,7 +324,9 @@ export function UploadShell({
     const query = rssEpisodeQuery.trim().toLocaleLowerCase();
     if (!query) return rssEpisodes;
     return rssEpisodes.filter((episode) =>
-      `${episode.title} ${episode.publishedAt ?? ""}`.toLocaleLowerCase().includes(query),
+      `${episode.title} ${episode.publishedAt ?? ""}`
+        .toLocaleLowerCase()
+        .includes(query),
     );
   }, [rssEpisodeQuery, rssEpisodes]);
   const visibleRssEpisodes = useMemo(
@@ -346,7 +339,11 @@ export function UploadShell({
       return { kind: "file" as const, file };
     }
     if (activeTab === "link" && linkUrl.trim() && linkProvider) {
-      return { kind: "link" as const, url: linkUrl.trim(), provider: linkProvider };
+      return {
+        kind: "link" as const,
+        url: linkUrl.trim(),
+        provider: linkProvider,
+      };
     }
     if (activeTab === "rss" && selectedEpisodes.length > 0) {
       return {
@@ -477,7 +474,9 @@ export function UploadShell({
     if (detectedKind === "link") {
       setActiveTab("link");
       setLinkUrl(trimmedPaste);
-      setLinkProvider(pasteDetectedProvider ?? detectLinkProvider(trimmedPaste));
+      setLinkProvider(
+        pasteDetectedProvider ?? detectLinkProvider(trimmedPaste),
+      );
       return;
     }
     setActiveTab("rss");
@@ -502,7 +501,9 @@ export function UploadShell({
     setActiveTab("file");
   }
 
-  function getFormValues() {
+  function getFormValues(
+    defaultAspectRatio: ContentPack["defaultAspectRatio"],
+  ) {
     const hasKnownDuration = typeof durationSec === "number" && durationSec > 0;
     const nextStartSec = Math.max(0, Math.floor(startSec));
     const nextEndSec = hasKnownDuration
@@ -517,6 +518,7 @@ export function UploadShell({
       languageCode,
       mode,
       clipLengthPreset: clipLength,
+      defaultAspectRatio,
       autoHook,
       specificMoments,
       processingStartSec: hasCustomWindow ? nextStartSec : null,
@@ -531,7 +533,9 @@ export function UploadShell({
     };
   }
 
-  async function handleFileUploadAndGenerate() {
+  async function handleFileUploadAndGenerate(
+    ratio: ContentPack["defaultAspectRatio"],
+  ) {
     if (!file || !title.trim()) {
       setErrorMessage("Add a title and choose a file.");
       return;
@@ -557,7 +561,7 @@ export function UploadShell({
       title: title.trim(),
       brandTemplateId,
       brandProfileId,
-      generationContext: buildUploadGenerationContext(getFormValues()),
+      generationContext: buildUploadGenerationContext(getFormValues(ratio)),
     });
   }
 
@@ -609,7 +613,9 @@ export function UploadShell({
     }
   }
 
-  async function handleRssImportAndGenerate() {
+  async function handleRssImportAndGenerate(
+    ratio: ContentPack["defaultAspectRatio"],
+  ) {
     if (!rssUrl.trim() || selectedEpisodes.length === 0) {
       setErrorMessage("Select at least one episode to import.");
       return;
@@ -619,10 +625,13 @@ export function UploadShell({
     setStatusMessage("Importing episode and queueing generation…");
 
     try {
-      const formData = buildUploadSettingsFormData(getFormValues());
+      const formData = buildUploadSettingsFormData(getFormValues(ratio));
       formData.set("rssUrl", rssUrl.trim());
       formData.set("titlePrefix", title.trim());
-      formData.set("episodeIds", JSON.stringify(selectedEpisodeIds.slice(0, 1)));
+      formData.set(
+        "episodeIds",
+        JSON.stringify(selectedEpisodeIds.slice(0, 1)),
+      );
       rssCommitTokenRef.current ??= crypto.randomUUID();
       formData.set("commitToken", rssCommitTokenRef.current);
       const result = await generateFromRssAction(formData);
@@ -662,15 +671,15 @@ export function UploadShell({
 
   // Link path has its own Commit → Configure CTAs inside LinkImportFlow —
   // this shared submit zone now only serves the unchanged file/RSS flows.
-  function handleSubmit() {
-    if (activeTab === "file") return handleFileUploadAndGenerate();
-    if (activeTab === "rss") return handleRssImportAndGenerate();
+  function handleSubmit(ratio: ContentPack["defaultAspectRatio"]) {
+    if (activeTab === "file") return handleFileUploadAndGenerate(ratio);
+    if (activeTab === "rss") return handleRssImportAndGenerate(ratio);
   }
 
   const submitLabel =
     mode === "caption_only"
-      ? "Get captioned video in 1 click"
-      : "Get clips in 1 click";
+      ? "Upload & create captions"
+      : "Upload & get AI clips";
 
   const sourceKindLabel =
     activeTab === "file"
@@ -722,133 +731,216 @@ export function UploadShell({
       )}
 
       {!sourceChosen ? (
-        /* Source selection */
-        <Stack gap="8" maxW="820px" mx="auto" bg="bg.dialog" borderWidth="1px" borderColor="border.subtle" borderRadius="l3" p={{base:"4",md:"6"}}>
-          <Stack gap="1"><Text fontSize="xs" color="fg.subtle">New project</Text><Text as="h2" fontSize="md" fontWeight="500">Choose your source</Text></Stack>
-          <SimpleGrid columns={3} gap={{base:"2",sm:"4"}} py={{base:"0",md:"3"}}>
-          <Box
-            position="relative"
-            borderRadius="l2"
-            outline={dropzoneDragOver ? "2px solid" : undefined}
-            outlineColor="accent.solid"
-            transition="border-color 120ms ease, background 120ms ease"
-            css={{
-              "&:has(input:focus-visible)": {
-                outline: "2px solid var(--chakra-colors-accent-solid)",
-                outlineOffset: "2px",
-              },
-            }}
-            onDragEnter={(event) => {
-              event.preventDefault();
-              setDropzoneDragOver(true);
-            }}
-            onDragOver={(event) => {
-              event.preventDefault();
-              setDropzoneDragOver(true);
-            }}
-            onDragLeave={(event) => {
-              if (
-                event.relatedTarget instanceof Node &&
-                event.currentTarget.contains(event.relatedTarget)
-              ) {
-                return;
-              }
-              setDropzoneDragOver(false);
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              setDropzoneDragOver(false);
-              if (busy) return;
-              const dropped = event.dataTransfer?.files?.[0];
-              if (dropped) acceptFile(dropped);
-            }}
+        <Stack gap="6" maxW="640px" mx="auto" animation="fade-up">
+          <Stack
+            gap="4"
+            bg="bg.panel"
+            rounded="2xl"
+            p={{ base: "4", md: "6" }}
+            boxShadow="0 8px 32px rgba(0,0,0,0.03)"
           >
-            <Stack gap="3" pointerEvents="none">
-              <Flex h={{ base: "86px", md: "128px" }} align="center" justify="center" bg="bg.panel" borderRadius="l2" color={dropzoneDragOver ? "accent.fg" : "fg.muted"}><Upload size={28} strokeWidth={1.5} /></Flex>
-              <Text fontSize={{ base: "xs", md: "sm" }} fontWeight="500">Upload a file</Text>
-              <Text fontSize="xs" color="fg.subtle" display={{ base: "none", sm: "block" }}>Choose a video or audio file from your device.</Text>
-            </Stack>
-            <input
-              type="file"
-              accept={FILE_ACCEPT}
-              aria-label="Choose a video or audio file"
-              onChange={(event) => {
-                const next = event.target.files?.[0] ?? null;
-                if (next) acceptFile(next);
-              }}
-              style={{
-                position: "absolute",
-                inset: 0,
-                width: "100%",
-                height: "100%",
-                opacity: 0,
-                cursor: "pointer",
-              }}
-            />
-          </Box>
-
-          {[{title:"Paste a link", description:"YouTube, Vimeo, or another supported video URL.", value:"link" as const, icon:Link2}, {title:"Podcast feed", description:"Choose episodes from a public RSS feed.", value:"rss" as const, icon:AudioLines}].map(({title,description,value,icon:Icon}) => (
-            <Box key={value} asChild cursor="pointer" alignSelf="start" minW="0">
-              <button type="button" aria-pressed={pasteOverride === value} onClick={() => {setPasteOverride(value); document.getElementById("import-source-url")?.focus();}}>
-                <Stack gap="3" textAlign="left">
-                  <Flex h={{ base: "86px", md: "128px" }} align="center" justify="center" bg="bg.panel" borderWidth="1px" borderColor={pasteOverride === value ? "border.control" : "transparent"} borderRadius="l2" color="fg.muted" _hover={{ bg: "bg.muted", color: "fg" }}><Icon size={28} strokeWidth={1.5}/></Flex>
-                  <Text fontSize={{ base: "xs", md: "sm" }} fontWeight="500">{title}</Text>
-                  <Text display={{base:"none",sm:"block"}} fontSize="xs" color="fg.subtle">{description}</Text>
-                </Stack>
-              </button>
-            </Box>
-          ))}
-          </SimpleGrid>
-          {/* Smart paste — one field, auto-detects a provider link vs RSS */}
-          <Stack gap="3">
-            <Flex align="center" gap="4">
-              <Text
-                textStyle="eyebrow"
-                fontWeight="500"
-                color="fg.subtle"
+            <Stack gap="2">
+              <chakra.label
+                htmlFor="import-source-url"
+                fontSize="13px"
+                fontWeight="550"
               >
-                Video link or RSS feed
-              </Text>
-            </Flex>
-            {/* The paste field is the primary path — attached solid Continue
-                is this view's one solid button. */}
-            <Flex gap="2" bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l2" p="2">
-              <Input
-                id="import-source-url"
-                value={pasteValue}
-                onChange={(event) => setPasteValue(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    commitPastedLink();
-                  }
+                Import from a link
+              </chakra.label>
+              <Flex
+                gap="2"
+                align="center"
+                bg="bg.subtle"
+                borderWidth="1px"
+                borderColor="border.control"
+                rounded="xl"
+                p="1.5"
+                _focusWithin={{
+                  borderColor: "accent.solid",
+                  outline: "1px solid",
+                  outlineColor: "accent.solid",
                 }}
-                placeholder="Paste a video link or RSS feed"
-                type="url"
-                aria-label="Video link or RSS URL"
-                flex="1"
-                variant="flushed"
-                borderWidth="0"
-                px="3"
-              />
-              <Button
-                onClick={commitPastedLink}
-                disabled={!detectedKind || busy}
-                type="button"
-
               >
-                Continue
+                <Box pl="2" color="fg.muted">
+                  <Link2 size={18} />
+                </Box>
+                <Input
+                  id="import-source-url"
+                  value={pasteValue}
+                  onChange={(event) => setPasteValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitPastedLink();
+                    }
+                  }}
+                  placeholder={
+                    pasteOverride === "rss"
+                      ? "Paste a podcast RSS feed"
+                      : "Paste a video link or RSS feed"
+                  }
+                  type="url"
+                  aria-label="Video link or RSS URL"
+                  flex="1"
+                  minW="0"
+                  variant="flushed"
+                  borderWidth="0"
+                  px="1"
+                  fontSize="13px"
+                  _focusVisible={{ outline: "none", boxShadow: "none" }}
+                />
+                <Button
+                  onClick={commitPastedLink}
+                  disabled={!detectedKind || busy}
+                  type="button"
+                  bg="accent.solid"
+                  color="accent.contrast"
+                  rounded="lg"
+                  px="4"
+                  h="40px"
+                >
+                  Continue <ArrowRight size={15} />
+                </Button>
+              </Flex>
+              {trimmedPaste && (
+                <Text
+                  fontSize="12px"
+                  color={detectedKind ? "fg.muted" : "danger.fg"}
+                  role="status"
+                >
+                  {detectedKind === "rss"
+                    ? "Podcast RSS feed detected"
+                    : detectedKind === "link"
+                      ? `${pasteDetectedProvider ? linkProviderLabel(pasteDetectedProvider) : "Video"} link detected`
+                      : "Enter a full URL starting with https://"}
+                </Text>
+              )}
+            </Stack>
+            <Flex align="center" gap="3" color="fg.subtle">
+              <Box flex="1" h="1px" bg="border.subtle" />
+              <Text fontSize="11px">or upload a file</Text>
+              <Box flex="1" h="1px" bg="border.subtle" />
+            </Flex>
+            <Box
+              position="relative"
+              rounded="xl"
+              borderWidth="1px"
+              borderStyle="dashed"
+              borderColor={dropzoneDragOver ? "accent.solid" : "border.control"}
+              bg={dropzoneDragOver ? "accent.subtle" : "bg.subtle"}
+              transition="background 150ms ease, border-color 150ms ease"
+              _hover={{ bg: "accent.subtle", borderColor: "accent.solid" }}
+              css={{
+                "&:has(input:focus-visible)": {
+                  outline: "2px solid var(--chakra-colors-accent-solid)",
+                  outlineOffset: "3px",
+                },
+              }}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setDropzoneDragOver(true);
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setDropzoneDragOver(true);
+              }}
+              onDragLeave={(event) => {
+                if (
+                  event.relatedTarget instanceof Node &&
+                  event.currentTarget.contains(event.relatedTarget)
+                )
+                  return;
+                setDropzoneDragOver(false);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDropzoneDragOver(false);
+                if (busy) return;
+                const dropped = event.dataTransfer?.files?.[0];
+                if (dropped) acceptFile(dropped);
+              }}
+            >
+              <Stack
+                align="center"
+                justify="center"
+                minH={{ base: "200px", md: "240px" }}
+                gap="4"
+                pointerEvents="none"
+                p="5"
+              >
+                <Flex
+                  boxSize="56px"
+                  rounded="2xl"
+                  bg="bg.panel"
+                  borderWidth="1px"
+                  borderColor="border"
+                  boxShadow="0 4px 10px rgba(0,0,0,0.04)"
+                  align="center"
+                  justify="center"
+                  color="accent.fg"
+                >
+                  <Upload size={25} strokeWidth={1.5} />
+                </Flex>
+                <Stack gap="1.5" align="center">
+                  <Text fontSize="14px" fontWeight="550">
+                    Drop your video here, or{" "}
+                    <chakra.span color="accent.fg">browse files</chakra.span>
+                  </Text>
+                  <Text fontSize="12px" color="fg.muted">
+                    Video or audio · Up to 5 GB
+                  </Text>
+                </Stack>
+              </Stack>
+              <input
+                type="file"
+                accept={FILE_ACCEPT}
+                aria-label="Choose a video or audio file"
+                disabled={busy}
+                onChange={(event) => {
+                  const next = event.target.files?.[0];
+                  if (next) acceptFile(next);
+                }}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  opacity: 0,
+                  cursor: "pointer",
+                }}
+              />
+            </Box>
+            <Flex align="center" justify="space-between" gap="3" wrap="wrap">
+              <Flex align="center" gap="2" color="fg.muted">
+                <AudioLines size={15} />
+                <Text fontSize="12px">Have a podcast?</Text>
+              </Flex>
+              <Button
+                variant="ghost"
+                size="sm"
+                color="accent.fg"
+                onClick={() => {
+                  setPasteOverride("rss");
+                  document.getElementById("import-source-url")?.focus();
+                }}
+              >
+                Import an RSS feed <ArrowRight size={13} />
               </Button>
             </Flex>
-            <Flex justify="space-between" align="center" gap="3" wrap="wrap">
-              <Flex align="center" gap="2">
-                <Text fontSize="11px" color="fg.subtle">
-                  Treat link as
-                </Text>
+            <chakra.details fontSize="12px" color="fg.muted">
+              <chakra.summary
+                cursor="pointer"
+                display="flex"
+                alignItems="center"
+                gap="1"
+              >
+                Link options <ChevronDown size={13} />
+              </chakra.summary>
+              <Stack gap="3" pt="3">
                 <SegmentedControl
                   size="sm"
                   items={[
-                    { label: "Auto", value: "auto" },
+                    { label: "Auto-detect", value: "auto" },
                     { label: "Video link", value: "link" },
                     { label: "RSS feed", value: "rss" },
                   ]}
@@ -857,43 +949,16 @@ export function UploadShell({
                     setPasteOverride(next as PasteOverride)
                   }
                 />
-              </Flex>
-              <Box minH="4">
-                {trimmedPaste && detectedKind === "link" && (
-                  <Flex align="center" gap="1.5">
-                    <Box w="6px" h="6px" borderRadius="1px" bg="accent.solid" />
-                    <Text textStyle="eyebrow" color="fg.muted">
-                      {pasteDetectedProvider
-                        ? `Detected: ${linkProviderLabel(pasteDetectedProvider)}`
-                        : "Video link detected"}
-                    </Text>
-                  </Flex>
-                )}
-                {trimmedPaste && detectedKind === "rss" && (
-                  <Flex align="center" gap="1.5">
-                    <Box w="6px" h="6px" borderRadius="1px" bg="accent.solid" />
-                    <Text textStyle="eyebrow" color="fg.muted">
-                      RSS feed detected
-                    </Text>
-                  </Flex>
-                )}
-                {trimmedPaste && !detectedKind && (
-                  <Flex align="center" gap="1.5" color="danger.fg">
-                    <AlertTriangle size={12} strokeWidth={2} />
-                    <Text fontSize="11px" fontWeight="500">
-                      Paste a full URL, like https://…
-                    </Text>
-                  </Flex>
-                )}
-              </Box>
-            </Flex>
-            <Text textStyle="data" fontSize="11px" color="fg.subtle">
-              Supported: {LINK_PROVIDER_LABELS_JOINED} — or a podcast RSS feed
-            </Text>
+                <Text fontSize="11px">
+                  Supported: {LINK_PROVIDER_LABELS_JOINED}
+                </Text>
+              </Stack>
+            </chakra.details>
             {errorMessage && <ErrorNotice message={errorMessage} />}
           </Stack>
-
-          <RecommendationCard />
+          <Text textAlign="center" fontSize="12px" color="fg.muted">
+            Choose your captions and clip preferences in the next steps.
+          </Text>
         </Stack>
       ) : activeTab === "link" ? (
         /* Link path: its own Commit → Configure state machine — see
@@ -902,89 +967,71 @@ export function UploadShell({
         <LinkImportFlow
           linkUrl={resumeData?.sourceMediaUrl ?? linkUrl}
           linkProvider={
-            (resumeData?.sourceProvider as LinkProviderId | null) ?? linkProvider ?? "youtube"
+            (resumeData?.sourceProvider as LinkProviderId | null) ??
+            linkProvider ??
+            "youtube"
           }
           brandTemplates={brandTemplates}
           brandProfiles={brandProfiles}
           usageSummary={usageSummary}
           resumeData={resumeData}
-          onChangeSource={handleChangeSource}
         />
       ) : (
-        /* STEP 2 — preview + settings bands */
-        <Grid
-          templateColumns={{ base: "1fr", lg: "1.1fr 1fr" }}
-          gap="8"
-          animation="fade-up"
-        >
-          {/* LEFT — source */}
-          <Box
-            alignSelf="start"
-            position={{ base: "static", lg: "sticky" }}
-            top={{ lg: "6" }}
-          >
-            <Flex align="center" justify="space-between" mb="2">
-              <Flex align="center" gap="1.5">
-                <Text textStyle="eyebrow" color="fg.subtle">
-                  Source · {sourceKindLabel}
-                </Text>
-              </Flex>
-              <chakra.button
-                type="button"
-                onClick={handleChangeSource}
-                disabled={busy || uploadSourceLocked}
-                fontSize="12px"
-                color="fg"
-                textDecoration="underline"
-                textUnderlineOffset="2px"
-                cursor="pointer"
-                transition="color 120ms ease"
-                _hover={{ color: "fg.muted" }}
-                _disabled={{ color: "fg.disabled", cursor: "not-allowed" }}
-              >
-                Change source
-              </chakra.button>
-            </Flex>
-            <Stack layerStyle="band" gap="4">
-              <VideoPreview
-                source={previewSource}
-                onDurationKnown={handleDurationKnown}
-                durationSec={durationSec}
-              />
-
-              {activeTab === "rss" && (
-                <Stack gap="2">
-                  {rssPreviewLoading && (
-                    <Flex align="center" gap="2">
-                      <Spinner size="xs" />
-                      <Text fontSize="12.5px" color="fg.muted">
-                        Loading episodes…
-                      </Text>
-                    </Flex>
-                  )}
-                  {rssError && <ErrorNotice message={rssError} />}
-                  {!rssPreviewLoading && rssNotice && (
-                    <Text textStyle="data" fontSize="11px" color="fg.muted">
-                      {rssNotice}
+        <SourceSetupFlow
+          title={title}
+          onTitleChange={setTitle}
+          sourceLabel={sourceKindLabel}
+          mode={mode}
+          canContinue={Boolean(hasSource) && Boolean(title.trim())}
+          locked={busy || uploadSourceLocked}
+          onChangeSource={handleChangeSource}
+          sourcePreview={
+            <VideoPreview
+              source={previewSource}
+              onDurationKnown={handleDurationKnown}
+              durationSec={durationSec}
+            />
+          }
+          sourcePicker={
+            activeTab === "rss" && (
+              <Stack gap="2">
+                {rssPreviewLoading && (
+                  <Flex align="center" gap="2">
+                    <Spinner size="xs" />
+                    <Text fontSize="12.5px" color="fg.muted">
+                      Loading episodes…
                     </Text>
-                  )}
-                  {rssEpisodes.length > 0 && (
-                    <Stack gap="2.5">
-                      <Input
-                        aria-label="Search RSS episodes"
-                        placeholder="Search episodes"
-                        value={rssEpisodeQuery}
-                        onChange={(event) => {
-                          setRssEpisodeQuery(event.target.value);
-                          setRssEpisodeLimit(RSS_EPISODE_PAGE_SIZE);
-                        }}
-                        size="sm"
-                      />
-                      <Flex align="center" justify="space-between" gap="2">
-                        <Text textStyle="data" fontSize="10.5px" color="fg.subtle">
-                          Showing {visibleRssEpisodes.length} of {filteredRssEpisodes.length}
-                        </Text>
-                        {rssEpisodeQuery && filteredRssEpisodes.length !== rssEpisodes.length && (
+                  </Flex>
+                )}
+                {rssError && <ErrorNotice message={rssError} />}
+                {!rssPreviewLoading && rssNotice && (
+                  <Text textStyle="data" fontSize="11px" color="fg.muted">
+                    {rssNotice}
+                  </Text>
+                )}
+                {rssEpisodes.length > 0 && (
+                  <Stack gap="2.5">
+                    <Input
+                      aria-label="Search RSS episodes"
+                      placeholder="Search episodes"
+                      value={rssEpisodeQuery}
+                      onChange={(event) => {
+                        setRssEpisodeQuery(event.target.value);
+                        setRssEpisodeLimit(RSS_EPISODE_PAGE_SIZE);
+                      }}
+                      size="sm"
+                    />
+                    <Flex align="center" justify="space-between" gap="2">
+                      <Text
+                        textStyle="data"
+                        fontSize="10.5px"
+                        color="fg.subtle"
+                      >
+                        Showing {visibleRssEpisodes.length} of{" "}
+                        {filteredRssEpisodes.length}
+                      </Text>
+                      {rssEpisodeQuery &&
+                        filteredRssEpisodes.length !== rssEpisodes.length && (
                           <chakra.button
                             type="button"
                             onClick={() => {
@@ -999,188 +1046,200 @@ export function UploadShell({
                             Clear search
                           </chakra.button>
                         )}
-                      </Flex>
-                      <RadioGroup
-                        value={selectedEpisodeIds[0] ?? ""}
-                        onValueChange={(next) => toggleEpisode(next, true)}
+                    </Flex>
+                    <RadioGroup
+                      value={selectedEpisodeIds[0] ?? ""}
+                      onValueChange={(next) => toggleEpisode(next, true)}
+                    >
+                      <Stack
+                        gap="0"
+                        maxH="60"
+                        overflowY="auto"
+                        borderTopWidth="1px"
+                        borderTopColor="border"
                       >
-                        <Stack
-                          gap="0"
-                          maxH="60"
-                          overflowY="auto"
-                          borderTopWidth="1px"
-                          borderTopColor="border"
-                        >
-                          {visibleRssEpisodes.map((episode) => (
-                            <Box
-                              key={episode.id}
-                              py="2.5"
-                              px="1"
-                              borderBottomWidth="1px"
-                              borderBottomColor="border.subtle"
-                              transition="background 120ms ease"
-                              _hover={{ bg: "bg.subtle" }}
-                            >
-                              <Radio value={episode.id} w="full">
-                                <Box overflow="hidden" minW="0">
-                                  <Text
-                                    fontSize="13px"
-                                    fontWeight="500"
-                                    color="fg"
-                                    truncate
-                                  >
-                                    {episode.title}
-                                  </Text>
-                                  <Text
-                                    textStyle="data"
-                                    fontSize="11px"
-                                    color="fg.subtle"
-                                    mt="0.5"
-                                  >
-                                    {episode.publishedAt
-                                      ? formatDate(episode.publishedAt) ||
-                                        episode.publishedAt
-                                      : "Unknown publish date"}
-                                  </Text>
-                                </Box>
-                              </Radio>
-                            </Box>
-                          ))}
-                          {visibleRssEpisodes.length === 0 && (
-                            <Text py="4" px="1" fontSize="12px" color="fg.muted">
-                              No episodes match this search.
-                            </Text>
-                          )}
-                        </Stack>
-                      </RadioGroup>
-                      {visibleRssEpisodes.length < filteredRssEpisodes.length && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            setRssEpisodeLimit((current) =>
-                              Math.min(
-                                current + RSS_EPISODE_PAGE_SIZE,
-                                filteredRssEpisodes.length,
-                              ),
-                            )
-                          }
-                        >
-                          Show {Math.min(
-                            RSS_EPISODE_PAGE_SIZE,
-                            filteredRssEpisodes.length - visibleRssEpisodes.length,
-                          )} more
-                        </Button>
-                      )}
-                    </Stack>
-                  )}
-                </Stack>
-              )}
-            </Stack>
-          </Box>
-
-          {/* RIGHT — settings as rule-band sections */}
-          <Stack gap="8">
-            <fieldset
-              disabled={uploadSourceLocked}
-              aria-disabled={uploadSourceLocked || undefined}
-              inert={uploadSourceLocked || undefined}
-              style={{ border: 0, margin: 0, minWidth: 0, padding: 0 }}
-            >
-              <Stack gap="8">
-                <SettingsBand eyebrow="Project">
-              <Input
-                onChange={(event) => setTitle(event.target.value)}
-                placeholder="Episode 45 — Founder interview"
-                value={title}
-                aria-label="Project title"
-              />
-                </SettingsBand>
-
-                <SettingsBand eyebrow="Mode">
-                  <ModeTabs value={mode} onChange={setMode} />
-                </SettingsBand>
-
-                <SettingsBand eyebrow="Speech language">
+                        {visibleRssEpisodes.map((episode) => (
+                          <Box
+                            key={episode.id}
+                            py="2.5"
+                            px="1"
+                            borderBottomWidth="1px"
+                            borderBottomColor="border.subtle"
+                            transition="background 120ms ease"
+                            _hover={{ bg: "bg.subtle" }}
+                          >
+                            <Radio value={episode.id} w="full">
+                              <Box overflow="hidden" minW="0">
+                                <Text
+                                  fontSize="13px"
+                                  fontWeight="500"
+                                  color="fg"
+                                  truncate
+                                >
+                                  {episode.title}
+                                </Text>
+                                <Text
+                                  textStyle="data"
+                                  fontSize="11px"
+                                  color="fg.subtle"
+                                  mt="0.5"
+                                >
+                                  {episode.publishedAt
+                                    ? formatDate(episode.publishedAt) ||
+                                      episode.publishedAt
+                                    : "Unknown publish date"}
+                                </Text>
+                              </Box>
+                            </Radio>
+                          </Box>
+                        ))}
+                        {visibleRssEpisodes.length === 0 && (
+                          <Text py="4" px="1" fontSize="12px" color="fg.muted">
+                            No episodes match this search.
+                          </Text>
+                        )}
+                      </Stack>
+                    </RadioGroup>
+                    {visibleRssEpisodes.length < filteredRssEpisodes.length && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setRssEpisodeLimit((current) =>
+                            Math.min(
+                              current + RSS_EPISODE_PAGE_SIZE,
+                              filteredRssEpisodes.length,
+                            ),
+                          )
+                        }
+                      >
+                        Show{" "}
+                        {Math.min(
+                          RSS_EPISODE_PAGE_SIZE,
+                          filteredRssEpisodes.length -
+                            visibleRssEpisodes.length,
+                        )}{" "}
+                        more
+                      </Button>
+                    )}
+                  </Stack>
+                )}
+              </Stack>
+            )
+          }
+          metadata={
+            <Stack gap="4">
+              <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="4">
+                <Box>
+                  <Text fontSize="12px" color="fg.muted" mb="2">
+                    Speech language
+                  </Text>
                   <LanguageSelect
                     value={languageCode}
                     onChange={setLanguageCode}
                   />
-                </SettingsBand>
-
-                {/* ProcessingTimeline draws its own label under the section rule. */}
-                <Box layerStyle="band">
-              <ProcessingTimeline
-                durationSec={durationSec}
-                startSec={startSec}
-                endSec={endSec}
-                disabled={!hasSource || !durationSec}
-                hasSource={Boolean(hasSource)}
-                onChange={(s, e) => {
-                  setStartSec(s);
-                  setEndSec(e);
-                }}
-              />
                 </Box>
-
-                {/* BrandTemplatePicker draws its own label + Manage link. */}
-                <Box layerStyle="band">
-              <BrandTemplatePicker
-                builtIns={brandTemplates.builtIns}
-                mine={brandTemplates.mine}
-                value={brandTemplateId}
-                onChange={setBrandTemplateId}
-                profiles={brandProfiles.items}
-                profileValue={brandProfileId}
-                onProfileChange={setBrandProfileId}
-              />
+                <Box>
+                  <Text fontSize="12px" color="fg.muted" mb="2">
+                    Mode
+                  </Text>
+                  <ModeTabs value={mode} onChange={setMode} />
                 </Box>
-
-                {mode === "clip" && (
-                  <SettingsBand eyebrow="Clip settings">
-                <ClipSettingsForm
-                  clipLength={clipLength}
-                  onClipLengthChange={setClipLength}
-                  autoHook={autoHook}
-                  onAutoHookChange={setAutoHook}
-                  specificMoments={specificMoments}
-                  onSpecificMomentsChange={setSpecificMoments}
-                  platformTargets={platformTargets}
-                  onPlatformTargetsChange={setPlatformTargets}
-                  clipCountTarget={clipCountTarget}
-                  onClipCountTargetChange={setClipCountTarget}
-                  autoRenderClips={autoRenderClips}
-                  onAutoRenderClipsChange={setAutoRenderClips}
-                  toneConstraints={toneConstraints}
-                  onToneConstraintsChange={setToneConstraints}
-                />
-                  </SettingsBand>
-                )}
-
-                {mode === "caption_only" && (
-                  <Box layerStyle="band">
-                <Stack gap="3">
-                  <CaptionPresetSelect
-                    value={captionPreset}
-                    onChange={setCaptionPreset}
-                  />
-                  <Flex gap="2" align="flex-start">
-                    <Box color="fg.subtle" mt="0.5" flexShrink={0}>
-                      <Info size={13} strokeWidth={2} />
-                    </Box>
-                    <Text fontSize="12px" color="fg.muted" lineHeight="1.5">
-                      We transcribe your full video, then render it at original
-                      length with burned-in captions. No clipping.
-                    </Text>
-                  </Flex>
-                </Stack>
+              </Grid>
+              {durationSec ? (
+                <chakra.details
+                  borderTopWidth="1px"
+                  borderColor="border.subtle"
+                  pt="3"
+                >
+                  <chakra.summary
+                    display="flex"
+                    justifyContent="space-between"
+                    alignItems="center"
+                    cursor="pointer"
+                    fontSize="12px"
+                    color="fg.muted"
+                  >
+                    <Flex align="center" gap="2">
+                      <Clock size={13} />
+                      {formatTimecode(durationSec)} · Select a processing range
+                    </Flex>
+                    <ChevronDown size={14} />
+                  </chakra.summary>
+                  <Box pt="4">
+                    <ProcessingTimeline
+                      durationSec={durationSec}
+                      startSec={startSec}
+                      endSec={endSec}
+                      disabled={!hasSource}
+                      hasSource={Boolean(hasSource)}
+                      onChange={(start, end) => {
+                        setStartSec(start);
+                        setEndSec(end);
+                      }}
+                    />
                   </Box>
-                )}
-              </Stack>
-            </fieldset>
-
-            {/* Submit zone */}
+                </chakra.details>
+              ) : (
+                <Text fontSize="11px" color="fg.muted">
+                  Duration and processing usage will be confirmed after upload.
+                </Text>
+              )}
+              <chakra.details
+                borderTopWidth="1px"
+                borderColor="border.subtle"
+                pt="3"
+              >
+                <chakra.summary
+                  display="flex"
+                  justifyContent="space-between"
+                  alignItems="center"
+                  cursor="pointer"
+                  fontSize="13px"
+                  fontWeight="500"
+                >
+                  Brand preferences
+                  <ChevronDown size={15} />
+                </chakra.summary>
+                <Box pt="4">
+                  <BrandTemplatePicker
+                    builtIns={brandTemplates.builtIns}
+                    mine={brandTemplates.mine}
+                    value={brandTemplateId}
+                    onChange={setBrandTemplateId}
+                    profiles={brandProfiles.items}
+                    profileValue={brandProfileId}
+                    onProfileChange={setBrandProfileId}
+                  />
+                </Box>
+              </chakra.details>
+            </Stack>
+          }
+          configuration={(ratio, setRatio) => (
+            <ClipStyleSettings
+              mode={mode}
+              defaultAspectRatio={ratio}
+              setDefaultAspectRatio={setRatio}
+              clipLengthPreset={clipLength}
+              setClipLengthPreset={setClipLength}
+              captionPreset={captionPreset}
+              setCaptionPreset={setCaptionPreset}
+              autoHook={autoHook}
+              setAutoHook={setAutoHook}
+              autoRenderClips={autoRenderClips}
+              setAutoRenderClips={setAutoRenderClips}
+              specificMoments={specificMoments}
+              setSpecificMoments={setSpecificMoments}
+              platformTargets={platformTargets}
+              setPlatformTargets={setPlatformTargets}
+              clipCountTarget={clipCountTarget}
+              setClipCountTarget={setClipCountTarget}
+              toneConstraints={toneConstraints}
+              setToneConstraints={setToneConstraints}
+            />
+          )}
+          actions={(ratio) => (
             <Stack gap="3" pt="1">
               {activeTab === "file" && (
                 <UploadSessionStatusPanel
@@ -1197,37 +1256,38 @@ export function UploadShell({
                 </Flex>
               )}
               {errorMessage && <ErrorNotice message={errorMessage} />}
-              <HStack gap="2">
+              <HStack gap="2" w="full" maxW="480px" mx="auto">
                 <Button
                   disabled={submitDisabled}
                   onClick={() => {
-                    if (
-                      activeTab === "file" &&
-                      uploadSnapshot.canStartFresh
-                    ) {
+                    if (activeTab === "file" && uploadSnapshot.canStartFresh) {
                       void uploadAdapter.startFresh();
                       return;
                     }
-                    void handleSubmit();
+                    void handleSubmit(ratio);
                   }}
                   type="button"
                   size="md"
                   flex="1"
+                  h="46px"
+                  rounded="xl"
+                  bg="accent.solid"
+                  color="accent.contrast"
                 >
                   {activeTab === "file"
                     ? uploadSnapshot.phase === "paused"
                       ? "Resume upload"
                       : uploadSnapshot.canStartFresh
                         ? "Start fresh upload"
-                      : uploadSnapshot.phase === "failed"
-                        ? "Try upload again"
-                        : uploadSnapshot.phase === "verifying"
-                          ? "Verifying…"
-                          : uploadSnapshot.phase === "uploading"
-                            ? "Uploading…"
-                            : uploadSnapshot.phase === "preparing"
-                              ? "Preparing…"
-                              : submitLabel
+                        : uploadSnapshot.phase === "failed"
+                          ? "Try upload again"
+                          : uploadSnapshot.phase === "verifying"
+                            ? "Verifying…"
+                            : uploadSnapshot.phase === "uploading"
+                              ? "Uploading…"
+                              : uploadSnapshot.phase === "preparing"
+                                ? "Preparing…"
+                                : submitLabel
                     : submitting
                       ? "Working…"
                       : submitLabel}
@@ -1240,12 +1300,10 @@ export function UploadShell({
                   />
                 )}
               </HStack>
-              <Text fontSize="11px" color="fg.subtle" textAlign="center">
-                Using video you don&apos;t own may violate copyright laws.
-              </Text>
+
             </Stack>
-          </Stack>
-        </Grid>
+          )}
+        />
       )}
     </Box>
   );

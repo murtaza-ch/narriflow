@@ -1,14 +1,18 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Box, Flex, Text } from "@chakra-ui/react";
-import { Link2, Play } from "lucide-react";
+import { Link2, Play, FileVideo } from "lucide-react";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
 import type { LinkProviderId } from "@narriflow/validators";
 import { LINK_PROVIDERS } from "@narriflow/validators";
+import { attachLocalMediaPreview } from "../_lib/local-media-preview";
 import { formatTimecode } from "@/lib/format";
-import { extractYoutubeId, youtubeThumbnailUrl } from "../../projects/_lib/youtube";
+import {
+  extractYoutubeId,
+  youtubeThumbnailUrl,
+} from "../../projects/_lib/youtube";
 
 type YtPlayer = {
   getDuration: () => number;
@@ -62,7 +66,8 @@ function loadYoutubeApi(): Promise<YtNamespace> {
     const script = document.createElement("script");
     script.src = YT_SCRIPT_SRC;
     script.async = true;
-    script.onerror = () => reject(new Error("Failed to load YouTube IFrame API"));
+    script.onerror = () =>
+      reject(new Error("Failed to load YouTube IFrame API"));
     document.head.appendChild(script);
   });
 
@@ -91,11 +96,23 @@ function linkProviderLabel(provider: LinkProviderId): string {
 
 /** Neutral placeholder for link providers other than YouTube — no
  *  client-side preview is possible before import runs. */
-function LinkPreview({ url, provider }: { url: string; provider: LinkProviderId }) {
+function LinkPreview({
+  url,
+  provider,
+}: {
+  url: string;
+  provider: LinkProviderId;
+}) {
   return (
     <Flex gap="4" p="4" layerStyle="well" align="flex-start">
       <MediaWell ratio={1} w="64px" flexShrink={0}>
-        <Flex align="center" justify="center" position="absolute" inset="0" color="studio.fgMuted">
+        <Flex
+          align="center"
+          justify="center"
+          position="absolute"
+          inset="0"
+          color="studio.fgMuted"
+        >
           <Link2 size={20} strokeWidth={1.75} />
         </Flex>
       </MediaWell>
@@ -107,8 +124,8 @@ function LinkPreview({ url, provider }: { url: string; provider: LinkProviderId 
           {url}
         </Text>
         <Text fontSize="12px" color="fg.muted" mt="1.5">
-          Preview appears after import — the video is fetched and its
-          duration detected during processing.
+          Preview appears after import — the video is fetched and its duration
+          detected during processing.
         </Text>
       </Box>
     </Flex>
@@ -179,17 +196,85 @@ function YoutubePreview({
   );
 }
 
+function LocalVideoPreview({
+  file,
+  onDurationKnown,
+  durationSec,
+}: {
+  file: File;
+  onDurationKnown: (seconds: number) => void;
+  durationSec?: number | null;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    setUnavailable(false);
+    const detach = attachLocalMediaPreview(video, file);
+    const timeout = window.setTimeout(() => {
+      if (video.readyState === 0) setUnavailable(true);
+    }, 15000);
+    return () => {
+      window.clearTimeout(timeout);
+      detach();
+    };
+  }, [file]);
+  return (
+    <MediaWell
+      ratio={16 / 9}
+      timecode={durationSec ? formatTimecode(durationSec) : undefined}
+    >
+      {/* biome-ignore lint/a11y/useMediaCaption: source preview precedes transcription; no captions exist yet. */}
+      <video
+        ref={videoRef}
+        controls
+        playsInline
+        preload="metadata"
+        onError={() => setUnavailable(true)}
+        onLoadedMetadata={(event) => {
+          const seconds = event.currentTarget.duration;
+          if (Number.isFinite(seconds) && seconds > 0) {
+            setUnavailable(false);
+            onDurationKnown(Math.floor(seconds));
+          }
+        }}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          objectFit: "contain",
+        }}
+      />
+      {unavailable && (
+        <Flex
+          role="status"
+          position="absolute"
+          inset="0"
+          direction="column"
+          align="center"
+          justify="center"
+          gap="2"
+          p="3"
+          bg="studio.canvas"
+          color="studio.fgMuted"
+          textAlign="center"
+        >
+          <FileVideo size={22} />
+          <Text fontSize="11px">Browser preview unavailable.</Text>
+          <Text fontSize="10px">You can still upload this file.</Text>
+        </Flex>
+      )}
+    </MediaWell>
+  );
+}
+
 export function VideoPreview({
   source,
   onDurationKnown,
   durationSec,
 }: VideoPreviewProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const objectUrl = useMemo(() => {
-    if (source?.kind === "file") return URL.createObjectURL(source.file);
-    return null;
-  }, [source]);
-
   // Forward RSS-known duration upward so the timeline becomes interactive.
   useEffect(() => {
     if (
@@ -200,11 +285,6 @@ export function VideoPreview({
       onDurationKnown(Math.floor(source.durationSeconds));
     }
   }, [source, onDurationKnown]);
-
-  useEffect(() => {
-    if (!objectUrl) return;
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [objectUrl]);
 
   if (!source) {
     return (
@@ -221,33 +301,13 @@ export function VideoPreview({
     );
   }
 
-  if (source.kind === "file" && objectUrl) {
+  if (source.kind === "file") {
     return (
-      <MediaWell
-        ratio={16 / 9}
-        timecode={durationSec ? formatTimecode(durationSec) : undefined}
-      >
-        {/* biome-ignore lint/a11y/useMediaCaption: pre-transcription upload preview; no caption data exists until transcription runs. */}
-        <video
-          ref={videoRef}
-          src={objectUrl}
-          controls
-          preload="metadata"
-          onLoadedMetadata={(event) => {
-            const duration = event.currentTarget.duration;
-            if (Number.isFinite(duration)) {
-              onDurationKnown(Math.floor(duration));
-            }
-          }}
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
-          }}
-        />
-      </MediaWell>
+      <LocalVideoPreview
+        file={source.file}
+        onDurationKnown={onDurationKnown}
+        durationSec={durationSec}
+      />
     );
   }
 

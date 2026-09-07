@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
-import { Box, Flex, Stack, Text } from "@chakra-ui/react";
-import { PageHeader } from "@narriflow/ui/components/page-header";
+import { Box, Stack } from "@chakra-ui/react";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
-import { brandProfileService, brandTemplateService, projectService } from "@narriflow/services";
+import {
+  brandProfileService,
+  brandTemplateService,
+  projectService,
+} from "@narriflow/services";
 import { parseStoredContentPack } from "@narriflow/validators";
 import { UploadShell } from "./_components/upload-shell";
 import type { LinkResumeData } from "./_components/link-import-flow";
@@ -36,7 +37,10 @@ async function loadLinkResumeData(
   projectId: string,
   workspaceId: string,
 ): Promise<LinkResumeData | null> {
-  const snapshot = await projectService.getProjectSnapshot(userId, projectId, workspaceId,
+  const snapshot = await projectService.getProjectSnapshot(
+    userId,
+    projectId,
+    workspaceId,
   );
 
   if (!snapshot.project) {
@@ -45,7 +49,10 @@ async function loadLinkResumeData(
   if (snapshot.activeRun) {
     redirect(`/projects/${projectId}`);
   }
-  if (snapshot.project.sourceType !== "youtube" && snapshot.project.sourceType !== "link") {
+  if (
+    snapshot.project.sourceType !== "youtube" &&
+    snapshot.project.sourceType !== "link"
+  ) {
     redirect("/upload");
   }
 
@@ -72,7 +79,11 @@ async function loadLinkResumeData(
 export default async function UploadPage({
   searchParams,
 }: {
-  searchParams: Promise<{ url?: string | string[]; project?: string | string[]; source?: string; mode?: string;
+  searchParams: Promise<{
+    url?: string | string[];
+    project?: string | string[];
+    source?: string;
+    mode?: string;
   }>;
 }) {
   const appUser = await admitWorkspacePage("processing.consume");
@@ -85,54 +96,40 @@ export default async function UploadPage({
     pricingTier: appUser.pricingTier,
     isPersonalWorkspace: appUser.isPersonalWorkspace,
   };
-  const [brandTemplates, brandProfiles, defaultBrandProfileId, params, usageSummary] = await Promise.all([
-    brandTemplateService.list(appUser.workspaceOwnerUserId, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId,
+  const [
+    brandTemplates,
+    brandProfiles,
+    defaultBrandProfileId,
+    params,
+    usageSummary,
+  ] = await Promise.all([
+    brandTemplateService.list(appUser.workspaceOwnerUserId, {
+      workspaceId: appUser.workspaceId,
+      actorUserId: appUser.actorUserId,
     }),
     brandProfileService.list(brandScope),
     brandProfileService.getDefaultId(brandScope),
     searchParams,
-    projectService.getUsageSummary(appUser.workspaceOwnerUserId, appUser.workspaceId,
+    projectService.getUsageSummary(
+      appUser.workspaceOwnerUserId,
+      appUser.workspaceId,
     ),
   ]);
   const rawUrl = Array.isArray(params.url) ? params.url[0] : params.url;
-  const rawProjectId = Array.isArray(params.project) ? params.project[0] : params.project;
+  const rawProjectId = Array.isArray(params.project)
+    ? params.project[0]
+    : params.project;
 
   const resumeData = rawProjectId
-    ? await loadLinkResumeData(appUser.actorUserId, rawProjectId, appUser.workspaceId,
+    ? await loadLinkResumeData(
+        appUser.actorUserId,
+        rawProjectId,
+        appUser.workspaceId,
       )
     : null;
 
   return (
-    <Stack gap="8" maxW="1080px" mx="auto">
-      {/* Focused funnel: the sidebar hides itself on /upload, so this slim
-          bar is the only chrome — a way back plus the usage readout the
-          sidebar meter normally provides. */}
-      <Flex align="center" justify="space-between" gap="4">
-        <Link href="/home">
-          <Flex
-            align="center"
-            gap="1.5"
-            color="fg.muted"
-            transition="color 120ms ease"
-            _hover={{ color: "fg" }}
-          >
-            <ArrowLeft size={14} aria-hidden />
-            <Text fontSize="13px" fontWeight="550">
-              Home
-            </Text>
-          </Flex>
-        </Link>
-        <Text textStyle="data" fontSize="11.5px" color="fg.subtle">
-          {usageSummary.usedMinutes} of {usageSummary.limitMinutes} min used
-          this month
-        </Text>
-      </Flex>
-      <Box animation="fade-up" animationFillMode="backwards">
-        <PageHeader
-          title="Import a video"
-          description="Choose a source, then set up your clips and captions."
-        />
-      </Box>
+    <Stack gap={{ base: "6", md: "7" }} maxW="1080px" mx="auto">
       <Box
         animation="fade-up"
         style={{ animationDelay: "60ms" }}
@@ -140,7 +137,10 @@ export default async function UploadPage({
       >
         <UploadShell
           brandTemplates={brandTemplates}
-          brandProfiles={{ items: brandProfiles, defaultId: defaultBrandProfileId }}
+          brandProfiles={{
+            items: brandProfiles,
+            defaultId: defaultBrandProfileId,
+          }}
           initialUrl={rawUrl ?? null}
           initialSource={params.source === "rss" ? "rss" : "auto"}
           initialMode={params.mode === "caption_only" ? "caption_only" : "clip"}
