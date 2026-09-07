@@ -31,7 +31,8 @@ The server-side module that owns canonical post-creation Clip Editor Document st
 _Avoid_: Clip Service save helper, Studio cloud state, cleanup callback
 
 **Clip Composition Plan**:
-The immutable, versioned result of resolving one Clip Editor Document, source facts, bounded evidence, asset availability, capabilities, and up to four output targets into exact timed canvases, layers, crops, destinations, notices, and evidence requests. Studio preview and FFmpeg translate this plan; they do not choose composition policy.
+The immutable, versioned result of resolving one Clip Editor Document, source facts, bounded evidence, asset availability, capabilities, and up to four output targets into exact timed canvases, layers, crops, destinations, text fitting, notices, and evidence requests. Studio preview and FFmpeg translate this plan; they do not choose composition policy.
+The plan does not carry render-time media facts that only one adapter can observe, such as source frame rate or a logo image's intrinsic size. Where placement depends on such a fact, the plan states a symbolic anchor both adapters late-bind, and says so at the field. A symbolic anchor is not a leak.
 _Avoid_: FFmpeg filter graph, preview layout, auto-layout analysis
 
 **Scene Block**:
