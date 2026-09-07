@@ -1,79 +1,38 @@
 # Clip Render Attempt rollout and recovery
 
-The Clip Render Attempt path is intentionally drain-gated. Old and new render
-workers must never claim protocol-version-2 `clip_rendering` Workflow Runs at
-the same time. The additive schema remains in place during rollback.
+Clip Render Attempt is the only render execution path. Render claiming defaults to disabled unless `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=1`. Disabling it pauses new render claims; it does not select another renderer.
 
-## Rollout
+Narriflow is pre-production. Deploy web, services, and workers from the same revision after applying migrations. Drain existing render workers before replacing them.
 
-1. **Migrate.** Apply the additive schema before deploying readers:
-   `bun run --cwd packages/db prisma:migrate:deploy`. Confirm
-   `20260815000000_render_work_sets` and
-   `20260817000000_render_settlement_notifications` are applied.
-2. **Deploy dark.** Deploy the upgraded services, event dispatcher, worker
-   adapters, and reconciliation command with
-   `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=0`. Existing render workers may remain
-   active during this step; upgraded workers do not claim render runs. Missing
-   or empty values also default to disabled, but set `0` explicitly so the
-   deployment configuration records that the pool is dark.
-3. **Verify adapters.** Run the worker contract tests and a project-scoped
-   dry reconciliation:
+## Deployment
+
+1. Stop processes that poll `clip_rendering` and wait for active render attempts to settle or lose their leases.
+2. Apply the complete migration chain with `bun --cwd packages/db run prisma:migrate:deploy`, then regenerate the client with `bun --cwd packages/db run prisma:generate`.
+3. Verify the adapters and Workflow Run lifecycle:
 
    ```sh
    bun test apps/worker/src/render-config.test.ts apps/worker/src/worker-process.test.ts apps/worker/src/render-runtime-adapters.test.ts apps/worker/src/render-diagnostic-adapter.test.ts apps/worker/src/tasks/clip-render-attempt.test.ts apps/worker/src/tasks/clip-render-attempt-core-paths.test.ts apps/worker/src/render-object-reconciler.test.ts packages/services/src/r2-storage.test.ts packages/services/src/notification.service.test.ts
    bun run test:workflow:db
-   R2_CONTRACT_TEST_PREFIX=tests/narriflow-cutover bun --env-file=apps/worker/.env test packages/services/src/r2-storage.test.ts --test-name-pattern 'R2 object adapter uploads'
    ```
 
-   The R2 command requires the isolated test prefix plus configured worker R2
-   credentials. It creates and removes only UUID-scoped objects below that
-   prefix. Then run
-   `bun run --cwd apps/worker reconcile:render-objects --project <project-uuid>`.
-   Exit `0` is clean, `1` reports reviewed dry-run orphans, `2` reports one or
-   more per-object deletion failures, and `3` means reconciliation was unsafe
-   or unavailable (including validation, listing, database, and deadline
-   failures).
-   During any mixed-version period, use dry-run only. Do not pass `--delete`
-   until every old render worker has drained and the upgraded worker pool is
-   the sole owner of clip-rendering claims.
-   Before cutover, compare legacy and attempt-path outputs for optional assets
-   present, absent, corrupt, expired, and provider-unavailable. Cover vertical
-   and horizontal talking-head footage, screen/PiP, split/two-speaker,
-   background-fit, and audiogram inputs with the relevant feature switch both
-   enabled and set to literal `0`. A crop, layout, timing, mix, or attribution
-   mismatch blocks cutover; do not tune geometry or composition policy as part
-   of the migration.
-4. **Drain.** Stop every process that can poll `clip_rendering`. Wait until no
-   render worker process is running and no protocol-version-2 render run has
-   a live lease. Do not enable while any old render process remains.
-5. **Enable and restart.** Set `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=1` on the
-   upgraded worker pool and start it. No lifecycle protocol version change is
-   required. Startup validates `WORKER_X264_PRESET`; supported non-default
-   presets emit a structured warning. `WORKER_STORAGE_TIMEOUT_MS` bounds each
-   render and reconciliation storage operation.
-6. **Observe.** Verify representative `completed`, `partial`, `requeued`, and
-   `failed` runs. Query terminal Workflow Events where
-   `notificationRequired = true AND notificationDeliveredAt IS NULL`; this
-   queue must drain independently of render state. Inspect structured
-   `workflow_attempt_lost`, cleanup, follow-up, and reconciliation diagnostics.
+   For the R2 contract test, configure worker R2 credentials and an isolated prefix:
 
-## Rollback
+   ```sh
+   R2_CONTRACT_TEST_PREFIX=tests/narriflow-render bun --env-file=apps/worker/.env test packages/services/src/r2-storage.test.ts --test-name-pattern 'R2 object adapter uploads'
+   ```
 
-1. **Drain before disabling.** Stop the upgraded render workers and wait for
-   active render leases to disappear or be reaped. Never start legacy-compatible
-   render code while a new Clip Render Attempt is active.
-2. Set `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=0` and restart the upgraded worker
-   pool so it cannot claim render work.
-3. Roll back application code only after the drain. Retain the additive
-   columns, Render Work Set lineage, attempt-unique objects, and committed
-   Workflow Events. The upgraded event dispatcher must remain available until
-   every notification-required event has a delivery acknowledgement.
-   Optional-asset and media-analysis rollback requires no asset-data migration:
-   stored snapshots, selected keys, legacy helpers, analysis envelopes, and
-   attempt-unique objects remain valid and are not renamed or backfilled.
-4. If legacy-compatible rendering must resume, start it only after confirming
-   the upgraded render pool is fully stopped. Pending lineage remains readable;
-   completed historical rows and objects must not be rewritten.
+   This creates and removes UUID-scoped objects below the test prefix.
+4. Run `bun --cwd apps/worker run reconcile:render-objects --project <project-uuid>` in dry mode. Exit `0` is clean, `1` reports dry-run orphans, `2` reports per-object deletion failures, and `3` means reconciliation was unsafe or unavailable. Review orphan identifiers before any explicit deletion.
+5. Set `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=1` and start the worker pool. Verify `/health` reports `render.enabled: true`. Startup validates render settings; `WORKER_STORAGE_TIMEOUT_MS` bounds each render and reconciliation storage operation.
+6. Verify optional assets present, absent, corrupt, expired, and unavailable. Cover vertical and horizontal talking-head footage, Screen/PiP, Split, Fit, and audio-only inputs with analysis enabled and disabled. Use the [composition operations guide](clip-composition-plan-rollout.md) for shared preview/export checks.
+7. Observe representative `completed`, `partial`, `requeued`, and `failed` runs. Workflow Events with `notificationRequired = true AND notificationDeliveredAt IS NULL` must drain independently of render state. Inspect `workflow_attempt_lost`, cleanup, follow-up, and reconciliation diagnostics.
+
+## Pause and recovery
+
+1. Stop render workers and let active leases settle or expire before replacing the pool.
+2. Set `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=0` and restart if other worker loops must continue while rendering is paused.
+3. Preserve Render Work Sets, attempt-unique objects, and committed Workflow Events. Keep the event dispatcher available until notification-required events have delivery acknowledgements.
+4. Fix and verify the current implementation, then re-enable render claiming. Do not restore obsolete render helpers, compatibility readers, or a second renderer. If a local fixture uses an obsolete shape, reset that fixture with processes stopped.
 
 ## Recovery drills
 

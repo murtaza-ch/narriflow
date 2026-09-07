@@ -13,11 +13,6 @@
       "skillPath": "skills/engineering/ask-matt/SKILL.md",
       "computedHash": "b2e8ef5ffc2f142022c1e1e1bba68073f0821356a8e1cf1b23670f61d13fe50b"
     },
-    "assemblyai": {
-      "source": "AssemblyAI/assemblyai-skill",
-      "sourceType": "github",
-      "computedHash": "982d6b5ca9975721158f67a0308d4417b316bf6b5c2b973bec3267a045f29bd2"
-    },
     "clerk": {
       "source": "clerk/skills",
       "sourceType": "github",

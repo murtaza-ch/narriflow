@@ -1,54 +1,42 @@
-# Remotion video
+# Narriflow marketing videos
 
-<p align="center">
-  <a href="https://github.com/remotion-dev/logo">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://github.com/remotion-dev/logo/raw/main/animated-logo-banner-dark.apng">
-      <img alt="Animated Remotion Logo" src="https://github.com/remotion-dev/logo/raw/main/animated-logo-banner-light.gif">
-    </picture>
-  </a>
-</p>
+This Remotion project produces the looping product demos used by the landing pages. It is outside the root Bun workspaces and has its own npm lockfile.
 
-Welcome to your Remotion project!
+## Local preview
 
-## Commands
+From the repository root:
 
-**Install Dependencies**
-
-```console
-npm i
-```
-
-**Start Preview**
-
-```console
+```bash
+cd tools/videos
+npm ci
 npm run dev
 ```
 
-**Render video**
+The compositions are registered in [src/Root.tsx](src/Root.tsx). Shared colors and typography live in [src/theme.ts](src/theme.ts).
 
-```console
-npx remotion render
+| Composition ID | Output size | Frame rate |
+| --- | --- | --- |
+| `moment-detect` | 1600 × 1000 | 30 fps |
+| `caption-loop` | 1080 × 1920 | 30 fps |
+| `repurpose-burst` | 1200 × 1200 | 30 fps |
+
+## Render
+
+Run inside `tools/videos`:
+
+```bash
+npx remotion render moment-detect out/moment-detect.mp4
+npx remotion render caption-loop out/caption-loop.mp4
+npx remotion render repurpose-burst out/repurpose-burst.mp4
 ```
 
-**Upgrade Remotion**
+Preview the result before copying an updated asset to [apps/web/public/videos](../../apps/web/public/videos). Keep filenames aligned with the landing-page references.
 
-```console
-npx remotion upgrade
+## Verification
+
+```bash
+npm run lint
+npm run build
 ```
 
-## Docs
-
-Get started with Remotion by reading the [fundamentals page](https://www.remotion.dev/docs/the-fundamentals).
-
-## Help
-
-We provide help on our [Discord server](https://discord.gg/6VzzNDwUwV).
-
-## Issues
-
-Found an issue with Remotion? [File an issue here](https://github.com/remotion-dev/remotion/issues/new).
-
-## License
-
-Note that for some entities a company license is needed. [Read the terms here](https://github.com/remotion-dev/remotion/blob/main/LICENSE.md).
+These checks are separate from the root Turborepo commands.
