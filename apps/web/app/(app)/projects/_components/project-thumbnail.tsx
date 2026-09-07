@@ -55,6 +55,7 @@ export function ProjectThumbnail({
     <MediaWell
       ratio={16 / 9}
       timecode={variant === "card" && duration ? duration : undefined}
+      borderWidth="0"
     >
       {youtubeId ? (
         <YoutubeThumb

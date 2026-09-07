@@ -263,7 +263,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
         : null;
 
   return (
-    <Stack gap="6" maxW="640px" mx="auto" w="full" p={{ base: "5", md: "8" }} bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l3">
+    <Stack gap="6" maxW="640px" mx="auto" w="full" p={{ base: "5", md: "8" }} bg="bg.panel" borderRadius="l3">
       <Stack gap="3" align="center" textAlign="center">
         <Box w="180px">{props.mediaWell}</Box>
         <Stack gap="1" align="center">
@@ -296,8 +296,6 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
           position="relative"
           p="4"
           bg="bg.subtle"
-          borderWidth="1px"
-          borderColor="border"
           borderRadius="l2"
           overflow="hidden"
         >
@@ -327,8 +325,6 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
           position="relative"
           p="4"
           bg="bg.subtle"
-          borderWidth="1px"
-          borderColor="border"
           borderRadius="l2"
           overflow="hidden"
         >
@@ -343,8 +339,6 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
           position="relative"
           p="4"
           bg="bg.subtle"
-          borderWidth="1px"
-          borderColor="border"
           borderRadius="l2"
           overflow="hidden"
         >

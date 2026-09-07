@@ -34,7 +34,7 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
   }, [asset.body]);
 
   return (
-    <Box bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l2" p="5">
+    <Box bg="bg.panel" borderRadius="l2" p="5">
       <Flex align="center" justify="space-between" gap="3" mb="2">
         <Flex align="center" gap="2" minW="0">
           <Box color="fg.subtle" flexShrink={0}>
@@ -58,8 +58,6 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
         maxH="280px"
         overflowY="auto"
         borderRadius="l1"
-        borderWidth="1px"
-        borderColor="border"
         bg="bg.subtle"
         px="4"
         py="3"
@@ -218,8 +216,6 @@ export function ContentSuitePanel({
             py="7"
             bg="bg.panel"
             borderRadius="l2"
-            borderWidth="1px"
-            borderColor="border.subtle"
           >
             <Box w="6px" h="6px" borderRadius="2px" bg="accent.solid" />
             <Text fontSize="13px" color="fg.muted">

@@ -317,8 +317,6 @@ export function DubbingPanel({
                   bg="bg.panel"
                   borderRadius="l2"
                   flexWrap="wrap"
-                  borderWidth="1px"
-                  borderColor="border.subtle"
                   transition="background 120ms ease"
                   _hover={{ bg: "bg.subtle" }}
                 >

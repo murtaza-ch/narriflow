@@ -464,9 +464,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
   return (
     <Box
       position="relative"
-      borderWidth="1px"
       borderRadius="l3"
-      borderColor={selected ? "accent.solid" : "border"}
       mb="4"
       p={compact ? "3" : "5"}
       transition="background 120ms ease"
@@ -489,6 +487,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
           <MediaWell
             ratio={selectedOption.width / selectedOption.height}
             timecode={formatDuration(clip.durationSec)}
+            borderWidth="0"
           >
             {previewUrl ? (
               <ClipVideo

@@ -33,8 +33,7 @@ export function Toaster() {
             overflow="hidden"
             bg="bg.panel"
             borderRadius="l3"
-            borderWidth="1px"
-            borderColor="border"
+            borderWidth="0"
             boxShadow="cardHover"
           >
             {(toast.type === "success" || toast.type === "error") && (

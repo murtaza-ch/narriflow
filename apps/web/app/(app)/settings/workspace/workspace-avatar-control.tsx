@@ -59,7 +59,7 @@ export function WorkspaceAvatarControl({
   }
 
   return (
-    <Stack gap="3" bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l2" p={{ base: "5", md: "6" }}>
+    <Stack gap="3" bg="bg.panel" borderRadius="l2" p={{ base: "5", md: "6" }}>
       <Text fontSize="13px" fontWeight="600">Workspace avatar</Text>
       <Flex align="center" gap="4" wrap="wrap">
         <Flex w="16" h="16" align="center" justify="center" overflow="hidden" borderRadius="l2" bg="bg.muted" color="fg.muted" borderWidth="1px" borderColor="border">

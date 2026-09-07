@@ -685,7 +685,7 @@ export function AssistedPublishingWorkspace({
         </Flex>
       </Box>
 
-      <Grid templateColumns={{ base: "1fr", xl: "280px minmax(0, 1fr) 300px" }} gap="0" borderWidth="1px" borderRadius="l3" overflow="hidden" bg="bg.panel" borderColor="border.subtle">
+      <Grid templateColumns={{ base: "1fr", xl: "280px minmax(0, 1fr) 300px" }} gap="0" borderRadius="l3" overflow="hidden" bg="bg.panel">
         <Box borderEndWidth={{ xl: "1px" }} borderBottomWidth={{ base: "1px", xl: "0" }} borderColor="border.subtle">
           <Flex px="4" py="3" align="center" justify="space-between" borderBottomWidth="1px" borderColor="border.subtle">
             <Text textStyle="eyebrow" color="fg.subtle">Clips</Text>

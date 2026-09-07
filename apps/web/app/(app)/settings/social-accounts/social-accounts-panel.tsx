@@ -239,8 +239,6 @@ export function SocialAccountsPanel({
             <Box
               key={platform}
               position="relative"
-              borderWidth="1px"
-              borderColor="border"
               borderRadius="l2"
               bg="bg.panel"
               p="5"

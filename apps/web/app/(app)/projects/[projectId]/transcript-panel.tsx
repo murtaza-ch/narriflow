@@ -135,8 +135,6 @@ export function TranscriptPanel({
             overflow="auto"
             borderRadius="l1"
             bg="bg.subtle"
-            borderWidth="1px"
-            borderColor="border"
             p="4"
             fontSize="13px"
             fontFamily="mono"

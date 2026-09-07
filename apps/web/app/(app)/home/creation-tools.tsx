@@ -60,12 +60,10 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
             p: { base: "3", md: "4" },
             minH: "80px",
             bg: "bg.panel",
-            borderWidth: "1px",
-            borderColor: "border",
             borderRadius: "l2",
             textAlign: "left",
-            transition: "background 150ms, border-color 150ms",
-            _hover: { bg: "bg.muted", borderColor: "border.emphasized" },
+            transition: "background 150ms",
+            _hover: { bg: "bg.muted" },
           } as const;
           return "href" in tool ? (
             <Flex key={tool.title} {...styles} asChild>

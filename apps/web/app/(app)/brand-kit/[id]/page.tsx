@@ -105,7 +105,7 @@ function IdentitySection({ profile }: { profile: Profile }) {
             </Flex>
           ))}
         </Stack>
-        <Box  bg="bg.panel" borderWidth="1px" borderRadius="l2" borderColor="border" p="6">
+        <Box bg="bg.panel" borderRadius="l2" p="6">
           <Stack gap="5">
             <Text textStyle="eyebrow" color="fg.subtle">Type roles</Text>
             {profile.fonts.length ? profile.fonts.map((font) => (
@@ -130,7 +130,7 @@ function StylesSection({ profile, selectedTemplateId }: { profile: Profile; sele
           {profile.templates.map((template) => {
             const selected = selectedTemplateId === template.id || (!selectedTemplateId && profile.defaultTemplateId === template.id);
             return (
-              <Stack key={template.id} gap="4" borderWidth="1px" borderRadius="l2" bg="bg.panel" borderColor={selected ? "border.accent" : "border"} p="4" position="relative" _before={{ content: '""', position: "absolute", insetInlineStart: "0", top: "0", bottom: "0", w: "3px", bg: selected ? "accent.solid" : "transparent" }}>
+              <Stack key={template.id} gap="4" borderRadius="l2" bg="bg.panel" p="4" position="relative" _before={{ content: '""', position: "absolute", insetInlineStart: "0", top: "0", bottom: "0", w: "3px", bg: selected ? "accent.solid" : "transparent" }}>
                 <Flex align="center" gap="2"><Text textStyle="eyebrow" color={selected ? "accent.fg" : "fg.subtle"}>{selected ? "Selected" : "Preset"}</Text></Flex>
                 <Text fontFamily="display" fontWeight="500" fontSize="md">{template.name}</Text>
                 <Flex gap="2"><Box h="7px" flex="1" borderRadius="l1" style={{ background: template.primaryColor }} /><Box h="7px" flex="1" borderRadius="l1" style={{ background: template.secondaryColor }} /></Flex>

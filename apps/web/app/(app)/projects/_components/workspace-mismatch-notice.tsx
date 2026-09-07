@@ -30,10 +30,6 @@ export function WorkspaceMismatchNotice({
       gap="3"
       py="3"
       px="4"
-      borderWidth="1px"
-      borderColor="border.subtle"
-      borderLeftWidth="3px"
-      borderLeftColor="accent.solid"
       bg="bg.subtle"
     >
       <Text fontSize="sm">

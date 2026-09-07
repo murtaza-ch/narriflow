@@ -36,10 +36,10 @@ export function ProjectRow({
         py="3"
         pr={{ base: "3", md: "4" }}
         pl={selectable ? "12" : { base: "3", md: "4" }}
-        borderWidth="1px"
-        borderColor={selected ? "accent.solid" : "border"}
         borderRadius="l2"
         bg="bg.panel"
+        outline={selected ? "2px solid" : "none"}
+        outlineColor="accent.solid"
         transition="background 120ms ease"
         _hover={{ bg: "bg.subtle" }}
         css={{

@@ -11,9 +11,9 @@ interface EmptyStateProps {
 
 export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
   return (
-    <ChakraEmptyState.Root py={{ base: "10", md: "12" }} px="5" bg="bg.subtle" borderWidth="1px" borderStyle="dashed" borderColor="border" borderRadius="l2">
+    <ChakraEmptyState.Root py={{ base: "10", md: "12" }} px="5" bg="bg.subtle" borderRadius="l2">
       <ChakraEmptyState.Content>
-        {icon && <ChakraEmptyState.Indicator color="fg.muted" bg="bg.muted" borderWidth="1px" borderColor="border.emphasized" borderRadius="l2" p="3">{icon}</ChakraEmptyState.Indicator>}
+        {icon && <ChakraEmptyState.Indicator color="fg.muted" bg="bg.muted" borderRadius="l2" p="3">{icon}</ChakraEmptyState.Indicator>}
         <Stack textAlign="center" gap="2">
           <ChakraEmptyState.Title fontWeight="500">{title}</ChakraEmptyState.Title>
           {description && (

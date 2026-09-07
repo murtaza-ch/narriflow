@@ -450,7 +450,9 @@ export function ClipsPanel({
                       >
                         {rank}
                       </Text>
-                      <Stack gap="1" textAlign="left"><Text fontSize="xs" color={isActive ? "fg" : "fg.muted"} lineClamp={2}>{clip.title || clip.hookText}</Text><Text fontSize="10px" color="fg.subtle">{Math.round(clip.durationSec)}s · {clip.viralityScore} score</Text></Stack>
+                      <Text fontSize="xs" color={isActive ? "fg" : "fg.muted"} lineClamp={2} textAlign="left">
+                        {clip.title || clip.hookText}
+                      </Text>
                     </Box>
                   );
                 })}

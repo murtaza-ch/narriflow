@@ -389,8 +389,6 @@ export function CommitStep({
             minH="40px"
             px="3"
             py="2"
-            borderWidth="1px"
-            borderColor="border"
             rounded="l2"
             bg="bg.panel"
           >

@@ -239,8 +239,6 @@ const config = defineConfig({
       panel: {
         value: {
           bg: "bg.panel",
-          borderWidth: "1px",
-          borderColor: "border",
           borderRadius: "l3",
           boxShadow: "card",
         },
@@ -248,13 +246,10 @@ const config = defineConfig({
       panelHover: {
         value: {
           bg: "bg.panel",
-          borderWidth: "1px",
-          borderColor: "border",
           borderRadius: "l3",
           boxShadow: "card",
-          transition: "border-color 120ms ease, background 120ms ease, box-shadow 200ms ease",
+          transition: "background 120ms ease, box-shadow 200ms ease",
           _hover: {
-            borderColor: "border.emphasized",
             boxShadow: "cardHover",
           },
         },
@@ -633,8 +628,7 @@ const config = defineConfig({
           backdrop: { bg: "bg.scrim", backdropFilter: "blur(8px)" },
           content: {
             bg: "bg.dialog",
-            borderWidth: "1px",
-            borderColor: "border.subtle",
+            borderWidth: "0",
             borderRadius: "l3",
             boxShadow: "0 24px 80px #0006",
             maxH: "calc(100dvh - 32px)",
@@ -662,7 +656,7 @@ const config = defineConfig({
         ],
         base: {
           backdrop: { bg: "bg.scrim", backdropFilter: "blur(8px)" },
-          content: { bg: "bg.dialog", borderColor: "border.subtle", boxShadow: "none" },
+          content: { bg: "bg.dialog", borderWidth: "0", boxShadow: "none" },
           title: { fontSize: "md", fontWeight: "500" },
           header: { px: "6", py: "5" },
           body: { px: "6" },
@@ -672,7 +666,7 @@ const config = defineConfig({
       card: defineSlotRecipe({
         slots: ["root", "header", "body", "footer", "title", "description"],
         base: {
-          root: { borderRadius: "l2", boxShadow: "none" },
+          root: { borderRadius: "l2", borderWidth: "0", boxShadow: "none" },
           title: { fontWeight: "500", fontSize: "sm" },
         },
         variants: {
@@ -704,7 +698,7 @@ const config = defineConfig({
         base: {
           content: {
             bg: "bg.raised",
-            borderColor: "border.emphasized",
+            borderWidth: "0",
             borderRadius: "l2",
             p: "1.5",
             boxShadow: "0 12px 40px #0006",
@@ -733,7 +727,7 @@ const config = defineConfig({
           "arrowTip",
         ],
         base: {
-          content: { bg: "bg.raised", borderRadius: "l2", borderColor: "border.emphasized" },
+          content: { bg: "bg.raised", borderRadius: "l2", borderWidth: "0" },
         },
       }),
       tabs: defineSlotRecipe({

@@ -56,7 +56,7 @@ export default async function BrandKitPage() {
               );
               const isDefault = profile.id === defaultProfileId;
               return (
-                <Box key={profile.id} as="article" position="relative" borderWidth="1px" borderRadius="l3" bg="bg.panel" borderColor={isDefault ? "border.accent" : "border.subtle"} py="5" ps="5" pe="4">
+                <Box key={profile.id} as="article" position="relative" borderRadius="l3" bg="bg.panel" py="5" ps="5" pe="4">
                   <Flex align="flex-start" justify="space-between" gap="5">
                     <Stack gap="5" minW="0" flex="1">
                       <Flex align="center" gap="3">

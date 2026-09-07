@@ -19,7 +19,7 @@ export default async function NewBrandProfilePage() {
         />
       </Box>
       {enabled ? <BrandProfileCreateForm /> : (
-        <Box  bg="bg.panel" borderWidth="1px" borderRadius="l2" borderColor="border" p="7">
+        <Box bg="bg.panel" borderRadius="l2" p="7">
           <Stack gap="2"><Text textStyle="eyebrow" color="accent.fg">Read-only release group</Text><Text fontSize="14px">Brand Profile creation is paused. Existing profiles and projects remain readable.</Text></Stack>
         </Box>
       )}

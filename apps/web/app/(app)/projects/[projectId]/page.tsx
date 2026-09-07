@@ -608,8 +608,6 @@ export default async function ProjectDetailPage({
                 p="4"
                 bg="bg.panel"
                 borderRadius="l2"
-                borderWidth="1px"
-                borderColor="border"
               >
                 <Stack gap="1">
                   <Text textStyle="eyebrow" color="fg.subtle">

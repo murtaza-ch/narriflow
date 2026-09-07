@@ -10,7 +10,7 @@ export default async function ProfileSettingsPage() {
   return (
     <Stack gap="8">
       <PageHeader title="Profile" />
-      <Box borderWidth="1px" borderColor="border" borderRadius="l2" bg="bg.panel" p="6">
+      <Box borderRadius="l2" bg="bg.panel" p="6">
         <Flex align="center" gap="4">
           <AccountAvatar
             imageUrl={appUser.imageUrl}
@@ -24,7 +24,7 @@ export default async function ProfileSettingsPage() {
           </Stack>
         </Flex>
       </Box>
-      <Box borderWidth="1px" borderColor="border" borderRadius="l2" bg="bg.panel" p="5">
+      <Box borderRadius="l2" bg="bg.panel" p="5">
         <Text fontSize="13px" color="fg.muted">
           Your authentication profile manages your name, email, password, and sign-in methods.
         </Text>

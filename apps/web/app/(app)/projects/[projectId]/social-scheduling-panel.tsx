@@ -830,8 +830,6 @@ export function SocialSchedulingPanel({
                 p="4"
                 bg="bg.panel"
                 borderRadius="l2"
-                borderWidth="1px"
-                borderColor="border.subtle"
                 transition="background 120ms ease"
                 _hover={{ bg: "bg.subtle" }}
               >

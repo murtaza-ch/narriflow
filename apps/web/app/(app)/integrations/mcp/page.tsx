@@ -63,7 +63,7 @@ function ClientCard({
   snippet?: string;
 }) {
   return (
-    <Stack as="article" gap="3" p="5" bg="bg.panel" borderRadius="l2" borderWidth="1px" borderColor="border" minW="0">
+    <Stack as="article" gap="3" p="5" bg="bg.panel" borderRadius="l2" minW="0">
       <Flex align="center" justify="space-between" gap="3">
         <Text as="h3" fontSize="14px" fontWeight="650">{title}</Text>
         <Text textStyle="eyebrow" color="fg.subtle">{label}</Text>
@@ -83,7 +83,7 @@ function InfoColumn({ icon: Icon, title, children,
 }: { icon: typeof ShieldCheck; title: string; children: React.ReactNode;
 }) {
   return (
-    <Stack gap="2.5" p="5" bg="bg.panel" borderRadius="l2" borderWidth="1px" borderColor="border">
+    <Stack gap="2.5" p="5" bg="bg.panel" borderRadius="l2">
       <Flex align="center" gap="2"><Icon size={16} /><Text as="h3" fontSize="14px" fontWeight="650">{title}</Text></Flex>
       <Text as="div" fontSize="13px" lineHeight="1.65" color="fg.muted">{children}</Text>
     </Stack>

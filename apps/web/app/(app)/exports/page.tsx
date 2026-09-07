@@ -129,7 +129,7 @@ export default async function ExportsPage({
       ) : view === "list" ? (
         <Stack gap="3">
           {exports.map((item) => (
-            <Flex key={item.id} align={{ base: "flex-start", md: "center" }} direction={{ base: "column", md: "row" }} gap="4" p="4" borderWidth="1px" borderColor="border" borderRadius="l2" bg="bg.panel">
+            <Flex key={item.id} align={{ base: "flex-start", md: "center" }} direction={{ base: "column", md: "row" }} gap="4" p="4" borderRadius="l2" bg="bg.panel">
 
               <Stack gap="0.5" flex="1" minW="0" w={{ base: "full", md: "auto" }}>
                 <Text fontSize="13px" fontWeight="600" truncate>{item.clip.title?.trim() || item.clip.hookText}</Text>
@@ -161,7 +161,7 @@ export default async function ExportsPage({
         <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))", xl: "repeat(3, minmax(0, 1fr))",
           }} gap="4">
           {exports.map((item) => (
-            <Stack key={item.id} gap="4" borderWidth="1px" borderRadius="l3" borderColor="border" bg="bg.panel" p="5">
+            <Stack key={item.id} gap="4" borderRadius="l3" bg="bg.panel" p="5">
               <Stack gap="1" flex="1"><Text fontSize="14px" fontWeight="600" lineClamp={2}>{item.clip.title?.trim() || item.clip.hookText}</Text><Text fontSize="11px" color="fg.subtle">{item.project.title}</Text></Stack>
               <Flex align="center" justify="space-between" gap="3"><Text fontSize="11px" px="2" py="1" borderRadius="full" bg={item.status === "ready" ? "success.subtle" : item.status === "failed" ? "danger.subtle" : "bg.muted"} color={item.status === "ready" ? "success.fg" : item.status === "failed" ? "danger.fg" : "fg.muted"}>{item.status.replaceAll("_", " ")}</Text><Text textStyle="data" fontSize="11px" color="fg.subtle">{formatDateTime(item.createdAt)}</Text></Flex>
               <Flex gap="1" wrap="wrap">

@@ -355,8 +355,6 @@ export default async function CalendarPage({
 								p="4"
                 bg="bg.panel"
                 borderRadius="l2"
-								borderWidth="1px"
-								borderColor="border.subtle"
 							>
 								<Stack gap="0.5" flex="1" minW="0">
 									<Text fontSize="13px" fontWeight="600" lineClamp={1}>

@@ -108,8 +108,6 @@ export function FoldersPanel({
             align="center"
             minW="0"
             minH="68px"
-            borderWidth="1px"
-            borderColor="border"
             borderRadius="l2"
             bg="bg.panel"
             transition="border-color 120ms ease, background 120ms ease"

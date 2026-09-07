@@ -164,7 +164,9 @@ export function ProjectCard({
           top="2"
           left="2"
           zIndex={2}
-          p="1.5"
+          boxSize="8"
+          display="grid"
+          placeItems="center"
           borderRadius="l1"
           bg="studio.scrimStrong"
           onClick={(event) => {

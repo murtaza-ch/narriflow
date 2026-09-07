@@ -28,13 +28,6 @@ import {
   shouldFocusBillingStatus,
 } from "@/lib/billing-view-model";
 
-const STATUS_STRIPE = {
-  neutral: "border.emphasized",
-  accent: "accent.solid",
-  warning: "warning.solid",
-  danger: "danger.solid",
-} as const;
-
 export function BillingPlans({
   initialView,
   availableTiers,
@@ -271,8 +264,6 @@ export function BillingPlans({
       <Box
         ref={statusRef}
         tabIndex={-1}
-        borderWidth="1px"
-        borderColor={STATUS_STRIPE[status.tone]}
         borderRadius="l2"
         bg="bg.panel"
         p="5"
@@ -336,7 +327,7 @@ export function BillingPlans({
               const info = PRICING_TABLE[tier];
               const perMonth = interval === "annual" ? String(Math.round(info.annualUsd / 12)) : String(info.monthlyUsd);
               return (
-                <Stack key={tier} gap="4" p="5" bg="bg.panel" borderWidth="1px" borderRadius="l2" borderColor={tier === "creator" ? "border.emphasized" : "border"}>
+                <Stack key={tier} gap="4" p="5" bg="bg.panel" borderRadius="l2">
                   <Text textStyle="eyebrow" color={tier === "creator" ? "accent.fg" : "fg.subtle"}>{tier === "creator" ? "Recommended" : "Plan"}</Text>
                   <Text textStyle="title" fontSize="16px">{info.name}</Text>
                   <Flex align="baseline" gap="1"><Text textStyle="data" fontSize="28px">${perMonth}</Text><Text fontSize="12px" color="fg.muted">/mo</Text></Flex>

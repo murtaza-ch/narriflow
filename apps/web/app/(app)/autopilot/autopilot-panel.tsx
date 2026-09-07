@@ -420,8 +420,6 @@ export function AutopilotPanel({
                 <Box
                   key={rule.id}
                   position="relative"
-                  borderWidth="1px"
-                  borderColor="border"
                   borderRadius="l2"
                   bg="bg.panel"
                   px="4"

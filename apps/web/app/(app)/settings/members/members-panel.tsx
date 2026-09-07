@@ -174,7 +174,7 @@ export function MembersPanel({
 
   return (
     <Stack gap="8">
-      <Box as="form" onSubmit={submitInvite} borderWidth="1px" borderColor="border" borderRadius="l2" bg="bg.panel" p="6">
+      <Box as="form" onSubmit={submitInvite} borderRadius="l2" bg="bg.panel" p="6">
         <Stack gap="4">
           <Flex align="center" gap="2"><UserPlus size={16} /><Text fontWeight="600" fontSize="13px">Invite a member</Text></Flex>
           {!isBusiness && workspaceStatus !== "restricted" ? (
