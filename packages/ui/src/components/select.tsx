@@ -11,6 +11,7 @@ export interface SelectOption {
   label: string
   value: string
   disabled?: boolean
+  icon?: React.ReactNode
 }
 
 type SelectSize = "sm" | "md"
@@ -32,6 +33,7 @@ export interface SelectProps
   placeholder?: string
   label?: string
   ariaLabel?: string
+  startElement?: React.ReactNode
   size?: SelectSize
 }
 
@@ -49,6 +51,7 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
       placeholder = "Select…",
       label,
       ariaLabel,
+      startElement,
       size = "sm",
       ...rest
     } = props
@@ -91,10 +94,21 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
         <ChakraSelect.Control>
           <ChakraSelect.Trigger
             aria-label={ariaLabel}
+            justifyContent="flex-start"
             _hover={{ borderColor: "border.emphasized" }}
             _disabled={{ cursor: "not-allowed", color: "fg.disabled" }}
           >
+            {startElement ? (
+              <span
+                aria-hidden="true"
+                style={{ display: "flex", flexShrink: 0 }}
+              >
+                {startElement}
+              </span>
+            ) : null}
             <ChakraSelect.ValueText
+              flex="1"
+              textAlign="start"
               placeholder={placeholder}
               _placeholderShown={{ color: "fg.subtle" }}
             />
@@ -105,9 +119,7 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
         </ChakraSelect.Control>
         <Portal>
           <ChakraSelect.Positioner>
-            <ChakraSelect.Content
-              p="1"
-            >
+            <ChakraSelect.Content p="1">
               {items.map((item) => (
                 <ChakraSelect.Item
                   key={item.value}
@@ -117,7 +129,25 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
                   _highlighted={{ bg: "bg.subtle" }}
                   _disabled={{ color: "fg.disabled", cursor: "not-allowed" }}
                 >
-                  <ChakraSelect.ItemText>{item.label}</ChakraSelect.ItemText>
+                  <ChakraSelect.ItemText>
+                    <span
+                      style={{
+                        alignItems: "center",
+                        display: "flex",
+                        gap: "8px",
+                      }}
+                    >
+                      {item.icon ? (
+                        <span
+                          aria-hidden="true"
+                          style={{ display: "flex", flexShrink: 0 }}
+                        >
+                          {item.icon}
+                        </span>
+                      ) : null}
+                      {item.label}
+                    </span>
+                  </ChakraSelect.ItemText>
                   <ChakraSelect.ItemIndicator color="accent.fg" />
                 </ChakraSelect.Item>
               ))}

@@ -11,19 +11,25 @@ export interface SwitchProps
   inputProps?: React.ComponentProps<typeof ChakraSwitch.HiddenInput>
 }
 
-/**
- * Blueline Switch on Chakra v3 Switch.
- * Track: bg.muted with a border.control boundary → accent.solid when checked.
- */
+/** App-wide Chakra switch with a filled track and accent checked state. */
 export const Switch = React.forwardRef<HTMLLabelElement, SwitchProps>(
   function Switch(props, ref) {
-    const { children, onCheckedChange, inputProps, size = "sm", ...rest } =
-      props
+    const {
+      children,
+      onCheckedChange,
+      inputProps,
+      size = "sm",
+      variant = "solid",
+      colorPalette = "accent",
+      ...rest
+    } = props
 
     return (
       <ChakraSwitch.Root
         ref={ref}
         size={size}
+        variant={variant}
+        colorPalette={colorPalette}
         gap="2"
         cursor="pointer"
         _disabled={{ cursor: "not-allowed" }}
@@ -31,23 +37,8 @@ export const Switch = React.forwardRef<HTMLLabelElement, SwitchProps>(
         {...rest}
       >
         <ChakraSwitch.HiddenInput {...inputProps} />
-        <ChakraSwitch.Control
-          bg="bg.muted"
-          borderWidth="1px"
-          borderColor="border.control"
-          transition="background 120ms ease, border-color 120ms ease"
-          _checked={{ bg: "accent.solid", borderColor: "accent.solid" }}
-          _disabled={{ bg: "bg.muted", borderColor: "border" }}
-        >
-          <ChakraSwitch.Thumb
-            bg="bg.panel"
-            borderWidth="1px"
-            borderColor="border.control"
-            _checked={{
-              bg: "accent.contrast",
-              borderColor: "accent.contrast",
-            }}
-          />
+        <ChakraSwitch.Control>
+          <ChakraSwitch.Thumb bg="white" _checked={{ bg: "white" }} />
         </ChakraSwitch.Control>
         {children != null ? (
           <ChakraSwitch.Label
