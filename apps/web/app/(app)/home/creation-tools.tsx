@@ -2,28 +2,31 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Box, Dialog, Flex, Heading, Portal, SimpleGrid, Stack, Text } from "@chakra-ui/react";
-import { ArrowUpRight, Captions, Clapperboard, FileText, Languages, X } from "lucide-react";
+import { Box, Dialog, Flex, Heading, Portal, SimpleGrid, Stack, Text, Tooltip } from "@chakra-ui/react";
+import { ArrowUpRight, Clapperboard, X } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import type { ProjectListItem } from "@narriflow/services";
 
+import { ToolArtwork, tiltScene, resetScene } from "./hero-experience";
+import styles from "./hero-experience.module.css";
+
 const tools = [
-  { icon: Clapperboard, title: "AI clips", description: "Extract short clips", href: "/upload" },
+  { art: "clips", title: "AI clips", description: "Extract short clips", href: "/upload" },
   {
-    icon: Captions,
+    art: "captions",
     title: "Captions",
     description: "Add and style subtitles",
     href: "/upload?mode=caption_only",
   },
   {
-    icon: FileText,
+    art: "repurpose",
     title: "Repurpose",
     description: "Create posts and summaries",
     tab: "repurpose",
   },
   {
-    icon: Languages,
+    art: "dubbing",
     title: "Dubbing",
     description: "Translate voice and captions",
     tab: "dubbing",
@@ -38,47 +41,57 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
         {tools.map((tool) => {
           const content = (
             <>
-              <Box color="fg.muted" flexShrink={0}>
-                <tool.icon size={23} strokeWidth={1.6} />
-              </Box>
+              <ToolArtwork kind={tool.art} />
               <Stack gap="1" flex="1" minW="0">
                 <Heading as="h2" fontSize={{ base: "xs", md: "sm" }}>
                   {tool.title}
                 </Heading>
-                <Text fontSize={{ base: "10px", md: "11px" }} color="fg.subtle">
-                  {tool.description}
-                </Text>
               </Stack>
               <Box color="fg.subtle" display={{ base: "none", md: "block" }}>
                 <ArrowUpRight size={14} />
               </Box>
             </>
           );
-          const styles = {
+          const cardProps = {
+            className: styles.toolCard,
+            onPointerMove: tiltScene,
+            onPointerLeave: resetScene,
             align: "center",
             gap: "3",
-            p: { base: "3", md: "4" },
-            minH: "80px",
+            p: { base: "4", md: "5" },
+            minH: "176px",
             bg: "bg.panel",
             borderRadius: "l2",
             textAlign: "left",
             transition: "background 150ms",
             _hover: { bg: "bg.muted" },
           } as const;
-          return "href" in tool ? (
-            <Flex key={tool.title} {...styles} asChild>
-              <Link href={tool.href}>{content}</Link>
-            </Flex>
-          ) : (
-            <Flex
-              key={tool.title}
-              {...styles}
-              as="button"
-              cursor="pointer"
-              onClick={() => setSelected(tool.tab)}
-            >
-              {content}
-            </Flex>
+          return (
+            <Tooltip.Root key={tool.title} openDelay={250} closeDelay={0} positioning={{ placement: "top" }}>
+              <Tooltip.Trigger asChild>
+                {"href" in tool ? (
+                  <Flex {...cardProps} asChild>
+                    <Link href={tool.href}>{content}</Link>
+                  </Flex>
+                ) : (
+                  <Flex
+                    {...cardProps}
+                    as="button"
+                    cursor="pointer"
+                    onClick={() => setSelected(tool.tab)}
+                  >
+                    {content}
+                  </Flex>
+                )}
+              </Tooltip.Trigger>
+              <Portal>
+                <Tooltip.Positioner>
+                  <Tooltip.Content bg="bg.muted" color="fg" borderRadius="l2" px="3" py="2" fontSize="xs" boxShadow="md">
+                    {tool.description}
+                  </Tooltip.Content>
+                </Tooltip.Positioner>
+              </Portal>
+            </Tooltip.Root>
           );
         })}
       </SimpleGrid>

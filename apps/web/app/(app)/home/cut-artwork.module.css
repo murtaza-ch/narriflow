@@ -1,0 +1,33 @@
+.scene {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  --metal-light: #e1eaf9;
+  --metal: #97adc9;
+  --metal-dark: #42536b;
+}
+.left, .right { position: absolute; top: 50%; width: 175px; height: 190px; translate: 0 -40%; perspective: 700px; }
+.left { left: 25px; }
+.right { right: 25px; }
+.turntable { width: 100%; height: 145px; position: relative; transform-style: preserve-3d; transform: rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)); transition: transform .5s ease-out; }
+.source { position: absolute; inset: 12px 0 auto; transform: rotateY(25deg) rotateZ(-9deg); transform-style: preserve-3d; animation: hover 8s ease-in-out infinite; }
+.mediaFrame { width: 170px; height: 104px; position: relative; overflow: hidden; border: 1px solid var(--metal-light); border-radius: 13px; background: linear-gradient(155deg,#afc8df,#506d8a 80%); box-shadow: 1px 1px 0 var(--metal),2px 2px 0 var(--metal),3px 3px 0 var(--metal-dark),4px 4px 0 var(--metal-dark),8px 16px 25px #0005,inset 0 0 0 5px #dde9fa22; }
+.mountains { position: absolute; width: 115px; height: 115px; border-radius: 23px; background: linear-gradient(130deg,#9bb5c9,#35516c); rotate: 40deg; left: -15px; top: 45px; box-shadow: 65px -28px 0 #c0d3e050; }
+.sun { position: absolute; width: 19px; height: 19px; border-radius: 50%; background: #ecf0de; right: 24px; top: 19px; box-shadow: 0 0 24px #f8f8e54d; }
+.play { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; font-size: 20px; text-shadow: 0 2px 6px #0005; }
+.scrubber { position: absolute; left: 14px; right: 14px; bottom: 10px; height: 2px; background: #ffffff50; border-radius: 3px; }.scrubber i { display: block; width: 35%; height: 100%; background: white; }
+.filmTrack { display: flex; gap: 3px; margin: 12px 3px 0; opacity: .55; }.filmTrack i { flex: 1; height: 10px; border-radius: 3px; background: linear-gradient(140deg,#9daabf,#4d5e75); }
+.cutLine { position: absolute; width: 1px; height: 112px; top: -4px; background: #effaff; left: 40%; box-shadow: 0 0 9px #c2ddff; animation: scan 8s ease-in-out infinite; }.cutLine::before { content: ""; position: absolute; left: -3px; top: -4px; border: 4px solid transparent; border-top-color: #eaf8ff; }
+.clips { position: relative; height: 145px; transform: rotateY(-18deg); transform-style: preserve-3d; }
+.clips .mediaFrame { position: absolute; width: 65px; height: 112px; top: 9px; left: 3px; transform: rotate(-13deg) translateZ(-5px); animation: fanLeft 8s ease-in-out infinite; }
+.clips .mediaFrame:nth-child(2) { left: 50px; top: 0; z-index: 2; transform: translateZ(20px); animation: hover 8s ease-in-out -1s infinite; }
+.clips .mediaFrame:nth-child(3) { left: 100px; transform: rotate(13deg); animation: fanRight 8s ease-in-out infinite; }
+.portrait .play { font-size: 14px; }.portrait .mountains { top: 64px; }.portrait .sun { right: 12px; width: 13px; height: 13px; }.portrait .scrubber { left: 10px; right: 10px; }
+@keyframes hover { 50% { translate: 0 -7px; } }
+@keyframes scan { 50% { left: 70%; } }
+@keyframes fanLeft { 50% { translate: -5px 2px; } }
+@keyframes fanRight { 50% { translate: 5px 2px; } }
+.scene[data-paused="true"] :is(.source, .cutLine, .clips .mediaFrame) { animation-play-state: paused; }
+@container (max-width: 1050px) { .left { left: 0; }.right { right: 0; }.left,.right { scale: .75; }}
+@container (max-width: 850px) { .left,.right { top: 3px; translate: none; scale: .48; height: 140px; transform-origin: top center; }.left { left: calc(50% - 145px); }.right { right: calc(50% - 145px); }}
+@media (prefers-reduced-motion:reduce) { .scene[data-paused] :is(.source, .cutLine, .clips .mediaFrame) { animation: none; }.turntable { transform: none; transition: none; } }

@@ -1,0 +1,41 @@
+.experience { min-width: 0; container-type: inline-size; }
+.motionToggle:focus-visible, .importLinks a:focus-visible { outline: 2px solid var(--chakra-colors-fg-muted); outline-offset: 4px; }
+.centeredHero { position: relative; isolation: isolate; overflow: hidden; display: grid; place-items: center; min-height: 355px; padding: 42px 24px; border-radius: 22px; border: none; background: var(--chakra-colors-bg-panel); color: var(--chakra-colors-fg); --accent: var(--chakra-colors-fg); --rx: 0deg; --ry: 0deg; }
+.centerContent { position: relative; z-index: 2; width: min(100%, 620px); text-align: center; }
+.centerContent h1 { font-size: clamp(27px,2.65vw,40px); font-weight: 560; letter-spacing: -.045em; line-height: 1.2; }
+.centerContent h1 span { color: var(--accent); }
+.description { font-size: 12px; line-height: 1.7; margin: 13px auto 27px; color: var(--chakra-colors-fg-muted); }
+.importArea { width: 100%; margin: auto; }
+.importArea form { min-height: 67px; padding: 10px 10px 10px 20px; gap: 12px; border: 1px solid #ffffff; border-radius: 14px; background: #fafafa; box-shadow: 0 0 0 5px #ffffff06, 0 12px 32px #00000030; transition: box-shadow .2s; }
+.importArea form:focus-within { box-shadow: 0 0 0 4px #a3a3a370,0 12px 32px #0003; }
+.importArea form > div { color: #858585; }
+.importArea input { color: #242424; font-size: 14px; min-width: 0; }
+.importArea input::placeholder { color: #808080; }
+.importArea button { background: #303030; color: #fff; height: 44px; padding-inline: 21px; border-radius: 9px; font-size: 12px; }
+.importArea button:disabled { opacity: .7; }
+.importArea button:not(:disabled):hover { background: #454545; }
+.importLinks { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 18px; }
+.importLinks a { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--chakra-colors-fg-muted); border: 1px solid var(--chakra-colors-border); background: transparent; padding: 8px 13px; border-radius: 8px; transition: background .2s; }
+.importLinks a:hover { background: var(--chakra-colors-bg-muted); }
+.motionToggle { position: absolute; bottom: 15px; right: 15px; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--chakra-colors-border); color: var(--chakra-colors-fg-muted); cursor: pointer; z-index: 3; }
+.toolCard { position: relative; flex-wrap: wrap; overflow: hidden; border: none; --rx: 0deg; --ry: 0deg; }
+.toolCard > div:nth-last-child(2) { flex-basis: 70%; }
+.toolArt { position: relative; width: 100%; height: 96px; perspective: 500px; display: grid; place-items: center; }
+.toolArt > div { transform: rotateX(var(--rx)) rotateY(var(--ry)); transition: transform .3s; }
+.miniClips { position: relative; width: 145px; height: 86px; }.miniClips > span { position: absolute; width: 48px; height: 72px; border: 1px solid #cad8ff70; border-radius: 8px; background: linear-gradient(140deg,#c1d2f2,#5c6c96); top: 4px; left: 8px; transform: rotate(-15deg); box-shadow: 3px 6px 10px #0002; transition: .4s; }.miniClips > span:last-child { left: 90px; transform: rotate(15deg); background: linear-gradient(140deg,#c9bcf0,#74619e); }.miniClips > span:nth-child(2) { z-index: 1; left: 49px; top: 0; height: 82px; background: linear-gradient(135deg,#8cace0,#31486f); }.miniClips i { display: block; text-align: center; margin: 14px 0 9px; font-style: normal; color: #e8efff; }.miniClips b { display: block; color: white; font-size: 8px; line-height: 1.1; padding: 0 6px; }.toolCard:hover .miniClips > span:first-child { transform: translateX(-9px) rotate(-24deg); }.toolCard:hover .miniClips > span:last-child { transform: translateX(9px) rotate(24deg); }
+.captionArt { font-size: 13px; font-weight: 650; text-align: center; color: var(--chakra-colors-fg-muted); line-height: 1.7; }.captionArt span { display: block; }.captionArt strong { display: block; padding: 0 9px; border-radius: 5px; background: #d0eba6; color: #36432a; transform: rotate(-5deg); box-shadow: 0 4px 0 #788e5560; transition: transform .3s; }.toolCard:hover .captionArt strong { transform: rotate(3deg) scale(1.08); }.captionArt i { display: inline-block; height: 11px; width: 2px; background: #c1db93; vertical-align: middle; margin-left: 3px; }
+.paperArt { position: relative; width: 128px; height: 82px; }.paperArt > span { display: block; position: absolute; left: 19px; top: 0; width: 68px; height: 74px; background: #d4c2ef; border-radius: 6px; transform: rotate(-13deg); padding: 12px; box-shadow: 3px 5px 9px #0002; }.paperArt > span:nth-child(2) { left: 44px; top: 7px; transform: rotate(8deg); background: #f2e8fc; transition: transform .3s; }.paperArt b { display: block; color: #695a7e; font-size: 8px; white-space: nowrap; margin-bottom: 8px; }.paperArt i { display: block; width: 100%; height: 3px; margin: 5px 0; background: #9785b74d; border-radius: 3px; }.paperArt i:last-child { width: 65%; }.paperArt em { position: absolute; bottom: 0; left: 14px; font-style: normal; background: #aa8cce; border: 1px solid #d0bdea; color: white; padding: 1px 9px; border-radius: 8px; font-size: 23px; }.toolCard:hover .paperArt > span:nth-child(2) { transform: translate(7px,-4px) rotate(17deg); }
+.dubArt { width: 156px; height: 88px; position: relative; }.dubArt > span:first-child, .dubArt > strong { position: absolute; font-size: 12px; font-weight: 600; border-radius: 9px 9px 9px 2px; padding: 5px 12px; background: #f1c7ab; color: #794c37; left: 0; top: 0; transform: rotate(-7deg); box-shadow: 0 4px 0 #b5815850; }.dubArt > strong { right: 0; left: auto; top: 46px; transform: rotate(7deg); background: #e6a684; }.wave { display: flex; align-items: center; justify-content: center; gap: 3px; height: 80px; }.wave i { display: block; width: 3px; border-radius: 3px; height: var(--h); background: #c78c68; animation: sound 1s ease-in-out var(--delay) infinite alternate; animation-play-state: paused; }.toolCard:hover .wave i, .toolCard:focus-visible .wave i { animation-play-state: running; }
+
+@keyframes sound { to { transform: scaleY(.35); } }
+@container (min-width: 851px) and (max-width: 1050px) { .centerContent { width: 590px; }.centerContent h1 { font-size: 32px; } }
+@container (max-width: 850px) { .centeredHero { padding-top: 90px; }.centerContent { width: min(100%,620px); } }
+@media(max-width:760px) {
+  .centeredHero { padding-inline: 18px; padding-bottom: 34px; }
+  .centerContent h1 { font-size: 29px; }.centerContent h1 span { display: block; }
+  .description { font-size: 11px; max-width: 280px; margin-bottom: 24px; }
+  .importArea form { min-height: 60px; padding: 7px 7px 7px 12px; gap: 7px; }
+  .importArea input { font-size: 12px; }.importArea button { padding-inline: 12px; height: 43px; font-size: 11px; }.importArea button svg { width: 13px; }
+  .importLinks { gap: 8px; }.importLinks a { font-size: 10px; padding: 8px 9px; }.toolArt { height: 89px; }
+}
+@media(prefers-reduced-motion:reduce) { .toolCard .wave i { animation: none; }.experience form, .toolCard .toolArt > div, .toolCard .miniClips > span, .toolCard .captionArt strong, .toolCard .paperArt > span { transition: none; } }
