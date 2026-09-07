@@ -824,11 +824,9 @@ export function EditClipLengthDialog(props: {
       unmountOnExit={false}
     >
       <Portal>
-        <Dialog.Backdrop bg="rgba(0,0,0,0.6)" zIndex={300} />
+        <Dialog.Backdrop zIndex={300} />
         <Dialog.Positioner zIndex={310}>
           <Dialog.Content
-            layerStyle="panel"
-            borderRadius="l3"
             w="min(1180px, 96vw)"
             maxW="min(1180px, 96vw)"
             h="min(740px, 92vh)"
@@ -854,7 +852,7 @@ export function EditClipLengthDialog(props: {
                 </Text>
               </Box>
               <Dialog.CloseTrigger asChild>
-                <Button variant="ghost" size="xs" aria-label="Close">
+                <Button variant="ghost" size="sm" aria-label="Close">
                   <X size={14} />
                 </Button>
               </Dialog.CloseTrigger>

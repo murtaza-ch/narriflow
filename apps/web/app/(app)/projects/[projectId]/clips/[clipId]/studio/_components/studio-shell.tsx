@@ -2214,7 +2214,7 @@ export function StudioShell({
           <Button
             size="sm"
             variant="solid"
-            colorPalette="accent"
+            colorPalette="brand"
             onClick={() => router.push(`/projects/${clipInfo.projectId}`)}
           >
             Back to project

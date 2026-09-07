@@ -1,20 +1,30 @@
 "use client";
 
-import { Box, Center, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import {
+  Box,
+  Center,
+  Dialog,
+  Flex,
+  Grid,
+  HStack,
+  Input,
+  InputGroup,
+  Portal,
+  Stack,
+  Text,
+} from "@chakra-ui/react";
 import {
   startTransition,
   useEffect,
   useEffectEvent,
   useMemo,
-  useOptimistic,
   useState,
   useTransition,
 } from "react";
 import { useRouter } from "next/navigation";
-import { Inbox, TriangleAlert } from "lucide-react";
+import { Folder, FolderInput, Inbox, Search, TriangleAlert } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
-import { Select } from "@narriflow/ui/components/select";
 import type {
   ProjectListItem,
   ProjectListPage,
@@ -41,67 +51,161 @@ interface ProjectsExplorerProps {
   initialProjects: ProjectListItem[];
   initialNextCursor: string | null;
   totalCount: number;
-  initialStatusCounts: Record<StatusFilter, number>;
   initialQuery: string;
   initialStatus: StatusFilter;
   initialSource: SourceFilter;
   initialSort: SortOption;
   folderId?: string;
+  folderName?: string;
   folders: Array<{ id: string; name: string }>;
   canEdit: boolean;
 }
 
-function FolderControl({
-  project,
+function MoveProjectsDialog({
+  projects,
   folders,
+  onMoved,
 }: {
-  project: ProjectListItem;
+  projects: ProjectListItem[];
   folders: Array<{ id: string; name: string }>;
+  onMoved: () => void;
 }) {
   const router = useRouter();
   const [pending, startMove] = useTransition();
   const [moveError, setMoveError] = useState<string | null>(null);
-  const [committedFolderId, setCommittedFolderId] = useState(project.folderId ?? "");
-  const [optimisticFolderId, setOptimisticFolderId] = useOptimistic(committedFolderId);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const currentFolderId =
+    projects.length > 0 &&
+    projects.every((project) => project.folderId === projects[0]?.folderId)
+      ? (projects[0]?.folderId ?? "")
+      : null;
+  const [selectedFolderId, setSelectedFolderId] = useState(currentFolderId ?? "");
 
   useEffect(() => {
-    setCommittedFolderId(project.folderId ?? "");
-  }, [project.folderId]);
+    setSelectedFolderId(currentFolderId ?? "");
+  }, [currentFolderId]);
+
+  const destinations = [
+    { id: "", name: "Projects" },
+    ...folders.map((folder) => ({ id: folder.id, name: folder.name })),
+  ].filter((folder) => folder.name.toLowerCase().includes(query.trim().toLowerCase()));
+
+  function move() {
+    startMove(async () => {
+      const results = await Promise.all(
+        projects.map((project) =>
+          moveProjectToFolderAction(project.id, selectedFolderId || null),
+        ),
+      );
+      const failure = results.find(isAuthenticatedActionFailure);
+      if (failure) {
+        setMoveError(
+          authenticatedActionResultMessage(failure, "The projects could not be moved."),
+        );
+        return;
+      }
+      setMoveError(null);
+      setOpen(false);
+      onMoved();
+      router.refresh();
+    });
+  }
+
+  const title =
+    projects.length === 1
+      ? `Move “${projects[0]?.title ?? "project"}”`
+      : `Move ${projects.length} projects`;
 
   return (
-    <Stack gap="1">
-    <Select
-      ariaLabel={`Move ${project.title} to folder`}
-      value={optimisticFolderId}
-      onValueChange={(value) => {
-        const folderId = value || null;
-        startMove(async () => {
-          setOptimisticFolderId(value);
-          const result = await moveProjectToFolderAction(project.id, folderId);
-          if (isAuthenticatedActionFailure(result)) {
-            setMoveError(
-              authenticatedActionResultMessage(
-                result,
-                "The Project could not be moved.",
-              ),
-            );
-            return;
-          }
+    <Dialog.Root
+      open={open}
+      onOpenChange={(details) => {
+        setOpen(details.open);
+        if (details.open) {
+          setQuery("");
           setMoveError(null);
-          setCommittedFolderId(value);
-          router.refresh();
-        });
+          setSelectedFolderId(currentFolderId ?? "");
+        }
       }}
-      mt="2"
-      size="sm"
-      disabled={pending}
-      items={[
-        { value: "", label: "No folder" },
-        ...folders.map((folder) => ({ value: folder.id, label: folder.name })),
-      ]}
-    />
-    {moveError ? <Text role="alert" fontSize="xs" color="danger.fg">{moveError}</Text> : null}
-    </Stack>
+      placement="center"
+    >
+      <Dialog.Trigger asChild>
+        <Button size="sm" variant="outline" disabled={projects.length === 0}>
+          <FolderInput size={13} />
+          Move to
+        </Button>
+      </Dialog.Trigger>
+      <Portal>
+        <Dialog.Backdrop />
+        <Dialog.Positioner>
+          <Dialog.Content maxW="480px">
+            <Dialog.Header>
+              <Dialog.Title>{title}</Dialog.Title>
+            </Dialog.Header>
+            <Dialog.Body>
+              <Stack gap="4">
+                <InputGroup color="fg.subtle" startElement={<Search size={13} />}>
+                  <Input
+                    value={query}
+                    onChange={(event) => setQuery(event.currentTarget.value)}
+                    placeholder="Search folders"
+                    aria-label="Search folders"
+                  />
+                </InputGroup>
+                <Stack gap="1">
+                  {destinations.map((destination) => {
+                    const selected = selectedFolderId === destination.id;
+                    return (
+                      <Button
+                        key={destination.id || "projects"}
+                        size="sm"
+                        variant={selected ? "outline" : "ghost"}
+                        justifyContent="flex-start"
+                        onClick={() => setSelectedFolderId(destination.id)}
+                      >
+                        <Folder size={14} />
+                        <Text flex="1" textAlign="left">
+                          {destination.name}
+                        </Text>
+                        {selected ? (
+                          <Text fontSize="11px" color="fg.subtle">
+                            {currentFolderId === destination.id ? "Current" : "Selected"}
+                          </Text>
+                        ) : null}
+                      </Button>
+                    );
+                  })}
+                </Stack>
+                {moveError ? (
+                  <Text role="alert" fontSize="12px" color="danger.fg">
+                    {moveError}
+                  </Text>
+                ) : null}
+              </Stack>
+            </Dialog.Body>
+            <Dialog.Footer>
+              <Flex justify="flex-end" gap="2" w="full">
+                <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={move}
+                  loading={pending}
+                  disabled={
+                    projects.length === 0 ||
+                    (currentFolderId !== null && selectedFolderId === currentFolderId)
+                  }
+                >
+                  Move
+                </Button>
+              </Flex>
+            </Dialog.Footer>
+          </Dialog.Content>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
   );
 }
 
@@ -134,12 +238,12 @@ export function ProjectsExplorer({
   initialProjects,
   initialNextCursor,
   totalCount: initialTotalCount,
-  initialStatusCounts,
   initialQuery,
   initialStatus,
   initialSource,
   initialSort,
   folderId,
+  folderName,
   folders,
   canEdit,
 }: ProjectsExplorerProps) {
@@ -157,6 +261,7 @@ export function ProjectsExplorer({
   const [source, setSource] = useState<SourceFilter>(initialSource);
   const [sort, setSort] = useState<SortOption>(initialSort);
   const [view, setView] = useState<ViewMode>("grid");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -169,6 +274,7 @@ export function ProjectsExplorer({
     setSource(initialSource);
     setSort(initialSort);
     setExtraPages([]);
+    setSelectedIds([]);
   }
 
   // Refreshed page 1 wins on id collisions (a project created since the last
@@ -186,6 +292,20 @@ export function ProjectsExplorer({
     }
     return merged;
   }, [initialProjects, extraPages]);
+  const selectedProjects = useMemo(
+    () => projects.filter((project) => selectedIds.includes(project.id)),
+    [projects, selectedIds],
+  );
+
+  function setProjectSelected(projectId: string, selected: boolean) {
+    setSelectedIds((current) =>
+      selected
+        ? current.includes(projectId)
+          ? current
+          : [...current, projectId]
+        : current.filter((id) => id !== projectId),
+    );
+  }
 
   const lastPage = extraPages.at(-1);
   const nextCursor = lastPage ? lastPage.nextCursor : initialNextCursor;
@@ -336,16 +456,24 @@ export function ProjectsExplorer({
         }}
         view={view}
         onViewChange={setView}
-        statusCounts={initialStatusCounts}
-        resultCount={projects.length}
-        loadedCount={initialTotalCount}
+        selectedCount={selectedProjects.length}
+        onClearSelection={() => setSelectedIds([])}
+        selectionAction={
+          canEdit ? (
+            <MoveProjectsDialog
+              projects={selectedProjects}
+              folders={folders}
+              onMoved={() => setSelectedIds([])}
+            />
+          ) : undefined
+        }
       />
 
       {projects.length === 0 ? (
         <EmptyState
           icon={<Inbox size={22} strokeWidth={1.5} />}
-          title="No projects match your filters"
-          description="Try another search or clear filters."
+          title={folderName && !hasActiveFilters ? "This folder is empty" : "No projects match your filters"}
+          description={folderName && !hasActiveFilters ? "Move a project here or start a new upload." : "Try another search or clear filters."}
           action={
             hasActiveFilters ? (
               <Button size="sm" variant="outline" onClick={clearFilters}>
@@ -355,7 +483,10 @@ export function ProjectsExplorer({
           }
         />
       ) : view === "grid" ? (
-        <SimpleGrid columns={{ base: 1, sm: 2, lg: 3, "2xl": 4 }} gap="5">
+        <Grid
+          gap="4"
+          templateColumns="repeat(auto-fill, minmax(min(100%, 260px), 1fr))"
+        >
           {projects.map((project, index) => (
             <Box
               key={project.id}
@@ -365,13 +496,18 @@ export function ProjectsExplorer({
               animationFillMode="backwards"
               style={{ animationDelay: `${Math.min(index, 11) * 60}ms` }}
             >
-              <ProjectCard project={project} priority={index < 4} />
-              {canEdit ? <FolderControl project={project} folders={folders} /> : null}
+              <ProjectCard
+                project={project}
+                priority={index < 4}
+                selectable={canEdit}
+                selected={selectedIds.includes(project.id)}
+                onSelectedChange={(selected) => setProjectSelected(project.id, selected)}
+              />
             </Box>
           ))}
-        </SimpleGrid>
+        </Grid>
       ) : (
-        <Box borderTopWidth="1px" borderTopColor="border.subtle">
+        <Stack gap="4">
           {projects.map((project, index) => (
             <Box
               key={project.id}
@@ -381,11 +517,15 @@ export function ProjectsExplorer({
               animationFillMode="backwards"
               style={{ animationDelay: `${Math.min(index, 11) * 40}ms` }}
             >
-              <ProjectRow project={project} />
-              {canEdit ? <FolderControl project={project} folders={folders} /> : null}
+              <ProjectRow
+                project={project}
+                selectable={canEdit}
+                selected={selectedIds.includes(project.id)}
+                onSelectedChange={(selected) => setProjectSelected(project.id, selected)}
+              />
             </Box>
           ))}
-        </Box>
+        </Stack>
       )}
 
       {nextCursor ? (

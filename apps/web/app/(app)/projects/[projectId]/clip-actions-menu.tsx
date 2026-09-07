@@ -386,11 +386,6 @@ export function ClipActionsMenu({
           <Dialog.Positioner>
             <Dialog.Content
               maxW="md"
-              bg="bg.panel"
-              borderWidth="1px"
-              borderColor="border"
-              borderRadius="l3"
-              boxShadow="card"
             >
               <Dialog.Header pt="5" pb="0" px="5">
                 <Dialog.Title textStyle="title" fontSize="15px" color="fg">
@@ -455,7 +450,7 @@ export function ClipActionsMenu({
                 <Button
                   variant="solid"
                   size="sm"
-                  colorPalette="accent"
+                  colorPalette="brand"
                   loading={renameSaving}
                   onClick={() => void handleRenameSubmit()}
                 >
@@ -483,11 +478,6 @@ export function ClipActionsMenu({
           <Dialog.Positioner>
             <Dialog.Content
               maxW="md"
-              bg="bg.panel"
-              borderWidth="1px"
-              borderColor="border"
-              borderRadius="l3"
-              boxShadow="card"
             >
               <Dialog.Header pt="5" pb="0" px="5">
                 <Dialog.Title textStyle="title" fontSize="15px" color="fg">

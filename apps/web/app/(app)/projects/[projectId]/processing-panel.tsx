@@ -263,7 +263,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
         : null;
 
   return (
-    <Stack gap="6" maxW="560px" mx="auto" w="full" py="4">
+    <Stack gap="6" maxW="640px" mx="auto" w="full" p={{ base: "5", md: "8" }} bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l3">
       <Stack gap="3" align="center" textAlign="center">
         <Box w="180px">{props.mediaWell}</Box>
         <Stack gap="1" align="center">
@@ -294,21 +294,20 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
       {isIngestFailed && (
         <Box
           position="relative"
-          ps="4"
-          py="3"
+          p="4"
+          bg="bg.subtle"
           borderWidth="1px"
           borderColor="border"
           borderRadius="l2"
           overflow="hidden"
         >
-          <Box position="absolute" insetInlineStart="0" top="0" bottom="0" w="3px" bg="danger.solid" />
           <Stack gap="2">
             <Flex align="center" gap="2" color="danger.fg">
               <AlertTriangle size={14} aria-hidden />
               <Text fontSize="sm">{userErrorMessage(props.ingestErrorCode)}</Text>
             </Flex>
             {ingestRecoveryAction(props.ingestErrorCode) === "new_upload" ? (
-              <Button asChild size="xs" variant="outline" alignSelf="flex-start">
+              <Button asChild size="sm" variant="outline" alignSelf="flex-start">
                 <Link href="/upload">Upload video instead</Link>
               </Button>
             ) : (
@@ -326,14 +325,13 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
       {props.quotaBlockedMessage && (
         <Box
           position="relative"
-          ps="4"
-          py="3"
+          p="4"
+          bg="bg.subtle"
           borderWidth="1px"
           borderColor="border"
           borderRadius="l2"
           overflow="hidden"
         >
-          <Box position="absolute" insetInlineStart="0" top="0" bottom="0" w="3px" bg="warning.solid" />
           <PlanLimitNotice message={props.quotaBlockedMessage} />
         </Box>
       )}
@@ -343,14 +341,13 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
       {genericFailureStage && (
         <Box
           position="relative"
-          ps="4"
-          py="3"
+          p="4"
+          bg="bg.subtle"
           borderWidth="1px"
           borderColor="border"
           borderRadius="l2"
           overflow="hidden"
         >
-          <Box position="absolute" insetInlineStart="0" top="0" bottom="0" w="3px" bg="danger.solid" />
           <Stack gap="2">
             <Flex align="center" gap="2" color="danger.fg">
               <AlertTriangle size={14} aria-hidden />

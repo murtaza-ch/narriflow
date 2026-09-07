@@ -454,7 +454,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
   // widening compact previews to 148px took rows from 269px to 340px. That is
   // precisely the density the compact toggle exists to protect, so compact
   // stays fixed and comfortable absorbs the new width.
-  const mediaW = compact ? "108px" : { base: "168px", lg: "200px", "2xl": "232px" };
+  const mediaW = compact ? { base: "144px", md: "108px" } : { base: "180px", md: "180px", xl: "200px" };
 
   // Readable measure for the prose blocks. Unconstrained, "Why this clip" ran
   // the full 1000px content width — ~120 characters per line, well past the
@@ -464,27 +464,18 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
   return (
     <Box
       position="relative"
-      borderBottomWidth="1px"
-      borderColor="border.subtle"
-      py={compact ? "3" : "4"}
-      ps="4"
-      pe="1"
+      borderWidth="1px"
+      borderRadius="l3"
+      borderColor={selected ? "accent.solid" : "border"}
+      mb="4"
+      p={compact ? "3" : "5"}
       transition="background 120ms ease"
-      bg={selected ? "accent.subtle" : undefined}
-      _before={{
-        content: '""',
-        position: "absolute",
-        insetBlock: "0",
-        insetInlineStart: "0",
-        w: "3px",
-        bg: selected ? "accent.solid" : "transparent",
-        transition: "background 120ms ease",
-      }}
+      bg={selected ? "accent.subtle" : "bg.panel"}
       _hover={{ bg: selected ? "accent.subtle" : "bg.subtle" }}
     >
-      <Flex gap="3" align="flex-start">
+      <Flex gap={{ base: "4", md: "6" }} align="stretch" direction={{ base: "column", md: "row" }}>
         {!isCaptionOnly && (
-          <Box pt="1" flexShrink={0}>
+          <Box pt="1" flexShrink={0} position="absolute" top="7" left="7" zIndex="1">
             <Checkbox
               checked={selected}
               onCheckedChange={(checked) => onToggleSelect(clip.id, checked)}
@@ -494,7 +485,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
         )}
 
         {/* Left — media well */}
-        <Box flexShrink={0} w={mediaW}>
+        <Box flexShrink={0} w={mediaW} alignSelf={{ base: "center", md: "flex-start" }}>
           <MediaWell
             ratio={selectedOption.width / selectedOption.height}
             timecode={formatDuration(clip.durationSec)}
@@ -576,7 +567,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
         </Box>
 
         {/* Right — content */}
-        <Stack flex="1" minW="0" gap="2">
+        <Stack flex="1" minW="0" w="full" gap="4">
           {/* Capped to the prose measure plus a meta allowance so the score
               sits with the title it grades. Left unbounded, space-between
               threw it to the container's right edge, ~560px clear of the text.
@@ -592,8 +583,8 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
             <Box minW="0" flex="1">
               <Flex align="center" gap="2" mb="0.5">
                 {!isCaptionOnly && (
-                  <Text textStyle="eyebrow" color="accent.fg">
-                    #{rank}
+                  <Text fontSize="10px" color="fg.subtle">
+                    Clip {String(rank).padStart(2, "0")}
                   </Text>
                 )}
                 <Text textStyle="eyebrow" color={clip.category === "hook" ? "accent.fg" : "fg.subtle"}>
@@ -602,7 +593,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
               </Flex>
               <Link href={studioHref}>
                 <Text
-                  fontSize="sm"
+                  fontSize={compact ? "sm" : "20px"}
                   fontWeight="500"
                   color="fg"
                   lineHeight="1.4"
@@ -632,7 +623,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
                   <Text
                     textStyle="data"
                     fontWeight="600"
-                    fontSize="26px"
+                    fontSize="20px"
                     lineHeight="1"
                     color={
                       clip.viralityScore >= 70
@@ -703,36 +694,18 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
 
           {!isCaptionOnly && (
             <Box>
-              <Text textStyle="eyebrow" color="fg.subtle" mb="0.5">
-                Why this clip
-              </Text>
-              <Text
-                fontSize="xs"
-                color="fg"
-                lineHeight="1.6"
-                maxW={measure}
-                lineClamp={reasoningExpanded ? undefined : 2}
-              >
-                {clip.reasoning}
-                {clip.payoffText ? ` Payoff: ${clip.payoffText}` : ""}
-              </Text>
-              {(clip.reasoning.length > 140 || (clip.payoffText?.length ?? 0) > 0) && (
-                <Button
-                  variant="ghost"
-                  size="2xs"
-                  mt="0.5"
-                  onClick={() => setReasoningExpanded((v) => !v)}
-                >
-                  {reasoningExpanded ? "Show less" : "Show more"}
-                </Button>
-              )}
+              <Button variant="plain" size="sm" w="full" justifyContent="space-between" onClick={() => setReasoningExpanded((v) => !v)} aria-expanded={reasoningExpanded}>
+                Why this clip works
+                {reasoningExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              </Button>
+              {reasoningExpanded && <Text mt="3" fontSize="sm" color="fg.muted" lineHeight="1.7" maxW={measure}>{clip.reasoning}{clip.payoffText ? ` Payoff: ${clip.payoffText}` : ""}</Text>}
             </Box>
           )}
 
           {clip.transcriptSlice.length > 0 && (
             <Box>
               <Flex align="center" justify="space-between" mb="0.5">
-                <Text textStyle="eyebrow" color="fg.subtle">
+                <Text fontSize="xs" color="fg.subtle">
                   Transcript
                 </Text>
                 <Button
@@ -773,8 +746,8 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
                   <Text textStyle="data" fontSize="10px" color="fg.timecode" flexShrink={0}>
                     {formatTimecode(clip.transcriptSlice[0]!.startSec)}
                   </Text>
-                  <Text fontSize="xs" color="fg.muted" lineClamp={1}>
-                    {clip.transcriptSlice[0]!.text}
+                  <Text fontSize="sm" color="fg.muted" lineHeight="1.8" lineClamp={compact ? 2 : 4}>
+                    {clip.transcriptSlice.map((utterance) => utterance.text).join(" ")}
                   </Text>
                 </Flex>
               )}
@@ -800,11 +773,11 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
 
           {/* Action row — all outline/ghost, never solid (the view's one
               solid button lives in the toolbar as "Render selected"). */}
-          <Flex gap="1.5" align="center" wrap="wrap" pt="1">
+          <Flex gap="2" align="center" wrap="wrap" pt="4" mt="auto">
             {hasAnyRenderedAsset ? (
               <Tooltip.Root openDelay={100} closeDelay={0}>
                 <Tooltip.Trigger asChild>
-                  <Button size="xs" variant="outline" asChild flexShrink={0}>
+                  <Button size="sm" asChild flexShrink={0}>
                     <Link href={publishHref}>Publish</Link>
                   </Button>
                 </Tooltip.Trigger>
@@ -834,7 +807,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
             )}
 
             {selectedVariantHasAsset ? (
-              <Button size="xs" variant="outline" asChild>
+              <Button size="sm" variant="outline" asChild>
                 <a
                   href={clipFileDownloadPath(
                     clip.projectId,
@@ -849,7 +822,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
               </Button>
             ) : (
               <Button
-                size="xs"
+                size="sm"
                 variant="outline"
                 disabled={selectedStatus === "pending" || selectedStatus === "rendering"}
                 onClick={() => handleRenderWithConfirm(selectedAspectRatio)}
@@ -863,15 +836,15 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
               </Button>
             )}
 
-            <Button size="xs" variant="ghost" asChild>
+            <Button size="sm" variant="outline" asChild>
               <Link href={studioHref}>
                 <Pencil size={12} />
-                <Text ms="1">Studio</Text>
+                <Text ms="1">Preview &amp; edit</Text>
               </Link>
             </Button>
 
             <Button
-              size="xs"
+              size="sm"
               variant="ghost"
               ms="auto"
               onClick={() => setEditingBoundaries(true)}

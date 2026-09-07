@@ -437,7 +437,7 @@ export function GeneratedImagesPanel() {
 
         {limitExhausted ? <Text fontSize="11px" color="studio.fgMuted">Your workspace has used its available images for this period.</Text> : null}
         {error ? <Text fontSize="11px" color="danger.fg">{error}</Text> : null}
-        <Button size="sm" colorPalette="accent" onClick={() => void generate()} disabled={!generatedImagesCapability.available || limitExhausted || submitting || (!prompt.trim() && !contextIncluded)}>
+        <Button size="sm" colorPalette="brand" onClick={() => void generate()} disabled={!generatedImagesCapability.available || limitExhausted || submitting || (!prompt.trim() && !contextIncluded)}>
           {submitting ? <Spinner size="xs" /> : <Sparkles size={14} />}
           Generate {requestedAspectRatio}
         </Button>

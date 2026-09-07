@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { Box, Flex, HStack, Stack, Text } from "@chakra-ui/react";
-import { StatusBadge } from "@narriflow/ui/components/status-badge";
-import { ScoreMeter } from "@narriflow/ui/components/meter";
+import { Box, Stack, Text } from "@chakra-ui/react";
+import { Checkbox } from "@narriflow/ui/components/checkbox";
 import type { ProjectListItem } from "@narriflow/services";
-import { formatDate, formatDuration } from "@/lib/format";
+import { formatDate, formatDateTime, formatDuration } from "@/lib/format";
 import { DeleteProjectButton } from "./delete-project-button";
 import { ProjectThumbnail } from "./project-thumbnail";
-import { ProjectExpiration } from "./project-expiration";
 import { STATUS_CONFIG, type BadgeStatus } from "../_lib/status";
 
 export { STATUS_CONFIG };
@@ -16,6 +14,9 @@ export { STATUS_CONFIG };
 interface ProjectCardProps {
   project: ProjectListItem;
   priority?: boolean;
+  selectable?: boolean;
+  selected?: boolean;
+  onSelectedChange?: (selected: boolean) => void;
 }
 
 export interface ProjectActivity {
@@ -66,7 +67,7 @@ export function buildProjectMeta(project: ProjectListItem): string {
     project.transcript?.status === "completed" &&
     project.transcript.languageCode
   ) {
-    parts.push(project.transcript.languageCode.toUpperCase());
+    parts.push(project.transcript.languageCode.replace("_", "-").toUpperCase());
   }
 
   return parts.join(" · ");
@@ -77,12 +78,32 @@ export function buildProjectMeta(project: ProjectListItem): string {
  * in a MediaWell, the text block sits directly on the page ground. The whole
  * card is one link (per-card actions are out of scope for this pass).
  */
-export function ProjectCard({ project, priority = false }: ProjectCardProps) {
+export function ProjectCard({
+  project,
+  priority = false,
+  selectable = false,
+  selected = false,
+  onSelectedChange,
+}: ProjectCardProps) {
   const activity = getProjectActivity(project);
-  const meta = buildProjectMeta(project);
 
   return (
-    <Box position="relative" h="full">
+    <Box
+      position="relative"
+      borderRadius="l2"
+      outline={selected ? "2px solid" : "none"}
+      outlineColor="accent.solid"
+      outlineOffset="3px"
+      css={{
+        "@media (hover: hover) and (pointer: fine)": {
+          "& .project-card-action": { opacity: 0 },
+          "&:hover .project-card-action, &:focus-within .project-card-action": {
+            opacity: 1,
+          },
+          "& .project-select-action[data-selected=true]": { opacity: 1 },
+        },
+      }}
+    >
       <Link
         href={`/projects/${project.id}`}
         style={{ textDecoration: "none", display: "block", height: "100%" }}
@@ -109,52 +130,54 @@ export function ProjectCard({ project, priority = false }: ProjectCardProps) {
             ) : null}
           </Box>
 
-          <Stack gap="1.5">
-            <Flex align="flex-start" justify="space-between" gap="3">
-              <Text
-                className="project-card-title"
-                flex="1"
-                minW="0"
-                fontSize="14px"
-                fontWeight="600"
-                color="fg"
-                letterSpacing="-0.01em"
-                lineHeight="1.35"
-                textDecorationColor="border.emphasized"
-                textUnderlineOffset="3px"
-                css={{
-                  display: "-webkit-box",
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: "vertical",
-                  overflow: "hidden",
-                }}
-              >
-                {project.title}
-              </Text>
-              {project.avgViralityScore !== null ? (
-                // pt nudge seats the lineHeight-1 numeral on the title's
-                // first-line baseline (title is 14px at 1.35).
-                <Box pt="0.5" flexShrink={0}>
-                  <ScoreMeter
-                    score={Math.round(project.avgViralityScore)}
-                    size="sm"
-                  />
-                </Box>
-              ) : null}
-            </Flex>
-
-            <HStack gap="2.5" wrap="wrap">
-              <StatusBadge status={activity.status} label={activity.label} />
-              <Text textStyle="data" fontSize="11px" color="fg.subtle">
-                {meta}
-              </Text>
-            </HStack>
-            {project.expiresAt ? (
-              <ProjectExpiration expiresAt={project.expiresAt} />
-            ) : null}
+          <Stack gap="1">
+            <Text fontSize="11px" color="fg.subtle">
+              {formatDateTime(project.createdAt)}
+            </Text>
+            <Text
+              className="project-card-title"
+              minW="0"
+              fontSize="14px"
+              fontWeight="500"
+              color="fg"
+              letterSpacing="-0.01em"
+              lineHeight="1.35"
+              textDecorationColor="border.emphasized"
+              textUnderlineOffset="3px"
+              css={{
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }}
+            >
+              {project.title}
+            </Text>
           </Stack>
         </Stack>
       </Link>
+      {selectable ? (
+        <Box
+          className="project-card-action project-select-action"
+          data-selected={selected}
+          position="absolute"
+          top="2"
+          left="2"
+          zIndex={2}
+          p="1.5"
+          borderRadius="l1"
+          bg="studio.scrimStrong"
+          onClick={(event) => {
+            event.stopPropagation();
+          }}
+        >
+          <Checkbox
+            checked={selected}
+            onCheckedChange={(checked) => onSelectedChange?.(checked)}
+            aria-label={`Select "${project.title}"`}
+          />
+        </Box>
+      ) : null}
       <DeleteProjectButton
         projectId={project.id}
         projectTitle={project.title}

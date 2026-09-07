@@ -1,24 +1,21 @@
 "use client";
 
+import type { ReactNode } from "react";
 import {
-  Box,
-  HStack,
+  Collapsible,
+  Flex,
+  Grid,
   Input,
   InputGroup,
+  Stack,
   Text,
   VisuallyHidden,
 } from "@chakra-ui/react";
-import { LayoutGrid, Rows3, Search } from "lucide-react";
-import { Button } from "@narriflow/ui/components/button";
+import { Filter, LayoutGrid, Rows3, Search, X } from "lucide-react";
+import { IconButton } from "@narriflow/ui/components/button";
 import { Select } from "@narriflow/ui/components/select";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
-import { Toolbar } from "@narriflow/ui/components/toolbar";
-import type {
-  SourceFilter,
-  SortOption,
-  StatusFilter,
-  ViewMode,
-} from "./projects-explorer";
+import type { SourceFilter, SortOption, StatusFilter, ViewMode } from "./projects-explorer";
 
 interface FilterToolbarProps {
   query: string;
@@ -31,16 +28,13 @@ interface FilterToolbarProps {
   onSortChange: (value: SortOption) => void;
   view: ViewMode;
   onViewChange: (value: ViewMode) => void;
-  /** Per-status counts across every matching project (source + search applied). */
-  statusCounts: Record<StatusFilter, number>;
-  /** Projects currently rendered after all filters. */
-  resultCount: number;
-  /** Total matching projects on the server. */
-  loadedCount: number;
+  selectedCount: number;
+  onClearSelection: () => void;
+  selectionAction?: ReactNode;
 }
 
 const STATUS_ITEMS: { value: StatusFilter; label: string }[] = [
-  { value: "all", label: "All" },
+  { value: "all", label: "All statuses" },
   { value: "ready", label: "Ready" },
   { value: "processing", label: "Processing" },
   { value: "queued", label: "Queued" },
@@ -64,8 +58,7 @@ const SORT_ITEMS: { value: SortOption; label: string }[] = [
 
 /**
  * FilterToolbar — the slim sticky command row that replaces the boxed filter
- * panel: search, status chips with live mono counts, compact source + sort
- * selects, and a grid/list view toggle.
+ * panel: search, compact filter + sort selects, and a grid/list view toggle.
  */
 export function FilterToolbar({
   query,
@@ -78,142 +71,133 @@ export function FilterToolbar({
   onSortChange,
   view,
   onViewChange,
-  statusCounts,
-  resultCount,
-  loadedCount,
+  selectedCount,
+  onClearSelection,
+  selectionAction,
 }: FilterToolbarProps) {
-  return (
-    <Toolbar h="auto" minH="12" py="2" flexWrap="wrap" gap="2" columnGap="3">
-      <InputGroup
-        w={{ base: "full", md: "220px" }}
-        flexShrink={0}
-        color="fg.subtle"
-        startElement={<Search size={13} />}
-      >
-        <Input
-          value={query}
-          onChange={(event) => onQueryChange(event.currentTarget.value)}
-          placeholder="Search projects"
-          aria-label="Search projects"
-          size="sm"
-          // Pin to the shared 32px toolbar control height (sm recipe is
-          // 36px); the var also drives the InputGroup icon inset.
-          css={{ "--input-height": "sizes.8" }}
-          fontSize="13px"
-        />
-      </InputGroup>
+  const activeFilterCount =
+    Number(query.trim().length > 0) + Number(status !== "all") + Number(source !== "all");
 
-      <HStack gap="1" flexWrap="wrap" role="group" aria-label="Filter by status">
-        {STATUS_ITEMS.map((item) => (
-          <StatusChip
-            key={item.value}
-            label={item.label}
-            count={statusCounts[item.value]}
-            active={status === item.value}
-            danger={item.value === "failed"}
-            onClick={() => onStatusChange(item.value)}
+  return (
+    <Collapsible.Root defaultOpen={activeFilterCount > 0}>
+      <Stack gap="0" minW="0" w="full">
+        <Flex gap="3" align="center" justify="space-between" wrap="wrap">
+          <Text fontSize="13px" fontWeight="600" color="fg">
+            Projects
+          </Text>
+          <Flex gap="2" w={{ base: "full", md: "auto" }} minW="0">
+            {selectedCount > 0 ? (
+              <>
+                <IconButton
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Clear project selection"
+                  onClick={onClearSelection}
+                >
+                  <X size={13} />
+                </IconButton>
+                {selectionAction}
+              </>
+            ) : (
+              <>
+                <Collapsible.Trigger asChild>
+                  <IconButton
+                    size="sm"
+                    variant={activeFilterCount > 0 ? "solid" : "outline"}
+                    flexShrink={0}
+                    aria-label={
+                      activeFilterCount > 0
+                        ? `Filters, ${activeFilterCount} active`
+                        : "Filters"
+                    }
+                  >
+                    <Filter size={13} aria-hidden="true" />
+                  </IconButton>
+                </Collapsible.Trigger>
+                <SegmentedControl
+                  size="sm"
+                  flexShrink={0}
+                  alignItems="center"
+                  value={view}
+                  onValueChange={(value) => onViewChange(value as ViewMode)}
+                  aria-label="View mode"
+                  items={[
+                    {
+                      value: "grid",
+                      label: (
+                        <>
+                          <LayoutGrid size={13} aria-hidden="true" />
+                          <VisuallyHidden>Grid view</VisuallyHidden>
+                        </>
+                      ),
+                    },
+                    {
+                      value: "list",
+                      label: (
+                        <>
+                          <Rows3 size={13} aria-hidden="true" />
+                          <VisuallyHidden>List view</VisuallyHidden>
+                        </>
+                      ),
+                    },
+                  ]}
+                />
+              </>
+            )}
+          </Flex>
+        </Flex>
+
+        <Collapsible.Content>
+          <Grid
+            gap="2"
+            pt="3"
+            w="full"
+            templateColumns={{
+              base: "1fr",
+              sm: "repeat(2, minmax(0, 1fr))",
+              lg: "minmax(240px, 1fr) 132px 144px 152px",
+            }}
+          >
+          <InputGroup color="fg.subtle" startElement={<Search size={13} />}>
+            <Input
+              value={query}
+              onChange={(event) => onQueryChange(event.currentTarget.value)}
+              placeholder="Search projects"
+              aria-label="Search projects"
+              size="sm"
+              fontSize="13px"
+            />
+          </InputGroup>
+          <Select
+            items={STATUS_ITEMS}
+            value={status}
+            onValueChange={(value) => onStatusChange(value as StatusFilter)}
+            size="sm"
+            width="full"
+            minW="0"
+            aria-label="Filter by status"
           />
-        ))}
-      </HStack>
-
-      <Box flex="1" minW="2" />
-
-      <Text
-        textStyle="data"
-        fontSize="11px"
-        color="fg.subtle"
-        flexShrink={0}
-        aria-live="polite"
-      >
-        {resultCount} of {loadedCount} loaded
-      </Text>
-
-      <HStack gap="2" flexShrink={0}>
-        <Select
-          items={SOURCE_ITEMS}
-          value={source}
-          onValueChange={(value) => onSourceChange(value as SourceFilter)}
-          size="sm"
-          width="128px"
-          aria-label="Filter by source"
-        />
-        <Select
-          items={SORT_ITEMS}
-          value={sort}
-          onValueChange={(value) => onSortChange(value as SortOption)}
-          size="sm"
-          width="136px"
-          aria-label="Sort projects"
-        />
-        <SegmentedControl
-          size="sm"
-          // Match the 32px control row (sm track is ~30px on its own).
-          h="8"
-          alignItems="center"
-          value={view}
-          onValueChange={(value) => onViewChange(value as ViewMode)}
-          aria-label="View mode"
-          items={[
-            {
-              value: "grid",
-              label: (
-                <>
-                  <LayoutGrid size={13} aria-hidden="true" />
-                  <VisuallyHidden>Grid view</VisuallyHidden>
-                </>
-              ),
-            },
-            {
-              value: "list",
-              label: (
-                <>
-                  <Rows3 size={13} aria-hidden="true" />
-                  <VisuallyHidden>List view</VisuallyHidden>
-                </>
-              ),
-            },
-          ]}
-        />
-      </HStack>
-    </Toolbar>
-  );
-}
-
-function StatusChip({
-  label,
-  count,
-  active,
-  danger,
-  onClick,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  danger?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <Button
-      size="xs"
-      variant="ghost"
-      onClick={onClick}
-      aria-pressed={active}
-      px="2"
-      gap="1.5"
-      color={active ? "fg" : "fg.muted"}
-      bg={active ? "bg.muted" : "transparent"}
-      fontWeight={active ? "600" : "500"}
-      _hover={{ bg: active ? "bg.muted" : "bg.subtle", color: "fg" }}
-    >
-      {label}
-      <Text
-        as="span"
-        textStyle="data"
-        fontSize="11px"
-        color={danger && count > 0 ? "danger.fg" : active ? "fg.muted" : "fg.subtle"}
-      >
-        {count}
-      </Text>
-    </Button>
+          <Select
+            items={SOURCE_ITEMS}
+            value={source}
+            onValueChange={(value) => onSourceChange(value as SourceFilter)}
+            size="sm"
+            width="full"
+            minW="0"
+            aria-label="Filter by source"
+          />
+          <Select
+            items={SORT_ITEMS}
+            value={sort}
+            onValueChange={(value) => onSortChange(value as SortOption)}
+            size="sm"
+            width="full"
+            minW="0"
+            aria-label="Sort projects"
+          />
+          </Grid>
+        </Collapsible.Content>
+      </Stack>
+    </Collapsible.Root>
   );
 }

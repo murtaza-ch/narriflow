@@ -184,10 +184,7 @@ export function AdvancedClipSettings({
         <Drawer.Backdrop />
         <Drawer.Positioner>
           <Drawer.Content
-            bg="bg.panel"
             borderInlineStartWidth="1px"
-            borderColor="border"
-            boxShadow="cardHover"
           >
             <Drawer.Header
               px="5"

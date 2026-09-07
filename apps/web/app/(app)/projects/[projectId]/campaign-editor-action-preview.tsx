@@ -604,7 +604,7 @@ export function CampaignEditorActionPreview({
               <Button
                 key={value}
                 flex="1"
-                size="xs"
+                size="sm"
                 variant="ghost"
                 bg={placement === value ? "bg" : "transparent"}
                 color={placement === value ? "accent.fg" : "fg.muted"}

@@ -46,7 +46,6 @@ export function TranscriptPanel({
     typeof transcript.languageConfidence === "number"
       ? `Language confidence: ${Math.round(transcript.languageConfidence * 100)}%`
       : null,
-    transcript.providerModel ? `Model: ${transcript.providerModel}` : null,
     typeof transcript.speakerCount === "number"
       ? `Speakers: ${transcript.speakerCount}`
       : null,
@@ -86,7 +85,7 @@ export function TranscriptPanel({
           {isReady && (
             <Flex gap="1.5">
               {["txt", "srt", "vtt"].map((format) => (
-                <Button key={format} asChild size="xs" variant="outline">
+                <Button key={format} asChild size="sm" variant="outline">
                   <a href={`/api/projects/${projectId}/transcript/export?format=${format}`}>
                     {format.toUpperCase()}
                   </a>
@@ -123,7 +122,7 @@ export function TranscriptPanel({
                     {formatTimecode(utterance.startSec)} – {formatTimecode(utterance.endSec)}
                   </Text>
                 </Flex>
-                <Text fontSize="13px" lineHeight="1.6" color="fg">
+                <Text fontSize="sm" lineHeight="1.7" color="fg" maxW="80ch">
                   {utterance.text}
                 </Text>
               </Box>

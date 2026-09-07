@@ -71,8 +71,8 @@ import {
   type PipelineStepView,
   type ProcessingStageInput,
 } from "@/lib/project-state";
-import { Stack, Box, Text, Flex, NativeSelect, Tabs } from "@chakra-ui/react";
-import { AlertTriangle, ArrowLeft, Film, Info, Link2 } from "lucide-react";
+import { Stack, Box, Text, Flex, NativeSelect, Tabs, Collapsible } from "@chakra-ui/react";
+import { AlertTriangle, ArrowLeft, ChevronDown, Film, Info, Link2 } from "lucide-react";
 
 function linkProviderLabel(sourceProvider: string | null | undefined): string {
   return LINK_PROVIDERS.find((p) => p.id === sourceProvider)?.label ?? "Link";
@@ -477,77 +477,29 @@ export default async function ProjectDetailPage({
   const ingestBadge =
     STATUS_CONFIG[snapshot.project.ingestStatus] ?? STATUS_CONFIG.queued!;
 
-  // 1240px stays. Widening this to 1600px on large screens was tried and
-  // reverted: once the prose blocks in ClipRow are capped to a readable
-  // measure, a clip row's natural content is only ~900px wide, so the extra
-  // width did not let anything breathe — it stretched the row and opened an
-  // 800px dead band between the transcript and the right-hand score. The page
-  // felt empty because prose was running to 1000px per line, not because the
-  // container was too narrow.
   return (
-    <Stack gap="8" maxW="1240px" mx="auto" w="full">
+    <Stack gap={{ base: "4", md: "6" }} maxW="1400px" mx="auto" w="full">
       <ProjectEventsProvider
         projectId={projectId}
         initialSeq={snapshot.lastSeq}
         initialEvents={workflowHistory}
       >
-      {/* Vizard-style workspace bar: the sidebar is suppressed on open
-          projects (see AppChrome), so this row is the navigation — back
-          arrow + title + status meta left, destructive action right. */}
-      <Flex
-        align="center"
-        gap="3"
-        wrap="wrap"
-        animation="fade-up"
-        animationFillMode="backwards"
-      >
-        <Link href="/projects" aria-label="Back to projects">
-          <Flex
-            align="center"
-            justify="center"
-            w="30px"
-            h="30px"
-            borderRadius="l1"
-            color="fg.muted"
-            transition="color 120ms ease, background 120ms ease"
-            _hover={{ color: "fg", bg: "bg.subtle" }}
-          >
-            <ArrowLeft size={16} aria-hidden />
+      <Link href="/projects" aria-label="Back to projects">
+        <Flex align="center" gap="2" color="fg.muted" fontSize="xs" w="fit-content" _hover={{ color: "fg" }}><ArrowLeft size={14} />All projects</Flex>
+      </Link>
+      <Collapsible.Root defaultOpen={clips.length === 0 || ingestInProgress || runInFlight || runFailed || Boolean(snapshot.project.ingestErrorCode) || activeRun?.status === "partial"}>
+      <Flex align="flex-start" gap="4" direction={{ base: "column", md: "row" }} animation="fade-up">
+        <Stack gap="3" flex="1" minW="0">
+          <Text as="h1" textStyle="title" fontSize={{ base: "xl", md: "24px" }} color="fg" lineClamp={2}>{snapshot.project.title}</Text>
+          <Flex align="center" gap="3" wrap="wrap">
+            <Text fontSize="xs" color="fg.subtle" textTransform="capitalize">{snapshot.project.sourceType === "link" ? linkProviderLabel(snapshot.project.sourceProvider) : snapshot.project.sourceType}</Text>
+            {typeof durationSec === "number" && durationSec > 0 && <Text fontSize="xs" color="fg.subtle">{formatDuration(durationSec)}</Text>}
+            <Text fontSize="xs" color="fg.subtle">{formatDate(snapshot.project.createdAt)}</Text>
+            <StatusBadge status={ingestBadge.status} label={ingestBadge.label} />
           </Flex>
-        </Link>
-        <Text
-          as="h1"
-          textStyle="title"
-          fontSize="lg"
-          color="fg"
-          truncate
-          minW="0"
-          flexShrink={1}
-        >
-          {snapshot.project.title}
-        </Text>
-        <Flex align="center" gap="3" flexShrink={0}>
-          <StatusBadge status={ingestBadge.status} label={ingestBadge.label} />
-          {typeof durationSec === "number" && durationSec > 0 && (
-            <Text textStyle="data" fontSize="xs" color="fg.timecode">
-              {formatDuration(durationSec)}
-            </Text>
-          )}
-          <Text textStyle="eyebrow" color="fg.subtle">
-            {snapshot.project.sourceType === "link"
-              ? linkProviderLabel(snapshot.project.sourceProvider)
-              : snapshot.project.sourceType}
-          </Text>
-          <Text
-            textStyle="data"
-            fontSize="xs"
-            color="fg.muted"
-            display={{ base: "none", md: "block" }}
-          >
-            {formatDate(snapshot.project.createdAt)}
-          </Text>
-        </Flex>
-        <Box flex="1" />
+        </Stack>
+        <Flex gap="2" align="center" flexShrink={0} wrap="wrap">
+        <Collapsible.Trigger asChild><Button variant="outline" size="sm">Project details <Collapsible.Indicator><ChevronDown size={14} /></Collapsible.Indicator></Button></Collapsible.Trigger>
         {canManageReview ? (
           <ProjectShareButton
             projectId={projectId}
@@ -561,13 +513,10 @@ export default async function ProjectDetailPage({
             }}
           />
         ) : null}
-        <DeleteProjectButton
-          projectId={projectId}
-          projectTitle={snapshot.project.title}
-          variant="button"
-        />
+        </Flex>
       </Flex>
 
+        <Collapsible.Content pt="5">
       <Flex
         gap="5"
         align={{ base: "stretch", md: "center" }}
@@ -637,7 +586,7 @@ export default async function ProjectDetailPage({
               {isIngestFailed &&
                 ingestRecoveryAction(snapshot.project.ingestErrorCode) ===
                   "new_upload" && (
-                  <Button size="xs" variant="outline" asChild alignSelf="flex-start">
+                  <Button size="sm" variant="outline" asChild alignSelf="flex-start">
                     <Link href="/upload">Upload video instead</Link>
                   </Button>
                 )}
@@ -646,14 +595,9 @@ export default async function ProjectDetailPage({
         </Stack>
       </Flex>
 
-      {/* Workspace tabs — URL-driven (?tab=); SSE stream shared via
-          ProjectEventsProvider so the Clips-tab processing checklist and the
-          Activity tab consume the same EventSource (no second connection). */}
-      <ProjectTabs clipsCountBadge={<TabCountBadge count={clips.length} />}>
-        {/* CLIPS — processing panel while a run/ingest is in flight, ranked
-            results once clips exist, legacy step cards otherwise. */}
-        <Tabs.Content value="clips" pt="6">
-          {activeTab === "clips" && brandProfiles.length > 0 ? (
+          {brandProfiles.length > 0 ? (
+            <Box mt="5">
+
             <AuthenticatedActionForm action={applyProjectBrandProfileFormAction}>
               <input type="hidden" name="projectId" value={projectId} />
               <Flex
@@ -661,10 +605,10 @@ export default async function ProjectDetailPage({
                 direction={{ base: "column", md: "row" }}
                 justify="space-between"
                 gap="4"
-                mb="5"
-                py="4"
-                borderTopWidth="1px"
-                borderBottomWidth="1px"
+                p="4"
+                bg="bg.panel"
+                borderRadius="l2"
+                borderWidth="1px"
                 borderColor="border"
               >
                 <Stack gap="1">
@@ -672,7 +616,7 @@ export default async function ProjectDetailPage({
                     Project identity
                   </Text>
                   <Text fontSize="sm" color="fg.muted">
-                    Choose the profile to freeze for future project work.
+                    Set the brand profile for future clips.
                   </Text>
                 </Stack>
                 <Flex gap="2" align="center" minW={{ md: "360px" }}>
@@ -710,7 +654,24 @@ export default async function ProjectDetailPage({
                 </Flex>
               </Flex>
             </AuthenticatedActionForm>
+            </Box>
+
           ) : null}
+
+        <Flex justify="flex-end" mt="3">        <DeleteProjectButton
+          projectId={projectId}
+          projectTitle={snapshot.project.title}
+          variant="button"
+        /></Flex>
+        </Collapsible.Content>
+      </Collapsible.Root>
+      {/* Workspace tabs — URL-driven (?tab=); SSE stream shared via
+          ProjectEventsProvider so the Clips-tab processing checklist and the
+          Activity tab consume the same EventSource (no second connection). */}
+      <ProjectTabs clipsCountBadge={<TabCountBadge count={clips.length} />}>
+        {/* CLIPS — processing panel while a run/ingest is in flight, ranked
+            results once clips exist, legacy step cards otherwise. */}
+        <Tabs.Content value="clips" pt="6">
           {activeTab === "clips" ? (isDraftPack ? (
             <Flex
               align="center"

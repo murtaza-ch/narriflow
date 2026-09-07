@@ -104,6 +104,8 @@ export function DeleteProjectButton({
     <>
       {variant === "icon" ? (
         <IconButton
+          className="project-card-action project-delete-action"
+          transition="opacity 120ms ease, background 120ms ease"
           type="button"
           size="xs"
           variant="ghost"

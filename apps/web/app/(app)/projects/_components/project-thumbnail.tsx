@@ -186,8 +186,8 @@ function SourceChip({
   return (
     <Flex
       position="absolute"
-      top="1.5"
-      left="1.5"
+      bottom="2"
+      left="2"
       align="center"
       gap="1"
       px="1.5"
@@ -199,10 +199,10 @@ function SourceChip({
       pointerEvents="none"
     >
       <Box color="studio.fg">
-        <Icon size={10} strokeWidth={2.2} />
+        <Icon size={13} strokeWidth={2.2} />
       </Box>
       <Text
-        textStyle="data"
+        srOnly
         fontSize="10px"
         color="studio.fg"
         letterSpacing="0.08em"

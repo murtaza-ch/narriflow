@@ -54,13 +54,6 @@ const STALE_AFTER_FAILURES = 2;
 /** Countdown copy is minute-grained, so a coarse tick is plenty. */
 const CLOCK_TICK_MS = 15_000;
 
-const toneStripe: Record<SocialPostTone, string> = {
-  neutral: "border.emphasized",
-  accent: "accent.solid",
-  success: "success.solid",
-  warning: "warning.solid",
-  danger: "danger.solid",
-};
 
 const toneFg: Record<SocialPostTone, string> = {
   neutral: "fg.muted",
@@ -821,9 +814,7 @@ export function SocialSchedulingPanel({
 
         {livePosts.length > 0 ? (
           <Stack
-            gap="0"
-            borderTopWidth="1px"
-            borderColor="border.subtle"
+            gap="3"
             aria-live="polite"
           >
             {livePosts.map((post) => {
@@ -836,23 +827,14 @@ export function SocialSchedulingPanel({
                 align={{ base: "stretch", md: "center" }}
                 justify="space-between"
                 gap="3"
-                ps="3.5"
-                pe="1"
-                py="2.5"
-                borderBottomWidth="1px"
+                p="4"
+                bg="bg.panel"
+                borderRadius="l2"
+                borderWidth="1px"
                 borderColor="border.subtle"
                 transition="background 120ms ease"
                 _hover={{ bg: "bg.subtle" }}
               >
-                {/* 3px status stripe */}
-                <Box
-                  position="absolute"
-                  insetInlineStart="0"
-                  top="0"
-                  bottom="0"
-                  w="3px"
-                  bg={toneStripe[feedback.tone]}
-                />
                 <Box minW="0">
                   <Flex align="center" gap="2" wrap="wrap">
                     <Text fontSize="13px" fontWeight="500" color="fg" truncate>
@@ -1033,14 +1015,14 @@ export function SocialSchedulingPanel({
                       ) : null}
                       <Flex gap="2" justify="flex-end">
                         <Button
-                          size="xs"
+                          size="sm"
                           variant="ghost"
                           onClick={() => setRecoveryForm(null)}
                         >
                           Close
                         </Button>
                         <Button
-                          size="xs"
+                          size="sm"
                           variant="outline"
                           disabled={
                             submitting ||
@@ -1059,7 +1041,7 @@ export function SocialSchedulingPanel({
                 </Box>
                 {post.allowedActions.includes("cancel") ? (
                   <Button
-                    size="xs"
+                    size="sm"
                     variant="ghost"
                     flexShrink={0}
                     disabled={isPending || submitting}
@@ -1072,7 +1054,7 @@ export function SocialSchedulingPanel({
                   <Flex gap="1" flexShrink={0} wrap="wrap" justify="flex-end">
                     {post.allowedActions.includes("recheck") ? (
                       <Button
-                        size="xs"
+                        size="sm"
                         variant="ghost"
                         onClick={() =>
                           setRecoveryForm({
@@ -1091,7 +1073,7 @@ export function SocialSchedulingPanel({
                     ) : null}
                     {post.allowedActions.includes("confirm_published") ? (
                       <Button
-                        size="xs"
+                        size="sm"
                         variant="ghost"
                         onClick={() =>
                           setRecoveryForm({
@@ -1110,7 +1092,7 @@ export function SocialSchedulingPanel({
                     ) : null}
                     {post.allowedActions.includes("publish_again") ? (
                       <Button
-                        size="xs"
+                        size="sm"
                         variant="ghost"
                         color="warning.fg"
                         onClick={() =>
@@ -1129,13 +1111,13 @@ export function SocialSchedulingPanel({
                       </Button>
                     ) : null}
                     {post.allowedActions.includes("reconnect_account") ? (
-                      <Button size="xs" variant="ghost" asChild>
+                      <Button size="sm" variant="ghost" asChild>
                         <Link href="/settings/social-accounts">Reconnect</Link>
                       </Button>
                     ) : null}
                   </Flex>
                 ) : post.allowedActions.includes("reconnect_account") ? (
-                  <Button size="xs" variant="ghost" asChild>
+                  <Button size="sm" variant="ghost" asChild>
                     <Link href="/settings/social-accounts">Reconnect</Link>
                   </Button>
                 ) : null}

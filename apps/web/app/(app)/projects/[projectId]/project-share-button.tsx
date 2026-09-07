@@ -160,16 +160,13 @@ export function ProjectShareButton({
       positioning={{ placement: "bottom-end", offset: { mainAxis: 8 } }}
     >
       <Popover.Trigger asChild>
-        <Button size="sm" colorPalette="accent">
+        <Button size="sm" variant="outline">
           <Share2 size={15} aria-hidden /> Share
         </Button>
       </Popover.Trigger>
       <Portal>
         <Popover.Positioner>
           <Popover.Content
-            layerStyle="panel"
-            boxShadow="cardHover"
-            borderColor="border"
             w={{ base: "calc(100vw - 24px)", sm: "420px" }}
             maxW="420px"
             overflow="hidden"
@@ -210,7 +207,7 @@ export function ProjectShareButton({
                           <Text fontSize="sm" fontWeight="650">Anyone with the link can review</Text>
                           <Text fontSize="xs" color="fg.muted">Private link · round {activeRound.revision}</Text>
                         </Box>
-                        <Button size="xs" variant="outline" onClick={() => void copyLink()}>
+                        <Button size="sm" variant="outline" onClick={() => void copyLink()}>
                           <Copy size={13} aria-hidden /> Copy link
                         </Button>
                       </Flex>

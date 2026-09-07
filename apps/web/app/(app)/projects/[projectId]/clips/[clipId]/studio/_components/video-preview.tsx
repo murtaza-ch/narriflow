@@ -1707,11 +1707,7 @@ export function VideoPreview() {
             <Menu.Positioner>
               <Menu.Content
                 minW="140px"
-                bg="studio.surface"
                 borderWidth="1px"
-                borderColor="studio.borderStrong"
-                borderRadius="l2"
-                boxShadow="cardHover"
                 py="1"
               >
                 {Object.entries(ASPECT_RATIO_CONFIG).map(([ratio, cfg]) => {

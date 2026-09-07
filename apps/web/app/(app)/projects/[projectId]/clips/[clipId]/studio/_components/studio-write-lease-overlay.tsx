@@ -57,7 +57,7 @@ export function StudioWriteLeaseOverlay({
           <Flex justify="flex-end">
             <Button
               size="sm"
-              colorPalette="accent"
+              colorPalette="brand"
               variant="solid"
               onClick={onTakeOver}
             >

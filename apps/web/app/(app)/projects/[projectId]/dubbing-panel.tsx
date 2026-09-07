@@ -68,12 +68,6 @@ function downloadUrlFromPayload(payload: unknown): string | null {
   }
 }
 
-const dubStripe: Record<ClipDubSnapshot["status"], string> = {
-  completed: "success.solid",
-  failed: "danger.solid",
-  processing: "accent.solid",
-  queued: "border.emphasized",
-};
 
 const dubLabelColor: Record<ClipDubSnapshot["status"], string> = {
   completed: "success.fg",
@@ -309,7 +303,7 @@ export function DubbingPanel({
         ) : null}
 
         {dubs.length > 0 ? (
-          <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+          <Stack gap="3">
             {dubs.map((dub) => {
               const clipIndex = clips.find((clip) => clip.id === dub.clipId)?.index;
               return (
@@ -319,23 +313,15 @@ export function DubbingPanel({
                   align="center"
                   justify="space-between"
                   gap="3"
-                  ps="3.5"
-                  pe="1"
-                  py="2.5"
-                  borderBottomWidth="1px"
+                  p="4"
+                  bg="bg.panel"
+                  borderRadius="l2"
+                  flexWrap="wrap"
+                  borderWidth="1px"
                   borderColor="border.subtle"
                   transition="background 120ms ease"
                   _hover={{ bg: "bg.subtle" }}
                 >
-                  {/* 3px status stripe */}
-                  <Box
-                    position="absolute"
-                    insetInlineStart="0"
-                    top="0"
-                    bottom="0"
-                    w="3px"
-                    bg={dubStripe[dub.status]}
-                  />
                   <Box minW="0">
                     <Text fontSize="13px" color="fg" truncate>
                       Clip {clipIndex === undefined ? "?" : clipIndex + 1} ·{" "}
@@ -356,7 +342,7 @@ export function DubbingPanel({
                   {dub.status === "completed" ? (
                     <Flex gap="1.5" flexShrink={0}>
                       <Button
-                        size="xs"
+                        size="sm"
                         variant="outline"
                         disabled={downloadingAsset !== null}
                         onClick={() => downloadDub(dub, "video")}
@@ -373,7 +359,7 @@ export function DubbingPanel({
                         </Text>
                       </Button>
                       <Button
-                        size="xs"
+                        size="sm"
                         variant="ghost"
                         disabled={downloadingAsset !== null}
                         onClick={() => downloadDub(dub, "audio")}

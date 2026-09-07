@@ -17,16 +17,11 @@ export function DraftRecoveryDialog({
   return (
     <Dialog.Root open={open} closeOnEscape={false} closeOnInteractOutside={false} placement="center">
       <Portal>
-        <Dialog.Backdrop bg="rgba(0,0,0,0.76)" zIndex={400} />
+        <Dialog.Backdrop zIndex={400} />
         <Dialog.Positioner zIndex={410}>
           <Dialog.Content
-            bg="studio.surface"
-            borderWidth="1px"
-            borderColor="studio.borderStrong"
-            borderRadius="l3"
             w="min(480px, 92vw)"
             maxW="min(480px, 92vw)"
-            boxShadow="0 24px 60px rgba(0,0,0,0.7)"
             color="studio.fg"
             p="6"
           >
@@ -51,7 +46,7 @@ export function DraftRecoveryDialog({
                 <Button size="sm" variant="ghost" onClick={onKeepCloud}>
                   Keep cloud version
                 </Button>
-                <Button size="sm" colorPalette="accent" variant="solid" onClick={onRecoverLocal}>
+                <Button size="sm" colorPalette="brand" variant="solid" onClick={onRecoverLocal}>
                   Recover this device's draft
                 </Button>
               </Flex>

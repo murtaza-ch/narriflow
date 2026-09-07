@@ -226,7 +226,7 @@ export function ExportDeliveryClient({
   }
 
   return (
-    <Box minH="100dvh" bg="bg.canvas" layerStyle="blueprint">
+    <Box minH="100dvh" bg="bg" >
       <Flex
         as="header"
         minH="56px"
@@ -365,7 +365,7 @@ export function ExportDeliveryClient({
               <Stack gap="2">
                 <Button
                   asChild={Boolean(selected?.downloadUrl)}
-                  colorPalette="accent"
+                  colorPalette="brand"
                   disabled={!selected?.downloadUrl}
                   w="full"
                 >
@@ -405,8 +405,8 @@ export function ExportDeliveryClient({
                   <Flex align="center" gap="2" mb="2"><ShieldCheck size={13} /><Text fontSize="12px" fontWeight="600">Private link copied</Text></Flex>
                   <Text fontSize="11px" color="fg.muted" wordBreak="break-all">{shareUrl}</Text>
                   <Flex gap="2" mt="3">
-                    <Button size="xs" variant="outline" onClick={() => void copyShareLink()}><Copy size={12} /> Copy again</Button>
-                    <Button size="xs" variant="ghost" disabled={action === "revoke"} onClick={() => void revokeLinks()}>Revoke all</Button>
+                    <Button size="sm" variant="outline" onClick={() => void copyShareLink()}><Copy size={12} /> Copy again</Button>
+                    <Button size="sm" variant="ghost" disabled={action === "revoke"} onClick={() => void revokeLinks()}>Revoke all</Button>
                   </Flex>
                 </Box>
               ) : null}

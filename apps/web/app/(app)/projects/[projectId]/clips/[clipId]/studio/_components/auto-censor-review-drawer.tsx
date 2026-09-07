@@ -455,7 +455,7 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
         <Box px="20px" py="14px" borderTopWidth="1px" borderColor="studio.borderStrong" bg="studio.raised">
           {!autoCensorPolicy.canApply && <Text mb="8px" fontSize="11px" color="studio.fgMuted">Preview is free. Upgrade to Creator to save censor edits.</Text>}
           {autoCensorPolicy.canApply && !hasWritableTreatment && <Text mb="8px" fontSize="11px" color="studio.fgMuted">Scanning is available. Applying censor edits is temporarily unavailable.</Text>}
-          <Button w="100%" colorPalette="accent" disabled={!autoCensorPolicy.canApply || !hasWritableTreatment || selectedCount === 0} onClick={apply}>
+          <Button w="100%" colorPalette="brand" disabled={!autoCensorPolicy.canApply || !hasWritableTreatment || selectedCount === 0} onClick={apply}>
             Apply {selectedCount > 0 ? selectedCount : "selected"} {selectedCount === 1 ? "edit" : "edits"}
           </Button>
         </Box>

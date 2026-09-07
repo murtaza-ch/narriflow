@@ -157,7 +157,7 @@ export function RenderClipsButton({
       </Popover.Trigger>
       <Portal>
         <Popover.Positioner>
-          <Popover.Content layerStyle="panel" boxShadow="cardHover" minW="240px" p="3">
+          <Popover.Content minW="240px" p="3">
             <Stack gap="3">
               <Box>
                 <Text textStyle="eyebrow" color="fg.subtle">
@@ -250,7 +250,7 @@ export function RenderClipsButton({
                   {selectedAspectRatios.length === 1 ? "" : "s"} selected
                 </Text>
                 <Button
-                  size="xs"
+                  size="sm"
                   disabled={
                     selectedAspectRatios.length === 0 || isPending || submitting
                   }
@@ -339,7 +339,7 @@ export function RetryIngestButton({
       <Stack gap="1.5" align="flex-start">
         <Button
           type="submit"
-          size="xs"
+          size="sm"
           variant="outline"
           disabled={disabled || isPending}
         >

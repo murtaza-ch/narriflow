@@ -667,15 +667,15 @@ export function AssistedPublishingWorkspace({
 
   return (
     <Stack gap="5">
-      <Box borderTopWidth="3px" borderColor="accent.solid" layerStyle="blueprint">
+      <Box>
         <Flex px={{ base: "4", md: "5" }} py="4" align={{ base: "start", md: "center" }} justify="space-between" gap="4" direction={{ base: "column", md: "row" }}>
           <Box>
             <Text textStyle="eyebrow" color="accent.fg">Publishing workspace</Text>
-            <Text mt="1" fontFamily="display" fontSize={{ base: "xl", md: "2xl" }} fontWeight="700" letterSpacing="-0.025em">
-              Review once. Publish everywhere.
+            <Text mt="1" fontFamily="display" fontSize={{ base: "xl", md: "2xl" }} fontWeight="500" letterSpacing="-0.025em">
+              Schedule a campaign
             </Text>
             <Text mt="1" fontSize="sm" color="fg.muted" maxW="680px">
-              Select clips and accounts, generate platform-native copy, approve the exact wording, then build a timezone-safe campaign.
+              Choose clips and accounts, review your captions, and set a publishing schedule.
             </Text>
           </Box>
           <Flex align="center" gap="2" color="fg.subtle">
@@ -685,11 +685,11 @@ export function AssistedPublishingWorkspace({
         </Flex>
       </Box>
 
-      <Grid templateColumns={{ base: "1fr", xl: "280px minmax(0, 1fr) 300px" }} gap="0" borderWidth="1px" borderColor="border.subtle">
+      <Grid templateColumns={{ base: "1fr", xl: "280px minmax(0, 1fr) 300px" }} gap="0" borderWidth="1px" borderRadius="l3" overflow="hidden" bg="bg.panel" borderColor="border.subtle">
         <Box borderEndWidth={{ xl: "1px" }} borderBottomWidth={{ base: "1px", xl: "0" }} borderColor="border.subtle">
           <Flex px="4" py="3" align="center" justify="space-between" borderBottomWidth="1px" borderColor="border.subtle">
             <Text textStyle="eyebrow" color="fg.subtle">Clips</Text>
-            <Button size="xs" variant="ghost" onClick={() => setSelectedClipIds(selectedClipIds.length === clips.length ? [] : clips.map((clip) => clip.id))}>
+            <Button size="sm" variant="ghost" onClick={() => setSelectedClipIds(selectedClipIds.length === clips.length ? [] : clips.map((clip) => clip.id))}>
               {selectedClipIds.length === clips.length ? "Clear" : "Select all"}
             </Button>
           </Flex>
@@ -697,7 +697,7 @@ export function AssistedPublishingWorkspace({
             {clips.map((clip) => {
               const selected = selectedClipIds.includes(clip.id);
               return (
-                <Flex key={clip.id} position="relative" px="4" py="3" gap="3" align="start" bg={selected ? "accent.subtle" : "transparent"} borderBottomWidth="1px" borderColor="border.subtle" transition="background 120ms ease" _hover={{ bg: selected ? "accent.subtle" : "bg.subtle" }}>
+                <Flex key={clip.id} position="relative" px="4" py="3" gap="3" align="start" bg={selected ? "bg.muted" : "transparent"} borderBottomWidth="1px" borderColor="border.subtle" transition="background 120ms ease" _hover={{ bg: selected ? "bg.muted" : "bg.subtle" }}>
                   {selected ? <Box position="absolute" insetInlineStart="0" top="0" bottom="0" w="3px" bg="accent.solid" /> : null}
                   <Checkbox checked={selected} onCheckedChange={() => toggleClip(clip.id)} aria-label={`Select clip ${clip.index + 1}`} />
                   <Box minW="0" flex="1" onClick={() => toggleClip(clip.id)} cursor="pointer">
@@ -726,7 +726,7 @@ export function AssistedPublishingWorkspace({
             <Textarea value={campaignNote} onChange={(event) => setCampaignNote(event.target.value.slice(0, 2_000))} minH="88px" resize="vertical" borderColor="border.control" placeholder="What should this campaign communicate? Add the offer, audience, and non-negotiable facts." />
             <Flex mt="2" gap="2" wrap="wrap">
               {["Use our Tone & Voice.", "Add relevant hashtags.", "Include a clear CTA."].map((action) => (
-                <Button key={action} size="xs" variant="outline" onClick={() => addInstruction(action)}>{action.replace(/\.$/, "")}</Button>
+                <Button key={action} size="sm" variant="outline" onClick={() => addInstruction(action)}>{action.replace(/\.$/, "")}</Button>
               ))}
             </Flex>
             {revisionInstruction ? (
@@ -767,7 +767,7 @@ export function AssistedPublishingWorkspace({
                           <Text textStyle="eyebrow" color={draft?.confirmed ? "success.fg" : "fg.subtle"}>{draft?.confirmed ? "Confirmed" : draft ? "Review required" : "Not generated"}</Text>
                         </Box>
                         {capability.thumbnailSources.length > 0 ? (
-                          <Button size="xs" variant="ghost" disabled={!customThumbnailsEnabled} onClick={() => openThumbnail(clip.id, platform)}>
+                          <Button size="sm" variant="ghost" disabled={!customThumbnailsEnabled} onClick={() => openThumbnail(clip.id, platform)}>
                             <ImageIcon size={13} /> {thumbnail ? "Change cover" : "Add cover"}
                           </Button>
                         ) : (
@@ -809,7 +809,7 @@ export function AssistedPublishingWorkspace({
                             <Flex align="center" gap="2" color="fg.muted"><Check size={12} /><Text fontSize="11px">{thumbnail.source === "extracted_frame" ? `Frame at ${((thumbnail.sourceTimeMs ?? 0) / 1_000).toFixed(1)}s` : thumbnail.source === "generated" ? "Generated image selected" : "Uploaded image selected"}</Text></Flex>
                           ) : null}
                           <Flex justify="flex-end">
-                            <Button size="xs" variant={draft.confirmed ? "ghost" : "outline"} disabled={confirming !== null || composedLength(draft) > capability.textLimit} onClick={() => void confirmDraft(clip.id, platform)}>
+                            <Button size="sm" variant={draft.confirmed ? "ghost" : "outline"} disabled={confirming !== null || composedLength(draft) > capability.textLimit} onClick={() => void confirmDraft(clip.id, platform)}>
                               {confirming === draftKey ? <Spinner size="xs" /> : draft.confirmed ? <CheckCircle2 size={13} /> : <Check size={13} />}
                               {draft.confirmed ? "Confirmed" : "Confirm exact copy"}
                             </Button>
@@ -907,7 +907,7 @@ export function AssistedPublishingWorkspace({
               <Text textStyle="eyebrow" color={bulkResult.status === "completed" ? "success.fg" : "warning.fg"}>{bulkResult.status === "completed" ? "Campaign scheduled" : "Partial outcome"}</Text>
               <Text mt="1" fontSize="xs" color="fg.muted">{bulkResult.counts.succeeded} scheduled · {bulkResult.counts.ineligible} ineligible · {bulkResult.counts.failed} retryable</Text>
             </Box>
-            {bulkResult.counts.failed > 0 ? <Button size="xs" variant="outline" disabled={scheduling} onClick={() => void scheduleCampaign(true)}><RefreshCw size={13} /> Retry safely</Button> : null}
+            {bulkResult.counts.failed > 0 ? <Button size="sm" variant="outline" disabled={scheduling} onClick={() => void scheduleCampaign(true)}><RefreshCw size={13} /> Retry safely</Button> : null}
           </Flex>
           {bulkResult.items.some((item) => item.status !== "succeeded") ? (
             <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
@@ -926,7 +926,7 @@ export function AssistedPublishingWorkspace({
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
-            <Dialog.Content maxW="760px" bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l3" boxShadow="cardHover">
+            <Dialog.Content maxW="760px">
               <Dialog.Header px="5" pt="5" pb="3" flexDirection="column" alignItems="stretch" gap="1">
                 <Text textStyle="eyebrow" color="fg.subtle">Thumbnail</Text>
                 <Dialog.Title fontFamily="display" fontSize="18px">Choose the exact cover</Dialog.Title>
@@ -951,9 +951,9 @@ export function AssistedPublishingWorkspace({
                 ) : (
                   <Stack py="5" gap="4">
                     <Flex gap="2" wrap="wrap">
-                      {canUploadVisualAssets ? <Button size="xs" variant="outline" asChild><label><Upload size={13} />{uploadBusy ? "Uploading…" : "Upload image"}<input type="file" accept={thumbnailTarget?.platform === "youtube_shorts" ? "image/jpeg,image/png" : "image/jpeg,image/png,image/webp"} hidden disabled={uploadBusy} onChange={(event) => void uploadAsset(event.target.files?.[0] ?? null)} /></label></Button> : null}
-                      {thumbnailTarget ? <Button size="xs" variant="outline" asChild><Link href={`/projects/${projectId}/clips/${thumbnailTarget.clipId}/studio`}><Sparkles size={13} /> Generate in Studio <ChevronRight size={12} /></Link></Button> : null}
-                      <Button size="xs" variant="ghost" onClick={() => void loadThumbnailSources()}><RefreshCw size={13} /> Refresh</Button>
+                      {canUploadVisualAssets ? <Button size="sm" variant="outline" asChild><label><Upload size={13} />{uploadBusy ? "Uploading…" : "Upload image"}<input type="file" accept={thumbnailTarget?.platform === "youtube_shorts" ? "image/jpeg,image/png" : "image/jpeg,image/png,image/webp"} hidden disabled={uploadBusy} onChange={(event) => void uploadAsset(event.target.files?.[0] ?? null)} /></label></Button> : null}
+                      {thumbnailTarget ? <Button size="sm" variant="outline" asChild><Link href={`/projects/${projectId}/clips/${thumbnailTarget.clipId}/studio`}><Sparkles size={13} /> Generate in Studio <ChevronRight size={12} /></Link></Button> : null}
+                      <Button size="sm" variant="ghost" onClick={() => void loadThumbnailSources()}><RefreshCw size={13} /> Refresh</Button>
                     </Flex>
                     {libraryAssets.length > 0 ? (
                       <Grid templateColumns={{ base: "repeat(2, 1fr)", md: "repeat(3, 1fr)" }} gap="3">

@@ -79,7 +79,7 @@ export function StudioExportMenu() {
       <Popover.Trigger asChild>
         <Button
           size="sm"
-          colorPalette="accent"
+          colorPalette="brand"
           variant={open ? "outline" : "solid"}
           disabled={exportState === "queued"}
           aria-label="Open export options"
@@ -101,8 +101,6 @@ export function StudioExportMenu() {
       <Portal>
         <Popover.Positioner>
           <Popover.Content
-            layerStyle="panel"
-            boxShadow="cardHover"
             w="min(340px, calc(100vw - 24px))"
             p="0"
             overflow="hidden"
@@ -195,7 +193,7 @@ export function StudioExportMenu() {
                 </Text>
                 <Button
                   size="sm"
-                  colorPalette="accent"
+                  colorPalette="brand"
                   variant="solid"
                   disabled={!canSubmit}
                   onClick={() => void submit()}

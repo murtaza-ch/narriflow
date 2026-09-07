@@ -8,7 +8,7 @@ import type {
 } from "@narriflow/validators";
 import { Box, Flex, Grid, Popover, Portal, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
-import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
+import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Select } from "@narriflow/ui/components/select";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
@@ -111,7 +111,7 @@ export function ClipsPanel({
   const [platformFilter, setPlatformFilter] = useState("all");
   const [scoreFilter, setScoreFilter] = useState("all");
   const [sort, setSort] = useState<SortKey>("virality");
-  const [density, setDensity] = useState<"comfortable" | "compact">("compact");
+  const [density, setDensity] = useState<"comfortable" | "compact">("comfortable");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectionRestored, setSelectionRestored] = useState(false);
   const [activeRailId, setActiveRailId] = useState<string | null>(null);
@@ -241,26 +241,32 @@ export function ClipsPanel({
 
   // Scrollspy for the left jump rail — highlights the row nearest the top
   // of the viewport as the user scrolls.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sortedClips intentionally rebuilds observation for the rendered row set.
   useEffect(() => {
     if (mode === "caption_only") return;
-    const rows = [...rowRefs.current.entries()];
+    const rows = sortedClips.flatMap((clip) => {
+      const element = rowRefs.current.get(clip.id);
+      return element ? [[clip.id, element] as const] : [];
+    });
     if (rows.length === 0) return;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible.length > 0) {
-          setActiveRailId(visible[0]!.target.getAttribute("data-clip-id"));
-        }
-      },
-      { rootMargin: "-15% 0px -70% 0px", threshold: 0 },
-    );
-
-    for (const [, el] of rows) observer.observe(el);
-    return () => observer.disconnect();
+    let frame = 0;
+    function updateActiveClip() {
+      frame = 0;
+      const anchor = Math.max(100, window.innerHeight * 0.25);
+      const current = rows.find(([, element]) => element.getBoundingClientRect().bottom > anchor) ?? rows.at(-1);
+      setActiveRailId(current?.[0] ?? null);
+    }
+    function scheduleUpdate() {
+      if (!frame) frame = window.requestAnimationFrame(updateActiveClip);
+    }
+    updateActiveClip();
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("resize", scheduleUpdate);
+    };
   }, [mode, sortedClips]);
 
   if (clips.length === 0) {
@@ -292,15 +298,12 @@ export function ClipsPanel({
 
   return (
     <Box>
-      <Text textStyle="eyebrow" color="fg.subtle" mb="2">
-        AI Clips
-      </Text>
-      <Box layerStyle="band">
+      <Box>
         {/* Toolbar */}
         <Flex align="center" justify="space-between" gap="3" wrap="wrap" pb="3" mb="1" borderBottomWidth="1px" borderColor="border.subtle">
           <Flex align="center" gap="3" wrap="wrap">
-            <Text textStyle="data" fontSize="12px" color="fg.subtle">
-              {clips.length} clip{clips.length === 1 ? "" : "s"}
+            <Text fontSize="sm" color="fg.muted">
+              {hasActiveFilters ? `${sortedClips.length} of ${clips.length}` : clips.length} clip{clips.length === 1 ? "" : "s"}
             </Text>
             <Box w="152px">
               <Select
@@ -329,7 +332,7 @@ export function ClipsPanel({
               </Popover.Trigger>
               <Portal>
                 <Popover.Positioner>
-                  <Popover.Content layerStyle="panel" boxShadow="cardHover" minW="260px" p="3">
+                  <Popover.Content minW="260px" p="3">
                     <Stack gap="2.5">
                       <Text textStyle="eyebrow" color="fg.subtle">
                         Filters
@@ -363,7 +366,7 @@ export function ClipsPanel({
                         aria-label="Filter by platform"
                       />
                       {hasActiveFilters && (
-                        <Button variant="ghost" size="xs" onClick={clearFilters} alignSelf="flex-start">
+                        <Button variant="ghost" size="sm" onClick={clearFilters} alignSelf="flex-start">
                           Clear filters
                         </Button>
                       )}
@@ -399,37 +402,21 @@ export function ClipsPanel({
         </Flex>
 
         {filteredClips.length === 0 ? (
-          <Flex direction="column" align="center" gap="4" py="10">
-            <GhostFrame ratio={9 / 16} size="72px" />
-            <Text fontSize="sm" color="fg.muted">
-              No clips match these filters.
-            </Text>
-            {hasActiveFilters && (
-              <Button variant="outline" size="xs" onClick={clearFilters}>
-                Clear filters
-              </Button>
-            )}
-          </Flex>
+          <EmptyState icon={<Filter size={24} />} title="No clips match your filters" description="Try a different duration, score, or category." action={hasActiveFilters ? <Button variant="outline" size="sm" onClick={clearFilters}>Clear filters</Button> : undefined} />
         ) : (
-          <Grid templateColumns={{ base: "1fr", xl: "44px 1fr" }} gap="4" alignItems="start" pt="3">
+          <Grid templateColumns={{ base: "1fr", xl: "210px minmax(0, 1fr)" }} gap="6" alignItems="start" pt="3">
             {/* Left jump rail — ≥xl only */}
             <Box
               display={{ base: "none", xl: "block" }}
               position="sticky"
-              top="4"
+              top="20"
               alignSelf="flex-start"
             >
-              {/* Drawn index, not floating chips: a hairline rule with a 3px
-                  tick per clip, echoing the status stripe on the rows it
-                  points at. The old 36px bordered boxes read as a detached
-                  column of buttons — ten of them stacked 414px tall against
-                  2690px of rows, which is a lot of chrome for a jump nav. */}
+              <Text fontSize="10px" color="fg.subtle" mb="3" px="2">In this project · {sortedClips.length}</Text>
               <Stack
-                gap="0"
+                gap="2"
                 maxH="calc(100vh - 160px)"
                 overflowY="auto"
-                borderInlineStartWidth="1px"
-                borderColor="border.subtle"
               >
                 {sortedClips.map((clip) => {
                   const rank = ranks.get(clip.id) ?? 0;
@@ -439,26 +426,21 @@ export function ClipsPanel({
                       key={clip.id}
                       as="button"
                       onClick={() => {
-                        rowRefs.current.get(clip.id)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                        rowRefs.current.get(clip.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
                       }}
                       display="flex"
                       alignItems="center"
                       gap="2"
-                      h="30px"
+                      minH="48px"
+                      p="2"
+                      borderRadius="l2"
+                      bg={isActive ? "bg.muted" : "transparent"}
                       w="full"
                       cursor="pointer"
                       aria-label={`Jump to clip ${rank}`}
                       aria-current={isActive ? "true" : undefined}
-                      _hover={{ "& > [data-tick]": { bg: "border.emphasized" } }}
+                      _hover={{ bg: "bg.muted" }}
                     >
-                      <Box
-                        data-tick
-                        w="3px"
-                        h="14px"
-                        flexShrink={0}
-                        bg={isActive ? "accent.solid" : "border"}
-                        transition="background 120ms ease"
-                      />
                       <Text
                         textStyle="data"
                         fontSize="11px"
@@ -468,18 +450,20 @@ export function ClipsPanel({
                       >
                         {rank}
                       </Text>
+                      <Stack gap="1" textAlign="left"><Text fontSize="xs" color={isActive ? "fg" : "fg.muted"} lineClamp={2}>{clip.title || clip.hookText}</Text><Text fontSize="10px" color="fg.subtle">{Math.round(clip.durationSec)}s · {clip.viralityScore} score</Text></Stack>
                     </Box>
                   );
                 })}
               </Stack>
             </Box>
 
-            {/* Ranked rows — hairline separators + 3px status stripe */}
-            <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+            {/* Ranked clip cards. */}
+            <Stack gap="0">
               {sortedClips.map((clip) => (
                 <Box
                   key={clip.id}
                   data-clip-id={clip.id}
+                  scrollMarginTop="20"
                   ref={(el: HTMLDivElement | null) => {
                     if (el) rowRefs.current.set(clip.id, el);
                     else rowRefs.current.delete(clip.id);

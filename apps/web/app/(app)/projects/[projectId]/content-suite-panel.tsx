@@ -34,7 +34,7 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
   }, [asset.body]);
 
   return (
-    <Box borderBottomWidth="1px" borderColor="border.subtle" py="3">
+    <Box bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l2" p="5">
       <Flex align="center" justify="space-between" gap="3" mb="2">
         <Flex align="center" gap="2" minW="0">
           <Box color="fg.subtle" flexShrink={0}>
@@ -49,7 +49,7 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
             </Text>
           </Box>
         </Flex>
-        <Button size="xs" variant="outline" onClick={copy} flexShrink={0}>
+        <Button size="sm" variant="outline" onClick={copy} flexShrink={0}>
           {copied ? <Check size={12} /> : <Copy size={12} />}
           <Text ms="1.5">{copied ? "Copied" : "Copy"}</Text>
         </Button>
@@ -216,8 +216,9 @@ export function ContentSuitePanel({
             justify="center"
             gap="2"
             py="7"
-            borderTopWidth="1px"
-            borderBottomWidth="1px"
+            bg="bg.panel"
+            borderRadius="l2"
+            borderWidth="1px"
             borderColor="border.subtle"
           >
             <Box w="6px" h="6px" borderRadius="2px" bg="accent.solid" />
@@ -229,7 +230,7 @@ export function ContentSuitePanel({
         ) : null}
 
         {assets.length > 0 ? (
-          <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+          <Stack gap="4">
             {assets.map((asset) => (
               <AssetRow key={asset.id} asset={asset} />
             ))}

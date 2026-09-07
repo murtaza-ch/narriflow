@@ -1034,7 +1034,7 @@ export function CampaignCommandBar({
         <Portal>
           <Drawer.Backdrop />
           <Drawer.Positioner>
-            <Drawer.Content layerStyle="panel" borderRadius="0">
+            <Drawer.Content>
               <Drawer.Header borderBottomWidth="1px" borderColor="border.subtle">
                 <Stack gap="1">
                   <Text textStyle="eyebrow" color="fg.subtle">
@@ -1195,7 +1195,7 @@ export function CampaignCommandBar({
                         <Button
                           key={value}
                           flex="1"
-                          size="xs"
+                          size="sm"
                           variant="ghost"
                           bg={motionScope === value ? "bg" : "transparent"}
                           color={motionScope === value ? "accent.fg" : "fg.muted"}

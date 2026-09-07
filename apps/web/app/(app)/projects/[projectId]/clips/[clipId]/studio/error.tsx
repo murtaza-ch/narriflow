@@ -29,15 +29,12 @@ export default function StudioError({
       bg="studio.canvas"
       color="studio.fg"
     >
-      <Stack gap="5" maxW="440px" align="center" textAlign="center" animation="fade-up">
-        {/* Ghost frame — the Blueline empty/error signature, graphite-tuned */}
+      <Stack gap="5" maxW="480px" w="full" p={{ base: "6", md: "10" }} bg="studio.surface" borderWidth="1px" borderColor="studio.border" borderRadius="l3" align="center" textAlign="center" animation="fade-up">
         <Flex
-          w="200px"
-          aspectRatio={16 / 9}
+          boxSize="14"
           align="center"
           justify="center"
           borderWidth="1px"
-          borderStyle="dashed"
           borderColor="studio.borderStrong"
           borderRadius="l2"
           color="studio.fgSubtle"
@@ -63,8 +60,8 @@ export default function StudioError({
           ) : null}
         </Stack>
 
-        <Flex gap="3">
-          <Button size="sm" variant="solid" colorPalette="accent" onClick={reset}>
+        <Flex gap="3" wrap="wrap" justify="center">
+          <Button size="sm" variant="solid" colorPalette="brand" onClick={reset}>
             Try again
           </Button>
           <Button

@@ -29,16 +29,11 @@ export function ResetConfirmDialog({
       placement="center"
     >
       <Portal>
-        <Dialog.Backdrop bg="rgba(0,0,0,0.7)" zIndex={300} />
+        <Dialog.Backdrop zIndex={300} />
         <Dialog.Positioner zIndex={310}>
           <Dialog.Content
-            bg="studio.surface"
-            borderWidth="1px"
-            borderColor="studio.borderStrong"
-            borderRadius="l3"
             w="min(420px, 90vw)"
             maxW="min(420px, 90vw)"
-            boxShadow="0 24px 60px rgba(0,0,0,0.7)"
             color="studio.fg"
             p="6"
           >

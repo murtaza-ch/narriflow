@@ -814,8 +814,6 @@ function RemoveSilencePopover() {
       <Portal>
         <Popover.Positioner>
           <Popover.Content
-            layerStyle="panel"
-            boxShadow="cardHover"
             minW="260px"
             p="3"
             aria-label="Remove silence settings"
@@ -902,7 +900,7 @@ function RemoveSilencePopover() {
                 <Button
                   size="sm"
                   variant="outline"
-                  colorPalette="accent"
+                  colorPalette="brand"
                   disabled={detected.length === 0}
                   onClick={handleApply}
                 >
