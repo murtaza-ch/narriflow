@@ -14,7 +14,7 @@ export function SharedExportClient({ exported }: { exported: ClipExportSnapshot 
   const primary = ready[0]!;
 
   return (
-    <Box minH="100dvh" bg="bg.canvas" layerStyle="blueprint">
+    <Box minH="100dvh" bg="bg" layerStyle="blueprint">
       <Flex
         as="header"
         h="56px"

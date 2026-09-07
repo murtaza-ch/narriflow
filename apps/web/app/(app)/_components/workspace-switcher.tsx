@@ -67,8 +67,7 @@ export function WorkspaceSwitcher({
           gap="2.5"
           px="3"
           py="2.5"
-          borderBottomWidth="1px"
-          borderColor="border.subtle"
+          borderRadius="l2"
           textAlign="left"
           cursor="pointer"
           _hover={{ bg: "bg.subtle" }}
@@ -79,8 +78,8 @@ export function WorkspaceSwitcher({
             align="center"
             justify="center"
             borderRadius="l2"
-            bg="accent.subtle"
-            color="accent.fg"
+            bg="bg.muted"
+            color="fg.muted"
             flexShrink={0}
             overflow="hidden"
           >
@@ -99,7 +98,7 @@ export function WorkspaceSwitcher({
       </Menu.Trigger>
       <Portal>
         <Menu.Positioner>
-          <Menu.Content layerStyle="panel" minW="260px" p="1">
+          <Menu.Content minW="260px" p="1">
             {switchError ? (
               <Text role="alert" px="3" py="2" fontSize="xs" color="danger.fg">
                 {switchError}

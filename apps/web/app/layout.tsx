@@ -147,10 +147,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Script id="narriflow-theme" strategy="beforeInteractive">
           {`(() => {
             try {
-              const stored = localStorage.getItem("theme");
+              const stored = localStorage.getItem("narriflow-color-mode");
               const mode = stored === "light" || stored === "dark"
                 ? stored
-                : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+                : "dark";
               const root = document.documentElement;
               root.classList.remove("light", "dark");
               root.classList.add(mode);

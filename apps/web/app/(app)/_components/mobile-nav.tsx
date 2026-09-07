@@ -119,7 +119,7 @@ export function MobileNav({
         <Portal>
           <Drawer.Backdrop />
           <Drawer.Positioner>
-            <Drawer.Content bg="bg" maxW="300px" display="flex" flexDirection="column">
+            <Drawer.Content maxW="300px" display="flex" flexDirection="column">
               {/* Drawer header */}
               <Flex
                 h="48px"

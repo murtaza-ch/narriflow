@@ -48,16 +48,6 @@ export function AuthShell({ children, maxW = "420px", footer }: AuthShellProps) 
         h="100svh"
         overflow="hidden"
       >
-        {/* Blueprint ambient — fades at center (under copy) and at the edges */}
-        <Box
-          aria-hidden="true"
-          position="absolute"
-          inset="0"
-          layerStyle="blueprint"
-          maskImage="radial-gradient(ellipse 75% 75% at center, transparent 22%, black 55%, transparent 100%)"
-          pointerEvents="none"
-        />
-
         <Box position="relative" animation="fade-up" animationFillMode="backwards">
           <Link href="/" aria-label="Narriflow home">
             <Logo size="lg" />
@@ -76,9 +66,8 @@ export function AuthShell({ children, maxW = "420px", footer }: AuthShellProps) 
             <Text textStyle="eyebrow" color="fg.subtle">
               Clip studio
             </Text>
-            <Box h="1.5px" w="8" bg="border.strong" animation="rule-in" />
             <Text
-              textStyle="display"
+              textStyle="title"
               fontSize={{ base: "28px", xl: "32px" }}
               color="fg"
               pt="1"
@@ -160,8 +149,8 @@ export function AuthShell({ children, maxW = "420px", footer }: AuthShellProps) 
           position="relative"
           gap="7"
           pt="4"
-          borderTopWidth="1.5px"
-          borderTopColor="border.strong"
+          borderTopWidth="1px"
+          borderTopColor="border"
           animation="fade-up"
           animationDelay="120ms"
           animationFillMode="backwards"
@@ -193,7 +182,7 @@ export function AuthShell({ children, maxW = "420px", footer }: AuthShellProps) 
               <Logo size="lg" />
             </Link>
           </Flex>
-          <Box animation="fade-up" animationDelay="80ms" animationFillMode="backwards">
+          <Box bg="bg.dialog" borderWidth="1px" borderColor="border" borderRadius="l3" p={{ base: "5", md: "7" }} animation="fade-up" animationDelay="80ms" animationFillMode="backwards">
             {children}
           </Box>
           {footer && <Flex justify="center">{footer}</Flex>}
@@ -221,9 +210,8 @@ export function AuthHeader({ eyebrow, title, description }: AuthHeaderProps) {
       <Text textStyle="eyebrow" color="fg.subtle">
         {eyebrow}
       </Text>
-      <Box h="1.5px" w="7" bg="border.strong" animation="rule-in" />
       <Stack gap="1.5" pt="1">
-        <Text as="h1" textStyle="display" fontSize="26px" color="fg">
+        <Text as="h1" textStyle="title" fontSize="26px" color="fg">
           {title}
         </Text>
         {description && (

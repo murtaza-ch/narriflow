@@ -11,7 +11,7 @@ export default function NotFound() {
       <Box
         position="absolute"
         inset="0"
-        layerStyle="blueprint"
+
         style={{
           maskImage: "radial-gradient(ellipse 75% 75% at center, transparent 22%, black 55%, transparent 100%)",
           WebkitMaskImage: "radial-gradient(ellipse 75% 75% at center, transparent 22%, black 55%, transparent 100%)",

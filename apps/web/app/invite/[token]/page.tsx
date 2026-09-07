@@ -22,7 +22,7 @@ export default async function WorkspaceInvitePage({ params,
   return (
     <Stack minH="100dvh" align="center" justify="center" p="6" bg="bg">
       <Logo size="md" />
-      <Box maxW="480px" w="full" borderTopWidth="1px" borderColor="border" pt="8" textAlign="center">
+      <Box maxW="480px" w="full" bg="bg.dialog" borderWidth="1px" borderColor="border" borderRadius="l3" p="8" textAlign="center">
         <Text textStyle="eyebrow" color="fg.subtle">Workspace invitation</Text>
         <Text textStyle="title" fontSize="28px" mt="2">Join {invite.workspace.name}</Text>
         <Text fontSize="13px" color="fg.muted" mt="3">You&apos;ll join as {invite.role}. Your personal workspace and its subscription remain separate.</Text>

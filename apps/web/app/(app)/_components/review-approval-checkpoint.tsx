@@ -65,7 +65,7 @@ export function ReviewApprovalCheckpoint({
             align={{ base: "stretch", md: "end" }}
             direction={{ base: "column", md: "row" }}
           >
-            <Button size="xs" variant="outline" asChild>
+            <Button size="sm" variant="outline" asChild>
               <Link href={`/projects/${projectId}?tab=review`}>Open review</Link>
             </Button>
             {canOverride ? (

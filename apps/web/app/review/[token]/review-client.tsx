@@ -202,7 +202,7 @@ export function ReviewClient({ token }: { token: string }) {
 
   if (!round) {
     return (
-      <Flex minH="100dvh" bg="bg.canvas" align="center" justify="center" px="5" py="10" layerStyle="blueprint">
+      <Flex minH="100dvh" bg="bg" align="center" justify="center" px="5" py="10" layerStyle="blueprint">
         <Box w="full" maxW="460px" bg="bg.panel" borderWidth="1px" borderColor="border" borderRadius="l2" overflow="hidden">
           <Box h="3px" bg="accent.solid" />
           <Stack as="form" onSubmit={access} gap="6" p={{ base: "6", md: "8" }}>
@@ -223,7 +223,7 @@ export function ReviewClient({ token }: { token: string }) {
   }
 
   return (
-    <Box minH="100dvh" bg="bg.canvas">
+    <Box minH="100dvh" bg="bg">
       <Box as="header" borderBottomWidth="1px" borderColor="border" bg="bg.panel" px={{ base: "4", md: "8" }} py="4">
         <Flex maxW="1320px" mx="auto" justify="space-between" align={{ base: "start", md: "end" }} gap="4" direction={{ base: "column", md: "row" }}>
           <Box><Flex align="center" gap="2"><Box w="8px" h="8px" borderRadius="2px" bg="accent.solid" /><Text textStyle="eyebrow" color="fg.subtle">{round.agencyName} · Round {String(round.revision).padStart(2, "0")}</Text></Flex><Heading as="h1" textStyle="title" fontSize={{ base: "20px", md: "24px" }} mt="1">{round.projectTitle}</Heading></Box>

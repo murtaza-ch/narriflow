@@ -17,7 +17,7 @@ export function CreateWorkspaceForm() {
 
   return (
     <chakra.form action={action} maxW="560px">
-      <Stack gap="5" borderTopWidth="1px" borderColor="border" pt="6">
+      <Stack gap="5" bg="bg.dialog" borderWidth="1px" borderColor="border" borderRadius="l3" p="6">
         <Stack gap="2">
           <chakra.label htmlFor="workspace-name" fontSize="13px" fontWeight="600">
             Workspace name

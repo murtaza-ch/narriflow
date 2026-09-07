@@ -144,26 +144,29 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
           h="8"
           px="3"
           minW={{ lg: "240px" }}
-          borderWidth="1px"
-          borderColor="border.control"
-          borderRadius="l2"
+          borderRadius="l1"
           color="fg.muted"
           cursor="pointer"
           _hover={{ borderColor: "border.emphasized", color: "fg" }}
         >
           <Search size={14} />
           <Text fontSize="12px" flex="1" textAlign="left">Search workspace</Text>
-          <Text textStyle="data" fontSize="11px" color="fg.subtle">⌘K</Text>
+          <Text as="kbd" fontSize="11px" color="fg.subtle" borderWidth="1px" borderColor="border" borderRadius="4px" px="1">⌘K</Text>
         </Flex>
       </Dialog.Trigger>
       <Portal>
         <Dialog.Backdrop />
         <Dialog.Positioner pt="12vh">
-          <Dialog.Content layerStyle="panel" maxW="620px" overflow="hidden">
+          <Dialog.Content maxW="620px" overflow="hidden" aria-label="Search workspace">
             <Dialog.Header p="0">
-              <Flex align="center" borderBottomWidth="1px" borderColor="border.subtle" px="4">
+              <Flex w="full" align="center" gap="3" borderBottomWidth="1px" borderColor="border.subtle" px="4" pe="12">
                 <Search size={17} />
                 <Input
+                  flex="1"
+                  minW="0"
+                  bg="transparent"
+                  variant="flushed"
+                  borderRadius="0"
                   autoFocus
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}

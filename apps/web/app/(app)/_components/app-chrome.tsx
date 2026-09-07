@@ -57,7 +57,7 @@ function WorkspaceChangedNotice({ workspaceId }: { workspaceId: string }) {
         Workspace you can access.
       </Text>
       <Button
-        size="xs"
+        size="sm"
         variant="outline"
         loading={pending}
         onClick={() =>
@@ -101,10 +101,13 @@ function DesktopTopBar({
   activeWorkspaceId,
 }: Pick<AppChromeProps,
   | "email" | "firstName" | "lastName" | "imageUrl" | "usedMinutes" | "limitMinutes" | "workspaceRole" | "workspaceStatus" | "workspaceTier" | "activeWorkspaceId">) {
+  const pathname = usePathname();
+  const section = pathname.split("/")[1] ?? "home";
+  const title = ({ home: "Home", projects: "Projects", exports: "Exports", calendar: "Calendar", autopilot: "Autopilot", "brand-kit": "Brand kit", integrations: "Integrations", settings: "Settings", help: "Help", "whats-new": "What's new" } as Record<string, string>)[section] ?? "Workspace";
   const canInvite = workspaceStatus === "active" && workspaceTier === "business" && (workspaceRole === "owner" || workspaceRole === "admin");
   return (
     <Flex
-      h="48px"
+      h="64px"
       align="center"
       justify="space-between"
       gap="2"
@@ -114,8 +117,9 @@ function DesktopTopBar({
       display={{ base: "none", lg: "flex" }}
       flexShrink={0}
     >
-      <GlobalSearch workspaceId={activeWorkspaceId} />
-      <Flex align="center" gap="2">
+      <Text fontSize="xs" color="fg.muted">{title}</Text>
+      <Flex align="center" gap="3">
+        <GlobalSearch workspaceId={activeWorkspaceId} />
         <Button variant="ghost" size="sm" asChild>
           <Link href="/settings/usage"><Gauge size={14} />{Math.round(usedMinutes)}/{Math.round(limitMinutes)} min</Link>
         </Button>
@@ -148,7 +152,7 @@ function FocusedTopBar({
 }: Pick<AppChromeProps, "email" | "firstName" | "lastName" | "imageUrl">) {
   return (
     <Flex
-      h="48px"
+      h="64px"
       align="center"
       justify="flex-end"
       gap="2"
@@ -204,7 +208,7 @@ export function AppChrome({
   // An open project is a focused Vizard-style workspace too: no sidebar, the
   // page renders its own back-arrow bar. The /projects LIST keeps the normal
   // shell; the Studio route is a fixed overlay and never sees this chrome.
-  const isProjectWorkspace = /^\/projects\/[^/]+/.test(pathname ?? "");
+  const [collapsed, setCollapsed] = useState(false);
 
   if (isUploadFunnel) {
     return (
@@ -218,42 +222,20 @@ export function AppChrome({
         {workspaceSelectionChanged ? (
           <WorkspaceChangedNotice workspaceId={activeWorkspaceId} />
         ) : null}
-        <Box as="main" flex="1" w="full" px={{ base: "4", md: "8" }} py={{ base: "6", md: "8" }}>
+        <Box as="main" flex="1" w="full" maxW="1400px" mx="auto" px={{ base: "4", md: "10" }} py={{ base: "6", md: "11" }} css={{ "@media (min-width: 1600px)": { paddingTop: "55px" } }}>
           {children}
         </Box>
       </Flex>
     );
   }
 
-  if (isProjectWorkspace) {
-    return (
-      <Flex direction="column" minH="100dvh">
-        <DesktopTopBar
-          email={email}
-          firstName={firstName}
-          lastName={lastName}
-          imageUrl={imageUrl}
-          usedMinutes={usedMinutes}
-          limitMinutes={limitMinutes}
-          workspaceRole={workspaceRole}
-          workspaceStatus={workspaceStatus}
-          workspaceTier={workspaceTier}
-          activeWorkspaceId={activeWorkspaceId}
-        />
-        {workspaceSelectionChanged ? (
-          <WorkspaceChangedNotice workspaceId={activeWorkspaceId} />
-        ) : null}
-        <Box as="main" flex="1" w="full" px={{ base: "4", md: "8" }} py={{ base: "6", md: "8" }}>
-          {children}
-        </Box>
-      </Flex>
-    );
-  }
 
   return (
     <>
       {/* Desktop sidebar — separated from content by a single hairline */}
       <Sidebar
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((value) => !value)}
         email={email}
         firstName={firstName}
         imageUrl={imageUrl}
@@ -283,7 +265,7 @@ export function AppChrome({
       {/* Content region — flat porcelain ground */}
       <Flex
         direction="column"
-        ml={{ base: "0", lg: "240px" }}
+        ml={{ base: "0", lg: collapsed ? "68px" : "232px" }}
         pt={{ base: "48px", lg: "0" }}
         minH="100dvh"
       >
@@ -306,7 +288,7 @@ export function AppChrome({
         ) : null}
 
         {/* Page content */}
-        <Box as="main" flex="1" w="full" px={{ base: "4", md: "8" }} py={{ base: "6", md: "8" }}>
+        <Box as="main" flex="1" w="full" maxW="1400px" mx="auto" px={{ base: "4", md: "10" }} py={{ base: "6", md: "11" }} css={{ "@media (min-width: 1600px)": { paddingTop: "55px" } }}>
           {children}
         </Box>
       </Flex>

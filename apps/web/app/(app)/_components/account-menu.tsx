@@ -152,7 +152,7 @@ export function AccountMenu({
       </Menu.Trigger>
       <Portal>
         <Menu.Positioner>
-          <Menu.Content layerStyle="panel" boxShadow="cardHover" minW="14rem" p="1">
+          <Menu.Content minW="14rem" p="1">
             <Box px="3" py="2" borderBottomWidth="1px" borderColor="border.subtle" mb="1">
               <Text fontSize="13px" fontWeight="600" color="fg" truncate>
                 {displayName}
