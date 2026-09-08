@@ -3,7 +3,7 @@
 import type { SyntheticEvent } from "react";
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { EditClipLengthDialog } from "./edit-clip-length-dialog";
 import { Button } from "@narriflow/ui/components/button";
@@ -276,6 +276,8 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
   const [, startTransition] = useTransition();
   const [reasoningExpanded, setReasoningExpanded] = useState(false);
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
+  const searchParams = useSearchParams();
+  const collapseTranscript = searchParams.get("view") !== "desk";
   const [scoresExpanded, setScoresExpanded] = useState(false);
   const [editingBoundaries, setEditingBoundaries] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -463,6 +465,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
 
   return (
     <Box
+      data-clip-card
       position="relative"
       borderRadius="l3"
       mb="4"
@@ -471,7 +474,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
       bg={selected ? "accent.subtle" : "bg.panel"}
       _hover={{ bg: selected ? "accent.subtle" : "bg.subtle" }}
     >
-      <Flex gap={{ base: "4", md: "6" }} align="stretch" direction={{ base: "column", md: "row" }}>
+      <Flex data-clip-body gap={{ base: "4", md: "6" }} align="stretch" direction={{ base: "column", md: "row" }}>
         {!isCaptionOnly && (
           <Box pt="1" flexShrink={0} position="absolute" top="7" left="7" zIndex="1">
             <Checkbox
@@ -483,7 +486,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
         )}
 
         {/* Left — media well */}
-        <Box flexShrink={0} w={mediaW} alignSelf={{ base: "center", md: "flex-start" }}>
+        <Box data-clip-media flexShrink={0} w={mediaW} alignSelf={{ base: "center", md: "flex-start" }}>
           <MediaWell
             ratio={selectedOption.width / selectedOption.height}
             timecode={formatDuration(clip.durationSec)}
@@ -566,7 +569,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
         </Box>
 
         {/* Right — content */}
-        <Stack flex="1" minW="0" w="full" gap="4">
+        <Stack data-clip-copy flex="1" minW="0" w="full" gap="4">
           {/* Capped to the prose measure plus a meta allowance so the score
               sits with the title it grades. Left unbounded, space-between
               threw it to the container's right edge, ~560px clear of the text.
@@ -740,7 +743,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
                     </Box>
                   ))}
                 </Stack>
-              ) : (
+              ) : !collapseTranscript ? (
                 <Flex gap="1.5" align="baseline" maxW={measure}>
                   <Text textStyle="data" fontSize="10px" color="fg.timecode" flexShrink={0}>
                     {formatTimecode(clip.transcriptSlice[0]!.startSec)}
@@ -749,7 +752,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
                     {clip.transcriptSlice.map((utterance) => utterance.text).join(" ")}
                   </Text>
                 </Flex>
-              )}
+              ) : null}
             </Box>
           )}
 
@@ -772,7 +775,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
 
           {/* Action row — all outline/ghost, never solid (the view's one
               solid button lives in the toolbar as "Render selected"). */}
-          <Flex gap="2" align="center" wrap="wrap" pt="4" mt="auto">
+          <Flex data-clip-actions gap="2" align="center" wrap="wrap" pt="4" mt="auto">
             {hasAnyRenderedAsset ? (
               <Tooltip.Root openDelay={100} closeDelay={0}>
                 <Tooltip.Trigger asChild>

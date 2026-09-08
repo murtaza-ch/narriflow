@@ -30,7 +30,6 @@ import {
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
   LEGACY_DEFAULT_CAPTION_PRESET_ID,
-  LINK_PROVIDERS,
   captionPresetIdSchema,
   defaultAspectRatioSchema,
   processingMinutesFromSeconds,
@@ -38,6 +37,7 @@ import {
   workspaceAllowsCapability,
 } from "@narriflow/validators";
 import { ProjectEvents } from "./project-events";
+import { SourceIcon } from "./source-icon";
 import { ProjectEventsProvider } from "./project-events-provider";
 import { PipelineStepper } from "./pipeline-stepper";
 import { ingestRecoveryAction } from "@/lib/project-state";
@@ -75,9 +75,6 @@ import {
 import { Stack, Box, Text, Flex, Tabs, Collapsible } from "@chakra-ui/react";
 import { AlertTriangle, ArrowLeft, ChevronDown, Film, Info, Link2 } from "lucide-react";
 
-function linkProviderLabel(sourceProvider: string | null | undefined): string {
-  return LINK_PROVIDERS.find((p) => p.id === sourceProvider)?.label ?? "Link";
-}
 function SourceThumb({
   projectId,
   title,
@@ -479,24 +476,24 @@ export default async function ProjectDetailPage({
     STATUS_CONFIG[snapshot.project.ingestStatus] ?? STATUS_CONFIG.queued!;
 
   return (
-    <Stack gap={{ base: "4", md: "6" }} maxW="1400px" mx="auto" w="full">
+    <Stack data-project-page gap={{ base: "4", md: "6" }} maxW="1400px" mx="auto" w="full">
       <ProjectEventsProvider
         projectId={projectId}
         initialSeq={snapshot.lastSeq}
         initialEvents={workflowHistory}
       >
-      <Link href="/projects" aria-label="Back to projects">
+      <Link data-project-back href="/projects" aria-label="Back to projects">
         <Flex align="center" gap="2" color="fg.muted" fontSize="xs" w="fit-content" _hover={{ color: "fg" }}><ArrowLeft size={14} />All projects</Flex>
       </Link>
       <Collapsible.Root defaultOpen={clips.length === 0 || ingestInProgress || runInFlight || runFailed || Boolean(snapshot.project.ingestErrorCode) || activeRun?.status === "partial"}>
-      <Flex align="flex-start" gap="4" direction={{ base: "column", md: "row" }} animation="fade-up">
+      <Flex data-project-heading align="flex-start" gap="4" direction={{ base: "column", md: "row" }} animation="fade-up">
         <Stack gap="3" flex="1" minW="0">
           <Text as="h1" textStyle="title" fontSize={{ base: "xl", md: "24px" }} color="fg" lineClamp={2}>{snapshot.project.title}</Text>
           <Flex align="center" gap="3" wrap="wrap">
-            <Text fontSize="xs" color="fg.subtle" textTransform="capitalize">{snapshot.project.sourceType === "link" ? linkProviderLabel(snapshot.project.sourceProvider) : snapshot.project.sourceType}</Text>
+            <SourceIcon sourceType={snapshot.project.sourceType} sourceProvider={snapshot.project.sourceProvider} />
             {typeof durationSec === "number" && durationSec > 0 && <Text fontSize="xs" color="fg.subtle">{formatDuration(durationSec)}</Text>}
             <Text fontSize="xs" color="fg.subtle">{formatDate(snapshot.project.createdAt)}</Text>
-            <StatusBadge status={ingestBadge.status} label={ingestBadge.label} />
+            {!isIngestReady && <StatusBadge status={ingestBadge.status} label={ingestBadge.label} />}
           </Flex>
         </Stack>
         <Flex gap="2" align="center" flexShrink={0} wrap="wrap">

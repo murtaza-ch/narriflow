@@ -7,6 +7,7 @@ import { Box, chakra, Flex, Text } from "@chakra-ui/react";
 import { Gauge, UserPlus } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
+import { ProjectWorkspace } from "./project-workspace";
 import { Sidebar } from "./sidebar";
 import { MobileNav } from "./mobile-nav";
 import { AccountMenu } from "./account-menu";
@@ -212,6 +213,15 @@ export function AppChrome({
   // page renders its own back-arrow bar. The /projects LIST keeps the normal
   // shell; the Studio route is a fixed overlay and never sees this chrome.
   const [collapsed, setCollapsed] = useState(false);
+
+  if (/^\/projects\/[^/]+(?:\/|$)/.test(pathname)) {
+    return (
+      <ProjectWorkspace account={<AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />} themeToggle={<ThemeToggle />}>
+        {workspaceSelectionChanged ? <WorkspaceChangedNotice workspaceId={activeWorkspaceId} /> : null}
+        {children}
+      </ProjectWorkspace>
+    );
+  }
 
   if (isUploadFunnel) {
     return (

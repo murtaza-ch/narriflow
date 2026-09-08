@@ -1,18 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import type {
   ClipAspectRatio,
   ClipPlatformTarget,
   ClipSnapshot,
 } from "@narriflow/validators";
-import { Box, Flex, Grid, Popover, Portal, Stack, Text } from "@chakra-ui/react";
-import { Button } from "@narriflow/ui/components/button";
+import { Box, Flex, Grid, Popover, Portal, Stack, Text, VisuallyHidden } from "@chakra-ui/react";
+import { Button, IconButton } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Select } from "@narriflow/ui/components/select";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
-import { Filter } from "lucide-react";
+import { Filter, LayoutGrid, PanelsTopLeft } from "lucide-react";
 import { computeClipRanks } from "@/lib/project-state";
 import { ClipRow } from "./clip-row";
 import { CampaignCommandBar } from "./campaign-command-bar";
@@ -111,7 +112,15 @@ export function ClipsPanel({
   const [platformFilter, setPlatformFilter] = useState("all");
   const [scoreFilter, setScoreFilter] = useState("all");
   const [sort, setSort] = useState<SortKey>("virality");
-  const [density, setDensity] = useState<"comfortable" | "compact">("comfortable");
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const view = searchParams.get("view") === "desk" ? "desk" : "gallery";
+
+  function changeView(value: string) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("view", value === "gallery" ? "gallery" : "desk");
+    window.history.pushState(null, "", `${pathname}?${params}`);
+  }
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectionRestored, setSelectionRestored] = useState(false);
   const [activeRailId, setActiveRailId] = useState<string | null>(null);
@@ -300,11 +309,18 @@ export function ClipsPanel({
     <Box>
       <Box>
         {/* Toolbar */}
-        <Flex align="center" justify="space-between" gap="3" wrap="wrap" pb="3" mb="1" borderBottomWidth="1px" borderColor="border.subtle">
+          <Flex align="center" justify="space-between" gap="3" wrap="wrap" pb="3" mb="1">
           <Flex align="center" gap="3" wrap="wrap">
-            <Text fontSize="sm" color="fg.muted">
-              {hasActiveFilters ? `${sortedClips.length} of ${clips.length}` : clips.length} clip{clips.length === 1 ? "" : "s"}
-            </Text>
+            <SegmentedControl
+              items={[
+                { value: "gallery", label: <span title="Gallery"><LayoutGrid size={16} aria-hidden="true" /><VisuallyHidden>Gallery</VisuallyHidden></span> },
+                { value: "desk", label: <span title="Review desk"><PanelsTopLeft size={16} aria-hidden="true" /><VisuallyHidden>Review desk</VisuallyHidden></span> },
+              ]}
+              value={view}
+              onValueChange={changeView}
+              aria-label="Clip layout"
+              size="sm"
+            />
             <Box w="152px">
               <Select
                 items={sortItems}
@@ -314,21 +330,11 @@ export function ClipsPanel({
                 aria-label="Sort clips"
               />
             </Box>
-            <SegmentedControl
-              items={[
-                { value: "compact", label: "Compact" },
-                { value: "comfortable", label: "Comfortable" },
-              ]}
-              value={density}
-              onValueChange={(v) => setDensity(v as "compact" | "comfortable")}
-              size="sm"
-            />
             <Popover.Root positioning={{ placement: "bottom-start" }}>
               <Popover.Trigger asChild>
-                <Button size="sm" variant="outline">
-                  <Filter size={12} />
-                  <Text ms="1">Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</Text>
-                </Button>
+                <IconButton size="sm" variant="outline" aria-label={activeFilterCount > 0 ? `Filters (${activeFilterCount} active)` : "Filters"} title="Filters" color="fg.muted" _hover={{ bg: "bg.muted", color: "fg" }}>
+                  <Filter size={16} aria-hidden="true" />
+                </IconButton>
               </Popover.Trigger>
               <Portal>
                 <Popover.Positioner>
@@ -404,9 +410,10 @@ export function ClipsPanel({
         {filteredClips.length === 0 ? (
           <EmptyState icon={<Filter size={24} />} title="No clips match your filters" description="Try a different duration, score, or category." action={hasActiveFilters ? <Button variant="outline" size="sm" onClick={clearFilters}>Clear filters</Button> : undefined} />
         ) : (
-          <Grid templateColumns={{ base: "1fr", xl: "210px minmax(0, 1fr)" }} gap="6" alignItems="start" pt="3">
+          <Grid data-clips-layout templateColumns={{ base: "1fr", xl: "210px minmax(0, 1fr)" }} gap="6" alignItems="start" pt="3">
             {/* Left jump rail — ≥xl only */}
             <Box
+              data-clip-index
               display={{ base: "none", xl: "block" }}
               position="sticky"
               top="20"
@@ -460,7 +467,7 @@ export function ClipsPanel({
             </Box>
 
             {/* Ranked clip cards. */}
-            <Stack gap="0">
+            <Stack data-clip-list gap="0">
               {sortedClips.map((clip) => (
                 <Box
                   key={clip.id}
@@ -475,7 +482,7 @@ export function ClipsPanel({
                     clip={clip}
                     projectId={projectId}
                     rank={ranks.get(clip.id) ?? null}
-                    compact={density === "compact"}
+                    compact={false}
                     selected={selectedIds.has(clip.id)}
                     onToggleSelect={toggleSelect}
                     sourceVideoUrl={sourceVideoUrl}
