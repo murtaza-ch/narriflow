@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import Image from "next/image";
 import { Button } from "@narriflow/ui/components/button";
+import { Select } from "@narriflow/ui/components/select";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import { MediaWell } from "@narriflow/ui/components/media-well";
@@ -71,7 +72,7 @@ import {
   type PipelineStepView,
   type ProcessingStageInput,
 } from "@/lib/project-state";
-import { Stack, Box, Text, Flex, NativeSelect, Tabs, Collapsible } from "@chakra-ui/react";
+import { Stack, Box, Text, Flex, Tabs, Collapsible } from "@chakra-ui/react";
 import { AlertTriangle, ArrowLeft, ChevronDown, Film, Info, Link2 } from "lucide-react";
 
 function linkProviderLabel(sourceProvider: string | null | undefined): string {
@@ -513,6 +514,11 @@ export default async function ProjectDetailPage({
             }}
           />
         ) : null}
+        <DeleteProjectButton
+          projectId={projectId}
+          projectTitle={snapshot.project.title}
+          variant="menu"
+        />
         </Flex>
       </Flex>
 
@@ -618,28 +624,21 @@ export default async function ProjectDetailPage({
                   </Text>
                 </Stack>
                 <Flex gap="2" align="center" minW={{ md: "360px" }}>
-                  <NativeSelect.Root
+                  <Select
                     key={snapshot.project.brandProfileId ?? "unassigned"}
+                    name="profileId"
+                    ariaLabel="Brand profile"
+                    placeholder="Select a Brand Profile"
+                    defaultValue={snapshot.project.brandProfileId ?? undefined}
+                    items={brandProfiles.map((profile) => ({
+                      label: profile.name,
+                      value: profile.id,
+                    }))}
                     flex="1"
+                    minW="0"
+                    size="sm"
                     disabled={!canApplyBrandProfile}
-                  >
-                    <NativeSelect.Field
-                      name="profileId"
-                      defaultValue={snapshot.project.brandProfileId ?? ""}
-                      minH="9"
-                      borderColor="border.control"
-                      bg="bg.panel"
-                      color="fg"
-                    >
-                      <option value="" disabled>Select a Brand Profile</option>
-                      {brandProfiles.map((profile) => (
-                        <option key={profile.id} value={profile.id}>
-                          {profile.name}
-                        </option>
-                      ))}
-                    </NativeSelect.Field>
-                    <NativeSelect.Indicator />
-                  </NativeSelect.Root>
+                  />
                   <ActionSubmitButton
                     type="submit"
                     size="sm"
@@ -656,11 +655,6 @@ export default async function ProjectDetailPage({
 
           ) : null}
 
-        <Flex justify="flex-end" mt="3">        <DeleteProjectButton
-          projectId={projectId}
-          projectTitle={snapshot.project.title}
-          variant="button"
-        /></Flex>
         </Collapsible.Content>
       </Collapsible.Root>
       {/* Workspace tabs — URL-driven (?tab=); SSE stream shared via

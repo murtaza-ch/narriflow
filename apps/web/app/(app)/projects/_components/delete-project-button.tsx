@@ -2,8 +2,9 @@
 
 import { useTransition } from "react";
 import { Text } from "@chakra-ui/react";
-import { Trash2 } from "lucide-react";
+import { MoreHorizontal, Trash2 } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
+import { ActionMenu } from "@narriflow/ui/components/menu";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
@@ -29,7 +30,7 @@ interface DeleteProjectButtonProps {
   projectTitle: string;
   /** "icon" — compact overlay affordance for the project card.
    *  "button" — labeled danger action for the project detail page header. */
-  variant?: "icon" | "button";
+  variant?: "icon" | "button" | "menu";
 }
 
 /**
@@ -81,11 +82,11 @@ export function DeleteProjectButton({
     });
   }
 
-  async function handleTriggerClick(event: { preventDefault: () => void; stopPropagation: () => void }) {
+  async function handleTriggerClick(event?: { preventDefault: () => void; stopPropagation: () => void }) {
     // The card variant's trigger sits over a whole-card <Link> — stop the
     // click from also navigating.
-    event.preventDefault();
-    event.stopPropagation();
+    event?.preventDefault();
+    event?.stopPropagation();
 
     const confirmed = await confirm({
       title: `Delete "${projectTitle}"?`,
@@ -102,7 +103,24 @@ export function DeleteProjectButton({
 
   return (
     <>
-      {variant === "icon" ? (
+      {variant === "menu" ? (
+        <ActionMenu
+          ariaLabel="Project actions"
+          trigger={
+            <IconButton aria-label="Project actions" variant="outline" size="sm" disabled={pending}>
+              <MoreHorizontal size={16} />
+            </IconButton>
+          }
+          items={[{
+            value: "delete",
+            label: "Delete project",
+            icon: <Trash2 size={14} />,
+            destructive: true,
+            busy: pending,
+            onSelect: () => { void handleTriggerClick(); },
+          }]}
+        />
+      ) : variant === "icon" ? (
         <IconButton
           className="project-card-action project-delete-action"
           transition="opacity 120ms ease, background 120ms ease"
