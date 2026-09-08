@@ -7,13 +7,16 @@ import { Box, chakra, Flex, Text } from "@chakra-ui/react";
 import { Gauge, UserPlus } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
+import { SettingsChrome } from "./settings-chrome";
+import { useSettingsReturn } from "./use-settings-return";
+import { isSettingsPath } from "@/lib/settings-return";
 import { ProjectWorkspace } from "./project-workspace";
 import { Sidebar } from "./sidebar";
 import { MobileNav } from "./mobile-nav";
 import { AccountMenu } from "./account-menu";
 import { ThemeToggle } from "./theme-toggle";
 import { GlobalSearch } from "./global-search";
-import type { WorkspaceSwitcherItem } from "./workspace-switcher";
+import type { WorkspaceMenuPresentation, WorkspaceSwitcherItem } from "./workspace-switcher";
 import { switchWorkspaceAction } from "../_actions/workspace";
 import {
   authenticatedActionResultMessage,
@@ -34,6 +37,7 @@ interface AppChromeProps {
   workspaceTier: "free" | "creator" | "pro" | "business";
   workspaces: WorkspaceSwitcherItem[];
   canCreateWorkspace: boolean;
+  workspaceMenu: WorkspaceMenuPresentation;
   children: React.ReactNode;
 }
 
@@ -205,14 +209,31 @@ export function AppChrome({
   workspaceTier,
   workspaces,
   canCreateWorkspace,
+  workspaceMenu,
   children,
 }: AppChromeProps) {
   const pathname = usePathname();
+  const backHref = useSettingsReturn(activeWorkspaceId);
   const isUploadFunnel = pathname?.startsWith("/upload") ?? false;
   // An open project is a focused Vizard-style workspace too: no sidebar, the
   // page renders its own back-arrow bar. The /projects LIST keeps the normal
   // shell; the Studio route is a fixed overlay and never sees this chrome.
   const [collapsed, setCollapsed] = useState(false);
+
+  if (isSettingsPath(pathname)) {
+    return (
+      <SettingsChrome
+        workspaceName={workspaces.find((workspace) => workspace.id === activeWorkspaceId)?.name ?? "Workspace"}
+        canManageApi={workspaceMenu.canManageApi}
+        backHref={backHref}
+        account={<AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />}
+        themeToggle={<ThemeToggle />}
+      >
+        {workspaceSelectionChanged ? <WorkspaceChangedNotice workspaceId={activeWorkspaceId} /> : null}
+        {children}
+      </SettingsChrome>
+    );
+  }
 
   if (/^\/projects\/[^/]+(?:\/|$)/.test(pathname)) {
     return (
@@ -260,6 +281,7 @@ export function AppChrome({
         activeWorkspaceId={activeWorkspaceId}
         workspaces={workspaces}
         canCreate={workspaceRole !== "viewer" && workspaceStatus === "active"}
+        workspaceMenu={workspaceMenu}
         canCreateWorkspace={canCreateWorkspace}
       />
 
@@ -274,6 +296,7 @@ export function AppChrome({
         activeWorkspaceId={activeWorkspaceId}
         workspaces={workspaces}
         canCreate={workspaceRole !== "viewer" && workspaceStatus === "active"}
+        workspaceMenu={workspaceMenu}
         canCreateWorkspace={canCreateWorkspace}
       />
 

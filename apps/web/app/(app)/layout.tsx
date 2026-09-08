@@ -5,7 +5,7 @@ import { Box } from "@chakra-ui/react";
 import { resolvePricingTier } from "@narriflow/validators";
 import { AppChrome } from "./_components/app-chrome";
 import { getCachedDashboardStats } from "./_components/usage";
-import { workspaceService, workspacesV1EnabledForUser,
+import { workspaceService, workspacesV1EnabledForUser, workspaceAllowsCapability,
 } from "@narriflow/services";
 
 export default async function AppLayout({ children,
@@ -37,6 +37,13 @@ export default async function AppLayout({ children,
     avatarUrl: avatarUrls[workspace.id] ?? null,
   }));
 
+  let planAction: string | null = null;
+  if (workspaceAllowsCapability(appUser.workspace, "billing.manage")) {
+    if (appUser.workspace.status === "pending_payment") planAction = "Complete setup";
+    else if (appUser.workspace.status === "restricted") planAction = "Manage billing";
+    else if (resolvePricingTier(appUser.workspace.pricingTier) !== "business") planAction = "Upgrade your plan";
+  }
+
   return (
     <Box minH="100dvh" bg="bg" color="fg">
       {/* AppChrome (client) owns the sidebar/offset/mobile-nav vs. /upload
@@ -55,6 +62,12 @@ export default async function AppLayout({ children,
         workspaceStatus={appUser.workspace.status}
         workspaceTier={resolvePricingTier(appUser.workspace.pricingTier)}
         workspaces={workspaces}
+        workspaceMenu={{
+          tier: resolvePricingTier(appUser.workspace.pricingTier),
+          canManageApi: workspaceAllowsCapability(appUser.workspace, "api.manage"),
+          canInvite: workspaceAllowsCapability(appUser.workspace, "members.invite") && resolvePricingTier(appUser.workspace.pricingTier) === "business",
+          planAction,
+        }}
         canCreateWorkspace={workspacesV1EnabledForUser(appUser.actorUserId)}
       >
         {children}

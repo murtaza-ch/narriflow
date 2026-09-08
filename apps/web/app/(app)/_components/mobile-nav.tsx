@@ -17,7 +17,7 @@ import { AccountAvatar } from "./account-menu";
 import { getDisplayName, getInitials } from "@/lib/account-display";
 import { isStudioRoute } from "./theme-toggle";
 import { usagePalette } from "./usage-palette";
-import { WorkspaceSwitcher, type WorkspaceSwitcherItem } from "./workspace-switcher";
+import { WorkspaceSwitcher, type WorkspaceMenuPresentation, type WorkspaceSwitcherItem } from "./workspace-switcher";
 
 interface MobileNavProps {
   email: string | null;
@@ -30,6 +30,7 @@ interface MobileNavProps {
   workspaces: WorkspaceSwitcherItem[];
   canCreate: boolean;
   canCreateWorkspace: boolean;
+  workspaceMenu: WorkspaceMenuPresentation;
 }
 
 export function MobileNav({
@@ -43,6 +44,7 @@ export function MobileNav({
   workspaces,
   canCreate,
   canCreateWorkspace,
+  workspaceMenu,
 }: MobileNavProps) {
   const [open, setOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -146,7 +148,7 @@ export function MobileNav({
                 </Drawer.CloseTrigger>
               </Flex>
 
-              <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} canCreateWorkspace={canCreateWorkspace} />
+              <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} presentation={workspaceMenu} canCreateWorkspace={canCreateWorkspace} />
 
               {/* Navigation — single IA source */}
               <Stack as="nav" flex="1" px="3" py="4" gap="0.5" overflowY="auto">

@@ -1,20 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import type { ComponentType } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Box, Flex, Image, Stack, Text } from "@chakra-ui/react";
-import {
-  Instagram,
-  Link2,
-  Linkedin,
-  Music2,
-  Trash2,
-  Youtube,
-} from "lucide-react";
+import { Box, Flex, Image, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { Trash2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
-import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
@@ -25,63 +16,86 @@ import {
 
 const platformLabels: Record<SocialPlatform, string> = {
   tiktok: "TikTok",
-  youtube_shorts: "YouTube Shorts",
-  instagram_reels: "Instagram Reels",
-  facebook_reels: "Facebook Reels",
+  youtube_shorts: "YouTube",
+  instagram_reels: "Instagram",
+  facebook_reels: "Facebook",
   linkedin: "LinkedIn",
   x: "X",
 };
 
-const platformHelp: Record<SocialPlatform, string> = {
-  tiktok: "Direct video publishing through TikTok Content Posting API.",
-  youtube_shorts: "Uploads rendered clips to the selected YouTube channel.",
-  instagram_reels: "Publishes Reels through a connected Instagram Business or Creator account.",
-  facebook_reels: "Connects an eligible Facebook Page. Publishing remains gated until provider sandbox verification is complete.",
-  linkedin: "Publishes video posts to the connected LinkedIn member profile.",
-  x: "Uploads video media and creates posts through X API v2.",
+const platformIcons: Record<SocialPlatform, { light: string; dark?: string }> = {
+  tiktok: { light: "tiktok-light.svg", dark: "tiktok-dark.svg" },
+  youtube_shorts: { light: "youtube.svg" },
+  instagram_reels: { light: "instagram.svg" },
+  facebook_reels: { light: "facebook.svg" },
+  linkedin: { light: "linkedin.svg" },
+  x: { light: "x-light.svg", dark: "x-dark.svg" },
 };
 
-// Platform glyphs for the icon tile. X has no lucide glyph — it renders a
-// display-face letter instead (see PlatformTile).
-const platformIcons: Partial<
-  Record<SocialPlatform, ComponentType<{ size?: number | string }>>
-> = {
-  tiktok: Music2,
-  youtube_shorts: Youtube,
-  instagram_reels: Instagram,
-  linkedin: Linkedin,
-};
-
-function PlatformTile({ platform }: { platform: SocialPlatform }) {
-  const Icon = platformIcons[platform];
+function PlatformTile({ platform, compact = false }: { platform: SocialPlatform; compact?: boolean }) {
+  const icon = platformIcons[platform];
   return (
-    <Flex
-      boxSize="10"
-      align="center"
-      justify="center"
-      borderRadius="l2"
-      bg="bg.muted"
-      borderWidth="1px"
-      borderColor="border"
-      color="fg.muted"
-      flexShrink={0}
-      aria-hidden="true"
-    >
-      {Icon ? (
-        <Icon size={17} />
-      ) : (
-        <Text textStyle="display" fontSize="15px" lineHeight="1">
-          X
-        </Text>
-      )}
+    <Flex boxSize={compact ? "4" : "10"} align="center" justify="center" flexShrink={0} aria-hidden="true">
+      <Image
+        src={`/images/social/${icon.light}`}
+        alt=""
+        boxSize={compact ? "3.5" : "7"}
+        objectFit="contain"
+        bg={platform === "linkedin" ? "white" : undefined}
+        borderRadius={platform === "linkedin" ? "2px" : undefined}
+        display="block"
+        _dark={icon.dark ? { display: "none" } : undefined}
+      />
+      {icon.dark ? <Image src={`/images/social/${icon.dark}`} alt="" boxSize={compact ? "3.5" : "7"} objectFit="contain" display="none" _dark={{ display: "block" }} /> : null}
     </Flex>
   );
 }
 
-const platforms = Object.keys(platformLabels) as SocialPlatform[];
+const platforms: SocialPlatform[] = ["tiktok", "youtube_shorts", "instagram_reels", "facebook_reels", "x", "linkedin"];
 
 function connectHref(platform: SocialPlatform) {
   return `/api/social/oauth/start/${platform}?redirect=/settings/social-accounts`;
+}
+
+function SocialAvatar({
+  src,
+  name,
+  size = "10",
+}: {
+  src: string | null;
+  name: string;
+  size?: "8" | "10";
+}) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+
+  return (
+    <Flex
+      boxSize={size}
+      flexShrink={0}
+      borderRadius="full"
+      overflow="hidden"
+      align="center"
+      justify="center"
+      bg="bg.muted"
+      color="fg.muted"
+      fontSize={size === "10" ? "sm" : "xs"}
+      fontWeight="600"
+      aria-hidden="true"
+    >
+      {src && failedSrc !== src ? (
+        <Image
+          src={src}
+          alt=""
+          boxSize="full"
+          objectFit="cover"
+          referrerPolicy="no-referrer"
+          onError={() => setFailedSrc(src)}
+        />
+      ) : (
+        name.trim().charAt(0).toUpperCase() || "?"
+      )}
+    </Flex>
+  );
 }
 
 export function SocialAccountsPanel({
@@ -217,7 +231,7 @@ export function SocialAccountsPanel({
           <Stack mt="3" gap="0" borderTopWidth="1px" borderColor="border">
             {facebookPages.map((page) => (
               <Flex key={page.id} py="3" align="center" gap="3" borderBottomWidth="1px" borderColor="border.subtle">
-                <Flex boxSize="8" borderRadius="full" overflow="hidden" align="center" justify="center" bg="bg.muted">{page.avatarUrl ? <Image src={page.avatarUrl} alt="" boxSize="full" objectFit="cover" /> : (page.name ?? "F").charAt(0)}</Flex>
+                <SocialAvatar src={page.avatarUrl} name={page.name ?? "Facebook Page"} size="8" />
                 <Text flex="1" fontSize="13px" fontWeight="600">{page.name ?? "Facebook Page"}</Text>
                 <Button size="sm" variant="outline" disabled={selectingPage !== null} onClick={() => selectFacebookPage(page.id)}>{selectingPage === page.id ? "Connecting…" : "Connect"}</Button>
               </Flex>
@@ -225,139 +239,43 @@ export function SocialAccountsPanel({
           </Stack>
         </Box>
       ) : null}
-      <Text textStyle="eyebrow" color="fg.subtle" mb="2">
-        Platforms
-      </Text>
-      <Stack gap="3">
-        {platforms.map((platform) => {
-          const platformAccounts = accounts.filter(
-            (account) => account.platform === platform,
-          );
-          const isConnected = platformAccounts.length > 0;
-
-          return (
-            <Box
-              key={platform}
-              position="relative"
-              borderRadius="l2"
-              bg="bg.panel"
-              p="5"
-            >
-              <Flex gap="3" align="flex-start">
-                <PlatformTile platform={platform} />
-
-                <Box flex="1" minW="0">
-                  <Flex
-                    align={{ base: "flex-start", md: "center" }}
-                    justify="space-between"
-                    gap="3.5"
-                    direction={{ base: "column", md: "row" }}
-                  >
-                    <Box minW="0">
-                      <Flex align="center" gap="3" wrap="wrap">
-                        <Text fontSize="14px" fontWeight="600" color="fg">
-                          {platformLabels[platform]}
-                        </Text>
-                        <StatusBadge
-                          status={isConnected ? "ready" : "pending"}
-                          label={
-                            isConnected
-                              ? `Connected · ${platformAccounts.length}`
-                              : "Not connected"
-                          }
-                        />
-                      </Flex>
-                      <Text mt="0.5" fontSize="12px" color="fg.muted">
-                        {platformHelp[platform]}
-                      </Text>
-                    </Box>
-
-                    {canManage ? (
-                      <Button asChild size="sm" variant="outline" colorPalette="gray" flexShrink={0}>
-                        <Link href={connectHref(platform)}>
-                          <Link2 size={14} />
-                          {isConnected ? "Add another" : "Connect"}
-                        </Link>
-                      </Button>
-                    ) : null}
-                  </Flex>
-
-                  {platformAccounts.length > 0 ? (
-                    <Stack gap="0" mt="3">
-                      {platformAccounts.map((account) => (
-                    <Flex
-                      key={account.id}
-                      align="center"
-                      justify="space-between"
-                      gap="2.5"
-                      py="2"
-                      borderTopWidth="1px"
-                      borderColor="border.subtle"
-                    >
-                      <Flex align="center" gap="2.5" minW="0">
-                        <Flex
-                          h="7"
-                          w="7"
-                          align="center"
-                          justify="center"
-                          overflow="hidden"
-                          borderRadius="full"
-                          bg="bg.muted"
-                          borderWidth="1px"
-                          borderColor="border"
-                          color="fg.muted"
-                          fontSize="12px"
-                          fontWeight="600"
-                          flexShrink={0}
-                        >
-                          {account.avatarUrl ? (
-                            <Image
-                              alt={account.displayName}
-                              h="full"
-                              w="full"
-                              objectFit="cover"
-                              src={account.avatarUrl}
-                            />
-                          ) : (
-                            account.displayName.charAt(0).toUpperCase()
-                          )}
-                        </Flex>
-                        <Box minW="0">
-                          <Text fontSize="13px" color="fg" truncate>
-                            {account.displayName}
-                          </Text>
-                          <Text
-                            textStyle="data"
-                            fontSize="11px"
-                            color="fg.muted"
-                            truncate
-                          >
-                            {account.handle ?? account.providerAccountId} · {account.status}
-                          </Text>
-                        </Box>
-                      </Flex>
-
-                      {canManage ? <Button
-                        size="sm"
-                        variant="ghost"
-                        colorPalette="danger"
-                        loading={disconnecting === account.id}
-                        disabled={isPending || disconnecting !== null}
-                        onClick={() => void disconnect(account)}
-                      >
-                        <Trash2 size={12} />
-                        Disconnect
-                      </Button> : null}
-                    </Flex>
-                  ))}
-                    </Stack>
-                  ) : null}
-                </Box>
-              </Flex>
-            </Box>
-          );
-        })}
+      {accounts.length > 0 ? (
+        <Stack gap="3" mb="8" maxW="600px">
+          <Text as="h2" fontSize="sm" fontWeight="600">Connected accounts</Text>
+          <SimpleGrid columns={{ base: 1, sm: 2, md: 3 }} gap="3" css={{ "@media (min-width: 360px) and (max-width: 479px)": { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } }}>
+          {accounts.map((account) => (
+            <Flex key={account.id} direction="column" gap="3" align="center" minW="0" p="4" borderWidth="1px" borderColor="border.subtle" borderRadius="l2" bg="bg.panel">
+              <Box position="relative" flexShrink={0}>
+                <SocialAvatar src={account.avatarUrl} name={account.displayName} />
+                <Flex position="absolute" bottom="-1" right="-1" boxSize="5" align="center" justify="center" borderRadius="full" bg="bg.panel" borderWidth="2px" borderColor="bg.panel" role="img" aria-label={platformLabels[account.platform]} title={platformLabels[account.platform]}>
+                  <PlatformTile platform={account.platform} compact />
+                </Flex>
+              </Box>
+              <Box flex="1" minW="0" w="full" textAlign="center">
+                <Text fontSize="sm" fontWeight="600" overflowWrap="anywhere">{account.displayName}</Text>
+                <Text fontSize="xs" color="fg.muted" overflowWrap="anywhere">{account.handle ?? account.providerAccountId}</Text>
+                {account.status !== "active" ? <Text fontSize="xs" color="fg.muted" textTransform="capitalize">{account.status.replaceAll("_", " ")}</Text> : null}
+              </Box>
+              {canManage ? <Button size="sm" variant="ghost" colorPalette="danger" aria-label={`Disconnect ${account.displayName}`} loading={disconnecting === account.id} disabled={isPending || disconnecting !== null} onClick={() => void disconnect(account)}><Trash2 size={14} />Disconnect</Button> : null}
+            </Flex>
+          ))}
+          </SimpleGrid>
+        </Stack>
+      ) : null}
+      <Stack gap="2" mb="5" maxW="560px">
+        <Text as="h2" fontSize="sm" fontWeight="600">{accounts.length ? "Add an account" : "Connect your first social account"}</Text>
+        <Text fontSize="13px" color="fg.muted">{canManage ? "Sign in to the social account you want to add, then choose a platform below." : "Ask a workspace owner or admin to connect a social account."}</Text>
       </Stack>
+      <SimpleGrid columns={{ base: 1, sm: 2, md: 3 }} gap="3" maxW="600px" css={{ "@media (min-width: 360px) and (max-width: 479px)": { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } }}>
+        {platforms.map((platform) => {
+          const content = <Stack key={platform} gap="3" align="center" justify="center" minH="132px" p="5"><PlatformTile platform={platform} /><Text fontSize="13px" fontWeight="500">{platformLabels[platform]}</Text></Stack>;
+          return canManage ? (
+            <Box key={platform} asChild borderWidth="1px" borderStyle="dashed" borderColor="border" borderRadius="l2" transition="background 120ms ease, border-color 120ms ease" _hover={{ bg: "bg.subtle", borderColor: "fg.subtle" }} _focusVisible={{ outline: "2px solid", outlineColor: "accent.solid", outlineOffset: "3px" }}>
+              <Link href={connectHref(platform)} aria-label={`Connect ${platformLabels[platform]} account`}>{content}</Link>
+            </Box>
+          ) : <Box key={platform} borderWidth="1px" borderStyle="dashed" borderColor="border" borderRadius="l2" color="fg.muted">{content}</Box>;
+        })}
+      </SimpleGrid>
       {dialog}
     </Box>
   );

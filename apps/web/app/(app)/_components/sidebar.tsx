@@ -11,7 +11,7 @@ import { AccountMenu } from "./account-menu";
 import { Fragment } from "react";
 import { NAV_ITEMS } from "./nav-items";
 import { usagePalette } from "./usage-palette";
-import { WorkspaceSwitcher, type WorkspaceSwitcherItem } from "./workspace-switcher";
+import { WorkspaceSwitcher, type WorkspaceMenuPresentation, type WorkspaceSwitcherItem } from "./workspace-switcher";
 
 interface SidebarProps {
   email: string | null;
@@ -24,6 +24,7 @@ interface SidebarProps {
   workspaces: WorkspaceSwitcherItem[];
   canCreate: boolean;
   canCreateWorkspace: boolean;
+  workspaceMenu: WorkspaceMenuPresentation;
   collapsed: boolean;
   onToggle: () => void;
 }
@@ -38,6 +39,7 @@ export function Sidebar({
   workspaces,
   canCreate,
   canCreateWorkspace,
+  workspaceMenu,
 }: SidebarProps) {
   const usagePct = limitMinutes > 0 ? Math.min(100, (usedMinutes / limitMinutes) * 100) : 0;
   const palette = usagePalette(usagePct);
@@ -72,7 +74,7 @@ export function Sidebar({
         <IconButton variant="ghost" size="sm" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={onToggle}>{collapsed ? <PanelLeftOpen size={17}/> : <PanelLeftClose size={17}/>}</IconButton>
       </Flex>
 
-      {!collapsed && <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} canCreateWorkspace={canCreateWorkspace} />}
+      {!collapsed && <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} presentation={workspaceMenu} canCreateWorkspace={canCreateWorkspace} />}
 
       {/* Navigation — single IA source */}
       <Stack as="nav" flex="1" px="3" py="4" gap="0.5" overflowY="auto" css={{ scrollbarWidth: "thin", scrollbarColor: "transparent transparent", "&:hover": { scrollbarColor: "var(--chakra-colors-border) transparent" }, "@media (max-height: 800px)": { paddingBlock: "8px", gap: 0 } }}>
