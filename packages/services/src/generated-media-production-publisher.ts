@@ -1,4 +1,3 @@
-import sharp from "sharp";
 import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -250,6 +249,7 @@ export function createProductionGeneratedMediaPublisher(environment: NodeJS.Proc
   repository: repositoryForEnvironment(),
   maxBytes,
   async inspect(bytes) {
+    const { default: sharp } = await import("sharp");
     const metadata = await sharp(bytes, {
       failOn: "warning",
       limitInputPixels: 40_000_000,

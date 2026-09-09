@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
-import sharp from "sharp";
 import {
   createThumbnailFramePreparation,
   ThumbnailPreparationError,
@@ -389,6 +388,7 @@ function productionModule() {
       };
     },
     async extract({ storageKey, sourceTimeMs }) {
+      const { default: sharp } = await import("sharp");
       const url = await presignDownloadUrl({ key: storageKey, expiresIn: 300 });
       const bytes = await ffmpegFrame(url, sourceTimeMs);
       const metadata = await sharp(bytes, {
