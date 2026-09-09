@@ -1,7 +1,7 @@
 /**
  * Display + polling logic for scheduled social posts.
  *
- * The publish tab renders a server snapshot, but a post's real state changes
+ * The Posts tab renders a server snapshot, but a post's real state changes
  * in the worker (`apps/worker/src/tasks/social-publisher.ts`) with no SSE
  * channel of its own — the project stream only carries `workflow.stage.updated`
  * events for pipeline stages. So the panel polls while a post is still in the
@@ -30,6 +30,7 @@ export const SOCIAL_POST_STATUS_LABELS: Record<
 	string
 > = {
 	draft: "Draft",
+	inbox_delivered: "Sent to TikTok",
 	preparing_video: "Preparing video",
 	scheduled: "Scheduled",
 	publishing: "Publishing",
@@ -92,8 +93,7 @@ export function isLiveSocialPostSnapshot(
 ): boolean {
 	return (
 		isLiveSocialPost(post.status) ||
-		(post.status === "posted" &&
-			post.providerProcessingStatus === "processing")
+		(post.status === "posted" && post.providerProcessingStatus === "processing")
 	);
 }
 
@@ -136,26 +136,24 @@ function attentionGuidance(
 	) {
 		return "LinkedIn did not grant the read permission needed for an exact author-and-video check. Inspect the selected LinkedIn account before taking another action.";
 	}
-	if (
-		platform === "x" &&
-		errorCode === "x_reconciliation_permission_missing"
-	) {
+	if (platform === "x" && errorCode === "x_reconciliation_permission_missing") {
 		return "This X account or product tier does not allow the exact recent-post lookup Narriflow needs. Inspect the selected X account before taking another action.";
 	}
 	return `Verify the post on ${SOCIAL_PLATFORM_LABELS[platform]} before taking another action.`;
 }
 
 type SocialPostFeedbackInput = Pick<
-  SocialPostSnapshot,
+	SocialPostSnapshot,
 	| "status"
 	| "platform"
 	| "scheduledFor"
 	| "postedAt"
 	| "errorCode"
 	| "errorDisposition"
-  | "nextAttemptAt"
+	| "nextAttemptAt"
 > & {
 	createdAt?: string | null;
+	deliveryMode?: "direct" | "tiktok_inbox";
 	providerProcessingStatus?: SocialPostSnapshot["providerProcessingStatus"];
 };
 
@@ -176,7 +174,17 @@ function timestampOf(value: string | null | undefined): number | null {
 export function describeSocialPost(
 	post: SocialPostFeedbackInput,
 	nowMs: number | null,
+	timeZone?: string,
 ): SocialPostFeedback {
+	const dateLabel = (value: string) =>
+		timeZone
+			? new Intl.DateTimeFormat(undefined, {
+					dateStyle: "medium",
+					timeStyle: "short",
+					timeZone,
+				}).format(new Date(value)) + ` (${timeZone})`
+			: formatDateTime(value);
+	const inbox = post.deliveryMode === "tiktok_inbox";
 	const platformLabel = SOCIAL_PLATFORM_LABELS[post.platform];
 	const retryAt = timestampOf(post.nextAttemptAt);
 	const retrying = post.errorDisposition === "safe_retry" && retryAt !== null;
@@ -184,6 +192,15 @@ export function describeSocialPost(
 	const postedAt = timestampOf(post.postedAt);
 
 	switch (post.status) {
+		case "inbox_delivered":
+			return {
+				label: "Sent to TikTok",
+				tone: "success",
+				detail: "Open your TikTok inbox to finish editing and publish.",
+				error: null,
+				isBusy: false,
+				isLive: false,
+			};
 		case "draft":
 			return {
 				label: SOCIAL_POST_STATUS_LABELS.draft,
@@ -209,7 +226,9 @@ export function describeSocialPost(
 				return {
 					label: "Queued",
 					tone: "accent",
-					detail: `Publishing to ${platformLabel} on the next pass.`,
+					detail: inbox
+						? "Sending to TikTok inbox on the next pass."
+						: `Publishing to ${platformLabel} on the next pass.`,
 					error: null,
 					isBusy: true,
 					isLive: true,
@@ -218,8 +237,8 @@ export function describeSocialPost(
 
 			const effectiveDate = retrying ? post.nextAttemptAt! : post.scheduledFor!;
 			const goesOut = retrying
-				? `Retries ${formatDateTime(effectiveDate)}`
-				: `Goes out ${formatDateTime(effectiveDate)}`;
+				? `Retries ${dateLabel(effectiveDate)}`
+				: `${inbox ? "Delivery" : "Goes out"} ${dateLabel(effectiveDate)}`;
 			if (nowMs === null) {
 				return {
 					label: retrying ? "Retry scheduled" : "Scheduled",
@@ -265,7 +284,9 @@ export function describeSocialPost(
 
 		case "publishing":
 			return {
-				label: SOCIAL_POST_STATUS_LABELS.publishing,
+				label: inbox
+					? "Sending to TikTok"
+					: SOCIAL_POST_STATUS_LABELS.publishing,
 				tone: "accent",
 				detail: `Uploading to ${platformLabel}…`,
 				error: null,
@@ -294,6 +315,15 @@ export function describeSocialPost(
 			};
 
 		case "posted": {
+			if (inbox)
+				return {
+					label: "Published in TikTok",
+					tone: "success",
+					detail: "TikTok reported publication after inbox delivery.",
+					error: null,
+					isBusy: false,
+					isLive: false,
+				};
 			if (post.providerProcessingStatus === "processing") {
 				return {
 					label: "Posted · processing",
@@ -315,7 +345,8 @@ export function describeSocialPost(
 					tone: "warning",
 					detail:
 						"YouTube accepted this video, but Narriflow lost permission to verify final processing.",
-					error: "Reconnect the YouTube account, then verify the accepted video.",
+					error:
+						"Reconnect the YouTube account, then verify the accepted video.",
 					isBusy: false,
 					isLive: false,
 				};
@@ -354,7 +385,7 @@ export function describeSocialPost(
 					isLive: false,
 				};
 			}
-			const published = `Published ${formatDateTime(post.postedAt!)}`;
+			const published = `Published ${dateLabel(post.postedAt!)}`;
 			return {
 				label: SOCIAL_POST_STATUS_LABELS.posted,
 				tone: "success",
@@ -395,7 +426,9 @@ export function describeSocialPost(
 			return {
 				label: SOCIAL_POST_STATUS_LABELS.needs_attention,
 				tone: "warning",
-				detail: `This post could already be live on ${platformLabel}; Narriflow will not submit it again automatically.`,
+				detail: inbox
+					? "This upload may already be in your TikTok inbox. Check TikTok before sending it again."
+					: `This post could already be live on ${platformLabel}; Narriflow will not submit it again automatically.`,
 				error: attentionGuidance(post.platform, post.errorCode),
 				isBusy: false,
 				isLive: false,
