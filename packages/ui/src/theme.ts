@@ -519,10 +519,10 @@ const config = defineConfig({
         base: { field: { borderRadius: "l2", bg: "bg.subtle", borderColor: "border.emphasized" } },
       }),
       datePicker: defineSlotRecipe({
-        slots: ["root", "control", "input", "trigger", "label"],
+        slots: ["root", "control", "input", "trigger", "label", "content", "positioner"],
         defaultVariants: { size: "sm" },
         variants: { size: slotControlVariants("input") },
-        base: { input: { borderRadius: "l2", bg: "bg.subtle", borderColor: "border.emphasized" }, label: { fontSize: "13px", fontWeight: "500", color: "fg.muted" } },
+        base: { content: { bg: "bg.panel", color: "fg", borderWidth: "0", borderColor: "border", borderRadius: "xl", boxShadow: "lg", p: "4" }, positioner: { zIndex: "popover" }, input: { borderRadius: "l2", bg: "bg.subtle", borderColor: "border.emphasized", focusRing: "none", _focusVisible: { borderColor: "accent.focusRing", outline: "none", boxShadow: "none" } }, label: { fontSize: "13px", fontWeight: "500", color: "fg.muted" } },
       }),
       checkbox: defineSlotRecipe({
         slots: ["root", "control", "label", "indicator", "group"],

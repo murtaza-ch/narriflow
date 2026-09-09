@@ -4,7 +4,6 @@ import {
   Button,
   DatePicker as ChakraDatePicker,
   Flex,
-  Input,
   Portal,
 } from "@chakra-ui/react"
 import {
@@ -15,6 +14,17 @@ import {
 } from "@internationalized/date"
 import { CalendarDays } from "lucide-react"
 import * as React from "react"
+import { TimePicker } from "./time-picker"
+
+// Keep nested calendars inside the dialog's focus scope while escaping scroll clipping.
+function useCalendarPortal() {
+  const rootRef = React.useRef<HTMLDivElement>(null)
+  const [container, setContainer] = React.useState<HTMLElement | null>(null)
+  React.useEffect(() => {
+    setContainer(rootRef.current?.closest<HTMLElement>('[role="dialog"]') ?? null)
+  }, [])
+  return { rootRef, container: container ? { current: container } : undefined }
+}
 
 function dateValue(value?: string) {
   if (!value) return []
@@ -75,6 +85,7 @@ export function DatePicker({
   max,
   width = "12rem",
 }: DatePickerProps) {
+  const calendarPortal = useCalendarPortal()
   const [internalValue, setInternalValue] = React.useState(defaultValue ?? "")
   const selected = value ?? internalValue
 
@@ -86,6 +97,8 @@ export function DatePicker({
 
   return (
     <ChakraDatePicker.Root
+        ref={calendarPortal.rootRef}
+        positioning={{ strategy: "fixed", placement: "bottom-start" }}
       value={dateValue(selected)}
       onValueChange={change}
       min={dateValue(min)[0]}
@@ -107,7 +120,7 @@ export function DatePicker({
           </ChakraDatePicker.Trigger>
         </ChakraDatePicker.IndicatorGroup>
       </ChakraDatePicker.Control>
-      <Portal>
+      <Portal container={calendarPortal.container}>
         <ChakraDatePicker.Positioner>
           <ChakraDatePicker.Content>
             <DateViews />
@@ -167,6 +180,7 @@ export function DateTimePicker({
   disabled,
   width = "full",
 }: DateTimePickerProps) {
+  const calendarPortal = useCalendarPortal()
   const selected = parseLocalDateTime(value)
   const timeValue = selected
     ? `${String(selected.hour).padStart(2, "0")}:${String(selected.minute).padStart(2, "0")}`
@@ -189,8 +203,8 @@ export function DateTimePicker({
     )
   }
 
-  function onTimeChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const [hour, minute] = event.currentTarget.value.split(":").map(Number)
+  function onTimeChange(value: string) {
+    const [hour, minute] = value.split(":").map(Number)
     if (!selected || !Number.isFinite(hour) || !Number.isFinite(minute)) return
     const current = selected
     onValueChange(localDateTimeValue(current.set({ hour, minute })))
@@ -200,6 +214,8 @@ export function DateTimePicker({
     <Flex gap="2" width={width} align="stretch">
       {name ? <input type="hidden" name={name} value={value} /> : null}
       <ChakraDatePicker.Root
+        ref={calendarPortal.rootRef}
+        positioning={{ strategy: "fixed", placement: "bottom-start" }}
         value={selected ? [selected] : []}
         onValueChange={onDateChange}
         disabled={disabled}
@@ -223,7 +239,7 @@ export function DateTimePicker({
             </Button>
           </ChakraDatePicker.Trigger>
         </ChakraDatePicker.Control>
-        <Portal>
+        <Portal container={calendarPortal.container}>
           <ChakraDatePicker.Positioner>
             <ChakraDatePicker.Content>
               <DateViews />
@@ -231,13 +247,11 @@ export function DateTimePicker({
           </ChakraDatePicker.Positioner>
         </Portal>
       </ChakraDatePicker.Root>
-      <Input
-        type="time"
+      <TimePicker
         value={timeValue}
-        onChange={onTimeChange}
-        aria-label="Publish time"
+        onValueChange={onTimeChange}
+        ariaLabel="Publish time"
         disabled={disabled || !selected}
-        width="7.5rem"
       />
     </Flex>
   )
