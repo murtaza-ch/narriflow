@@ -1,3 +1,4 @@
+import { socialPublishingOptions } from "./social-publishing-options";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -26,6 +27,7 @@ import {
 } from "./expected-domain-failure";
 
 export type FrozenPublicationState = {
+	deliveryMode?: import("@narriflow/validators").SocialDeliveryMode;
 	clipExportId: string;
 	clipExportVariantId: string;
 	editorRevision: number;
@@ -79,6 +81,7 @@ export type SchedulePublicationInput = {
 	aspectRatio: ClipAspectRatio;
 	resolution: ClipRenderResolution;
 	scheduledFor: Date;
+	immediate?: boolean;
 	providerSettings: Prisma.JsonObject;
 	reviewOverrideReason?: string | null;
 };
@@ -113,7 +116,6 @@ const publicationIntentFailureCatalog = {
 	clip_not_found: "missing",
 	editor_revision_conflict: "conflict",
 	project_not_found: "missing",
-	publication_account_schedule_conflict: "conflict",
 	publication_already_started: "conflict",
 	publication_export_mismatch: "conflict",
 	publication_export_variant_missing: "missing",
@@ -127,6 +129,9 @@ const publicationIntentFailureCatalog = {
 	social_account_unavailable: "missing",
 	social_post_not_found: "missing",
 	social_provider_publishing_disabled: "unavailable",
+	social_account_scope_missing: "unavailable",
+	tiktok_creator_settings_changed: "invalid",
+	tiktok_video_too_long: "invalid",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export class PublicationIntentConflictError extends ExpectedDomainFailureError<"publication_intent_conflict"> {
@@ -147,10 +152,7 @@ type PublicationIntentStateErrorCode = Exclude<
 >;
 
 export class PublicationIntentStateError extends ExpectedDomainFailureError<PublicationIntentStateErrorCode> {
-	constructor(
-		code: PublicationIntentStateErrorCode,
-		message: string,
-	) {
+	constructor(code: PublicationIntentStateErrorCode, message: string) {
 		super({ code, kind: publicationIntentFailureCatalog[code], message });
 		this.name = "PublicationIntentStateError";
 	}
@@ -160,7 +162,11 @@ export function socialAccountCanPublishAt(
 	account: { expiresAt: Date | null; refreshTokenEncrypted: string | null },
 	now: Date,
 ): boolean {
-	return !account.expiresAt || account.expiresAt > now || Boolean(account.refreshTokenEncrypted);
+	return (
+		!account.expiresAt ||
+		account.expiresAt > now ||
+		Boolean(account.refreshTokenEncrypted)
+	);
 }
 
 function canonicalJson(value: unknown): string {
@@ -180,7 +186,8 @@ export function publicationIntentHash(input: SchedulePublicationInput): string {
 	return createHash("sha256")
 		.update(
 			canonicalJson({
-				contract: "social-publication-intent-v1",
+				contract: "social-publication-intent-v2",
+				immediate: input.immediate === true,
 				workspaceId: input.workspaceId,
 				projectId: input.projectId,
 				clipId: input.clipId,
@@ -234,7 +241,7 @@ export function createSocialPublicationScheduling(dependencies: {
 				clientIdempotencyKey: input.clientIdempotencyKey,
 				immutableRequestHash,
 				create: async () => {
-					if (input.scheduledFor <= dependencies.now()) {
+					if (!input.immediate && input.scheduledFor <= dependencies.now()) {
 						throw new PublicationIntentStateError(
 							"publication_schedule_in_past",
 							"Choose a future publish time",
@@ -505,6 +512,7 @@ function toPublicationIntent(row: PublicationIntentRow): PublicationIntent {
 		reviewApprovalOverrideId: row.reviewApprovalOverrideId,
 		frozen: {
 			clipExportId: frozen.clipExportId,
+			deliveryMode: frozen.deliveryMode,
 			clipExportVariantId: frozen.clipExportVariantId,
 			editorRevision: frozen.editorRevision,
 			exportFingerprint: frozen.exportFingerprint,
@@ -577,40 +585,6 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 						return replay;
 					}
 
-					if (candidate.frozen.socialAccountId) {
-						const oneMinute = 60_000;
-						const conflict = await tx.socialPost.findFirst({
-							where: {
-								workspaceId: candidate.workspaceId,
-								socialAccountId: candidate.frozen.socialAccountId,
-								status: {
-									in: [
-										"preparing_video",
-										"scheduled",
-										"publishing",
-										"processing",
-										"reconciling",
-									],
-								},
-								scheduledFor: {
-									gte: new Date(
-										candidate.frozen.scheduledFor.getTime() - oneMinute,
-									),
-									lte: new Date(
-										candidate.frozen.scheduledFor.getTime() + oneMinute,
-									),
-								},
-							},
-							select: { id: true },
-						});
-						if (conflict) {
-							throw new PublicationIntentStateError(
-								"publication_account_schedule_conflict",
-								"This social account already has a post scheduled at that time",
-							);
-						}
-					}
-
 					const row = await tx.socialPost.create({
 						data: {
 							id: candidate.id,
@@ -624,11 +598,11 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 							clientIdempotencyKey: candidate.clientIdempotencyKey,
 							immutableRequestHash: candidate.immutableRequestHash,
 							caption: candidate.frozen.caption,
+							deliveryMode: candidate.frozen.deliveryMode ?? "direct",
 							aspectRatio: clipAspectRatioToDb[candidate.frozen.aspectRatio],
 							scheduledFor: candidate.frozen.scheduledFor,
 							metadata: candidate.frozen.providerSettings,
-							reviewApprovalOverrideId:
-								candidate.reviewApprovalOverrideId,
+							reviewApprovalOverrideId: candidate.reviewApprovalOverrideId,
 							frozenState: {
 								create: {
 									clipExportId: candidate.frozen.clipExportId,
@@ -643,6 +617,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 									aspectRatio:
 										clipAspectRatioToDb[candidate.frozen.aspectRatio],
 									caption: candidate.frozen.caption,
+									deliveryMode: candidate.frozen.deliveryMode ?? "direct",
 									providerSettings: candidate.frozen.providerSettings,
 									capabilityVersion: candidate.frozen.capabilityVersion,
 									scheduledFor: candidate.frozen.scheduledFor,
@@ -675,8 +650,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 								platform: candidate.frozen.platform,
 								metadata: {
 									socialPostId: candidate.id,
-									reviewApprovalOverrideId:
-										candidate.reviewApprovalOverrideId,
+									reviewApprovalOverrideId: candidate.reviewApprovalOverrideId,
 									exportId: candidate.frozen.clipExportId,
 								},
 							},
@@ -866,20 +840,22 @@ export function createProductionSocialPublicationScheduling() {
 
 			const requestedExportId = input.clipExportId
 				? input.clipExportId
-				: (await clipExportService.create(
-						input.projectId,
-						input.clipId,
-						{
-							expectedRevision: input.expectedEditorRevision,
-							aspectRatios: [input.aspectRatio],
-							resolution: input.resolution,
-						},
-						`social:${input.workspaceId}:${input.clientIdempotencyKey}`,
-						{
-							workspaceId: input.workspaceId,
-							actorUserId: input.actorUserId,
-						},
-					)).export.id;
+				: (
+						await clipExportService.create(
+							input.projectId,
+							input.clipId,
+							{
+								expectedRevision: input.expectedEditorRevision,
+								aspectRatios: [input.aspectRatio],
+								resolution: input.resolution,
+							},
+							`social:${input.workspaceId}:${input.clientIdempotencyKey}`,
+							{
+								workspaceId: input.workspaceId,
+								actorUserId: input.actorUserId,
+							},
+						)
+					).export.id;
 			const row = await prisma.clipExport.findFirst({
 				where: {
 					id: requestedExportId,
@@ -892,7 +868,9 @@ export function createProductionSocialPublicationScheduling() {
 				include: {
 					variants: {
 						where: {
-							...(input.clipExportVariantId ? { id: input.clipExportVariantId } : {}),
+							...(input.clipExportVariantId
+								? { id: input.clipExportVariantId }
+								: {}),
 							aspectRatio: clipAspectRatioToDb[input.aspectRatio],
 							resolution: input.resolution,
 						},
@@ -918,7 +896,60 @@ export function createProductionSocialPublicationScheduling() {
 					"The exact Clip Export Variant failed to render",
 				);
 			}
+			if (
+				input.clipExportId &&
+				(variant.status !== "completed" ||
+					!variant.storageKey ||
+					variant.sizeBytes === null ||
+					variant.durationSec === null)
+			) {
+				throw new PublicationIntentStateError(
+					"publication_media_preparation_failed",
+					"Prepare the selected video before submitting.",
+				);
+			}
+
+			if (input.platform === "tiktok" && input.accountId) {
+				const options = await socialPublishingOptions(
+					input.workspaceId,
+					input.accountId,
+				);
+				const inbox = input.providerSettings.deliveryMode === "tiktok_inbox";
+				if (inbox ? !options.inboxEnabled : !options.directEnabled)
+					throw new PublicationIntentStateError(
+						"social_account_scope_missing",
+						"Reconnect TikTok to allow this delivery mode.",
+					);
+				if (
+					!inbox &&
+					(!options.privacyOptions.includes(
+						String(input.providerSettings.tiktokPrivacyLevel ?? ""),
+					) ||
+						(options.commentDisabled &&
+							input.providerSettings.disableComment !== true) ||
+						(options.duetDisabled &&
+							input.providerSettings.disableDuet !== true) ||
+						(options.stitchDisabled &&
+							input.providerSettings.disableStitch !== true))
+				)
+					throw new PublicationIntentStateError(
+						"tiktok_creator_settings_changed",
+						"TikTok settings changed. Reload the account settings and review this post.",
+					);
+				if (
+					variant.durationSec &&
+					variant.durationSec > options.maximumDurationSec
+				)
+					throw new PublicationIntentStateError(
+						"tiktok_video_too_long",
+						"This video exceeds the account’s duration limit.",
+					);
+			}
 			const state: FrozenPublicationState = {
+				deliveryMode:
+					input.providerSettings.deliveryMode === "tiktok_inbox"
+						? "tiktok_inbox"
+						: "direct",
 				clipExportId: row.id,
 				clipExportVariantId: variant.id,
 				editorRevision: row.editorRevision,

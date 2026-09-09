@@ -43,7 +43,9 @@ export type NativePublicationDependencies = {
 		): Promise<string>;
 	};
 	thumbnails?: {
-		materialize(input: NativePublicationThumbnail): Promise<NativePublicationThumbnailMedia>;
+		materialize(
+			input: NativePublicationThumbnail,
+		): Promise<NativePublicationThumbnailMedia>;
 		createScopedAccess(input: NativePublicationThumbnail): Promise<string>;
 	};
 	clock: { now(): Date };
@@ -72,12 +74,13 @@ function providerOperationClass(url: string, init?: RequestInit) {
 	if (/\/initialize(?:\?|$)|initializeUpload/.test(url)) return "initialize";
 	if (/\/finalize(?:\?|$)|finalizeUpload/.test(url)) return "finalize";
 	if (/\/append(?:\?|$)|\/upload(?:\/|\?|$)/.test(url)) return "upload";
-	if (
-		/status|creator_info|publishing_limit|\/videos\?|\/media\?/.test(url)
-	) {
+	if (/status|creator_info|publishing_limit|\/videos\?|\/media\?/.test(url)) {
 		return "status";
 	}
-	if (method === "POST" && /media_publish|\/tweets$|\/posts$|video\/init/.test(url)) {
+	if (
+		method === "POST" &&
+		/media_publish|\/tweets$|\/posts$|video\/init/.test(url)
+	) {
 		return "submission";
 	}
 	if (method === "PUT") return "upload";
@@ -96,7 +99,9 @@ function facebookReelsPlatform(
 			publishing_phase?: { status?: string; publish_status?: string };
 		};
 	};
-	const processingOperation = (videoId: string): PublicationProviderOperation => ({
+	const processingOperation = (
+		videoId: string,
+	): PublicationProviderOperation => ({
 		kind: "facebook_reel_processing",
 		state: { videoId },
 	});
@@ -116,27 +121,47 @@ function facebookReelsPlatform(
 			status.processing_phase?.status,
 			status.publishing_phase?.status,
 			status.publishing_phase?.publish_status,
-		].filter((entry): entry is string => typeof entry === "string")
+		]
+			.filter((entry): entry is string => typeof entry === "string")
 			.map((entry) => entry.toLowerCase());
-		if (values.some((entry) => ["error", "failed", "expired"].includes(entry))) {
+		if (
+			values.some((entry) => ["error", "failed", "expired"].includes(entry))
+		) {
 			return "failed" as const;
 		}
-		const publishingComplete = status.publishing_phase?.status?.toLowerCase() === "complete";
-		const published = status.publishing_phase?.publish_status?.toLowerCase() === "published";
-		const processingComplete = status.processing_phase?.status?.toLowerCase() === "complete";
-		const videoReady = ["ready", "published"].includes(status.video_status?.toLowerCase() ?? "");
-		if (publishingComplete && published && processingComplete && videoReady) return "published" as const;
+		const publishingComplete =
+			status.publishing_phase?.status?.toLowerCase() === "complete";
+		const published =
+			status.publishing_phase?.publish_status?.toLowerCase() === "published";
+		const processingComplete =
+			status.processing_phase?.status?.toLowerCase() === "complete";
+		const videoReady = ["ready", "published"].includes(
+			status.video_status?.toLowerCase() ?? "",
+		);
+		if (publishingComplete && published && processingComplete && videoReady)
+			return "published" as const;
 		const videoStatus = status.video_status?.toLowerCase() ?? "";
-		const hasSubmissionEvidence = Boolean(status.processing_phase || status.publishing_phase) ||
+		const hasSubmissionEvidence =
+			Boolean(status.processing_phase || status.publishing_phase) ||
 			["processing", "ready", "published"].includes(videoStatus);
-		return hasSubmissionEvidence ? "processing" as const : "unsubmitted" as const;
+		return hasSubmissionEvidence
+			? ("processing" as const)
+			: ("unsubmitted" as const);
 	};
 	const hasPublishingEvidence = (value: FacebookReelStatus) => {
 		const phaseStatus = value.status?.publishing_phase?.status?.toLowerCase();
-		const publishStatus = value.status?.publishing_phase?.publish_status?.toLowerCase();
-		return value.status?.video_status?.toLowerCase() === "published" ||
-			Boolean(phaseStatus && !["not_started", "not started"].includes(phaseStatus)) ||
-			Boolean(publishStatus && !["not_started", "not started"].includes(publishStatus));
+		const publishStatus =
+			value.status?.publishing_phase?.publish_status?.toLowerCase();
+		return (
+			value.status?.video_status?.toLowerCase() === "published" ||
+			Boolean(
+				phaseStatus && !["not_started", "not started"].includes(phaseStatus),
+			) ||
+			Boolean(
+				publishStatus &&
+					!["not_started", "not started"].includes(publishStatus),
+			)
+		);
 	};
 	const accepted = (videoId: string): PublicationPlatformResult => ({
 		kind: "accepted",
@@ -165,9 +190,15 @@ function facebookReelsPlatform(
 	): Promise<PublicationPlatformResult> => {
 		assertPublishingEnabled();
 		const account = requireAccount(input, "facebook_reels");
-		requireScopes(account, SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.requiredScopes);
+		requireScopes(
+			account,
+			SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.requiredScopes,
+		);
 		const duration = SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.durationSec;
-		if (input.media.durationSec < duration.min || input.media.durationSec > duration.max) {
+		if (
+			input.media.durationSec < duration.min ||
+			input.media.durationSec > duration.max
+		) {
 			throw new PublicationPlatformConfigurationError(
 				"facebook_reel_duration_invalid",
 				`Facebook Reel duration must be between ${duration.min} and ${duration.max} seconds`,
@@ -183,7 +214,10 @@ function facebookReelsPlatform(
 			uploadUrl,
 			{
 				method: "POST",
-				headers: { Authorization: `OAuth ${account.accessToken}`, file_url: fileUrl },
+				headers: {
+					Authorization: `OAuth ${account.accessToken}`,
+					file_url: fileUrl,
+				},
 				signal: context.signal,
 			},
 			"facebook_reel_upload_failed",
@@ -241,7 +275,9 @@ function facebookReelsPlatform(
 			recovery: "bounded",
 			asynchronous: true,
 			idempotency: "narriflow",
-			requiredScopes: [...SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.requiredScopes],
+			requiredScopes: [
+				...SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.requiredScopes,
+			],
 			capabilityVersion: SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.version,
 			apiVersion: dependencies.config.metaGraphVersion,
 			// The worker-level provider budget remains the hard ceiling. This
@@ -254,24 +290,44 @@ function facebookReelsPlatform(
 				assertPublishingEnabled();
 				const account = requireAccount(input, "facebook_reels");
 				requireScopes(account, this.capabilities.requiredScopes);
-				const started = await jsonRequest<{ video_id?: string; upload_url?: string }>(
+				const started = await jsonRequest<{
+					video_id?: string;
+					upload_url?: string;
+				}>(
 					dependencies,
 					context,
 					`https://graph.facebook.com/${dependencies.config.metaGraphVersion}/${account.providerAccountId}/video_reels`,
 					{
 						method: "POST",
 						headers: { "Content-Type": "application/x-www-form-urlencoded" },
-						body: new URLSearchParams({ upload_phase: "start", access_token: account.accessToken }),
+						body: new URLSearchParams({
+							upload_phase: "start",
+							access_token: account.accessToken,
+						}),
 						signal: context.signal,
 					},
 					"facebook_reel_start_failed",
 					"preparation",
 				);
 				if (!started.video_id || !started.upload_url) {
-					throw new ProviderHttpError("facebook_reel_upload_session_missing", "preparation", 502, null);
+					throw new ProviderHttpError(
+						"facebook_reel_upload_session_missing",
+						"preparation",
+						502,
+						null,
+					);
 				}
-				await context.checkpoint({ kind: "facebook_reel_upload", state: { videoId: started.video_id, uploadUrl: started.upload_url } });
-				return uploadAndPublish(input, context, started.video_id, started.upload_url, markSubmitted);
+				await context.checkpoint({
+					kind: "facebook_reel_upload",
+					state: { videoId: started.video_id, uploadUrl: started.upload_url },
+				});
+				return uploadAndPublish(
+					input,
+					context,
+					started.video_id,
+					started.upload_url,
+					markSubmitted,
+				);
 			});
 		},
 		resume(input, operation, context) {
@@ -299,15 +355,37 @@ function facebookReelsPlatform(
 						return processingResult(videoId);
 					}
 					if (outcome === "failed") {
-						return { kind: "failed", failure: { code: "facebook_reel_processing_failed", phase: "reconciliation", disposition: "attention", retryAfterMs: null } };
+						return {
+							kind: "failed",
+							failure: {
+								code: "facebook_reel_processing_failed",
+								phase: "reconciliation",
+								disposition: "attention",
+								retryAfterMs: null,
+							},
+						};
 					}
 					return finishPublish(input, context, videoId, markSubmitted);
 				}
 				const uploadUrl = operationString(operation.state, "uploadUrl");
 				if (!videoId || !uploadUrl) {
-					return { kind: "failed", failure: { code: "facebook_reel_upload_session_missing", phase: "preparation", disposition: "permanent", retryAfterMs: null } };
+					return {
+						kind: "failed",
+						failure: {
+							code: "facebook_reel_upload_session_missing",
+							phase: "preparation",
+							disposition: "permanent",
+							retryAfterMs: null,
+						},
+					};
 				}
-				return uploadAndPublish(input, context, videoId, uploadUrl, markSubmitted);
+				return uploadAndPublish(
+					input,
+					context,
+					videoId,
+					uploadUrl,
+					markSubmitted,
+				);
 			});
 		},
 		reconcile(input, operation, context) {
@@ -316,7 +394,11 @@ function facebookReelsPlatform(
 				const account = requireAccount(input, "facebook_reels");
 				requireScopes(account, this.capabilities.requiredScopes);
 				const videoId = operationString(operation.state, "videoId");
-				if ((operation.kind !== "facebook_reel_processing" && operation.kind !== "submission_started") || !videoId) {
+				if (
+					(operation.kind !== "facebook_reel_processing" &&
+						operation.kind !== "submission_started") ||
+					!videoId
+				) {
 					return {
 						kind: "failed",
 						failure: {
@@ -342,9 +424,10 @@ function facebookReelsPlatform(
 				return {
 					kind: "failed",
 					failure: {
-						code: outcome === "failed"
-							? "facebook_reel_processing_failed"
-							: "facebook_reel_status_invalid",
+						code:
+							outcome === "failed"
+								? "facebook_reel_processing_failed"
+								: "facebook_reel_status_invalid",
 						phase: "reconciliation",
 						disposition: "attention",
 						retryAfterMs: null,
@@ -414,10 +497,7 @@ function xRetryAfterMs(
 	dependencies: NativePublicationDependencies,
 	response: Response,
 ) {
-	const providerRetryAfterMs = retryAfterMs(
-		response,
-		dependencies.clock.now(),
-	);
+	const providerRetryAfterMs = retryAfterMs(response, dependencies.clock.now());
 	return response.status === 429
 		? Math.max(
 				providerRetryAfterMs ?? 0,
@@ -436,6 +516,35 @@ async function jsonRequest<T>(
 ): Promise<T> {
 	await context.providerCall?.();
 	const response = await dependencies.fetch(url, init);
+	if (errorCode.startsWith("tiktok_")) {
+		const payload = (await response
+			.clone()
+			.json()
+			.catch(() => null)) as { error?: { code?: string } } | null;
+		const code = payload?.error?.code;
+		if (code && code !== "ok") {
+			const known: Record<string, [string, number]> = {
+				spam_risk_too_many_pending_share: ["tiktok_pending_drafts_limit", 400],
+				spam_risk_user_banned_from_posting: ["tiktok_account_restricted", 400],
+				spam_risk_too_many_posts: ["tiktok_rate_limit", 429],
+				access_token_invalid: ["tiktok_authentication_required", 401],
+				scope_not_authorized: ["tiktok_permission_required", 403],
+				rate_limit_exceeded: ["tiktok_rate_limit", 429],
+				internal_error: [errorCode, 500],
+			};
+			const [mapped, status] = known[code] ?? [
+				errorCode,
+				response.ok ? 400 : response.status,
+			];
+			throw new ProviderHttpError(
+				mapped,
+				phase,
+				status,
+				retryAfterMs(response, dependencies.clock.now()),
+			);
+		}
+	}
+
 	if (!response.ok) {
 		const providerRetryAfterMs = errorCode.startsWith("x_")
 			? xRetryAfterMs(dependencies, response)
@@ -581,13 +690,13 @@ function normalizedFailure(
 				? error.code
 				: error.status === 404 && error.code.startsWith("x_media_")
 					? "x_media_expired"
-				: error.status === 401
-				? `${error.code.split("_")[0]}_authentication_required`
-				: error.status === 403
-					? `${error.code.split("_")[0]}_permission_required`
-					: error.status === 429
-						? `${error.code.split("_")[0]}_rate_limit`
-						: error.code
+					: error.status === 401
+						? `${error.code.split("_")[0]}_authentication_required`
+						: error.status === 403
+							? `${error.code.split("_")[0]}_permission_required`
+							: error.status === 429
+								? `${error.code.split("_")[0]}_rate_limit`
+								: error.code
 			: null;
 	if (submitted) {
 		return {
@@ -692,7 +801,9 @@ type YouTubeVideoResource = {
 	};
 };
 
-function youtubeReceipt(resource: YouTubeVideoResource): PublicationPlatformResult {
+function youtubeReceipt(
+	resource: YouTubeVideoResource,
+): PublicationPlatformResult {
 	const videoId = resource.id!;
 	const uploadStatus = resource.status?.uploadStatus;
 	const processingFailed =
@@ -704,7 +815,7 @@ function youtubeReceipt(resource: YouTubeVideoResource): PublicationPlatformResu
 		receipt: {
 			receiptId: videoId,
 			platformPostId: videoId,
-			externalUrl: `https://www.youtube.com/watch?v=${videoId}`,
+			externalUrl: `https://www.youtube.com/shorts/${videoId}`,
 			metrics: null,
 			providerProcessingStatus:
 				uploadStatus === "processed"
@@ -782,7 +893,10 @@ async function finishYoutubePublication(
 			};
 		}
 		if (!response.ok) {
-			const code = await youtubeFailureCode(response, "youtube_thumbnail_failed");
+			const code = await youtubeFailureCode(
+				response,
+				"youtube_thumbnail_failed",
+			);
 			if (response.status === 429 || response.status >= 500) {
 				return {
 					kind: "unknown",
@@ -856,7 +970,8 @@ async function continueYoutubeUpload(
 	const account = requireAccount(input, "youtube_shorts");
 	requireScopes(account, ["https://www.googleapis.com/auth/youtube.upload"]);
 	const uploadUrl = operationString(state, "uploadUrl");
-	const totalBytes = operationNumber(state, "totalBytes") ?? input.media.sizeBytes;
+	const totalBytes =
+		operationNumber(state, "totalBytes") ?? input.media.sizeBytes;
 	if (!uploadUrl || totalBytes !== input.media.sizeBytes) {
 		return {
 			kind: "unknown",
@@ -961,7 +1076,11 @@ async function continueYoutubeUpload(
 				);
 			}
 			const providerBytes = youtubeUploadedBytes(response.headers.get("range"));
-			if (providerBytes === null || providerBytes < end || providerBytes > totalBytes) {
+			if (
+				providerBytes === null ||
+				providerBytes < end ||
+				providerBytes > totalBytes
+			) {
 				throw new ProviderHttpError(
 					"youtube_upload_range_invalid",
 					"upload",
@@ -1010,7 +1129,11 @@ function youtubePlatform(
 				requireScopes(account, this.capabilities.requiredScopes);
 				const settings = metadata(input);
 				const videoTitle = stringSetting(settings, ["title"], title(input))!;
-				const categoryId = stringSetting(settings, ["youtubeCategoryId"], "22")!;
+				const categoryId = stringSetting(
+					settings,
+					["youtubeCategoryId"],
+					"22",
+				)!;
 				if (
 					input.media.sizeBytes <= 0 ||
 					input.caption.length > 5_000 ||
@@ -1023,76 +1146,76 @@ function youtubePlatform(
 						"YouTube publication settings or media facts are invalid",
 					);
 				}
-					const requestedPrivacy = stringSetting(
-						settings,
-						["youtubePrivacyStatus", "privacyStatus"],
-						"public",
-					)!;
-					if (!["private", "public", "unlisted"].includes(requestedPrivacy)) {
-						throw new PublicationPlatformConfigurationError(
-							"youtube_privacy_invalid",
-							"YouTube privacy must be private, public, or unlisted",
-						);
-					}
-					const privacyStatus = booleanSetting(
-						accountMetadata(input),
-						["auditEnforcedPrivate", "forcePrivateUploads"],
-						false,
-					)
-						? "private"
-						: requestedPrivacy;
-					await context.providerCall?.();
-					const init = await dependencies.fetch(
-						`https://www.googleapis.com/upload/youtube/${dependencies.config.youtubeApiVersion}/videos?uploadType=resumable&part=snippet,status`,
-						{
-							method: "POST",
-							headers: {
-								Authorization: `Bearer ${account.accessToken}`,
-								"Content-Type": "application/json; charset=UTF-8",
-								"X-Upload-Content-Type": "video/mp4",
-								"X-Upload-Content-Length": String(input.media.sizeBytes),
-							},
-							body: JSON.stringify({
-								snippet: {
-									title: videoTitle,
-									description: input.caption,
-									categoryId,
-								},
-								status: {
-									privacyStatus,
-									selfDeclaredMadeForKids: booleanSetting(
-										settings,
-										["selfDeclaredMadeForKids"],
-										false,
-									),
-								},
-							}),
-							signal: context.signal,
-						},
+				const requestedPrivacy = stringSetting(
+					settings,
+					["youtubePrivacyStatus", "privacyStatus"],
+					"public",
+				)!;
+				if (!["private", "public", "unlisted"].includes(requestedPrivacy)) {
+					throw new PublicationPlatformConfigurationError(
+						"youtube_privacy_invalid",
+						"YouTube privacy must be private, public, or unlisted",
 					);
-					const uploadUrl = init.headers.get("location");
-					if (!init.ok || !uploadUrl) {
-						throw new ProviderHttpError(
-							await youtubeFailureCode(init, "youtube_upload_init_failed"),
-							"preparation",
-							init.status,
-							retryAfterMs(init, dependencies.clock.now()),
-						);
-					}
-					const state = {
-						providerOperation: "youtube_resumable_upload",
-						uploadUrl,
-						uploadedBytes: 0,
-						totalBytes: input.media.sizeBytes,
-					};
-					await context.checkpoint({ kind: "submission_started", state });
-					markSubmitted();
+				}
+				const privacyStatus = booleanSetting(
+					accountMetadata(input),
+					["auditEnforcedPrivate", "forcePrivateUploads"],
+					false,
+				)
+					? "private"
+					: requestedPrivacy;
+				await context.providerCall?.();
+				const init = await dependencies.fetch(
+					`https://www.googleapis.com/upload/youtube/${dependencies.config.youtubeApiVersion}/videos?uploadType=resumable&part=snippet,status`,
+					{
+						method: "POST",
+						headers: {
+							Authorization: `Bearer ${account.accessToken}`,
+							"Content-Type": "application/json; charset=UTF-8",
+							"X-Upload-Content-Type": "video/mp4",
+							"X-Upload-Content-Length": String(input.media.sizeBytes),
+						},
+						body: JSON.stringify({
+							snippet: {
+								title: videoTitle,
+								description: input.caption,
+								categoryId,
+							},
+							status: {
+								privacyStatus,
+								selfDeclaredMadeForKids: booleanSetting(
+									settings,
+									["selfDeclaredMadeForKids"],
+									false,
+								),
+							},
+						}),
+						signal: context.signal,
+					},
+				);
+				const uploadUrl = init.headers.get("location");
+				if (!init.ok || !uploadUrl) {
+					throw new ProviderHttpError(
+						await youtubeFailureCode(init, "youtube_upload_init_failed"),
+						"preparation",
+						init.status,
+						retryAfterMs(init, dependencies.clock.now()),
+					);
+				}
+				const state = {
+					providerOperation: "youtube_resumable_upload",
+					uploadUrl,
+					uploadedBytes: 0,
+					totalBytes: input.media.sizeBytes,
+				};
+				await context.checkpoint({ kind: "submission_started", state });
+				markSubmitted();
 				return continueYoutubeUpload(
-						dependencies,
-						input,
-						context,
-						state,
-						false,
+					dependencies,
+					input,
+					context,
+					state,
+					false,
 				);
 			});
 		},
@@ -1109,12 +1232,9 @@ function youtubePlatform(
 							operation: null,
 						};
 					}
-					return finishYoutubePublication(
-						dependencies,
-						input,
-						context,
-						{ id: videoId },
-					);
+					return finishYoutubePublication(dependencies, input, context, {
+						id: videoId,
+					});
 				}
 				return continueYoutubeUpload(
 					dependencies,
@@ -1136,18 +1256,18 @@ async function instagramContainerStatus(
 	signal: AbortSignal,
 ) {
 	const result = await jsonRequest<{ status_code?: string }>(
-			dependencies,
-			context,
-			`https://graph.facebook.com/${dependencies.config.metaGraphVersion}/${containerId}?${new URLSearchParams(
-				{
-					fields: "status_code,status",
-					access_token: accessToken,
-				},
-			)}`,
-			{ method: "GET", signal },
-			"instagram_container_status_failed",
-			"preparation",
-		);
+		dependencies,
+		context,
+		`https://graph.facebook.com/${dependencies.config.metaGraphVersion}/${containerId}?${new URLSearchParams(
+			{
+				fields: "status_code,status",
+				access_token: accessToken,
+			},
+		)}`,
+		{ method: "GET", signal },
+		"instagram_container_status_failed",
+		"preparation",
+	);
 	const status = result.status_code;
 	if (
 		status !== "IN_PROGRESS" &&
@@ -1596,6 +1716,11 @@ async function tiktokStatus(
 		: postIds;
 	return {
 		status: String(state.status ?? state.status_code ?? "PROCESSING"),
+		platformPostIds: Array.isArray(postIds)
+			? postIds
+					.filter((v) => typeof v === "string" || typeof v === "number")
+					.map(String)
+			: [],
 		failureReason:
 			typeof state.fail_reason === "string" ? state.fail_reason : null,
 		platformPostId:
@@ -1608,13 +1733,18 @@ async function tiktokStatus(
 function tiktokAccepted(
 	input: PublicationPlatformInput,
 	publishId: string,
-	status: { status: string; platformPostId: string | null },
+	status: {
+		status: string;
+		platformPostId: string | null;
+		platformPostIds?: string[];
+	},
 ): PublicationPlatformResult {
 	const username = input.account?.handle?.replace(/^@/, "");
 	return {
 		kind: "accepted",
 		receipt: {
 			receiptId: publishId,
+			platformPostIds: status.platformPostIds,
 			platformPostId: status.platformPostId,
 			externalUrl:
 				status.platformPostId && username
@@ -1701,38 +1831,47 @@ function tiktokPlatform(
 		publish(input, context) {
 			return withNativeOutcome(async (markSubmitted) => {
 				const account = requireAccount(input, "tiktok");
-				requireScopes(account, this.capabilities.requiredScopes);
+				const inbox = input.providerSettings.deliveryMode === "tiktok_inbox";
+				requireScopes(account, [inbox ? "video.upload" : "video.publish"]);
 				const local = await dependencies.media.materialize(input.media);
 				try {
 					const settings = metadata(input);
-					const creator = await jsonRequest<{
-						data?: {
-							creator_username?: string;
-							privacy_level_options?: string[];
-							comment_disabled?: boolean;
-							duet_disabled?: boolean;
-							stitch_disabled?: boolean;
-							max_video_post_duration_sec?: number;
-						};
-					}>(
-						dependencies,
-						context,
-						`https://open.tiktokapis.com/${dependencies.config.tiktokApiVersion}/post/publish/creator_info/query/`,
-						{
-							method: "POST",
-							headers: {
-								Authorization: `Bearer ${account.accessToken}`,
-								"Content-Type": "application/json; charset=UTF-8",
-							},
-							signal: context.signal,
-						},
-						"tiktok_creator_info_failed",
-						"preparation",
-					);
+					const creator = inbox
+						? { data: {} }
+						: await jsonRequest<{
+								data?: {
+									creator_username?: string;
+									privacy_level_options?: string[];
+									comment_disabled?: boolean;
+									duet_disabled?: boolean;
+									stitch_disabled?: boolean;
+									max_video_post_duration_sec?: number;
+								};
+							}>(
+								dependencies,
+								context,
+								`https://open.tiktokapis.com/${dependencies.config.tiktokApiVersion}/post/publish/creator_info/query/`,
+								{
+									method: "POST",
+									headers: {
+										Authorization: `Bearer ${account.accessToken}`,
+										"Content-Type": "application/json; charset=UTF-8",
+									},
+									signal: context.signal,
+								},
+								"tiktok_creator_info_failed",
+								"preparation",
+							);
 					const options = creator.data?.privacy_level_options ?? [];
-					const creatorHandle = creator.data?.creator_username?.replace(/^@/, "").toLowerCase();
+					const creatorHandle = creator.data?.creator_username
+						?.replace(/^@/, "")
+						.toLowerCase();
 					const accountHandle = account.handle?.replace(/^@/, "").toLowerCase();
-					if (creatorHandle && accountHandle && creatorHandle !== accountHandle) {
+					if (
+						creatorHandle &&
+						accountHandle &&
+						creatorHandle !== accountHandle
+					) {
 						throw new PublicationPlatformConfigurationError(
 							"tiktok_creator_account_changed",
 							"The TikTok creator account no longer matches the frozen publication account",
@@ -1742,19 +1881,32 @@ function tiktokPlatform(
 						"tiktokPrivacyLevel",
 						"privacyLevel",
 					]);
-					if (requested && !options.includes(requested)) {
+					if (!inbox && requested && !options.includes(requested)) {
 						throw new PublicationPlatformConfigurationError(
 							"tiktok_privacy_setting_changed",
 							"The selected TikTok privacy setting is no longer available",
 						);
 					}
-					const coverTimestamp = Number(settings.videoCoverTimestampMs ?? 1_000);
+					const coverTimestamp = inbox
+						? 0
+						: Number(
+								settings.videoCoverTimestampMs ??
+									Math.min(1000, input.media.durationSec * 1000),
+							);
 					const mediaDurationSec = input.media.durationSec;
 					const maximumDurationSec = creator.data?.max_video_post_duration_sec;
-					const disableComment = booleanSetting(settings, ["disableComment"], false);
+					const disableComment = booleanSetting(
+						settings,
+						["disableComment"],
+						false,
+					);
 					const disableDuet = booleanSetting(settings, ["disableDuet"], false);
-					const disableStitch = booleanSetting(settings, ["disableStitch"], false);
-					const postTitle = stringSetting(settings, ["title"], input.caption) ?? input.caption;
+					const disableStitch = booleanSetting(
+						settings,
+						["disableStitch"],
+						false,
+					);
+					const postTitle = input.caption;
 					if (
 						(Boolean(creator.data?.comment_disabled) && !disableComment) ||
 						(Boolean(creator.data?.duet_disabled) && !disableDuet) ||
@@ -1767,7 +1919,7 @@ function tiktokPlatform(
 					}
 					if (
 						input.media.sizeBytes <= 0 ||
-						input.caption.length > 2_200 ||
+						(!inbox && input.caption.length > 2_200) ||
 						!Number.isFinite(coverTimestamp) ||
 						coverTimestamp < 0 ||
 						!Number.isFinite(mediaDurationSec) ||
@@ -1800,7 +1952,7 @@ function tiktokPlatform(
 					}>(
 						dependencies,
 						context,
-						`https://open.tiktokapis.com/${dependencies.config.tiktokApiVersion}/post/publish/video/init/`,
+						`https://open.tiktokapis.com/${dependencies.config.tiktokApiVersion}/post/publish/${inbox ? "inbox/" : ""}video/init/`,
 						{
 							method: "POST",
 							headers: {
@@ -1808,15 +1960,20 @@ function tiktokPlatform(
 								"Content-Type": "application/json; charset=UTF-8",
 							},
 							body: JSON.stringify({
-								post_info: {
-									title: truncate(postTitle, 2200),
-									privacy_level: privacyLevel,
-									disable_comment: disableComment,
-									disable_duet: disableDuet,
-									disable_stitch: disableStitch,
-									video_cover_timestamp_ms: coverTimestamp,
-									is_aigc: booleanSetting(settings, ["isAigc", "madeWithAi"]),
-								},
+								post_info: inbox
+									? undefined
+									: {
+											title: truncate(postTitle, 2200),
+											privacy_level: privacyLevel,
+											disable_comment: disableComment,
+											disable_duet: disableDuet,
+											disable_stitch: disableStitch,
+											video_cover_timestamp_ms: coverTimestamp,
+											is_aigc: booleanSetting(settings, [
+												"isAigc",
+												"madeWithAi",
+											]),
+										},
 								source_info: {
 									source: "FILE_UPLOAD",
 									video_size: local.sizeBytes,
@@ -1888,7 +2045,8 @@ function tiktokPlatform(
 			return withNativeOutcome(async (markSubmitted) => {
 				markSubmitted();
 				const account = requireAccount(input, "tiktok");
-				requireScopes(account, this.capabilities.requiredScopes);
+				const inbox = input.providerSettings.deliveryMode === "tiktok_inbox";
+				requireScopes(account, [inbox ? "video.upload" : "video.publish"]);
 				const publishId = stringSetting(operation.state, ["publishId"]);
 				if (!publishId) {
 					return {
@@ -1904,12 +2062,7 @@ function tiktokPlatform(
 				const nextChunk = operationNumber(operation.state, "nextChunk") ?? 0;
 				const moderationChecks =
 					operationNumber(operation.state, "moderationChecks") ?? 0;
-				if (
-					uploadUrl &&
-					chunkBytes &&
-					totalChunks &&
-					nextChunk < totalChunks
-				) {
+				if (uploadUrl && chunkBytes && totalChunks && nextChunk < totalChunks) {
 					const local = await dependencies.media.materialize(input.media);
 					try {
 						await uploadTikTokChunks(dependencies, context, local, {
@@ -1930,6 +2083,17 @@ function tiktokPlatform(
 					publishId,
 					context.signal,
 				);
+				if (status.status === "SEND_TO_USER_INBOX" && inbox)
+					return {
+						kind: "accepted",
+						receipt: {
+							receiptId: publishId,
+							platformPostId: null,
+							externalUrl: null,
+							metrics: null,
+							deliveryMode: "tiktok_inbox",
+						},
+					};
 				if (status.status === "PUBLISH_COMPLETE") {
 					return tiktokAccepted(input, publishId, status);
 				}
@@ -1937,8 +2101,8 @@ function tiktokPlatform(
 					const failureCodes: Record<string, string> = {
 						spam_risk: "tiktok_spam_risk",
 						spam_risk_too_many_posts: "tiktok_rate_limit",
-						spam_risk_user_banned_from_posting:
-							"tiktok_account_restricted",
+						spam_risk_too_many_pending_share: "tiktok_pending_drafts_limit",
+						spam_risk_user_banned_from_posting: "tiktok_account_restricted",
 					};
 					const rateLimited =
 						status.failureReason === "spam_risk_too_many_posts";
@@ -1946,7 +2110,8 @@ function tiktokPlatform(
 						kind: "failed",
 						failure: {
 							code: status.failureReason
-								? failureCodes[status.failureReason] ?? "tiktok_publish_failed"
+								? (failureCodes[status.failureReason] ??
+									"tiktok_publish_failed")
 								: "tiktok_publish_failed",
 							phase: "reconciliation",
 							disposition: rateLimited ? "safe_retry" : "permanent",
@@ -2032,7 +2197,8 @@ async function resumeLinkedInVideoUpload(
 		"Linkedin-Version": dependencies.config.linkedInVersion,
 		"X-Restli-Protocol-Version": "2.0.0",
 	};
-	const local = materialized ?? (await dependencies.media.materialize(input.media));
+	const local =
+		materialized ?? (await dependencies.media.materialize(input.media));
 	try {
 		for (
 			let index = parsed.uploadedPartIds.length;
@@ -2044,10 +2210,7 @@ async function resumeLinkedInVideoUpload(
 			const response = await dependencies.fetch(instruction.uploadUrl, {
 				method: "PUT",
 				headers: { "Content-Type": "application/octet-stream" },
-				body: await local.blob(
-					instruction.firstByte,
-					instruction.lastByte + 1,
-				),
+				body: await local.blob(instruction.firstByte, instruction.lastByte + 1),
 				signal: context.signal,
 			});
 			if (!response.ok) {
@@ -2179,7 +2342,10 @@ function linkedInProcessingResult(
 	videoUrn: string,
 	processingChecks = 0,
 ): PublicationPlatformResult {
-	const delayMs = Math.min(15 * 60_000, 5_000 * 2 ** Math.min(processingChecks, 8));
+	const delayMs = Math.min(
+		15 * 60_000,
+		5_000 * 2 ** Math.min(processingChecks, 8),
+	);
 	return {
 		kind: "pending",
 		receiptId: videoUrn,
@@ -2384,79 +2550,79 @@ function linkedInPlatform(
 				}
 			});
 		},
-			resume(input, operation, context) {
-				return withNativeOutcome(async (markSubmitted) => {
-					const account = requireAccount(input, "linkedin");
-					const owner = requireLinkedInOwner(
-						input,
-						account,
-						operationString(operation.state, "owner"),
-					);
-					if (operation.kind === "linkedin_video_processing") {
-						const videoUrn = operationString(operation.state, "videoUrn");
-						const processingChecks =
-							operationNumber(operation.state, "processingChecks") ?? 0;
-						if (!videoUrn) {
-							throw new PublicationPlatformConfigurationError(
-								"linkedin_video_checkpoint_invalid",
-								"The durable LinkedIn video checkpoint is incomplete",
-							);
-						}
-						const readiness = await linkedInVideoReadiness(
-							dependencies,
-							context,
-							account.accessToken,
-							videoUrn,
+		resume(input, operation, context) {
+			return withNativeOutcome(async (markSubmitted) => {
+				const account = requireAccount(input, "linkedin");
+				const owner = requireLinkedInOwner(
+					input,
+					account,
+					operationString(operation.state, "owner"),
+				);
+				if (operation.kind === "linkedin_video_processing") {
+					const videoUrn = operationString(operation.state, "videoUrn");
+					const processingChecks =
+						operationNumber(operation.state, "processingChecks") ?? 0;
+					if (!videoUrn) {
+						throw new PublicationPlatformConfigurationError(
+							"linkedin_video_checkpoint_invalid",
+							"The durable LinkedIn video checkpoint is incomplete",
 						);
-						if (readiness === "failed") {
-							return {
-								kind: "failed",
-								failure: {
-									code: "linkedin_video_processing_failed",
-									phase: "upload",
-									disposition: "permanent",
-									retryAfterMs: null,
-								},
-							};
-						}
-						if (readiness === "invalid") {
-							return {
-								kind: "failed",
-								failure: {
-									code: "linkedin_video_status_invalid",
-									phase: "upload",
-									disposition: "permanent",
-									retryAfterMs: null,
-								},
-							};
-						}
-						return readiness === "available"
-							? submitLinkedInPost(
-									dependencies,
-									input,
-									context,
-									owner,
-									videoUrn,
-									markSubmitted,
-								)
-							: linkedInProcessingResult(
-									dependencies,
-									owner,
-									videoUrn,
-									processingChecks + 1,
-								);
 					}
-					const resumed = await resumeLinkedInVideoUpload(
+					const readiness = await linkedInVideoReadiness(
+						dependencies,
+						context,
+						account.accessToken,
+						videoUrn,
+					);
+					if (readiness === "failed") {
+						return {
+							kind: "failed",
+							failure: {
+								code: "linkedin_video_processing_failed",
+								phase: "upload",
+								disposition: "permanent",
+								retryAfterMs: null,
+							},
+						};
+					}
+					if (readiness === "invalid") {
+						return {
+							kind: "failed",
+							failure: {
+								code: "linkedin_video_status_invalid",
+								phase: "upload",
+								disposition: "permanent",
+								retryAfterMs: null,
+							},
+						};
+					}
+					return readiness === "available"
+						? submitLinkedInPost(
+								dependencies,
+								input,
+								context,
+								owner,
+								videoUrn,
+								markSubmitted,
+							)
+						: linkedInProcessingResult(
+								dependencies,
+								owner,
+								videoUrn,
+								processingChecks + 1,
+							);
+				}
+				const resumed = await resumeLinkedInVideoUpload(
 					dependencies,
 					input,
 					context,
 					operation.state,
 				);
-					return linkedInProcessingResult(
-						dependencies,
-						resumed.owner,
-						resumed.videoUrn,
-					);
+				return linkedInProcessingResult(
+					dependencies,
+					resumed.owner,
+					resumed.videoUrn,
+				);
 			});
 		},
 		reconcile(input, operation, context) {
@@ -2515,13 +2681,13 @@ function linkedInPlatform(
 						viewContext: "AUTHOR",
 					});
 					const response = await jsonRequest<{
-					elements?: Array<{
-						id?: string;
-						author?: string;
-						createdAt?: number;
-						content?: { media?: { id?: string } };
-					}>;
-					paging?: { start?: number; count?: number; total?: number };
+						elements?: Array<{
+							id?: string;
+							author?: string;
+							createdAt?: number;
+							content?: { media?: { id?: string } };
+						}>;
+						paging?: { start?: number; count?: number; total?: number };
 					}>(
 						dependencies,
 						context,
@@ -2617,10 +2783,12 @@ async function xMediaStatus(
 	}>(
 		dependencies,
 		context,
-		`https://api.x.com/${xApiVersion(dependencies)}/media/upload?${new URLSearchParams({
-			command: "STATUS",
-			media_id: mediaId,
-		})}`,
+		`https://api.x.com/${xApiVersion(dependencies)}/media/upload?${new URLSearchParams(
+			{
+				command: "STATUS",
+				media_id: mediaId,
+			},
+		)}`,
 		{
 			method: "GET",
 			headers: { Authorization: `Bearer ${accessToken}` },
@@ -2721,7 +2889,10 @@ async function continueXMediaUpload(
 			},
 		};
 	}
-	if (expiresAt && Date.parse(expiresAt) <= dependencies.clock.now().getTime()) {
+	if (
+		expiresAt &&
+		Date.parse(expiresAt) <= dependencies.clock.now().getTime()
+	) {
 		return {
 			kind: "failed",
 			failure: {
@@ -2783,7 +2954,8 @@ async function continueXMediaUpload(
 		);
 	}
 
-	const local = materialized ?? (await dependencies.media.materialize(input.media));
+	const local =
+		materialized ?? (await dependencies.media.materialize(input.media));
 	try {
 		const chunks = Math.max(1, Math.ceil(local.sizeBytes / chunkBytes));
 		for (; nextSegment < chunks; nextSegment += 1) {
@@ -2794,7 +2966,7 @@ async function continueXMediaUpload(
 			form.set("media", await local.blob(start, end), local.fileName);
 			await context.providerCall?.();
 			const appended = await dependencies.fetch(
-			`https://api.x.com/${xApiVersion(dependencies)}/media/upload/${mediaId}/append`,
+				`https://api.x.com/${xApiVersion(dependencies)}/media/upload/${mediaId}/append`,
 				{
 					method: "POST",
 					headers: { Authorization: `Bearer ${account.accessToken}` },
@@ -2915,7 +3087,11 @@ function xPlatform(
 				const local = await dependencies.media.materialize(input.media);
 				try {
 					const initialized = await jsonRequest<{
-						data?: { id?: string; media_key?: string; expires_after_secs?: number };
+						data?: {
+							id?: string;
+							media_key?: string;
+							expires_after_secs?: number;
+						};
 					}>(
 						dependencies,
 						context,
@@ -3090,7 +3266,9 @@ function xPlatform(
 				const startedMs = Date.parse(startedAt);
 				const windowEnd = dependencies.clock.now().getTime() + 60_000;
 				const matches = posts.filter((post) => {
-					const created = post.created_at ? Date.parse(post.created_at) : Number.NaN;
+					const created = post.created_at
+						? Date.parse(post.created_at)
+						: Number.NaN;
 					return (
 						post.id &&
 						post.attachments?.media_keys?.includes(mediaKey) &&

@@ -4,7 +4,10 @@ import { createNativePublicationPlatformRegistry } from "./social-publication-na
 import type { PublicationPlatformInput } from "./social-publication-platform";
 
 const CONTRACT_FIXTURE = (await Bun.file(
-	new URL("./__fixtures__/social-publication/native-provider-contracts.json", import.meta.url),
+	new URL(
+		"./__fixtures__/social-publication/native-provider-contracts.json",
+		import.meta.url,
+	),
 ).json()) as {
 	instagram: {
 		account: { id: string };
@@ -19,7 +22,11 @@ const CONTRACT_FIXTURE = (await Bun.file(
 const PLATFORM_SCOPES: Record<SocialPlatform, string[]> = {
 	youtube_shorts: ["https://www.googleapis.com/auth/youtube.upload"],
 	instagram_reels: ["instagram_content_publish"],
-	facebook_reels: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
+	facebook_reels: [
+		"pages_show_list",
+		"pages_read_engagement",
+		"pages_manage_posts",
+	],
 	tiktok: ["video.publish"],
 	linkedin: ["w_member_social", "r_member_social"],
 	x: ["tweet.write", "media.write", "tweet.read", "users.read"],
@@ -123,7 +130,8 @@ function harness(
 					sizeBytes: 4,
 					fileName: "thumbnail.jpg",
 					contentType: "image/jpeg",
-					blob: async () => new Blob([new Uint8Array(4)], { type: "image/jpeg" }),
+					blob: async () =>
+						new Blob([new Uint8Array(4)], { type: "image/jpeg" }),
 					cleanup: async () => {
 						cleanups += 1;
 					},
@@ -168,7 +176,8 @@ async function publish(
 	cleanupFails = false,
 ) {
 	const state = harness(responses, cleanupFails);
-	const checkpoints: Array<{ kind: string; state: Record<string, unknown> }> = [];
+	const checkpoints: Array<{ kind: string; state: Record<string, unknown> }> =
+		[];
 	const result = await state.registry.get(platform).publish(input(platform), {
 		signal: new AbortController().signal,
 		checkpoint: async (operation) =>
@@ -181,24 +190,110 @@ async function publish(
 }
 
 describe("native publication adapters", () => {
+	test("uploads to TikTok inbox with video.upload only and never transmits suggested copy or direct settings", async () => {
+		const request = input("tiktok");
+		request.providerSettings = {
+			deliveryMode: "tiktok_inbox",
+			title: "Must not send",
+			tiktokPrivacyLevel: "PUBLIC_TO_EVERYONE",
+			videoCoverTimestampMs: 500,
+		};
+		request.account!.scopes = ["video.upload"];
+		const state = harness([
+			json({
+				data: {
+					publish_id: "inbox-1",
+					upload_url: "https://upload.tiktokapis.com/video",
+				},
+			}),
+			new Response(null, { status: 200 }),
+			json({ data: { status: "SEND_TO_USER_INBOX" } }),
+		]);
+		const checkpoints: string[] = [];
+		const result = await state.registry.get("tiktok").publish(request, {
+			signal: new AbortController().signal,
+			checkpoint: async (operation) => {
+				checkpoints.push(operation.kind);
+			},
+		});
+		expect(state.requests[0]!.url).toBe(
+			"https://open.tiktokapis.com/v2/post/publish/inbox/video/init/",
+		);
+		expect(JSON.parse(String(state.requests[0]!.init?.body))).toEqual({
+			source_info: {
+				source: "FILE_UPLOAD",
+				video_size: 8,
+				chunk_size: 8,
+				total_chunk_count: 1,
+			},
+		});
+		expect(result.kind).toBe("pending");
+		if (result.kind !== "pending")
+			throw new Error("Expected delivery processing");
+		const settled = await state.registry.get("tiktok").reconcile!(
+			request,
+			result.operation,
+			{ signal: new AbortController().signal, checkpoint: async () => {} },
+		);
+		expect(settled).toMatchObject({
+			kind: "accepted",
+			receipt: {
+				receiptId: "inbox-1",
+				deliveryMode: "tiktok_inbox",
+				platformPostId: null,
+				externalUrl: null,
+			},
+		});
+		expect(checkpoints).toEqual(["submission_started", "submission_started"]);
+	});
+	test("requires the inbox upload scope without initializing another upload", async () => {
+		const request = input("tiktok");
+		request.providerSettings = { deliveryMode: "tiktok_inbox" };
+		const state = harness([]);
+		await expect(
+			state.registry.get("tiktok").publish(request, {
+				signal: new AbortController().signal,
+				checkpoint: async () => {},
+			}),
+		).resolves.toMatchObject({ kind: "failed" });
+		expect(state.requests).toHaveLength(0);
+	});
+
 	test("keeps Facebook Reels dark until enabled and then follows the bounded start-upload-finish flow", async () => {
 		const disabled = harness([]);
-		const disabledResult = await disabled.registry.get("facebook_reels").publish(input("facebook_reels"), {
-			signal: new AbortController().signal,
-			checkpoint: async () => undefined,
+		const disabledResult = await disabled.registry
+			.get("facebook_reels")
+			.publish(input("facebook_reels"), {
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			});
+		expect(disabledResult).toMatchObject({
+			kind: "failed",
+			failure: { code: "facebook_reels_rollout_disabled" },
 		});
-		expect(disabledResult).toMatchObject({ kind: "failed", failure: { code: "facebook_reels_rollout_disabled" } });
 
-		const enabled = harness([
-			json({ video_id: "facebook-video-1", upload_url: "https://rupload.facebook.com/session-1" }),
-			json({ success: true }),
-			json({ success: true }),
-		], false, undefined, true);
+		const enabled = harness(
+			[
+				json({
+					video_id: "facebook-video-1",
+					upload_url: "https://rupload.facebook.com/session-1",
+				}),
+				json({ success: true }),
+				json({ success: true }),
+			],
+			false,
+			undefined,
+			true,
+		);
 		const checkpoints: string[] = [];
-		const result = await enabled.registry.get("facebook_reels").publish(input("facebook_reels"), {
-			signal: new AbortController().signal,
-			checkpoint: async (operation) => { checkpoints.push(operation.kind); },
-		});
+		const result = await enabled.registry
+			.get("facebook_reels")
+			.publish(input("facebook_reels"), {
+				signal: new AbortController().signal,
+				checkpoint: async (operation) => {
+					checkpoints.push(operation.kind);
+				},
+			});
 		expect(result).toMatchObject({
 			kind: "pending",
 			receiptId: "facebook-video-1",
@@ -208,7 +303,11 @@ describe("native publication adapters", () => {
 			},
 			submissionStarted: true,
 		});
-		expect(checkpoints).toEqual(["facebook_reel_upload", "facebook_reel_finish_pending", "submission_started"]);
+		expect(checkpoints).toEqual([
+			"facebook_reel_upload",
+			"facebook_reel_finish_pending",
+			"submission_started",
+		]);
 		expect(enabled.requests.map((request) => request.url)).toEqual([
 			"https://graph.facebook.com/v24.0/provider-account-1/video_reels",
 			"https://rupload.facebook.com/session-1",
@@ -217,24 +316,41 @@ describe("native publication adapters", () => {
 	});
 
 	test("reconciles Facebook processing without issuing a duplicate publish", async () => {
-		const state = harness([
-			json({
-				status: {
-					video_status: "ready",
-					processing_phase: { status: "complete" },
-					publishing_phase: { status: "complete", publish_status: "published" },
-				},
-			}),
-		], false, undefined, true);
+		const state = harness(
+			[
+				json({
+					status: {
+						video_status: "ready",
+						processing_phase: { status: "complete" },
+						publishing_phase: {
+							status: "complete",
+							publish_status: "published",
+						},
+					},
+				}),
+			],
+			false,
+			undefined,
+			true,
+		);
 		const result = await state.registry.get("facebook_reels").reconcile!(
 			input("facebook_reels"),
-			{ kind: "facebook_reel_processing", state: { videoId: "facebook-video-1" } },
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				kind: "facebook_reel_processing",
+				state: { videoId: "facebook-video-1" },
+			},
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 
 		expect(result).toMatchObject({
 			kind: "accepted",
-			receipt: { receiptId: "facebook-video-1", platformPostId: "facebook-video-1" },
+			receipt: {
+				receiptId: "facebook-video-1",
+				platformPostId: "facebook-video-1",
+			},
 		});
 		expect(state.requests.map((request) => request.url)).toEqual([
 			"https://graph.facebook.com/v24.0/facebook-video-1?fields=status&access_token=access-token",
@@ -242,49 +358,85 @@ describe("native publication adapters", () => {
 	});
 
 	test("reconciles the durable Facebook finish checkpoint after a lost response", async () => {
-		const state = harness([
-			json({
-				status: {
-					video_status: "ready",
-					processing_phase: { status: "complete" },
-					publishing_phase: { status: "complete", publish_status: "published" },
-				},
-			}),
-		], false, undefined, true);
+		const state = harness(
+			[
+				json({
+					status: {
+						video_status: "ready",
+						processing_phase: { status: "complete" },
+						publishing_phase: {
+							status: "complete",
+							publish_status: "published",
+						},
+					},
+				}),
+			],
+			false,
+			undefined,
+			true,
+		);
 		const result = await state.registry.get("facebook_reels").reconcile!(
 			input("facebook_reels"),
 			{
 				kind: "submission_started",
-				state: { providerOperation: "facebook_reel_finish", videoId: "facebook-video-1" },
+				state: {
+					providerOperation: "facebook_reel_finish",
+					videoId: "facebook-video-1",
+				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 
 		expect(result).toMatchObject({
 			kind: "accepted",
-			receipt: { receiptId: "facebook-video-1", platformPostId: "facebook-video-1" },
+			receipt: {
+				receiptId: "facebook-video-1",
+				platformPostId: "facebook-video-1",
+			},
 		});
 		expect(state.requests).toHaveLength(1);
 	});
 
 	test("finishes after Meta's pre-publish status when a crash happens before submission", async () => {
-		const state = harness([
-			json({ status: {
-				video_status: "processing",
-				uploading_phase: { status: "complete" },
-				processing_phase: { status: "not_started" },
-				publishing_phase: { status: "not_started" },
-			} }),
-			json({ success: true }),
-		], false, undefined, true);
+		const state = harness(
+			[
+				json({
+					status: {
+						video_status: "processing",
+						uploading_phase: { status: "complete" },
+						processing_phase: { status: "not_started" },
+						publishing_phase: { status: "not_started" },
+					},
+				}),
+				json({ success: true }),
+			],
+			false,
+			undefined,
+			true,
+		);
 		const checkpoints: string[] = [];
 		const result = await state.registry.get("facebook_reels").resume!(
 			input("facebook_reels"),
-			{ kind: "facebook_reel_finish_pending", state: { videoId: "facebook-video-1" } },
-			{ signal: new AbortController().signal, checkpoint: async (operation) => { checkpoints.push(operation.kind); } },
+			{
+				kind: "facebook_reel_finish_pending",
+				state: { videoId: "facebook-video-1" },
+			},
+			{
+				signal: new AbortController().signal,
+				checkpoint: async (operation) => {
+					checkpoints.push(operation.kind);
+				},
+			},
 		);
 
-		expect(result).toMatchObject({ kind: "pending", receiptId: "facebook-video-1", submissionStarted: true });
+		expect(result).toMatchObject({
+			kind: "pending",
+			receiptId: "facebook-video-1",
+			submissionStarted: true,
+		});
 		expect(checkpoints).toEqual(["submission_started"]);
 		expect(state.requests.map((request) => request.url)).toEqual([
 			"https://graph.facebook.com/v24.0/facebook-video-1?fields=status&access_token=access-token",
@@ -293,15 +445,25 @@ describe("native publication adapters", () => {
 	});
 
 	test("keeps a durable Facebook reconciliation key when the finish response is lost", async () => {
-		const state = harness([
-			json({ video_id: "facebook-video-2", upload_url: "https://rupload.facebook.com/session-2" }),
-			json({ success: true }),
-			new Response(null, { status: 504 }),
-		], false, undefined, true);
-		const result = await state.registry.get("facebook_reels").publish(input("facebook_reels"), {
-			signal: new AbortController().signal,
-			checkpoint: async () => undefined,
-		});
+		const state = harness(
+			[
+				json({
+					video_id: "facebook-video-2",
+					upload_url: "https://rupload.facebook.com/session-2",
+				}),
+				json({ success: true }),
+				new Response(null, { status: 504 }),
+			],
+			false,
+			undefined,
+			true,
+		);
+		const result = await state.registry
+			.get("facebook_reels")
+			.publish(input("facebook_reels"), {
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			});
 
 		expect(result).toMatchObject({
 			kind: "unknown",
@@ -317,41 +479,125 @@ describe("native publication adapters", () => {
 		const missingRole = harness([], false, undefined, true);
 		const withoutRole = input("facebook_reels");
 		withoutRole.account!.scopes = [];
-		expect(await missingRole.registry.get("facebook_reels").publish(withoutRole, {
-			signal: new AbortController().signal,
-			checkpoint: async () => undefined,
-		})).toMatchObject({ kind: "failed", failure: { code: "social_account_scope_missing" } });
-
-		for (const [status, code] of [[401, "facebook_authentication_required"], [403, "facebook_permission_required"], [429, "facebook_rate_limit"]] as const) {
-			const state = harness([new Response(null, { status, headers: status === 429 ? { "retry-after": "30" } : undefined })], false, undefined, true);
-			expect(await state.registry.get("facebook_reels").publish(input("facebook_reels"), {
+		expect(
+			await missingRole.registry.get("facebook_reels").publish(withoutRole, {
 				signal: new AbortController().signal,
 				checkpoint: async () => undefined,
-			})).toMatchObject({ kind: "failed", failure: { code } });
+			}),
+		).toMatchObject({
+			kind: "failed",
+			failure: { code: "social_account_scope_missing" },
+		});
+
+		for (const [status, code] of [
+			[401, "facebook_authentication_required"],
+			[403, "facebook_permission_required"],
+			[429, "facebook_rate_limit"],
+		] as const) {
+			const state = harness(
+				[
+					new Response(null, {
+						status,
+						headers: status === 429 ? { "retry-after": "30" } : undefined,
+					}),
+				],
+				false,
+				undefined,
+				true,
+			);
+			expect(
+				await state.registry
+					.get("facebook_reels")
+					.publish(input("facebook_reels"), {
+						signal: new AbortController().signal,
+						checkpoint: async () => undefined,
+					}),
+			).toMatchObject({ kind: "failed", failure: { code } });
 		}
 
-		const upload = harness([
-			json({ video_id: "facebook-video-3", upload_url: "https://rupload.facebook.com/session-3" }),
-			new Response(null, { status: 422 }),
-		], false, undefined, true);
-		expect(await upload.registry.get("facebook_reels").publish(input("facebook_reels"), {
-			signal: new AbortController().signal,
-			checkpoint: async () => undefined,
-		})).toMatchObject({ kind: "failed", failure: { code: "facebook_reel_upload_failed", disposition: "permanent" } });
+		const upload = harness(
+			[
+				json({
+					video_id: "facebook-video-3",
+					upload_url: "https://rupload.facebook.com/session-3",
+				}),
+				new Response(null, { status: 422 }),
+			],
+			false,
+			undefined,
+			true,
+		);
+		expect(
+			await upload.registry
+				.get("facebook_reels")
+				.publish(input("facebook_reels"), {
+					signal: new AbortController().signal,
+					checkpoint: async () => undefined,
+				}),
+		).toMatchObject({
+			kind: "failed",
+			failure: {
+				code: "facebook_reel_upload_failed",
+				disposition: "permanent",
+			},
+		});
 
-		const processing = harness([json({ status: { video_status: "processing", processing_phase: { status: "processing" } } })], false, undefined, true);
-		expect(await processing.registry.get("facebook_reels").reconcile!(
-			input("facebook_reels"),
-			{ kind: "facebook_reel_processing", state: { videoId: "facebook-video-3" } },
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
-		)).toMatchObject({ kind: "pending", receiptId: "facebook-video-3" });
+		const processing = harness(
+			[
+				json({
+					status: {
+						video_status: "processing",
+						processing_phase: { status: "processing" },
+					},
+				}),
+			],
+			false,
+			undefined,
+			true,
+		);
+		expect(
+			await processing.registry.get("facebook_reels").reconcile!(
+				input("facebook_reels"),
+				{
+					kind: "facebook_reel_processing",
+					state: { videoId: "facebook-video-3" },
+				},
+				{
+					signal: new AbortController().signal,
+					checkpoint: async () => undefined,
+				},
+			),
+		).toMatchObject({ kind: "pending", receiptId: "facebook-video-3" });
 
-		const rejected = harness([json({ status: { video_status: "error", processing_phase: { status: "failed" } } })], false, undefined, true);
-		expect(await rejected.registry.get("facebook_reels").reconcile!(
-			input("facebook_reels"),
-			{ kind: "facebook_reel_processing", state: { videoId: "facebook-video-4" } },
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
-		)).toMatchObject({ kind: "failed", failure: { code: "facebook_reel_processing_failed" } });
+		const rejected = harness(
+			[
+				json({
+					status: {
+						video_status: "error",
+						processing_phase: { status: "failed" },
+					},
+				}),
+			],
+			false,
+			undefined,
+			true,
+		);
+		expect(
+			await rejected.registry.get("facebook_reels").reconcile!(
+				input("facebook_reels"),
+				{
+					kind: "facebook_reel_processing",
+					state: { videoId: "facebook-video-4" },
+				},
+				{
+					signal: new AbortController().signal,
+					checkpoint: async () => undefined,
+				},
+			),
+		).toMatchObject({
+			kind: "failed",
+			failure: { code: "facebook_reel_processing_failed" },
+		});
 	});
 
 	test("preserves the YouTube upload request and receipt", async () => {
@@ -366,7 +612,7 @@ describe("native publication adapters", () => {
 			kind: "accepted",
 			receipt: {
 				receiptId: "youtube-video-1",
-				externalUrl: "https://www.youtube.com/watch?v=youtube-video-1",
+				externalUrl: "https://www.youtube.com/shorts/youtube-video-1",
 				providerProcessingStatus: "processing",
 			},
 		});
@@ -390,7 +636,10 @@ describe("native publication adapters", () => {
 			thumbnailSource: "generated",
 		};
 		const state = harness([
-			json({}, { headers: { Location: "https://youtube-upload.example/session" } }),
+			json(
+				{},
+				{ headers: { Location: "https://youtube-upload.example/session" } },
+			),
 			json({ id: "youtube-video-with-thumbnail" }),
 			json({ items: [] }),
 		]);
@@ -430,17 +679,28 @@ describe("native publication adapters", () => {
 		const result = await state.registry.get("youtube_shorts").reconcile!(
 			request,
 			{ kind: "youtube_thumbnail", state: { videoId: "youtube-video-1" } },
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 
-		expect(result).toMatchObject({ kind: "accepted", receipt: { receiptId: "youtube-video-1" } });
+		expect(result).toMatchObject({
+			kind: "accepted",
+			receipt: { receiptId: "youtube-video-1" },
+		});
 		expect(state.requests).toHaveLength(1);
-		expect(state.requests[0]!.url).toContain("/thumbnails/set?videoId=youtube-video-1");
+		expect(state.requests[0]!.url).toContain(
+			"/thumbnails/set?videoId=youtube-video-1",
+		);
 	});
 
 	test("retains an accepted YouTube receipt when the final resource reports processing failure", async () => {
 		const state = await publish("youtube_shorts", [
-			json({}, { headers: { Location: "https://youtube-upload.example/session" } }),
+			json(
+				{},
+				{ headers: { Location: "https://youtube-upload.example/session" } },
+			),
 			json({
 				id: "youtube-video-rejected",
 				status: {
@@ -574,7 +834,9 @@ describe("native publication adapters", () => {
 		});
 
 		const body = state.requests[2]!.init?.body as URLSearchParams;
-		expect(body.get("cover_url")).toBe("https://media.example/scoped/thumbnail.jpg?grant=short");
+		expect(body.get("cover_url")).toBe(
+			"https://media.example/scoped/thumbnail.jpg?grant=short",
+		);
 		expect(body.has("thumb_offset")).toBe(false);
 		expect(state.thumbnailAccessCount()).toBe(1);
 	});
@@ -606,7 +868,7 @@ describe("native publication adapters", () => {
 			receiptId: "publish-1",
 		});
 		expect(JSON.parse(String(state.requests[1]!.init?.body))).toMatchObject({
-			post_info: { title: "Approved title" },
+			post_info: { title: "Approved caption" },
 		});
 		if (state.result.kind !== "pending") throw new Error("expected pending");
 		const reconciled = await state.registry.get("tiktok").reconcile!(
@@ -909,7 +1171,10 @@ describe("native publication adapters", () => {
 				lookupKey: "tiktok:publish-failed",
 				state: { publishId: "publish-failed", moderationChecks: 12 },
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 
 		expect(result).toMatchObject({
@@ -922,13 +1187,21 @@ describe("native publication adapters", () => {
 		});
 	});
 
-	test("resumes TikTok upload from the checkpointed chunk index", async () => {
+	test.each([
+		"direct",
+		"tiktok_inbox",
+	])("resumes TikTok %s upload from the checkpointed chunk index", async (deliveryMode) => {
+		const request = input("tiktok");
+		request.providerSettings.deliveryMode = deliveryMode;
+		request.account!.scopes = [
+			deliveryMode === "direct" ? "video.publish" : "video.upload",
+		];
 		const state = harness([
 			new Response(null, { status: 204 }),
 			json({ data: { status: "PROCESSING_UPLOAD" } }),
 		]);
 		const result = await state.registry.get("tiktok").reconcile!(
-			input("tiktok"),
+			request,
 			{
 				kind: "submission_started",
 				state: {
@@ -1018,8 +1291,16 @@ describe("native publication adapters", () => {
 					owner: "urn:li:person:creator",
 					uploadToken: "upload-token",
 					uploadInstructions: [
-						{ uploadUrl: "https://linkedin-upload.example/part-1", firstByte: 0, lastByte: 3 },
-						{ uploadUrl: "https://linkedin-upload.example/part-2", firstByte: 4, lastByte: 7 },
+						{
+							uploadUrl: "https://linkedin-upload.example/part-1",
+							firstByte: 0,
+							lastByte: 3,
+						},
+						{
+							uploadUrl: "https://linkedin-upload.example/part-2",
+							firstByte: 4,
+							lastByte: 7,
+						},
 					],
 					uploadedPartIds: ["part-1"],
 				},
@@ -1199,7 +1480,9 @@ describe("native publication adapters", () => {
 	});
 
 	test("rejects an X upload identity without a media key before checkpointing", async () => {
-		const state = await publish("x", [json({ data: { id: "media-without-key" } })]);
+		const state = await publish("x", [
+			json({ data: { id: "media-without-key" } }),
+		]);
 
 		expect(state.result).toMatchObject({
 			kind: "failed",
@@ -1215,7 +1498,10 @@ describe("native publication adapters", () => {
 
 	test("enforces YouTube audit privacy before initiating a resumable upload", async () => {
 		const state = harness([
-			json({}, { headers: { Location: "https://youtube-upload.example/audit" } }),
+			json(
+				{},
+				{ headers: { Location: "https://youtube-upload.example/audit" } },
+			),
 			json({ id: "youtube-private" }),
 		]);
 		const request = input("youtube_shorts");
@@ -1279,7 +1565,10 @@ describe("native publication adapters", () => {
 			}),
 		]);
 		const request = input("linkedin");
-		request.account!.scopes = ["w_organization_social", "r_organization_social"];
+		request.account!.scopes = [
+			"w_organization_social",
+			"r_organization_social",
+		];
 		request.account!.metadata = { ownerUrn: "urn:li:organization:123" };
 		const pending = await state.registry.get("linkedin").publish(request, {
 			signal: new AbortController().signal,
@@ -1370,11 +1659,17 @@ describe("native publication adapters", () => {
 					submissionStartedAt: "2026-08-28T10:00:00.000Z",
 				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 		expect(linkedin).toMatchObject({
 			kind: "failed",
-			failure: { code: "linkedin_reconciliation_permission_missing", disposition: "attention" },
+			failure: {
+				code: "linkedin_reconciliation_permission_missing",
+				disposition: "attention",
+			},
 		});
 
 		const xState = harness([]);
@@ -1389,11 +1684,17 @@ describe("native publication adapters", () => {
 					submissionStartedAt: "2026-08-28T10:00:00.000Z",
 				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 		expect(x).toMatchObject({
 			kind: "failed",
-			failure: { code: "x_reconciliation_permission_missing", disposition: "attention" },
+			failure: {
+				code: "x_reconciliation_permission_missing",
+				disposition: "attention",
+			},
 		});
 	});
 
@@ -1485,7 +1786,10 @@ describe("native publication adapters", () => {
 				kind: "submission_started",
 				state: { publishId: "publish-rate", creatorHandle: "creator" },
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 
 		expect(result).toMatchObject({
@@ -1505,9 +1809,15 @@ describe("native publication adapters", () => {
 			input("linkedin"),
 			{
 				kind: "linkedin_video_processing",
-				state: { owner: "urn:li:person:creator", videoUrn: "urn:li:video:processing" },
+				state: {
+					owner: "urn:li:person:creator",
+					videoUrn: "urn:li:video:processing",
+				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 
 		expect(result).toMatchObject({
@@ -1524,9 +1834,15 @@ describe("native publication adapters", () => {
 			input("linkedin"),
 			{
 				kind: "linkedin_video_processing",
-				state: { owner: "urn:li:person:creator", videoUrn: "urn:li:video:failed" },
+				state: {
+					owner: "urn:li:person:creator",
+					videoUrn: "urn:li:video:failed",
+				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 
 		expect(result).toMatchObject({
@@ -1544,14 +1860,19 @@ describe("native publication adapters", () => {
 			content: { media: { id: `urn:li:video:unrelated-${index}` } },
 		}));
 		const state = harness([
-			json({ elements: unrelated, paging: { start: 0, count: 100, total: 101 } }),
 			json({
-				elements: [{
-					id: "urn:li:share:page-two",
-					author: "urn:li:person:creator",
-					createdAt: new Date("2026-08-28T10:00:05.000Z").getTime(),
-					content: { media: { id: "urn:li:video:exact-page-two" } },
-				}],
+				elements: unrelated,
+				paging: { start: 0, count: 100, total: 101 },
+			}),
+			json({
+				elements: [
+					{
+						id: "urn:li:share:page-two",
+						author: "urn:li:person:creator",
+						createdAt: new Date("2026-08-28T10:00:05.000Z").getTime(),
+						content: { media: { id: "urn:li:video:exact-page-two" } },
+					},
+				],
 				paging: { start: 100, count: 1, total: 101 },
 			}),
 		]);
@@ -1565,7 +1886,10 @@ describe("native publication adapters", () => {
 					submissionStartedAt: "2026-08-28T10:00:00.000Z",
 				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 
 		expect(result).toMatchObject({
@@ -1577,18 +1901,22 @@ describe("native publication adapters", () => {
 
 	test("reserves Instagram call budget for validation, publish, and permalink", () => {
 		const state = harness([]);
-		expect(state.registry.get("instagram_reels").capabilities.maxProviderCalls).toBe(7);
+		expect(
+			state.registry.get("instagram_reels").capabilities.maxProviderCalls,
+		).toBe(7);
 	});
 
 	test("paginates X reconciliation before settling one exact media key", async () => {
 		const state = harness([
 			json({ data: [], meta: { next_token: "page-two" } }),
 			json({
-				data: [{
-					id: "x-page-two",
-					created_at: "2026-08-28T10:00:05.000Z",
-					attachments: { media_keys: ["media-key-page-two"] },
-				}],
+				data: [
+					{
+						id: "x-page-two",
+						created_at: "2026-08-28T10:00:05.000Z",
+						attachments: { media_keys: ["media-key-page-two"] },
+					},
+				],
 				meta: {},
 			}),
 		]);
@@ -1601,7 +1929,10 @@ describe("native publication adapters", () => {
 					submissionStartedAt: "2026-08-28T10:00:00.000Z",
 				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 
 		expect(result).toMatchObject({
@@ -1625,7 +1956,10 @@ describe("native publication adapters", () => {
 					submissionStartedAt: "2026-08-28T10:00:00.000Z",
 				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 		expect(linkedin).toMatchObject({
 			kind: "unknown",
@@ -1642,7 +1976,10 @@ describe("native publication adapters", () => {
 					submissionStartedAt: "2026-08-28T10:00:00.000Z",
 				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 		expect(x).toMatchObject({
 			kind: "unknown",
@@ -1673,7 +2010,10 @@ describe("native publication adapters", () => {
 					submissionStartedAt: "2026-08-28T10:00:00.000Z",
 				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 		expect(linkedin).toMatchObject({
 			kind: "failed",
@@ -1702,7 +2042,10 @@ describe("native publication adapters", () => {
 					submissionStartedAt: "2026-08-28T10:00:00.000Z",
 				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 		expect(x).toMatchObject({
 			kind: "failed",
@@ -1725,7 +2068,10 @@ describe("native publication adapters", () => {
 					totalBytes: 8,
 				},
 			},
-			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
 		);
 		expect(result).toMatchObject({
 			kind: "failed",
@@ -1739,7 +2085,10 @@ describe("native publication adapters", () => {
 
 	test("contains a malformed completed YouTube response after submission", async () => {
 		const state = await publish("youtube_shorts", [
-			json({}, { headers: { Location: "https://youtube-upload.example/malformed" } }),
+			json(
+				{},
+				{ headers: { Location: "https://youtube-upload.example/malformed" } },
+			),
 			json({ status: { uploadStatus: "processed" } }),
 		]);
 		expect(state.result).toMatchObject({
@@ -1749,3 +2098,25 @@ describe("native publication adapters", () => {
 		});
 	});
 });
+
+for (const status of [200, 403])
+	test(`TikTok pending inbox limit is actionable and never automatically retried (HTTP ${status})`, async () => {
+		const state = harness([
+			json({ error: { code: "spam_risk_too_many_pending_share" } }, { status }),
+		]);
+		const request = input("tiktok");
+		request.account!.scopes = ["video.upload"];
+		request.providerSettings = { deliveryMode: "tiktok_inbox" };
+		const result = await state.registry.get("tiktok").publish(request, {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		});
+		expect(result).toMatchObject({
+			kind: "failed",
+			failure: {
+				code: "tiktok_pending_drafts_limit",
+				disposition: "permanent",
+			},
+		});
+		expect(state.requests).toHaveLength(1);
+	});

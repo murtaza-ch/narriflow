@@ -77,8 +77,9 @@ function createAttemptHarness(
 		maxDelayMs: number;
 		jitterRatio: number;
 	}> = {},
-	credentialsLoad: (accountId: string) => Promise<PublishSocialAccount | null> =
-		async () => null,
+	credentialsLoad: (
+		accountId: string,
+	) => Promise<PublishSocialAccount | null> = async () => null,
 ) {
 	const store = createInMemorySocialPublicationAttemptStore([attemptSeed]);
 	const diagnostics: Array<Record<string, unknown>> = [];
@@ -89,7 +90,9 @@ function createAttemptHarness(
 	}> = [];
 	const attempt = createSocialPublicationAttempt({
 		store,
-		platforms: createPublicationPlatformRegistry({ youtube_shorts: platform }),
+		platforms: createPublicationPlatformRegistry({
+			[attemptSeed.frozen.platform]: platform,
+		}),
 		credentials: { load: credentialsLoad },
 		checkpointCipher: {
 			seal: (value) => `sealed:${JSON.stringify(value)}`,
@@ -163,7 +166,10 @@ describe("Social Publication Attempt", () => {
 		});
 		expect(providerCalls).toBe(0);
 		expect(await store.inspect("attempt-1")).toMatchObject({
-			socialPost: { status: "failed", errorCode: "social_account_reconnect_required" },
+			socialPost: {
+				status: "failed",
+				errorCode: "social_account_reconnect_required",
+			},
 		});
 	});
 
@@ -435,9 +441,7 @@ describe("Social Publication Attempt", () => {
 		});
 		expect(result.kind).toBe("processing");
 		if (result.kind !== "processing") throw new Error("expected processing");
-		expect(result.nextActionAt.toISOString()).toBe(
-			"2026-08-28T10:00:30.000Z",
-		);
+		expect(result.nextActionAt.toISOString()).toBe("2026-08-28T10:00:30.000Z");
 	});
 
 	test("creates a linked bounded retry only for a definitive pre-submission failure", async () => {
@@ -741,10 +745,10 @@ describe("Social Publication Attempt", () => {
 			...deterministic,
 			async reconcile() {
 				return {
-				kind: "pending",
-				receiptId: "provider-processing-1",
-				operation: { kind: "provider_processing", state: {} },
-				nextCheckAt: new Date("2026-08-28T10:01:00.000Z"),
+					kind: "pending",
+					receiptId: "provider-processing-1",
+					operation: { kind: "provider_processing", state: {} },
+					nextCheckAt: new Date("2026-08-28T10:01:00.000Z"),
 				} as const;
 			},
 		};
@@ -767,5 +771,45 @@ describe("Social Publication Attempt", () => {
 				value: 310_000,
 			}),
 		);
+	});
+});
+
+test("inbox acceptance settles delivery without a published event or another upload", async () => {
+	const platform = createDeterministicPublicationPlatform([
+		{
+			kind: "accepted",
+			receipt: {
+				receiptId: "upload-1",
+				platformPostId: null,
+				externalUrl: null,
+				metrics: null,
+				deliveryMode: "tiktok_inbox",
+			},
+		},
+	]);
+	const { attempt, store } = createAttemptHarness(platform, {
+		...seed,
+		frozen: {
+			...seed.frozen,
+			platform: "tiktok",
+			deliveryMode: "tiktok_inbox",
+			providerSettings: { deliveryMode: "tiktok_inbox" },
+		},
+	});
+	const request = {
+		attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+		signal: new AbortController().signal,
+	};
+	expect(await attempt.execute(request)).toMatchObject({
+		kind: "inbox_delivered",
+	});
+	expect(await attempt.execute(request)).toMatchObject({
+		kind: "inbox_delivered",
+	});
+	expect(await store.inspect("attempt-1")).toMatchObject({
+		socialPost: { status: "inbox_delivered" },
+		analyticsIntent: null,
+		claim: null,
+		attempt: { phase: "succeeded" },
 	});
 });

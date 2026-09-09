@@ -361,6 +361,35 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		).rejects.toBeInstanceOf(PublicationIntentConflictError);
 	});
 
+	test("admits distinct publications to one account at the same time", async () => {
+		const f = await fixture();
+		const scheduledFor = new Date(Date.now() + 3_600_000);
+		const ids: string[] = [];
+		for (let index = 0; index < 2; index++) {
+			const candidate = frozenCandidate(f, {
+				id: randomUUID(),
+				key: randomUUID(),
+				hash: `same-time-${index}`,
+				accountId: f.firstAccount.id,
+				scheduledFor,
+			});
+			const post = await prismaPublicationSchedulingStore.open({
+				workspaceId: f.workspace.id,
+				clientIdempotencyKey: candidate.clientIdempotencyKey,
+				immutableRequestHash: candidate.immutableRequestHash,
+				create: async () => candidate,
+			});
+			ids.push(post.id);
+			expect(post.frozen.scheduledFor).toEqual(scheduledFor);
+		}
+		expect(new Set(ids).size).toBe(2);
+		expect(
+			await prisma.socialPost.count({
+				where: { id: { in: ids }, status: "scheduled" },
+			}),
+		).toBe(2);
+	});
+
 	test("persists one idempotent override audit and links it to the Social Post", async () => {
 		const f = await fixture();
 		await prisma.project.update({
@@ -405,11 +434,13 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		});
 		const overridden = await gate.authorize({
 			...request,
-			overrideReason: "The client approved this launch outside the review room.",
+			overrideReason:
+				"The client approved this launch outside the review room.",
 		});
 		const replay = await gate.authorize({
 			...request,
-			overrideReason: "The client approved this launch outside the review room.",
+			overrideReason:
+				"The client approved this launch outside the review room.",
 		});
 		expect(replay).toEqual(overridden);
 		const overrideId = overridden.items[0]?.overrideAuditId;
@@ -493,10 +524,11 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect(
 			new Set(activeClaims.map((claim) => claim.accountSlotKey)).size,
 		).toBe(2);
-		const createdAttempt = await prisma.socialPublicationAttempt.findFirstOrThrow({
-			where: { id: claims[0]!.attemptId },
-			select: { processingDeadline: true, reconciliationDeadline: true },
-		});
+		const createdAttempt =
+			await prisma.socialPublicationAttempt.findFirstOrThrow({
+				where: { id: claims[0]!.attemptId },
+				select: { processingDeadline: true, reconciliationDeadline: true },
+			});
 		expect(createdAttempt.processingDeadline).toEqual(
 			new Date(now.getTime() + claimConfig.processingDeadlineMs),
 		);
@@ -751,7 +783,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect(retry.attemptNumber).toBe(2);
 		expect(retry.idempotencyKey).not.toBe(`publication:${id}:1`);
 		expect(retry.processingDeadline).toEqual(
-			new Date(result.nextActionAt.getTime() + claimConfig.processingDeadlineMs),
+			new Date(
+				result.nextActionAt.getTime() + claimConfig.processingDeadlineMs,
+			),
 		);
 		expect(retry.reconciliationDeadline).toEqual(
 			new Date(
@@ -1149,7 +1183,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			}),
 		]);
 
-		expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+		expect(
+			outcomes.filter((outcome) => outcome.status === "fulfilled"),
+		).toHaveLength(1);
 		expect(
 			await prisma.publicationManualDecision.count({
 				where: { socialPostId: target.socialPostId },
@@ -1187,7 +1223,10 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		).rejects.toBeInstanceOf(SocialPublicationRecoveryError);
 	});
 
-	test("verified duplicate and out-of-order TikTok webhooks settle one publish_id once", async () => {
+	test.each([
+		"direct",
+		"tiktok_inbox",
+	] as const)("verified duplicate and out-of-order TikTok %s events settle delivery and retain publication evidence", async (deliveryMode) => {
 		const f = await fixture();
 		const now = new Date("2026-08-28T10:00:00.000Z");
 		const publishId = `publish-${randomUUID()}`;
@@ -1215,6 +1254,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			...base,
 			frozen: {
 				...base.frozen,
+				deliveryMode,
 				socialAccountId: account.id,
 				platform: "tiktok" as const,
 				capabilityVersion: "tiktok-v2",
@@ -1273,7 +1313,12 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				event,
 				create_time: Number(timestamp),
 				user_openid: account.providerAccountId,
-				content: JSON.stringify({ publish_id: publishId, ...content }),
+				content: JSON.stringify({
+					publish_id: publishId,
+					publish_type:
+						deliveryMode === "tiktok_inbox" ? "INBOX_SHARE" : "DIRECT_POST",
+					...content,
+				}),
 			});
 			const digest = createHmac("sha256", clientSecret)
 				.update(`${timestamp}.${rawBody}`)
@@ -1286,6 +1331,25 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				now,
 			});
 		};
+
+		if (deliveryMode === "tiktok_inbox") {
+			expect(await invoke("post.publish.inbox_delivered", {})).toMatchObject({
+				kind: "inbox_delivered",
+			});
+			expect(
+				await prisma.socialPost.findUnique({ where: { id: socialPostId } }),
+			).toMatchObject({ status: "inbox_delivered", postedAt: null });
+			expect(
+				await prisma.projectAnalyticsEvent.count({
+					where: { projectId: f.project.id, type: "social_posted" },
+				}),
+			).toBe(0);
+			expect(
+				await prisma.socialPublicationAttempt.findUnique({
+					where: { id: attempt.id },
+				}),
+			).toMatchObject({ phase: "succeeded", currentClaimId: null });
+		}
 
 		expect(
 			await invoke("post.publish.publicly_available", { post_id: "post-123" }),
@@ -1310,10 +1374,29 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			}),
 		).toBe(1);
 		expect(
-			await prisma.socialPost.findUniqueOrThrow({ where: { id: socialPostId } }),
+			await prisma.socialPost.findUniqueOrThrow({
+				where: { id: socialPostId },
+			}),
 		).toMatchObject({
 			status: "posted",
 			externalUrl: "https://www.tiktok.com/@fixture/video/post-123",
 		});
+		if (deliveryMode === "tiktok_inbox") {
+			await invoke("post.publish.publicly_available", { post_id: "post-456" });
+			await invoke("post.publish.complete", {});
+			await invoke("post.publish.inbox_delivered", {});
+			await invoke("post.publish.publicly_available", { post_id: "post-456" });
+			expect(
+				await prisma.publishedSocialVideo.count({ where: { socialPostId } }),
+			).toBe(2);
+			expect(
+				await prisma.socialPost.findUnique({ where: { id: socialPostId } }),
+			).toMatchObject({ status: "posted" });
+			expect(
+				await prisma.projectAnalyticsEvent.count({
+					where: { projectId: f.project.id, type: "social_posted" },
+				}),
+			).toBe(1);
+		}
 	});
 });

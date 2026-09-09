@@ -47,6 +47,7 @@ export type PublicationAttemptSeed = {
 			| "publishing"
 			| "processing"
 			| "reconciling"
+			| "inbox_delivered"
 			| "posted"
 			| "failed"
 			| "needs_attention"
@@ -86,7 +87,7 @@ export type PublicationAttemptSeed = {
 
 export type PublicationAttemptExecutionResult =
 	| {
-			kind: "posted";
+			kind: "posted" | "inbox_delivered";
 			attemptId: string;
 			socialPostId: string;
 			externalUrl: string | null;
@@ -220,8 +221,7 @@ function retryActionAt(input: {
 		input.retry.maxDelayMs,
 		input.retry.baseDelayMs * 2 ** Math.max(0, input.attemptNumber - 1),
 	);
-	const jitter =
-		1 + (input.retry.random() * 2 - 1) * input.retry.jitterRatio;
+	const jitter = 1 + (input.retry.random() * 2 - 1) * input.retry.jitterRatio;
 	const delayMs = Math.max(
 		input.retryAfterMs ?? 0,
 		Math.round(rawDelay * jitter),
@@ -340,7 +340,9 @@ export function createSocialPublicationAttempt(dependencies: {
 						Math.max(
 							0,
 							dependencies.clock.now().getTime() -
-								(loaded.attempt.phaseStartedAt ?? loaded.attempt.startedAt).getTime(),
+								(
+									loaded.attempt.phaseStartedAt ?? loaded.attempt.startedAt
+								).getTime(),
 						),
 						attributes,
 					);
@@ -351,7 +353,9 @@ export function createSocialPublicationAttempt(dependencies: {
 						Math.max(
 							0,
 							dependencies.clock.now().getTime() -
-								(loaded.attempt.phaseStartedAt ?? loaded.attempt.startedAt).getTime(),
+								(
+									loaded.attempt.phaseStartedAt ?? loaded.attempt.startedAt
+								).getTime(),
 						),
 						attributes,
 					);
@@ -447,7 +451,7 @@ export function createSocialPublicationAttempt(dependencies: {
 						canReconcile: false,
 						nextActionAt: null,
 						now,
-							});
+					});
 					recordDiagnostic({
 						level: "error",
 						message: "social_publication_attempt_failed",
@@ -469,8 +473,7 @@ export function createSocialPublicationAttempt(dependencies: {
 					now,
 					retry: dependencies.retry,
 					processingDeadlineMs: dependencies.processingDeadlineMs,
-					reconciliationDeadlineMs:
-						dependencies.reconciliationDeadlineMs,
+					reconciliationDeadlineMs: dependencies.reconciliationDeadlineMs,
 				});
 				recordDiagnostic({
 					level: "error",
@@ -488,7 +491,8 @@ export function createSocialPublicationAttempt(dependencies: {
 				return settled;
 			}
 			if (
-				platform.capabilities.capabilityVersion !== loaded.frozen.capabilityVersion
+				platform.capabilities.capabilityVersion !==
+				loaded.frozen.capabilityVersion
 			) {
 				const now = dependencies.clock.now();
 				const submitted =
@@ -515,8 +519,7 @@ export function createSocialPublicationAttempt(dependencies: {
 							now,
 							retry: dependencies.retry,
 							processingDeadlineMs: dependencies.processingDeadlineMs,
-							reconciliationDeadlineMs:
-								dependencies.reconciliationDeadlineMs,
+							reconciliationDeadlineMs: dependencies.reconciliationDeadlineMs,
 						}));
 				recordDiagnostic({
 					level: "error",
@@ -565,11 +568,13 @@ export function createSocialPublicationAttempt(dependencies: {
 			try {
 				if (input.signal.aborted)
 					throw new DOMException("Aborted", "AbortError");
-				if (!socialProviderAcceptsMedia({
-					platform: platformInput.platform,
-					aspectRatio: platformInput.media.aspectRatio,
-					durationSec: platformInput.media.durationSec,
-				})) {
+				if (
+					!socialProviderAcceptsMedia({
+						platform: platformInput.platform,
+						aspectRatio: platformInput.media.aspectRatio,
+						durationSec: platformInput.media.durationSec,
+					})
+				) {
 					throw new PublicationPlatformExecutionError(
 						"publication_media_capability_mismatch",
 						"preparation",
@@ -586,15 +591,15 @@ export function createSocialPublicationAttempt(dependencies: {
 								platform.capabilities.maxProviderCalls,
 							),
 							now: dependencies.clock.now(),
-							});
+						});
 						dependencies.metrics?.observe(
 							"social_publication_provider_operations_total",
 							1,
-								{
-									platform: loaded.frozen.platform,
-									operation:
-										lastCheckpointOperation?.kind ?? loaded.attempt.phase,
-								},
+							{
+								platform: loaded.frozen.platform,
+								operation:
+									lastCheckpointOperation?.kind ?? loaded.attempt.phase,
+							},
 						);
 					},
 					checkpoint: async (operation: PublicationProviderOperation) => {
@@ -694,8 +699,7 @@ export function createSocialPublicationAttempt(dependencies: {
 							now,
 							retry: dependencies.retry,
 							processingDeadlineMs: dependencies.processingDeadlineMs,
-							reconciliationDeadlineMs:
-								dependencies.reconciliationDeadlineMs,
+							reconciliationDeadlineMs: dependencies.reconciliationDeadlineMs,
 						});
 						break;
 					case "unknown": {
@@ -737,10 +741,10 @@ export function createSocialPublicationAttempt(dependencies: {
 						settled.kind === "needs_attention"
 							? "attention"
 							: result.kind === "failed"
-							? result.failure.disposition
-							: result.kind === "unknown"
-								? "attention"
-								: undefined,
+								? result.failure.disposition
+								: result.kind === "unknown"
+									? "attention"
+									: undefined,
 					operation:
 						result.kind === "pending"
 							? result.operation.kind
@@ -860,8 +864,7 @@ export function createSocialPublicationAttempt(dependencies: {
 							now,
 							retry: dependencies.retry,
 							processingDeadlineMs: dependencies.processingDeadlineMs,
-							reconciliationDeadlineMs:
-								dependencies.reconciliationDeadlineMs,
+							reconciliationDeadlineMs: dependencies.reconciliationDeadlineMs,
 						});
 				recordDiagnostic({
 					level: "error",
@@ -871,8 +874,8 @@ export function createSocialPublicationAttempt(dependencies: {
 					disposition: submissionCheckpointed
 						? "attention"
 						: error instanceof PublicationProviderCallBudgetError ||
-							(error instanceof PublicationPlatformExecutionError &&
-								error.code === "publication_frozen_media_missing")
+								(error instanceof PublicationPlatformExecutionError &&
+									error.code === "publication_frozen_media_missing")
 							? "permanent"
 							: "safe_retry",
 					errorCode: code,
@@ -976,20 +979,29 @@ export function createInMemorySocialPublicationAttemptStore(
 			if (record.terminalResult) return record.terminalResult;
 			record.attempt.phase = "succeeded";
 			record.attempt.outcome = "accepted";
-			record.socialPost.status = "posted";
+			record.socialPost.status =
+				input.result.receipt.deliveryMode === "tiktok_inbox"
+					? "inbox_delivered"
+					: "posted";
 			record.socialPost.externalUrl = input.result.receipt.externalUrl;
 			record.receipt = {
 				receiptId: input.result.receipt.receiptId,
 				platformPostId: input.result.receipt.platformPostId,
 				externalUrl: input.result.receipt.externalUrl,
 			};
-			record.analyticsIntent = {
-				kind: "social_posted",
-				attemptId: record.attempt.id,
-			};
+			record.analyticsIntent =
+				input.result.receipt.deliveryMode === "tiktok_inbox"
+					? null
+					: {
+							kind: "social_posted",
+							attemptId: record.attempt.id,
+						};
 			record.claim = null;
 			record.terminalResult = {
-				kind: "posted",
+				kind:
+					input.result.receipt.deliveryMode === "tiktok_inbox"
+						? "inbox_delivered"
+						: "posted",
 				attemptId: record.attempt.id,
 				socialPostId: record.socialPost.id,
 				externalUrl: input.result.receipt.externalUrl,
@@ -1215,7 +1227,10 @@ function rowExecutionResult(
 ): PublicationAttemptExecutionResult | null {
 	if (row.phase === "succeeded" && row.receipt) {
 		return {
-			kind: "posted",
+			kind:
+				row.receipt.deliveryMode === "tiktok_inbox"
+					? "inbox_delivered"
+					: "posted",
 			attemptId: row.id,
 			socialPostId: row.socialPostId,
 			externalUrl: row.receipt.externalUrl,
@@ -1444,6 +1459,7 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 		async settleAccepted(input) {
 			try {
 				return await requirePrisma().$transaction(async (tx) => {
+					await tx.$queryRaw`SELECT "id" FROM "SocialPublicationAttempt" WHERE "id" = ${input.owned.attemptId}::uuid FOR UPDATE`;
 					const row = await tx.socialPublicationAttempt.findUnique({
 						where: { id: input.owned.attemptId },
 						include: publicationAttemptInclude,
@@ -1467,6 +1483,11 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 							attemptId: row.id,
 							platform: row.frozenState.platform,
 							receiptId: input.result.receipt.receiptId,
+							deliveryMode: input.result.receipt.deliveryMode ?? "direct",
+							inboxDeliveredAt:
+								input.result.receipt.deliveryMode === "tiktok_inbox"
+									? input.now
+									: null,
 							platformPostId: input.result.receipt.platformPostId,
 							externalUrl: input.result.receipt.externalUrl,
 							metrics: input.result.receipt.metrics
@@ -1489,32 +1510,34 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 									: null,
 						},
 					});
-					await tx.publicationAnalyticsIntent.create({
-						data: {
-							attemptId: row.id,
-							socialPostId: row.socialPostId,
-							projectId: row.socialPost.projectId,
-							kind: "social_posted",
-							payload: {
-								platform: row.frozenState.platform,
-								receiptId: input.result.receipt.receiptId,
-							},
-							deliveredAt: input.now,
-						},
-					});
-					await tx.projectAnalyticsEvent.create({
-						data: {
-							projectId: row.socialPost.projectId,
-							clipId: row.socialPost.clipId,
-							type: "social_posted",
-							platform: row.frozenState.platform,
-							metadata: {
-								socialPostId: row.socialPostId,
+					if (input.result.receipt.deliveryMode !== "tiktok_inbox") {
+						await tx.publicationAnalyticsIntent.create({
+							data: {
 								attemptId: row.id,
-								receiptId: input.result.receipt.receiptId,
+								socialPostId: row.socialPostId,
+								projectId: row.socialPost.projectId,
+								kind: "social_posted",
+								payload: {
+									platform: row.frozenState.platform,
+									receiptId: input.result.receipt.receiptId,
+								},
+								deliveredAt: input.now,
 							},
-						},
-					});
+						});
+						await tx.projectAnalyticsEvent.create({
+							data: {
+								projectId: row.socialPost.projectId,
+								clipId: row.socialPost.clipId,
+								type: "social_posted",
+								platform: row.frozenState.platform,
+								metadata: {
+									socialPostId: row.socialPostId,
+									attemptId: row.id,
+									receiptId: input.result.receipt.receiptId,
+								},
+							},
+						});
+					}
 					if (input.result.receipt.metrics) {
 						const metrics = input.result.receipt.metrics;
 						await tx.socialPostMetric.create({
@@ -1550,20 +1573,46 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 					await tx.socialPost.update({
 						where: { id: row.socialPostId },
 						data: {
-							status: "posted",
-							postedAt: input.now,
+							status:
+								input.result.receipt.deliveryMode === "tiktok_inbox"
+									? "inbox_delivered"
+									: "posted",
+							postedAt:
+								input.result.receipt.deliveryMode === "tiktok_inbox"
+									? null
+									: input.now,
 							externalUrl: input.result.receipt.externalUrl,
 							errorCode:
 								input.result.receipt.providerProcessingFailureCode ?? null,
-							errorDisposition: input.result.receipt.providerProcessingFailureCode
+							errorDisposition: input.result.receipt
+								.providerProcessingFailureCode
 								? "permanent"
 								: null,
 							nextAttemptAt: null,
 						},
 					});
+					for (const postId of input.result.receipt.platformPostIds ?? []) {
+						await tx.publishedSocialVideo.upsert({
+							where: {
+								socialPostId_platformPostId: {
+									socialPostId: row.socialPostId,
+									platformPostId: postId,
+								},
+							},
+							create: {
+								socialPostId: row.socialPostId,
+								platformPostId: postId,
+								externalUrl: `https://www.tiktok.com/@_/video/${postId}`,
+							},
+							update: {},
+						});
+					}
 					await releaseCurrentClaim(tx, input.owned, input.now);
 					return {
-						kind: "posted",
+						kind:
+							input.result.receipt.deliveryMode === "tiktok_inbox"
+								? "inbox_delivered"
+								: "posted",
 						attemptId: row.id,
 						socialPostId: row.socialPostId,
 						externalUrl: input.result.receipt.externalUrl,
@@ -1600,8 +1649,7 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 					data: {
 						phase: nextPhase,
 						outcome: "pending",
-						phaseStartedAt:
-							current.phase === nextPhase ? undefined : input.now,
+						phaseStartedAt: current.phase === nextPhase ? undefined : input.now,
 						nextActionAt,
 						operationKind: input.result.operation.kind,
 						checkpointEncrypted: input.sealedState,
@@ -2115,7 +2163,8 @@ export async function claimDueSocialPublicationAttempts(input: {
 							? "social_account_reconnect_required"
 							: providerBudgetExhausted
 								? "publication_provider_call_budget_exhausted"
-								: current.phase === "processing" || current.phase === "uploading"
+								: current.phase === "processing" ||
+										current.phase === "uploading"
 									? "publication_processing_deadline_exceeded"
 									: "publication_reconciliation_deadline_exceeded";
 						const terminalAttempt =

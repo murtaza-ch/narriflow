@@ -26,15 +26,30 @@ const readyState: FrozenPublicationState = {
 
 test("expired social credentials require a refresh token at scheduling time", () => {
 	const now = new Date("2026-08-28T10:00:00.000Z");
-	expect(socialAccountCanPublishAt({ expiresAt: null, refreshTokenEncrypted: null }, now)).toBe(true);
-	expect(socialAccountCanPublishAt({
-		expiresAt: new Date("2026-08-28T09:59:59.000Z"),
-		refreshTokenEncrypted: null,
-	}, now)).toBe(false);
-	expect(socialAccountCanPublishAt({
-		expiresAt: new Date("2026-08-28T09:59:59.000Z"),
-		refreshTokenEncrypted: "encrypted-refresh",
-	}, now)).toBe(true);
+	expect(
+		socialAccountCanPublishAt(
+			{ expiresAt: null, refreshTokenEncrypted: null },
+			now,
+		),
+	).toBe(true);
+	expect(
+		socialAccountCanPublishAt(
+			{
+				expiresAt: new Date("2026-08-28T09:59:59.000Z"),
+				refreshTokenEncrypted: null,
+			},
+			now,
+		),
+	).toBe(false);
+	expect(
+		socialAccountCanPublishAt(
+			{
+				expiresAt: new Date("2026-08-28T09:59:59.000Z"),
+				refreshTokenEncrypted: "encrypted-refresh",
+			},
+			now,
+		),
+	).toBe(true);
 });
 
 const baseInput = {
@@ -265,4 +280,25 @@ describe("Social Publication scheduling", () => {
 		]);
 		expect(post.reviewApprovalOverrideId).toBe("audit-1");
 	});
+});
+
+test("immediate admission survives elapsed queue time while scheduled admission rejects the past", async () => {
+	const scheduling = createSocialPublicationScheduling({
+		store: createInMemoryPublicationSchedulingStore(),
+		authorize: async () => {},
+		authorizeReview,
+		freeze: async (input) => ({
+			kind: "ready",
+			state: { ...readyState, scheduledFor: input.scheduledFor },
+		}),
+		createId: () => "now-post",
+		now: () => new Date("2026-08-29T10:01:00.000Z"),
+	});
+	await expect(scheduling.schedule(baseInput)).rejects.toMatchObject({
+		code: "publication_schedule_in_past",
+	});
+	const immediate = { ...baseInput, immediate: true };
+	const admitted = await scheduling.schedule(immediate);
+	expect(admitted.frozen.scheduledFor).toEqual(baseInput.scheduledFor);
+	expect(await scheduling.schedule(immediate)).toEqual(admitted);
 });

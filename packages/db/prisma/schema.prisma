@@ -172,7 +172,13 @@ enum SocialPlatform {
   x
 }
 
+enum SocialDeliveryMode {
+  direct
+  tiktok_inbox
+}
+
 enum SocialPostStatus {
+  inbox_delivered
   draft
   preparing_video
   scheduled
@@ -766,7 +772,6 @@ model User {
   createdVisualAssets             VisualAsset[]                    @relation("VisualAssetsCreatedBy")
   createdGeneratedMediaJobs       GeneratedMediaJob[]              @relation("GeneratedMediaJobsCreatedBy")
   createdAssistedCopyGenerations  AssistedCopyGeneration[]         @relation("AssistedCopyGenerationsCreatedBy")
-  confirmedAssistedCopyVariants   AssistedCopyVariant[]            @relation("AssistedCopyVariantsConfirmedBy")
   createdThumbnailFrameOperations ThumbnailFrameOperation[]        @relation("ThumbnailFrameOperationsCreatedBy")
   generatedMediaUsage             GeneratedMediaUsageReservation[]
   brandFonts                      BrandFont[]                      @relation("UserBrandFonts")
@@ -1950,17 +1955,12 @@ model AssistedCopyVariant {
   promptVersion           String
   moderationOutcome       String
   originalFingerprint     String
-  confirmationFingerprint String?
-  confirmedByUserId       String?        @db.Uuid
-  confirmedAt             DateTime?
   createdAt               DateTime       @default(now())
   updatedAt               DateTime       @updatedAt
 
   generation  AssistedCopyGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
-  confirmedBy User?                  @relation("AssistedCopyVariantsConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([generationId, platform])
-  @@index([confirmationFingerprint])
 }
 
 model ThumbnailFrameOperation {
@@ -2166,6 +2166,8 @@ model AudioAssetFavorite {
 }
 
 model SocialPost {
+  deliveryMode SocialDeliveryMode @default(direct)
+  publishedVideos PublishedSocialVideo[]
   id                       String                         @id @default(uuid()) @db.Uuid
   projectId                String                         @db.Uuid
   workspaceId              String?                        @db.Uuid
@@ -2209,6 +2211,7 @@ model SocialPost {
 }
 
 model FrozenPublicationState {
+  deliveryMode SocialDeliveryMode @default(direct)
   id                  String          @id @default(uuid()) @db.Uuid
   socialPostId        String          @unique @db.Uuid
   clipExportId        String          @db.Uuid
@@ -2320,6 +2323,8 @@ model PublicationClaim {
 }
 
 model ProviderReceipt {
+  deliveryMode SocialDeliveryMode @default(direct)
+  inboxDeliveredAt DateTime?
   id                            String         @id @default(uuid()) @db.Uuid
   attemptId                     String         @unique @db.Uuid
   platform                      SocialPlatform
@@ -2412,4 +2417,14 @@ model ProgramAnalyticsEvent {
   @@index([workspaceId, createdAt])
   @@index([projectId, createdAt])
   @@index([type, createdAt])
+}
+
+model PublishedSocialVideo {
+  id String @id @default(uuid()) @db.Uuid
+  socialPostId String @db.Uuid
+  platformPostId String
+  externalUrl String?
+  publishedAt DateTime @default(now())
+  socialPost SocialPost @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  @@unique([socialPostId, platformPostId])
 }
