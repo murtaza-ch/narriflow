@@ -7,8 +7,12 @@ const reviewScriptSource = process.env.NODE_ENV === "development"
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
-  serverExternalPackages: ["@node-rs/argon2", "@ffprobe-installer/ffprobe"],
+  serverExternalPackages: ["@node-rs/argon2", "@ffprobe-installer/ffprobe", "sharp"],
   outputFileTracingIncludes: {
+    "/*": [
+      "../../node_modules/sharp/**/*",
+      "../../node_modules/@img/sharp*-linux-x64/**/*",
+    ],
     "/api/*": [
       "../../node_modules/@ffprobe-installer/**/{ffprobe,*.js,*.json}",
       "../../node_modules/.bun/@ffprobe-installer+*/node_modules/@ffprobe-installer/**/{ffprobe,*.js,*.json}",
