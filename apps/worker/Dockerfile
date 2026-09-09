@@ -46,9 +46,11 @@ WORKDIR /app
 
 COPY package.json bun.lock turbo.json ./
 COPY apps/worker/package.json apps/worker/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY apps/mcp/package.json apps/mcp/package.json
 COPY packages packages
 
-RUN bun install
+RUN bun install --frozen-lockfile
 
 COPY . .
 
