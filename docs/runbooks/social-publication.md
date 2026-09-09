@@ -1,6 +1,6 @@
 # Social Publication operations
 
-Social Publication Attempt is the only owner of provider delivery. Deploy the database migrations through `20260828234000_frozen_publication_media_duration` before starting the web or worker process. Drain social workers before migration. Narriflow has no production users or mixed-version deployment contract, so obsolete local publication rows without frozen intent are deleted instead of supported through dual paths.
+Social Publication Attempt is the only owner of provider delivery. Deploy the database migrations through `20260909010000_publishing_delivery` before starting the web or worker process. Drain social workers before migration. Narriflow has no production users or mixed-version deployment contract, so obsolete local publication rows without frozen intent are deleted instead of supported through dual paths.
 
 ## Configuration
 
@@ -103,3 +103,15 @@ bun run build
 The database runner creates a disposable schema, applies the complete migration chain, exercises concurrent intent replay, claim/account fencing, atomic receipt settlement, and retry lineage, then drops the schema unless `SOCIAL_PUBLICATION_TEST_KEEP_SCHEMA=1`.
 
 Use a real authenticated Chrome session to check Publish and Calendar at desktop and narrow widths. Verify the shared labels and status stripes for every product state, idempotency-key reuse after a simulated lost response, cancellation only before submission, live polling, keyboard focus, and absence of console errors. Do not exercise real provider submission with customer content during UI verification.
+
+## TikTok inbox configuration and recovery
+
+Enable the Content Posting API’s **Upload** capability and obtain approval for `video.upload` in the TikTok developer application. Direct Post continues to require `video.publish`. Narriflow requests both during connection; reconnect existing accounts to grant inbox upload. An account missing one scope remains eligible for the other mode.
+
+Configure the verified callback `/api/webhooks/tiktok/publication` with the application client key and secret. Subscribe to `post.publish.inbox_delivered`, `post.publish.complete`, `post.publish.publicly_available`, and `post.publish.failed`. Signature verification uses the unmodified request body and a bounded replay window. Inbox events use `publish_type=INBOX_SHARE`; direct events use `DIRECT_POST`.
+
+Inbox requests use `/v2/post/publish/inbox/video/init/` with FILE_UPLOAD `source_info` only. Do not add title, privacy, interaction, cover, or suggested-description fields. Upload chunks retain the existing encrypted checkpoints and resume the same upload after interruption. `SEND_TO_USER_INBOX` settles Sent to TikTok. No periodic poll or delivery timeout continues while the creator decides when to publish.
+
+Use **Refresh TikTok status** after delivery to explicitly fetch later publication evidence. Verified callbacks also enrich settled deliveries. A publication without a public post ID has no link; repeated and multiple IDs are stored as deduplicated child records. Never resend an inbox upload just because no public post appears. For pending-upload limits, ask the creator to complete or clear existing inbox drafts; for revoked permission, reconnect before an explicitly new delivery. Unknown outcomes retain the normal Recheck and duplicate-risk recovery policy.
+
+References: [Upload video](https://developers.tiktok.com/doc/content-posting-api-reference-upload-video), [Status](https://developers.tiktok.com/doc/content-posting-api-reference-get-video-status).

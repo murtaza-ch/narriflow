@@ -154,3 +154,11 @@ _Avoid_: Share link, project snapshot, approval request
 **Generated Media Job**:
 One metered provider request that may produce a Visual Asset after moderation and usage settlement.
 _Avoid_: Workflow Run, image task, generation credit
+
+**Publishing Draft**:
+An unfinished browser-local publishing composition scoped to one signed-in actor, Workspace, Project, Clip, and destination account. It preserves editable copy, settings, cover identity, and scheduling choices; it is separate from Studio’s Device Draft and from a durable submitted Social Post.
+_Avoid_: Device Draft, Social Post, provider inbox draft
+
+**TikTok Inbox Delivery**:
+Delivery of a frozen clip video to a connected creator’s TikTok inbox, where the creator completes publication. Delivery settles the Social Publication Attempt as Sent to TikTok without a published event. Later verified evidence may report zero, one, or multiple public posts from that upload.
+_Avoid_: Published, automatic publication, failed delivery while awaiting the creator
