@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import ffprobe from "@ffprobe-installer/ffprobe";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { Prisma, VisualAsset, VisualAssetKind } from "@prisma/client";
@@ -200,6 +199,7 @@ function extensionForVisual(contentType: string) {
 async function productionProbe(key: string): Promise<VisualMediaProbe | null> {
   try {
     const url = await presignDownloadUrl({ key, expiresIn: 300 });
+    const { default: ffprobe } = await import("@ffprobe-installer/ffprobe");
     const { stdout } = await execFileAsync(ffprobe.path, [
       "-v", "error", "-select_streams", "v:0",
       "-show_entries", "stream=codec_name,width,height,duration:format=format_name:format_tags=major_brand", "-of", "json", url,

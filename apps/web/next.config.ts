@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { NextConfig } from "next";
 
 const reviewScriptSource = process.env.NODE_ENV === "development"
@@ -5,9 +6,11 @@ const reviewScriptSource = process.env.NODE_ENV === "development"
   : "script-src 'self' 'unsafe-inline' https://*.clerk.accounts.dev https://*.clerk.com";
 
 const nextConfig: NextConfig = {
+  outputFileTracingRoot: path.join(__dirname, "../.."),
   serverExternalPackages: ["@node-rs/argon2", "@ffprobe-installer/ffprobe"],
   outputFileTracingIncludes: {
     "/api/*": [
+      "../../node_modules/@ffprobe-installer/**/{ffprobe,*.js,*.json}",
       "../../node_modules/.bun/@ffprobe-installer+*/node_modules/@ffprobe-installer/**/{ffprobe,*.js,*.json}",
     ],
   },
