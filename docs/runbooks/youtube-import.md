@@ -33,8 +33,8 @@ Install Deno 2.9.5 and FFmpeg first. Use Python 3.10 or newer. From the reposito
 root, prepare the pinned dependencies. The server's lockfile pins npm dependencies.
 
 ```sh
-python3 -m venv apps/worker/.venv
-apps/worker/.venv/bin/pip install 'yt-dlp[default]==2026.8.19' 'bgutil-ytdlp-pot-provider==2.0.0'
+python3 -m venv apps/worker/.venv/youtube
+apps/worker/.venv/youtube/bin/pip install 'yt-dlp[default]==2026.8.19' 'bgutil-ytdlp-pot-provider==2.0.0'
 git clone --depth 1 --branch 2.0.0 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git apps/worker/.venv/bgutil
 cd apps/worker/.venv/bgutil/server
 npm ci --omit=dev --no-audit --no-fund
@@ -42,8 +42,9 @@ deno cache --frozen src/main.ts
 ```
 
 Set `YTDLP_POT_SERVER_HOME` in `apps/worker/.env` to the absolute path of that
-server directory. Put the virtual environment's `bin` directory first on PATH
-when starting the worker, so it uses the yt-dlp installation with the plugin.
+server directory. Set `YTDLP_EXECUTABLE` to the absolute path of
+`apps/worker/.venv/youtube/bin/yt-dlp`, so the native worker uses the installation
+with the plugin without changing your existing face-detection Python environment.
 The worker starts and stops the token server itself. Only one worker process can
 own port 4416 on a native host; separate containers have separate loopback ports.
 

@@ -151,7 +151,7 @@ export async function executeYtdlpCommand(
   options: { timeoutMs: number; acceptableExitCodes?: readonly number[] },
 ) {
   try {
-    return await execCommand(workerProcess, signal, "yt-dlp", args, options);
+    return await execCommand(workerProcess, signal, process.env.YTDLP_EXECUTABLE || "yt-dlp", args, options);
   } catch (error) {
     const classified = classifyYtdlpProviderFailure(
       error instanceof WorkerProcessFailure
