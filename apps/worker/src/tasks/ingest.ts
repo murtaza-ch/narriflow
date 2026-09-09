@@ -446,7 +446,9 @@ async function runYtdlpLinkDownload(
       executeYtdlpCommand(
         workerProcess,
         signal,
-        [...commonArgs, "--dump-single-json", url],
+        // Full info JSON includes captions and format URLs and can exceed
+        // the process output limit. Project only the fields ingestion needs.
+        [...commonArgs, "--skip-download", "--print", "%(.{id,title,duration})j", url],
         { timeoutMs: METADATA_PROBE_TIMEOUT_MS },
       ),
     );
@@ -454,7 +456,6 @@ async function runYtdlpLinkDownload(
       title?: string;
       id?: string;
       duration?: number;
-      ext?: string;
     };
 
     const metadataDuration = normalizeDuration(metadata.duration);
