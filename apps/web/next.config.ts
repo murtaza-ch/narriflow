@@ -5,7 +5,12 @@ const reviewScriptSource = process.env.NODE_ENV === "development"
   : "script-src 'self' 'unsafe-inline' https://*.clerk.accounts.dev https://*.clerk.com";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["@node-rs/argon2"],
+  serverExternalPackages: ["@node-rs/argon2", "@ffprobe-installer/ffprobe"],
+  outputFileTracingIncludes: {
+    "/api/*": [
+      "../../node_modules/.bun/@ffprobe-installer+*/node_modules/@ffprobe-installer/**/{ffprobe,*.js,*.json}",
+    ],
+  },
   transpilePackages: [
     "@narriflow/auth",
     "@narriflow/db",

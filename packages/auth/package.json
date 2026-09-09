@@ -21,7 +21,7 @@
     "@narriflow/db": "workspace:*",
     "@narriflow/validators": "workspace:*",
     "@prisma/client": "^7.4.2",
-    "next": "16.3.0"
+    "next": "16.3.3"
   },
   "devDependencies": {
     "@types/node": "26.2.0"
