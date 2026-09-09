@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { startYoutubeTokenServer } from "./youtube-import";
+import { getYoutubeProxyUrl, startYoutubeTokenServer } from "./youtube-import";
 import { createIsolatedPollLoop, type PollLoop } from "./poll-loop";
 import {
 	billingService,
@@ -47,6 +47,7 @@ import { executeNextWorkflowAttempt } from "./workflow-attempt-executor";
 
 const port = Number(process.env.PORT || 0);
 const workerShutdown = new AbortController();
+const youtubeProxyUrl = getYoutubeProxyUrl();
 assertUploadProviderLifecyclePrerequisite(process.env);
 billingService.validateConfiguration({ surface: "worker" });
 getSocialPublicationRuntime();
@@ -592,6 +593,7 @@ const youtubeTokenServer = await startYoutubeTokenServer(
   process.env.YTDLP_POT_SERVER_HOME ?? "/opt/youtube-tokens",
   workerShutdown.signal,
 );
+console.warn(JSON.stringify({ level: "info", message: "youtube_network_configured", mode: youtubeProxyUrl ? "proxy" : "direct" }));
 youtubeTokenServer.once("exit", () => {
   if (workerShutdown.signal.aborted) return;
   console.warn(JSON.stringify({ level: "error", message: "youtube_token_server_exited" }));

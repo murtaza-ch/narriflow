@@ -88,7 +88,7 @@ describe("executeYtdlpCommand process contract", () => {
     const controller = new AbortController();
     const workerProcess = processModuleWithExecute(async (request) => {
       expect(request).toMatchObject({
-        command: "yt-dlp",
+        command: process.env.YTDLP_EXECUTABLE || "yt-dlp",
         signal: controller.signal,
         acceptableExitCodes: [0, 101],
         captureStdout: true,

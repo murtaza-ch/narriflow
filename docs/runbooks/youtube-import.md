@@ -52,8 +52,10 @@ own port 4416 on a native host; separate containers have separate loopback ports
 
 Deploy the worker Dockerfile through the existing Railway GitHub `dev`
 integration. Keep its start command as `bun run apps/worker/src/index.ts`.
-No additional Railway service, port, cookie secret, or environment override is
-needed. Check for `youtube_token_server_ready` before testing imports.
+No additional Railway service or public port is needed. For proxy access, set
+the worker variable described below. Check for `youtube_token_server_ready` and
+`youtube_network_configured` before testing imports. The latter logs only
+`direct` or `proxy`, never credentials.
 
 From the worker console:
 
@@ -79,6 +81,48 @@ Then retry the failed import in the app and verify it reaches ready, has an R2
 source, and does not requeue the same bot-check failure. Repeat full downloads
 with several videos and after a worker restart. A metadata-only success does
 not establish that the media server accepts the download.
+
+## Proxy configuration
+
+Set `YTDLP_PROXY_URL` privately in Railway's worker variables and in
+`apps/worker/.env`. HTTP, HTTPS and SOCKS proxy URLs are supported. Credentials
+must be URL-encoded. The variable applies only to YouTube imports; R2, database,
+AI services and other link providers keep their existing network configuration.
+An empty value explicitly uses a direct connection, ignoring machine-wide proxy
+environment variables for YouTube. Malformed configuration prevents worker startup.
+
+Use a static outbound IP or a sticky session that lasts through the entire import.
+The optional `{session}` placeholder in the username generates a fresh session
+ID once per import. Metadata, media transfer and transient retries reuse it.
+The bgutil plugin forwards the resolved proxy to token generation automatically;
+requests to the loopback token server itself bypass the proxy. There is no direct
+fallback if a configured proxy is unavailable.
+
+For Decodo residential proxies, the documented endpoint and a three-hour session
+look like this. Replace the placeholder credentials privately, and preserve the
+literal `{session}` marker:
+
+```dotenv
+YTDLP_PROXY_URL=http://user-USERNAME-session-{session}-sessionduration-180:PASSWORD@gate.decodo.com:7000
+```
+
+Three hours covers the worker's metadata and download retry deadlines. A
+residential peer can still disconnect before the session expires. Choose a plan
+that permits Google/YouTube and video transfer. Decodo's trial needs payment
+verification, allows 100 MB, and starts billing after three days unless canceled.
+The original test video alone is approximately 78.5 MB, so use a short video
+first and monitor the provider's bandwidth balance.
+
+For the console commands above, add `--proxy "$YTDLP_PROXY_URL"` only when the
+variable already contains a resolved session ID. To expand `{session}` exactly
+as the application does, call `ytdlpCommonArgs("youtube")` once from a Bun script
+and reuse the returned arguments for both commands. Do not paste credentials
+into shell history or enable yt-dlp verbose/traffic logs with real credentials.
+
+References: [yt-dlp network options](https://github.com/yt-dlp/yt-dlp#network-options),
+[bgutil proxy forwarding](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/blob/2.0.0/plugin/yt_dlp_plugins/extractor/getpot_bgutil_http.py),
+[Decodo sticky sessions](https://help.decodo.com/docs/residential-proxy-custom-sticky-sessions),
+[Decodo trial terms](https://help.decodo.com/docs/trials).
 
 ## Remaining provider restrictions
 

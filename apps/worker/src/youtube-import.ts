@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -6,11 +7,40 @@ import { setTimeout as sleep } from "node:timers/promises";
 export const YOUTUBE_TOKEN_SERVER_URL = "http://127.0.0.1:4416";
 export const YOUTUBE_TOKEN_SERVER_VERSION = "2.0.0";
 
+/** Operator configuration only. Never accept proxy credentials from import input. */
+export function getYoutubeProxyUrl(value = process.env.YTDLP_PROXY_URL): string {
+  const proxy = value?.trim() ?? "";
+  if (!proxy) return "";
+  try {
+    const url = new URL(proxy);
+    if (
+      !["http:", "https:", "socks4:", "socks4a:", "socks5:", "socks5h:"].includes(url.protocol)
+      || !url.hostname || (url.pathname !== "" && url.pathname !== "/")
+      || url.search || url.hash || /\s/.test(proxy) || proxy.length > 2048
+    ) throw new Error("invalid proxy");
+    return proxy;
+  } catch {
+    // URL parsing errors can include credentials. Never forward them.
+    throw new Error("YTDLP_PROXY_URL must be an HTTP, HTTPS or SOCKS proxy URL without a path, query or fragment");
+  }
+}
+
 /** Both extraction and media transfer must use the same client configuration. */
-export function ytdlpCommonArgs(provider: string): string[] {
+export function ytdlpCommonArgs(provider: string, proxyUrl = process.env.YTDLP_PROXY_URL): string[] {
   const args = ["--ignore-config", "--no-playlist"];
   if (provider === "youtube") {
+    let proxy = getYoutubeProxyUrl(proxyUrl);
+    if (proxy) {
+      const url = new URL(proxy);
+      if (/%7Bsession%7D/i.test(url.username)) {
+        // Called once per import; metadata, media and retries reuse these args.
+        url.username = url.username.replace(/%7Bsession%7D/gi, randomUUID().replaceAll("-", ""));
+        proxy = url.href;
+      }
+    }
     args.push(
+      // Empty explicitly means direct; ignore machine-wide proxy environment.
+      "--proxy", proxy,
       "--no-js-runtimes", "--js-runtimes", "deno",
       "--extractor-args", "youtube:player_client=mweb",
       "--extractor-args", `youtubepot-bgutilhttp:base_url=${YOUTUBE_TOKEN_SERVER_URL}`,

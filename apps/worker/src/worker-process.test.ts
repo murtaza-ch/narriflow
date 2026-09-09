@@ -172,6 +172,25 @@ test("worker process classifies invalid input and bounds redacted diagnostics", 
   expect((failure as WorkerProcessFailure).diagnostic).toContain("?[redacted]");
 });
 
+test("worker process removes authenticated proxy credentials from failures", async () => {
+  let failure: unknown;
+  try {
+    await createWorkerProcessModule().execute({
+      command: process.execPath,
+      args: ["-e", 'console.error("Proxy connection failed: http://private-user:p%40ss@proxy.example:8080 and socks5h://other:secret@proxy.example:1080"); process.exit(1)'],
+      signal: new AbortController().signal,
+      deadlineMs: 1_000,
+    });
+  } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(WorkerProcessFailure);
+  const text = `${(failure as WorkerProcessFailure).message} ${(failure as WorkerProcessFailure).diagnostic}`;
+  expect(text).toContain("http://[redacted]@proxy.example:8080");
+  expect(text).toContain("socks5h://[redacted]@proxy.example:1080");
+  for (const secret of ["private-user", "p%40ss", "other", "secret"]) {
+    expect(text).not.toContain(secret);
+  }
+});
+
 test("worker process classifies other nonzero exits as retryable", async () => {
   await expect(
     createWorkerProcessModule({ killGraceMs: 20 }).execute({

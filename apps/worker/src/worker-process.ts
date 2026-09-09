@@ -121,12 +121,14 @@ const STILL_IMAGE_CODEC_NAMES: ReadonlySet<string> = new Set([
   "jpegls",
 ]);
 
-function redactUrlQueries(text: string): string {
-  return text.replace(/\?[^\s"']+/g, "?[redacted]");
+function redactUrlSecrets(text: string): string {
+  return text
+    .replace(/\b((?:https?|socks4a?|socks5h?):\/\/)[^\s/"']+@/gi, "$1[redacted]@")
+    .replace(/\?[^\s"']+/g, "?[redacted]");
 }
 
 function boundedDiagnostic(text: string): string {
-  return redactUrlQueries(text).slice(-MAX_DIAGNOSTIC_CHARS);
+  return redactUrlSecrets(text).slice(-MAX_DIAGNOSTIC_CHARS);
 }
 
 function cancellationFailureCode(signal: AbortSignal): string {
