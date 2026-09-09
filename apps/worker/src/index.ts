@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { startYoutubeTokenServer } from "./youtube-import";
 import { createIsolatedPollLoop, type PollLoop } from "./poll-loop";
 import {
 	billingService,
@@ -583,6 +584,21 @@ const server = createServer(async (req, res) => {
 	res.end(JSON.stringify({ error: "not_found" }));
 });
 
+let loopIntervals: ReturnType<typeof setInterval>[] = [];
+process.once("SIGTERM", beginGracefulShutdown);
+process.once("SIGINT", beginGracefulShutdown);
+
+const youtubeTokenServer = await startYoutubeTokenServer(
+  process.env.YTDLP_POT_SERVER_HOME ?? "/opt/youtube-tokens",
+  workerShutdown.signal,
+);
+youtubeTokenServer.once("exit", () => {
+  if (workerShutdown.signal.aborted) return;
+  console.warn(JSON.stringify({ level: "error", message: "youtube_token_server_exited" }));
+  process.exitCode = 1;
+  beginGracefulShutdown();
+});
+
 server.listen(port, () => {
 	const address = server.address();
 	const resolvedPort =
@@ -590,7 +606,7 @@ server.listen(port, () => {
 	console.log(`narriflow worker listening on :${resolvedPort}`);
 });
 
-const loopIntervals = allLoops.map(({ loop, intervalMs }) =>
+loopIntervals = allLoops.map(({ loop, intervalMs }) =>
 	setInterval(() => {
 		void loop.tick();
 	}, intervalMs),
@@ -602,9 +618,6 @@ function beginGracefulShutdown() {
 	for (const interval of loopIntervals) clearInterval(interval);
 	server.close();
 }
-
-process.once("SIGTERM", beginGracefulShutdown);
-process.once("SIGINT", beginGracefulShutdown);
 
 void maintenanceLoop.tick();
 void uploadSessionMaintenanceLoop.tick();

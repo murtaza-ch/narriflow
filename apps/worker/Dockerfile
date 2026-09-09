@@ -1,4 +1,12 @@
+FROM brainicism/bgutil-ytdlp-pot-provider:2.0.0-deno AS youtube_tokens
 FROM oven/bun:1.3.6
+
+# The provider image pins Deno 2.9.5 and its npm dependencies. Keep the
+# Python plugin on the same version as this server. It listens only on loopback.
+COPY --from=youtube_tokens /usr/bin/deno /usr/local/bin/deno
+COPY --from=youtube_tokens /app /opt/youtube-tokens
+ENV YTDLP_POT_SERVER_HOME=/opt/youtube-tokens
+ENV DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1
 
 # ffmpeg for media processing; fontconfig + base fonts for caption
 # burn-in; Noto core/extra cover representative Arabic, Hebrew and Indic
@@ -14,7 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Distribution packages lag YouTube extractor changes by months. Pin the
 # upstream release that removed the broken android_vr default client and added
 # working fallback clients for the August 2026 HTTP 403 regression.
-RUN pip3 install --no-cache-dir --break-system-packages "yt-dlp[default]==2026.8.19"
+RUN pip3 install --no-cache-dir --break-system-packages \
+      "yt-dlp[default]==2026.8.19" "bgutil-ytdlp-pot-provider==2.0.0" \
+  && deno --version && yt-dlp --version
 
 # Auto-reframe: OpenCV YuNet face detector (CPU-only, MIT, ~232 KB). Bake the
 # tiny model into the image rather than fetching it at runtime.

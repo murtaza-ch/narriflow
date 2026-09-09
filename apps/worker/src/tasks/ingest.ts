@@ -28,6 +28,7 @@ import {
   type LinkProviderId,
 } from "@narriflow/validators";
 import { notifyIngestFailureAfterSettlement } from "../notifications";
+import { ytdlpCommonArgs } from "../youtube-import";
 import {
   productionWorkerProcessModule,
   WorkerProcessFailure,
@@ -81,6 +82,12 @@ class IngestWorkerError extends Error {
 export function classifyYtdlpProviderFailure(
   stderr: string,
 ): { code: string; message: string } | null {
+  if (/sign in to confirm you(?:['’]re| are) not a bot/i.test(stderr)) {
+    return {
+      code: "source_provider_access_denied",
+      message: "YouTube blocked this import. Upload the video file instead.",
+    };
+  }
   if (/HTTP Error 403\b|HTTP 403\b|403 Forbidden/i.test(stderr)) {
     return {
       code: "source_provider_access_denied",
@@ -433,12 +440,13 @@ async function runYtdlpLinkDownload(
   signal: AbortSignal,
 ) {
   return workerProcess.withScratchDirectory("narriflow-link-", async (tempDir) => {
+    const commonArgs = ytdlpCommonArgs(provider);
     const probeStartedAtMs = Date.now();
     const metadataOutput = await withTransientRetry("yt_dlp_metadata_probe", () =>
       executeYtdlpCommand(
         workerProcess,
         signal,
-        ["--dump-single-json", "--no-warnings", "--no-playlist", url],
+        [...commonArgs, "--dump-single-json", url],
         { timeoutMs: METADATA_PROBE_TIMEOUT_MS },
       ),
     );
@@ -470,8 +478,7 @@ async function runYtdlpLinkDownload(
         workerProcess,
         signal,
         [
-          "--no-warnings",
-          "--no-playlist",
+          ...commonArgs,
           "--max-downloads",
           "1",
           "--max-filesize",

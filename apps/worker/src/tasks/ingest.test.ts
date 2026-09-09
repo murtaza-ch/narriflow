@@ -42,6 +42,15 @@ describe("readVerifiedUploadPayload", () => {
 });
 
 describe("classifyYtdlpProviderFailure", () => {
+  test.each(["you're", "you’re", "you are"])("treats a YouTube bot check with %s as permanent", (wording) => {
+    expect(classifyYtdlpProviderFailure(
+      `ERROR: [youtube] 9aSKMf5nCk0: Sign in to confirm ${wording} not a bot. Use --cookies for authentication.`,
+    )).toEqual({
+      code: "source_provider_access_denied",
+      message: "YouTube blocked this import. Upload the video file instead.",
+    });
+  });
+
   test("turns an HTTP 403 media response into a permanent provider-access failure", () => {
     expect(
       classifyYtdlpProviderFailure(
@@ -61,6 +70,20 @@ describe("classifyYtdlpProviderFailure", () => {
 });
 
 describe("executeYtdlpCommand process contract", () => {
+  test("uses the full process diagnostic to classify a bot check before retry settlement", async () => {
+    const workerProcess = processModuleWithExecute(async () => {
+      throw new WorkerProcessFailure(
+        "worker_command_failed", "retryable", "generic truncated message",
+        "ERROR: [youtube] id: Sign in to confirm you’re not a bot. Use --cookies for authentication.", 1,
+      );
+    });
+    await expect(executeYtdlpCommand(workerProcess, new AbortController().signal, [], {
+      timeoutMs: 1000,
+    })).rejects.toMatchObject({
+      code: "source_provider_access_denied",
+      message: "YouTube blocked this import. Upload the video file instead.",
+    });
+  });
   test("forwards yt-dlp's declared 101 success code", async () => {
     const controller = new AbortController();
     const workerProcess = processModuleWithExecute(async (request) => {

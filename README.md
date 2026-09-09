@@ -361,7 +361,11 @@ Install these on the machine that runs the worker:
 Why:
 
 - `ffmpeg` is required to extract transcription-ready audio before uploading it to AssemblyAI.
-- `yt-dlp` is required for the YouTube import path.
+- YouTube imports require `yt-dlp[default]==2026.8.19`, Deno 2.9.5, and the
+  bgutil PO-token plugin/server 2.0.0. The worker starts the private token server
+  before claiming jobs. Use the worker image locally for matching dependencies;
+  native setup and full-download verification are in
+  [the YouTube import runbook](docs/runbooks/youtube-import.md).
 
 Face-tracked Automatic, Split, and Screen framing requires Python with `opencv-python-headless` and `numpy`, plus the YuNet model. Set `REFRAME_PYTHON` to the interpreter and `REFRAME_MODEL_PATH` to the model file. The worker image includes these dependencies.
 
