@@ -19,7 +19,7 @@ export default function AppError({
   }, [error]);
 
   return (
-    <Flex position="relative" minH="60dvh" align="center" justify="center" p="6" overflow="hidden">
+    <Flex data-page-error="" width="full" position="relative" minH="60dvh" align="center" justify="center" p="6" overflow="hidden">
       {/* Blueprint-grid atmosphere, fading toward the center */}
       <Box
         position="absolute"

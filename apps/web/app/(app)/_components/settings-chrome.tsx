@@ -61,7 +61,7 @@ export function SettingsChrome({ workspaceName, canManageApi, backHref, account,
           </Flex>
           <Flex ml="auto" gap="2" align="center">{themeToggle}{account}</Flex>
         </Flex>
-        <Box as="main" w="full" maxW="1120px" px={{ base: "4", lg: "8" }} pt="6" pb="12">{children}</Box>
+        <Box as="main" css={{ "&:has([data-page-error])": { maxWidth: "none", paddingBlock: "0", "& [data-page-error]": { minHeight: "calc(100dvh - 64px)" } } }} w="full" maxW="1120px" px={{ base: "4", lg: "8" }} pt="6" pb="12">{children}</Box>
       </Box>
     </Flex>
   );
