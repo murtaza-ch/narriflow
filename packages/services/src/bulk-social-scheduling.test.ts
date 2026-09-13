@@ -391,6 +391,32 @@ describe("bulk social scheduling", () => {
 		expect(posts.size).toBe(1);
 	});
 
+	test("keeps unresolved admission running until the original claim can recover", async () => {
+		let now = new Date("2026-09-02T10:00:00Z");
+		let available = false;
+		let admitted = false;
+		const module = createBulkSocialScheduling({
+			store: createInMemoryBulkScheduleStore(() => now),
+			authorize: async () => ({ pricingTier: "pro", timeZone: INPUT.timeZone }),
+			recover: async () => {
+				if (!available && admitted) throw new Error("database unavailable");
+				return admitted ? { socialPostId: "original-post", status: "scheduled" } : null;
+			},
+			schedule: async () => { admitted = true; throw new Error("response lost"); },
+			createId: () => crypto.randomUUID(), now: () => now,
+		});
+		const input = { ...INPUT, items: [INPUT.items[0]!] };
+		await expect(module.schedule(input)).rejects.toMatchObject({ code: "campaign_schedule_item_failed" });
+		const waiting = await module.schedule(input);
+		expect(waiting.status).toBe("running");
+		expect(waiting.items[0]?.status).toBe("processing");
+		available = true;
+		now = new Date("2026-09-02T10:11:00Z");
+		const recovered = await module.schedule(input);
+		expect(recovered.status).toBe("completed");
+		expect(recovered.items[0]?.socialPostId).toBe("original-post");
+	});
+
 	test("replays partial results and gives an explicit corrected submission a new identity", async () => {
 		const seen: string[] = [];
 		let fail = true;
