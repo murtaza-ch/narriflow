@@ -230,10 +230,9 @@ export class SocialService {
 				project: { userId },
 				...(options.activeOnly
 					? {
-						OR: [
-							{ status: { in: ["preparing_video", "scheduled", "publishing", "processing", "reconciling"] } },
-							...(options.trackedIds?.length ? [{ id: { in: options.trackedIds.slice(0, 100) } }] : []),
-						],
+						...(options.trackedIds?.length
+							? { id: { in: options.trackedIds.slice(0, 100) } }
+							: { status: { in: ["preparing_video", "scheduled", "publishing", "processing", "reconciling"] } }),
 					}
 					: {}),
 			},

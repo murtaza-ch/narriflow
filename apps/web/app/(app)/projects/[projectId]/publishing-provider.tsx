@@ -114,6 +114,15 @@ export function mergeRefreshedPosts(
 	for (const post of refreshed) merged.set(post.id, post);
 	return [...merged.values()];
 }
+
+export function nextTrackedPostBatch(ids: string[], offset: number) {
+	if (offset < 0) return { ids: [], nextOffset: 0 };
+	const batch = ids.slice(offset, offset + 100);
+	return {
+		ids: batch,
+		nextOffset: offset + 100 >= ids.length ? -1 : offset + 100,
+	};
+}
 const PublishingContext = createContext<PublishingContextValue | null>(null);
 export function usePublishing() {
 	const context = useContext(PublishingContext);
@@ -143,6 +152,7 @@ export function PublishingProvider({
 	const triggerRef = useRef<HTMLElement | null>(null);
 	const [posts, setPosts] = useState(config.initialPosts);
 	const [nextPostsCursor, setNextPostsCursor] = useState(config.initialPostsCursor);
+	const trackedRefreshOffset = useRef(0);
 	const [open, setOpen] = useState(false);
 	const [mode, setMode] = useState<"compose" | "posts">("compose");
 	const [ids, setIds] = useState<string[]>([]);
@@ -154,7 +164,10 @@ export function PublishingProvider({
 	useEffect(() => setPosts(config.initialPosts), [config.initialPosts]);
 	useEffect(() => setNextPostsCursor(config.initialPostsCursor), [config.initialPostsCursor]);
 	const refresh = useCallback(async () => {
-		const tracked = posts.filter(isLiveSocialPostSnapshot).map((post) => post.id);
+		const live = posts.filter(isLiveSocialPostSnapshot).map((post) => post.id);
+		const batch = nextTrackedPostBatch(live, trackedRefreshOffset.current);
+		const tracked = batch.ids;
+		trackedRefreshOffset.current = batch.nextOffset;
 		const result = await publishingRequest<{ posts: unknown; nextCursor: string | null }>(
 			`/api/projects/${config.projectId}/social-posts?active=1&tracked=${encodeURIComponent(tracked.join(","))}`,
 		);

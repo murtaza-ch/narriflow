@@ -84,6 +84,7 @@ const exports = clips.map(
 let Provider: typeof import("./publishing-provider").PublishingProvider;
 let usePublishing: typeof import("./publishing-provider").usePublishing;
 let mergeRefreshedPosts: typeof import("./publishing-provider").mergeRefreshedPosts;
+let nextTrackedPostBatch: typeof import("./publishing-provider").nextTrackedPostBatch;
 let ChakraProvider: typeof import("@chakra-ui/react").ChakraProvider;
 let system: typeof import("@narriflow/ui/theme").system;
 let root: Root;
@@ -130,7 +131,7 @@ beforeAll(async () => {
 		IS_REACT_ACT_ENVIRONMENT: true,
 	});
 	({ createRoot } = await import("react-dom/client"));
-	({ PublishingProvider: Provider, usePublishing, mergeRefreshedPosts } = await import(
+	({ PublishingProvider: Provider, usePublishing, mergeRefreshedPosts, nextTrackedPostBatch } = await import(
 		"./publishing-provider"
 	));
 	({ ChakraProvider } = await import("@chakra-ui/react"));
@@ -309,6 +310,17 @@ test("keeps every loaded history row when a bounded live refresh displaces track
 	expect(merged).toHaveLength(201);
 	expect(merged.find((entry) => entry.id === history[0]!.id)?.status).toBe("posted");
 	expect(merged.some((entry) => entry.id === history[200]!.id)).toBe(true);
+});
+
+test("rotates bounded tracked post reads before discovering new live posts", () => {
+	const ids = Array.from({ length: 201 }, (_, index) => id(2000 + index));
+	const first = nextTrackedPostBatch(ids, 0);
+	const second = nextTrackedPostBatch(ids, first.nextOffset);
+	const third = nextTrackedPostBatch(ids, second.nextOffset);
+	const discovery = nextTrackedPostBatch(ids, third.nextOffset);
+	expect([first.ids, second.ids, third.ids].flat()).toEqual(ids);
+	expect(discovery.ids).toEqual([]);
+	expect(discovery.nextOffset).toBe(0);
 });
 test("preserves displayed bulk order in generation and explicit admission", async () => {
 	await render();
