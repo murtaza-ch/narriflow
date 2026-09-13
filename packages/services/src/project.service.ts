@@ -58,6 +58,17 @@ import {
 	publishIngestWorkflowStageUpdated,
 } from "./workflow.service";
 import {
+	deriveProjectListProgress,
+	projectProgressStatusSql,
+	projectProgressWorkflowOrderSql,
+	type ProjectListProgress,
+} from "./project-progress";
+export {
+	deriveProjectListProgress,
+	type ProjectListProgress,
+	type ProjectListWorkflowRun,
+} from "./project-progress";
+import {
 	ProjectExpiredError,
 	projectRetentionService,
 	type RetentionPolicyKey,
@@ -125,18 +136,6 @@ export type ProjectListStatusFilter =
 	| "queued"
 	| "failed";
 
-export interface ProjectListProgress {
-	status: Exclude<ProjectListStatusFilter, "all">;
-	label: string;
-	/** Whether a list should continue refreshing this Project. */
-	active: boolean;
-}
-
-export interface ProjectListWorkflowRun {
-	stage: string;
-	status: string;
-	updatedAt: Date | string;
-}
 export type ProjectListSourceFilter =
   "all"
 	| "youtube"
@@ -224,70 +223,6 @@ function decodeProjectCursor(cursor: string | null | undefined) {
 	} catch {
 		return 0;
 	}
-}
-
-const ACTIVE_WORKFLOW_STATUSES = new Set(["queued", "running", "waiting"]);
-
-const WORKFLOW_PROGRESS_LABELS: Record<string, { active: string; queued: string }> = {
-	stt: { active: "Transcribing", queued: "Transcription queued" },
-	moment_detection: { active: "Detecting", queued: "Detection queued" },
-	clip_rendering: { active: "Rendering", queued: "Render queued" },
-	dubbing: { active: "Dubbing", queued: "Dub queued" },
-};
-
-function workflowProgressLabel(stage: string, status: string) {
-	const label = WORKFLOW_PROGRESS_LABELS[stage];
-	if (label) return status === "queued" ? label.queued : label.active;
-	const readable = stage
-		.split("_")
-		.filter(Boolean)
-		.map((part) => part[0]!.toUpperCase() + part.slice(1))
-		.join(" ");
-	return status === "queued" ? `${readable} queued` : `${readable} in progress`;
-}
-
-/**
- * Resolves the product meaning of Project progress for a list. Intake and
- * Workflow Runs keep their own lifecycles; only this list-facing interface
- * joins their current outcomes. A newer Workflow Run wins over an older
- * failure, while any current queued/running/waiting run keeps the Project
- * live until it settles.
- */
-export function deriveProjectListProgress(input: {
-	ingestStatus: PrismaIngestStatus;
-	workflowRuns: readonly ProjectListWorkflowRun[];
-}): ProjectListProgress {
-	if (input.ingestStatus === "failed") {
-		return { status: "failed", label: "Import failed", active: false };
-	}
-	if (input.ingestStatus === "queued" || input.ingestStatus === "pending") {
-		return { status: "queued", label: "Import queued", active: true };
-	}
-	if (input.ingestStatus !== "ready") {
-		return { status: "processing", label: "Importing", active: true };
-	}
-
-	const workflowRuns = [...input.workflowRuns].sort(
-		(left, right) =>
-			new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
-	);
-	const activeRun = workflowRuns.find((run) => ACTIVE_WORKFLOW_STATUSES.has(run.status));
-	if (activeRun) {
-		return {
-			status: activeRun.status === "queued" ? "queued" : "processing",
-			label: workflowProgressLabel(activeRun.stage, activeRun.status),
-			active: true,
-		};
-	}
-
-	const latestRun = workflowRuns[0];
-	if (latestRun?.status === "failed") {
-		return { status: "failed", label: `${workflowProgressLabel(latestRun.stage, "running")} failed`, active: false };
-	}
-	if (latestRun?.status === "partial") {
-		return { status: "ready", label: "Partially ready", active: false };
-	}
-	return { status: "ready", label: "Ready", active: false };
 }
 
 function emptyProjectStatusCounts(): Record<ProjectListStatusFilter, number> {
@@ -1472,6 +1407,11 @@ export class ProjectService {
 				.replaceAll("_", "\\_")}%`;
 			progressConditions.push(Prisma.sql`(p.title ILIKE ${pattern} ESCAPE E'\\\\' OR p."sourceMediaUrl" ILIKE ${pattern} ESCAPE E'\\\\' OR p."sourceInput" ILIKE ${pattern} ESCAPE E'\\\\')`);
 		}
+		const progressStatus = projectProgressStatusSql({
+			ingestStatus: Prisma.sql`p."ingestStatus"`,
+			workflowStatus: Prisma.sql`current_run.status`,
+		});
+		const workflowOrder = projectProgressWorkflowOrderSql();
 		const progressCte = Prisma.sql`
 			WITH listed AS (
 				SELECT
@@ -1481,24 +1421,13 @@ export class ProjectService {
 					current_run.status AS "workflowStatus",
 					p."createdAt",
 					p.title,
-					CASE
-						WHEN p."ingestStatus" = 'failed' THEN 'failed'
-						WHEN p."ingestStatus" IN ('queued', 'pending') THEN 'queued'
-						WHEN p."ingestStatus" <> 'ready' THEN 'processing'
-						WHEN current_run.status = 'queued' THEN 'queued'
-						WHEN current_run.status IN ('running', 'waiting') THEN 'processing'
-						WHEN current_run.status = 'failed' THEN 'failed'
-						ELSE 'ready'
-					END AS "progressStatus"
+					${progressStatus} AS "progressStatus"
 				FROM "Project" p
 				LEFT JOIN LATERAL (
 					SELECT stage, status
 					FROM "WorkflowRun"
 					WHERE "projectId" = p.id
-					ORDER BY
-						CASE WHEN status IN ('queued', 'running', 'waiting') THEN 0 ELSE 1 END,
-						"updatedAt" DESC,
-						id DESC
+					ORDER BY ${workflowOrder}
 					LIMIT 1
 				) current_run ON TRUE
 				WHERE ${Prisma.join(progressConditions, " AND ")}
