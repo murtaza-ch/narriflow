@@ -138,7 +138,6 @@ function logMutation(tool: string, principal: NarriflowMcpPrincipal, workspaceId
 
 function buildDefaultContentPack(input: {
   clipCountTarget?: number;
-  autoRenderClips?: boolean;
 }) {
   return contentPackSchema.parse({
     outputTypes: ["short_clip"],
@@ -150,7 +149,6 @@ function buildDefaultContentPack(input: {
     preferredMaxDurationSec: 60,
     maxDurationSec: 90,
     platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
-    autoRenderClips: input.autoRenderClips ?? true,
     toneConstraints: ["concise", "conversational"],
     captionPreset: BRAND_DEFAULT_CAPTION_PRESET_ID,
     platformPlaybookVersion: "2026.2",
@@ -228,7 +226,6 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
         intervalMinutes: z.number().int().min(60).max(10080).optional(),
         maxEpisodesPerRun: z.number().int().min(1).max(10).optional(),
         clipCountTarget: z.number().int().min(3).max(30).optional(),
-        autoRenderClips: z.boolean().optional(),
       }),
       outputSchema: dataOutputSchema,
       annotations: {
@@ -254,7 +251,6 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
         maxEpisodesPerRun: input.maxEpisodesPerRun ?? 3,
         contentPack: buildDefaultContentPack({
           clipCountTarget: input.clipCountTarget,
-          autoRenderClips: input.autoRenderClips,
         }),
       }, { workspaceId: actor.workspaceId, actorUserId: principal.userId });
     }),

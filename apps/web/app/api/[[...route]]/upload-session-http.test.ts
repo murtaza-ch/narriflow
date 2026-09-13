@@ -31,7 +31,6 @@ const OPEN_PAYLOAD = {
       preferredMaxDurationSec: 60,
       maxDurationSec: 90,
       platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
-      autoRenderClips: false,
       toneConstraints: ["concise"],
       captionPreset: "brand_default",
       platformPlaybookVersion: "2026.2",

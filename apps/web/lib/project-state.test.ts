@@ -267,10 +267,15 @@ describe("processing checklist workflow-v2 states", () => {
     detect: { status: "completed" as const, progress: 100, errorCode: null },
     render: { status: "queued" as const, progress: 0, errorCode: null },
     mode: "clip" as const,
-    autoRenderClips: true,
     clipCount: 2,
     hasAnyRendered: false,
   };
+
+  test("detected clips wait for rendering even after the first artifact lands", () => {
+    const nodes = deriveProcessingChecklist({ ...base, hasAnyRendered: true });
+    expect(nodes.find((node) => node.id === "render")?.state).not.toBe("done");
+    expect(nodes.find((node) => node.id === "done")?.state).not.toBe("done");
+  });
 
   test("waiting remains active", () => {
     const nodes = deriveProcessingChecklist({

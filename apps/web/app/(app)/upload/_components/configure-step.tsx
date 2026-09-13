@@ -70,9 +70,6 @@ export function ConfigureStep({
   const [defaultAspectRatio, setDefaultAspectRatio] =
     useState<DefaultAspectRatio>(initialStep2.defaultAspectRatio);
   const [autoHook, setAutoHook] = useState(initialStep2.autoHook);
-  const [autoRenderClips, setAutoRenderClips] = useState(
-    initialStep2.autoRenderClips,
-  );
   const [specificMoments, setSpecificMoments] = useState(
     initialStep2.specificMoments,
   );
@@ -125,7 +122,6 @@ export function ConfigureStep({
         captionPreset,
         defaultAspectRatio,
         autoHook,
-        autoRenderClips,
         specificMoments,
         platformTargets,
         clipCountTarget,
@@ -139,7 +135,6 @@ export function ConfigureStep({
       captionPreset,
       defaultAspectRatio,
       autoHook,
-      autoRenderClips,
       specificMoments,
       platformTargets,
       clipCountTarget,
@@ -229,8 +224,6 @@ export function ConfigureStep({
         setCaptionPreset={setCaptionPreset}
         autoHook={autoHook}
         setAutoHook={setAutoHook}
-        autoRenderClips={autoRenderClips}
-        setAutoRenderClips={setAutoRenderClips}
         specificMoments={specificMoments}
         setSpecificMoments={setSpecificMoments}
         platformTargets={platformTargets}

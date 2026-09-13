@@ -48,7 +48,6 @@ const CONTENT_PACK = {
   preferredMaxDurationSec: 60,
   maxDurationSec: 90,
   platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
-  autoRenderClips: false,
   toneConstraints: ["concise", "conversational"],
   captionPreset: "brand_default",
   platformPlaybookVersion: "2026-07-01",

@@ -12,7 +12,6 @@ const baseContentPack = {
   clipGenerationMode: "best",
   clipCountTarget: 10,
   platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
-  autoRenderClips: false,
   toneConstraints: ["concise"],
   captionPreset: BRAND_DEFAULT_CAPTION_PRESET_ID,
   platformPlaybookVersion: "2026.2",

@@ -2175,11 +2175,6 @@ export default function DashboardPrototype({ initialView }: { initialView?: stri
                   checked={autoHook}
                   onChange={setAutoHook}
                 />
-                <Toggle
-                  label="Prepare previews automatically"
-                  checked={autoRender}
-                  onChange={setAutoRender}
-                />
               </div>
               <button
                 type="button"

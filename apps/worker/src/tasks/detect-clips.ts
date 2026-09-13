@@ -26,10 +26,7 @@ import {
   type ContentPack,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-import {
-  notifyTerminalOutcome,
-  notifyWorkflowFailureAfterSettlement,
-} from "../notifications";
+import { notifyWorkflowFailureAfterSettlement } from "../notifications";
 
 interface WorkflowRunJob {
   id: string;
@@ -1360,7 +1357,6 @@ export async function processClipDetectionRun(
       candidateCountTarget,
       durationPolicy,
       platformTargets,
-      autoRenderClips: contentPack?.autoRenderClips ?? false,
     });
 
     // Update progress
@@ -1550,25 +1546,23 @@ export async function processClipDetectionRun(
       contentPack,
     );
 
-    if (contentPack?.autoRenderClips) {
-      try {
-        await clipService.autoQueueDefaultRenders(
-          attempt,
-          contentPack.defaultAspectRatio,
-        );
-      } catch (error) {
-        log("error", "auto_render_queue_failed", {
-          workflowRunId: run.id,
-          projectId: run.projectId,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        throw new WorkflowWorkerError(
-          "auto_render_queue_failed",
-          `Failed to queue automatic renders: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+    try {
+      await clipService.autoQueueDefaultRenders(
+        attempt,
+        contentPack?.defaultAspectRatio ?? "9:16",
+      );
+    } catch (error) {
+      log("error", "auto_render_queue_failed", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw new WorkflowWorkerError(
+        "auto_render_queue_failed",
+        `Failed to queue automatic renders: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
 
     // Complete workflow run
@@ -1580,15 +1574,6 @@ export async function processClipDetectionRun(
       clipCount: finalClips.length,
       tokensUsed: totalTokensUsed,
     });
-
-    if (!contentPack?.autoRenderClips) {
-      await notifyTerminalOutcome({
-        projectId: run.projectId,
-        sourceId: run.id,
-        outcome: "clips_ready",
-        clipCount: finalClips.length,
-      });
-    }
   } catch (error) {
     rethrowWorkflowAttemptLost(error);
     const failure = workflowFailureFromUnknown(error);

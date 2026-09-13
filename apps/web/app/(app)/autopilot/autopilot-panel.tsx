@@ -70,7 +70,6 @@ type RuleAction = "toggle" | "run" | "delete";
 
 function buildContentPack(input: {
   clipCountTarget: number;
-  autoRenderClips: boolean;
 }): ContentPack {
   return contentPackSchema.parse({
     outputTypes: ["short_clip"],
@@ -82,7 +81,6 @@ function buildContentPack(input: {
     preferredMaxDurationSec: 60,
     maxDurationSec: 90,
     platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
-    autoRenderClips: input.autoRenderClips,
     toneConstraints: ["concise", "conversational"],
     captionPreset: BRAND_DEFAULT_CAPTION_PRESET_ID,
     platformPlaybookVersion: "2026.2",
@@ -175,7 +173,6 @@ export function AutopilotPanel({
   >("future_only");
   const [initialImportCount, setInitialImportCount] = useState("3");
   const [clipCountTarget, setClipCountTarget] = useState("10");
-  const [autoRenderClips, setAutoRenderClips] = useState(true);
 
   // Per-rule pending state — one in-flight action per rule, never global.
   const [pendingRules, setPendingRules] = useState<
@@ -198,7 +195,6 @@ export function AutopilotPanel({
     setInitialImportMode("future_only");
     setInitialImportCount("3");
     setClipCountTarget("10");
-    setAutoRenderClips(true);
     setFormError(null);
   }
 
@@ -242,7 +238,6 @@ export function AutopilotPanel({
         initialImportCount: initialCount,
         contentPack: buildContentPack({
           clipCountTarget: clipCount,
-          autoRenderClips,
         }),
       }),
     });
@@ -746,15 +741,6 @@ export function AutopilotPanel({
                           inputProps={{ id: "autopilot-clips-per-episode" }}
                         />
                       </Field>
-                      <Flex align="end" pb="1">
-                        <Switch
-                          size="sm"
-                          checked={autoRenderClips}
-                          onCheckedChange={setAutoRenderClips}
-                        >
-                          Render clips after detection
-                        </Switch>
-                      </Flex>
                     </SimpleGrid>
                   </FieldGroup>
 

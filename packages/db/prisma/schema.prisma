@@ -496,7 +496,6 @@ model ContentPack {
   preferredMaxDurationSec Int          @default(60)
   maxDurationSec          Int          @default(90)
   platformTargets         String[]     @default(["tiktok", "youtube_shorts", "instagram_reels"])
-  autoRenderClips         Boolean      @default(false)
   toneConstraints         Json
   captionPreset           String
   platformPlaybookVersion String

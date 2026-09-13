@@ -304,7 +304,7 @@ Clip detection settings are stored in the latest content pack for each project:
 - Default preferred duration: 30-60 seconds.
 - Default hard duration: 15-90 seconds.
 - Default platform targets: TikTok, YouTube Shorts, and Instagram Reels.
-- Default render behavior: detection only. Users render selected clips explicitly unless auto-render is enabled.
+- Clips render automatically after detection in the selected aspect ratio.
 
 The worker asks OpenAI for a larger candidate pool than the final clip count, repairs timings against word-level transcript data, deduplicates overlaps, then selects a diverse set across the source timeline. Ranking combines hook strength, emotional intensity, story completeness, pacing, duration fit, and platform scores.
 
@@ -423,7 +423,7 @@ Runtime ports:
 7. Confirm the transcript appears in the project page.
 8. Confirm the worker auto-queues and completes `moment_detection`.
 9. Confirm detected clips appear in the project page.
-10. Confirm the worker auto-queues renders only when auto-render is enabled; otherwise render selected clips manually.
+10. Confirm the worker automatically queues renders after clip detection.
 11. Download completed rendered clips from the project page.
 12. Export transcript `TXT`, `SRT`, and `VTT` if needed.
 

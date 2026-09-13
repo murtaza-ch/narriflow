@@ -25,8 +25,6 @@ export interface ClipStyleSettingsProps {
   setCaptionPreset: (value: CaptionPresetId) => void;
   autoHook: boolean;
   setAutoHook: (value: boolean) => void;
-  autoRenderClips: boolean;
-  setAutoRenderClips: (value: boolean) => void;
   specificMoments: string;
   setSpecificMoments: (value: string) => void;
   platformTargets: ClipPlatformTarget[];
@@ -47,8 +45,6 @@ export function ClipStyleSettings({
   setCaptionPreset,
   autoHook,
   setAutoHook,
-  autoRenderClips,
-  setAutoRenderClips,
   specificMoments,
   setSpecificMoments,
   platformTargets,
@@ -80,7 +76,7 @@ export function ClipStyleSettings({
       </Box>
       {mode === "clip" ? (
         <Grid
-          templateColumns={{ base: "1fr", md: "1fr 1fr" }}
+          templateColumns="1fr"
           gap="4"
           bg="bg.subtle"
           rounded="xl"
@@ -101,24 +97,6 @@ export function ClipStyleSettings({
               inputProps={{
                 name: "autoHook",
                 "aria-labelledby": "auto-hook-label",
-              }}
-            />
-          </Flex>
-          <Flex align="center" justify="space-between" gap="3">
-            <Box>
-              <Text id="auto-render-label" fontSize="13px" fontWeight="550">
-                Auto-render clips
-              </Text>
-              <Text fontSize="11px" color="fg.muted" mt="1">
-                Render automatically after detection.
-              </Text>
-            </Box>
-            <Switch
-              checked={autoRenderClips}
-              onCheckedChange={setAutoRenderClips}
-              inputProps={{
-                name: "autoRenderClips",
-                "aria-labelledby": "auto-render-label",
               }}
             />
           </Flex>

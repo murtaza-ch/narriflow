@@ -3573,7 +3573,6 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
             maxDurationSec: contentPack.maxDurationSec,
             platformTargets: contentPack.platformTargets,
-            autoRenderClips: contentPack.autoRenderClips,
             toneConstraints: contentPack.toneConstraints,
             captionPreset: contentPack.captionPreset,
             platformPlaybookVersion: contentPack.platformPlaybookVersion,

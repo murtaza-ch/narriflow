@@ -1990,7 +1990,6 @@ export class ClipService {
             preferredMaxDurationSec: parsedContentPack.preferredMaxDurationSec,
             maxDurationSec: parsedContentPack.maxDurationSec,
             platformTargets: parsedContentPack.platformTargets,
-            autoRenderClips: parsedContentPack.autoRenderClips,
             toneConstraints: parsedContentPack.toneConstraints,
             captionPreset: parsedContentPack.captionPreset,
             platformPlaybookVersion: parsedContentPack.platformPlaybookVersion,

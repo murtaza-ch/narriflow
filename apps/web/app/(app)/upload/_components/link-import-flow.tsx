@@ -64,7 +64,6 @@ function step2StateFromContentPack(contentPack: ContentPack): LinkConfigureState
     captionPreset: contentPack.captionPreset,
     defaultAspectRatio: contentPack.defaultAspectRatio,
     autoHook: contentPack.autoHook,
-    autoRenderClips: contentPack.autoRenderClips,
     specificMoments: contentPack.specificMoments,
     platformTargets: contentPack.platformTargets,
     clipCountTarget: contentPack.clipCountTarget,

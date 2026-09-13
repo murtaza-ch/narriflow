@@ -22,7 +22,6 @@ function baseInput(overrides: Partial<Parameters<typeof buildUploadSettingsFormD
     brandTemplateId: null,
     clipCountTarget: 10,
     platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"] as const,
-    autoRenderClips: false,
     toneConstraints: "concise, conversational",
     ...overrides,
   };
@@ -60,7 +59,6 @@ describe("content pack form parsing", () => {
         baseInput({
           clipCountTarget: 22,
           platformTargets: ["tiktok"],
-          autoRenderClips: true,
           toneConstraints: "energetic, punchy",
         }),
       ),
@@ -68,7 +66,6 @@ describe("content pack form parsing", () => {
 
     expect(contentPack.clipCountTarget).toBe(22);
     expect(contentPack.platformTargets).toEqual(["tiktok"]);
-    expect(contentPack.autoRenderClips).toBe(true);
     expect(contentPack.toneConstraints).toEqual(["energetic", "punchy"]);
   });
 
@@ -88,10 +85,9 @@ describe("content pack form parsing", () => {
 });
 
 test("local upload preserves aspect ratio and an explicitly disabled hook", () => {
-  const context = buildUploadGenerationContext(baseInput({defaultAspectRatio: "1:1", autoHook: false, autoRenderClips: false}));
+  const context = buildUploadGenerationContext(baseInput({ defaultAspectRatio: "1:1", autoHook: false }));
   expect(context.contentPack.defaultAspectRatio).toBe("1:1");
   expect(context.contentPack.autoHook).toBe(false);
-  expect(context.contentPack.autoRenderClips).toBe(false);
 });
 
 test("RSS form carries the selected brand profile", () => {

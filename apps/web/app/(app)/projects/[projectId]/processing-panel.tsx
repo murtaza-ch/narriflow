@@ -172,7 +172,6 @@ export interface ProcessingPanelProps {
   detect: ProcessingStageInput;
   render: ProcessingStageInput;
   mode: "clip" | "caption_only";
-  autoRenderClips: boolean;
   clipCount: number;
   hasAnyRendered: boolean;
   quotaBlockedMessage: string | null;
@@ -181,7 +180,6 @@ export interface ProcessingPanelProps {
     defaultProcessingStartSec: number | null;
     defaultProcessingEndSec: number | null;
     defaultCaptionPreset: CaptionPresetId;
-    defaultAutoRenderClips: boolean;
   };
   defaultSourceLanguageCode: string | null;
 }
@@ -235,7 +233,6 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
     detect: detectMerged,
     render: renderMerged,
     mode: props.mode,
-    autoRenderClips: props.autoRenderClips,
     clipCount: props.clipCount,
     hasAnyRendered: props.hasAnyRendered,
   });

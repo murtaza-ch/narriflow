@@ -101,7 +101,6 @@ interface AdvancedClipSettingsProps {
   defaultProcessingStartSec?: number | null;
   defaultProcessingEndSec?: number | null;
   defaultCaptionPreset?: CaptionPresetId;
-  defaultAutoRenderClips?: boolean;
   /** Inline toolbar rendering — trigger + chips on one row, no group label. */
   compact?: boolean;
 }
@@ -119,7 +118,6 @@ export function AdvancedClipSettings({
   defaultProcessingStartSec = null,
   defaultProcessingEndSec = null,
   defaultCaptionPreset = BRAND_DEFAULT_CAPTION_PRESET_ID,
-  defaultAutoRenderClips = false,
   compact = false,
 }: AdvancedClipSettingsProps) {
   const [open, setOpen] = useState(false);
@@ -132,7 +130,6 @@ export function AdvancedClipSettings({
     "youtube_shorts",
     "instagram_reels",
   ]);
-  const [autoRender, setAutoRender] = useState(defaultAutoRenderClips);
 
   const platformSummary =
     platforms.length === platformOptions.length
@@ -170,7 +167,6 @@ export function AdvancedClipSettings({
         <SummaryChip>{clipLengthChipLabels[clipLengthPreset] ?? "Auto length"}</SummaryChip>
         <SummaryChip>{clipCount || "10"} clips</SummaryChip>
         <SummaryChip>{platformSummary}</SummaryChip>
-        {autoRender && <SummaryChip>Auto-render</SummaryChip>}
       </Flex>
 
       <input type="hidden" name="clipGenerationMode" value="best" />
@@ -304,13 +300,6 @@ export function AdvancedClipSettings({
                       </Checkbox>
                     ))}
                   </Flex>
-                  <Checkbox
-                    checked={autoRender}
-                    onCheckedChange={setAutoRender}
-                    inputProps={{ name: "autoRenderClips" }}
-                  >
-                    Auto-render detected clips
-                  </Checkbox>
                   <Checkbox defaultChecked inputProps={{ name: "autoHook" }}>
                     Auto-hook (favor strong opening clips)
                   </Checkbox>

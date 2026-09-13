@@ -44,7 +44,6 @@ export const contentPackSchema = z.object({
     .array(clipPlatformTargetSchema)
     .min(1)
     .default(["tiktok", "youtube_shorts", "instagram_reels"]),
-  autoRenderClips: z.boolean().default(false),
   toneConstraints: z.array(z.string()).default([]),
   captionPreset: captionPresetIdSchema.default(BRAND_DEFAULT_CAPTION_PRESET_ID),
   platformPlaybookVersion: z.string().min(1),

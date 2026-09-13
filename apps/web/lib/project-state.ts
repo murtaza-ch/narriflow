@@ -306,27 +306,23 @@ export interface ProcessingChecklistInput {
   detect: ProcessingStageInput;
   render: ProcessingStageInput;
   mode: "clip" | "caption_only";
-  autoRenderClips: boolean;
   clipCount: number;
   hasAnyRendered: boolean;
 }
 
 const DONE_COPY = {
-  clipNoAutoRender: "Clips found — previews are finishing.",
   clipAutoRender: "All done — your clips are rendered and ready.",
   captionOnly: "Your captioned video is ready.",
 } as const;
 
 /**
  * Vertical checklist stepper for the processing panel: Import -> Transcribe
- * -> Find best moments -> (Render, only when auto-render is on or the mode
- * is caption-only) -> Done. Pure derivation — the caller owns merging
+ * -> Find best moments -> Render -> Done. The caller owns merging
  * server-rendered state with any live SSE event for freshness.
  */
 export function deriveProcessingChecklist(
   input: ProcessingChecklistInput,
 ): ProcessingNode[] {
-  const showRenderNode = input.autoRenderClips || input.mode === "caption_only";
 
   const importState: PipelineStepState =
     input.ingestStatus === "ready"
@@ -345,9 +341,7 @@ export function deriveProcessingChecklist(
   const doneCopy =
     input.mode === "caption_only"
       ? DONE_COPY.captionOnly
-      : input.autoRenderClips
-        ? DONE_COPY.clipAutoRender
-        : DONE_COPY.clipNoAutoRender;
+      : DONE_COPY.clipAutoRender;
 
   // Auto-render and caption-only both fold a mandatory render into the same
   // run, so "done" must track the render stage's own terminal status
@@ -357,11 +351,7 @@ export function deriveProcessingChecklist(
   // `renderState` already falls back to `hasAnyRendered` when there's no
   // active run to read a stage status from (see the caller), so this stays
   // exactly as accurate once the run disappears.
-  const isDone = input.autoRenderClips
-    ? renderState === "done"
-    : input.mode === "caption_only"
-      ? renderState === "done"
-      : input.clipCount > 0 || detectState === "done";
+  const isDone = renderState === "done";
 
   const nodes: ProcessingNode[] = [
     {
@@ -397,20 +387,18 @@ export function deriveProcessingChecklist(
     },
   ];
 
-  if (showRenderNode) {
-    nodes.push({
-      id: "render",
-      label: renderLabel,
-      state: renderState,
-      detail:
-        renderState === "active" &&
-        input.render.progress > 0 &&
-        input.render.progress < 100
-          ? `${Math.round(input.render.progress)}%`
-          : null,
-      errorCode: input.render.errorCode,
-    });
-  }
+  nodes.push({
+    id: "render",
+    label: renderLabel,
+    state: renderState,
+    detail:
+      renderState === "active" &&
+      input.render.progress > 0 &&
+      input.render.progress < 100
+        ? `${Math.round(input.render.progress)}%`
+        : null,
+    errorCode: input.render.errorCode,
+  });
 
   nodes.push({
     id: "done",

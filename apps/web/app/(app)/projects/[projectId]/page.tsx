@@ -335,7 +335,6 @@ export default async function ProjectDetailPage({
 		defaultProcessingStartSec: latestContentPack?.processingStartSec ?? null,
 		defaultProcessingEndSec: latestContentPack?.processingEndSec ?? null,
 		defaultCaptionPreset,
-		defaultAutoRenderClips: latestContentPack?.autoRenderClips ?? false,
 	};
 
 	// Pipeline derivation from existing workflow/status data.
@@ -353,12 +352,11 @@ export default async function ProjectDetailPage({
 
 	// Link-first split (Phase 0/1): the latest pack may still be a draft — a
 	// draft must never be treated as an active configuration (never read its
-	// mode/autoRenderClips as if generation could be running against it).
+	// mode as if generation could be running against it).
 	const isDraftPack = latestContentPack?.draft === true;
 	const hasCommittedPack = latestContentPack !== null && !isDraftPack;
 	const generationMode: "clip" | "caption_only" =
 		latestContentPack?.mode === "caption_only" ? "caption_only" : "clip";
-	const autoRenderClips = latestContentPack?.autoRenderClips ?? false;
 
 	const ingestInProgress = !isIngestReady && !isIngestFailed;
 	const runInFlight =
@@ -406,10 +404,8 @@ export default async function ProjectDetailPage({
 				? { status: "completed", progress: 100, errorCode: null }
 				: { status: null, progress: 0, errorCode: null };
 
-	// Renders queued by auto-render (or caption-only's mandatory 16:9 render)
-	// continue within the SAME WorkflowRun row, so its stage moves on to
-	// "clip_rendering" once detection hands off — this is the latest
-	// render-stage run's status, not a guess from asset counts.
+	// Detection queues a separate render run. Read that run's status while
+	// it is active, then fall back to completed artifacts.
 	const renderStage: ProcessingStageInput =
 		activeRun?.stage === "clip_rendering"
 			? {
@@ -425,18 +421,7 @@ export default async function ProjectDetailPage({
 	// Step 01/02 form cards whenever a run is in flight, or ingest is still
 	// running/failed with a committed pack, or quota was crossed mid-flight.
 	//
-	// Mode-aware cutover to the ranked-rows results view (Phase 3):
-	// - Plain clip mode (no auto-render): resolves as soon as clips are found
-	//   — render is a later, per-clip, user-triggered action that never blocks
-	//   results.
-	// - Clip mode WITH auto-render, and caption-only (its render is
-	//   mandatory): fold a render into the same run, so the panel stays up
-	//   until that render *succeeds* — a mid-render or failed render must not
-	//   silently flip to results. A render failure keeps the panel showing
-	//   its in-panel danger band (the checklist's render node already renders
-	//   one) rather than dropping the user into an empty/incomplete results view.
-	const renderGatesProcessingPanel =
-		generationMode === "caption_only" || autoRenderClips;
+	// Keep processing visible until rendering succeeds.
 	const renderStageSucceeded =
 		renderStage.status === "completed" || renderStage.status === "partial";
 	const showProcessingPanel =
@@ -447,7 +432,7 @@ export default async function ProjectDetailPage({
 				runInFlight ||
 				runFailed ||
 				quotaBlockedMidFlight
-			: renderGatesProcessingPanel && !renderStageSucceeded);
+			: !renderStageSucceeded);
 
 	const steps: PipelineStepView[] = [
 		{
@@ -862,7 +847,6 @@ export default async function ProjectDetailPage({
 										detect={detectStage}
 										render={renderStage}
 										mode={generationMode}
-										autoRenderClips={autoRenderClips}
 										clipCount={clips.length}
 										hasAnyRendered={hasAnyRendered}
 										quotaBlockedMessage={quotaBlockedMessage}

@@ -1800,7 +1800,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         preferredMaxDurationSec: 60,
         maxDurationSec: 90,
         platformTargets: ["tiktok"],
-        autoRenderClips: false,
         toneConstraints: [],
         captionPreset: "default",
         platformPlaybookVersion: "test",

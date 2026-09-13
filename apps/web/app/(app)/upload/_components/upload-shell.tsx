@@ -267,7 +267,6 @@ export function UploadShell({
     "instagram_reels",
   ]);
   const [clipCountTarget, setClipCountTarget] = useState(10);
-  const [autoRenderClips, setAutoRenderClips] = useState(false);
   const [toneConstraints, setToneConstraints] = useState(
     "concise, conversational",
   );
@@ -528,7 +527,6 @@ export function UploadShell({
       brandProfileId,
       clipCountTarget,
       platformTargets,
-      autoRenderClips,
       toneConstraints,
     };
   }
@@ -1227,8 +1225,6 @@ export function UploadShell({
               setCaptionPreset={setCaptionPreset}
               autoHook={autoHook}
               setAutoHook={setAutoHook}
-              autoRenderClips={autoRenderClips}
-              setAutoRenderClips={setAutoRenderClips}
               specificMoments={specificMoments}
               setSpecificMoments={setSpecificMoments}
               platformTargets={platformTargets}

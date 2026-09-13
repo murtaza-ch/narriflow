@@ -22,7 +22,6 @@ const defaultContentPack: ContentPack = {
   preferredMaxDurationSec: 60,
   maxDurationSec: 90,
   platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
-  autoRenderClips: false,
   toneConstraints: ["concise", "conversational"],
   captionPreset: BRAND_DEFAULT_CAPTION_PRESET_ID,
   platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION,
@@ -142,7 +141,6 @@ export function readContentPackFromForm(formData: FormData): ContentPack {
       platformTargets.length > 0
         ? platformTargets
         : defaultContentPack.platformTargets,
-    autoRenderClips: readBoolean(formData, "autoRenderClips", false),
     toneConstraints:
       toneConstraints.length > 0
         ? toneConstraints
@@ -183,7 +181,6 @@ export type UploadSettingsFormInput = {
   defaultAspectRatio?: ContentPack["defaultAspectRatio"];
   clipCountTarget: number;
   platformTargets: ClipPlatformTarget[];
-  autoRenderClips: boolean;
   toneConstraints: string;
 };
 
@@ -211,7 +208,6 @@ export function buildUploadSettingsFormData(input: UploadSettingsFormInput) {
   for (const target of input.platformTargets) {
     formData.append("platformTargets", target);
   }
-  formData.set("autoRenderClips", String(input.autoRenderClips));
   formData.set("toneConstraints", input.toneConstraints);
   return formData;
 }
