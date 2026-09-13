@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
 	ClipAspectRatio,
 	ClipRenderResolution,
@@ -45,6 +45,7 @@ export type BulkScheduleOperation = {
 };
 
 export interface BulkScheduleStore {
+	find(input: { workspaceId: string; projectId: string; idempotencyKey: string }): Promise<BulkScheduleOperation | null>;
 	open(input: {
 		workspaceId: string;
 		projectId: string;
@@ -375,6 +376,7 @@ export function createBulkSocialScheduling(dependencies: {
 		projectId: string;
 		clipIds: string[];
 		bulk: boolean;
+		replay: boolean;
 		permission: "publishing.manage";
 	}): Promise<{ pricingTier: string; timeZone: string }>;
 	schedule(input: {
@@ -404,28 +406,31 @@ export function createBulkSocialScheduling(dependencies: {
 		socialPostId: string;
 		status: "preparing_video" | "scheduled";
 	}>;
+	recover(input: { workspaceId: string; projectId: string; clientIdempotencyKey: string }): Promise<{ socialPostId: string; status: "preparing_video" | "scheduled" } | null>;
 	createId(): string;
 	now(): Date;
 }) {
 	return {
 		async schedule(input: BulkSocialScheduleInput) {
 			validateInput(input);
+			const existing = await dependencies.store.find(input);
 			const access = await dependencies.authorize({
 				actorUserId: input.actorUserId,
 				workspaceId: input.workspaceId,
 				projectId: input.projectId,
 				clipIds: [...new Set(input.items.map((item) => item.clipId))],
 				bulk: input.items.length > 1,
+				replay: Boolean(existing),
 				permission: "publishing.manage",
 			});
-			if (input.timeZone !== access.timeZone) {
+			if (!existing && input.timeZone !== access.timeZone) {
 				throw new BulkSocialSchedulingError(
 					"schedule_timezone_mismatch",
 					"Use the workspace timezone shown in the scheduling form",
 				);
 			}
 			const clipIds = [...new Set(input.items.map((item) => item.clipId))];
-			const slots = publishingSlots({ ...input, clipIds }, dependencies.now());
+			const slots = existing ? [] : publishingSlots({ ...input, clipIds }, dependencies.now());
 			const requestFingerprint = sha256({
 				contract: "publishing-v2",
 				...input,
@@ -442,7 +447,7 @@ export function createBulkSocialScheduling(dependencies: {
 				thumbnail: item.thumbnail,
 				scheduledFor: slots[clipIds.indexOf(item.clipId)]!,
 			}));
-			const opened = await dependencies.store.open({
+			const opened = existing ? { operation: existing, replayed: true } : await dependencies.store.open({
 				workspaceId: input.workspaceId,
 				projectId: input.projectId,
 				idempotencyKey: input.idempotencyKey,
@@ -542,93 +547,40 @@ export function createBulkSocialScheduling(dependencies: {
 					);
 					continue;
 				}
+				const identity = {
+					workspaceId: input.workspaceId, projectId: input.projectId,
+					clientIdempotencyKey: bulkScheduleDeterministicUuid(`${input.workspaceId}:${input.projectId}:${plan.requestKey}`),
+				};
+				const uncertain = () => new BulkSocialSchedulingError(
+					"campaign_schedule_item_failed",
+					"The submission may have been accepted. Check the previous submission to recover its result.", true,
+				);
 				let scheduled: Awaited<ReturnType<typeof admit>>;
 				try {
-					scheduled = await admit(plan);
+					// Recovery reads the durable intent before mutable admission checks.
+					scheduled = await dependencies.recover(identity) ?? await admit(plan);
 				} catch (error) {
-					if (!(error instanceof ExpectedDomainFailureError)) {
-						try {
-							const recovered = await admit(plan);
-							await dependencies.store.settleItem(
-								opened.operation.id,
-								plan.requestKey,
-								claimed.claimToken,
-								{
-									status: "succeeded",
-									errorCode: null,
-									retryable: false,
-									socialPostId: recovered.socialPostId,
-								},
-							);
-							continue;
-						} catch {
-							throw new BulkSocialSchedulingError(
-								"campaign_schedule_item_failed",
-								"The submission may have been accepted but its result could not be recovered. Check the previous submission.",
-								true,
-							);
-						}
+					let recovered: Awaited<ReturnType<typeof dependencies.recover>>;
+					try { recovered = await dependencies.recover(identity); }
+					catch { throw uncertain(); }
+					if (recovered) scheduled = recovered;
+					else {
+						// Only a known rejection with a confirmed absent intent is terminal.
+						if (!(error instanceof ExpectedDomainFailureError)) throw uncertain();
+						const retryable = error.kind === "rate_limited" || error.kind === "unavailable";
+						await dependencies.store.settleItem(opened.operation.id, plan.requestKey, claimed.claimToken, {
+							status: retryable ? "failed" : "ineligible", errorCode: error.code, retryable, socialPostId: null,
+						});
+						continue;
 					}
-					const normalized =
-						error instanceof ExpectedDomainFailureError
-							? {
-									code: error.code,
-									retryable:
-										error.kind === "rate_limited" ||
-										error.kind === "unavailable",
-								}
-							: {
-									code: "campaign_schedule_item_failed",
-									retryable: false,
-								};
-					await dependencies.store.settleItem(
-						opened.operation.id,
-						plan.requestKey,
-						claimed.claimToken,
-						{
-							status: normalized.retryable ? "failed" : "ineligible",
-							errorCode: normalized.code,
-							retryable: normalized.retryable,
-							socialPostId: null,
-						},
-					);
-					continue;
 				}
+				const patch = { status: "succeeded" as const, errorCode: null, retryable: false, socialPostId: scheduled.socialPostId };
 				try {
-					await dependencies.store.settleItem(
-						opened.operation.id,
-						plan.requestKey,
-						claimed.claimToken,
-						{
-							status: "succeeded",
-							errorCode: null,
-							retryable: false,
-							socialPostId: scheduled.socialPostId,
-						},
-					);
+					await dependencies.store.settleItem(opened.operation.id, plan.requestKey, claimed.claimToken, patch);
 				} catch {
-						// Admission may have committed before the Campaign Operation write
-						// failed. Re-admit the deterministic identity before reporting it.
-						try {
-							const recovered = await admit(plan);
-							await dependencies.store.settleItem(
-								opened.operation.id,
-								plan.requestKey,
-								claimed.claimToken,
-								{
-									status: "succeeded",
-									errorCode: null,
-									retryable: false,
-									socialPostId: recovered.socialPostId,
-								},
-							);
-						} catch {
-							throw new BulkSocialSchedulingError(
-								"campaign_schedule_item_failed",
-								"The submission was accepted but its result could not be recovered. Check the previous submission.",
-								true,
-							);
-						}
+					try {
+						await dependencies.store.settleItem(opened.operation.id, plan.requestKey, claimed.claimToken, patch);
+					} catch { throw uncertain(); }
 				}
 			}
 			const settled = await dependencies.store.settleOperation(
@@ -654,10 +606,14 @@ function cloneOperation(
 	};
 }
 
-export function createInMemoryBulkScheduleStore(): BulkScheduleStore {
+export function createInMemoryBulkScheduleStore(now: () => Date = () => new Date()): BulkScheduleStore {
 	const operations = new Map<string, BulkScheduleOperation>();
-	const claims = new Map<string, string>();
+	const claims = new Map<string, { token: string; expiresAt: number }>();
 	return {
+		async find(input) {
+			const existing = [...operations.values()].find((operation) => operation.workspaceId === input.workspaceId && operation.projectId === input.projectId && operation.idempotencyKey === input.idempotencyKey);
+			return existing ? cloneOperation(existing) : null;
+		},
 		async open(input) {
 			const existing = [...operations.values()].find(
 				(operation) =>
@@ -676,12 +632,11 @@ export function createInMemoryBulkScheduleStore(): BulkScheduleStore {
 			const item = operation?.items.find(
 				(candidate) => candidate.requestKey === requestKey,
 			);
-			if (!operation || !item || item.status !== "pending") return null;
+			const priorClaim = claims.get(`${operationId}:${requestKey}`);
+			if (!operation || !item || (item.status !== "pending" && !(item.status === "processing" && priorClaim && priorClaim.expiresAt <= now().getTime()))) return null;
 			item.status = "processing";
-			const claimToken = bulkScheduleDeterministicUuid(
-				`${operationId}:${requestKey}:${item.id}`,
-			);
-			claims.set(`${operationId}:${requestKey}`, claimToken);
+			const claimToken = randomUUID();
+			claims.set(`${operationId}:${requestKey}`, { token: claimToken, expiresAt: now().getTime() + 10 * 60_000 });
 			return { item: { ...item }, claimToken };
 		},
 		async settleItem(operationId, requestKey, claimToken, patch) {
@@ -691,7 +646,7 @@ export function createInMemoryBulkScheduleStore(): BulkScheduleStore {
 			);
 			if (!item)
 				throw new BulkSocialSchedulingError("campaign_schedule_item_not_found");
-			if (claims.get(`${operationId}:${requestKey}`) !== claimToken) {
+			if (claims.get(`${operationId}:${requestKey}`)?.token !== claimToken || claims.get(`${operationId}:${requestKey}`)!.expiresAt <= now().getTime()) {
 				throw new BulkSocialSchedulingError("campaign_schedule_claim_lost");
 			}
 			Object.assign(item, patch);
@@ -701,6 +656,7 @@ export function createInMemoryBulkScheduleStore(): BulkScheduleStore {
 			const operation = operations.get(operationId);
 			if (!operation)
 				throw new BulkSocialSchedulingError("campaign_schedule_not_found");
+			if (operation.items.some((item) => item.status === "pending" || item.status === "processing")) return cloneOperation(operation);
 			const ineligible = operation.items.filter(
 				(item) => item.status === "ineligible",
 			).length;

@@ -31,7 +31,9 @@ import { prismaAssistedCopyStore } from "./assisted-social-copy-runtime";
 import { createAssistedSocialCopy } from "./assisted-social-copy";
 import { AutopilotService } from "./autopilot.service";
 import { dubbingService } from "./dubbing.service";
-import { bulkSocialSchedulingService } from "./bulk-social-scheduling-runtime";
+import { workspaceLibraryService } from "./workspace-library.service";
+import { socialService } from "./social.service";
+import { bulkSocialSchedulingService, prismaBulkScheduleStore } from "./bulk-social-scheduling-runtime";
 
 const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
 const databaseSchema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;
@@ -1045,6 +1047,104 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				(variant) => variant.aspectRatio === "9:16" && variant.hasAsset,
 			),
 		).toBe(true);
+	});
+
+	test("library pagination stays newest-first beyond old caps and survives a deleted boundary", async () => {
+		const current = await fixture("library-pages");
+		const origin = Date.parse("2026-01-01T00:00:00Z");
+		await prisma.clipExport.createMany({ data: Array.from({ length: 205 }, (_, i) => ({
+			id: randomUUID(), projectId: current.project.id, workspaceId: current.workspace.id,
+			createdByUserId: current.user.id, clipId: current.clip.id, editorRevision: 3,
+			fingerprint: `page-${i}`, resolution: "1080p", watermark: false, status: "ready" as const,
+			createdAt: new Date(origin + i * 1000),
+		})) });
+		const first = await workspaceLibraryService.listExports(current.user.id, current.workspace.id);
+		expect(first.items).toHaveLength(100);
+		expect(first.items[0]!.id).toBe(current.clipExport.id);
+		expect(first.nextCursor).toBeTruthy();
+		const boundary = first.items.at(-1)!;
+		await prisma.clipExport.delete({ where: { id: boundary.id } });
+		const exports = [...first.items];
+		let cursor = first.nextCursor;
+		while (cursor) {
+			const page = await workspaceLibraryService.listExports(current.user.id, current.workspace.id, { cursor });
+			expect(page.items.length).toBeLessThanOrEqual(100);
+			exports.push(...page.items);
+			cursor = page.nextCursor;
+		}
+		expect(exports).toHaveLength(206);
+		expect(new Set(exports.map((item) => item.id)).size).toBe(206);
+		expect(exports.map((item) => item.createdAt)).toEqual(exports.map((item) => item.createdAt).sort().reverse());
+		await prisma.clip.createMany({ data: Array.from({ length: 505 }, (_, i) => ({
+			...current.clip, id: randomUUID(), index: i + 1, title: `Library clip ${i}`,
+			createdAt: new Date(origin + i * 1000), updatedAt: new Date(origin + i * 1000),
+		})) });
+		const clipIds: string[] = [];
+		let clipCursor: string | null = null;
+		do {
+			const page = await workspaceLibraryService.getCalendarComposerOptions(current.user.id, current.workspace.id, { cursor: clipCursor ?? undefined });
+			expect(page.clips.length).toBeLessThanOrEqual(100);
+			if (!clipCursor) expect(page.clips[0]!.id).toBe(current.clip.id);
+			clipIds.push(...page.clips.map((clip) => clip.id));
+			clipCursor = page.nextCursor;
+		} while (clipCursor);
+		expect(new Set(clipIds).size).toBe(506);
+		const search = await workspaceLibraryService.getCalendarComposerOptions(current.user.id, current.workspace.id, { query: "Library clip 504" });
+		expect(search.clips.map((clip) => clip.title)).toEqual(["Library clip 504"]);
+		const malformed = await workspaceLibraryService.listExports(current.user.id, current.workspace.id, { cursor: "invalid-cursor" });
+		expect(malformed.items[0]!.id).toBe(current.clipExport.id);
+	});
+
+	test("Campaign recovery retains a committed post across lost responses, expired claims, and changed eligibility", async () => {
+		const current = await fixture("campaign-recovery");
+		const account = await prisma.socialAccount.create({ data: {
+			userId: current.user.id, workspaceId: current.workspace.id, createdByUserId: current.user.id,
+			platform: "youtube_shorts", providerAccountId: randomUUID(), displayName: "Test account",
+			accessTokenEncrypted: "fixture-token",
+		} });
+		const input = {
+			actorUserId: current.user.id, workspaceId: current.workspace.id, projectId: current.project.id,
+			value: { idempotencyKey: randomUUID(), scheduleMode: "now", timeZone: "UTC",
+				startDate: new Date().toISOString().slice(0, 10), postingWindow: { start: "09:00", end: "17:00" },
+				frequency: { unit: "days", value: 1 }, dstDisambiguation: null,
+				items: [{ accountId: account.id, platform: "youtube_shorts", deliveryMode: "direct", providerSettings: {},
+					clipId: current.clip.id, expectedEditorRevision: current.clip.editorRevision,
+					exportId: current.clipExport.id, exportVariantId: current.clipExport.variants[0]!.id,
+					aspectRatio: "9:16", resolution: "1080p", thumbnail: null,
+					copy: { caption: "Fixture publication", title: "Fixture", hashtags: [], variantId: null },
+				}],
+			},
+		};
+		const schedule = socialService.schedulePost.bind(socialService);
+		let admissions = 0;
+		const lostResponse = spyOn(socialService, "schedulePost").mockImplementation(async (...args) => {
+			const post = await schedule(...args);
+			admissions += 1;
+			if (admissions === 1) throw new Error("committed post response lost");
+			return post;
+		});
+		const settlement = spyOn(prismaBulkScheduleStore, "settleItem").mockRejectedValue(new Error("campaign settlement unavailable"));
+		try {
+			await expect(bulkSocialSchedulingService.schedule(input)).rejects.toMatchObject({ code: "campaign_schedule_item_failed" });
+			const operation = await prisma.campaignOperation.findFirstOrThrow({ where: { workspaceId: current.workspace.id }, include: { items: true } });
+			expect(operation.status).toBe("running");
+			expect(operation.items[0]!.status).toBe("processing");
+			expect(await prisma.socialPost.count({ where: { projectId: current.project.id } })).toBe(1);
+			settlement.mockRestore();
+			await prisma.campaignOperationItem.updateMany({ where: { operationId: operation.id }, data: { leaseExpiresAt: new Date(0) } });
+			await prisma.socialAccount.update({ where: { id: account.id }, data: { status: "expired" } });
+			await prisma.workspace.update({ where: { id: current.workspace.id }, data: { timezone: "Asia/Karachi" } });
+			const replay = await bulkSocialSchedulingService.schedule(input);
+			expect(replay).toMatchObject({ id: operation.id, status: "completed", replayed: true });
+			expect(replay.items[0]!.socialPostId).toBeTruthy();
+			expect(admissions).toBe(1);
+			expect(await prisma.socialPost.count({ where: { projectId: current.project.id } })).toBe(1);
+			await prisma.socialAccount.update({ where: { id: account.id }, data: { status: "active" } });
+			await prisma.workspace.update({ where: { id: current.workspace.id }, data: { timezone: "UTC" } });
+			const deliberate = await bulkSocialSchedulingService.schedule({ ...input, value: { ...input.value, idempotencyKey: randomUUID() } });
+			expect(deliberate.status).toBe("completed");
+			expect(await prisma.socialPost.count({ where: { projectId: current.project.id } })).toBe(2);
+		} finally { settlement.mockRestore(); lostResponse.mockRestore(); }
 	});
 
 	test("rejects cross-project bulk clip identifiers before persisting an operation", async () => {

@@ -44,6 +44,7 @@ function exportHref(
   }
   if (value === "all" && key === "status") next.delete(key);
   else next.set(key, value);
+  if (key === "status") next.delete("cursor");
   const query = next.toString();
   return query ? `/exports?${query}` : "/exports";
 }
@@ -179,9 +180,10 @@ export default async function ExportsPage({
           ))}
         </Grid>
       )}
-			{exportPage.nextCursor && (
+			{(params.cursor || exportPage.nextCursor) && (
 				<Flex gap="2" justify="end">
-					<Button size="sm" variant="outline" asChild><Link href={exportHref({ ...params, cursor: exportPage.nextCursor }, "view", view)}>Next</Link></Button>
+					{params.cursor && <Button size="sm" variant="outline" asChild><Link href={exportHref({ ...params, cursor: undefined }, "view", view)}>Newest exports</Link></Button>}
+					{exportPage.nextCursor && <Button size="sm" variant="outline" asChild><Link href={exportHref({ ...params, cursor: exportPage.nextCursor }, "view", view)}>Next</Link></Button>}
 				</Flex>
 			)}
     </Stack>

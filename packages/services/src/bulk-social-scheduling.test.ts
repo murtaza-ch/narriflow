@@ -73,6 +73,7 @@ function harness(
 		socialPostId: item.clientIdempotencyKey,
 		status: "scheduled" as const,
 	}),
+	recover: Parameters<typeof createBulkSocialScheduling>[0]["recover"] = async () => null,
 ) {
 	let id = 100;
 	const store = createInMemoryBulkScheduleStore();
@@ -82,6 +83,7 @@ function harness(
 			store,
 			authorize: async () => ({ pricingTier: "pro", timeZone: INPUT.timeZone }),
 			schedule,
+			recover,
 			createId: () =>
 				`00000000-0000-4000-8000-${String(++id).padStart(12, "0")}`,
 			now: () => new Date("2026-09-02T10:00:00.000Z"),
@@ -309,6 +311,10 @@ describe("bulk social scheduling", () => {
 		const module = createBulkSocialScheduling({
 			store,
 			authorize: async () => ({ pricingTier: "pro", timeZone: INPUT.timeZone }),
+			recover: async ({ clientIdempotencyKey }) => {
+				const socialPostId = admitted.get(clientIdempotencyKey);
+				return socialPostId ? { socialPostId, status: "scheduled" } : null;
+			},
 			schedule: async (item) => {
 				const existing = admitted.get(item.clientIdempotencyKey);
 				const socialPostId = existing ?? `post-${admitted.size + 1}`;
@@ -344,6 +350,9 @@ describe("bulk social scheduling", () => {
 				throw new Error("connection lost after Social Post commit");
 			}
 			return { socialPostId, status: "scheduled" };
+		}, async ({ clientIdempotencyKey }) => {
+			const socialPostId = admitted.get(clientIdempotencyKey);
+			return socialPostId ? { socialPostId, status: "scheduled" } : null;
 		});
 
 		const first = await module.schedule({ ...INPUT, items: [INPUT.items[0]!] });
@@ -352,6 +361,34 @@ describe("bulk social scheduling", () => {
 		expect(first.items[0]).toMatchObject({ status: "succeeded", socialPostId: "post-1" });
 		expect(replay.items[0]).toMatchObject({ status: "succeeded", socialPostId: "post-1" });
 		expect(admitted.size).toBe(1);
+	});
+
+	test("recovers committed intent despite changed admission facts and replays after timezone changes", async () => {
+		const posts = new Map<string, string>();
+		let timeZone = INPUT.timeZone;
+		let now = new Date("2026-09-02T10:00:00Z");
+		const module = createBulkSocialScheduling({
+			store: createInMemoryBulkScheduleStore(),
+			authorize: async () => ({ pricingTier: "pro", timeZone }),
+			recover: async ({ clientIdempotencyKey }) => {
+				const socialPostId = posts.get(clientIdempotencyKey);
+				return socialPostId ? { socialPostId, status: "scheduled" } : null;
+			},
+			schedule: async ({ clientIdempotencyKey }) => {
+				if (posts.has(clientIdempotencyKey)) throw new BulkSocialSchedulingError("social_account_expired");
+				posts.set(clientIdempotencyKey, "committed-post");
+				throw new Error("result read unavailable");
+			},
+			createId: () => crypto.randomUUID(), now: () => now,
+		});
+		const input = { ...INPUT, items: [INPUT.items[0]!] };
+		const first = await module.schedule(input);
+		expect(first.items[0]?.socialPostId).toBe("committed-post");
+		timeZone = "UTC";
+		now = new Date("2027-01-01T00:00:00Z");
+		const replay = await module.schedule(input);
+		expect(replay).toMatchObject({ id: first.id, status: "completed", replayed: true });
+		expect(posts.size).toBe(1);
 	});
 
 	test("replays partial results and gives an explicit corrected submission a new identity", async () => {

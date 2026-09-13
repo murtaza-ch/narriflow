@@ -58,6 +58,34 @@ function validFolderName(name: string) {
 	return trimmed;
 }
 
+// Carry the ordering values, so deleting the boundary record cannot strand a
+// reader. Invalid URLs simply reopen the first page.
+function libraryCursor(value: string | undefined) {
+	if (!value || value.length > 256) return null;
+	try {
+		const [timestamp, id] = JSON.parse(Buffer.from(value, "base64url").toString());
+		if (typeof timestamp !== "string" || typeof id !== "string" ||
+			!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) return null;
+		const createdAt = new Date(timestamp);
+		return Number.isFinite(createdAt.getTime()) ? { createdAt, id } : null;
+	} catch { return null; }
+}
+
+function libraryContinuation(value: string | undefined) {
+	const cursor = libraryCursor(value);
+	return cursor ? [{ OR: [
+		{ createdAt: { lt: cursor.createdAt } },
+		{ createdAt: cursor.createdAt, id: { lt: cursor.id } },
+	] }] : [];
+}
+
+function nextLibraryCursor(rows: { id: string; createdAt: Date }[]) {
+	const boundary = rows[99];
+	return rows.length > 100 && boundary
+		? Buffer.from(JSON.stringify([boundary.createdAt.toISOString(), boundary.id])).toString("base64url")
+		: null;
+}
+
 export class WorkspaceLibraryService {
 	async search(userId: string, workspaceId: string, query: string) {
 		await workspaceService.requireActor(userId, workspaceId, "content.view");
@@ -248,6 +276,7 @@ export class WorkspaceLibraryService {
 		const rows = await requiredPrisma().clipExport.findMany({
 			where: {
 				workspaceId,
+				AND: libraryContinuation(filters.cursor),
 				...(filters.status === "processing"
 					? {
 							status: {
@@ -320,9 +349,8 @@ export class WorkspaceLibraryService {
 					orderBy: { aspectRatio: "asc" },
 				},
 			},
-			orderBy: { id: "desc" },
+			orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 			take: 101,
-			...(filters.cursor ? { cursor: { id: filters.cursor }, skip: 1 } : {}),
 		});
 		return {
 			items: rows.slice(0, 100).map((row) => ({
@@ -335,7 +363,7 @@ export class WorkspaceLibraryService {
 					variant.sizeBytes === null ? null : Number(variant.sizeBytes),
 			})),
 			})),
-			nextCursor: rows.length > 100 ? rows[99]!.id : null,
+			nextCursor: nextLibraryCursor(rows),
 		};
 	}
 
@@ -468,6 +496,7 @@ export class WorkspaceLibraryService {
 			prisma.clip.findMany({
 				where: {
 					project: { workspaceId, ...accessibleProjectWhere() },
+					AND: libraryContinuation(options.cursor),
 					...(options.query?.trim()
 						? {
 							OR: [
@@ -480,15 +509,15 @@ export class WorkspaceLibraryService {
 				},
 				select: {
 					id: true,
+					createdAt: true,
 					editorRevision: true,
 					title: true,
 					hookText: true,
 					projectId: true,
 					project: { select: { title: true } },
 				},
-				orderBy: { id: "desc" },
+				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 				take: 101,
-				...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
 			}),
 			prisma.socialAccount.findMany({
 				where: { workspaceId, status: "active" },
@@ -511,7 +540,7 @@ export class WorkspaceLibraryService {
 				] as ClipAspectRatio[],
 			})),
 			accounts,
-			nextCursor: clips.length > 100 ? clips[99]!.id : null,
+			nextCursor: nextLibraryCursor(clips),
 		};
 	}
 }

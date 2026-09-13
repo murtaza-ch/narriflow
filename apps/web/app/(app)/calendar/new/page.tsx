@@ -24,7 +24,7 @@ export default async function NewCalendarPostPage({ searchParams }: { searchPara
 					</Button>
 				}
 			/>
-			<form method="get"><Input name="q" defaultValue={params.q} placeholder="Search clips or projects" /><Button type="submit" size="sm" mt="2">Search</Button></form>
+			<form method="get"><Input name="q" aria-label="Search clips or projects" defaultValue={params.q} placeholder="Search clips or projects" /><Button type="submit" size="sm" mt="2">Search</Button></form>
 			{clips.length ? (
 				clips.map((clip) => (
 					<Box
@@ -44,10 +44,10 @@ export default async function NewCalendarPostPage({ searchParams }: { searchPara
 				))
 			) : (
 				<Text color="fg.muted">
-					Create a project and a clip to schedule your first post.
+					{params.q ? "No clips match your search." : "Create a project and a clip to schedule your first post."}
 				</Text>
 			)}
-			{nextCursor && <Flex gap="2"><Button size="sm" variant="outline" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}&cursor=${encodeURIComponent(nextCursor)}`}>Next</Link></Button></Flex>}
+			{(params.cursor || nextCursor) && <Flex gap="2">{params.cursor && <Button size="sm" variant="outline" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}`}>Newest clips</Link></Button>}{nextCursor && <Button size="sm" variant="outline" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}&cursor=${encodeURIComponent(nextCursor)}`}>Next</Link></Button>}</Flex>}
 		</Stack>
 	);
 }

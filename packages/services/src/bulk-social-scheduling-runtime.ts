@@ -111,6 +111,10 @@ async function readOperation(
 }
 
 export const prismaBulkScheduleStore: BulkScheduleStore = {
+	async find(input) {
+		const row = await readOperation(input.workspaceId, input.projectId, input.idempotencyKey);
+		return row ? toOperation(row) : null;
+	},
 	async open(input) {
 		const existing = await readOperation(
 			input.workspaceId,
@@ -186,9 +190,7 @@ export const prismaBulkScheduleStore: BulkScheduleStore = {
 	async claimItem(operationId, requestKey) {
 		const requestedClipId = bulkScheduleDeterministicUuid(requestKey);
 		const now = new Date();
-		const claimToken = bulkScheduleDeterministicUuid(
-			`${operationId}:${requestKey}:${now.toISOString()}`,
-		);
+		const claimToken = randomUUID();
 		const claimed = await requirePrisma().campaignOperationItem.updateMany({
 			where: {
 				operationId,
@@ -242,7 +244,7 @@ export const prismaBulkScheduleStore: BulkScheduleStore = {
 					})
 				: null;
 			const settled = await tx.campaignOperationItem.updateMany({
-				where: { id: current.id, status: "processing", claimToken },
+				where: { id: current.id, status: "processing", claimToken, leaseExpiresAt: { gt: new Date() } },
 				data: {
 					status: patch.status,
 					errorCode: patch.errorCode,
@@ -340,6 +342,7 @@ function productionModule() {
 			projectId,
 			clipIds,
 			bulk,
+			replay,
 			permission,
 		}) => {
 			const actor = await workspaceService.requireActor(
@@ -347,7 +350,7 @@ function productionModule() {
 				workspaceId,
 				permission,
 			);
-			if (bulk && !hasFeature(actor.pricingTier, "campaign.operations")) {
+			if (!replay && bulk && !hasFeature(actor.pricingTier, "campaign.operations")) {
 				throw new BulkSocialSchedulingError(
 					"campaign_schedule_entitlement_required",
 					"Bulk scheduling requires a Pro or Business plan",
@@ -366,13 +369,20 @@ function productionModule() {
 					_count: { select: { clips: { where: { id: { in: clipIds } } } } },
 				},
 			});
-			if (!project || project._count.clips !== new Set(clipIds).size) {
+			if (!project || (!replay && project._count.clips !== new Set(clipIds).size)) {
 				throw new BulkSocialSchedulingError(
 					"campaign_schedule_clip_not_found",
 					"Every selected clip must belong to the active project",
 				);
 			}
 			return { pricingTier: actor.pricingTier, timeZone: workspace.timezone };
+		},
+		async recover(input) {
+			const post = await requirePrisma().socialPost.findFirst({
+				where: { workspaceId: input.workspaceId, projectId: input.projectId, clientIdempotencyKey: input.clientIdempotencyKey },
+				select: { id: true, status: true },
+			});
+			return post ? { socialPostId: post.id, status: post.status === "preparing_video" ? "preparing_video" : "scheduled" } : null;
 		},
 		async schedule(input) {
 			const workspace = await requirePrisma().workspace.findUnique({
