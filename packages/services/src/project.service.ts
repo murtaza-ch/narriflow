@@ -2925,7 +2925,7 @@ export class ProjectService {
 		await prisma.$transaction(async (tx) => {
 			const settled = await tx.ingestJob.updateMany({
 				where: { id: job.id, status: "running", claimId, claimExpiresAt: { gt: new Date() } },
-				data: { status: "completed", lastError: null, completedAt: new Date(), claimExpiresAt: null, generationHandoffAt: null },
+				data: { status: "completed", lastError: null, completedAt: new Date(), claimExpiresAt: null, generationHandoffAt: null, generationHandoffRetryAt: null },
 			});
 			if (settled.count === 0) throw new IngestJobClaimLost(job.id);
 			await tx.project.update({
@@ -2960,11 +2960,7 @@ export class ProjectService {
 		try {
 			await this.processPendingIngestGenerationHandoffs(1, job.id);
 		} catch (error) {
-			// The ingest itself succeeded (upload is "ready"); only the automatic
-			// generation trigger failed. Recovery is the manual "AI Transcription"
-			// retry action on the project page (queueTranscriptionFormAction →
-			// triggerGeneration), so surface this loudly at error level rather than
-			// swallowing it as a warning.
+			// The durable handoff intent remains pending and maintenance retries it.
 			console.warn(
 				JSON.stringify({
 					level: "error",
@@ -2982,7 +2978,7 @@ export class ProjectService {
 	async processPendingIngestGenerationHandoffs(limit = 25, jobId?: string): Promise<number> {
 		const prisma = this.requirePrisma();
 		const jobs = await prisma.ingestJob.findMany({
-			where: { status: "completed", generationHandoffAt: null, ...(jobId ? { id: jobId } : {}), project: { ingestStatus: "ready" } },
+			where: { status: "completed", generationHandoffAt: null, OR: [{ generationHandoffRetryAt: null }, { generationHandoffRetryAt: { lte: new Date() } }], ...(jobId ? { id: jobId } : {}), project: { ingestStatus: "ready" } },
 			select: { id: true, projectId: true }, orderBy: { completedAt: "asc" }, take: limit,
 		});
 		let handedOff = 0;
@@ -2992,6 +2988,7 @@ export class ProjectService {
 				admitted = await this.triggerGenerationIfPending(pending.projectId);
 			} catch (error) {
 				console.warn(JSON.stringify({ level: "warn", message: "ingest_generation_handoff_deferred", jobId: pending.id, projectId: pending.projectId, error: error instanceof Error ? error.message : String(error) }));
+				await prisma.ingestJob.updateMany({ where: { id: pending.id, generationHandoffAt: null }, data: { generationHandoffRetryAt: new Date(Date.now() + 60_000) } });
 				continue;
 			}
 			if (!admitted) {
@@ -2999,11 +2996,14 @@ export class ProjectService {
 				// acknowledged this intent. Only that durable run proves handoff;
 				// missing/draft configuration stays pending for finalize-setup.
 				const existing = await prisma.workflowRun.findFirst({ where: { projectId: pending.projectId } });
-				if (!existing) continue;
+				if (!existing) {
+					await prisma.ingestJob.updateMany({ where: { id: pending.id, generationHandoffAt: null }, data: { generationHandoffRetryAt: new Date(Date.now() + 60_000) } });
+					continue;
+				}
 			}
 			const settled = await prisma.ingestJob.updateMany({
 				where: { id: pending.id, status: "completed", generationHandoffAt: null },
-				data: { generationHandoffAt: new Date() },
+				data: { generationHandoffAt: new Date(), generationHandoffRetryAt: null },
 			});
 			handedOff += settled.count;
 		}
