@@ -105,6 +105,15 @@ type PublishingContextValue = {
 	nextPostsCursor: string | null;
 	config: Config;
 };
+
+export function mergeRefreshedPosts(
+	current: SocialPostSnapshot[],
+	refreshed: SocialPostSnapshot[],
+) {
+	const merged = new Map(current.map((post) => [post.id, post]));
+	for (const post of refreshed) merged.set(post.id, post);
+	return [...merged.values()];
+}
 const PublishingContext = createContext<PublishingContextValue | null>(null);
 export function usePublishing() {
 	const context = useContext(PublishingContext);
@@ -150,14 +159,7 @@ export function PublishingProvider({
 			`/api/projects/${config.projectId}/social-posts?active=1&tracked=${encodeURIComponent(tracked.join(","))}`,
 		);
 		const activePosts = socialPostSnapshotSchema.array().parse(result.posts);
-		setPosts((current) => [
-			...current.filter(
-				(post) =>
-					!isLiveSocialPostSnapshot(post) &&
-					!activePosts.some((next) => next.id === post.id),
-			),
-			...activePosts,
-		]);
+		setPosts((current) => mergeRefreshedPosts(current, activePosts));
 		setStatusError("");
 	}, [config.projectId, posts]);
 	const loadOlderPosts = useCallback(async () => {

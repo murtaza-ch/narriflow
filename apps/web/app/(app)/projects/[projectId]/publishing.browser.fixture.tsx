@@ -83,6 +83,7 @@ const exports = clips.map(
 );
 let Provider: typeof import("./publishing-provider").PublishingProvider;
 let usePublishing: typeof import("./publishing-provider").usePublishing;
+let mergeRefreshedPosts: typeof import("./publishing-provider").mergeRefreshedPosts;
 let ChakraProvider: typeof import("@chakra-ui/react").ChakraProvider;
 let system: typeof import("@narriflow/ui/theme").system;
 let root: Root;
@@ -129,7 +130,7 @@ beforeAll(async () => {
 		IS_REACT_ACT_ENVIRONMENT: true,
 	});
 	({ createRoot } = await import("react-dom/client"));
-	({ PublishingProvider: Provider, usePublishing } = await import(
+	({ PublishingProvider: Provider, usePublishing, mergeRefreshedPosts } = await import(
 		"./publishing-provider"
 	));
 	({ ChakraProvider } = await import("@chakra-ui/react"));
@@ -272,6 +273,42 @@ test("opens the exact clip, auto-selects the sole account and generates missing 
 	);
 	expect(requests.filter((r) => r.url.endsWith("generations"))).toHaveLength(1);
 	expect(router.replace).not.toHaveBeenCalled();
+});
+
+test("keeps every loaded history row when a bounded live refresh displaces tracked posts", () => {
+	const post = (n: number, status: "scheduled" | "posted") => ({
+		id: id(1000 + n),
+		projectId,
+		clipId: clips[0]!.id,
+		accountId: accounts[0]!.id,
+		platform: "youtube_shorts",
+		status,
+		caption: "caption",
+		deliveryMode: "direct",
+		publishedVideos: [],
+		scheduledFor: null,
+		postedAt: null,
+		externalUrl: null,
+		errorCode: null,
+		errorDisposition: null,
+		nextAttemptAt: null,
+		providerProcessingStatus: null,
+		providerProcessingFailureCode: null,
+		providerVisibility: null,
+		metrics: null,
+		accountDisplayName: null,
+		accountHandle: null,
+		accountStatus: "active",
+		workspaceStatus: "active",
+		createdAt: "2026-09-01T00:00:00.000Z",
+	}) as SocialPostSnapshot;
+	const history = Array.from({ length: 201 }, (_, index) => post(index, "scheduled"));
+	const refreshed = [...history.slice(0, 100), post(0, "posted")];
+	const merged = mergeRefreshedPosts(history, refreshed);
+
+	expect(merged).toHaveLength(201);
+	expect(merged.find((entry) => entry.id === history[0]!.id)?.status).toBe("posted");
+	expect(merged.some((entry) => entry.id === history[200]!.id)).toBe(true);
 });
 test("preserves displayed bulk order in generation and explicit admission", async () => {
 	await render();
