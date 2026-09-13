@@ -208,6 +208,7 @@ async function render(
 					}
 					accounts={options.accounts ?? accounts.slice(0, 1)}
 					initialPosts={[]}
+					initialPostsCursor={null}
 					assistedCopyEnabled={options.assistedCopyEnabled ?? true}
 					customThumbnailsEnabled
 					campaignSchedulingEnabled

@@ -39,6 +39,8 @@ export function PublishingPosts({
 	posts,
 	clips,
 	refresh,
+	loadOlderPosts,
+	nextCursor,
 	compose,
 	filterable = false,
 	timeZone,
@@ -47,6 +49,8 @@ export function PublishingPosts({
 	posts: SocialPostSnapshot[];
 	clips: ClipSnapshot[];
 	refresh(): Promise<void>;
+	loadOlderPosts(): Promise<void>;
+	nextCursor: string | null;
 	compose(clipIds: string[]): void;
 	filterable?: boolean;
 	timeZone: string;
@@ -470,6 +474,11 @@ export function PublishingPosts({
 					</Stack>
 				);
 			})}
+			{nextCursor && filter === "all" && (
+				<Button variant="outline" onClick={() => void loadOlderPosts()}>
+					Load older posts
+				</Button>
+			)}
 		</Stack>
 	);
 }

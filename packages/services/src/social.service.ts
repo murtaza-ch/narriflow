@@ -221,8 +221,8 @@ export class SocialService {
 	async listProjectPosts(
 		userId: string,
 		projectId: string,
-		options: { activeOnly?: boolean; trackedIds?: string[] } = {},
-	): Promise<SocialPostSnapshot[]> {
+		options: { activeOnly?: boolean; trackedIds?: string[]; cursor?: string } = {},
+	): Promise<{ items: SocialPostSnapshot[]; nextCursor: string | null }> {
 		const prisma = requirePrisma();
 		const rows = await prisma.socialPost.findMany({
 			where: {
@@ -237,7 +237,9 @@ export class SocialService {
 					}
 					: {}),
 			},
-			orderBy: [{ scheduledFor: "asc" }, { createdAt: "desc" }],
+			orderBy: { id: "desc" },
+			take: 101,
+			...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
 			include: {
 				publishedVideos: true,
 				socialAccount: {
@@ -263,7 +265,7 @@ export class SocialService {
 				},
 			},
 		});
-		return rows.map(toSocialPostSnapshot);
+		return { items: rows.slice(0, 100).map(toSocialPostSnapshot), nextCursor: rows.length > 100 ? rows[99]!.id : null };
 	}
 
 	async schedulePost(

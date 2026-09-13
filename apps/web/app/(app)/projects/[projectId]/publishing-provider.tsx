@@ -86,6 +86,7 @@ type Config = {
 	clips: ClipSnapshot[];
 	accounts: SocialAccountSnapshot[];
 	initialPosts: SocialPostSnapshot[];
+	initialPostsCursor: string | null;
 	assistedCopyEnabled: boolean;
 	customThumbnailsEnabled: boolean;
 	campaignSchedulingEnabled: boolean;
@@ -100,6 +101,8 @@ type PublishingContextValue = {
 	compose(ids: string[], exportId?: string): void;
 	viewPosts(ids: string[]): void;
 	refresh(): Promise<void>;
+	loadOlderPosts(): Promise<void>;
+	nextPostsCursor: string | null;
 	config: Config;
 };
 const PublishingContext = createContext<PublishingContextValue | null>(null);
@@ -117,6 +120,8 @@ export function ProjectPosts() {
 			posts={c.posts}
 			clips={c.config.clips}
 			refresh={c.refresh}
+			loadOlderPosts={c.loadOlderPosts}
+			nextCursor={c.nextPostsCursor}
 			compose={c.compose}
 			filterable
 		/>
@@ -128,6 +133,7 @@ export function PublishingProvider({
 }: Config & { children: ReactNode }) {
 	const triggerRef = useRef<HTMLElement | null>(null);
 	const [posts, setPosts] = useState(config.initialPosts);
+	const [nextPostsCursor, setNextPostsCursor] = useState(config.initialPostsCursor);
 	const [open, setOpen] = useState(false);
 	const [mode, setMode] = useState<"compose" | "posts">("compose");
 	const [ids, setIds] = useState<string[]>([]);
@@ -137,9 +143,10 @@ export function PublishingProvider({
 	const router = useRouter();
 	const params = useSearchParams();
 	useEffect(() => setPosts(config.initialPosts), [config.initialPosts]);
+	useEffect(() => setNextPostsCursor(config.initialPostsCursor), [config.initialPostsCursor]);
 	const refresh = useCallback(async () => {
 		const tracked = posts.filter(isLiveSocialPostSnapshot).map((post) => post.id);
-		const result = await publishingRequest<{ posts: unknown }>(
+		const result = await publishingRequest<{ posts: unknown; nextCursor: string | null }>(
 			`/api/projects/${config.projectId}/social-posts?active=1&tracked=${encodeURIComponent(tracked.join(","))}`,
 		);
 		const activePosts = socialPostSnapshotSchema.array().parse(result.posts);
@@ -153,6 +160,13 @@ export function PublishingProvider({
 		]);
 		setStatusError("");
 	}, [config.projectId, posts]);
+	const loadOlderPosts = useCallback(async () => {
+		if (!nextPostsCursor) return;
+		const result = await publishingRequest<{ posts: unknown; nextCursor: string | null }>(`/api/projects/${config.projectId}/social-posts?cursor=${encodeURIComponent(nextPostsCursor)}`);
+		const older = socialPostSnapshotSchema.array().parse(result.posts);
+		setPosts((current) => [...current, ...older.filter((post) => !current.some((existing) => existing.id === post.id))]);
+		setNextPostsCursor(result.nextCursor);
+	}, [config.projectId, nextPostsCursor]);
 	useEffect(() => {
 		let alive = true;
 		const tick = () => {
@@ -235,7 +249,7 @@ export function PublishingProvider({
 	});
 	return (
 		<PublishingContext.Provider
-			value={{ posts, compose, viewPosts, refresh, config }}
+			value={{ posts, compose, viewPosts, refresh, loadOlderPosts, nextPostsCursor, config }}
 		>
 			{children}
 			<Drawer.Root
@@ -363,6 +377,8 @@ export function PublishingProvider({
 										)}
 										clips={config.clips}
 										refresh={refresh}
+										loadOlderPosts={loadOlderPosts}
+										nextCursor={nextPostsCursor}
 										compose={compose}
 									/>
 								</Drawer.Body>

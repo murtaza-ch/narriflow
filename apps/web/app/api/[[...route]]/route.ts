@@ -1891,15 +1891,16 @@ app.delete("/social/accounts/:accountId", async (c) => {
 
 app.get("/projects/:id/social-posts", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const posts = await socialService.listProjectPosts(
+	const postPage = await socialService.listProjectPosts(
 		appUser.workspaceOwnerUserId,
 		c.req.param("id"),
 		{
 			activeOnly: c.req.query("active") === "1",
 			trackedIds: (c.req.query("tracked") ?? "").split(",").filter(Boolean),
+			cursor: c.req.query("cursor") ?? undefined,
 		},
 	);
-	return c.json({ posts }, 200);
+	return c.json({ posts: postPage.items, nextCursor: postPage.nextCursor }, 200);
 });
 
 app.post("/projects/:id/social-posts", async (c) => {

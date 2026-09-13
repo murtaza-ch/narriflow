@@ -345,7 +345,7 @@ export default async function ProjectDetailPage({
 		clipCount: clips.length,
 		latestRun: activeRun,
 		renderVariants,
-		socialPosts,
+		socialPosts: socialPosts.items,
 	});
 	const detectionInFlight = pipelineStates.detect === "active";
 	const hasAnyRendered = renderVariants.some((render) => render.hasAsset);
@@ -770,7 +770,8 @@ export default async function ProjectDetailPage({
 					workspaceId={appUser.workspaceId}
 					clips={clips}
 					accounts={socialAccounts}
-					initialPosts={socialPosts}
+			initialPosts={socialPosts.items}
+			initialPostsCursor={socialPosts.nextCursor}
 					workspaceTimezone={activeWorkspace?.timezone ?? "UTC"}
 					can1080pExport={can1080pExport}
 					canOverrideReview={canOverrideReview}
