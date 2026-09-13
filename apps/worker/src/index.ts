@@ -47,6 +47,7 @@ import { executeNextWorkflowAttempt } from "./workflow-attempt-executor";
 
 const port = Number(process.env.PORT || 0);
 const workerShutdown = new AbortController();
+let youtubeLinkIntakeAvailable = false;
 const youtubeProxyUrl = getYoutubeProxyUrl();
 assertUploadProviderLifecyclePrerequisite(process.env);
 billingService.validateConfiguration({ surface: "worker" });
@@ -338,7 +339,7 @@ function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
 
 const ingestLoop = createPollLoop("ingest", async () => {
 	if (workerShutdown.signal.aborted) return 0;
-	const ingestJob = await projectService.claimNextIngestJob();
+	const ingestJob = await projectService.claimNextIngestJob({ youtubeAvailable: youtubeLinkIntakeAvailable });
 	if (!ingestJob) return 0;
 	await processIngestJob(ingestJob, { signal: workerShutdown.signal });
 	return 1;
@@ -565,9 +566,10 @@ const server = createServer(async (req, res) => {
 			JSON.stringify({
 				ok: true,
 				service: "narriflow-worker",
-				render: {
+		render: {
 					enabled: renderConfig.clipRenderAttemptEnabled,
-				},
+		},
+		youtubeLinkIntake: { available: youtubeLinkIntakeAvailable },
 				queue: {
 					processedCount,
 					loops: Object.fromEntries(
@@ -605,9 +607,11 @@ void startYoutubeTokenServer(
   process.env.YTDLP_POT_SERVER_HOME ?? "/opt/youtube-tokens",
   workerShutdown.signal,
 ).then((youtubeTokenServer) => {
+	 youtubeLinkIntakeAvailable = true;
   console.warn(JSON.stringify({ level: "info", message: "youtube_network_configured", mode: youtubeProxyUrl ? "proxy" : "direct" }));
   void youtubeTokenServer.exited.then(() => {
     if (workerShutdown.signal.aborted) return;
+		youtubeLinkIntakeAvailable = false;
     console.warn(JSON.stringify({ level: "warn", message: "youtube_token_server_exited" }));
   });
 }).catch((error) => {
@@ -634,6 +638,7 @@ loopIntervals = allLoops.map(({ loop, intervalMs }) =>
 
 function beginGracefulShutdown() {
 	if (workerShutdown.signal.aborted) return;
+	youtubeLinkIntakeAvailable = false;
 	workerShutdown.abort();
 	for (const interval of loopIntervals) clearInterval(interval);
 	server.close();

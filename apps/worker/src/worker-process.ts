@@ -548,7 +548,13 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
     request.signal.addEventListener("abort", abort, { once: true });
     child.stdout?.on("data", (chunk: Buffer) => request.onStdout?.(chunk));
     const exited = new Promise<{ exitCode: number | null; signalCode: NodeJS.Signals | null }>((resolve) => {
-      child.once("close", (exitCode, signalCode) => {
+      child.once("close", async (exitCode, signalCode) => {
+        // A daemon parent can close its stdio while a detached descendant keeps
+        // the process group alive. Reap the group before reporting completion.
+        try {
+          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+        } catch { /* group has already exited */ }
+        await waitForProcessGroupExit(child.pid, PROCESS_GROUP_REAP_TIMEOUT_MS);
         if (forceKill) clearTimeout(forceKill);
         request.signal.removeEventListener("abort", abort);
         resolve({ exitCode, signalCode });

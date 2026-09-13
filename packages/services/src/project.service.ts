@@ -2806,7 +2806,7 @@ export class ProjectService {
 		return run.id;
 	}
 
-	async claimNextIngestJob(): Promise<ClaimedIngestJob | null> {
+	async claimNextIngestJob(options: { youtubeAvailable?: boolean } = {}): Promise<ClaimedIngestJob | null> {
 		const prisma = this.requirePrisma();
 
 		// Bounded retry: cap contention retries and
@@ -2816,6 +2816,12 @@ export class ProjectService {
 			const queued = await prisma.ingestJob.findFirst({
 				where: {
 					status: "queued",
+					...(options.youtubeAvailable === false ? {
+						NOT: [
+							{ jobType: "youtube_import" },
+							{ payload: { path: ["provider"], equals: "youtube" } },
+						],
+					} : {}),
 					project: accessibleProjectWhere(),
 					// Backoff gate for a requeued job (see claimBackoffWhereClauses):
 					// a never-claimed job (attemptCount 0) is always eligible; a

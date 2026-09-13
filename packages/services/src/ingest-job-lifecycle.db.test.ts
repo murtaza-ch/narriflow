@@ -37,4 +37,19 @@ dbDescribe("Ingest Job lifecycle PostgreSQL ownership", () => {
     const unchanged = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     expect(unchanged.ingestStatus).toBe("queued");
   });
+
+  test("an expired unreaped claim cannot renew, report progress, fail, or complete", async () => {
+    const suffix = randomUUID();
+    const user = await prisma.user.create({ data: { clerkId: `ingest-db-test:${suffix}`, primaryEmail: `ingest-${suffix}@example.test` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Ingest expiry", ownerUserId: user.id, personalOwnerUserId: user.id, members: { create: { userId: user.id, role: "owner" } } } });
+    const project = await prisma.project.create({ data: { title: "Expired", sourceMediaUrl: "r2://pending", userId: user.id, workspaceId: workspace.id, createdByUserId: user.id, ingestStatus: "queued" } });
+    await prisma.ingestJob.create({ data: { projectId: project.id, jobType: "link_import", payload: {} } });
+    const claimed = await projectService.claimNextIngestJob();
+    await prisma.ingestJob.update({ where: { id: claimed!.id }, data: { claimExpiresAt: new Date(Date.now() - 1_000) } });
+    await expect(projectService.renewIngestJobClaim(claimed!.id, claimed!.claimId)).rejects.toBeInstanceOf(IngestJobClaimLost);
+    await expect(projectService.markIngestJobDownloading(claimed!.id, claimed!.claimId)).rejects.toBeInstanceOf(IngestJobClaimLost);
+    await expect(projectService.failIngestJob(claimed!.id, claimed!.claimId, "worker_unhandled_error", "expired")).rejects.toBeInstanceOf(IngestJobClaimLost);
+    await expect(projectService.completeIngestJob(claimed!.id, claimed!.claimId, { sourceStorageKey: "projects/test.mp4" })).rejects.toBeInstanceOf(IngestJobClaimLost);
+    expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).ingestStatus).toBe("queued");
+  });
 });

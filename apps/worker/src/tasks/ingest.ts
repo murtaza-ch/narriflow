@@ -844,11 +844,17 @@ export async function processIngestJob(
   const ownershipController = new AbortController();
   const signal = AbortSignal.any([externalSignal, ownershipController.signal]);
   const workerProcess = options.workerProcess ?? productionWorkerProcessModule;
+  let heartbeatInFlight = false;
   const heartbeat = setInterval(() => {
+    if (externalSignal.aborted || ownershipController.signal.aborted || heartbeatInFlight) return;
+    heartbeatInFlight = true;
     void projectService.renewIngestJobClaim(job.id, job.claimId).catch((error) => {
       ownershipController.abort(error);
-    });
+    }).finally(() => { heartbeatInFlight = false; });
   }, 2 * 60 * 1000);
+  const stopHeartbeat = () => clearInterval(heartbeat);
+  externalSignal.addEventListener("abort", stopHeartbeat, { once: true });
+  ownershipController.signal.addEventListener("abort", stopHeartbeat, { once: true });
   const jobStartedAtMs = Date.now();
   log("info", "ingest_job_started", {
     jobId: job.id,
@@ -914,5 +920,7 @@ export async function processIngestJob(
     });
   } finally {
     clearInterval(heartbeat);
+    externalSignal.removeEventListener("abort", stopHeartbeat);
+    ownershipController.signal.removeEventListener("abort", stopHeartbeat);
   }
 }
