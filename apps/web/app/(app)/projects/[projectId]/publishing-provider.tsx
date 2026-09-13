@@ -1383,8 +1383,10 @@ function PublishingComposer({
 											)}
 										</Flex>
 									)}
-									{config.assistedCopyEnabled ? (
-<Stack bg="bg.panel" p={{base:"4",md:"6"}} borderRadius="2xl" gap="4">
+{config.assistedCopyEnabled ? (
+<Collapsible.Root>
+<Collapsible.Trigger asChild><Button variant="ghost" size="sm" alignSelf="start"><Sparkles size={14}/>Description assistance<ChevronDown size={13}/></Button></Collapsible.Trigger>
+<Collapsible.Content><Stack bg="bg.panel" p={{base:"4",md:"6"}} borderRadius="2xl" gap="4" mt="2">
 <Field.Root gap="3">
 <Field.Label>Regenerate descriptions</Field.Label>
 <Textarea aria-label="Regeneration instructions" value={instruction} rows={3} bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.7" placeholder="Adjust the tone or tell us what to emphasize." onChange={(e) => setInstruction(e.target.value)} />
@@ -1400,7 +1402,7 @@ function PublishingComposer({
 <Field.Root><Field.Label>Keep these hashtags</Field.Label><Input value={lockedHashtags} placeholder="#YourBrand" onChange={e=>setLockedHashtags(e.target.value)}/></Field.Root>
 {clips.length > 1 && <Button alignSelf="start" variant="outline" size="sm" disabled={generating.current.size > 0} onClick={() => requestRegeneration("current")}>Regenerate this clip</Button>}
 </Stack></Collapsible.Content></Collapsible.Root>
-</Stack>
+</Stack></Collapsible.Content></Collapsible.Root>
 ) : <Text fontSize="xs" color="fg.muted">Automatic descriptions require a Creator plan. You can write your own description.</Text>}
 {accounts.map((account) => {
 										const key = publishingDraftKey(active.id, account.id);
