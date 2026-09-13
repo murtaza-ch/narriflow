@@ -542,7 +542,8 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
     const child = spawn(request.command, [...request.args], {
       cwd: request.cwd,
       env: request.env,
-      stdio: ["ignore", "pipe", "ignore"],
+      // Keep stdin open for helpers that exit when their owner disappears.
+      stdio: ["pipe", "pipe", "ignore"],
       detached: process.platform !== "win32",
     });
     const terminate = (signal: NodeJS.Signals): void => {

@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WorkflowAttemptLost } from "@narriflow/services";
 import {
   createWorkerProcessModule,
@@ -10,6 +11,39 @@ import {
   type WorkerProcessDiagnostic,
   type WorkerProcessRequest,
 } from "./worker-process";
+
+test("owned helper exits when its worker is killed without shutdown handlers", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "owned-helper-"));
+  const pidFile = join(directory, "pid");
+  const entry = join(directory, "helper.ts");
+  const owner = join(directory, "owner.ts");
+  await writeFile(entry, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); console.log('ready'); setInterval(() => {}, 1000);`);
+  await writeFile(owner, `import { createWorkerProcessModule } from ${JSON.stringify(fileURLToPath(new URL("./worker-process.ts", import.meta.url)))};
+    await createWorkerProcessModule().start({ command: process.execPath, args: [${JSON.stringify(fileURLToPath(new URL("./owned-helper.ts", import.meta.url)))}, ${JSON.stringify(entry)}], signal: new AbortController().signal, startupReadyMarker: 'ready' });`);
+  const worker = spawn(process.execPath, [owner], { stdio: "ignore" });
+  const workerExited = new Promise<void>((resolve) => worker.once("close", () => resolve()));
+  let helperPid: number | undefined;
+  const alive = () => {
+    if (!helperPid) return false;
+    try { process.kill(helperPid, 0); return true; } catch { return false; }
+  };
+  try {
+    for (let i = 0; i < 100 && !helperPid; i++) {
+      try { helperPid = Number(await readFile(pidFile, "utf8")); } catch { await Bun.sleep(20); }
+    }
+    expect(helperPid).toBeGreaterThan(0);
+    expect(alive()).toBe(true);
+    worker.kill("SIGKILL");
+    await workerExited;
+    for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(20);
+    expect(alive()).toBe(false);
+  } finally {
+    worker.kill("SIGKILL");
+    await workerExited;
+    if (alive()) process.kill(helperPid!, "SIGKILL");
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("worker process accepts declared exit codes and returns binary stdout", async () => {
   const workerProcess = createWorkerProcessModule({ killGraceMs: 20 });

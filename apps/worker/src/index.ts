@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { getYoutubeProxyUrl, startYoutubeTokenServer } from "./youtube-import";
+import { getYoutubeProxyUrl, startYoutubeTokenServer, superviseYoutubeTokenServer } from "./youtube-import";
 import { createIsolatedPollLoop, type PollLoop } from "./poll-loop";
 import {
 	billingService,
@@ -603,25 +603,18 @@ process.once("SIGINT", beginGracefulShutdown);
 
 // YouTube is one link-intake dependency. It must never decide whether billing,
 // publishing, or other worker loops can start or remain alive.
-void startYoutubeTokenServer(
-  process.env.YTDLP_POT_SERVER_HOME ?? "/opt/youtube-tokens",
+// Keep retrying so a temporary helper failure cannot strand queued imports.
+void superviseYoutubeTokenServer(
   workerShutdown.signal,
-).then((youtubeTokenServer) => {
-	 youtubeLinkIntakeAvailable = true;
-  console.warn(JSON.stringify({ level: "info", message: "youtube_network_configured", mode: youtubeProxyUrl ? "proxy" : "direct" }));
-  void youtubeTokenServer.exited.then(() => {
-    if (workerShutdown.signal.aborted) return;
-		youtubeLinkIntakeAvailable = false;
-    console.warn(JSON.stringify({ level: "warn", message: "youtube_token_server_exited" }));
-  });
-}).catch((error) => {
-  if (workerShutdown.signal.aborted) return;
-  console.warn(JSON.stringify({
-    level: "warn",
-    message: "youtube_link_intake_unavailable",
-    error: error instanceof Error ? error.message : String(error),
-  }));
-});
+  () => startYoutubeTokenServer(
+    process.env.YTDLP_POT_SERVER_HOME ?? "/opt/youtube-tokens",
+    workerShutdown.signal,
+  ),
+  (available) => {
+    youtubeLinkIntakeAvailable = available;
+    if (available) console.warn(JSON.stringify({ level: "info", message: "youtube_network_configured", mode: youtubeProxyUrl ? "proxy" : "direct" }));
+  },
+);
 
 server.listen(port, () => {
 	const address = server.address();

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import {
   productionWorkerProcessModule,
   type WorkerPersistentProcess,
@@ -65,7 +66,9 @@ export async function startYoutubeTokenServer(
   let failure: Error | undefined;
   const child = await workerProcess.start?.({ command: "deno", args: [
     "run", "--cached-only", "--frozen", "--allow-env", "--allow-net",
-    `--allow-ffi=${modules}`, `--allow-read=${modules}`,
+    `--allow-ffi=${modules}`, `--allow-read=${modules},${resolve(home, "src")}`,
+    `--config=${resolve(home, "deno.json")}`,
+    fileURLToPath(new URL("./owned-helper.ts", import.meta.url)),
     resolve(home, "src/main.ts"), "--host", "127.0.0.1",
   ],
     cwd: home,
@@ -107,6 +110,31 @@ export async function startYoutubeTokenServer(
     throw new Error("YouTube token server did not become ready within 45 seconds");
   } catch (error) {
     stop();
+    await child.exited;
     throw error;
+  }
+}
+
+/** Restore intake after a failed startup or helper exit without restarting other loops. */
+export async function superviseYoutubeTokenServer(
+  signal: AbortSignal,
+  start: () => Promise<WorkerPersistentProcess>,
+  setAvailable: (available: boolean) => void,
+  retryMs = 5_000,
+): Promise<void> {
+  while (!signal.aborted) {
+    try {
+      const server = await start();
+      setAvailable(!signal.aborted);
+      await server.exited;
+    } catch {
+      // Helper diagnostics can contain tokens; expose availability only.
+    } finally {
+      setAvailable(false);
+    }
+    if (signal.aborted) return;
+    console.warn(JSON.stringify({ level: "warn", message: "youtube_link_intake_unavailable", retryMs }));
+    try { await sleep(retryMs, undefined, { signal }); }
+    catch { return; }
   }
 }

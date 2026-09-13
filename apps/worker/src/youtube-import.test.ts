@@ -1,5 +1,32 @@
 import { expect, test } from "bun:test";
-import { getYoutubeProxyUrl, ytdlpCommonArgs } from "./youtube-import";
+import { getYoutubeProxyUrl, superviseYoutubeTokenServer, ytdlpCommonArgs } from "./youtube-import";
+
+test("YouTube intake recovers from startup failure and a later helper exit", async () => {
+  const controller = new AbortController();
+  const availability: boolean[] = [];
+  let starts = 0;
+  await superviseYoutubeTokenServer(controller.signal, async () => {
+    starts++;
+    if (starts === 1) throw new Error("port occupied");
+    if (starts === 3) controller.abort();
+    return { exited: Promise.resolve({ exitCode: 1, signalCode: null }), stop() {} };
+  }, (available) => availability.push(available), 1);
+  expect(starts).toBe(3);
+  expect(availability).toEqual([false, true, false, false, false]);
+});
+
+test("shutdown cancels the helper restart delay", async () => {
+  const controller = new AbortController();
+  let starts = 0;
+  const pending = superviseYoutubeTokenServer(controller.signal, async () => {
+    starts++;
+    throw new Error("unavailable");
+  }, () => {}, 60_000);
+  await Bun.sleep(10);
+  controller.abort();
+  await pending;
+  expect(starts).toBe(1);
+});
 
 test("YouTube explicitly uses Deno, mweb and the private token provider", () => {
   const args = ytdlpCommonArgs("youtube");
