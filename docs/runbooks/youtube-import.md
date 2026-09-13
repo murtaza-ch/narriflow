@@ -2,9 +2,9 @@
 
 The worker image bundles yt-dlp 2026.08.19, EJS 0.8.0, Deno 2.9.5, and
 bgutil PO-token provider/plugin 2.0.0. The worker starts the provider on
-127.0.0.1:4416 before opening its health endpoint or claiming work. If the
-provider exits, the worker stops its loops and exits unsuccessfully so the
-host can restart it. Generated tokens and application credentials are not
+127.0.0.1:4416 before claiming YouTube work. If startup fails or the provider
+later exits, YouTube link intake is marked unavailable while the other worker
+loops remain available. Generated tokens and application credentials are not
 forwarded between provider logs and the worker environment.
 
 Metadata and download commands use the same `mweb` client, Deno and local token

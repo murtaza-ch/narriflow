@@ -181,6 +181,38 @@ flowchart TD
 
 Use app-local env files instead of inventing a root `.env`.
 
+### Keep local and deployed development isolated
+
+The local web app and worker must use the same local development database, and
+the deployed web app (Vercel) and worker (Railway) must use the same
+deployed development database. These database connections also carry the
+durable ingest and workflow queues, so never start a local worker with the
+deployed database URL. For local development, install Redis with
+`brew install redis && brew services start redis` and set
+`UPSTASH_REDIS_URL=redis://127.0.0.1:6379` in both local app files. The deployed
+environment keeps its existing Upstash Redis settings. Use separate R2 buckets
+for local and deployed data; environment prefixes are not implemented. Redis
+carries live events, while R2 stores source media and renders.
+
+Run the network-free identity check before starting localhost:
+
+```bash
+bun run env:check
+```
+
+It reads `apps/web/.env.local`, `apps/worker/.env`, and `packages/db/.env`, then
+compares their local database host/port/database/schema, R2 bucket, and Redis
+endpoint without printing credentials. Redis may be absent from both local app
+files. This validates local file consistency only; it does not inspect or
+compare Vercel, Railway, or Upstash runtime settings. The Prisma CLI uses
+`DIRECT_URL` from
+`packages/db/.env` in preference to `DATABASE_URL`, so keep both values on the
+same environment branch. Apply migrations separately to each database before
+starting that environment.
+
+See the [environment runbook](docs/runbooks/environments.md) for the current
+resource assignments and deployment steps.
+
 ### Web
 
 Copy [`apps/web/.env.example`](apps/web/.env.example) to `apps/web/.env.local`.

@@ -52,6 +52,21 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 - App-local env files: `apps/web/.env.local`, `apps/worker/.env`, `packages/db/.env`. Never a root `.env`. See `README.md`.
 - `.env*` is gitignored — never commit real secrets.
 
+### Local and deployed development must stay separate
+
+| Resource | Local | Deployed dev |
+| --- | --- | --- |
+| Neon branch / database | `local-murtaza` / `narriflow_local` | `deployed-dev` / `neondb` |
+| Redis | `redis://127.0.0.1:6379` | Deployed Upstash database |
+| R2 bucket | `narriflow-local-murtaza` | `narriflow-dev` |
+| Applications | Local web and worker via `bun run dev` | Vercel `narriflow-dev` and Railway `@narriflow/worker` in environment `dev` |
+
+- PostgreSQL owns the durable `IngestJob` and `WorkflowRun` queues. Never start a local worker against the deployed database; it can claim deployed jobs and run maintenance or publishing against deployed data.
+- Keep web, worker, and migration connections on the same database within each environment. Prisma prefers `DIRECT_URL` over `DATABASE_URL`; verify both before migrations. The inherited `neondb` on the local branch is unused; local applications must use `narriflow_local`.
+- Keep Redis and R2 separate too. Use the local bucket's scoped credentials, and never download deployed variables over local env files or copy deployed jobs into the local database.
+- Before local startup, run `brew services start redis` and `bun run env:check`. The check validates local file consistency only; it does not verify deployed settings or prove isolation from deployed resources.
+- Apply migrations separately to the intended database before running new code. Pushing to GitHub `dev` triggers both deployed applications. See [the environment runbook](docs/runbooks/environments.md) for resource IDs and setup details.
+
 ## Pre-production compatibility policy
 
 - Narriflow has no production users, production data, or mixed-version deployments yet. Do not preserve obsolete behavior solely for backward compatibility.
@@ -61,6 +76,6 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 
 ## DB
 
-- Generate client: `bun --cwd packages/db run prisma:generate`.
-- Migrations under `packages/db/prisma/migrations`; apply with `bun --cwd packages/db run prisma:migrate:deploy`.
+- Generate client: `bun run --cwd packages/db prisma:generate`.
+- Migrations under `packages/db/prisma/migrations`; apply with `bun run --cwd packages/db prisma:migrate:deploy`.
 - Pending migrations must be applied before deploying code that uses them.
