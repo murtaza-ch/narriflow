@@ -2887,7 +2887,7 @@ export class ProjectService {
 
 	async renewIngestJobClaim(jobId: string, claimId: string): Promise<void> {
 		const updated = await this.requirePrisma().ingestJob.updateMany({
-			where: { id: jobId, status: "running", claimId },
+			where: { id: jobId, status: "running", claimId, claimExpiresAt: { gt: new Date() } },
 			data: { claimExpiresAt: new Date(Date.now() + 10 * 60 * 1000) },
 		});
 		if (updated.count === 0) throw new IngestJobClaimLost(jobId);
@@ -2918,7 +2918,7 @@ export class ProjectService {
 
 		await prisma.$transaction(async (tx) => {
 			const settled = await tx.ingestJob.updateMany({
-				where: { id: job.id, status: "running", claimId },
+				where: { id: job.id, status: "running", claimId, claimExpiresAt: { gt: new Date() } },
 				data: { status: "completed", lastError: null, completedAt: new Date(), claimExpiresAt: null, generationHandoffAt: null },
 			});
 			if (settled.count === 0) throw new IngestJobClaimLost(job.id);
@@ -2981,7 +2981,20 @@ export class ProjectService {
 		});
 		let handedOff = 0;
 		for (const pending of jobs) {
-			await this.triggerGenerationIfPending(pending.projectId);
+			let admitted = false;
+			try {
+				admitted = await this.triggerGenerationIfPending(pending.projectId);
+			} catch (error) {
+				console.warn(JSON.stringify({ level: "warn", message: "ingest_generation_handoff_deferred", jobId: pending.id, projectId: pending.projectId, error: error instanceof Error ? error.message : String(error) }));
+				continue;
+			}
+			if (!admitted) {
+				// A prior attempt may have admitted the run and crashed before it
+				// acknowledged this intent. Only that durable run proves handoff;
+				// missing/draft configuration stays pending for finalize-setup.
+				const existing = await prisma.workflowRun.findFirst({ where: { projectId: pending.projectId } });
+				if (!existing) continue;
+			}
 			const settled = await prisma.ingestJob.updateMany({
 				where: { id: pending.id, status: "completed", generationHandoffAt: null },
 				data: { generationHandoffAt: new Date() },
@@ -3025,7 +3038,7 @@ export class ProjectService {
 
 		if (decision.outcome === "requeue") {
 			await prisma.$transaction(async (tx) => {
-				const released = await tx.ingestJob.updateMany({ where: { id: job.id, status: "running", claimId }, data: { status: "queued", claimId: null, claimExpiresAt: null, lastError: `${errorCode}: ${errorMessage} (auto-retry, attempt ${job.attemptCount} of ${INGEST_AUTO_RETRY_MAX_ATTEMPTS})` } });
+				const released = await tx.ingestJob.updateMany({ where: { id: job.id, status: "running", claimId, claimExpiresAt: { gt: new Date() } }, data: { status: "queued", claimId: null, claimExpiresAt: null, lastError: `${errorCode}: ${errorMessage} (auto-retry, attempt ${job.attemptCount} of ${INGEST_AUTO_RETRY_MAX_ATTEMPTS})` } });
 				if (released.count === 0) throw new IngestJobClaimLost(job.id);
 				await tx.project.update({
 					where: { id: job.projectId },
@@ -3051,7 +3064,7 @@ export class ProjectService {
 		const terminalErrorCode = decision.terminalErrorCode;
 
 		await prisma.$transaction(async (tx) => {
-			const settled = await tx.ingestJob.updateMany({ where: { id: job.id, status: "running", claimId }, data: { status: "failed", lastError: `${errorCode}: ${errorMessage}`, completedAt: new Date(), claimExpiresAt: null } });
+			const settled = await tx.ingestJob.updateMany({ where: { id: job.id, status: "running", claimId, claimExpiresAt: { gt: new Date() } }, data: { status: "failed", lastError: `${errorCode}: ${errorMessage}`, completedAt: new Date(), claimExpiresAt: null } });
 			if (settled.count === 0) throw new IngestJobClaimLost(job.id);
 			await tx.project.update({
 				where: { id: job.projectId },
@@ -3182,14 +3195,14 @@ export class ProjectService {
 	) {
 		const prisma = this.requirePrisma();
 
-		const job = await prisma.ingestJob.findFirst({ where: { id: jobId, status: "running", claimId } });
+		const job = await prisma.ingestJob.findFirst({ where: { id: jobId, status: "running", claimId, claimExpiresAt: { gt: new Date() } } });
 
 		if (!job) {
 			throw new IngestJobClaimLost(jobId);
 		}
 
 		const renewed = await prisma.ingestJob.updateMany({
-			where: { id: job.id, status: "running", claimId },
+			where: { id: job.id, status: "running", claimId, claimExpiresAt: { gt: new Date() } },
 			data: { lastError: null, claimExpiresAt: new Date(Date.now() + 10 * 60 * 1000) },
 		});
 		if (renewed.count === 0) throw new IngestJobClaimLost(job.id);
