@@ -529,6 +529,16 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
 
   async start(request: WorkerPersistentProcessRequest): Promise<WorkerPersistentProcess> {
     request.signal.throwIfAborted();
+    const deadlineMs = request.startupDeadlineMs ?? 45_000;
+    if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {
+      throw new Error("Worker helper startup deadline must be finite and positive");
+    }
+    if (request.startupReadyMarker && request.startupReadyMarker.length > MAX_DIAGNOSTIC_CHARS) {
+      throw new Error("Worker helper readiness marker exceeds the capture limit");
+    }
+    const startedAt = Date.now();
+    const diagnose = (event: Omit<WorkerProcessDiagnostic, "elapsedMs">) =>
+      safeDiagnose(request.diagnose, { ...event, elapsedMs: Date.now() - startedAt });
     const child = spawn(request.command, [...request.args], {
       cwd: request.cwd,
       env: request.env,
@@ -536,6 +546,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       detached: process.platform !== "win32",
     });
     const terminate = (signal: NodeJS.Signals): void => {
+      diagnose({ operation: "termination", status: "completed", terminationSignal: signal });
       try {
         if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
         else child.kill(signal);
@@ -546,7 +557,10 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       terminate("SIGTERM");
       forceKill ??= setTimeout(() => terminate("SIGKILL"), this.killGraceMs);
     };
-    const abort = () => stop();
+    const abort = () => {
+      diagnose({ operation: "cancellation", status: "failed", failureCode: cancellationFailureCode(request.signal) });
+      stop();
+    };
     request.signal.addEventListener("abort", abort, { once: true });
     let startupOutput = "";
     let startupReady = !request.startupReadyMarker;
@@ -571,19 +585,33 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         await waitForProcessGroupExit(child.pid, PROCESS_GROUP_REAP_TIMEOUT_MS);
         if (forceKill) clearTimeout(forceKill);
         request.signal.removeEventListener("abort", abort);
-        if (!startupReady) rejectStartup(new WorkerProcessFailure("worker_process_startup_failed", "retryable", "Worker helper exited before readiness", boundedDiagnostic(startupOutput), exitCode));
+        // Helper stdout may contain authentication tokens. It is only a
+        // readiness signal, never an error diagnostic or log payload.
+        startupOutput = "";
+        diagnose({ operation: "exit", status: exitCode === 0 ? "completed" : "failed" });
+        if (!startupReady) rejectStartup(new WorkerProcessFailure("worker_process_startup_failed", "retryable", "Worker helper exited before readiness", "", exitCode));
         resolve({ exitCode, signalCode });
       });
-      child.once("error", () => stop());
+      child.once("spawn", () => diagnose({ operation: "spawn", status: "completed" }));
+      child.once("error", () => {
+        diagnose({ operation: "spawn", status: "failed" });
+        stop();
+      });
     });
     if (!startupReady) {
-      const deadlineMs = request.startupDeadlineMs ?? 45_000;
       const timeout = setTimeout(() => {
         if (startupReady) return;
+        diagnose({ operation: "timeout", status: "failed", failureCode: "worker_process_startup_timeout" });
         stop();
-        rejectStartup(new WorkerProcessFailure("worker_process_startup_timeout", "retryable", "Worker helper did not become ready", boundedDiagnostic(startupOutput)));
+        rejectStartup(new WorkerProcessFailure("worker_process_startup_timeout", "retryable", "Worker helper did not become ready", ""));
       }, deadlineMs);
-      try { await startup; } finally { clearTimeout(timeout); }
+      try { await startup; }
+      catch (error) {
+        stop();
+        await exited;
+        request.signal.throwIfAborted();
+        throw error;
+      } finally { clearTimeout(timeout); }
     }
     return { exited, stop };
   }

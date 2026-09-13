@@ -58,6 +58,29 @@ test("persistent helper reaps a descendant after its parent exits", async () => 
   expect((await helper!.exited).exitCode).toBe(0);
 });
 
+test("persistent startup failures discard sensitive stdout and preserve cancellation", async () => {
+  const events: WorkerProcessDiagnostic[] = [];
+  let failure: unknown;
+  try {
+    await createWorkerProcessModule({ killGraceMs: 20 }).start?.({
+      command: "sh", args: ["-c", "echo opaque-test-token; exit 1"], cwd: process.cwd(),
+      env: { PATH: process.env.PATH }, signal: new AbortController().signal,
+      startupReadyMarker: "ready", startupDeadlineMs: 1000, diagnose: (event) => events.push(event),
+    });
+  } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ code: "worker_process_startup_failed", diagnostic: "" });
+  expect(JSON.stringify(events)).not.toContain("opaque-test-token");
+  expect(events.some((event) => event.operation === "exit" && event.status === "failed")).toBe(true);
+  const controller = new AbortController();
+  const reason = new Error("worker shutdown");
+  const pending = createWorkerProcessModule({ killGraceMs: 20 }).start?.({
+    command: "sh", args: ["-c", "sleep 60"], cwd: process.cwd(), env: { PATH: process.env.PATH },
+    signal: controller.signal, startupReadyMarker: "ready", startupDeadlineMs: 1000,
+  });
+  controller.abort(reason);
+  await expect(pending).rejects.toBe(reason);
+});
+
 test("worker process returns captured text as bytes", async () => {
   const result = await createWorkerProcessModule({ killGraceMs: 20 }).execute({
     command: process.execPath,
