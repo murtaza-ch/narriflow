@@ -180,7 +180,7 @@ async function render(
 			});
 		if (value.endsWith("generations")) return generate(body);
 		if (value.endsWith("/schedule")) return admit(body);
-		if (value.endsWith("social-posts")) return Response.json({ posts: [] });
+		if (value.includes("social-posts")) return Response.json({ posts: [] });
 		if (value.endsWith("/preview"))
 			return Response.json({
 				slots: body.clipIds.map((clipId: string) => ({

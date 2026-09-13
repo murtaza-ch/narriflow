@@ -492,6 +492,36 @@ export function createBulkSocialScheduling(dependencies: {
 				return publicOperation(opened.operation, true);
 			}
 
+			const admit = (plan: (typeof plans)[number]) =>
+				dependencies.schedule({
+					immediate: input.scheduleMode === "now",
+					actorUserId: input.actorUserId,
+					workspaceId: input.workspaceId,
+					projectId: input.projectId,
+					clientIdempotencyKey: bulkScheduleDeterministicUuid(
+						`${input.workspaceId}:${input.projectId}:${plan.requestKey}`,
+					),
+					clipId: plan.clip.clipId,
+					expectedEditorRevision: plan.clip.expectedEditorRevision,
+					clipExportId: plan.clip.exportId,
+					clipExportVariantId: plan.clip.exportVariantId,
+					accountId: plan.account.accountId,
+					platform: plan.account.platform,
+					caption: plan.copy!.caption,
+					hashtags: [...plan.copy!.hashtags],
+					title: plan.copy!.title,
+					providerSettings: plan.clip.providerSettings,
+					deliveryMode: plan.clip.deliveryMode,
+					assistedCopyVariantId: plan.copy!.variantId,
+					aspectRatio: plan.clip.aspectRatio,
+					resolution: plan.clip.resolution,
+					thumbnail: plan.thumbnail,
+					scheduledFor: opened.operation.items.find(
+						(item) => item.requestKey === plan.requestKey,
+					)!.scheduledFor!,
+					reviewOverrideReason: input.reviewOverrideReason,
+				});
+
 			for (const plan of plans) {
 				const claimed = await dependencies.store.claimItem(
 					opened.operation.id,
@@ -512,46 +542,9 @@ export function createBulkSocialScheduling(dependencies: {
 					);
 					continue;
 				}
+				let scheduled: Awaited<ReturnType<typeof admit>>;
 				try {
-					const scheduled = await dependencies.schedule({
-						immediate: input.scheduleMode === "now",
-						actorUserId: input.actorUserId,
-						workspaceId: input.workspaceId,
-						projectId: input.projectId,
-						clientIdempotencyKey: bulkScheduleDeterministicUuid(
-							`${input.workspaceId}:${input.projectId}:${plan.requestKey}`,
-						),
-						clipId: plan.clip.clipId,
-						expectedEditorRevision: plan.clip.expectedEditorRevision,
-						clipExportId: plan.clip.exportId,
-						clipExportVariantId: plan.clip.exportVariantId,
-						accountId: plan.account.accountId,
-						platform: plan.account.platform,
-						caption: plan.copy.caption,
-						hashtags: [...plan.copy.hashtags],
-						title: plan.copy.title,
-						providerSettings: plan.clip.providerSettings,
-						deliveryMode: plan.clip.deliveryMode,
-						assistedCopyVariantId: plan.copy.variantId,
-						aspectRatio: plan.clip.aspectRatio,
-						resolution: plan.clip.resolution,
-						thumbnail: plan.thumbnail,
-						scheduledFor: opened.operation.items.find(
-							(item) => item.requestKey === plan.requestKey,
-						)!.scheduledFor!,
-						reviewOverrideReason: input.reviewOverrideReason,
-					});
-					await dependencies.store.settleItem(
-						opened.operation.id,
-						plan.requestKey,
-						claimed.claimToken,
-						{
-							status: "succeeded",
-							errorCode: null,
-							retryable: false,
-							socialPostId: scheduled.socialPostId,
-						},
-					);
+					scheduled = await admit(plan);
 				} catch (error) {
 					const normalized =
 						error instanceof ExpectedDomainFailureError
@@ -576,6 +569,43 @@ export function createBulkSocialScheduling(dependencies: {
 							socialPostId: null,
 						},
 					);
+					continue;
+				}
+				try {
+					await dependencies.store.settleItem(
+						opened.operation.id,
+						plan.requestKey,
+						claimed.claimToken,
+						{
+							status: "succeeded",
+							errorCode: null,
+							retryable: false,
+							socialPostId: scheduled.socialPostId,
+						},
+					);
+				} catch {
+						// Admission may have committed before the Campaign Operation write
+						// failed. Re-admit the deterministic identity before reporting it.
+						try {
+							const recovered = await admit(plan);
+							await dependencies.store.settleItem(
+								opened.operation.id,
+								plan.requestKey,
+								claimed.claimToken,
+								{
+									status: "succeeded",
+									errorCode: null,
+									retryable: false,
+									socialPostId: recovered.socialPostId,
+								},
+							);
+						} catch {
+							throw new BulkSocialSchedulingError(
+								"campaign_schedule_item_failed",
+								"The submission was accepted but its result could not be recovered. Check the previous submission.",
+								true,
+							);
+						}
 				}
 			}
 			const settled = await dependencies.store.settleOperation(

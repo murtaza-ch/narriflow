@@ -1894,6 +1894,10 @@ app.get("/projects/:id/social-posts", async (c) => {
 	const posts = await socialService.listProjectPosts(
 		appUser.workspaceOwnerUserId,
 		c.req.param("id"),
+		{
+			activeOnly: c.req.query("active") === "1",
+			trackedIds: (c.req.query("tracked") ?? "").split(",").filter(Boolean),
+		},
 	);
 	return c.json({ posts }, 200);
 });

@@ -138,12 +138,21 @@ export function PublishingProvider({
 	const params = useSearchParams();
 	useEffect(() => setPosts(config.initialPosts), [config.initialPosts]);
 	const refresh = useCallback(async () => {
+		const tracked = posts.filter(isLiveSocialPostSnapshot).map((post) => post.id);
 		const result = await publishingRequest<{ posts: unknown }>(
-			`/api/projects/${config.projectId}/social-posts`,
+			`/api/projects/${config.projectId}/social-posts?active=1&tracked=${encodeURIComponent(tracked.join(","))}`,
 		);
-		setPosts(socialPostSnapshotSchema.array().parse(result.posts));
+		const activePosts = socialPostSnapshotSchema.array().parse(result.posts);
+		setPosts((current) => [
+			...current.filter(
+				(post) =>
+					!isLiveSocialPostSnapshot(post) &&
+					!activePosts.some((next) => next.id === post.id),
+			),
+			...activePosts,
+		]);
 		setStatusError("");
-	}, [config.projectId]);
+	}, [config.projectId, posts]);
 	useEffect(() => {
 		let alive = true;
 		const tick = () => {
@@ -1110,6 +1119,24 @@ function PublishingComposer({
 		(p) => drafts[p.key]?.deliveryMode === "tiktok_inbox",
 	).length;
 	const directCount = unresolved.length - inboxCount;
+	const submitBlockedReason = pending
+		? null
+		: !restored
+			? "Restore the publishing draft before submitting."
+			: !unresolved.length
+				? "Choose at least one post to submit."
+				: issueCount > 0
+					? "Resolve the highlighted publishing requirements before submitting."
+					: pairs.length > 1 && !config.campaignSchedulingEnabled
+						? "Publishing multiple posts together requires a Pro plan."
+						: timing.scheduleMode !== "now" && (!!previewError || !slots.length)
+							? previewError || "Choose a valid schedule before submitting."
+							: approvalBlocked &&
+								(!config.canOverrideReview || !override.trim())
+								? config.canOverrideReview
+									? "Provide a reason to publish without the required approval."
+									: "Request approval in the Review tab before publishing."
+								: null;
 	const coverPair = coverAccount
 		? pairs.find(
 				(p) => p.clip.id === active.id && p.account.id === coverAccount,
@@ -1413,32 +1440,11 @@ function PublishingComposer({
 																: SOCIAL_PLATFORM_LABELS[account.platform]}
 														</Text>
 													</Flex>
-													{submitted ? (
-														<Text fontSize="xs" color="success.fg">
-															Submitted
-														</Text>
-													) : (
-														config.assistedCopyEnabled && (
-															<Button
-																aria-label="Regenerate"
-																title="Regenerate"
-																variant="ghost"
-																size="xs"
-																disabled={generating.current.size > 0}
-																onClick={() => {
-																	if (d.edited) setReplaceScope(key);
-																	else
-																		void generate(
-																			active,
-																			[{ clip: active, account, key }],
-																			true,
-																		);
-																}}
-															>
-																<Sparkles size={15} />
-															</Button>
-														)
-													)}
+							{submitted ? (
+								<Text fontSize="xs" color="success.fg">
+									Submitted
+								</Text>
+							) : null}
 												</Flex>
 												<chakra.fieldset
 													disabled={submitted}
@@ -1532,7 +1538,7 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 																	update(key, { caption: e.target.value })
 																}
 															/>
-															<Flex width="full" justify="space-between">
+														<Flex width="full" justify="space-between">
 																<Button
 																	aria-label="Copy description"
 																	title="Copy description"
@@ -1554,7 +1560,21 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 																<Text fontSize="10px" color="fg.muted">
 																	{d.caption.length}/{capability.textLimit}
 																</Text>
-															</Flex>
+														</Flex>
+														{config.assistedCopyEnabled && (
+															<Button
+																aria-label="Regenerate"
+																variant="ghost"
+																size="xs"
+																disabled={generating.current.size > 0}
+																onClick={() => {
+																	if (d.edited) setReplaceScope(key);
+																	else void generate(active, [{ clip: active, account, key }], true);
+																}}
+															>
+																<Sparkles size={15} /> Regenerate description
+															</Button>
+														)}
 															<Field.ErrorText>
 																Shorten the description before publishing.
 															</Field.ErrorText>
@@ -1983,8 +2003,8 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 						Publishing multiple posts together requires a Pro plan.
 					</Text>
 				)}
-				<Flex justify="space-between" gap="3" align="center">
-					<chakra.fieldset disabled={disabled} border="0" p="0" m="0" flex="1" minW="0"><Flex gap="2" align="center" wrap="nowrap">
+				<Flex justify="space-between" gap="3" align={{ base: "stretch", sm: "center" }} direction={{ base: "column", sm: "row" }}>
+					<chakra.fieldset disabled={disabled} border="0" p="0" m="0" flex="1" minW="0"><Flex gap="2" align="center" wrap="wrap">
 							<Button
 								size="sm"
 								variant={timing.scheduleMode === "now" ? "outline" : "ghost"}
@@ -2004,11 +2024,11 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 								<CalendarClock size={14} />
 								Schedule
 							</Button>
-							<Text fontSize="xs" color="fg.muted" ms="auto" whiteSpace="nowrap">
+							<Text fontSize="xs" color="fg.muted" ms={{ base: "0", sm: "auto" }} overflowWrap="anywhere">
 								{config.workspaceTimezone}
 							</Text>
 						</Flex></chakra.fieldset>
-					<Flex gap="3" align="center">
+					<Flex gap="2" align={{ base: "stretch", sm: "center" }} direction={{ base: "column", sm: "row" }}>
 						<Text fontSize="xs" color="fg.muted">
 							{directCount
 								? `${directCount} post${directCount === 1 ? "" : "s"}`
@@ -2018,6 +2038,11 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 								? `${inboxCount} TikTok inbox ${inboxCount === 1 ? "draft" : "drafts"}`
 								: ""}
 						</Text>
+						{submitBlockedReason && (
+							<Text fontSize="xs" color="warning.fg" role="status">
+								{submitBlockedReason}
+							</Text>
+						)}
 						<Button
 							size="sm"
 							disabled={

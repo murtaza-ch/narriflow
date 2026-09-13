@@ -292,6 +292,47 @@ describe("bulk social scheduling", () => {
 		).rejects.toMatchObject({ code: "campaign_schedule_idempotency_conflict" });
 	});
 
+	test("recovers a committed Social Post when Campaign Operation settlement is interrupted", async () => {
+		const backingStore = createInMemoryBulkScheduleStore();
+		let interruptSettlement = true;
+		const store = {
+			...backingStore,
+			async settleItem(...args: Parameters<typeof backingStore.settleItem>) {
+				if (interruptSettlement) {
+					interruptSettlement = false;
+					throw new Error("settlement connection lost after admission");
+				}
+				return backingStore.settleItem(...args);
+			},
+		};
+		const admitted = new Map<string, string>();
+		const module = createBulkSocialScheduling({
+			store,
+			authorize: async () => ({ pricingTier: "pro", timeZone: INPUT.timeZone }),
+			schedule: async (item) => {
+				const existing = admitted.get(item.clientIdempotencyKey);
+				const socialPostId = existing ?? `post-${admitted.size + 1}`;
+				admitted.set(item.clientIdempotencyKey, socialPostId);
+				return { socialPostId, status: "scheduled" as const };
+			},
+			createId: () => crypto.randomUUID(),
+			now: () => new Date("2026-09-02T10:00:00.000Z"),
+		});
+
+		const first = await module.schedule({ ...INPUT, items: [INPUT.items[0]! ] });
+		const replay = await module.schedule({ ...INPUT, items: [INPUT.items[0]! ] });
+		const corrected = await module.schedule({
+			...INPUT,
+			idempotencyKey: "00000000-0000-4000-8000-000000000014",
+			items: [INPUT.items[0]!],
+		});
+
+		expect(first.items[0]).toMatchObject({ status: "succeeded", socialPostId: "post-1" });
+		expect(replay.items[0]).toMatchObject({ status: "succeeded", socialPostId: "post-1" });
+		expect(corrected.items[0]).toMatchObject({ status: "succeeded", socialPostId: "post-2" });
+		expect(admitted.size).toBe(2);
+	});
+
 	test("replays partial results and gives an explicit corrected submission a new identity", async () => {
 		const seen: string[] = [];
 		let fail = true;

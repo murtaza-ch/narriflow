@@ -30,6 +30,7 @@ type ExportSearchParams = {
   from?: string;
   to?: string;
   view?: string;
+	page?: string;
 };
 
 function exportHref(
@@ -71,17 +72,19 @@ export default async function ExportsPage({
   const canRetry =
     appUser.workspace.status === "active" &&
     appUser.workspace.role !== "viewer";
-  const [exports, projects] = await Promise.all([
+  const page = Number.isFinite(Number(params.page)) ? Math.max(0, Math.floor(Number(params.page))) : 0;
+  const [exportPage, projects] = await Promise.all([
     workspaceLibraryService.listExports(
       appUser.actorUserId,
       appUser.workspaceId,
-      { status, query: params.q, projectId: params.project, aspectRatio, from, to,
+      { status, query: params.q, projectId: params.project, aspectRatio, from, to, page,
       },
     ),
     workspaceLibraryService.listExportProjects(appUser.actorUserId, appUser.workspaceId,
     ),
   ]);
 
+  const exports = exportPage.items;
   const hasFilters = Boolean(status || params.q || params.project || params.ratio || params.from || params.to);
 
   return (
@@ -177,6 +180,12 @@ export default async function ExportsPage({
           ))}
         </Grid>
       )}
+			{(page > 0 || exportPage.hasMore) && (
+				<Flex gap="2" justify="end">
+					{page > 0 && <Button size="sm" variant="outline" asChild><Link href={exportHref({ ...params, page: String(page - 1) }, "view", view)}>Previous</Link></Button>}
+					{exportPage.hasMore && <Button size="sm" variant="outline" asChild><Link href={exportHref({ ...params, page: String(page + 1) }, "view", view)}>Next</Link></Button>}
+				</Flex>
+			)}
     </Stack>
   );
 }

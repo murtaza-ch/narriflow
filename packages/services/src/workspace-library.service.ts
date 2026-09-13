@@ -58,6 +58,10 @@ function validFolderName(name: string) {
 	return trimmed;
 }
 
+function boundedPage(value: number | undefined) {
+	return Number.isFinite(value) ? Math.max(0, Math.floor(value!)) : 0;
+}
+
 export class WorkspaceLibraryService {
 	async search(userId: string, workspaceId: string, query: string) {
 		await workspaceService.requireActor(userId, workspaceId, "content.view");
@@ -241,6 +245,7 @@ export class WorkspaceLibraryService {
 			aspectRatio?: ClipAspectRatio;
 			from?: Date;
 			to?: Date;
+			page?: number;
 		} = {},
 	) {
 		await workspaceService.requireActor(userId, workspaceId, "content.view");
@@ -320,9 +325,11 @@ export class WorkspaceLibraryService {
 				},
 			},
 			orderBy: { createdAt: "desc" },
-			take: 200,
+			take: 101,
+			skip: boundedPage(filters.page) * 100,
 		});
-		return rows.map((row) => ({
+		return {
+			items: rows.slice(0, 100).map((row) => ({
 			...row,
 			createdAt: row.createdAt.toISOString(),
 			completedAt: row.completedAt?.toISOString() ?? null,
@@ -331,7 +338,9 @@ export class WorkspaceLibraryService {
 				sizeBytes:
 					variant.sizeBytes === null ? null : Number(variant.sizeBytes),
 			})),
-		}));
+			})),
+			hasMore: rows.length > 100,
+		};
 	}
 
 	async listExportProjects(userId: string, workspaceId: string) {
@@ -448,7 +457,11 @@ export class WorkspaceLibraryService {
 		return { accounts, projects };
 	}
 
-	async getCalendarComposerOptions(userId: string, workspaceId: string) {
+	async getCalendarComposerOptions(
+		userId: string,
+		workspaceId: string,
+		options: { query?: string; page?: number } = {},
+	) {
 		await workspaceService.requireActor(
 			userId,
 			workspaceId,
@@ -459,6 +472,15 @@ export class WorkspaceLibraryService {
 			prisma.clip.findMany({
 				where: {
 					project: { workspaceId, ...accessibleProjectWhere() },
+					...(options.query?.trim()
+						? {
+							OR: [
+								{ title: { contains: options.query.trim(), mode: "insensitive" } },
+								{ hookText: { contains: options.query.trim(), mode: "insensitive" } },
+								{ project: { title: { contains: options.query.trim(), mode: "insensitive" } } },
+							],
+						}
+						: {}),
 				},
 				select: {
 					id: true,
@@ -469,7 +491,8 @@ export class WorkspaceLibraryService {
 					project: { select: { title: true } },
 				},
 				orderBy: { createdAt: "desc" },
-				take: 500,
+				take: 101,
+				skip: boundedPage(options.page) * 100,
 			}),
 			prisma.socialAccount.findMany({
 				where: { workspaceId, status: "active" },
@@ -478,7 +501,7 @@ export class WorkspaceLibraryService {
 			}),
 		]);
 		return {
-			clips: clips.map((clip) => ({
+			clips: clips.slice(0, 100).map((clip) => ({
 				id: clip.id,
 				editorRevision: clip.editorRevision,
 				projectId: clip.projectId,
@@ -492,6 +515,7 @@ export class WorkspaceLibraryService {
 				] as ClipAspectRatio[],
 			})),
 			accounts,
+			hasMore: clips.length > 100,
 		};
 	}
 }
