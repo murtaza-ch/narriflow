@@ -27,6 +27,21 @@ test("worker process accepts declared exit codes and returns binary stdout", asy
   expect([...result.stdout]).toEqual([0, 255, 1]);
 });
 
+test("worker process reaps a persistent helper when its owner shuts down", async () => {
+  const controller = new AbortController();
+  const helper = await createWorkerProcessModule({ killGraceMs: 20 }).start?.({
+    command: "sh",
+    args: ["-c", "echo ready; sleep 60"],
+    cwd: process.cwd(),
+    env: { PATH: process.env.PATH },
+    signal: controller.signal,
+  });
+  expect(helper).toBeDefined();
+  controller.abort();
+  const outcome = await helper!.exited;
+  expect(outcome.signalCode).not.toBeNull();
+});
+
 test("worker process returns captured text as bytes", async () => {
   const result = await createWorkerProcessModule({ killGraceMs: 20 }).execute({
     command: process.execPath,

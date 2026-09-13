@@ -71,6 +71,23 @@ export interface WorkerProcessModule {
     work: (directory: string) => Promise<T>,
     diagnose?: (event: WorkerProcessDiagnostic) => void,
   ): Promise<T>;
+  start?(request: WorkerPersistentProcessRequest): Promise<WorkerPersistentProcess>;
+}
+
+/** Long-lived helpers (the YouTube token daemon) still use the same process
+ * group and cancellation owner as one-shot commands. */
+export interface WorkerPersistentProcessRequest {
+  command: string;
+  args: readonly string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  signal: AbortSignal;
+  onStdout?(chunk: Buffer): void;
+}
+
+export interface WorkerPersistentProcess {
+  exited: Promise<{ exitCode: number | null; signalCode: NodeJS.Signals | null }>;
+  stop(): void;
 }
 
 export class WorkerProcessFailure extends WorkflowFailure {
@@ -506,6 +523,39 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         reject(failure);
       });
     });
+  }
+
+  async start(request: WorkerPersistentProcessRequest): Promise<WorkerPersistentProcess> {
+    request.signal.throwIfAborted();
+    const child = spawn(request.command, [...request.args], {
+      cwd: request.cwd,
+      env: request.env,
+      stdio: ["ignore", "pipe", "ignore"],
+      detached: process.platform !== "win32",
+    });
+    const terminate = (signal: NodeJS.Signals): void => {
+      try {
+        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch { /* process already exited */ }
+    };
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const stop = (): void => {
+      terminate("SIGTERM");
+      forceKill ??= setTimeout(() => terminate("SIGKILL"), this.killGraceMs);
+    };
+    const abort = () => stop();
+    request.signal.addEventListener("abort", abort, { once: true });
+    child.stdout?.on("data", (chunk: Buffer) => request.onStdout?.(chunk));
+    const exited = new Promise<{ exitCode: number | null; signalCode: NodeJS.Signals | null }>((resolve) => {
+      child.once("close", (exitCode, signalCode) => {
+        if (forceKill) clearTimeout(forceKill);
+        request.signal.removeEventListener("abort", abort);
+        resolve({ exitCode, signalCode });
+      });
+      child.once("error", () => stop());
+    });
+    return { exited, stop };
   }
 
   async inspectMedia(request: WorkerMediaInspectionRequest): Promise<WorkerMediaInspection> {

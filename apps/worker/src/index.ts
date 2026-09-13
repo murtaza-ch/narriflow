@@ -606,7 +606,7 @@ void startYoutubeTokenServer(
   workerShutdown.signal,
 ).then((youtubeTokenServer) => {
   console.warn(JSON.stringify({ level: "info", message: "youtube_network_configured", mode: youtubeProxyUrl ? "proxy" : "direct" }));
-  youtubeTokenServer.once("exit", () => {
+  void youtubeTokenServer.exited.then(() => {
     if (workerShutdown.signal.aborted) return;
     console.warn(JSON.stringify({ level: "warn", message: "youtube_token_server_exited" }));
   });
