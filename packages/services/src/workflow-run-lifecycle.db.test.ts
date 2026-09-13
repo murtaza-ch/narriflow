@@ -2854,4 +2854,66 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       new Set([first.project.id, secondProject.id]),
     );
   });
+
+  test("keeps an older active run ahead of a newer terminal sibling in list and detail progress", async () => {
+    const { user, workspace, project, run } = await fixture("clip_rendering");
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { ingestStatus: "ready" },
+    });
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: { status: "running" },
+    });
+    await prisma.workflowRun.create({
+      data: {
+        projectId: project.id,
+        idempotencyKey: `newer-terminal:${randomUUID()}`,
+        stage: "dubbing",
+        status: "completed",
+        updatedAt: new Date(Date.now() + 10_000),
+      },
+    });
+
+    const page = await projectService.listProjectsWithStatsPage(user.id, {
+      workspaceId: workspace.id,
+      status: "processing",
+    });
+    const snapshot = await projectService.getProjectSnapshot(
+      user.id,
+      project.id,
+      workspace.id,
+    );
+
+    expect(page.items.find((item) => item.id === project.id)?.progress).toEqual({
+      status: "processing",
+      label: "Rendering",
+      active: true,
+    });
+    expect(snapshot.activeRun?.stage).toBe("clip_rendering");
+  });
+
+  test("treats search wildcards as literal text", async () => {
+    const { user, workspace, project } = await fixture();
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { title: "100%_ready" },
+    });
+    await prisma.project.create({
+      data: {
+        title: "100xxready",
+        sourceMediaUrl: "r2://test/non-literal-match.mp4",
+        userId: user.id,
+        workspaceId: workspace.id,
+        createdByUserId: user.id,
+      },
+    });
+
+    const page = await projectService.listProjectsWithStatsPage(user.id, {
+      workspaceId: workspace.id,
+      query: "100%_ready",
+    });
+
+    expect(page.items.map((item) => item.id)).toEqual([project.id]);
+  });
 });

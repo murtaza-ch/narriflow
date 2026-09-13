@@ -1457,8 +1457,11 @@ export class ProjectService {
 		if (options.folderId) progressConditions.push(Prisma.sql`p."folderId" = ${options.folderId}`);
 		if (source !== "all") progressConditions.push(Prisma.sql`p."sourceType" = CAST(${source} AS "SourceType")`);
 		if (query) {
-			const pattern = `%${query}%`;
-			progressConditions.push(Prisma.sql`(p.title ILIKE ${pattern} OR p."sourceMediaUrl" ILIKE ${pattern} OR p."sourceInput" ILIKE ${pattern})`);
+			const pattern = `%${query
+				.replaceAll("\\", "\\\\")
+				.replaceAll("%", "\\%")
+				.replaceAll("_", "\\_")}%`;
+			progressConditions.push(Prisma.sql`(p.title ILIKE ${pattern} ESCAPE E'\\\\' OR p."sourceMediaUrl" ILIKE ${pattern} ESCAPE E'\\\\' OR p."sourceInput" ILIKE ${pattern} ESCAPE E'\\\\')`);
 		}
 		const progressCte = Prisma.sql`
 			WITH listed AS (
@@ -1483,7 +1486,10 @@ export class ProjectService {
 					SELECT stage, status
 					FROM "WorkflowRun"
 					WHERE "projectId" = p.id
-					ORDER BY "updatedAt" DESC, id DESC
+					ORDER BY
+						CASE WHEN status IN ('queued', 'running', 'waiting') THEN 0 ELSE 1 END,
+						"updatedAt" DESC,
+						id DESC
 					LIMIT 1
 				) current_run ON TRUE
 				WHERE ${Prisma.join(progressConditions, " AND ")}
@@ -1716,9 +1722,13 @@ export class ProjectService {
 		}
 
 		const scope = await this.resolveProjectScope(userId, workspaceId);
-		const [row, latestRun, lastSeq, ingestAttemptCount] = await Promise.all([
+		const [row, activeWorkflowRun, latestRun, lastSeq, ingestAttemptCount] = await Promise.all([
 			prisma.project.findFirst({
 				where: { id: projectId, AND: [scope, accessibleProjectWhere()] },
+			}),
+			prisma.workflowRun.findFirst({
+				where: { projectId, status: { in: ["queued", "running", "waiting"] } },
+				orderBy: { updatedAt: "desc" },
 			}),
 			prisma.workflowRun.findFirst({
 				where: { projectId },
@@ -1733,7 +1743,11 @@ export class ProjectService {
 
 		return {
 			project,
-			activeRun: latestRun ? toWorkflowRunSnapshot(latestRun) : null,
+			activeRun: activeWorkflowRun
+				? toWorkflowRunSnapshot(activeWorkflowRun)
+				: latestRun
+					? toWorkflowRunSnapshot(latestRun)
+					: null,
 			lastSeq,
 			ingestAttemptCount,
 		};
@@ -1769,9 +1783,13 @@ export class ProjectService {
 
 	async getIngestSnapshot(userId: string, projectId: string) {
 		const prisma = this.requirePrisma();
-		const [row, latestRun, lastSeq] = await Promise.all([
+		const [row, activeWorkflowRun, latestRun, lastSeq] = await Promise.all([
 			prisma.project.findFirst({
 				where: { id: projectId, userId, ...accessibleProjectWhere() },
+			}),
+			prisma.workflowRun.findFirst({
+				where: { projectId, status: { in: ["queued", "running", "waiting"] } },
+				orderBy: { updatedAt: "desc" },
 			}),
 			prisma.workflowRun.findFirst({
 				where: { projectId },
@@ -1786,7 +1804,11 @@ export class ProjectService {
 
 		return {
 			project: toProjectSnapshot(row),
-			activeRun: latestRun ? toWorkflowRunSnapshot(latestRun) : null,
+			activeRun: activeWorkflowRun
+				? toWorkflowRunSnapshot(activeWorkflowRun)
+				: latestRun
+					? toWorkflowRunSnapshot(latestRun)
+					: null,
 			lastSeq,
 		};
 	}
