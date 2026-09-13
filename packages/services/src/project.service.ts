@@ -2817,9 +2817,9 @@ export class ProjectService {
 				where: {
 					status: "queued",
 					...(options.youtubeAvailable === false ? {
-						NOT: [
-							{ jobType: "youtube_import" },
-							{ payload: { path: ["provider"], equals: "youtube" } },
+						OR: [
+							{ jobType: { in: ["upload_finalize", "rss_import"] } },
+							{ jobType: "link_import", NOT: { payload: { path: ["provider"], equals: "youtube" } } },
 						],
 					} : {}),
 					project: accessibleProjectWhere(),
@@ -2979,7 +2979,7 @@ export class ProjectService {
 		const prisma = this.requirePrisma();
 		const jobs = await prisma.ingestJob.findMany({
 			where: { status: "completed", generationHandoffAt: null, OR: [{ generationHandoffRetryAt: null }, { generationHandoffRetryAt: { lte: new Date() } }], ...(jobId ? { id: jobId } : {}), project: { ingestStatus: "ready" } },
-			select: { id: true, projectId: true }, orderBy: { completedAt: "asc" }, take: limit,
+			select: { id: true, projectId: true }, orderBy: [{ generationHandoffRetryAt: { sort: "asc", nulls: "first" } }, { completedAt: "asc" }, { id: "asc" }], take: limit,
 		});
 		let handedOff = 0;
 		for (const pending of jobs) {

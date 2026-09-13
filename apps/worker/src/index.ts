@@ -305,7 +305,7 @@ function diagnoseWorkflowAttemptLost(input: {
 function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
 	return createIsolatedPollLoop({
 		name,
-		run: fn,
+		run: async () => workerShutdown.signal.aborted ? 0 : fn(),
 		maximumConsecutiveFailures: maxConsecutivePollFailures,
 		onProcessed: (processed) => {
 			processedCount += processed;
@@ -645,7 +645,9 @@ function beginGracefulShutdown() {
 	// Every process-capable stage receives workerShutdown and Worker Process
 	// reaps descendants on abort. Do not let an adapter that ignores cancellation
 	// keep a deployment hostage forever.
-	const forceExit = setTimeout(() => process.exit(0), Number(process.env.WORKER_SHUTDOWN_DRAIN_MS ?? "30000"));
+	const configuredDrainMs = Number(process.env.WORKER_SHUTDOWN_DRAIN_MS ?? "30000");
+	const drainMs = Number.isFinite(configuredDrainMs) && configuredDrainMs > 0 ? configuredDrainMs : 30_000;
+	const forceExit = setTimeout(() => process.exit(0), drainMs);
 	forceExit.unref();
 }
 

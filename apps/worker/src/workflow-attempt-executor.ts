@@ -39,7 +39,8 @@ export async function executeNextWorkflowAttempt<
   /** Worker lifetime cancellation stops heartbeats and active subprocesses. */
   signal?: AbortSignal;
 }): Promise<0 | 1> {
-  const claimed = await input.lifecycle.claim(input.stage);
+	if (input.signal?.aborted) return 0;
+	const claimed = await input.lifecycle.claim(input.stage);
   if (!claimed) return 0;
   const attempt = claimed;
   const startedAtMs = Date.now();

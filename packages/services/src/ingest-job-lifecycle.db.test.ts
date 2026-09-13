@@ -52,4 +52,27 @@ dbDescribe("Ingest Job lifecycle PostgreSQL ownership", () => {
     await expect(projectService.completeIngestJob(claimed!.id, claimed!.claimId, { sourceStorageKey: "projects/test.mp4" })).rejects.toBeInstanceOf(IngestJobClaimLost);
     expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).ingestStatus).toBe("queued");
   });
+
+  test("unavailable YouTube leaves YouTube jobs queued while other intake claims", async () => {
+    const suffix = randomUUID();
+    const user = await prisma.user.create({ data: { clerkId: `ingest-db-test:${suffix}`, primaryEmail: `ingest-${suffix}@example.test` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Ingest availability", ownerUserId: user.id, personalOwnerUserId: user.id, members: { create: { userId: user.id, role: "owner" } } } });
+    const makeJob = async (jobType: "youtube_import" | "link_import" | "upload_finalize" | "rss_import", payload: object) => {
+      const project = await prisma.project.create({ data: { title: jobType, sourceMediaUrl: "r2://pending", userId: user.id, workspaceId: workspace.id, createdByUserId: user.id, ingestStatus: "queued" } });
+      return prisma.ingestJob.create({ data: { projectId: project.id, jobType, payload } });
+    };
+    const youtubeLegacy = await makeJob("youtube_import", { youtubeUrl: "https://youtube.test/a" });
+    const youtubeLink = await makeJob("link_import", { provider: "youtube", url: "https://youtube.test/b" });
+    const upload = await makeJob("upload_finalize", {});
+    const rss = await makeJob("rss_import", {});
+    const direct = await makeJob("link_import", { provider: "dropbox", url: "https://dropbox.test/c" });
+    const claimed = [
+      await projectService.claimNextIngestJob({ youtubeAvailable: false }),
+      await projectService.claimNextIngestJob({ youtubeAvailable: false }),
+      await projectService.claimNextIngestJob({ youtubeAvailable: false }),
+    ];
+    expect(new Set(claimed.map((job) => job?.id))).toEqual(new Set([upload.id, rss.id, direct.id]));
+    const untouched = await prisma.ingestJob.findMany({ where: { id: { in: [youtubeLegacy.id, youtubeLink.id] } }, select: { status: true, attemptCount: true } });
+    expect(untouched).toEqual([{ status: "queued", attemptCount: 0 }, { status: "queued", attemptCount: 0 }]);
+  });
 });
