@@ -18,6 +18,7 @@ import {
   clipAutoLayoutAnalysisSchema,
   editorDocumentSchema,
   studioEditsSchema,
+  type SceneLayoutPreset,
 } from "@narriflow/validators";
 import {
   compileCompositionPlanAudiogram,
@@ -47,7 +48,7 @@ function planCenter() {
     assets: { backgroundImage: { state: "missing" } },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
     },
     targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
   });
@@ -90,7 +91,7 @@ function planInsertedScenes(targets = [
     source: { identity: "source:key", kind: "video", ...source },
     evidence: { automaticLayout: { state: "missing" } },
     assets: { backgroundImage: { state: "missing" } },
-    capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+    capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v2" },
     targets,
   });
   if (result.status === "invalid") throw new Error(result.error.code);
@@ -129,7 +130,7 @@ function planFit(imageAvailable: boolean) {
     },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
     },
     targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
   });
@@ -150,8 +151,8 @@ function planAuto() {
   });
   const sourceIdentity = "source:key";
   const analysis = clipAutoLayoutAnalysisSchema.parse({
-    version: 1,
-    engine: "shot-layout-v1",
+    version: 2,
+    engine: "shot-layout-v2",
     sourceIdentity,
     analyzedAtISO: "2026-08-26T00:00:00.000Z",
     clipStartSec: 0,
@@ -167,10 +168,23 @@ function planAuto() {
         layout: "two-up",
         topCxNorm: 0.25,
         bottomCxNorm: 0.75,
+        subjects: [
+          { id: "left", cxNorm: 0.25, cyNorm: 0.5, zoom: 1 },
+          { id: "right", cxNorm: 0.75, cyNorm: 0.5, zoom: 1 },
+        ],
       },
     ],
     noSplitSegments: [
-      { startSec: 0, endSec: 5, layout: "single", cxNorm: 0.5 },
+      {
+        startSec: 0,
+        endSec: 5,
+        layout: "single",
+        cxNorm: 0.5,
+        subjects: [
+          { id: "left", cxNorm: 0.25, cyNorm: 0.5, zoom: 1 },
+          { id: "right", cxNorm: 0.75, cyNorm: 0.5, zoom: 1 },
+        ],
+      },
     ],
     shotCount: 1,
     soloShotCount: 0,
@@ -192,9 +206,9 @@ function planAuto() {
             clipStartSec: 0,
             clipEndSec: 5,
             deletedRanges: [],
-            engineVersion: "shot-layout-v1",
+            engineVersion: "shot-layout-v2",
           }),
-          engineVersion: "shot-layout-v1",
+          engineVersion: "shot-layout-v2",
           analysis,
         },
       },
@@ -202,7 +216,7 @@ function planAuto() {
     assets: { backgroundImage: { state: "missing" } },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
     },
     targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
   });
@@ -258,7 +272,7 @@ function planSplit() {
     assets: { backgroundImage: { state: "missing" } },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
       explicitSplitLayout: true,
       splitEngineVersion: engineVersion,
     },
@@ -309,11 +323,187 @@ function planScreen() {
     assets: { backgroundImage: { state: "missing" } },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
       screenLayout: true,
       screenEngineVersion: engineVersion,
     },
     targets: [{ id: "variant-1", aspectRatio: "4:5", width: 1080, height: 1350 }],
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return result.plan;
+}
+
+function planSceneLayout(
+  preset: SceneLayoutPreset | null,
+  background: "off" | "color" | "image" = "off",
+) {
+  const sourceIdentity = "source:scene-layout";
+  const screenEngineVersion = "screen-layout-v2";
+  const document = editorDocumentSchema.parse({
+    version: 2,
+    clipStartSec: 0,
+    clipEndSec: 1,
+    captionPreset: captionPresetSchema.parse({ visible: false }),
+    transcriptSlice: [],
+    studioEdits: studioEditsSchema.parse({
+      framing: { mode: "center" },
+      background:
+        background === "image"
+          ? {
+              mode: "image",
+              color: "#123456",
+              imageUrl: "https://example.com/background.jpg",
+            }
+          : background === "color"
+            ? { mode: "color", color: "#123456" }
+            : { mode: "off" },
+      sceneLayouts: preset
+        ? [
+            {
+              id: `layout-${preset}`,
+              aspectRatio: "9:16",
+              startSec: 0.25,
+              endSec: 0.75,
+              preset,
+            },
+          ]
+        : [],
+    }),
+    brollUrl: null,
+    deletedRanges: [],
+  });
+  const analysis = clipAutoLayoutAnalysisSchema.parse({
+    version: 2,
+    engine: "shot-layout-v2",
+    sourceIdentity,
+    analyzedAtISO: "2026-09-13T00:00:00.000Z",
+    clipStartSec: 0,
+    clipEndSec: 1,
+    deletedRanges: [],
+    editedDurationSec: 1,
+    sourceWidth: 320,
+    sourceHeight: 180,
+    segments: [
+      {
+        startSec: 0,
+        endSec: 0.5,
+        layout: "two-up",
+        topCxNorm: 0.28,
+        bottomCxNorm: 0.72,
+        subjects: [
+          { id: "one", cxNorm: 0.14, cyNorm: 0.5, zoom: 1 },
+          { id: "two", cxNorm: 0.38, cyNorm: 0.5, zoom: 1 },
+          { id: "three", cxNorm: 0.62, cyNorm: 0.5, zoom: 1 },
+          { id: "four", cxNorm: 0.86, cyNorm: 0.5, zoom: 1 },
+        ],
+      },
+      {
+        startSec: 0.5,
+        endSec: 1,
+        layout: "two-up",
+        topCxNorm: 0.32,
+        bottomCxNorm: 0.68,
+        subjects: [
+          { id: "one", cxNorm: 0.16, cyNorm: 0.5, zoom: 1 },
+          { id: "two", cxNorm: 0.39, cyNorm: 0.5, zoom: 1 },
+          { id: "three", cxNorm: 0.61, cyNorm: 0.5, zoom: 1 },
+          { id: "four", cxNorm: 0.84, cyNorm: 0.5, zoom: 1 },
+        ],
+      },
+    ],
+    noSplitSegments: [
+      {
+        startSec: 0,
+        endSec: 0.5,
+        layout: "single",
+        cxNorm: 0.72,
+        subjects: [
+          { id: "one", cxNorm: 0.14, cyNorm: 0.5, zoom: 1 },
+          { id: "two", cxNorm: 0.38, cyNorm: 0.5, zoom: 1 },
+          { id: "three", cxNorm: 0.62, cyNorm: 0.5, zoom: 1 },
+          { id: "four", cxNorm: 0.86, cyNorm: 0.5, zoom: 1 },
+        ],
+      },
+      {
+        startSec: 0.5,
+        endSec: 1,
+        layout: "single",
+        cxNorm: 0.68,
+        subjects: [
+          { id: "one", cxNorm: 0.16, cyNorm: 0.5, zoom: 1 },
+          { id: "two", cxNorm: 0.39, cyNorm: 0.5, zoom: 1 },
+          { id: "three", cxNorm: 0.61, cyNorm: 0.5, zoom: 1 },
+          { id: "four", cxNorm: 0.84, cyNorm: 0.5, zoom: 1 },
+        ],
+      },
+    ],
+    shotCount: 2,
+    soloShotCount: 0,
+    multiShotCount: 2,
+    twoUpSegmentCount: 2,
+    speakerCount: 4,
+    mappedSpeakerCount: 4,
+  });
+  const result = planClipComposition({
+    document,
+    source: {
+      identity: sourceIdentity,
+      kind: "video",
+      width: 320,
+      height: 180,
+    },
+    evidence: {
+      automaticLayout: {
+        state: "available",
+        value: {
+          sourceIdentity,
+          inputFingerprint: automaticLayoutInputFingerprint({
+            sourceIdentity,
+            clipStartSec: 0,
+            clipEndSec: 1,
+            deletedRanges: [],
+            engineVersion: "shot-layout-v2",
+          }),
+          engineVersion: "shot-layout-v2",
+          analysis,
+        },
+      },
+      screenLayout: {
+        state: "available",
+        value: {
+          sourceIdentity,
+          inputFingerprint: screenLayoutInputFingerprint({
+            sourceIdentity,
+            clipStartSec: 0,
+            clipEndSec: 1,
+            deletedRanges: [],
+            engineVersion: screenEngineVersion,
+          }),
+          engineVersion: screenEngineVersion,
+          source: "durable-pip",
+          pictureInPicture: {
+            state: "confirmed",
+            rect: { x: 0.72, y: 0.68, width: 0.2, height: 0.22 },
+          },
+          faceBand: { state: "unavailable" },
+        },
+      },
+    },
+    assets: {
+      backgroundImage:
+        background === "image"
+          ? { state: "available", ref: "background:scene-layout" }
+          : { state: "missing" },
+    },
+    capabilities: {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v2",
+      screenLayout: true,
+      screenEngineVersion,
+    },
+    targets: [
+      { id: "scene-layout", aspectRatio: "9:16", width: 180, height: 320 },
+    ],
   });
   if (result.status === "invalid") throw new Error(result.error.code);
   return result.plan;
@@ -344,7 +534,7 @@ function planBroll() {
     },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
     },
     targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
   });
@@ -404,7 +594,7 @@ function planVisualStack(input: {
     },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
     },
     targets: [{
       id: "variant-1",
@@ -440,7 +630,7 @@ function planTransitionOnly(
     assets: { backgroundImage: { state: "missing" } },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
     },
     targets: [{ id: "smoke", aspectRatio: "16:9", width: 320, height: 180 }],
   });
@@ -511,7 +701,7 @@ describe("composition FFmpeg adapter", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v1",
+        automaticSpeakerEngineVersion: "shot-layout-v2",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 90, height: 160 },
@@ -586,7 +776,7 @@ describe("composition FFmpeg adapter", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v1",
+        automaticSpeakerEngineVersion: "shot-layout-v2",
       },
       targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
@@ -627,7 +817,7 @@ describe("composition FFmpeg adapter", () => {
       source: { identity: "audio:key", kind: "audio", width: 0, height: 0 },
       evidence: { automaticLayout: { state: "missing" } },
       assets: { backgroundImage: { state: "missing" } },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v2" },
       targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
     if (result.status === "invalid") throw new Error(result.error.code);
@@ -1115,6 +1305,233 @@ describe("composition FFmpeg adapter", () => {
     });
   });
 
+  test("renders timed Fit backgrounds and Inset geometry through real FFmpeg", async () => {
+    const cases = [
+      { label: "fit color", plan: planSceneLayout("fit", "color"), image: false },
+      { label: "fit image", plan: planSceneLayout("fit", "image"), image: true },
+      { label: "inset", plan: planSceneLayout("inset"), image: false },
+    ];
+
+    for (const renderCase of cases) {
+      const compiled = compileCompositionPlanVideo({
+        plan: renderCase.plan,
+        targetId: "scene-layout",
+        videoInputLabel: "[0:v]",
+        outputLabel: "[outv]",
+        backgroundImageInputIndex: renderCase.image ? 1 : null,
+        fps: 24,
+      });
+      expect(compiled.backgroundImageInputRequired, renderCase.label).toBe(
+        renderCase.image,
+      );
+      const graph = compiled.filterParts.join(";");
+      if (renderCase.label === "fit color") {
+        expect(graph).toContain("color=0x123456");
+      } else if (renderCase.label === "fit image") {
+        expect(graph).toContain(
+          "[composition_scene_1_background_src]loop=loop=-1:size=1:start=0,trim=duration=0.500",
+        );
+      } else {
+        expect(graph).toContain("overlay=");
+      }
+
+      const process = Bun.spawn(
+        [
+          "ffmpeg",
+          "-v",
+          "error",
+          "-f",
+          "lavfi",
+          "-i",
+          "testsrc2=size=320x180:rate=24:duration=1",
+          ...(renderCase.image
+            ? [
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=0B7A42:s=180x320:r=24:d=0.042",
+              ]
+            : []),
+          "-filter_complex",
+          graph,
+          "-map",
+          "[outv]",
+          "-frames:v",
+          "24",
+          "-pix_fmt",
+          "rgb24",
+          "-f",
+          "rawvideo",
+          "pipe:1",
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const [stderr, output] = await Promise.all([
+        new Response(process.stderr).text(),
+        new Response(process.stdout).arrayBuffer(),
+      ]);
+      expect(await process.exited, `${renderCase.label}: ${stderr}`).toBe(0);
+      expect(output.byteLength, renderCase.label).toBe(180 * 320 * 3 * 24);
+    }
+  }, 30_000);
+
+  test("renders masked circles, rounded corners, and three/four-layer templates", async () => {
+    const cases: Array<{
+      preset: SceneLayoutPreset;
+      expectedSourceLayers: number;
+      inspectPixels: "circle" | "rounded" | null;
+    }> = [
+      {
+        preset: "screen-top-circle",
+        expectedSourceLayers: 2,
+        inspectPixels: "circle",
+      },
+      {
+        preset: "screen-top-two-circle",
+        expectedSourceLayers: 3,
+        inspectPixels: null,
+      },
+      { preset: "three-top", expectedSourceLayers: 3, inspectPixels: null },
+      {
+        preset: "four-grid-padded",
+        expectedSourceLayers: 4,
+        inspectPixels: "rounded",
+      },
+    ];
+
+    for (const renderCase of cases) {
+      const plan = planSceneLayout(renderCase.preset, "color");
+      const target = plan.targets[0]!;
+      const selectedScene = target.scenes.find(
+        (scene) => scene.layoutSelection?.preset === renderCase.preset,
+      )!;
+      const sourceLayers = selectedScene.layers.filter(
+        (layer) => layer.kind === "source-video",
+      );
+      expect(sourceLayers, renderCase.preset).toHaveLength(
+        renderCase.expectedSourceLayers,
+      );
+      const compiled = compileCompositionPlanVideo({
+        plan,
+        targetId: "scene-layout",
+        videoInputLabel: "[0:v]",
+        outputLabel: "[outv]",
+        fps: 24,
+      });
+      const process = Bun.spawn(
+        [
+          "ffmpeg",
+          "-v",
+          "error",
+          "-f",
+          "lavfi",
+          "-i",
+          "color=c=E53935:s=320x180:r=24:d=1",
+          "-filter_complex",
+          compiled.filterParts.join(";"),
+          "-map",
+          "[outv]",
+          "-frames:v",
+          "24",
+          "-pix_fmt",
+          "rgb24",
+          "-f",
+          "rawvideo",
+          "pipe:1",
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const [stderr, buffer] = await Promise.all([
+        new Response(process.stderr).text(),
+        new Response(process.stdout).arrayBuffer(),
+      ]);
+      expect(await process.exited, `${renderCase.preset}: ${stderr}`).toBe(0);
+      expect(buffer.byteLength, renderCase.preset).toBe(180 * 320 * 3 * 24);
+
+      if (renderCase.inspectPixels) {
+        const bytes = new Uint8Array(buffer);
+        const pixel = (x: number, y: number) => {
+          const frameOffset = 12 * 180 * 320 * 3;
+          const offset = frameOffset + (y * 180 + x) * 3;
+          return [bytes[offset]!, bytes[offset + 1]!, bytes[offset + 2]!] as const;
+        };
+        const isSourceRed = ([red, green, blue]: readonly number[]) =>
+          red > green + 80 && red > blue + 80;
+        const isPlannedBackground = ([red, green, blue]: readonly number[]) =>
+          red >= 5 && red <= 35 && green >= 35 && green <= 70 && blue >= 70 && blue <= 105;
+        const maskedLayers = sourceLayers.filter((layer) => layer.mask);
+        if (renderCase.inspectPixels === "circle") {
+          const circle = maskedLayers.find(
+            (layer) => layer.mask?.kind === "circle",
+          )!;
+          expect(circle.destination.width).toBe(circle.destination.height);
+          expect(
+            isSourceRed(
+              pixel(
+                circle.destination.x + circle.destination.width / 2,
+                circle.destination.y + circle.destination.height / 2,
+              ),
+            ),
+          ).toBe(true);
+          expect(
+            isPlannedBackground(
+              pixel(circle.destination.x + 1, circle.destination.y + 1),
+            ),
+          ).toBe(true);
+        } else {
+          expect(maskedLayers).toHaveLength(4);
+          for (const layer of maskedLayers) {
+            expect(
+              isSourceRed(
+                pixel(
+                  layer.destination.x + layer.destination.width / 2,
+                  layer.destination.y + layer.destination.height / 2,
+                ),
+              ),
+            ).toBe(true);
+            expect(
+              isPlannedBackground(
+                pixel(layer.destination.x + 1, layer.destination.y + 1),
+              ),
+            ).toBe(true);
+          }
+        }
+      }
+    }
+  }, 30_000);
+
+  test("accepts planner scene boundaries under clip-wide Center and Fit modes", () => {
+    const plans = [planSceneLayout(null), planSceneLayout(null, "color")].map(
+      (plan) => {
+        const target = plan.targets[0]!;
+        const scene = target.scenes[0]!;
+        return {
+          ...plan,
+          targets: [
+            {
+              ...target,
+              scenes: [
+                { ...scene, startSec: 0, endSec: 0.5 },
+                { ...scene, startSec: 0.5, endSec: 1 },
+              ],
+            },
+          ],
+        };
+      },
+    );
+
+    for (const plan of plans) {
+      const compiled = compileCompositionPlanVideo({
+        plan,
+        targetId: "scene-layout",
+        videoInputLabel: "[0:v]",
+        outputLabel: "[outv]",
+        fps: 24,
+      });
+      expect(compiled.filterParts.join(";")).toContain("[outv]");
+    }
+  });
+
   test("compiles Auto scenes from exact planned crops and destinations", () => {
     expect(
       compileCompositionPlanVideo({
@@ -1421,7 +1838,7 @@ describe("composition FFmpeg adapter", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v1",
+        automaticSpeakerEngineVersion: "shot-layout-v2",
       },
       targets: [
         { id: "square", aspectRatio: "1:1", width: 1080, height: 1080 },
@@ -1541,7 +1958,7 @@ describe("composition FFmpeg adapter", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v1",
+        automaticSpeakerEngineVersion: "shot-layout-v2",
       },
       targets: [{ id: "real", aspectRatio: "9:16", width: 180, height: 320 }],
     });
@@ -1686,7 +2103,7 @@ describe("composition FFmpeg adapter", () => {
       evidence: { automaticLayout: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v1",
+        automaticSpeakerEngineVersion: "shot-layout-v2",
       },
       assets: {
         backgroundImage: { state: "missing" },
@@ -1788,7 +2205,7 @@ describe("composition FFmpeg adapter", () => {
       evidence: { automaticLayout: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v1",
+        automaticSpeakerEngineVersion: "shot-layout-v2",
       },
       assets: { backgroundImage: { state: "missing" } },
       targets: [{ id: "real", aspectRatio: "16:9", width: 160, height: 90 }],

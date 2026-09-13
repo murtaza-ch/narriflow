@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { clipAutoLayoutSegmentSchema } from "./clip-auto-layout-analysis";
+import { clipSplitLayoutSegmentSchema } from "./clip-auto-layout-analysis";
 import {
   assertSupportedClipCompositionEvidenceVersion,
 } from "./clip-composition-evidence";
@@ -77,7 +77,7 @@ export const clipLayoutAnalysisV2Schema = clipLayoutAnalysisBaseSchema.extend({
   sourceHeight: z.number().int().positive(),
   deletedRanges: deletedRangesSchema,
   faceBandSegments: z
-    .array(clipAutoLayoutSegmentSchema)
+    .array(clipSplitLayoutSegmentSchema)
     .min(1)
     .max(64)
     .nullable(),

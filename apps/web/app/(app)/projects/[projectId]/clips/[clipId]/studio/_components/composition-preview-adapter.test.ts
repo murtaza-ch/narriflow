@@ -18,10 +18,12 @@ import {
   compositionNoticeTexts,
   compositionInvalidText,
   manualBrollAvailabilityForPlan,
+  orderedCompositionSourceLayers,
   plannedCompositionSourceDimensions,
   plannedCompositionAudioState,
   plannedCompositionUsesStackedStage,
   plannedCompositionFrameStyle,
+  plannedCompositionMaskStyle,
   plannedCompositionVideoStyle,
   plannedSceneTextPreview,
   adoptCompositionMotion,
@@ -588,6 +590,7 @@ describe("composition preview adapter", () => {
       sceneId: "scene:center:9:16:0",
       sceneStartSec: 0,
       sceneEndSec: 6,
+      sourceRange: null,
       requestedMode: "center",
       effectiveMode: "center",
       layers: [
@@ -701,6 +704,25 @@ describe("composition preview adapter", () => {
     });
   });
 
+  test("scales rounded and circular source masks from output pixels", () => {
+    const layer = centerPlan().targets[0]!.scenes[0]!.layers[0]!;
+    if (layer.kind !== "source-video") throw new Error("expected source layer");
+    expect(
+      plannedCompositionMaskStyle(
+        { ...layer, mask: { kind: "rounded", radiusPx: 20 } },
+        { width: 1080, height: 1920 },
+        { width: 270, height: 480 },
+      ),
+    ).toEqual({ borderRadius: "5px" });
+    expect(
+      plannedCompositionMaskStyle(
+        { ...layer, mask: { kind: "circle" } },
+        { width: 1080, height: 1920 },
+        { width: 270, height: 480 },
+      ),
+    ).toEqual({ borderRadius: "50%" });
+  });
+
   test("translates Screen contain and crop layers without re-deciding fit policy", () => {
     const layer = centerPlan().targets[0]!.scenes[0]!.layers[0]!;
     if (layer.kind !== "source-video") throw new Error("expected source layer");
@@ -763,6 +785,37 @@ describe("composition preview adapter", () => {
 
     expect(plannedCompositionUsesStackedStage(splitSingle)).toBe(false);
     expect(plannedCompositionUsesStackedStage(splitTwoUp)).toBe(true);
+  });
+
+  test("keeps the planner's primary source first in mixed speaker and screen layouts", () => {
+    const base = adoptCompositionPreview(centerPlan(), "9:16", 0).layers[0]!;
+    if (base.kind !== "source-video") throw new Error("expected source layer");
+    const transform = {
+      role: "single" as const,
+      frameX: 0,
+      frameY: 0,
+      frameWidth: 0.4,
+      frameHeight: 0.4,
+      rotationDeg: 0,
+      cropCxNorm: 0.5,
+      cropCyNorm: 0.5,
+      cropZoom: 1,
+    };
+    const speaker = {
+      ...base,
+      id: "speaker-primary",
+      speaker: {
+        role: "single" as const,
+        transform,
+        defaultTransform: transform,
+        overrideId: null,
+      },
+    };
+    const screen = { ...base, id: "screen-secondary" };
+
+    expect(
+      orderedCompositionSourceLayers([speaker, screen]).map((layer) => layer.id),
+    ).toEqual(["speaker-primary", "screen-secondary"]);
   });
 
   test("adopts B-roll only inside the planner's active edited-time scene", () => {

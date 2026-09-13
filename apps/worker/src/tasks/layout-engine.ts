@@ -42,10 +42,14 @@
  * incomplete detection, allowing callers to use their safe center/reframe
  * fallback without pretending the detector saw what it did not.
  */
-import type { TranscriptUtterance } from "@narriflow/validators";
+import type {
+  ClipAutoLayoutSegment,
+  ClipAutoLayoutSubject,
+  TranscriptUtterance,
+} from "@narriflow/validators";
 import { sourceToEdited } from "@narriflow/validators";
 import type { ClipCutPlan } from "./cut-plan";
-import type { DetectedFace, MultiFaceSample, SplitLayoutSegment } from "./two-up";
+import type { DetectedFace, MultiFaceSample } from "./two-up";
 
 // ---------------------------------------------------------------------------
 // Speech timebase conversion + turns
@@ -281,6 +285,9 @@ export interface ShotAnalysis {
   kind: ShotKind;
   /** Sorted by descending face size. Empty iff kind === "none". */
   seats: ShotSeat[];
+  /** Stable, simultaneously observed people available to explicit scene
+   * layouts. Left-to-right order is deterministic within this shot. */
+  subjectSeats: ShotSeat[];
   sampleCount: number;
 }
 
@@ -320,6 +327,45 @@ function median(values: number[]): number {
 }
 
 /**
+ * Derives up to four face anchors from samples that observed those faces at
+ * the same time. Choosing a supported count before clustering prevents one
+ * person moving across the frame from becoming several layout subjects.
+ */
+function cooccurringSubjectSeats(
+  samples: MultiFaceSample[],
+  samplesWithFaces: number,
+  minCoOccurrence: number,
+): ShotSeat[] {
+  let count = 1;
+  for (let candidate = 2; candidate <= 4; candidate++) {
+    const cooccurring = samples.filter(
+      (sample) => sample.faces.length >= candidate,
+    ).length;
+    if (cooccurring / samplesWithFaces < minCoOccurrence) break;
+    count = candidate;
+  }
+  if (count === 1) return [];
+
+  const frames = samples
+    .filter((sample) => sample.faces.length >= count)
+    .map((sample) =>
+      [...sample.faces]
+        .sort((left, right) => right.w * right.h - left.w * left.h)
+        .slice(0, count)
+        .sort((left, right) => left.cx - right.cx),
+    );
+  return Array.from({ length: count }, (_, index) => {
+    const faces = frames.map((frame) => frame[index]!);
+    return {
+      cx: median(faces.map((face) => face.cx)),
+      cy: median(faces.map((face) => face.cy)),
+      h: median(faces.map((face) => face.h)),
+      presence: frames.length / samples.length,
+    };
+  });
+}
+
+/**
  * Classifies one shot from the detector samples inside its window. Seats are
  * formed by 1-D cx clustering WITHIN the shot only (per the two-up spike's
  * finding that cluster positions are only stable within a shot): faces
@@ -342,7 +388,7 @@ export function analyzeShot(
   );
   const sampleCount = inShot.length;
   if (sampleCount === 0) {
-    return { shot, kind: "none", seats: [], sampleCount };
+    return { shot, kind: "none", seats: [], subjectSeats: [], sampleCount };
   }
 
   const allFaces: DetectedFace[] = inShot.flatMap((s) => s.faces);
@@ -351,7 +397,7 @@ export function analyzeShot(
     allFaces.length === 0 ||
     samplesWithFaces / sampleCount < minFaceSampleFraction
   ) {
-    return { shot, kind: "none", seats: [], sampleCount };
+    return { shot, kind: "none", seats: [], subjectSeats: [], sampleCount };
   }
 
   // Co-occurrence gate (C1): "multi" demands both faces on screen AT THE
@@ -384,7 +430,7 @@ export function analyzeShot(
     .sort((a, b) => b.h - a.h);
 
   if (seats.length === 0) {
-    return { shot, kind: "none", seats: [], sampleCount };
+    return { shot, kind: "none", seats: [], subjectSeats: [], sampleCount };
   }
   if (seats.length > 1 && !coOccurs) {
     // Two-plus lateral positions but rarely on screen together: this is a
@@ -393,12 +439,24 @@ export function analyzeShot(
     // slightly-off single crop beats a two-up of one person's face and
     // their empty chair).
     const dominant = [...seats].sort((a, b) => b.presence - a.presence)[0]!;
-    return { shot, kind: "solo", seats: [dominant], sampleCount };
+    return {
+      shot,
+      kind: "solo",
+      seats: [dominant],
+      subjectSeats: [dominant],
+      sampleCount,
+    };
   }
+  const kind = seats.length === 1 ? "solo" : "multi";
+  const cooccurringSubjects = coOccurs
+    ? cooccurringSubjectSeats(inShot, samplesWithFaces, minCoOccurrence)
+    : [];
   return {
     shot,
-    kind: seats.length === 1 ? "solo" : "multi",
+    kind,
     seats,
+    subjectSeats:
+      cooccurringSubjects.length > 0 ? cooccurringSubjects : [seats[0]!],
     sampleCount,
   };
 }
@@ -661,7 +719,7 @@ export interface BuildAutoLayoutPlanResult {
   /** Empty only when the footage produced no trustworthy face framing or
    * detection ended too early. A one-shot talking head still returns one
    * face-centered segment so preview and export share the exact same plan. */
-  segments: SplitLayoutSegment[];
+  segments: ClipAutoLayoutSegment[];
   shotCount: number;
   soloShotCount: number;
   multiShotCount: number;
@@ -689,13 +747,46 @@ function speechShareInWindow(
   return shares;
 }
 
+function sameSubjects(
+  left: readonly ClipAutoLayoutSubject[],
+  right: readonly ClipAutoLayoutSubject[],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((subject, index) => {
+    const other = right[index];
+    return Boolean(
+      other &&
+        Math.abs(subject.cxNorm - other.cxNorm) < 0.015 &&
+        Math.abs(subject.cyNorm - other.cyNorm) < 0.015 &&
+        Math.abs(subject.zoom - other.zoom) < 0.015,
+    );
+  });
+}
+
+function sharedSubjects(
+  left: readonly ClipAutoLayoutSubject[],
+  right: readonly ClipAutoLayoutSubject[],
+): ClipAutoLayoutSubject[] {
+  return left.filter((subject, index) => {
+    const other = right[index];
+    return Boolean(
+      other &&
+        Math.abs(subject.cxNorm - other.cxNorm) < 0.015 &&
+        Math.abs(subject.cyNorm - other.cyNorm) < 0.015 &&
+        Math.abs(subject.zoom - other.zoom) < 0.015,
+    );
+  });
+}
+
 /** Merges adjacent segments whose layout and framing are effectively equal
  *  (crop centers within ~1.5% and same zoom) so consecutive same-camera
  *  shots don't cost redundant filtergraph branches. */
-function coalesceEqualSegments(segments: SplitLayoutSegment[]): SplitLayoutSegment[] {
+function coalesceEqualSegments(
+  segments: ClipAutoLayoutSegment[],
+): ClipAutoLayoutSegment[] {
   const near = (a: number | undefined, b: number | undefined) =>
     Math.abs((a ?? 0.5) - (b ?? 0.5)) < 0.015;
-  const out: SplitLayoutSegment[] = [];
+  const out: ClipAutoLayoutSegment[] = [];
   for (const seg of segments) {
     const last = out[out.length - 1];
     if (
@@ -704,7 +795,8 @@ function coalesceEqualSegments(segments: SplitLayoutSegment[]): SplitLayoutSegme
       seg.layout === "single" &&
       near(last.cxNorm, seg.cxNorm) &&
       near(last.cyNorm, seg.cyNorm) &&
-      near(last.zoom ?? 1, seg.zoom ?? 1)
+      near(last.zoom ?? 1, seg.zoom ?? 1) &&
+      sameSubjects(last.subjects, seg.subjects)
     ) {
       last.endSec = seg.endSec;
     } else if (
@@ -716,7 +808,8 @@ function coalesceEqualSegments(segments: SplitLayoutSegment[]): SplitLayoutSegme
       near(last.topCyNorm, seg.topCyNorm) &&
       near(last.bottomCyNorm, seg.bottomCyNorm) &&
       near(last.topZoom ?? 1, seg.topZoom ?? 1) &&
-      near(last.bottomZoom ?? 1, seg.bottomZoom ?? 1)
+      near(last.bottomZoom ?? 1, seg.bottomZoom ?? 1) &&
+      sameSubjects(last.subjects, seg.subjects)
     ) {
       last.endSec = seg.endSec;
     } else {
@@ -738,11 +831,11 @@ function coalesceEqualSegments(segments: SplitLayoutSegment[]): SplitLayoutSegme
  * onto the wrong seat).
  */
 function mergeShortSegments(
-  segments: SplitLayoutSegment[],
+  segments: ClipAutoLayoutSegment[],
   minSegmentSec: number,
-): SplitLayoutSegment[] {
+): ClipAutoLayoutSegment[] {
   let out = segments.map((s) => ({ ...s }));
-  const duration = (s: SplitLayoutSegment) => s.endSec - s.startSec;
+  const duration = (s: ClipAutoLayoutSegment) => s.endSec - s.startSec;
   while (out.length > 1) {
     let bestIndex = -1;
     let bestScore = Infinity;
@@ -767,6 +860,7 @@ function mergeShortSegments(
       ...keep,
       startSec: a.startSec,
       endSec: b.endSec,
+      subjects: sharedSubjects(a.subjects, b.subjects),
     });
     out = coalesceEqualSegments(out);
   }
@@ -777,7 +871,7 @@ function mergeShortSegments(
  *  `capSegments` to always pick the LEAST damaging merge (merging two
  *  near-identical solo crops loses nothing; folding a split into a solo of
  *  the other seat loses a lot). Mixed layouts are heavily penalized. */
-function mergeCost(a: SplitLayoutSegment, b: SplitLayoutSegment): number {
+function mergeCost(a: ClipAutoLayoutSegment, b: ClipAutoLayoutSegment): number {
   if (a.layout !== b.layout) return 10;
   if (a.layout === "single" && b.layout === "single") {
     return (
@@ -804,11 +898,11 @@ function mergeCost(a: SplitLayoutSegment, b: SplitLayoutSegment): number {
  * wrongly-framed segment.
  */
 function capSegments(
-  segments: SplitLayoutSegment[],
+  segments: ClipAutoLayoutSegment[],
   maxSegments: number,
-): SplitLayoutSegment[] {
+): ClipAutoLayoutSegment[] {
   let out = segments.map((s) => ({ ...s }));
-  const duration = (s: SplitLayoutSegment) => s.endSec - s.startSec;
+  const duration = (s: ClipAutoLayoutSegment) => s.endSec - s.startSec;
   while (out.length > maxSegments && out.length > 1) {
     let bestIndex = 0;
     let bestScore = Infinity;
@@ -826,10 +920,11 @@ function capSegments(
     const a = out[bestIndex]!;
     const b = out[bestIndex + 1]!;
     const keep = duration(a) >= duration(b) ? a : b;
-    const merged: SplitLayoutSegment = {
+    const merged: ClipAutoLayoutSegment = {
       ...keep,
       startSec: a.startSec,
       endSec: b.endSec,
+      subjects: sharedSubjects(a.subjects, b.subjects),
     };
     out.splice(bestIndex, 2, merged);
     out = coalesceEqualSegments(out);
@@ -907,7 +1002,7 @@ export function buildAutoLayoutPlan(
 
   const turns = buildSpeakerTurns(params.words, opts.turnsOptions);
 
-  const segments: SplitLayoutSegment[] = [];
+  const segments: ClipAutoLayoutSegment[] = [];
   let mappedSpeakerCount = 0;
   // Indexes of leading "none" segments awaiting the FIRST real framing to
   // backfill from (M2's hold-framing policy has no previous shot to hold
@@ -915,8 +1010,19 @@ export function buildAutoLayoutPlan(
   const pendingBackfill: number[] = [];
   let twoUpSegmentCount = 0;
 
-  for (const analysis of analyses) {
+  for (const [shotIndex, analysis] of analyses.entries()) {
     const { shot, kind, seats } = analysis;
+    const subjects: ClipAutoLayoutSubject[] = analysis.subjectSeats
+      .slice(0, 4)
+      .map((seat, subjectIndex) => {
+        const framed = frameFaceInCrop(seat, 1, opts.frameOptions);
+        return {
+          id: `shot:${shotIndex}:subject:${subjectIndex}`,
+          cxNorm: framed.cxNorm,
+          cyNorm: framed.cyNorm,
+          zoom: framed.zoom,
+        };
+      });
 
     if (kind === "none") {
       // Hold the previous shot's framing rather than snapping to a hard
@@ -926,7 +1032,12 @@ export function buildAutoLayoutPlan(
       // that the backfill pass below replaces with the NEXT shot's framing.
       const prev = segments[segments.length - 1];
       if (prev && prev.layout === "single") {
-        segments.push({ ...prev, startSec: shot.startSec, endSec: shot.endSec });
+        segments.push({
+          ...prev,
+          startSec: shot.startSec,
+          endSec: shot.endSec,
+          subjects: [],
+        });
       } else {
         pendingBackfill.push(segments.length);
         segments.push({
@@ -934,6 +1045,9 @@ export function buildAutoLayoutPlan(
           endSec: shot.endSec,
           layout: "single",
           cxNorm: 0.5,
+          cyNorm: 0.5,
+          zoom: 1,
+          subjects: [],
         });
       }
       continue;
@@ -966,6 +1080,7 @@ export function buildAutoLayoutPlan(
         cxNorm: framed.cxNorm,
         cyNorm: framed.cyNorm,
         zoom: framed.zoom,
+        subjects,
       });
       continue;
     }
@@ -991,7 +1106,10 @@ export function buildAutoLayoutPlan(
     );
     mappedSpeakerCount = Math.max(mappedSpeakerCount, seatMap.size);
     if (activeSpeakerCuts && seatMap.size > 0) {
-      const filler = (startSec: number, endSec: number): SplitLayoutSegment => {
+      const filler = (
+        startSec: number,
+        endSec: number,
+      ): ClipAutoLayoutSegment => {
         if (params.allowTwoUp) {
           const fA = frameFaceInCrop(seatA, 1, opts.frameOptions);
           const fB = frameFaceInCrop(seatB, 1, opts.frameOptions);
@@ -1005,14 +1123,31 @@ export function buildAutoLayoutPlan(
             bottomCyNorm: fB.cyNorm,
             topZoom: fA.zoom,
             bottomZoom: fB.zoom,
+            subjects,
           };
         }
         const spread = Math.abs(seatA.cx - seatB.cx);
         if (spread < 0.3) {
-          return { startSec, endSec, layout: "single", cxNorm: (seatA.cx + seatB.cx) / 2 };
+          return {
+            startSec,
+            endSec,
+            layout: "single",
+            cxNorm: (seatA.cx + seatB.cx) / 2,
+            cyNorm: (seatA.cy + seatB.cy) / 2,
+            zoom: 1,
+            subjects,
+          };
         }
         const framed = frameFaceInCrop(seats[0]!, 1, opts.frameOptions);
-        return { startSec, endSec, layout: "single", cxNorm: framed.cxNorm, cyNorm: framed.cyNorm, zoom: framed.zoom };
+        return {
+          startSec,
+          endSec,
+          layout: "single",
+          cxNorm: framed.cxNorm,
+          cyNorm: framed.cyNorm,
+          zoom: framed.zoom,
+          subjects,
+        };
       };
 
       // Solo intervals: mapped speakers' turns overlapping this shot with
@@ -1044,7 +1179,7 @@ export function buildAutoLayoutPlan(
       }
 
       let cursor = shot.startSec;
-      const shotSegments: SplitLayoutSegment[] = [];
+      const shotSegments: ClipAutoLayoutSegment[] = [];
       for (const iv of merged) {
         if (iv.startSec - cursor > 0) {
           if (iv.startSec - cursor <= holdGapSec && shotSegments.length === 0) {
@@ -1063,6 +1198,7 @@ export function buildAutoLayoutPlan(
           cxNorm: framed.cxNorm,
           cyNorm: framed.cyNorm,
           zoom: framed.zoom,
+          subjects,
         });
         cursor = iv.endSec;
       }
@@ -1116,6 +1252,7 @@ export function buildAutoLayoutPlan(
         cxNorm: framed.cxNorm,
         cyNorm: framed.cyNorm,
         zoom: framed.zoom,
+        subjects,
       });
       continue;
     }
@@ -1135,6 +1272,7 @@ export function buildAutoLayoutPlan(
         bottomCyNorm: framedB.cyNorm,
         topZoom: framedA.zoom,
         bottomZoom: framedB.zoom,
+        subjects,
       });
       twoUpSegmentCount += 1;
       continue;
@@ -1150,6 +1288,7 @@ export function buildAutoLayoutPlan(
       cxNorm: (seatA.cx + seatB.cx) / 2,
       cyNorm: (seatA.cy + seatB.cy) / 2,
       zoom: 1,
+      subjects,
     });
   }
 

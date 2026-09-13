@@ -15,7 +15,6 @@ import {
   type CompositionCaptionVisualLayer,
   type CompositionLogoVisualLayer,
   type CompositionOutputTreatmentVisualLayer,
-  type CompositionSourceVideoLayer,
   type CompositionTextVisualLayer,
   type CompositionTransitionVisualLayer,
   type CompositionInsertedSceneLayer,
@@ -26,12 +25,13 @@ import {
   Square,
   Monitor,
   RectangleHorizontal,
-  Maximize2,
+  PanelsTopLeft,
   ChevronDown,
   AlertTriangle,
   RotateCcw,
 } from "lucide-react";
 import {
+  CLIP_AUTO_LAYOUT_ENGINE,
   clipAspectRatioOptions,
   editedToSource,
   resolveEffectiveFramingMode,
@@ -44,7 +44,7 @@ import {
   type ResolvedSpeakerLayoutScene,
 } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
-import type { AspectRatio, LayoutMode } from "./studio-shell";
+import type { AspectRatio } from "./studio-shell";
 import {
   sceneFontPreviewFamily,
   systemSceneFontPreviewFamily,
@@ -57,6 +57,7 @@ import { CensorBeepPreviewTrack } from "./censor-beep-preview-track";
 import { SplitSecondaryTile, type SplitSecondaryTileCropRect } from "./split-secondary-tile";
 import type { NormalizedCropRect } from "./normalized-crop";
 import {
+  activeAutoLayoutSegment,
   resetSpeakerLayerTransform,
   speakerLayerCropRect,
 } from "./auto-layout-preview";
@@ -72,7 +73,9 @@ import {
   compositionInvalidText,
   compositionNoticeEntries,
   manualBrollAvailabilityForPlan,
+  orderedCompositionSourceLayers,
   plannedCompositionFrameStyle,
+  plannedCompositionMaskStyle,
   plannedCompositionAudioState,
   plannedCompositionSourceDimensions,
   plannedCompositionUsesStackedStage,
@@ -149,8 +152,6 @@ const ASPECT_RATIO_CONFIG: Record<AspectRatio, { w: number; h: number; icon: Rea
   "4:5":  { w: 4,  h: 5, icon: <RectangleHorizontal size={12} />, label: "4:5" },
 };
 
-const LAYOUT_OPTIONS: LayoutMode[] = ["fill", "fit", "blur"];
-
 function explicitCropVideoStyle(
   crop: NormalizedCropRect | null,
   tileWidthPx: number,
@@ -218,7 +219,6 @@ function explicitCropVideoStyle(
 // reasonable stand-in for a per-shot detected center, same "good enough"
 // preview stance as before.
 const SPLIT_TOP_TILE_CX = 0;
-const SPLIT_BOTTOM_TILE_CX = 1;
 
 const PILL_STYLES = {
   alignItems: "center",
@@ -389,7 +389,7 @@ export function VideoPreview() {
     motionPreview,
     clipInfo,
     aspectRatio, setAspectRatio,
-    layoutMode, setLayoutMode,
+    activeTool, setActiveTool, reportLayoutScene,
     studioEdits,
     mediaRef,
     playbackClock,
@@ -426,7 +426,7 @@ export function VideoPreview() {
     autoLayoutAnalysisStatus,
     reportCompositionPlanStatus,
     compositionPlanQaFixture,
-  } = useStudio("editorDocument", "motionPreview", "clipInfo", "aspectRatio", "setAspectRatio", "layoutMode", "setLayoutMode", "studioEdits", "mediaRef", "playbackClock", "setSourceAudioEnvelope", "sourceVideoUrl", "previewVideoUrl", "sourcePurged", "useOriginalSourceFallback", "setUseOriginalSourceFallback", "reloadPlayback", "activeVideoUrl", "activeOffsetSec", "brollUrl", "brollPreviewAsset", "visualAssets", "sceneFonts", "setBrollPreviewAsset", "editedTimeMap", "compositeToBaseEdited", "deselectCaption", "deselectTextLayer", "captionSelected", "selectedTextLayerId", "setStudioEdits", "endCoalesce", "isPlaying", "duration", "brandLogo", "layoutAnalysis", "layoutAnalysisFailure", "autoLayoutAnalysis", "splitLayoutAnalysis", "splitLayoutFailure", "autoLayoutAnalysisStatus", "reportCompositionPlanStatus", "compositionPlanQaFixture");
+  } = useStudio("editorDocument", "motionPreview", "clipInfo", "aspectRatio", "setAspectRatio", "activeTool", "setActiveTool", "reportLayoutScene", "studioEdits", "mediaRef", "playbackClock", "setSourceAudioEnvelope", "sourceVideoUrl", "previewVideoUrl", "sourcePurged", "useOriginalSourceFallback", "setUseOriginalSourceFallback", "reloadPlayback", "activeVideoUrl", "activeOffsetSec", "brollUrl", "brollPreviewAsset", "visualAssets", "sceneFonts", "setBrollPreviewAsset", "editedTimeMap", "compositeToBaseEdited", "deselectCaption", "deselectTextLayer", "captionSelected", "selectedTextLayerId", "setStudioEdits", "endCoalesce", "isPlaying", "duration", "brandLogo", "layoutAnalysis", "layoutAnalysisFailure", "autoLayoutAnalysis", "splitLayoutAnalysis", "splitLayoutFailure", "autoLayoutAnalysisStatus", "reportCompositionPlanStatus", "compositionPlanQaFixture");
   const previewEditorDocument = useMemo(
     () => applyCompositionDocumentQaFixture(
       applyStudioMotionPreview(editorDocument, motionPreview),
@@ -597,27 +597,8 @@ export function VideoPreview() {
     }, [activeBrollAsset, brollUrl, setBrollPreviewAsset],
   );
 
-  // Vizard-parity Phase C item 2 (canvas background) / Phase C-2 stage 1
-  // (framing modes): a persisted studioEdits.background always wins over
-  // the cosmetic, session-local `layoutMode` — when the EFFECTIVE framing
-  // mode (resolveEffectiveFramingMode, shared with the Layout panel and the
-  // worker's render pipeline) resolves to "fit", the video letterboxes and
-  // a solid color or image fills the empty frame behind it, mirroring the
-  // worker composition compiler exactly (scale-to-contain,
-  // centered). When a persisted auto-layout plan is available, "auto" uses
-  // the exact analyzed crop below. Pending/failed analysis and explicit
-  // center mode fall back to the existing single-video behavior, so
-  // `layoutMode`'s own fill/fit/blur cycling stays fully in charge whenever
-  // background is "off". "split" and "screen" are also "off"-branch modes (`backgroundActive`
-  // below is a plain `=== "fit"` check, not an exhaustive switch, so it's
-  // `false` for both exactly like it is for center) but do NOT fall through
-  // to `layoutMode`'s single-video crop-to-fill below — split packet C (and
-  // now screen packet C) replace that with a real stacked 2-up dual-video
-  // preview (see `isSplit`/`isScreen` and the tile markup further down).
-  // `layoutMode`'s fill/fit/blur cosmetic only ever applies to the remaining
-  // single-video modes (auto/center) — each split/screen tile already fully
-  // determines its own framing via a fixed crop or letterbox, so there's no
-  // fill/fit/blur state left to cycle through for it.
+  // The persisted composition plan owns every source frame. Background
+  // settings remain clip-wide and sit behind any letterboxed source layers.
   const background = studioEdits.background;
   useEffect(() => {
     if (background.mode !== "image" || !background.imageUrl) {
@@ -671,7 +652,7 @@ export function VideoPreview() {
       ? autoLayoutAnalysis
       : null;
   const automaticLayoutAnalysis =
-    eligibleAutoLayoutAnalysis?.engine === "shot-layout-v1"
+    eligibleAutoLayoutAnalysis?.engine === CLIP_AUTO_LAYOUT_ENGINE
       ? eligibleAutoLayoutAnalysis
       : null;
   const eligibleSplitLayoutAnalysis =
@@ -822,9 +803,9 @@ export function VideoPreview() {
                     clipStartSec: editorDocument.clipStartSec,
                     clipEndSec: editorDocument.clipEndSec,
                     deletedRanges: editorDocument.deletedRanges,
-                    engineVersion: "shot-layout-v1",
+                    engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
                   }),
-                  engineVersion: "shot-layout-v1",
+                  engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
                   analysis: automaticLayoutAnalysis,
                 },
               }
@@ -949,7 +930,7 @@ export function VideoPreview() {
       capabilities: {
         automaticSpeakerLayout:
           compositionCapabilities.automaticSpeakerLayoutEnabled,
-        automaticSpeakerEngineVersion: "shot-layout-v1",
+        automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE,
         explicitSplitLayout:
           compositionCapabilities.explicitSplitLayoutEnabled,
         splitEngineVersion,
@@ -1030,11 +1011,7 @@ export function VideoPreview() {
     [compositionPlanResult, currentTime],
   );
   const plannedSourceLayers = useMemo(
-    () =>
-      compositionPreview?.layers.filter(
-        (layer): layer is CompositionSourceVideoLayer =>
-          layer.kind === "source-video",
-      ) ?? [],
+    () => orderedCompositionSourceLayers(compositionPreview?.layers ?? []),
     [compositionPreview],
   );
   useEffect(() => {
@@ -1059,6 +1036,59 @@ export function VideoPreview() {
   const plannedInsertedScene = compositionPreview?.layers.find(
     (layer): layer is CompositionInsertedSceneLayer => layer.kind === "inserted-scene",
   );
+  const compositionSourceStartSec = plannedInsertedScene
+    ? null
+    : compositionPreview?.sourceRange?.startSec ??
+      compositionPreview?.sceneStartSec ??
+      null;
+  const compositionSourceEndSec = plannedInsertedScene
+    ? null
+    : compositionPreview?.sourceRange?.endSec ??
+      compositionPreview?.sceneEndSec ??
+      null;
+  const compositionSceneId = compositionPreview?.sceneId ?? null;
+  const analyzedSpeakerLayerCount = useMemo(() => {
+    const sourceTime = compositionSourceStartSec;
+    if (sourceTime === null) return 0;
+    const evidenceSegment = activeAutoLayoutSegment(
+      automaticLayoutAnalysis?.segments ?? [],
+      sourceTime,
+    );
+    if (evidenceSegment) return evidenceSegment.subjects.length;
+    return 0;
+  }, [automaticLayoutAnalysis, compositionSourceStartSec]);
+  useEffect(() => {
+    if (!compositionSceneId) {
+      reportLayoutScene(null);
+      return;
+    }
+    reportLayoutScene({
+      id: compositionSceneId,
+      startSec: compositionSourceStartSec,
+      endSec: compositionSourceEndSec,
+      speakerLayerCount: analyzedSpeakerLayerCount,
+      speakerAnalysisStatus: automaticLayoutAnalysis
+        ? "available"
+        : autoLayoutAnalysisStatus === "failed"
+          ? "failed"
+          : "pending",
+      coveredBy: plannedInsertedScene
+        ? "inserted-scene"
+        : plannedBrollLayer
+          ? "broll"
+          : null,
+    });
+  }, [
+    analyzedSpeakerLayerCount,
+    compositionSceneId,
+    compositionSourceStartSec,
+    compositionSourceEndSec,
+    autoLayoutAnalysisStatus,
+    automaticLayoutAnalysis,
+    plannedBrollLayer,
+    plannedInsertedScene,
+    reportLayoutScene,
+  ]);
   const insertedSceneAssetReference = (() => {
     const content = plannedInsertedScene?.content;
     return content?.kind === "image" || content?.kind === "video" ? content.asset : null;
@@ -1176,25 +1206,24 @@ export function VideoPreview() {
         ? [{ key: "reduced-motion", text: "Motion preview paused by reduced-motion preference." }]
         : [],
     );
-  const backgroundActive =
-    effectiveFramingMode === "fit" && clipInfo.sourceKind === "video";
-  // resolveEffectiveFramingMode makes background and split/screen mutually
-  // exclusive (background always wins as "fit"), so `isSplit`/`isScreen`
-  // only ever read true here while `backgroundActive` is false — never read
-  // `studioEdits.framing.mode` directly, per the panel/schema doc comments.
+  const backgroundActive = Boolean(plannedBackgroundLayer);
   const isSplit = Boolean(
     compositionPreview?.effectiveMode === "split" &&
       plannedCompositionUsesStackedStage(compositionPreview),
   );
   const isScreen = compositionPreview?.effectiveMode === "screen";
   const plannedSpeakerScene = useMemo<ResolvedSpeakerLayoutScene | null>(() => {
+    const speakerRoles = plannedSourceLayers.map((layer) => layer.speaker?.role);
+    const supportsManualOverride =
+      (speakerRoles.length === 1 && speakerRoles[0] === "single") ||
+      (speakerRoles.length === 2 &&
+        speakerRoles.includes("top") &&
+        speakerRoles.includes("bottom"));
     if (
-      (compositionPreview?.requestedMode !== "auto" &&
-        compositionPreview?.requestedMode !== "split") ||
-      (compositionPreview.effectiveMode !== "auto" &&
-        compositionPreview.effectiveMode !== "split") ||
+      !compositionPreview ||
       plannedSourceLayers.length === 0 ||
-      plannedSourceLayers.some((layer) => !layer.speaker)
+      plannedSourceLayers.some((layer) => !layer.speaker) ||
+      !supportsManualOverride
     ) {
       return null;
     }
@@ -1316,36 +1345,17 @@ export function VideoPreview() {
   }, [activeSpeakerScene, aspectRatio, endCoalesce, plannedSourceLayers, setStudioEdits]);
 
   const autoTwoUp = activeSpeakerScene?.layout === "two-up";
-  const isStacked = isSplit || isScreen || autoTwoUp;
-  const videoObjectFit: "contain" | "cover" = backgroundActive
-    ? "contain"
-    : layoutMode === "fit"
-      ? "contain"
-      : "cover";
-  const backgroundStageStyle: React.CSSProperties = backgroundActive
-    ? plannedBackgroundLayer
-      ? plannedBackgroundLayer.imageRef && background.imageUrl
-        ? {
-            backgroundImage: `url(${background.imageUrl})`,
-            backgroundSize: "cover",
-            backgroundPosition: "center",
-            backgroundColor: plannedBackgroundLayer.color,
-          }
-        : { backgroundColor: plannedBackgroundLayer.color }
-      : background.mode === "image" && background.imageUrl
+  const hasSecondarySource = plannedSourceLayers.length > 1 || autoTwoUp;
+  const backgroundStageStyle: React.CSSProperties = plannedBackgroundLayer
+    ? plannedBackgroundLayer.imageRef && background.imageUrl
       ? {
           backgroundImage: `url(${background.imageUrl})`,
           backgroundSize: "cover",
           backgroundPosition: "center",
-          backgroundColor: background.color ?? "#000000",
+          backgroundColor: plannedBackgroundLayer.color,
         }
-      : { backgroundColor: background.color ?? "#000000" }
+      : { backgroundColor: plannedBackgroundLayer.color }
     : {};
-
-  const cycleLayout = useCallback(() => {
-    const idx = LAYOUT_OPTIONS.indexOf(layoutMode);
-    setLayoutMode(LAYOUT_OPTIONS[(idx + 1) % LAYOUT_OPTIONS.length]!);
-  }, [layoutMode, setLayoutMode]);
 
   const handleRetry = useCallback(() => {
     setRetryNonce((n) => n + 1);
@@ -1555,21 +1565,14 @@ export function VideoPreview() {
   // `playerRippleStartSec` above does for the clip's opening instant. Only
   // meaningful (and only computed) while split or screen is active; the tile
   // that consumes it doesn't otherwise exist.
-  const secondaryTileTargetTimeSec = isStacked
+  const secondaryTileTargetTimeSec = hasSecondarySource
     ? editedToSource(editedTimeMap, compositeToBaseEdited(currentTime)) - activeOffsetSec
     : 0;
 
   const autoMainLayer = activeSpeakerScene?.layers.find((layer) =>
     activeSpeakerScene.layout === "two-up" ? layer.role === "top" : layer.role === "single",
   );
-  const autoBottomLayer = activeSpeakerScene?.layers.find((layer) => layer.role === "bottom");
-  const plannedMainSourceLayer =
-    plannedSourceLayers.find(
-      (layer) => layer.speaker?.role === autoMainLayer?.role,
-    ) ?? plannedSourceLayers[0];
-  const plannedBottomSourceLayer = plannedSourceLayers.find(
-    (layer) => layer.speaker?.role === "bottom",
-  ) ?? plannedSourceLayers[1];
+  const plannedMainSourceLayer = plannedSourceLayers[0];
   const autoMainCrop = useMemo(() => {
     if (!autoMainLayer || !sourceDims) return null;
     if (plannedMainSourceLayer) {
@@ -1583,37 +1586,30 @@ export function VideoPreview() {
     }
     return speakerLayerCropRect(autoMainLayer, aspectRatio, sourceDims);
   }, [autoMainLayer, plannedMainSourceLayer, plannedSourceDims, sourceDims, aspectRatio]);
-  const autoBottomCrop = useMemo((): SplitSecondaryTileCropRect | null => {
-    if ((!autoBottomLayer && !plannedBottomSourceLayer) || !sourceDims) {
-      return null;
-    }
-    const crop = plannedBottomSourceLayer
-      ? {
-          x: plannedBottomSourceLayer.sourceCrop.x / (plannedSourceDims?.width ?? sourceDims.width),
-          y: plannedBottomSourceLayer.sourceCrop.y / (plannedSourceDims?.height ?? sourceDims.height),
-          w: plannedBottomSourceLayer.sourceCrop.width / (plannedSourceDims?.width ?? sourceDims.width),
-          h: plannedBottomSourceLayer.sourceCrop.height / (plannedSourceDims?.height ?? sourceDims.height),
-        }
-      : autoBottomLayer
-        ? speakerLayerCropRect(autoBottomLayer, aspectRatio, sourceDims)
-        : null;
-    if (!crop || previewWidth <= 0 || previewHeight <= 0) return null;
-    return {
-      ...crop,
-      tileWidthPx:
-        previewWidth *
-        (plannedBottomSourceLayer
-          ? plannedBottomSourceLayer.destination.width /
-            (compositionPreview?.canvas.width ?? 1)
-          : autoBottomLayer?.frameWidth ?? 1),
-      tileHeightPx:
-        previewHeight *
-        (plannedBottomSourceLayer
-          ? plannedBottomSourceLayer.destination.height /
-            (compositionPreview?.canvas.height ?? 1)
-          : autoBottomLayer?.frameHeight ?? 0.5),
-    };
-  }, [aspectRatio, autoBottomLayer, compositionPreview, plannedBottomSourceLayer, plannedSourceDims, previewHeight, previewWidth, sourceDims]);
+  const secondarySourceLayers = plannedSourceLayers.slice(1);
+  const secondarySourceCrops = secondarySourceLayers.map(
+    (layer): SplitSecondaryTileCropRect | null => {
+      if (
+        layer.fit === "contain" ||
+        !plannedSourceDims ||
+        !compositionPreview ||
+        previewWidth <= 0 ||
+        previewHeight <= 0
+      ) {
+        return null;
+      }
+      return {
+        x: layer.sourceCrop.x / plannedSourceDims.width,
+        y: layer.sourceCrop.y / plannedSourceDims.height,
+        w: layer.sourceCrop.width / plannedSourceDims.width,
+        h: layer.sourceCrop.height / plannedSourceDims.height,
+        tileWidthPx:
+          previewWidth * (layer.destination.width / compositionPreview.canvas.width),
+        tileHeightPx:
+          previewHeight * (layer.destination.height / compositionPreview.canvas.height),
+      };
+    },
+  );
 
   const previewPhase: "generating" | "unavailable" | "loading" | "error" | "ready" =
     !previewVideoUrl && !useOriginalSourceFallback
@@ -1657,15 +1653,22 @@ export function VideoPreview() {
           compositionPreview.canvas,
         )
       : null;
-  const plannedBottomFrameStyle =
-    plannedBottomSourceLayer && compositionPreview
-      ? plannedCompositionFrameStyle(
-          plannedBottomSourceLayer,
+  const plannedMainMaskStyle =
+    plannedMainSourceLayer && compositionPreview
+      ? plannedCompositionMaskStyle(
+          plannedMainSourceLayer,
           compositionPreview.canvas,
+          { width: previewWidth, height: previewHeight },
         )
-      : null;
-
-
+      : {};
+  const secondarySourceMaskStyles = secondarySourceLayers.map((layer) =>
+    compositionPreview
+      ? plannedCompositionMaskStyle(layer, compositionPreview.canvas, {
+          width: previewWidth,
+          height: previewHeight,
+        })
+      : {},
+  );
   return (
     <Flex
       direction="column"
@@ -1738,17 +1741,19 @@ export function VideoPreview() {
           </Portal>
         </Menu.Root>
 
-        {/* Layout mode (cycles fill → fit → blur) */}
+        {/* Opens the same scene layout gallery shown in the inspector. */}
         <Flex
           as="button"
           {...PILL_STYLES}
+          bg={activeTool === "layout" ? "studio.raised" : "studio.surface"}
+          color={activeTool === "layout" ? "studio.accentFg" : "studio.fgMuted"}
           _hover={{ bg: "studio.raised", color: "studio.fg" }}
-          onClick={cycleLayout}
-          title="Change layout for the selected scene"
-          aria-label={`Change layout (current: ${layoutMode})`}
+          onClick={() => setActiveTool("layout")}
+          title="Open scene layouts"
+          aria-label="Open scene layouts"
         >
-          <Maximize2 size={12} />
-          Layout: {layoutMode.charAt(0).toUpperCase() + layoutMode.slice(1)}
+          <PanelsTopLeft size={12} />
+          Layout
         </Flex>
       </Flex>
 
@@ -1782,14 +1787,11 @@ export function VideoPreview() {
             width: "auto",
             ...transitionSourceStyle,
           }}
-          bg={activeSpeakerScene?.overrideId ? "black" : "studio.subtle"}
+          bg="black"
           overflow="hidden"
           borderRadius="2px"
         >
-          {/* Canvas background (vizard-parity Phase C item 2) — sits behind
-              the (now letterboxed) video, filling the frame the crop would
-              otherwise have covered. Persisted, so it wins over the
-              session-local `layoutMode` blur/fill cosmetic below. */}
+          {/* Clip background sits behind letterboxed source layers. */}
           {backgroundActive && (
             <Box position="absolute" inset="0" style={backgroundStageStyle} />
           )}
@@ -1960,35 +1962,10 @@ export function VideoPreview() {
             </Flex>
           )}
 
-          {/* Actual video element(s) — three stage layouts share this one
-              wrapper position: (1) fill/fit/blur/auto/center — a single
-              full-height video, styled per `videoObjectFit`/`layoutMode`;
-              (2) split packet C — a stacked 2-up where the top tile is a
-              cropped-to-fill (`cover`) seat; (3) screen packet C — also a
-              stacked 2-up, but the top tile is the full source frame
-              letterboxed UNCROPPED (`contain`, against its own black
-              backdrop) rather than cropped, since "screen" means the shared
-              window/slide/app itself must stay fully visible up top. In
-              every case the TOP tile deliberately reuses the SAME
-              main `<video>` DOM node the single-video path
-              renders (just restyled/clipped) rather than introducing a
-              second element for it — that keeps every existing contract
-              that targets the browser media adapter untouched: it remains
-              the sole playback driver and audio source, regardless of how
-              the element is positioned.
-              The wrapper Box below is unconditionally present at this same
-              JSX position across ALL THREE branches (only its inline style
-              varies by `isSplit`/`isScreen`) specifically so React never
-              unmounts the video element when framing mode changes — a
-              real, considered risk here: if the wrapper only existed in
-              some branches, switching between them would swap in a
-              structurally different subtree, forcing React to tear down
-              and recreate the `<video>` node, which would silently drop
-              its loaded `src`/buffered state until some unrelated effect
-              happened to re-run. Only the BOTTOM tile is a genuinely new
-              secondary element (SplitSecondaryTile, shared by both split
-              and screen) — see its own file for why it's muted and merely
-              drift-corrected rather than clock-driving. */}
+          {/* The first planned source layer keeps the existing media element
+              mounted so it remains the playback clock and audio source.
+              Every additional planned source layer gets a muted companion
+              using the planner's exact destination and crop. */}
           <Box
             style={
               plannedSourceFrameStyle ?? (autoMainLayer
@@ -1998,18 +1975,23 @@ export function VideoPreview() {
                     top: 0,
                     left: 0,
                     right: 0,
-                    bottom: isStacked ? "50%" : 0,
+                    bottom: hasSecondarySource ? "50%" : 0,
                   })
             }
             overflow="visible"
             zIndex={
-              autoMainLayer && selectedSpeakerRole === autoMainLayer.role ? 6 : 1
+              plannedMainSourceLayer?.zIndex ?? 1
             }
-            borderBottomWidth={isStacked ? "1px" : "0"}
+            borderBottomWidth={hasSecondarySource && !plannedSourceFrameStyle ? "1px" : "0"}
             borderColor="studio.border"
-            bg={isScreen ? "black" : undefined}
           >
-            <Box position="absolute" inset="0" overflow="hidden">
+            <Box
+              position="absolute"
+              inset="0"
+              overflow="hidden"
+              bg={plannedMainSourceLayer?.fit === "contain" ? "black" : undefined}
+              style={plannedMainMaskStyle}
+            >
               {/* biome-ignore lint/a11y/useMediaCaption: captions render via the separate interactive caption overlay; the raw video has no VTT track source to attach. */}
               <video
                 ref={attachMainVideo}
@@ -2019,7 +2001,7 @@ export function VideoPreview() {
                     inset: 0,
                     width: "100%",
                     height: "100%",
-                    objectFit: isSplit ? "cover" : isScreen ? "contain" : videoObjectFit,
+                    objectFit: isScreen ? "contain" : "cover",
                     objectPosition: isSplit ? `${SPLIT_TOP_TILE_CX * 100}% 50%` : undefined,
                     display: previewPhase === "ready" ? "block" : "none",
                   }
@@ -2045,51 +2027,56 @@ export function VideoPreview() {
             ) : null}
           </Box>
 
-          {isStacked && activeVideoUrl && (
-            <Box
-              style={
-                plannedBottomFrameStyle ?? (autoBottomLayer
-                  ? speakerFrameStyle(autoBottomLayer)
-                  : {
-                      position: "absolute",
-                      top: "50%",
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                    })
-              }
-              overflow="visible"
-              zIndex={
-                autoBottomLayer && selectedSpeakerRole === autoBottomLayer.role
-                  ? 6
-                  : 1
-              }
-            >
-              <Box position="absolute" inset="0" overflow="hidden">
-                <SplitSecondaryTile
-                  src={activeVideoUrl}
-                  isPlaying={isPlaying}
-                  targetTimeSec={secondaryTileTargetTimeSec}
-                  objectFit="cover"
-                  objectPosition={isSplit ? `${SPLIT_BOTTOM_TILE_CX * 100}% 50%` : "50% 50%"}
-                  cropRect={autoBottomCrop}
-                  visible={previewPhase === "ready"}
-                  mainVideoRef={mainVideoRef}
-                />
-              </Box>
-              {activeSpeakerScene && autoBottomLayer ? (
-                <InteractiveSpeakerLayer
-                  layer={autoBottomLayer}
-                  canvasRef={videoContainerRef}
-                  selected={selectedSpeakerRole === autoBottomLayer.role}
-                  onSelect={() => selectSpeakerLayer(autoBottomLayer.role)}
-                  onChange={updateSpeakerLayer}
-                  onGestureEnd={endCoalesce}
-                  onReset={() => resetActiveSpeakerLayer(autoBottomLayer.role)}
-                />
-              ) : null}
-            </Box>
-          )}
+          {activeVideoUrl
+            ? secondarySourceLayers.map((sourceLayer, index) => {
+                const speakerLayer = sourceLayer.speaker?.transform ?? null;
+                return (
+                  <Box
+                    key={`secondary-source-${index}`}
+                    style={
+                      compositionPreview
+                        ? plannedCompositionFrameStyle(
+                            sourceLayer,
+                            compositionPreview.canvas,
+                          )
+                        : undefined
+                    }
+                    overflow="visible"
+                    zIndex={sourceLayer.zIndex}
+                  >
+                    <Box
+                      position="absolute"
+                      inset="0"
+                      overflow="hidden"
+                      bg={sourceLayer.fit === "contain" ? "black" : undefined}
+                      style={secondarySourceMaskStyles[index]}
+                    >
+                      <SplitSecondaryTile
+                        src={activeVideoUrl}
+                        isPlaying={isPlaying}
+                        targetTimeSec={secondaryTileTargetTimeSec}
+                        objectFit={sourceLayer.fit}
+                        objectPosition="50% 50%"
+                        cropRect={secondarySourceCrops[index]}
+                        visible={previewPhase === "ready"}
+                        mainVideoRef={mainVideoRef}
+                      />
+                    </Box>
+                    {activeSpeakerScene && speakerLayer ? (
+                      <InteractiveSpeakerLayer
+                        layer={speakerLayer}
+                        canvasRef={videoContainerRef}
+                        selected={selectedSpeakerRole === speakerLayer.role}
+                        onSelect={() => selectSpeakerLayer(speakerLayer.role)}
+                        onChange={updateSpeakerLayer}
+                        onGestureEnd={endCoalesce}
+                        onReset={() => resetActiveSpeakerLayer(speakerLayer.role)}
+                      />
+                    ) : null}
+                  </Box>
+                );
+              })
+            : null}
 
           {brollUrl ? (
             <video
@@ -2225,20 +2212,6 @@ export function VideoPreview() {
             beep={plannedAudioState?.beep ?? null}
             isPlaying={isPlaying}
           />
-
-          {/* Layout blur layer — a persisted background overrides this
-              cosmetic entirely (see backgroundActive above), and so do
-              split and screen: each tile's crop/letterbox already fully
-              determines its framing, so there's no single-video
-              fill/fit/blur state left to cosmetically blur behind. */}
-          {!backgroundActive && !isSplit && !isScreen && layoutMode === "blur" && (
-            <Box
-              position="absolute"
-              inset="0"
-              bg="rgba(0,0,0,0.4)"
-              backdropFilter="blur(20px)"
-            />
-          )}
 
           {plannedTextLayers.map((layer) => {
             return (

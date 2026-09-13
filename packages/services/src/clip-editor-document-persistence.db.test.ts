@@ -28,6 +28,7 @@ import {
   openClipPersistenceTestDatabase,
 } from "./clip-persistence-db-test-support";
 import { prismaMediaCleanupStore } from "./media-cleanup";
+import { clipService } from "./clip.service";
 
 const dbDescribe = clipPersistenceDbTestEnabled ? describe : describe.skip;
 
@@ -68,12 +69,50 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     };
   }
 
+  test("obsolete automatic layout evidence is reclaimed without losing the claim fence", async () => {
+    const f = await fixture();
+    await prisma.clip.update({
+      where: { id: f.clip.id },
+      data: {
+        autoLayoutStatus: "completed",
+        autoLayoutAnalysis: { version: 1, engine: "shot-layout-v1" },
+        viralityScore: 100,
+      },
+    });
+
+    const claim = await clipService.claimNextClipForAutoLayoutAnalysis(60_000);
+    expect(claim?.id).toBe(f.clip.id);
+    if (!claim) throw new Error("expected stale analysis to be reclaimed");
+    const claimed = await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } });
+    expect(claimed.autoLayoutStatus).toBe("processing");
+    expect(claimed.autoLayoutAnalysis).toBeNull();
+    expect(claimed.autoLayoutClaimToken).toBe(claim.autoLayoutClaimToken);
+    expect((await clipService.claimNextClipForAutoLayoutAnalysis(60_000))?.id).not.toBe(f.clip.id);
+    expect(await clipService.deferClaimedClipAutoLayoutAnalysis(
+      f.clip.id,
+      randomUUID(),
+      new Date(Date.now() + 60_000),
+    )).toBe(false);
+    expect(await clipService.deferClaimedClipAutoLayoutAnalysis(
+      f.clip.id,
+      claim.autoLayoutClaimToken,
+      new Date(Date.now() + 60_000),
+    )).toBe(true);
+    expect((await clipService.claimNextClipForAutoLayoutAnalysis(60_000))?.id).not.toBe(f.clip.id);
+  });
+
   test("document, revision, original, render retirement, and cleanup commit together", async () => {
     const f = await fixture();
     const persistence = createClipEditorDocumentPersistence({
       store: prismaClipEditorDocumentStore,
     });
-    const next = editorDocument({ brollUrl: "https://cdn.example.com/cutaway.mp4" });
+    const sceneLayouts = [
+      { id: "opening-layout", aspectRatio: "9:16" as const, startSec: 0, endSec: 2, preset: "fit" as const },
+      { id: "closing-layout", aspectRatio: "9:16" as const, startSec: 2, endSec: 4, preset: "screen-top-two-circle" as const },
+    ];
+    const next = editorDocument({
+      studioEdits: studioEditsSchema.parse({ sceneLayouts }),
+    });
     const result = await persistence.mutateDocument({
       ...fixtureActorScope(f),
       projectId: f.project.id,
@@ -90,6 +129,13 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     expect(clip.editorRevision).toBe(1);
     expect(editorDocumentSchema.parse(clip.editorOriginal)).toEqual(f.document);
     expect(clip.brollUrl).toBe(next.brollUrl);
+    expect(studioEditsSchema.parse(clip.studioEdits).sceneLayouts).toEqual(sceneLayouts);
+    const reopened = await persistence.readDocument({
+      ...fixtureActorScope(f),
+      projectId: f.project.id,
+      clipId: f.clip.id,
+    });
+    expect(reopened.document.studioEdits.sceneLayouts).toEqual(sceneLayouts);
     expect(mutableRenderCount).toBe(0);
     expect(obligations.map((item) => item.cleanupClass)).toEqual(["mutable_render"]);
     expect(obligations.map((item) => item.origin)).toEqual([

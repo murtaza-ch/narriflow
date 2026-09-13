@@ -1,318 +1,246 @@
 "use client";
 
-import { Box, Flex, Text } from "@chakra-ui/react";
-import type { EffectiveFramingMode } from "@narriflow/validators";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import {
+  SCENE_LAYOUT_PRESET_CATALOG,
+  resolveSceneLayoutPresetTemplate,
+  type SceneLayoutPresetDefinition,
+  type ResolvedSceneLayoutTemplateLayer,
+} from "@narriflow/composition-plan";
+import type { SceneLayoutPreset } from "@narriflow/validators";
+import type { SceneLayoutChoice } from "./layout-panel-model";
 
-// Vizard-style layout picker: a grid of drawn 9:16 mini-mockups (no icon +
-// label rows). Each tile is a small hand-drawn scene built from Box/Flex
-// primitives on studio.* tokens — see layout-panel.tsx's top-of-file comment
-// for the framing/background truth model these five presets encode.
+const THUMBNAIL_CANVAS = { width: 900, height: 1600 } as const;
+const THUMBNAIL_HEIGHT_PX = 64;
 
-// M6 (adversarial review): `label` is the full name — used for the
-// button's `title`/`aria-label` so screen readers and hover tooltips still
-// get the unambiguous full name. `shortLabel` is what's actually painted
-// under the tile: at the fluid tile widths below, "Auto reframe"/"Center
-// crop" wrap onto an awkward 3rd line at 11px; the shorter forms fit on one
-// line at both breakpoints without shrinking the font past legibility.
-const FRAMING_PRESETS: { id: EffectiveFramingMode; label: string; shortLabel: string }[] = [
-  { id: "auto", label: "Auto reframe", shortLabel: "Auto" },
-  { id: "center", label: "Center crop", shortLabel: "Center" },
-  { id: "fit", label: "Fit", shortLabel: "Fit" },
-  { id: "split", label: "Split", shortLabel: "Split" },
-  { id: "screen", label: "Screen", shortLabel: "Screen" },
+const CATEGORY_LABELS: Record<SceneLayoutPresetDefinition["category"], string> = {
+  automatic: "Automatic",
+  "speaker-source": "Speaker + source",
+  "speaker-only": "Speakers",
+  "source-only": "Source",
+};
+
+export const SCENE_LAYOUT_CHOICES: readonly SceneLayoutChoice[] = [
+  "clip-default",
+  ...SCENE_LAYOUT_PRESET_CATALOG.map((preset) => preset.id),
 ];
 
-function CornerBrackets({
-  top,
-  left,
-  size,
-  color,
-}: {
-  top: string;
-  left: string;
-  size: string;
-  color: string;
-}) {
-  const arm = "6px";
+function frameStyle(frame: ResolvedSceneLayoutTemplateLayer["frame"]) {
+  return {
+    left: `${(frame.x / THUMBNAIL_CANVAS.width) * 100}%`,
+    top: `${(frame.y / THUMBNAIL_CANVAS.height) * 100}%`,
+    width: `${(frame.width / THUMBNAIL_CANVAS.width) * 100}%`,
+    height: `${(frame.height / THUMBNAIL_CANVAS.height) * 100}%`,
+  };
+}
+
+function maskRadius(layer: ResolvedSceneLayoutTemplateLayer): string | undefined {
+  if (!layer.mask) return undefined;
+  if (layer.mask.kind === "circle") return "50%";
+  return `${layer.mask.radiusPx * (THUMBNAIL_HEIGHT_PX / THUMBNAIL_CANVAS.height)}px`;
+}
+
+function SpeakerGlyph() {
   return (
-    <>
-      <Box position="absolute" top={top} left={left} w={arm} h={arm} borderTopWidth="1.5px" borderLeftWidth="1.5px" borderColor={color} />
-      <Box position="absolute" top={top} left={`calc(${left} + ${size} - ${arm})`} w={arm} h={arm} borderTopWidth="1.5px" borderRightWidth="1.5px" borderColor={color} />
-      <Box position="absolute" top={`calc(${top} + ${size} - ${arm})`} left={left} w={arm} h={arm} borderBottomWidth="1.5px" borderLeftWidth="1.5px" borderColor={color} />
-      <Box position="absolute" top={`calc(${top} + ${size} - ${arm})`} left={`calc(${left} + ${size} - ${arm})`} w={arm} h={arm} borderBottomWidth="1.5px" borderRightWidth="1.5px" borderColor={color} />
-    </>
+    <Flex position="absolute" inset="0" direction="column" align="center" justify="center">
+      <Box w="23%" maxW="9px" aspectRatio={1} borderRadius="full" bg="currentColor" />
+      <Box w="48%" maxW="18px" h="20%" minH="3px" mt="2px" borderRadius="50% 50% 18% 18%" bg="currentColor" />
+    </Flex>
   );
 }
 
-// Shared person silhouette (circle head + rounded-rect shoulders) used by
-// both crop-to-fill presets — Auto and Center only differ in the overlay
-// cue drawn on top of it.
-function Silhouette({ color }: { color: string }) {
+function SourceGlyph({ fit }: { fit: "cover" | "contain" }) {
   return (
-    <>
-      <Box position="absolute" top="12px" left="50%" transform="translateX(-50%)" w="20px" h="20px" borderRadius="full" bg={color} />
+    <Flex position="absolute" inset="0" align="center" justify="center" bg="studio.surface">
       <Box
-        position="absolute"
-        bottom="8px"
-        left="50%"
-        transform="translateX(-50%)"
-        w="36px"
-        h="26px"
-        bg={color}
-        css={{ borderTopLeftRadius: "10px", borderTopRightRadius: "10px" }}
-      />
-    </>
-  );
-}
-
-// Split-preset silhouette pair — a smaller head+shoulders shape seated in
-// each half of the tile (one per stacked speaker tile), mirroring
-// `Silhouette` above but scaled down to leave room for the hairline divider.
-function StackedSilhouettes({ color }: { color: string }) {
-  return (
-    <>
-      {/* Top seat */}
-      <Box position="absolute" top="8px" left="50%" transform="translateX(-50%)" w="14px" h="14px" borderRadius="full" bg={color} />
-      <Box
-        position="absolute"
-        top="24px"
-        left="50%"
-        transform="translateX(-50%)"
-        w="26px"
-        h="16px"
-        bg={color}
-        css={{ borderTopLeftRadius: "8px", borderTopRightRadius: "8px" }}
-      />
-      {/* Bottom seat */}
-      <Box position="absolute" bottom="24px" left="50%" transform="translateX(-50%)" w="14px" h="14px" borderRadius="full" bg={color} />
-      <Box
-        position="absolute"
-        bottom="8px"
-        left="50%"
-        transform="translateX(-50%)"
-        w="26px"
-        h="16px"
-        bg={color}
-        css={{ borderTopLeftRadius: "8px", borderTopRightRadius: "8px" }}
-      />
-    </>
-  );
-}
-
-// Screen-preset art (screen packet A) — screen-share layout: the full frame
-// (the "screen" element) sits UNCROPPED in the top half, drawn like the Fit
-// tile's inner rect (studio.surface + border) but anchored to the top
-// instead of centered, with a couple of thin "content lines" inside reading
-// as a shared slide/window rather than a face. The bottom half carries a
-// face-tracked speaker crop — the same seated silhouette shape
-// StackedSilhouettes' bottom seat uses, just scaled up since it owns the
-// whole bottom half here (no top seat sharing the space).
-function ScreenShareArt({ color }: { color: string }) {
-  return (
-    <>
-      <Box
-        position="absolute"
-        top="6px"
-        left="50%"
-        transform="translateX(-50%)"
-        w="42px"
-        h="24px"
-        borderRadius="l1"
-        bg="studio.surface"
+        position="relative"
+        w={fit === "contain" ? "82%" : "100%"}
+        h={fit === "contain" ? "48%" : "100%"}
+        minH="4px"
         borderWidth="1px"
-        borderColor="studio.borderStrong"
-        overflow="hidden"
+        borderColor="currentColor"
+        opacity={0.72}
       >
-        <Box position="absolute" top="7px" left="6px" w="30px" h="2px" bg={color} opacity={0.7} />
-        <Box position="absolute" top="13px" left="6px" w="20px" h="2px" bg={color} opacity={0.7} />
+        <Box position="absolute" top="28%" left="12%" w="56%" h="1px" bg="currentColor" />
+        <Box position="absolute" top="50%" left="12%" w="38%" h="1px" bg="currentColor" />
       </Box>
-      <Box position="absolute" bottom="24px" left="50%" transform="translateX(-50%)" w="16px" h="16px" borderRadius="full" bg={color} />
-      <Box
-        position="absolute"
-        bottom="8px"
-        left="50%"
-        transform="translateX(-50%)"
-        w="30px"
-        h="17px"
-        bg={color}
-        css={{ borderTopLeftRadius: "9px", borderTopRightRadius: "9px" }}
-      />
-      {/* Screen/speaker boundary — a fixed hairline, not a state-colored
-          cue, mirroring the split divider's rationale (fixed layout
-          boundary rather than an interactive framing cue). */}
-      <Box position="absolute" top="50%" left="0" w="100%" h="1px" bg="studio.border" />
-    </>
+    </Flex>
   );
 }
 
-function FramingPresetArt({
-  mode,
-  shapeColor,
-  cueColor,
-}: {
-  mode: EffectiveFramingMode;
-  shapeColor: string;
-  cueColor: string;
-}) {
-  if (mode === "auto") {
-    return (
-      <>
-        <Silhouette color={shapeColor} />
-        {/* Face-tracking cue — corner brackets around the head, distinguishing
-            Auto from Center's static crosshair below. */}
-        <CornerBrackets top="4px" left="14px" size="28px" color={cueColor} />
-      </>
-    );
-  }
-
-  if (mode === "center") {
-    return (
-      <>
-        <Silhouette color={shapeColor} />
-        {/* Center-guide cue — a static crosshair through the tile midpoint. */}
-        <Box position="absolute" top="0" left="50%" w="1px" h="100%" bg={cueColor} opacity={0.5} />
-        <Box position="absolute" left="0" top="50%" w="100%" h="1px" bg={cueColor} opacity={0.5} />
-      </>
-    );
-  }
-
-  if (mode === "split") {
-    return (
-      <>
-        <StackedSilhouettes color={shapeColor} />
-        {/* Stacked 2-up divider — a fixed hairline, not a state-colored cue,
-            since it represents the fixed split boundary itself rather than
-            an interactive framing cue. */}
-        <Box position="absolute" top="50%" left="0" w="100%" h="1px" bg="studio.border" />
-      </>
-    );
-  }
-
-  if (mode === "screen") {
-    return <ScreenShareArt color={shapeColor} />;
-  }
-
-  // "fit": the letterboxed video sits inside the tile with visible bands
-  // above/below (the tile's own background stands in for the bands).
+function TemplateLayer({ layer }: { layer: ResolvedSceneLayoutTemplateLayer }) {
   return (
     <Box
       position="absolute"
-      top="50%"
-      left="50%"
-      transform="translate(-50%, -50%)"
-      w="44px"
-      h="25px"
-      borderRadius="l1"
-      bg="studio.surface"
+      style={frameStyle(layer.frame)}
+      overflow="hidden"
+      borderRadius={maskRadius(layer)}
       borderWidth="1px"
       borderColor="studio.borderStrong"
-      overflow="hidden"
+      bg={layer.kind === "speaker" ? "studio.raised" : "studio.surface"}
     >
-      <Box position="absolute" top="3px" left="50%" transform="translateX(-50%)" w="8px" h="8px" borderRadius="full" bg={shapeColor} />
-      <Box
-        position="absolute"
-        bottom="2px"
-        left="50%"
-        transform="translateX(-50%)"
-        w="16px"
-        h="10px"
-        bg={shapeColor}
-        css={{ borderTopLeftRadius: "4px", borderTopRightRadius: "4px" }}
-      />
+      {layer.kind === "speaker" ? <SpeakerGlyph /> : <SourceGlyph fit={layer.fit} />}
     </Box>
   );
 }
 
-function FramingPresetTile({
-  id,
-  label,
-  shortLabel,
-  isActive,
-  onClick,
-}: {
-  id: EffectiveFramingMode;
-  label: string;
-  shortLabel: string;
-  isActive: boolean;
-  onClick: () => void;
-}) {
+function LayoutArt({ preset }: { preset: SceneLayoutPresetDefinition | null }) {
+  const layers = preset
+    ? resolveSceneLayoutPresetTemplate(preset.id, THUMBNAIL_CANVAS)
+    : [];
   return (
-    <Flex direction="column" align="center" gap="6px" minW="0">
+    <Flex h="70px" align="center" justify="center" bg="studio.canvas" borderRadius="l1">
       <Box
-        as="button"
-        aria-label={label}
-        aria-pressed={isActive}
-        title={label}
-        onClick={onClick}
-        // M6 (adversarial review): fluid width (fills its `1fr` grid
-        // column) instead of a fixed 56px — a fixed width + `flexShrink={0}`
-        // couldn't shrink to fit either breakpoint. `aspectRatio` keeps the
-        // original 56:84 (2:3) tile shape at whatever width the grid column
-        // actually resolves to. Screen packet A moved the grid from 4 to 3
-        // columns (see FramingPresetGrid) so the tiles got BIGGER, not
-        // smaller: ~70.7px wide (~106px tall) at the panel's 228px
-        // base-breakpoint content width, ~84px wide (~126px tall) at the
-        // 268px `md` width — comfortably above the old 4-column ~51px/~61px
-        // tiles, since a 3-per-row layout has fewer gap deductions per row.
-        w="100%"
-        aspectRatio="2 / 3"
-        minW="0"
         position="relative"
+        h={`${THUMBNAIL_HEIGHT_PX}px`}
+        aspectRatio={THUMBNAIL_CANVAS.width / THUMBNAIL_CANVAS.height}
         overflow="hidden"
-        borderRadius="l2"
-        borderWidth="2px"
-        borderColor={isActive ? "studio.ring" : "studio.border"}
-        bg={isActive ? "studio.raised" : "studio.subtle"}
-        cursor="pointer"
-        transition="background 120ms ease, border-color 120ms ease"
-        _hover={{ borderColor: isActive ? "studio.ring" : "studio.borderStrong" }}
+        bg="black"
+        color="studio.fgMuted"
+        borderWidth="1px"
+        borderColor="studio.border"
       >
-        <FramingPresetArt
-          mode={id}
-          shapeColor={isActive ? "studio.fg" : "studio.fgSubtle"}
-          cueColor={isActive ? "studio.accentFg" : "studio.fgMuted"}
-        />
+        {preset?.id === "auto" ? (
+          <>
+            <SpeakerGlyph />
+            <Box position="absolute" inset="14%" borderWidth="1px" borderStyle="dashed" borderColor="studio.accent" />
+          </>
+        ) : preset ? (
+          layers.map((layer, index) => (
+            <TemplateLayer key={`${layer.kind}-${layer.subjectIndex ?? "source"}-${index}`} layer={layer} />
+          ))
+        ) : (
+          <>
+            <SpeakerGlyph />
+            <Box position="absolute" inset="14%" borderWidth="1px" borderStyle="dashed" borderColor="studio.borderStrong" />
+          </>
+        )}
       </Box>
-      <Text
-        fontSize="11px"
-        color={isActive ? "studio.accentFg" : "studio.fgMuted"}
-        fontWeight={isActive ? "600" : "500"}
-        textAlign="center"
-        whiteSpace="nowrap"
-      >
-        {shortLabel}
+    </Flex>
+  );
+}
+
+function LayoutCard({
+  choice,
+  preset,
+  active,
+  disabled,
+  hint,
+  onSelect,
+}: {
+  choice: SceneLayoutChoice;
+  preset: SceneLayoutPresetDefinition | null;
+  active: boolean;
+  disabled: boolean;
+  hint: "ready" | "speaker-analysis" | "speaker-count";
+  onSelect: (choice: SceneLayoutChoice) => void;
+}) {
+  const label = preset?.label ?? "Clip default";
+  const minimumSpeakers = preset?.minimumSpeakers ?? 0;
+  const availability = hint === "speaker-analysis"
+    ? ", analysis needed"
+    : hint === "speaker-count"
+      ? `, needs ${minimumSpeakers} detected ${minimumSpeakers === 1 ? "speaker" : "speakers"}`
+      : "";
+  return (
+    <Flex
+      as="button"
+      direction="column"
+      alignItems="stretch"
+      justifyContent="flex-start"
+      w="100%"
+      h="auto"
+      minH="108px"
+      minW="0"
+      p="6px"
+      gap="6px"
+      borderWidth="1px"
+      borderColor={active ? "studio.ring" : "studio.border"}
+      borderRadius="l2"
+      bg={active ? "studio.raised" : "studio.subtle"}
+      color={active ? "studio.fg" : "studio.fgSubtle"}
+      cursor={disabled ? "not-allowed" : "pointer"}
+      opacity={disabled ? 0.5 : 1}
+      aria-disabled={disabled}
+      aria-pressed={active}
+      aria-label={choice === "clip-default" ? "Use clip default layout" : `Use ${label} layout${availability}`}
+      onClick={() => {
+        if (!disabled) onSelect(choice);
+      }}
+      _hover={disabled ? undefined : { borderColor: active ? "studio.ring" : "studio.borderStrong" }}
+    >
+      <Box position="relative">
+        <LayoutArt preset={preset} />
+        {hint !== "ready" ? (
+          <Text position="absolute" right="4px" bottom="3px" px="4px" py="1px" borderRadius="full" bg="studio.surface/92" color="studio.fgSubtle" fontSize="8px" lineHeight="1.4">
+            {hint === "speaker-count"
+              ? `${minimumSpeakers} ${minimumSpeakers === 1 ? "speaker" : "speakers"}`
+              : "Analyze"}
+          </Text>
+        ) : null}
+      </Box>
+      <Text color={active ? "studio.accentFg" : "studio.fgMuted"} fontSize="10.5px" fontWeight={active ? "600" : "500"} textAlign="left" lineHeight="1.25" lineClamp="2">
+        {label}
       </Text>
     </Flex>
   );
 }
 
-export function FramingPresetGrid({
+export function SceneLayoutPresetGrid({
   selected,
   onSelect,
+  evidenceHint,
+  disabled,
 }: {
-  selected: EffectiveFramingMode;
-  onSelect: (mode: EffectiveFramingMode) => void;
+  selected: SceneLayoutChoice;
+  onSelect: (choice: SceneLayoutChoice) => void;
+  evidenceHint: (preset: SceneLayoutPreset) =>
+    | "ready"
+    | "speaker-analysis"
+    | "speaker-count";
+  disabled: boolean;
 }) {
-  // Five presets (screen packet A added "Screen" to the prior four): 3
-  // columns, auto-wrapping to a 3-over-2 layout (row 1: Auto/Center/Fit,
-  // row 2: Split/Screen, left-aligned with one empty trailing cell) rather
-  // than 4-across-plus-1-orphan, which reads as far more lopsided than a
-  // short second row. Plain CSS grid auto-placement gives every tile —
-  // whichever row it lands in — the exact same fluid 1fr width (see
-  // FramingPresetTile for the resulting px math at both breakpoints),
-  // instead of hand-sizing a 4-and-1 or 3-and-2 split.
+  const categories = Object.keys(CATEGORY_LABELS) as Array<
+    SceneLayoutPresetDefinition["category"]
+  >;
   return (
-    <Box display="grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", gap: "8px" }}>
-      {FRAMING_PRESETS.map((preset) => (
-        <FramingPresetTile
-          key={preset.id}
-          id={preset.id}
-          label={preset.label}
-          shortLabel={preset.shortLabel}
-          isActive={selected === preset.id}
-          onClick={() => onSelect(preset.id)}
-        />
-      ))}
-    </Box>
+    <Stack gap="14px">
+      {categories.map((category) => {
+        const presets = SCENE_LAYOUT_PRESET_CATALOG.filter(
+          (preset) => preset.category === category,
+        );
+        if (presets.length === 0) return null;
+        return (
+          <Box key={category}>
+            <Text mb="6px" fontSize="9.5px" fontWeight="600" color="studio.fgSubtle">
+              {CATEGORY_LABELS[category]}
+            </Text>
+            <Box display="grid" gridTemplateColumns="repeat(2, minmax(0, 1fr))" gap="8px">
+              {category === "automatic" ? (
+                <LayoutCard
+                  choice="clip-default"
+                  preset={null}
+                  active={selected === "clip-default"}
+                  disabled={disabled}
+                  hint="ready"
+                  onSelect={onSelect}
+                />
+              ) : null}
+              {presets.map((preset) => (
+                <LayoutCard
+                  key={preset.id}
+                  choice={preset.id}
+                  preset={preset}
+                  active={selected === preset.id}
+                  disabled={disabled}
+                  hint={evidenceHint(preset.id)}
+                  onSelect={onSelect}
+                />
+              ))}
+            </Box>
+          </Box>
+        );
+      })}
+    </Stack>
   );
 }

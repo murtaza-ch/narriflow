@@ -5,6 +5,8 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { projectService } from "./project.service";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
+  CLIP_AUTO_LAYOUT_ENGINE,
+  CLIP_AUTO_LAYOUT_VERSION,
   CLIP_MAX_DURATION_SEC,
   CLIP_MIN_DURATION_SEC,
   CLIP_TITLE_MAX_LENGTH,
@@ -180,6 +182,43 @@ export interface ClipPendingAutoLayoutAnalysis {
   /** Per-attempt fencing token. Only the worker holding this token may
    * publish or defer the claimed analysis. */
   autoLayoutClaimToken: string;
+}
+
+const autoLayoutEvidenceNeedsRefreshWhere = {
+  OR: [
+    { autoLayoutAnalysis: { equals: Prisma.DbNull } },
+    {
+      autoLayoutAnalysis: {
+        path: ["version"],
+        not: CLIP_AUTO_LAYOUT_VERSION,
+      },
+    },
+    {
+      autoLayoutAnalysis: {
+        path: ["engine"],
+        not: CLIP_AUTO_LAYOUT_ENGINE,
+      },
+    },
+  ],
+} satisfies Prisma.ClipWhereInput;
+
+function autoLayoutClaimStateWhere(now: Date): Prisma.ClipWhereInput {
+  return {
+    OR: [
+      {
+        autoLayoutStatus: "pending",
+        OR: [
+          { autoLayoutLeaseExpiresAt: null },
+          { autoLayoutLeaseExpiresAt: { lte: now } },
+        ],
+      },
+      {
+        autoLayoutStatus: "processing",
+        autoLayoutLeaseExpiresAt: { lte: now },
+      },
+      { autoLayoutStatus: "completed" },
+    ],
+  };
 }
 
 export function resolveClipCaptionPresetForContentPack(
@@ -598,16 +637,11 @@ function deriveTitleAndHookFromSlice(
 }
 
 /**
- * Fix (createClipFromSelection copies timeline-relative textLayers/sfx): a
- * `studioEdits.textLayers` overlay AND a `studioEdits.sfx[]` placement both
- * carry EDITED-TIMELINE seconds relative to the SOURCE clip's own window
- * (its startSec/endSec, minus its deletedRanges) — meaningless once
- * re-anchored to a brand-new clip's independently-computed window
- * (`planCreateClipFromSelection`'s startSec/endSec have no relationship to
- * the source's). Overlays/placements anchored to the wrong footage are
- * worse than none at all, so both are dropped (H3); every other studioEdits
- * field (transition/music/sourceAudio/logo/background/framing) is window-
- * independent styling and still copies over untouched.
+ * `studioEdits.textLayers`, `studioEdits.sfx`, and `studioEdits.sceneLayouts`
+ * carry edited-timeline seconds relative to the source clip's window. Those
+ * ranges have no meaning after this action creates a clip with a different
+ * window, so the new clip starts without them. Window-independent styling is
+ * copied unchanged.
  *
  * Pulled out as its own pure step (mirrors `deriveTitleAndHookFromSlice`
  * above) so it's unit-testable without a database — `createClipFromSelection`
@@ -622,6 +656,7 @@ export function planStudioEditsForClipFromSelection(
   return {
     ...studioEditsSchema.parse(sourceStudioEdits),
     textLayers: [],
+    sceneLayouts: [],
     sfx: [],
   };
 }
@@ -2793,23 +2828,13 @@ export class ClipService {
     const leaseExpiresAt = new Date(now.getTime() + boundedLeaseMs);
     const clips = await prisma.clip.findMany({
       where: {
-        autoLayoutAnalysis: { equals: Prisma.DbNull },
         previewStorageKey: { not: null },
         previewStartSec: { not: null },
         previewDurationSec: { not: null },
         project: accessibleProjectWhere(now),
-        OR: [
-          {
-            autoLayoutStatus: "pending",
-            OR: [
-              { autoLayoutLeaseExpiresAt: null },
-              { autoLayoutLeaseExpiresAt: { lte: now } },
-            ],
-          },
-          {
-            autoLayoutStatus: "processing",
-            autoLayoutLeaseExpiresAt: { lte: now },
-          },
+        AND: [
+          autoLayoutEvidenceNeedsRefreshWhere,
+          autoLayoutClaimStateWhere(now),
         ],
       },
       orderBy: [{ viralityScore: "desc" }, { createdAt: "asc" }],
@@ -2869,22 +2894,13 @@ export class ClipService {
         where: {
           id: clip.id,
           project: accessibleProjectWhere(now),
-          autoLayoutAnalysis: { equals: Prisma.DbNull },
-          OR: [
-            {
-              autoLayoutStatus: "pending",
-              OR: [
-                { autoLayoutLeaseExpiresAt: null },
-                { autoLayoutLeaseExpiresAt: { lte: now } },
-              ],
-            },
-            {
-              autoLayoutStatus: "processing",
-              autoLayoutLeaseExpiresAt: { lte: now },
-            },
+          AND: [
+            autoLayoutEvidenceNeedsRefreshWhere,
+            autoLayoutClaimStateWhere(now),
           ],
         },
         data: {
+          autoLayoutAnalysis: Prisma.DbNull,
           autoLayoutStatus: "processing",
           autoLayoutClaimToken: claimToken,
           autoLayoutLeaseExpiresAt: leaseExpiresAt,

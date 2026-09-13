@@ -3,6 +3,7 @@ import { DEFAULT_CAPTION_PRESET } from "./caption-preset";
 import { applyEditorAction, editorDocumentSchema } from "./editor-document";
 import {
   defaultSpeakerLayersForSegment,
+  removeSpeakerLayoutOverrideRange,
   resolveSpeakerLayoutScene,
   speakerLayoutOverrideFromScene,
   studioSpeakerLayoutOverrideSchema,
@@ -22,6 +23,47 @@ const twoUp = {
 };
 
 describe("speaker layout overrides", () => {
+  test("removes a range while preserving other aspects and valid remainders", () => {
+    const base = speakerLayoutOverrideFromScene(
+      resolveSpeakerLayoutScene({ ...twoUp, startSec: 0, endSec: 10 }, [], "9:16"),
+      "9:16",
+      "portrait",
+    );
+    const landscape = { ...base, id: "landscape", aspectRatio: "16:9" as const };
+
+    const next = removeSpeakerLayoutOverrideRange([base, landscape], {
+      aspectRatio: "9:16",
+      startSec: 3,
+      endSec: 7,
+    });
+
+    expect(next).toHaveLength(3);
+    expect(next.find((override) => override.id === "landscape")).toBe(landscape);
+    const portrait = next.filter((override) => override.aspectRatio === "9:16");
+    expect(portrait.map(({ startSec, endSec }) => [startSec, endSec])).toEqual([
+      [0, 3],
+      [7, 10],
+    ]);
+    expect(new Set(portrait.map((override) => override.id)).size).toBe(2);
+    expect(portrait.every((override) => override.layers === base.layers)).toBe(true);
+  });
+
+  test("drops manual-transform remainders shorter than a renderable scene", () => {
+    const base = speakerLayoutOverrideFromScene(
+      resolveSpeakerLayoutScene({ ...twoUp, startSec: 0, endSec: 10 }, [], "9:16"),
+      "9:16",
+      "portrait",
+    );
+
+    expect(
+      removeSpeakerLayoutOverrideRange([base], {
+        aspectRatio: "9:16",
+        startSec: 0.05,
+        endSec: 9.95,
+      }),
+    ).toEqual([]);
+  });
+
   test("derives independently editable default layers from a two-up scene", () => {
     const layers = defaultSpeakerLayersForSegment(twoUp);
     expect(layers.map((layer) => layer.role)).toEqual(["top", "bottom"]);

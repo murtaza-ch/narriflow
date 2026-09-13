@@ -20,6 +20,28 @@ import { deletedRangesSchema } from "./edit-ranges";
 const unitInterval = z.number().finite().min(0).max(1);
 const positiveZoom = z.number().finite().min(1).max(4);
 
+export const CLIP_AUTO_LAYOUT_VERSION = 2 as const;
+export const CLIP_AUTO_LAYOUT_ENGINE = "shot-layout-v2" as const;
+
+export const clipAutoLayoutSubjectSchema = z.object({
+  id: z.string().min(1).max(100),
+  cxNorm: unitInterval,
+  cyNorm: unitInterval,
+  zoom: positiveZoom,
+});
+
+const clipAutoLayoutSubjectsSchema = z
+  .array(clipAutoLayoutSubjectSchema)
+  .max(4)
+  .superRefine((subjects, ctx) => {
+    if (new Set(subjects.map((subject) => subject.id)).size !== subjects.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "automatic layout subject ids must be unique within a segment",
+      });
+    }
+  });
+
 export const clipAutoLayoutSingleSegmentSchema = z.object({
   startSec: z.number().finite().min(0),
   endSec: z.number().finite().gt(0),
@@ -27,6 +49,7 @@ export const clipAutoLayoutSingleSegmentSchema = z.object({
   cxNorm: unitInterval,
   cyNorm: unitInterval.default(0.5),
   zoom: positiveZoom.default(1),
+  subjects: clipAutoLayoutSubjectsSchema,
 });
 
 export const clipAutoLayoutTwoUpSegmentSchema = z.object({
@@ -39,6 +62,14 @@ export const clipAutoLayoutTwoUpSegmentSchema = z.object({
   bottomCyNorm: unitInterval.default(0.5),
   topZoom: positiveZoom.default(1),
   bottomZoom: positiveZoom.default(1),
+  subjects: clipAutoLayoutSubjectsSchema,
+});
+
+const clipSplitLayoutSingleSegmentSchema = clipAutoLayoutSingleSegmentSchema.omit({
+  subjects: true,
+});
+const clipSplitLayoutTwoUpSegmentSchema = clipAutoLayoutTwoUpSegmentSchema.omit({
+  subjects: true,
 });
 
 export const clipAutoLayoutSegmentSchema = z.discriminatedUnion("layout", [
@@ -46,18 +77,36 @@ export const clipAutoLayoutSegmentSchema = z.discriminatedUnion("layout", [
   clipAutoLayoutTwoUpSegmentSchema,
 ]);
 
+export const clipSplitLayoutSegmentSchema = z.discriminatedUnion("layout", [
+  clipSplitLayoutSingleSegmentSchema,
+  clipSplitLayoutTwoUpSegmentSchema,
+]);
+
 export type ClipAutoLayoutSegment = z.infer<
   typeof clipAutoLayoutSegmentSchema
 >;
+export type ClipAutoLayoutSubject = z.infer<typeof clipAutoLayoutSubjectSchema>;
+export type ClipSplitLayoutSegment = z.infer<
+  typeof clipSplitLayoutSegmentSchema
+>;
 
-const segmentListSchema = z.array(clipAutoLayoutSegmentSchema).max(64);
+const autoSegmentListSchema = z.array(clipAutoLayoutSegmentSchema).max(64);
+const splitSegmentListSchema = z.array(clipSplitLayoutSegmentSchema).max(64);
 
-function speakerLayoutAnalysisSchema<TEngine extends "shot-layout-v1" | "explicit-split-v1">(
+function speakerLayoutAnalysisSchema<
+  TVersion extends 1 | 2,
+  TEngine extends typeof CLIP_AUTO_LAYOUT_ENGINE | "explicit-split-v1",
+  TSegmentList extends
+    | typeof autoSegmentListSchema
+    | typeof splitSegmentListSchema,
+>(
+  version: TVersion,
   engine: TEngine,
+  segmentListSchema: TSegmentList,
 ) {
   return z
     .object({
-    version: z.literal(1),
+    version: z.literal(version),
     engine: z.literal(engine),
     /** Stable logical identity of the source media analyzed. */
     sourceIdentity: z.string().min(1),
@@ -92,7 +141,12 @@ function speakerLayoutAnalysisSchema<TEngine extends "shot-layout-v1" | "explici
     }
 
     for (const field of ["segments", "noSplitSegments"] as const) {
-      const segments = analysis[field];
+      const segments = (
+        analysis as unknown as Record<
+          typeof field,
+          readonly { startSec: number; endSec: number }[]
+        >
+      )[field];
       let cursor = 0;
       for (let index = 0; index < segments.length; index++) {
         const segment = segments[index]!;
@@ -129,13 +183,17 @@ function speakerLayoutAnalysisSchema<TEngine extends "shot-layout-v1" | "explici
 /** Automatic shot/speaker analysis. This schema cannot accept explicit Split
  * evidence, keeping the autoLayoutAnalysis write boundary engine-safe. */
 export const clipAutoLayoutAnalysisSchema = speakerLayoutAnalysisSchema(
-  "shot-layout-v1",
+  CLIP_AUTO_LAYOUT_VERSION,
+  CLIP_AUTO_LAYOUT_ENGINE,
+  autoSegmentListSchema,
 );
 
 /** Explicit Split detector evidence. It shares geometry with Automatic
  * analysis but has a separate schema, storage column, and lifecycle. */
 export const clipSplitLayoutAnalysisSchema = speakerLayoutAnalysisSchema(
+  1,
   "explicit-split-v1",
+  splitSegmentListSchema,
 );
 
 export const clipSplitLayoutFailureSchema = z.object({
@@ -173,9 +231,18 @@ export function parseClipAutoLayoutAnalysis(
   value: unknown,
 ): ClipAutoLayoutAnalysis | null {
   if (value === null || value === undefined) return null;
+  if (
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    value !== null &&
+    (value as Record<string, unknown>).version === 1 &&
+    (value as Record<string, unknown>).engine === "shot-layout-v1"
+  ) {
+    return null;
+  }
   assertSupportedClipCompositionEvidenceVersion(
     value,
-    { version: 1, engine: "shot-layout-v1" },
+    { version: CLIP_AUTO_LAYOUT_VERSION, engine: CLIP_AUTO_LAYOUT_ENGINE },
     ["explicit-split-v1"],
   );
   const parsed = clipAutoLayoutAnalysisSchema.safeParse(value);
@@ -186,10 +253,18 @@ export function parseClipSplitLayoutAnalysis(
   value: unknown,
 ): ClipSplitLayoutAnalysis | null {
   if (value === null || value === undefined) return null;
+  if (
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    value !== null &&
+    (value as Record<string, unknown>).engine === CLIP_AUTO_LAYOUT_ENGINE
+  ) {
+    return null;
+  }
   assertSupportedClipCompositionEvidenceVersion(
     value,
     { version: 1, engine: "explicit-split-v1" },
-    ["shot-layout-v1"],
+    [CLIP_AUTO_LAYOUT_ENGINE],
   );
   const parsed = clipSplitLayoutAnalysisSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
@@ -199,10 +274,18 @@ export function parseClipSplitLayoutFailure(
   value: unknown,
 ): ClipSplitLayoutFailure | null {
   if (value === null || value === undefined) return null;
+  if (
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    value !== null &&
+    (value as Record<string, unknown>).engine === CLIP_AUTO_LAYOUT_ENGINE
+  ) {
+    return null;
+  }
   assertSupportedClipCompositionEvidenceVersion(
     value,
     { version: 1, engine: "explicit-split-v1" },
-    ["shot-layout-v1"],
+    [CLIP_AUTO_LAYOUT_ENGINE],
   );
   const parsed = clipSplitLayoutFailureSchema.safeParse(value);
   return parsed.success ? parsed.data : null;

@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
-import { workflowStageUpdatedEventSchema } from "@narriflow/validators";
+import {
+  CLIP_AUTO_LAYOUT_ENGINE,
+  CLIP_AUTO_LAYOUT_VERSION,
+  workflowStageUpdatedEventSchema,
+} from "@narriflow/validators";
 import type {
   ClipCategory,
   ContentPack,
@@ -1402,7 +1406,21 @@ export class WorkflowRunLifecycle {
           projectId: attempt.projectId,
           editorRevision: input.editorRevision,
           previewStorageKey: input.previewStorageKey,
-          autoLayoutAnalysis: { equals: Prisma.DbNull },
+          OR: [
+            { autoLayoutAnalysis: { equals: Prisma.DbNull } },
+            {
+              autoLayoutAnalysis: {
+                path: ["version"],
+                not: CLIP_AUTO_LAYOUT_VERSION,
+              },
+            },
+            {
+              autoLayoutAnalysis: {
+                path: ["engine"],
+                not: CLIP_AUTO_LAYOUT_ENGINE,
+              },
+            },
+          ],
         },
         data: {
           autoLayoutAnalysis: input.analysis,

@@ -11,6 +11,10 @@ import {
   studioSpeakerLayoutOverrideSchema,
 } from "./speaker-layout-overrides";
 import { visualAssetReferenceSchema } from "./timed-edits";
+import {
+  sceneLayoutSelectionsEqual,
+  studioSceneLayoutSelectionsSchema,
+} from "./scene-layouts";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
@@ -463,6 +467,7 @@ export const studioEditsSchema = z
       .array(studioSpeakerLayoutOverrideSchema)
       .max(64)
       .default([]),
+    sceneLayouts: studioSceneLayoutSelectionsSchema,
     sfx: z.array(studioSfxPlacementSchema).max(20).default([]),
     visualBroll: z.array(studioVisualBrollPlacementSchema).max(20).default([]),
   })
@@ -487,6 +492,7 @@ export const studioEditsSchema = z
     background: STUDIO_BACKGROUND_DEFAULT,
     framing: STUDIO_FRAMING_DEFAULT,
     speakerLayoutOverrides: [],
+    sceneLayouts: [],
     sfx: [],
     visualBroll: [],
   });
@@ -607,7 +613,8 @@ export function studioEditsEqual(
     speakerLayoutOverridesEqual(
       left.speakerLayoutOverrides,
       right.speakerLayoutOverrides,
-    )
+    ) &&
+    sceneLayoutSelectionsEqual(left.sceneLayouts, right.sceneLayouts)
   );
 }
 

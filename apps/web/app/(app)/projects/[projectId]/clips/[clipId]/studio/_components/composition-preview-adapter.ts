@@ -9,6 +9,7 @@ import {
   type CompositionBrollAvailability,
   type CompositionAudioSchedule,
   type CompositionLayer,
+  type CompositionSourceVideoLayer,
   type CompositionMode,
   type CompositionNotice,
   type CompositionSceneTextRender,
@@ -16,6 +17,17 @@ import {
   type CompositionMotionPlan,
 } from "@narriflow/composition-plan";
 import { duckingGainMultiplierAt } from "@narriflow/validators";
+
+/** Keeps planner layer order intact so the first source layer remains the
+ * stable, clock-driving video and every later layer becomes a companion. */
+export function orderedCompositionSourceLayers(
+  layers: readonly (CompositionLayer | CompositionVisualLayer)[],
+): CompositionSourceVideoLayer[] {
+  return layers.filter(
+    (layer): layer is CompositionSourceVideoLayer =>
+      layer.kind === "source-video",
+  );
+}
 
 export function plannedSceneTextPreview(
   render: CompositionSceneTextRender,
@@ -393,6 +405,21 @@ export function plannedCompositionFrameStyle(
   };
 }
 
+/** Scales the plan's output-pixel mask into the rendered preview canvas. */
+export function plannedCompositionMaskStyle(
+  layer: Extract<CompositionLayer, { kind: "source-video" }>,
+  canvas: { width: number; height: number },
+  preview: { width: number; height: number },
+) {
+  if (!layer.mask) return {};
+  if (layer.mask.kind === "circle") return { borderRadius: "50%" };
+  const scale = Math.min(
+    preview.width / canvas.width,
+    preview.height / canvas.height,
+  );
+  return { borderRadius: `${layer.mask.radiusPx * scale}px` };
+}
+
 export function plannedCompositionVideoStyle(
   layer: Extract<CompositionLayer, { kind: "source-video" }>,
   source: { width: number; height: number },
@@ -597,6 +624,7 @@ export function adoptCompositionPreview(
     sceneId: scene.id,
     sceneStartSec: scene.startSec,
     sceneEndSec: scene.endSec,
+    sourceRange: scene.sourceRange ?? null,
     requestedMode: target.requestedMode,
     effectiveMode: target.effectiveMode,
     layers: [...scene.layers, ...visualLayers],

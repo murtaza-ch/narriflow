@@ -23,6 +23,10 @@ import {
   type StudioSpeakerLayoutOverride,
 } from "./studio-edits";
 import {
+  SCENE_LAYOUT_MIN_DURATION_SEC,
+  type StudioSceneLayoutSelection,
+} from "./scene-layouts";
+import {
   transcriptSlicesEqual,
   transcriptUtteranceSchema,
 } from "./transcript";
@@ -84,6 +88,15 @@ const editorDocumentV2Schema = z
       endSec: doc.clipEndSec,
     });
     const sourceDurationSec = editedTimeMap.editedDurationSec;
+    doc.studioEdits.sceneLayouts.forEach((selection, index) => {
+      if (selection.endSec > sourceDurationSec + 0.001) {
+        context.addIssue({
+          code: "custom",
+          path: ["studioEdits", "sceneLayouts", index, "endSec"],
+          message: "scene layout is outside the edited source timeline",
+        });
+      }
+    });
     for (let index = 0; index < blocks.length; index += 1) {
       const block = blocks[index]!;
       const previous = blocks[index - 1];
@@ -479,7 +492,10 @@ function rebaseSpeakerLayoutOverrides(
       endSec: Math.min(newMap.clipEndSec, sourceEndSec),
     };
     const edited = sourceRangeToEdited(newMap, clampedSource);
-    if (!edited || edited.endSec - edited.startSec < 0.075) {
+    if (
+      !edited ||
+      edited.endSec - edited.startSec < SCENE_LAYOUT_MIN_DURATION_SEC
+    ) {
       changed = true;
       continue;
     }
@@ -498,6 +514,42 @@ function rebaseSpeakerLayoutOverrides(
     });
   }
   return changed ? rebased : overrides;
+}
+
+function rebaseSceneLayouts(
+  selections: StudioSceneLayoutSelection[],
+  oldMap: EditedTimeMap,
+  newMap: EditedTimeMap,
+): StudioSceneLayoutSelection[] {
+  if (selections.length === 0) return selections;
+  let changed = false;
+  const rebased: StudioSceneLayoutSelection[] = [];
+  for (const selection of selections) {
+    const sourceStartSec = editedToSource(oldMap, selection.startSec);
+    const sourceEndSec = editedToSource(oldMap, selection.endSec);
+    const edited = sourceRangeToEdited(newMap, {
+      startSec: Math.max(newMap.clipStartSec, sourceStartSec),
+      endSec: Math.min(newMap.clipEndSec, sourceEndSec),
+    });
+    if (!edited || edited.endSec - edited.startSec < 0.075) {
+      changed = true;
+      continue;
+    }
+    if (
+      edited.startSec === selection.startSec &&
+      edited.endSec === selection.endSec
+    ) {
+      rebased.push(selection);
+    } else {
+      changed = true;
+      rebased.push({
+        ...selection,
+        startSec: edited.startSec,
+        endSec: edited.endSec,
+      });
+    }
+  }
+  return changed ? rebased : selections;
 }
 
 /** Applies `rebaseTextLayers`/`rebaseSfxPlacements` to `doc.studioEdits` and
@@ -520,14 +572,26 @@ function rebaseStudioEdits(
     oldMap,
     newMap,
   );
+  const sceneLayouts = rebaseSceneLayouts(
+    doc.studioEdits.sceneLayouts,
+    oldMap,
+    newMap,
+  );
   if (
     textLayers === doc.studioEdits.textLayers &&
     sfx === doc.studioEdits.sfx &&
-    speakerLayoutOverrides === doc.studioEdits.speakerLayoutOverrides
+    speakerLayoutOverrides === doc.studioEdits.speakerLayoutOverrides &&
+    sceneLayouts === doc.studioEdits.sceneLayouts
   ) {
     return doc.studioEdits;
   }
-  return { ...doc.studioEdits, textLayers, sfx, speakerLayoutOverrides };
+  return {
+    ...doc.studioEdits,
+    textLayers,
+    sfx,
+    speakerLayoutOverrides,
+    sceneLayouts,
+  };
 }
 
 function clampCensorSegmentsToWindow(

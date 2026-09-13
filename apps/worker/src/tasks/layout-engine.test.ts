@@ -174,6 +174,7 @@ describe("analyzeShot", () => {
     expect(analysis.kind).toBe("solo");
     expect(analysis.seats.length).toBe(1);
     expect(analysis.seats[0]!.cx).toBeCloseTo(0.52, 2);
+    expect(analysis.subjectSeats).toHaveLength(1);
   });
 
   it("classifies two laterally distinct faces as multi with two seats", () => {
@@ -181,6 +182,7 @@ describe("analyzeShot", () => {
     const analysis = analyzeShot(shot, samples);
     expect(analysis.kind).toBe("multi");
     expect(analysis.seats.length).toBe(2);
+    expect(analysis.subjectSeats).toHaveLength(2);
   });
 
   it("discards a low-presence walk-through face", () => {
@@ -206,6 +208,54 @@ describe("analyzeShot", () => {
     const analysis = analyzeShot(shot, samples);
     expect(analysis.kind).toBe("solo");
     expect(analysis.seats.length).toBe(1);
+    expect(analysis.subjectSeats).toHaveLength(1);
+  });
+
+  it("keeps a moving person as one subject when positions never co-occur", () => {
+    const samples = samplesOver(10, (t) => [
+      face(0.2 + 0.6 * (t / 10), 0.4, 0.2),
+    ]);
+    const analysis = analyzeShot(shot, samples);
+    expect(analysis.subjectSeats).toHaveLength(1);
+  });
+
+  it("derives four distinct anchors only when four faces co-occur", () => {
+    const samples = samplesOver(10, () => [
+      face(0.14),
+      face(0.38),
+      face(0.62),
+      face(0.86),
+    ]);
+    const analysis = analyzeShot(shot, samples);
+    expect(analysis.subjectSeats).toHaveLength(4);
+    expect(analysis.subjectSeats.map((subject) => subject.cx)).toEqual([
+      0.14, 0.38, 0.62, 0.86,
+    ]);
+  });
+
+  it("keeps four co-occurring subjects when Automatic seat clustering merges them", () => {
+    const samples = samplesOver(10, () => [
+      face(0.35),
+      face(0.45),
+      face(0.55),
+      face(0.65),
+    ]);
+    const analysis = analyzeShot(shot, samples);
+    expect(analysis.kind).toBe("solo");
+    expect(analysis.seats).toHaveLength(1);
+    expect(analysis.subjectSeats.map((subject) => subject.cx)).toEqual([
+      0.35, 0.45, 0.55, 0.65,
+    ]);
+    const plan = buildAutoLayoutPlan({
+      samples,
+      sceneCuts: [],
+      words: [],
+      durationSec: 10,
+      allowTwoUp: true,
+    });
+    expect(plan.segments).toHaveLength(1);
+    expect(plan.segments[0]!.layout).toBe("single");
+    expect(plan.segments[0]!.subjects).toHaveLength(4);
   });
 
   it("keeps multi for a genuine two-shot with occasional single-face dropouts", () => {
@@ -348,6 +398,8 @@ describe("buildAutoLayoutPlan", () => {
     expect(plan.segments.length).toBe(3);
     expect(plan.segments[0]!.layout).toBe("single");
     expect(plan.segments[1]!.layout).toBe("two-up");
+    expect(plan.segments[1]!.subjects).toHaveLength(2);
+    expect(new Set(plan.segments[1]!.subjects.map((subject) => subject.id)).size).toBe(2);
     expect(plan.segments[2]!.layout).toBe("single");
     expect(plan.twoUpSegmentCount).toBe(1);
     // Solo segments are zoom-framed on the face.
@@ -620,6 +672,7 @@ describe("buildAutoLayoutPlan", () => {
     expect(middle).toBeDefined();
     if (middle && middle.layout === "single") {
       expect(middle.cxNorm).toBeCloseTo(0.3, 1); // held, not 0.5
+      expect(middle.subjects).toEqual([]); // held crop, no invented face
     }
   });
 

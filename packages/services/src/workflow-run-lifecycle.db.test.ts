@@ -2234,7 +2234,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(storedUnowned.splitLayoutAnalysis).toBeNull();
   });
 
-  test("automatic-layout evidence is create-only", async () => {
+  test("automatic-layout evidence replaces a stale engine then stays create-only", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
     const previewStorageKey = `previews/${clip.id}/current.mp4`;
@@ -2259,18 +2259,28 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
     const input = {
       clipId: clip.id,
-      analysis: { version: 1, sourceIdentity: "source:current" },
+      analysis: {
+        version: 2,
+        engine: "shot-layout-v2",
+        sourceIdentity: "source:current",
+      },
       editorRevision: clip.editorRevision,
       previewStorageKey,
     };
     await expect(
       lifecycle.completeClipAutoLayoutAnalysis(attempt, input),
+    ).resolves.toBe(true);
+    await expect(
+      lifecycle.completeClipAutoLayoutAnalysis(attempt, {
+        ...input,
+        analysis: { ...input.analysis, sourceIdentity: "source:newer" },
+      }),
     ).resolves.toBe(false);
     expect(
       (
         await prisma.clip.findUniqueOrThrow({ where: { id: clip.id } })
       ).autoLayoutAnalysis,
-    ).toEqual({ version: 1, sourceIdentity: "source:stale" });
+    ).toEqual(input.analysis);
   });
 
   test("a stage-specific child command rejects an attempt from another stage", async () => {

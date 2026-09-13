@@ -232,7 +232,14 @@ function useIsViewportBelow(px: number): boolean {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type AspectRatio = "9:16" | "1:1" | "16:9" | "4:5";
-export type LayoutMode = "fill" | "fit" | "blur";
+export interface StudioLayoutScene {
+  id: string;
+  startSec: number | null;
+  endSec: number | null;
+  speakerLayerCount: number;
+  speakerAnalysisStatus: "pending" | "available" | "failed";
+  coveredBy: "broll" | "inserted-scene" | null;
+}
 export type StudioSaveState =
   | "idle"
   | "local"
@@ -394,7 +401,7 @@ interface StudioState {
   showTimeline: boolean;
   timelineSnapping: boolean;
   aspectRatio: AspectRatio;
-  layoutMode: LayoutMode;
+  layoutScene: StudioLayoutScene | null;
   showShortcuts: boolean;
   timelineZoom: number;
   selectedSegmentId: string | null;
@@ -581,7 +588,7 @@ interface StudioFields extends StudioState {
   setShowTimeline: (v: boolean) => void;
   setTimelineSnapping: (v: boolean) => void;
   setAspectRatio: (r: AspectRatio) => void;
-  setLayoutMode: (m: LayoutMode) => void;
+  reportLayoutScene: (scene: StudioLayoutScene | null) => void;
   setShowShortcuts: (v: boolean) => void;
   setTimelineZoom: React.Dispatch<React.SetStateAction<number>>;
   setSelectedSegmentId: (id: string | null) => void;
@@ -1197,7 +1204,25 @@ export function StudioShell({
   const router = useRouter();
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(clipInfo.aspectRatio,
   );
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>("fill");
+  const [layoutScene, setLayoutScene] = useState<StudioLayoutScene | null>(null);
+  const reportLayoutScene = useCallback((scene: StudioLayoutScene | null) => {
+    setLayoutScene((current) => {
+      if (current === scene) return current;
+      if (
+        current &&
+        scene &&
+        current.id === scene.id &&
+        current.startSec === scene.startSec &&
+        current.endSec === scene.endSec &&
+        current.speakerLayerCount === scene.speakerLayerCount &&
+        current.speakerAnalysisStatus === scene.speakerAnalysisStatus &&
+        current.coveredBy === scene.coveredBy
+      ) {
+        return current;
+      }
+      return scene;
+    });
+  }, []);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null,
@@ -2138,7 +2163,7 @@ export function StudioShell({
 
   const fields: StudioFields = {
     isPlaying, playbackRate, duration, activeTool, showTimeline, timelineSnapping, aspectRatio,
-    layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
+    layoutScene, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
     sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy,
@@ -2162,7 +2187,7 @@ export function StudioShell({
     updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
     updateWord, deleteSourceRange, applyRemoveSilence,
     setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,
-    setLayoutMode, setShowShortcuts, setTimelineZoom,
+    reportLayoutScene, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
     selectTextLayer, deselectTextLayer,
     setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset, endCoalesce,

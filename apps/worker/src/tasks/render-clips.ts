@@ -9,6 +9,7 @@ import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
   planClipComposition,
+  sceneLayoutPresetShowsBackground,
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
   type ClipCompositionPlan,
@@ -51,6 +52,8 @@ import {
 } from "@narriflow/services";
 import {
   AUDIO_UPLOAD_MAX_BYTES,
+  CLIP_AUTO_LAYOUT_ENGINE,
+  CLIP_AUTO_LAYOUT_VERSION,
   brandTemplateSnapshotSchema,
   brollCuesArraySchema,
   CAPTION_CHUNK_SIZE,
@@ -83,10 +86,10 @@ import type {
   CaptionPreset,
   ClipAspectRatio,
   ClipAutoLayoutAnalysis,
-  ClipAutoLayoutSegment,
   ClipCategory,
   ClipLayoutAnalysis,
   ClipRenderResolution,
+  ClipSplitLayoutSegment,
   EditorDocument,
   EditedTimeMap,
   StudioEdits,
@@ -2178,7 +2181,7 @@ function faceBandSegmentsForCompositionPlan(input: {
   cutPlan: ClipCutPlan;
   clipStartSec: number;
   editedDurationSec: number;
-}): ClipAutoLayoutSegment[] | null {
+}): ClipSplitLayoutSegment[] | null {
   if (!input.samples || input.samples.length === 0) return null;
   const points = remapFaceSamplesForCutPlan(
     input.samples,
@@ -5713,7 +5716,7 @@ async function renderClipGroup(input: {
   const persistedAutoLayoutEligible = Boolean(
     layoutEngineEnabled &&
       persistedAutoLayout &&
-      persistedAutoLayout.engine === "shot-layout-v1" &&
+      persistedAutoLayout.engine === CLIP_AUTO_LAYOUT_ENGINE &&
       persistedAutoLayout.sourceIdentity === compositionSourceIdentity &&
       clipAutoLayoutMatchesInputs(persistedAutoLayout, {
         clipStartSec,
@@ -5734,9 +5737,12 @@ async function renderClipGroup(input: {
     | "disabled" = persistedAutoLayoutEligible
     ? "durable"
     : automaticLayoutEvidenceFailure;
-  const automaticEvidenceProbe =
-    probe.hasVideo &&
-    resolveEffectiveFramingMode(studioEdits) === "auto"
+  // Ask the shared planner which evidence this exact document and target set
+  // needs. Scene layout selections can require speaker analysis even when the
+  // clip-wide framing mode is Center or Fit, so the global mode is not a
+  // complete scheduling signal.
+  const layoutEvidenceProbe =
+    probe.hasVideo
       ? planClipComposition({
           document: compositionDocument,
           source: {
@@ -5756,9 +5762,9 @@ async function renderClipGroup(input: {
                       clipStartSec,
                       clipEndSec,
                       deletedRanges,
-                      engineVersion: "shot-layout-v1",
+                      engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
                     }),
-                    engineVersion: "shot-layout-v1",
+                    engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
                     analysis: automaticLayoutAnalysisForPlan,
                   },
                 }
@@ -5773,7 +5779,11 @@ async function renderClipGroup(input: {
           },
           capabilities: {
             automaticSpeakerLayout: layoutEngineEnabled,
-            automaticSpeakerEngineVersion: "shot-layout-v1",
+            automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE,
+            explicitSplitLayout: currentRenderConfig().splitEnabled,
+            splitEngineVersion: "explicit-split-v1",
+            screenLayout: currentRenderConfig().screenLayoutEnabled,
+            screenEngineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
           },
           targets: outputs.map((output) => {
             const target = aspectRatioConfig.get(output.aspectRatio)!;
@@ -5786,20 +5796,15 @@ async function renderClipGroup(input: {
           }),
         })
       : null;
-  const automaticEvidenceRequested = Boolean(
-    automaticEvidenceProbe &&
-      automaticEvidenceProbe.status !== "invalid" &&
-      automaticEvidenceProbe.plan.evidenceRequests.length > 0,
+  const requestedLayoutEvidence =
+    layoutEvidenceProbe && layoutEvidenceProbe.status !== "invalid"
+      ? layoutEvidenceProbe.plan.evidenceRequests
+      : [];
+  const automaticEvidenceRequest = requestedLayoutEvidence.find(
+    (request) => request.kind === "automatic-speaker-layout",
   );
-  if (automaticEvidenceRequested) {
-    if (
-      automaticEvidenceProbe &&
-      automaticEvidenceProbe.status !== "invalid"
-    ) {
-      for (const request of automaticEvidenceProbe.plan.evidenceRequests) {
-        compositionResources.analysisRequestKeys.add(request.key);
-      }
-    }
+  if (automaticEvidenceRequest) {
+    compositionResources.analysisRequestKeys.add(automaticEvidenceRequest.key);
     compositionResources.analysisExecutionCount += 1;
     let engineHandled = false;
     if (persistedAutoLayoutEligible && persistedAutoLayout) {
@@ -5883,8 +5888,8 @@ async function renderClipGroup(input: {
 
         const envelope: ClipAutoLayoutAnalysis =
           clipAutoLayoutAnalysisSchema.parse({
-            version: 1,
-            engine: "shot-layout-v1",
+            version: CLIP_AUTO_LAYOUT_VERSION,
+            engine: CLIP_AUTO_LAYOUT_ENGINE,
             sourceIdentity: compositionSourceIdentity,
             analyzedAtISO: new Date(currentTimeMs()).toISOString(),
             clipStartSec,
@@ -5993,9 +5998,15 @@ async function renderClipGroup(input: {
 
   // Resolve the evidence needed by the shared planner for Screen mode.
   const screenLayoutEnabled = currentRenderConfig().screenLayoutEnabled;
-  const isScreenMode =
-    resolveEffectiveFramingMode(studioEdits) === "screen" && probe.hasVideo;
-  if (isScreenMode) {
+  const screenEvidenceRequest = requestedLayoutEvidence.find(
+    (request) => request.kind === "screen-layout",
+  );
+  const clipWideScreenMode =
+    resolveEffectiveFramingMode(studioEdits) === "screen";
+  const needsScreenEvidence =
+    probe.hasVideo &&
+    (Boolean(screenEvidenceRequest) || clipWideScreenMode);
+  if (needsScreenEvidence) {
     if (!screenLayoutEnabled) {
       screenLayoutEvidenceForPlan = { state: "disabled" };
       log("info", "clip_screen_fallback", {
@@ -6054,9 +6065,9 @@ async function renderClipGroup(input: {
             : null;
         const reuseExactScreenPlan = persistedAnalysis !== null;
         if (!reuseExactScreenPlan) {
-          compositionResources.analysisRequestKeys.add(
-            `screen-layout:${screenFingerprint}`,
-          );
+          if (screenEvidenceRequest) {
+            compositionResources.analysisRequestKeys.add(screenEvidenceRequest.key);
+          }
           compositionResources.analysisExecutionCount += 1;
         }
         // Real screen layout: element segmentation v1 (vizard-parity.md's
@@ -6481,7 +6492,7 @@ async function renderClipGroup(input: {
                 zoom: 1,
               },
             ]);
-        const explicitSegments: ClipAutoLayoutSegment[] = plan.segments.map(
+        const explicitSegments: ClipSplitLayoutSegment[] = plan.segments.map(
           (segment) =>
             segment.layout === "single"
               ? {
@@ -6600,6 +6611,17 @@ async function renderClipGroup(input: {
     touchedOptionalAssetClasses,
   });
 
+  const renderedAspectRatios = new Set(
+    outputs.map((output) => output.aspectRatio),
+  );
+  const needsCanvasBackground =
+    resolveEffectiveFramingMode(studioEdits) === "fit" ||
+    studioEdits.sceneLayouts.some(
+      (selection) =>
+        sceneLayoutPresetShowsBackground(selection.preset) &&
+        renderedAspectRatios.has(selection.aspectRatio),
+    );
+
   // Canvas background (vizard-parity Phase C item 2): mirrors the music
   // plan above — resolve once per clip, downloading the background image
   // (if any) to a local file so the per-output builders never touch the
@@ -6610,21 +6632,10 @@ async function renderClipGroup(input: {
   // either) rather than failing the render — same "best effort, never
   // fail the clip" policy the music/B-roll downloads follow.
   //
-  // Gated on the resolved effective mode (Phase C-2 stage 1), not the
-  // raw `background.mode`, so this can't drift from the reframe-skip
-  // gate above or the builder branch below — they're all
-  // `resolveEffectiveFramingMode(studioEdits) === "fit"` by definition
-  // (`background.mode !== "off"` always wins as "fit"), so this reads
-  // identically to before for every existing clip. This stays a plain
-  // `=== "fit"` check, not an exhaustive switch — a split clip
-  // (background off) leaves `backgroundPlan` null exactly like center
-  // does today, and instead of falling through to the plain
-  // crop-to-fill builder path, `buildSingleVideoArgs`/`buildBrollVideoArgs`
-  // check `params.split` (built from `splitPlan` above, split packet B)
-  // BEFORE the crop-to-fill fallback — see those builders' `else if`
-  // branch order.
+  // Timed templates with gaps, contained source, or masked corners expose the
+  // canvas just like Fit. Limit that work to aspect ratios rendered here.
   let backgroundPlan: BackgroundPlan | null = null;
-  if (resolveEffectiveFramingMode(studioEdits) === "fit") {
+  if (needsCanvasBackground) {
     const fallbackColor = studioEdits.background.color ?? "#000000";
     backgroundPlan = {
       mode: "color",
@@ -6795,9 +6806,9 @@ async function renderClipGroup(input: {
                     clipStartSec,
                     clipEndSec,
                     deletedRanges,
-                    engineVersion: "shot-layout-v1",
+                    engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
                   }),
-                  engineVersion: "shot-layout-v1",
+                  engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
                   analysis: automaticLayoutAnalysisForPlan,
                 },
               }
@@ -6881,7 +6892,7 @@ async function renderClipGroup(input: {
         },
         capabilities: {
           automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
-          automaticSpeakerEngineVersion: "shot-layout-v1",
+          automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE,
           explicitSplitLayout: currentRenderConfig().splitEnabled,
           splitEngineVersion: "explicit-split-v1",
           screenLayout: currentRenderConfig().screenLayoutEnabled,
@@ -6903,7 +6914,7 @@ async function renderClipGroup(input: {
       });
     };
     const backgroundImageAvailability =
-      requestedCompositionMode === "fit" &&
+      needsCanvasBackground &&
       backgroundPlan?.mode === "image" &&
       backgroundPlan.imagePath &&
       studioEdits.background.imageUrl
@@ -6914,7 +6925,7 @@ async function renderClipGroup(input: {
               studioEdits.background.imageUrl,
             ),
           }
-        : requestedCompositionMode === "fit" &&
+        : needsCanvasBackground &&
             studioEdits.background.mode === "image"
           ? ({ state: "failed" } as const)
           : ({ state: "missing" } as const);

@@ -7,6 +7,8 @@ import {
   type ClipPendingAutoLayoutAnalysis,
 } from "@narriflow/services";
 import {
+  CLIP_AUTO_LAYOUT_ENGINE,
+  CLIP_AUTO_LAYOUT_VERSION,
   clipAutoLayoutAnalysisSchema,
   sourceToEdited,
   type ClipAutoLayoutAnalysis,
@@ -308,8 +310,8 @@ export async function analyzeClipAutoLayout(params: {
   }
 
   return clipAutoLayoutAnalysisSchema.parse({
-    version: 1,
-    engine: "shot-layout-v1",
+    version: CLIP_AUTO_LAYOUT_VERSION,
+    engine: CLIP_AUTO_LAYOUT_ENGINE,
     sourceIdentity: compositionAssetRef("source", clip.projectId),
     analyzedAtISO: new Date().toISOString(),
     clipStartSec: clip.startSec,

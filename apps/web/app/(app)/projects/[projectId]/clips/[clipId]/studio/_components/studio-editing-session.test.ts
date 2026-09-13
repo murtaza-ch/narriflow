@@ -85,6 +85,39 @@ describe("StudioEditingSession document and history seam", () => {
     expect(notifications).toBe(1);
   });
 
+  test("keeps scene layout edits in undo and redo history", () => {
+    const session = makeSession();
+    const current = session.getSnapshot().document.studioEdits;
+    session.dispatch({
+      type: "document.edit",
+      action: {
+        type: "setStudioEdits",
+        studioEdits: {
+          ...current,
+          sceneLayouts: [
+            {
+              id: "scene-layout-test",
+              aspectRatio: "9:16",
+              startSec: 0,
+              endSec: 30,
+              preset: "side-by-side",
+            },
+          ],
+        },
+      },
+    });
+
+    expect(session.getSnapshot().document.studioEdits.sceneLayouts[0]?.preset).toBe(
+      "side-by-side",
+    );
+    session.dispatch({ type: "history.undo" });
+    expect(session.getSnapshot().document.studioEdits.sceneLayouts).toEqual([]);
+    session.dispatch({ type: "history.redo" });
+    expect(session.getSnapshot().document.studioEdits.sceneLayouts[0]?.preset).toBe(
+      "side-by-side",
+    );
+  });
+
   test("keeps the public snapshot stable for a no-op edit", () => {
     const session = makeSession();
     const before = session.getSnapshot();

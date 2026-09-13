@@ -11,6 +11,7 @@ import {
   type CompositionMotionPlan,
   type CompositionMotionState,
   type CompositionRect,
+  type CompositionSourceVideoLayer,
   type CompositionTargetPlan,
   type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
@@ -788,6 +789,31 @@ function assertRect(
   }
 }
 
+function sourceLayerMaskSuffix(layer: CompositionSourceVideoLayer): string {
+  if (!layer.mask) return "";
+  const { width, height } = layer.destination;
+  const rgbChannels = "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)'";
+  if (layer.mask.kind === "circle") {
+    const alpha =
+      "if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2)," +
+      "(min(W,H)/2)*(min(W,H)/2)),255,0)";
+    return `,format=rgba,geq=${rgbChannels}:a='${alpha}'`;
+  }
+  const radius = layer.mask.radiusPx;
+  if (
+    !Number.isFinite(radius) ||
+    radius <= 0 ||
+    radius > Math.min(width, height) / 2
+  ) {
+    throw new Error("invalid_clip_composition_source_mask");
+  }
+  const formattedRadius = radius.toFixed(3);
+  const alpha =
+    `if(lte(hypot(max(abs(X-W/2)-(W/2-${formattedRadius}),0),` +
+    `max(abs(Y-H/2)-(H/2-${formattedRadius}),0)),${formattedRadius}),255,0)`;
+  return `,format=rgba,geq=${rgbChannels}:a='${alpha}'`;
+}
+
 export function compileCompositionPlanInsertedSceneSequence(input: {
   plan: ClipCompositionPlan;
   targetId: string;
@@ -1147,11 +1173,13 @@ export function compileCompositionPlanVideo(input: {
     return { ...result, brollInputs, sceneInputs };
   };
   const target = baseOnlyTarget(plannedTarget);
-  if (
+  const needsSceneCompiler =
     target.effectiveMode === "auto" ||
     target.effectiveMode === "split" ||
-    target.effectiveMode === "screen"
-  ) {
+    target.effectiveMode === "screen" ||
+    target.scenes.length > 1 ||
+    target.scenes.some((scene) => scene.layoutSelection != null);
+  if (needsSceneCompiler) {
     if (target.scenes.length === 0) {
       throw new Error("invalid_clip_composition_scenes");
     }
@@ -1165,6 +1193,36 @@ export function compileCompositionPlanVideo(input: {
       parts.push(
         `${input.videoInputLabel}split=${target.scenes.length}${sceneInputs.join("")}`,
       );
+    }
+    const imageBackgroundSceneIndexes = target.scenes.flatMap((scene, index) =>
+      scene.layers.some(
+        (layer) => layer.kind === "background" && layer.imageRef !== null,
+      )
+        ? [index]
+        : [],
+    );
+    if (
+      imageBackgroundSceneIndexes.length > 0 &&
+      input.backgroundImageInputIndex == null
+    ) {
+      throw new Error("clip_composition_background_input_missing");
+    }
+    const imageBackgroundInputs = new Map<number, string>();
+    if (imageBackgroundSceneIndexes.length === 1) {
+      imageBackgroundInputs.set(
+        imageBackgroundSceneIndexes[0]!,
+        `[${input.backgroundImageInputIndex}:v]`,
+      );
+    } else if (imageBackgroundSceneIndexes.length > 1) {
+      const labels = imageBackgroundSceneIndexes.map(
+        (sceneIndex) => `[composition_scene_${sceneIndex}_background_src]`,
+      );
+      parts.push(
+        `[${input.backgroundImageInputIndex}:v]split=${labels.length}${labels.join("")}`,
+      );
+      imageBackgroundSceneIndexes.forEach((sceneIndex, index) => {
+        imageBackgroundInputs.set(sceneIndex, labels[index]!);
+      });
     }
     let cursor = 0;
     const sceneOutputs: string[] = [];
@@ -1189,8 +1247,30 @@ export function compileCompositionPlanVideo(input: {
       const layers = [...scene.layers]
         .filter((layer) => layer.kind === "source-video")
         .sort((left, right) => left.zIndex - right.zIndex);
-      if (layers.length === 0 || layers.length > 2) {
+      const backgroundLayers = scene.layers.filter(
+        (layer) => layer.kind === "background",
+      );
+      if (layers.length === 0 || layers.length > 4) {
         throw new Error("invalid_clip_composition_layers");
+      }
+      if (backgroundLayers.length > 1) {
+        throw new Error("invalid_clip_composition_layers");
+      }
+      const backgroundLayer = backgroundLayers[0] ?? null;
+      if (backgroundLayer) {
+        assertRect(
+          backgroundLayer.destination,
+          target.canvas,
+          "invalid_clip_composition_destination",
+        );
+        if (
+          backgroundLayer.destination.x !== 0 ||
+          backgroundLayer.destination.y !== 0 ||
+          backgroundLayer.destination.width !== target.canvas.width ||
+          backgroundLayer.destination.height !== target.canvas.height
+        ) {
+          throw new Error("unsupported_clip_composition_destination");
+        }
       }
       for (const layer of layers) {
         if (layer.sourceRef !== input.plan.source.ref) {
@@ -1209,11 +1289,13 @@ export function compileCompositionPlanVideo(input: {
       }
 
       const isFullCanvasSingle =
+        backgroundLayer === null &&
         layers.length === 1 &&
         layers[0]!.destination.x === 0 &&
         layers[0]!.destination.y === 0 &&
         layers[0]!.destination.width === target.canvas.width &&
         layers[0]!.destination.height === target.canvas.height &&
+        !layers[0]!.mask &&
         Math.abs(layers[0]!.rotationDeg) < 0.01;
       if (isFullCanvasSingle) {
         const layer = layers[0]!;
@@ -1227,11 +1309,13 @@ export function compileCompositionPlanVideo(input: {
       }
 
       const isExactStack =
+        backgroundLayer === null &&
         layers.length === 2 &&
         layers.every(
           (layer) =>
             layer.destination.x === 0 &&
             layer.destination.width === target.canvas.width &&
+            !layer.mask &&
             Math.abs(layer.rotationDeg) < 0.01,
         ) &&
         layers[0]!.destination.y === 0 &&
@@ -1280,22 +1364,46 @@ export function compileCompositionPlanVideo(input: {
           `[composition_scene_${sceneIndex}_layer_${layerIndex}_src]`,
       );
       let composite = `[composition_scene_${sceneIndex}_base]`;
-      parts.push(
-        `${trimLabel}split=${layers.length + 1}${baseSource}${layerSources.join("")}`,
-        `${baseSource}scale=${target.canvas.width}:${target.canvas.height},` +
-          `drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill${composite}`,
-      );
+      if (backgroundLayer?.imageRef) {
+        const backgroundInput = imageBackgroundInputs.get(sceneIndex);
+        if (!backgroundInput) {
+          throw new Error("clip_composition_background_input_missing");
+        }
+        if (layers.length === 1) {
+          layerSources[0] = trimLabel;
+        } else {
+          parts.push(`${trimLabel}split=${layers.length}${layerSources.join("")}`);
+        }
+        const fps = input.fps && input.fps > 0 ? input.fps : 30;
+        const durationSec = scene.endSec - scene.startSec;
+        parts.push(
+          `${backgroundInput}loop=loop=-1:size=1:start=0,` +
+            `trim=duration=${durationSec.toFixed(3)},` +
+            `setpts=PTS-STARTPTS,scale=${target.canvas.width}:${target.canvas.height}:` +
+            `force_original_aspect_ratio=increase,crop=${target.canvas.width}:` +
+            `${target.canvas.height},fps=${fps}${composite}`,
+        );
+      } else {
+        const backgroundColor = backgroundLayer?.color ?? "#000000";
+        parts.push(
+          `${trimLabel}split=${layers.length + 1}${baseSource}${layerSources.join("")}`,
+          `${baseSource}scale=${target.canvas.width}:${target.canvas.height},` +
+            `drawbox=x=0:y=0:w=iw:h=ih:color=${backgroundColor.replace("#", "0x")}:` +
+            `t=fill${composite}`,
+        );
+      }
       layers.forEach((layer, layerIndex) => {
         const crop = layer.sourceCrop;
         const layerOutput = `[composition_scene_${sceneIndex}_layer_${layerIndex}]`;
         const rotated = Math.abs(layer.rotationDeg) >= 0.01;
+        const mask = sourceLayerMaskSuffix(layer);
         const rotation = rotated
           ? `,format=rgba,rotate=${layer.rotationDeg.toFixed(3)}*PI/180:` +
             "ow=rotw(iw):oh=roth(ih):c=black@0"
           : "";
         parts.push(
           `${layerSources[layerIndex]}crop=${crop.width}:${crop.height}:${crop.x}:${crop.y},` +
-            `scale=${layer.destination.width}:${layer.destination.height}${rotation}${layerOutput}`,
+            `scale=${layer.destination.width}:${layer.destination.height}${mask}${rotation}${layerOutput}`,
         );
         const next =
           layerIndex === layers.length - 1
@@ -1325,7 +1433,10 @@ export function compileCompositionPlanVideo(input: {
           `format=yuv420p${baseSuffix}${baseOutputLabel}`,
       );
     }
-    return finalize({ filterParts: parts, backgroundImageInputRequired: false });
+    return finalize({
+      filterParts: parts,
+      backgroundImageInputRequired: imageBackgroundSceneIndexes.length > 0,
+    });
   }
   if (target.scenes.length !== 1) {
     throw new Error("unsupported_clip_composition_target");

@@ -290,7 +290,7 @@ function testComposition(params: {
     },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
     },
     targets: [
       {
@@ -456,7 +456,7 @@ function buildAudiogramArgs(
     },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
     },
     targets: [
       {
@@ -746,7 +746,7 @@ test("planned ASS serialization preserves the planner's punctuation filtering an
     assets: { backgroundImage: { state: "missing" } },
     capabilities: {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
+      automaticSpeakerEngineVersion: "shot-layout-v2",
     },
     targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
   });

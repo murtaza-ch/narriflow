@@ -32,6 +32,7 @@ export * from "./project";
 export * from "./review";
 export * from "./silence-detection";
 export * from "./scene-template";
+export * from "./scene-layouts";
 export * from "./social";
 export * from "./social-provider-capabilities";
 export * from "./studio-edits";

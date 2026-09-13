@@ -864,7 +864,7 @@ function buildBaselineCommands(input: {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v1",
+        automaticSpeakerEngineVersion: "shot-layout-v2",
       },
       targets: [
         {
@@ -1175,6 +1175,130 @@ test("ClipRenderAttempt deduplicates keyed analysis and extraction across mixed 
       }),
     });
   }
+});
+
+test("a stacked scene layout requests Automatic evidence under clip-wide Center framing", async () => {
+  const face = (cx: number) => ({
+    cx,
+    cy: 0.3,
+    w: 0.1,
+    h: 0.2,
+    score: 0.9,
+  });
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipOverrides: {
+      previewStorageKey: "projects/test/previews/current.mp4",
+      editorRevision: 0,
+      studioEdits: {
+        framing: { mode: "center" },
+        sceneLayouts: [
+          {
+            id: "stacked-scene",
+            aspectRatio: "9:16",
+            startSec: 0,
+            endSec: 10,
+            preset: "stacked",
+          },
+        ],
+      },
+    },
+    configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+    multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
+      t: index * 0.8,
+      faces: [face(0.3), face(0.7)],
+    })),
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute(
+      harness.attempt,
+      attemptContext(new AbortController().signal),
+    ),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  expect(harness.analysisCounts()).toEqual({
+    extraction: 1,
+    face: 0,
+    multiFace: 1,
+    pip: 0,
+    scene: 1,
+  });
+  expect(harness.persistedAutoLayouts).toHaveLength(1);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_resources",
+    context: expect.objectContaining({
+      analysisRequestCount: 1,
+      analysisRequestKeys: [
+        expect.stringMatching(/^automatic-speaker-layout:[0-9a-f]{16}$/),
+      ],
+      analysisExecutionCount: 1,
+      detectorExecutionCount: 2,
+    }),
+  });
+  const graph = harness.commands[0]?.args.join(" ") ?? "";
+  expect(graph).toContain("composition_scene_0_layer_1_src");
+});
+
+test("a screen scene layout requests only Automatic evidence under clip-wide Center framing", async () => {
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipOverrides: {
+      previewStorageKey: "projects/test/previews/current.mp4",
+      editorRevision: 0,
+      studioEdits: {
+        framing: { mode: "center" },
+        sceneLayouts: [
+          {
+            id: "screen-scene",
+            aspectRatio: "9:16",
+            startSec: 0,
+            endSec: 10,
+            preset: "screen-top",
+          },
+        ],
+      },
+    },
+    configOverrides: {
+      WORKER_LAYOUT_ENGINE: "1",
+      WORKER_SCREEN_LAYOUT: "1",
+    },
+    multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
+      t: index * 0.8,
+      faces: [
+        { cx: 0.82, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 },
+      ],
+    })),
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute(
+      harness.attempt,
+      attemptContext(new AbortController().signal),
+    ),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  expect(harness.analysisCounts()).toEqual({
+    extraction: 1,
+    face: 0,
+    multiFace: 1,
+    pip: 0,
+    scene: 1,
+  });
+  expect(harness.persistedAutoLayouts).toHaveLength(1);
+  expect(harness.persistedScreenLayouts).toHaveLength(0);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_resources",
+    context: expect.objectContaining({
+      analysisRequestCount: 1,
+      analysisRequestKeys: [
+        expect.stringMatching(/^automatic-speaker-layout:[0-9a-f]{16}$/),
+      ],
+      analysisExecutionCount: 1,
+      detectorExecutionCount: 2,
+      extractedSegmentCount: 1,
+    }),
+  });
+  const graph = harness.commands[0]?.args.join(" ") ?? "";
+  expect(graph).toContain("composition_scene_0_layer_1_src");
 });
 
 test("ClipRenderAttempt degrades shared extraction failure without changing settlement", async () => {
@@ -1906,6 +2030,48 @@ test("ClipRenderAttempt uses the frozen solid color when a background image is c
   });
 });
 
+test("ClipRenderAttempt resolves a background image for a gapped scene template", async () => {
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipOverrides: {
+      studioEdits: {
+        framing: { mode: "center" },
+        background: {
+          mode: "image",
+          color: "#123456",
+          imageUrl: "https://media.example/background.jpg",
+        },
+        sceneLayouts: [
+          {
+            id: "small-fit-scene",
+            aspectRatio: "9:16",
+            startSec: 0,
+            endSec: 10,
+            preset: "fit-small",
+          },
+        ],
+      },
+    },
+    backgroundDecodable: true,
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute(
+      harness.attempt,
+      attemptContext(new AbortController().signal),
+    ),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  expect(harness.commands).toHaveLength(1);
+  const command = harness.commands[0]?.args.join(" ") ?? "";
+  expect(command).toContain("background-clip-core-paths.bin");
+  expect(command).toContain("[1:v]loop=loop=-1");
+  expect(command).toContain("[composition_scene_0_base]");
+  expect(harness.diagnostics).not.toContainEqual({
+    message: "clip_render_optional_asset_fallback",
+    context: expect.objectContaining({ assetClass: "background" }),
+  });
+});
+
 test("ClipRenderAttempt uses the frozen solid color when background decode fails", async () => {
   const harness = createCoreRenderPathTracer({
     topology: "single-video",
@@ -2464,13 +2630,18 @@ test("ClipRenderAttempt reuses matching durable Automatic evidence without rerun
     endSec: 10,
     layout: "single" as const,
     cxNorm: 0.46,
+    cyNorm: 0.5,
+    zoom: 1,
+    subjects: [
+      { id: "speaker", cxNorm: 0.46, cyNorm: 0.5, zoom: 1 },
+    ],
   };
   const harness = createCoreRenderPathTracer({
     topology: "studio-per-output",
     clipOverrides: {
       autoLayoutAnalysis: {
-        version: 1,
-        engine: "shot-layout-v1",
+        version: 2,
+        engine: "shot-layout-v2",
         sourceIdentity,
         analyzedAtISO: "2026-08-26T00:00:00.000Z",
         clipStartSec: 2,

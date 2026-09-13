@@ -1,6 +1,7 @@
 import {
   CAPTION_CHUNK_SIZE,
   CAPTION_POSITION_Y_DEFAULTS,
+  CLIP_AUTO_LAYOUT_VERSION,
   DUCKING_DEFAULTS,
   buildEditedTimeMap,
   capDuckingWindows,
@@ -15,12 +16,17 @@ import {
   resolveMusicFadeWindows,
   resolveEffectiveFramingMode,
   resolveSpeakerLayoutScene,
+  sceneLayoutPresetNeedsAutomaticEvidence,
+  sceneLayoutSelectionAt,
+  SCENE_LAYOUT_MIN_DURATION_SEC,
   SCREEN_LAYOUT_ENGINE_VERSION,
   sourceRangeToEdited,
   type CaptionPreset,
   type ClipAspectRatio,
   type ClipAutoLayoutAnalysis,
   type ClipAutoLayoutSegment,
+  type ClipAutoLayoutSubject,
+  type ClipSplitLayoutSegment,
   type EditorDocument,
   type SceneBlock,
   type SceneContent,
@@ -28,6 +34,8 @@ import {
   type LogoPosition,
   type SpeakerLayerRole,
   type SpeakerLayerTransform,
+  type SceneLayoutPreset,
+  type StudioSceneLayoutSelection,
   type StudioTextLayer,
 } from "@narriflow/validators";
 import {
@@ -35,6 +43,14 @@ import {
   planTransitionMotion,
   type CompositionMotionPlan,
 } from "./motion-plan";
+import {
+  resolveSceneLayoutPresetTemplate,
+  sceneLayoutPresetDefinition,
+  sceneLayoutPresetShowsBackground,
+  type SceneLayoutLayerMask,
+} from "./scene-layout-presets";
+
+export { SCENE_LAYOUT_PRESET_CATALOG } from "./scene-layout-presets";
 
 export const CLIP_COMPOSITION_PLAN_VERSION = 2 as const;
 export const CLIP_COMPOSITION_MAX_TARGETS = 4;
@@ -155,8 +171,8 @@ export interface SplitLayoutEvidence {
     | "explicit-detector"
     | "durable-explicit"
     | "automatic-layout";
-  readonly segments: readonly ClipAutoLayoutSegment[];
-  readonly fallbackSegments: readonly ClipAutoLayoutSegment[];
+  readonly segments: readonly ClipSplitLayoutSegment[];
+  readonly fallbackSegments: readonly ClipSplitLayoutSegment[];
 }
 
 export interface ScreenLayoutEvidence {
@@ -177,8 +193,8 @@ export interface ScreenLayoutEvidence {
     | { readonly state: "unavailable" };
   readonly faceBand:
     | {
-        readonly state: "available";
-        readonly segments: readonly ClipAutoLayoutSegment[];
+      readonly state: "available";
+      readonly segments: readonly ClipSplitLayoutSegment[];
       }
     | { readonly state: "unavailable" };
 }
@@ -239,11 +255,13 @@ export interface CompositionSourceVideoLayer {
   readonly rotationDeg: number;
   readonly opacity: number;
   readonly zIndex: number;
+  readonly mask?: SceneLayoutLayerMask;
   readonly speaker?: {
     readonly role: SpeakerLayerRole;
     readonly transform: SpeakerLayerTransform;
     readonly defaultTransform: SpeakerLayerTransform;
     readonly overrideId: string | null;
+    readonly subjectId?: string;
   };
 }
 
@@ -470,6 +488,10 @@ export interface CompositionScene {
   /** Position in the pre-insertion edited source timeline. Inserted scenes
    * have no source range; shifted source scenes retain their original range. */
   readonly sourceRange?: CompositionActiveRange | null;
+  readonly layoutSelection?: {
+    readonly id: string;
+    readonly preset: SceneLayoutPreset;
+  } | null;
   readonly layers: readonly CompositionLayer[];
 }
 
@@ -948,7 +970,7 @@ function cropsAreLaterallyDistinct(
 }
 
 function segmentsAreComplete(
-  segments: readonly ClipAutoLayoutSegment[],
+  segments: readonly (ClipAutoLayoutSegment | ClipSplitLayoutSegment)[],
   editedDurationSec: number,
 ): boolean {
   if (segments.length === 0 || segments.length > 64) return false;
@@ -990,7 +1012,7 @@ function evidenceMatches(
 }
 
 function canonicalSplitTransforms(
-  segment: ClipAutoLayoutSegment,
+  segment: ClipAutoLayoutSegment | ClipSplitLayoutSegment,
   target: CompositionTarget,
 ): readonly SpeakerLayerTransform[] {
   if (segment.layout === "single") {
@@ -1039,10 +1061,15 @@ function speakerScenes(input: {
   mode: "auto" | "split";
   source: CompositionSourceFacts;
   target: CompositionTarget;
-  segments: readonly ClipAutoLayoutSegment[];
+  segments: readonly (ClipAutoLayoutSegment | ClipSplitLayoutSegment)[];
   overrides: EditorDocument["studioEdits"]["speakerLayoutOverrides"];
 }): CompositionScene[] {
   return input.segments.map((segment, sceneIndex) => {
+    const defaults = resolveSpeakerLayoutScene(
+      segment,
+      [],
+      input.target.aspectRatio,
+    );
     const resolved = resolveSpeakerLayoutScene(
       segment,
       input.overrides,
@@ -1051,7 +1078,7 @@ function speakerScenes(input: {
     const canonical =
       input.mode === "split"
         ? canonicalSplitTransforms(segment, input.target)
-        : resolved.layers;
+        : defaults.layers;
     const transforms = resolved.overrideId ? resolved.layers : canonical;
     return {
       id: `scene:${input.mode}:${input.target.id}:${sceneIndex}`,
@@ -1062,6 +1089,19 @@ function speakerScenes(input: {
           (candidate) => candidate.role === transform.role,
         )!;
         const destination = framePixels(transform, input.target);
+        const subject = Object.hasOwn(segment, "subjects")
+          ? [...(segment as ClipAutoLayoutSegment).subjects].sort(
+              (left, right) =>
+                Math.hypot(
+                  left.cxNorm - transform.cropCxNorm,
+                  left.cyNorm - transform.cropCyNorm,
+                ) -
+                Math.hypot(
+                  right.cxNorm - transform.cropCxNorm,
+                  right.cyNorm - transform.cropCyNorm,
+                ),
+            )[0]
+          : undefined;
         return {
           id: `layer:speaker:${transform.role}:${input.target.id}:${sceneIndex}`,
           kind: "source-video" as const,
@@ -1081,6 +1121,7 @@ function speakerScenes(input: {
             transform: { ...transform },
             defaultTransform: { ...defaultTransform },
             overrideId: resolved.overrideId,
+            ...(subject ? { subjectId: subject.id } : {}),
           },
         };
       }),
@@ -1153,6 +1194,395 @@ function screenScene(
   };
 }
 
+function containedInFrame(
+  source: Pick<CompositionSourceFacts, "width" | "height">,
+  frame: CompositionRect,
+): CompositionRect {
+  const local = containedDestination(source, {
+    width: frame.width,
+    height: frame.height,
+  });
+  return {
+    x: frame.x + local.x,
+    y: frame.y + local.y,
+    width: local.width,
+    height: local.height,
+  };
+}
+
+function presetSpeakerLayer(
+  input: {
+    source: CompositionSourceFacts;
+    target: CompositionTarget;
+    anchor: CompositionSourceVideoLayer;
+    destination: CompositionRect;
+    mask?: SceneLayoutLayerMask;
+    id: string;
+    zIndex: number;
+  },
+): CompositionSourceVideoLayer {
+  const anchorTransform = input.anchor.speaker!.transform;
+  const anchorDefault = input.anchor.speaker!.defaultTransform;
+  const presetFrame = {
+    x: input.destination.x / input.target.width,
+    y: input.destination.y / input.target.height,
+    width: input.destination.width / input.target.width,
+    height: input.destination.height / input.target.height,
+  };
+  let transform: SpeakerLayerTransform = input.anchor.speaker!.overrideId
+    ? { ...anchorTransform }
+    : {
+        ...anchorTransform,
+        frameX: presetFrame.x,
+        frameY: presetFrame.y,
+        frameWidth: presetFrame.width,
+        frameHeight: presetFrame.height,
+        rotationDeg: 0,
+      };
+  let defaultTransform: SpeakerLayerTransform = {
+    ...anchorDefault,
+    frameX: presetFrame.x,
+    frameY: presetFrame.y,
+    frameWidth: presetFrame.width,
+    frameHeight: presetFrame.height,
+    rotationDeg: 0,
+  };
+  if (input.mask?.kind === "circle") {
+    const squareTransform = (candidate: SpeakerLayerTransform) => {
+      const pixels = framePixels(candidate, input.target);
+      const size = Math.min(pixels.width, pixels.height);
+      return {
+        ...candidate,
+        frameX: (pixels.x + (pixels.width - size) / 2) / input.target.width,
+        frameY: (pixels.y + (pixels.height - size) / 2) / input.target.height,
+        frameWidth: size / input.target.width,
+        frameHeight: size / input.target.height,
+      };
+    };
+    transform = squareTransform(transform);
+    defaultTransform = squareTransform(defaultTransform);
+  }
+  const destination = framePixels(transform, input.target);
+  return {
+    id: input.id,
+    kind: "source-video",
+    sourceRef: input.source.identity,
+    sourceCrop: cropForSpeakerLayer(input.source, destination, transform),
+    destination,
+    fit: "cover",
+    rotationDeg: transform.rotationDeg,
+    opacity: 1,
+    zIndex: input.zIndex,
+    ...(input.mask
+      ? {
+          mask:
+            input.mask.kind === "rounded"
+              ? {
+                  kind: "rounded" as const,
+                  radiusPx: Math.min(
+                    input.mask.radiusPx,
+                    Math.floor(Math.min(destination.width, destination.height) / 2),
+                  ),
+                }
+              : input.mask,
+        }
+      : {}),
+    speaker: {
+      role: transform.role,
+      transform,
+      defaultTransform,
+      overrideId: input.anchor.speaker!.overrideId,
+      ...(input.anchor.speaker!.subjectId
+        ? { subjectId: input.anchor.speaker!.subjectId }
+        : {}),
+    },
+  };
+}
+
+function fullSourceLayer(
+  source: CompositionSourceFacts,
+  destination: CompositionRect,
+  id: string,
+  zIndex: number,
+  fit: "cover" | "contain" = "contain",
+): CompositionSourceVideoLayer {
+  return {
+    id,
+    kind: "source-video",
+    sourceRef: source.identity,
+    sourceCrop: { x: 0, y: 0, width: source.width, height: source.height },
+    destination,
+    fit,
+    rotationDeg: 0,
+    opacity: 1,
+    zIndex,
+  };
+}
+
+function subjectAnchorLayer(input: {
+  source: CompositionSourceFacts;
+  target: CompositionTarget;
+  subject: ClipAutoLayoutSubject;
+  role: SpeakerLayerRole;
+}): CompositionSourceVideoLayer {
+  const transform: SpeakerLayerTransform = {
+    role: input.role,
+    frameX: 0,
+    frameY: 0,
+    frameWidth: 1,
+    frameHeight: 1,
+    rotationDeg: 0,
+    cropCxNorm: input.subject.cxNorm,
+    cropCyNorm: input.subject.cyNorm,
+    cropZoom: input.subject.zoom,
+  };
+  const destination = framePixels(transform, input.target);
+  return {
+    id: `layer:subject-anchor:${input.subject.id}`,
+    kind: "source-video",
+    sourceRef: input.source.identity,
+    sourceCrop: cropForSpeakerLayer(input.source, destination, transform),
+    destination,
+    fit: "cover",
+    rotationDeg: 0,
+    opacity: 1,
+    zIndex: 0,
+    speaker: {
+      role: input.role,
+      transform,
+      defaultTransform: { ...transform },
+      overrideId: null,
+      subjectId: input.subject.id,
+    },
+  };
+}
+
+function sceneLayoutLayers(input: {
+  selection: StudioSceneLayoutSelection;
+  source: CompositionSourceFacts;
+  target: CompositionTarget;
+  automaticScene: CompositionScene | null;
+  automaticSegment: ClipAutoLayoutSegment | null;
+  backgroundImageRef: string | null;
+  backgroundColor: string;
+}): readonly CompositionLayer[] | null {
+  const { selection, source, target } = input;
+  const automaticSpeakers =
+    input.automaticScene?.layers.filter(
+      (layer): layer is CompositionSourceVideoLayer =>
+        layer.kind === "source-video" && Boolean(layer.speaker),
+    ) ?? [];
+  const full = { x: 0, y: 0, width: target.width, height: target.height };
+
+  if (selection.preset === "auto") {
+    return input.automaticScene?.layers ?? null;
+  }
+  const definition = sceneLayoutPresetDefinition(selection.preset);
+  const subjects = input.automaticSegment?.subjects ?? [];
+  if (subjects.length < definition.minimumSpeakers) return null;
+  const resolvedTemplate = resolveSceneLayoutPresetTemplate(selection.preset, target);
+  const speakerCount = resolvedTemplate.filter(
+    (templateLayer) => templateLayer.kind === "speaker",
+  ).length;
+  const layers: CompositionLayer[] = [];
+  if (definition.showsBackground) {
+    layers.push({
+      id: `layer:scene-layout:${selection.id}:background`,
+      kind: "background",
+      color: input.backgroundColor,
+      imageRef: input.backgroundImageRef,
+      destination: full,
+      fit: "cover",
+      rotationDeg: 0,
+      opacity: 1,
+      zIndex: 0,
+    });
+  }
+  const zOffset = layers.length;
+  for (const [index, templateLayer] of resolvedTemplate.entries()) {
+    if (templateLayer.kind === "source") {
+      const destination =
+        templateLayer.fit === "contain"
+          ? containedInFrame(source, templateLayer.frame)
+          : templateLayer.frame;
+      const layer = fullSourceLayer(
+        source,
+        destination,
+        `layer:scene-layout:${selection.id}:source:${index}`,
+        zOffset + index,
+        templateLayer.fit,
+      );
+      layers.push(
+        templateLayer.fit === "cover"
+          ? {
+              ...layer,
+              sourceCrop: centeredCoverCrop(source, destination),
+            }
+          : layer,
+      );
+      continue;
+    }
+    const subjectIndex = templateLayer.subjectIndex ?? 0;
+    const subject = subjects[subjectIndex];
+    if (!subject) return null;
+    const role: SpeakerLayerRole =
+      speakerCount === 1
+        ? "single"
+        : (["top", "bottom", "third", "fourth"] as const)[subjectIndex];
+    const observedAnchor = subjectAnchorLayer({ source, target, subject, role });
+    const manual = automaticSpeakers.find(
+      (candidate) =>
+        candidate.speaker?.role === role &&
+        candidate.speaker.overrideId !== null,
+    );
+    const anchor = manual?.speaker
+      ? {
+          ...observedAnchor,
+          speaker: {
+            ...manual.speaker,
+            role,
+            transform: { ...manual.speaker.transform, role },
+            defaultTransform: { ...observedAnchor.speaker!.defaultTransform, role },
+            subjectId: subject.id,
+          },
+        }
+      : observedAnchor;
+    layers.push(
+      presetSpeakerLayer({
+        source,
+        target,
+        anchor,
+        destination: templateLayer.frame,
+        mask: templateLayer.mask,
+        id: `layer:scene-layout:${selection.id}:speaker:${subjectIndex}`,
+        zIndex: zOffset + index,
+      }),
+    );
+  }
+  return layers;
+}
+
+function applySceneLayoutSelections(input: {
+  target: CompositionBaseTargetPlan;
+  targetInput: CompositionTarget;
+  source: CompositionSourceFacts;
+  selections: readonly StudioSceneLayoutSelection[];
+  automaticScenes: readonly CompositionScene[];
+  automaticDefaultScenes: readonly CompositionScene[];
+  automaticSegments: readonly ClipAutoLayoutSegment[];
+  automaticEvidencePending: boolean;
+  backgroundImageRef: string | null;
+  backgroundColor: string;
+}): { target: CompositionBaseTargetPlan; notices: CompositionNotice[] } {
+  if (input.source.kind !== "video") return { target: input.target, notices: [] };
+  const selections = input.selections.filter(
+    (selection) => selection.aspectRatio === input.target.aspectRatio,
+  );
+  if (selections.length === 0 && input.automaticScenes.length === 0) {
+    return { target: input.target, notices: [] };
+  }
+  const notices: CompositionNotice[] = [];
+  const scenes: CompositionScene[] = [];
+  for (const base of input.target.scenes) {
+    const boundaries = [base.startSec, base.endSec];
+    const addBoundary = (value: number, toleranceSec: number) => {
+      if (boundaries.some((boundary) => Math.abs(boundary - value) < toleranceSec)) {
+        return;
+      }
+      boundaries.push(value);
+    };
+    for (const candidate of selections) {
+      if (candidate.endSec <= base.startSec || candidate.startSec >= base.endSec) continue;
+      addBoundary(Math.max(base.startSec, candidate.startSec), 0.001);
+      addBoundary(Math.min(base.endSec, candidate.endSec), 0.001);
+    }
+    for (const candidate of input.automaticScenes) {
+      if (candidate.endSec <= base.startSec || candidate.startSec >= base.endSec) continue;
+      addBoundary(
+        Math.max(base.startSec, candidate.startSec),
+        SCENE_LAYOUT_MIN_DURATION_SEC,
+      );
+      addBoundary(
+        Math.min(base.endSec, candidate.endSec),
+        SCENE_LAYOUT_MIN_DURATION_SEC,
+      );
+    }
+    const ordered = boundaries.sort((left, right) => left - right);
+    for (let index = 0; index < ordered.length - 1; index += 1) {
+      const startSec = ordered[index]!;
+      const endSec = ordered[index + 1]!;
+      if (endSec <= startSec) continue;
+      const midpoint = startSec + (endSec - startSec) / 2;
+      const selection = sceneLayoutSelectionAt(
+        selections,
+        input.target.aspectRatio,
+        midpoint,
+      );
+      const automaticScene =
+        ((selection &&
+        sceneLayoutPresetDefinition(selection.preset).minimumSpeakers >= 2)
+          ? input.automaticScenes
+          : input.automaticDefaultScenes
+        ).find(
+          (candidate) =>
+            candidate.startSec <= midpoint && midpoint < candidate.endSec,
+        ) ?? null;
+      const automaticSegment =
+        input.automaticSegments.find(
+          (candidate) =>
+            candidate.startSec <= midpoint && midpoint < candidate.endSec,
+        ) ?? null;
+      const layers = selection
+        ? sceneLayoutLayers({
+            selection,
+            source: input.source,
+            target: input.targetInput,
+            automaticScene,
+            automaticSegment,
+            backgroundImageRef: input.backgroundImageRef,
+            backgroundColor: input.backgroundColor,
+          })
+        : null;
+      const id = `${base.id}:layout-slice:${scenes.length}`;
+      if (selection && !layers) {
+        const awaitingEvidence =
+          sceneLayoutPresetNeedsAutomaticEvidence(selection.preset) &&
+          input.automaticEvidencePending;
+        notices.push({
+          code: awaitingEvidence
+            ? "scene_layout_analyzing"
+            : "scene_layout_subjects_unavailable",
+          fidelity: awaitingEvidence ? "pending" : "degraded",
+          targetId: input.target.id,
+          sceneId: id,
+          effectiveFallback: input.target.effectiveMode,
+          userActionPossible: true,
+        });
+      }
+      scenes.push({
+        ...base,
+        id,
+        startSec,
+        endSec,
+        layoutSelection: selection
+          ? { id: selection.id, preset: selection.preset }
+          : null,
+        layers: layers ?? base.layers,
+      });
+    }
+  }
+  const customSelectionApplied = scenes.some((scene) => Boolean(scene.layoutSelection));
+  return {
+    target: {
+      ...input.target,
+      effectiveMode:
+        customSelectionApplied ? "auto" : input.target.effectiveMode,
+      scenes,
+    },
+    notices,
+  };
+}
+
 function validAutomaticLayoutEvidence(
   evidence: AutomaticLayoutEvidenceAvailability,
   input: ClipCompositionPlanInput,
@@ -1172,7 +1602,7 @@ function validAutomaticLayoutEvidence(
     value.sourceIdentity !== input.source.identity ||
     value.inputFingerprint !== expectedFingerprint ||
     value.engineVersion !== input.capabilities.automaticSpeakerEngineVersion ||
-    analysis.version !== 1 ||
+    analysis.version !== CLIP_AUTO_LAYOUT_VERSION ||
     analysis.engine !== input.capabilities.automaticSpeakerEngineVersion ||
     analysis.sourceIdentity !== input.source.identity ||
     // Speaker coordinates are normalized. Evidence may have been measured
@@ -2103,6 +2533,13 @@ export function planClipComposition(
   const hasActiveBroll = brollPlacements.length > 0;
 
   const requestedMode = resolveEffectiveFramingMode(input.document.studioEdits);
+  const targetAspectRatios = new Set(input.targets.map((target) => target.aspectRatio));
+  const activeSceneLayouts = input.document.studioEdits.sceneLayouts.filter(
+    (selection) => targetAspectRatios.has(selection.aspectRatio),
+  );
+  const sceneLayoutsNeedAutomaticEvidence = activeSceneLayouts.some((selection) =>
+    sceneLayoutPresetNeedsAutomaticEvidence(selection.preset),
+  );
   if (
     requestedMode !== "center" &&
     requestedMode !== "fit" &&
@@ -2128,6 +2565,7 @@ export function planClipComposition(
       },
       speakerLayoutOverrides:
         input.document.studioEdits.speakerLayoutOverrides,
+      sceneLayouts: input.document.studioEdits.sceneLayouts,
       visualLayers: {
         captionPreset: input.document.captionPreset,
         transcriptSlice: input.document.transcriptSlice,
@@ -2191,9 +2629,6 @@ export function planClipComposition(
   });
   const automaticAnalysis =
     input.source.kind === "video" &&
-    (requestedMode === "auto" ||
-      (hasActiveBroll &&
-        (requestedMode === "split" || requestedMode === "screen"))) &&
     input.capabilities.automaticSpeakerLayout
       ? validAutomaticLayoutEvidence(
           input.evidence.automaticLayout,
@@ -2203,7 +2638,10 @@ export function planClipComposition(
       : null;
   const automaticEvidenceIsProvisional =
     input.source.kind === "video" &&
-    requestedMode === "auto" &&
+    (requestedMode === "auto" ||
+      sceneLayoutsNeedAutomaticEvidence ||
+      (hasActiveBroll &&
+        (requestedMode === "split" || requestedMode === "screen"))) &&
     input.capabilities.automaticSpeakerLayout &&
     !automaticAnalysis &&
     input.evidence.automaticLayout.state !== "failed" &&
@@ -2292,7 +2730,7 @@ export function planClipComposition(
     });
   }
 
-  const baseTargets: CompositionBaseTargetPlan[] = input.targets.map((target) => {
+  const initialBaseTargets: CompositionBaseTargetPlan[] = input.targets.map((target) => {
     const canvas = {
       width: target.width,
       height: target.height,
@@ -2829,9 +3267,64 @@ export function planClipComposition(
     };
   });
 
+  const sceneLayoutWantsImage =
+    activeSceneLayouts.some((selection) =>
+      sceneLayoutPresetShowsBackground(selection.preset),
+    ) &&
+    input.document.studioEdits.background.mode === "image" &&
+    Boolean(input.document.studioEdits.background.imageUrl);
   const backgroundWantsImage =
-    requestedMode === "fit" &&
-    input.document.studioEdits.background.mode === "image";
+    (requestedMode === "fit" &&
+      input.document.studioEdits.background.mode === "image") ||
+    sceneLayoutWantsImage;
+
+  const baseTargets: CompositionBaseTargetPlan[] = initialBaseTargets.map(
+    (baseTarget) => {
+      const targetInput = input.targets.find((candidate) => candidate.id === baseTarget.id)!;
+      const automaticScenes = automaticAnalysis
+        ? speakerScenes({
+            mode: "auto",
+            source: input.source,
+            target: targetInput,
+            segments: automaticAnalysis.segments,
+            overrides: input.document.studioEdits.speakerLayoutOverrides,
+          })
+        : [];
+      const automaticDefaultScenes = automaticAnalysis
+        ? speakerScenes({
+            mode: "auto",
+            source: input.source,
+            target: targetInput,
+            segments: targetSupportsTwoUp(input.source, targetInput)
+              ? automaticAnalysis.segments
+              : automaticAnalysis.noSplitSegments,
+            overrides: input.document.studioEdits.speakerLayoutOverrides,
+          })
+        : [];
+      const applied = applySceneLayoutSelections({
+        target: baseTarget,
+        targetInput,
+        source: input.source,
+        selections: activeSceneLayouts,
+        automaticScenes,
+        automaticDefaultScenes,
+        automaticSegments: automaticAnalysis?.segments ?? [],
+        automaticEvidencePending: automaticEvidenceIsProvisional,
+        backgroundImageRef:
+          input.document.studioEdits.background.mode === "image" &&
+          input.document.studioEdits.background.imageUrl &&
+          input.assets.backgroundImage.state === "available"
+            ? input.assets.backgroundImage.ref
+            : null,
+        backgroundColor:
+          input.document.studioEdits.background.mode === "off"
+            ? "#000000"
+            : (input.document.studioEdits.background.color ?? "#000000"),
+      });
+      notices.push(...applied.notices);
+      return applied.target;
+    },
+  );
   if (
     input.source.kind === "audio" &&
     input.document.studioEdits.background.mode !== "off"

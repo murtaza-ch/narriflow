@@ -294,13 +294,13 @@ describe("planCreateClipFromSelection", () => {
   });
 });
 
-describe("planStudioEditsForClipFromSelection (fix: createClipFromSelection copies timeline-relative textLayers)", () => {
+describe("planStudioEditsForClipFromSelection", () => {
   test("returns null when the source clip has no studioEdits", () => {
     expect(planStudioEditsForClipFromSelection(null)).toBeNull();
     expect(planStudioEditsForClipFromSelection(undefined)).toBeNull();
   });
 
-  test("drops textLayers and sfx (source-clip-window-relative seconds) but keeps every other field", () => {
+  test("drops edits timed against the source clip and keeps window-independent fields", () => {
     const sourceStudioEdits = {
       textLayers: [
         {
@@ -320,6 +320,15 @@ describe("planStudioEditsForClipFromSelection (fix: createClipFromSelection copi
           volume: 80,
         },
       ],
+      sceneLayouts: [
+        {
+          id: "layout-1",
+          aspectRatio: "9:16",
+          startSec: 1,
+          endSec: 5,
+          preset: "stacked",
+        },
+      ],
       transition: { type: "fade", durationSec: 0.6 },
       music: {
         url: "https://example.com/song.mp3",
@@ -337,11 +346,8 @@ describe("planStudioEditsForClipFromSelection (fix: createClipFromSelection copi
 
     expect(result).not.toBeNull();
     expect(result!.textLayers).toEqual([]);
-    // H3: sfx[] carries edited-timeline seconds relative to the SOURCE
-    // clip's window, exactly like textLayers — meaningless once re-anchored
-    // to the new clip's independently-computed window, so it must be
-    // cleared the same way.
     expect(result!.sfx).toEqual([]);
+    expect(result!.sceneLayouts).toEqual([]);
     expect(result!.transition).toEqual(sourceStudioEdits.transition);
     // Packet A (AudioAsset foundation) added assetId/ducking to the music
     // schema — schema defaults fill both in even though the source fixture

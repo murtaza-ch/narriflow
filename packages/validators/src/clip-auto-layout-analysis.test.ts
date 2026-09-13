@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CLIP_AUTO_LAYOUT_ENGINE,
+  CLIP_AUTO_LAYOUT_VERSION,
   clipAutoLayoutAnalysisSchema,
   clipSplitLayoutAnalysisSchema,
   clipSplitLayoutFailureSchema,
@@ -11,8 +13,8 @@ import {
 } from "./clip-auto-layout-analysis";
 
 const valid: ClipAutoLayoutAnalysis = {
-  version: 1,
-  engine: "shot-layout-v1",
+  version: CLIP_AUTO_LAYOUT_VERSION,
+  engine: CLIP_AUTO_LAYOUT_ENGINE,
   sourceIdentity: "source:project-1",
   analyzedAtISO: "2026-08-10T12:00:00.000Z",
   clipStartSec: 10,
@@ -22,7 +24,15 @@ const valid: ClipAutoLayoutAnalysis = {
   sourceWidth: 1920,
   sourceHeight: 1080,
   segments: [
-    { startSec: 0, endSec: 8, layout: "single", cxNorm: 0.3, cyNorm: 0.45, zoom: 1.2 },
+    {
+      startSec: 0,
+      endSec: 8,
+      layout: "single",
+      cxNorm: 0.3,
+      cyNorm: 0.45,
+      zoom: 1.2,
+      subjects: [{ id: "speaker-a", cxNorm: 0.3, cyNorm: 0.45, zoom: 1.2 }],
+    },
     {
       startSec: 8,
       endSec: 18,
@@ -33,10 +43,25 @@ const valid: ClipAutoLayoutAnalysis = {
       bottomCyNorm: 0.46,
       topZoom: 1.1,
       bottomZoom: 1.1,
+      subjects: [
+        { id: "speaker-a", cxNorm: 0.3, cyNorm: 0.45, zoom: 1.1 },
+        { id: "speaker-b", cxNorm: 0.72, cyNorm: 0.46, zoom: 1.1 },
+      ],
     },
   ],
   noSplitSegments: [
-    { startSec: 0, endSec: 18, layout: "single", cxNorm: 0.5, cyNorm: 0.5, zoom: 1 },
+    {
+      startSec: 0,
+      endSec: 18,
+      layout: "single",
+      cxNorm: 0.5,
+      cyNorm: 0.5,
+      zoom: 1,
+      subjects: [
+        { id: "speaker-a", cxNorm: 0.3, cyNorm: 0.45, zoom: 1.1 },
+        { id: "speaker-b", cxNorm: 0.72, cyNorm: 0.46, zoom: 1.1 },
+      ],
+    },
   ],
   shotCount: 2,
   soloShotCount: 1,
@@ -52,7 +77,17 @@ describe("clipAutoLayoutAnalysisSchema", () => {
   });
 
   test("enforces isolated Automatic and Split evidence schemas", () => {
-    const explicitSplit = { ...valid, engine: "explicit-split-v1" as const };
+    const withoutSubjects = (segment: ClipAutoLayoutAnalysis["segments"][number]) => {
+      const { subjects: _, ...splitSegment } = segment;
+      return splitSegment;
+    };
+    const explicitSplit = {
+      ...valid,
+      version: 1 as const,
+      engine: "explicit-split-v1" as const,
+      segments: valid.segments.map(withoutSubjects),
+      noSplitSegments: valid.noSplitSegments.map(withoutSubjects),
+    };
     expect(clipAutoLayoutAnalysisSchema.safeParse(explicitSplit).success).toBe(false);
     expect(clipSplitLayoutAnalysisSchema.parse(explicitSplit)).toEqual(
       explicitSplit,
@@ -91,6 +126,18 @@ describe("clipAutoLayoutAnalysisSchema", () => {
     expect(clipAutoLayoutAnalysisSchema.safeParse(short).success).toBe(false);
   });
 
+  test("allows truthful no-face segments and rejects duplicate subject identities", () => {
+    const noFace = structuredClone(valid);
+    noFace.segments[0]!.subjects = [];
+    expect(clipAutoLayoutAnalysisSchema.safeParse(noFace).success).toBe(true);
+
+    const duplicate = structuredClone(valid);
+    duplicate.segments[1]!.subjects[1] = {
+      ...duplicate.segments[1]!.subjects[0]!,
+    };
+    expect(clipAutoLayoutAnalysisSchema.safeParse(duplicate).success).toBe(false);
+  });
+
   test("rejects invalid coordinates and unknown evidence versions", () => {
     expect(
       clipAutoLayoutAnalysisSchema.safeParse({
@@ -99,11 +146,18 @@ describe("clipAutoLayoutAnalysisSchema", () => {
       }).success,
     ).toBe(false);
     expect(() =>
-      parseClipAutoLayoutAnalysis({ ...valid, version: 2 }),
+      parseClipAutoLayoutAnalysis({ ...valid, version: 3 }),
     ).toThrow("unsupported_clip_composition_evidence_version");
     expect(() =>
-      parseClipAutoLayoutAnalysis({ ...valid, engine: "shot-layout-v2" }),
+      parseClipAutoLayoutAnalysis({ ...valid, engine: "shot-layout-v3" }),
     ).toThrow("unsupported_clip_composition_evidence_version");
+    expect(
+      parseClipAutoLayoutAnalysis({
+        ...valid,
+        version: 1,
+        engine: "shot-layout-v1",
+      }),
+    ).toBeNull();
     expect(() =>
       parseClipSplitLayoutAnalysis({
         ...valid,

@@ -1,9 +1,16 @@
 import { z } from "zod";
 import type { ClipAspectRatio } from "./clip";
+import { SCENE_LAYOUT_MIN_DURATION_SEC } from "./scene-layouts";
 
 const unit = z.number().finite().min(0).max(1);
 
-export const speakerLayerRoleSchema = z.enum(["single", "top", "bottom"]);
+export const speakerLayerRoleSchema = z.enum([
+  "single",
+  "top",
+  "bottom",
+  "third",
+  "fourth",
+]);
 
 export const speakerLayerTransformSchema = z
   .object({
@@ -128,6 +135,64 @@ export function speakerLayoutOverridesEqual(
       speakerLayerTransformsEqual(layer, candidate.layers[layerIndex]!),
     );
   });
+}
+
+function overrideFragmentId(
+  override: StudioSpeakerLayoutOverride,
+  side: "left" | "right",
+  boundarySec: number,
+): string {
+  const seed = `${override.id}:${side}:${boundarySec.toFixed(6)}`;
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${override.id.slice(0, 86)}:${side[0]}:${(hash >>> 0).toString(16)}`;
+}
+
+/** Removes one edited-time range while retaining valid manual-transform
+ * remainders on either side and every override for other aspect ratios. */
+export function removeSpeakerLayoutOverrideRange(
+  overrides: readonly StudioSpeakerLayoutOverride[],
+  range: Pick<
+    StudioSpeakerLayoutOverride,
+    "aspectRatio" | "startSec" | "endSec"
+  >,
+): StudioSpeakerLayoutOverride[] {
+  const output: StudioSpeakerLayoutOverride[] = [];
+  for (const override of overrides) {
+    if (
+      override.aspectRatio !== range.aspectRatio ||
+      override.endSec <= range.startSec ||
+      override.startSec >= range.endSec
+    ) {
+      output.push(override);
+      continue;
+    }
+    if (
+      range.startSec - override.startSec >= SCENE_LAYOUT_MIN_DURATION_SEC
+    ) {
+      output.push({
+        ...override,
+        id: overrideFragmentId(override, "left", range.startSec),
+        endSec: range.startSec,
+      });
+    }
+    if (override.endSec - range.endSec >= SCENE_LAYOUT_MIN_DURATION_SEC) {
+      output.push({
+        ...override,
+        id: overrideFragmentId(override, "right", range.endSec),
+        startSec: range.endSec,
+      });
+    }
+  }
+  return output.sort(
+    (left, right) =>
+      left.aspectRatio.localeCompare(right.aspectRatio) ||
+      left.startSec - right.startSec ||
+      left.endSec - right.endSec,
+  );
 }
 
 export interface ResolvedSpeakerLayoutScene {
