@@ -14,8 +14,8 @@ const nextConfig: NextConfig = {
       "../../node_modules/@img/sharp*-linux-x64/**/*",
     ],
     "/api/*": [
-      "../../node_modules/@ffprobe-installer/**/{ffprobe,*.js,*.json}",
-      "../../node_modules/.bun/@ffprobe-installer+*/node_modules/@ffprobe-installer/**/{ffprobe,*.js,*.json}",
+      "../../node_modules/@ffprobe-installer/*/{ffprobe,**/*.js,**/*.json}",
+      "../../node_modules/.bun/@ffprobe-installer+*/node_modules/@ffprobe-installer/*/{ffprobe,**/*.js,**/*.json}",
     ],
   },
   transpilePackages: [
