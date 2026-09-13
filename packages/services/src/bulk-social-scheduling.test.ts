@@ -333,6 +333,27 @@ describe("bulk social scheduling", () => {
 		expect(admitted.size).toBe(2);
 	});
 
+	test("recovers a committed Social Post when admission loses its result", async () => {
+		const admitted = new Map<string, string>();
+		let loseResult = true;
+		const { module } = harness(async (item) => {
+			const socialPostId = admitted.get(item.clientIdempotencyKey) ?? "post-1";
+			admitted.set(item.clientIdempotencyKey, socialPostId);
+			if (loseResult) {
+				loseResult = false;
+				throw new Error("connection lost after Social Post commit");
+			}
+			return { socialPostId, status: "scheduled" };
+		});
+
+		const first = await module.schedule({ ...INPUT, items: [INPUT.items[0]!] });
+		const replay = await module.schedule({ ...INPUT, items: [INPUT.items[0]!] });
+
+		expect(first.items[0]).toMatchObject({ status: "succeeded", socialPostId: "post-1" });
+		expect(replay.items[0]).toMatchObject({ status: "succeeded", socialPostId: "post-1" });
+		expect(admitted.size).toBe(1);
+	});
+
 	test("replays partial results and gives an explicit corrected submission a new identity", async () => {
 		const seen: string[] = [];
 		let fail = true;

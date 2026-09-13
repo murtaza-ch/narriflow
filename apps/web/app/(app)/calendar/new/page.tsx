@@ -5,16 +5,13 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Button } from "@narriflow/ui/components/button";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { workspaceLibraryService } from "@narriflow/services";
-export default async function NewCalendarPostPage({ searchParams }: { searchParams: Promise<{ q?: string; page?: string }> }) {
+export default async function NewCalendarPostPage({ searchParams }: { searchParams: Promise<{ q?: string; cursor?: string }> }) {
 	const actor = await admitWorkspacePage("publishing.manage");
 	const params = await searchParams;
-	const page = Number.isFinite(Number(params.page))
-		? Math.max(0, Math.floor(Number(params.page)))
-		: 0;
-	const { clips, hasMore } = await workspaceLibraryService.getCalendarComposerOptions(
+	const { clips, nextCursor } = await workspaceLibraryService.getCalendarComposerOptions(
 		actor.actorUserId,
 		actor.workspaceId,
-		{ query: params.q, page },
+		{ query: params.q, cursor: params.cursor },
 	);
 	return (
 		<Stack gap="6" maxW="760px">
@@ -50,7 +47,7 @@ export default async function NewCalendarPostPage({ searchParams }: { searchPara
 					Create a project and a clip to schedule your first post.
 				</Text>
 			)}
-			{(page > 0 || hasMore) && <Flex gap="2"><Button size="sm" variant="outline" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}&page=${Math.max(0, page - 1)}`}>Previous</Link></Button>{hasMore && <Button size="sm" variant="outline" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}&page=${page + 1}`}>Next</Link></Button>}</Flex>}
+			{nextCursor && <Flex gap="2"><Button size="sm" variant="outline" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}&cursor=${encodeURIComponent(nextCursor)}`}>Next</Link></Button></Flex>}
 		</Stack>
 	);
 }

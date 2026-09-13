@@ -58,10 +58,6 @@ function validFolderName(name: string) {
 	return trimmed;
 }
 
-function boundedPage(value: number | undefined) {
-	return Number.isFinite(value) ? Math.max(0, Math.floor(value!)) : 0;
-}
-
 export class WorkspaceLibraryService {
 	async search(userId: string, workspaceId: string, query: string) {
 		await workspaceService.requireActor(userId, workspaceId, "content.view");
@@ -245,7 +241,7 @@ export class WorkspaceLibraryService {
 			aspectRatio?: ClipAspectRatio;
 			from?: Date;
 			to?: Date;
-			page?: number;
+			cursor?: string;
 		} = {},
 	) {
 		await workspaceService.requireActor(userId, workspaceId, "content.view");
@@ -324,9 +320,9 @@ export class WorkspaceLibraryService {
 					orderBy: { aspectRatio: "asc" },
 				},
 			},
-			orderBy: { createdAt: "desc" },
+			orderBy: { id: "desc" },
 			take: 101,
-			skip: boundedPage(filters.page) * 100,
+			...(filters.cursor ? { cursor: { id: filters.cursor }, skip: 1 } : {}),
 		});
 		return {
 			items: rows.slice(0, 100).map((row) => ({
@@ -339,7 +335,7 @@ export class WorkspaceLibraryService {
 					variant.sizeBytes === null ? null : Number(variant.sizeBytes),
 			})),
 			})),
-			hasMore: rows.length > 100,
+			nextCursor: rows.length > 100 ? rows[99]!.id : null,
 		};
 	}
 
@@ -460,7 +456,7 @@ export class WorkspaceLibraryService {
 	async getCalendarComposerOptions(
 		userId: string,
 		workspaceId: string,
-		options: { query?: string; page?: number } = {},
+		options: { query?: string; cursor?: string } = {},
 	) {
 		await workspaceService.requireActor(
 			userId,
@@ -490,9 +486,9 @@ export class WorkspaceLibraryService {
 					projectId: true,
 					project: { select: { title: true } },
 				},
-				orderBy: { createdAt: "desc" },
+				orderBy: { id: "desc" },
 				take: 101,
-				skip: boundedPage(options.page) * 100,
+				...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
 			}),
 			prisma.socialAccount.findMany({
 				where: { workspaceId, status: "active" },
@@ -515,7 +511,7 @@ export class WorkspaceLibraryService {
 				] as ClipAspectRatio[],
 			})),
 			accounts,
-			hasMore: clips.length > 100,
+			nextCursor: clips.length > 100 ? clips[99]!.id : null,
 		};
 	}
 }

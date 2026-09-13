@@ -546,6 +546,29 @@ export function createBulkSocialScheduling(dependencies: {
 				try {
 					scheduled = await admit(plan);
 				} catch (error) {
+					if (!(error instanceof ExpectedDomainFailureError)) {
+						try {
+							const recovered = await admit(plan);
+							await dependencies.store.settleItem(
+								opened.operation.id,
+								plan.requestKey,
+								claimed.claimToken,
+								{
+									status: "succeeded",
+									errorCode: null,
+									retryable: false,
+									socialPostId: recovered.socialPostId,
+								},
+							);
+							continue;
+						} catch {
+							throw new BulkSocialSchedulingError(
+								"campaign_schedule_item_failed",
+								"The submission may have been accepted but its result could not be recovered. Check the previous submission.",
+								true,
+							);
+						}
+					}
 					const normalized =
 						error instanceof ExpectedDomainFailureError
 							? {
