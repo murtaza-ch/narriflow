@@ -78,6 +78,7 @@ try {
 			"bun",
 			"test",
 			"packages/services/src/social-publication.db.test.ts",
+			"packages/services/src/social-post-history.db.test.ts",
 			...process.argv.slice(2),
 		],
 		{

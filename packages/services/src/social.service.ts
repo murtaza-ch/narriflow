@@ -34,6 +34,7 @@ function decodeSocialPostCursor(value: string | undefined): SocialPostCursor | n
 		if (
 			typeof parsed?.id !== "string" ||
 			typeof parsed?.createdAt !== "string" ||
+			!/^\w{8}-(?:\w{4}-){3}\w{12}$/.test(parsed.id) ||
 			Number.isNaN(Date.parse(parsed.createdAt))
 		)
 			return null;
@@ -269,7 +270,6 @@ export class SocialService {
 			},
 			orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 			take: 101,
-			...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
 			include: {
 				publishedVideos: true,
 				socialAccount: {
