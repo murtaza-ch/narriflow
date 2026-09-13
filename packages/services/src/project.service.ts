@@ -2919,7 +2919,7 @@ export class ProjectService {
 		await prisma.$transaction(async (tx) => {
 			const settled = await tx.ingestJob.updateMany({
 				where: { id: job.id, status: "running", claimId },
-				data: { status: "completed", lastError: null, completedAt: new Date(), claimExpiresAt: null },
+				data: { status: "completed", lastError: null, completedAt: new Date(), claimExpiresAt: null, generationHandoffAt: null },
 			});
 			if (settled.count === 0) throw new IngestJobClaimLost(job.id);
 			await tx.project.update({
@@ -2952,7 +2952,7 @@ export class ProjectService {
 		});
 
 		try {
-			await this.triggerGenerationIfPending(job.projectId);
+			await this.processPendingIngestGenerationHandoffs(1, job.id);
 		} catch (error) {
 			// The ingest itself succeeded (upload is "ready"); only the automatic
 			// generation trigger failed. Recovery is the manual "AI Transcription"
@@ -2968,6 +2968,27 @@ export class ProjectService {
 				}),
 			);
 		}
+	}
+
+	/** Completed ingest leaves a durable handoff intent until its idempotent
+	 * generation admission succeeds. A crash after source acceptance therefore
+	 * recovers on maintenance rather than requiring a user retry. */
+	async processPendingIngestGenerationHandoffs(limit = 25, jobId?: string): Promise<number> {
+		const prisma = this.requirePrisma();
+		const jobs = await prisma.ingestJob.findMany({
+			where: { status: "completed", generationHandoffAt: null, ...(jobId ? { id: jobId } : {}), project: { ingestStatus: "ready" } },
+			select: { id: true, projectId: true }, orderBy: { completedAt: "asc" }, take: limit,
+		});
+		let handedOff = 0;
+		for (const pending of jobs) {
+			await this.triggerGenerationIfPending(pending.projectId);
+			const settled = await prisma.ingestJob.updateMany({
+				where: { id: pending.id, status: "completed", generationHandoffAt: null },
+				data: { generationHandoffAt: new Date() },
+			});
+			handedOff += settled.count;
+		}
+		return handedOff;
 	}
 
 	async failIngestJob(jobId: string, claimId: string, errorCode: string, errorMessage: string) {
@@ -3677,9 +3698,10 @@ export class ProjectService {
 				INGEST_RETRIES_EXHAUSTED_CODE,
 			);
 
-			const updated = await prisma.ingestJob.updateMany({
-				where: { id: job.id, status: "running", OR: [{ claimExpiresAt: { lt: new Date() } }, { claimExpiresAt: null }] },
-				data:
+			const reapedAtomically = await prisma.$transaction(async (tx) => {
+				const updated = await tx.ingestJob.updateMany({
+					where: { id: job.id, status: "running", OR: [{ claimExpiresAt: { lt: new Date() } }, { claimExpiresAt: null }] },
+					data:
 					decision.outcome === "requeue"
 						? {
 								status: "queued",
@@ -3693,19 +3715,21 @@ export class ProjectService {
 								lastError: "worker_stalled: ingest job heartbeat expired",
 								completedAt: new Date(),
 							},
-			});
-			if (updated.count === 0) continue;
-
-			await prisma.project.updateMany({
-				where: { id: job.projectId },
-				data:
+				});
+				if (updated.count === 0) return false;
+				await tx.project.updateMany({
+					where: { id: job.projectId },
+					data:
 					decision.outcome === "requeue"
 						? { ingestStatus: "queued", ingestErrorCode: null }
 						: {
 								ingestStatus: "failed",
 								ingestErrorCode: decision.terminalErrorCode,
 							},
+				});
+				return true;
 			});
+			if (!reapedAtomically) continue;
 
 			reaped += 1;
 			console.warn(

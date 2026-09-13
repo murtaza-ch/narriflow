@@ -687,6 +687,7 @@ model IngestJob {
   attemptCount    Int             @default(0)
   claimId         String?         @db.Uuid
   claimExpiresAt  DateTime?
+  generationHandoffAt DateTime?
   lastError       String?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
@@ -698,6 +699,7 @@ model IngestJob {
 
   @@index([status, createdAt])
   @@index([status, claimExpiresAt])
+  @@index([status, generationHandoffAt])
   @@index([projectId, status, createdAt])
 }
 

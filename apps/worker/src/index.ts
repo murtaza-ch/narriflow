@@ -337,6 +337,7 @@ function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
 }
 
 const ingestLoop = createPollLoop("ingest", async () => {
+	if (workerShutdown.signal.aborted) return 0;
 	const ingestJob = await projectService.claimNextIngestJob();
 	if (!ingestJob) return 0;
 	await processIngestJob(ingestJob, { signal: workerShutdown.signal });
@@ -348,7 +349,9 @@ const ingestLoop = createPollLoop("ingest", async () => {
 // loop ticks every minute; reapStalledRunsIfDue's internal lastReapAt gate
 // enforces the actual WORKER_REAP_INTERVAL_MS cadence.
 const maintenanceLoop = createPollLoop("maintenance", async () => {
+	if (workerShutdown.signal.aborted) return 0;
 	await reapStalledRunsIfDue();
+	await projectService.processPendingIngestGenerationHandoffs();
 	return 0;
 });
 
@@ -402,6 +405,7 @@ function processNextWorkflowAttempt<
 		context: WorkflowAttemptContext,
 	) => Promise<void>;
 }) {
+	if (workerShutdown.signal.aborted) return Promise.resolve(0 as const);
 	return executeNextWorkflowAttempt<TStage>({
 		...input,
 		signal: workerShutdown.signal,
@@ -576,6 +580,11 @@ const server = createServer(async (req, res) => {
 	}
 
 	if (req.url === "/poll-once" && req.method === "POST") {
+		if (workerShutdown.signal.aborted) {
+			res.writeHead(503, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: "worker_shutting_down" }));
+			return;
+		}
 		await Promise.all(allLoops.map(({ loop }) => loop.tick()));
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ ok: true }));
@@ -628,6 +637,11 @@ function beginGracefulShutdown() {
 	workerShutdown.abort();
 	for (const interval of loopIntervals) clearInterval(interval);
 	server.close();
+	// Every process-capable stage receives workerShutdown and Worker Process
+	// reaps descendants on abort. Do not let an adapter that ignores cancellation
+	// keep a deployment hostage forever.
+	const forceExit = setTimeout(() => process.exit(0), Number(process.env.WORKER_SHUTDOWN_DRAIN_MS ?? "30000"));
+	forceExit.unref();
 }
 
 void maintenanceLoop.tick();
