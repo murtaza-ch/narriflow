@@ -39,8 +39,11 @@ export async function executeNextWorkflowAttempt<
   /** Worker lifetime cancellation stops heartbeats and active subprocesses. */
   signal?: AbortSignal;
 }): Promise<0 | 1> {
-	if (input.signal?.aborted) return 0;
-	const claimed = await input.lifecycle.claim(input.stage);
+  if (input.signal?.aborted) return 0;
+  const claimed = await input.lifecycle.claim(input.stage);
+  // Shutdown can arrive while a database claim is in flight. Do not begin
+  // execution or a heartbeat; the normal lease reaper recovers this claim.
+  if (input.signal?.aborted) return 0;
   if (!claimed) return 0;
   const attempt = claimed;
   const startedAtMs = Date.now();

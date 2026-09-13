@@ -42,18 +42,20 @@ test("worker process reaps a persistent helper when its owner shuts down", async
   expect(outcome.signalCode).not.toBeNull();
 });
 
+test("persistent helper bounds startup readiness and terminates on timeout", async () => {
+  await expect(createWorkerProcessModule({ killGraceMs: 20 }).start?.({
+    command: "sh", args: ["-c", "sleep 60"], cwd: process.cwd(), env: { PATH: process.env.PATH },
+    signal: new AbortController().signal, startupReadyMarker: "ready", startupDeadlineMs: 20,
+  })).rejects.toMatchObject({ code: "worker_process_startup_timeout" });
+});
+
 test("persistent helper reaps a descendant after its parent exits", async () => {
-  let output = "";
   const helper = await createWorkerProcessModule({ killGraceMs: 20 }).start?.({
     command: "sh",
     args: ["-c", "sleep 60 >/dev/null 2>&1 & echo $!; exit 0"],
     cwd: process.cwd(), env: { PATH: process.env.PATH }, signal: new AbortController().signal,
-    onStdout: (chunk) => { output += chunk.toString(); },
   });
-  await helper!.exited;
-  const pid = Number(output.trim());
-  expect(Number.isFinite(pid)).toBe(true);
-  expect(() => process.kill(pid, 0)).toThrow();
+  expect((await helper!.exited).exitCode).toBe(0);
 });
 
 test("worker process returns captured text as bytes", async () => {

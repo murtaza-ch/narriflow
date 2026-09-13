@@ -162,3 +162,23 @@ test("worker shutdown reaches an active Workflow Attempt", async () => {
   await executing;
   expect(receivedSignal?.aborted).toBe(true);
 });
+
+test("shutdown during claim never starts a Workflow Attempt handler", async () => {
+  const shutdown = new AbortController();
+  let releaseClaim!: () => void;
+  const claimGate = new Promise<void>((resolve) => { releaseClaim = resolve; });
+  let started = false;
+  const executing = executeNextWorkflowAttempt({
+    stage: "stt",
+    signal: shutdown.signal,
+    lifecycle: {
+      claim: async () => { await claimGate; return null; },
+      runAttempt: async () => { started = true; },
+    },
+    process: async () => { started = true; },
+  });
+  shutdown.abort(new Error("worker_shutdown"));
+  releaseClaim();
+  expect(await executing).toBe(0);
+  expect(started).toBe(false);
+});

@@ -82,7 +82,9 @@ export interface WorkerPersistentProcessRequest {
   cwd: string;
   env: NodeJS.ProcessEnv;
   signal: AbortSignal;
-  onStdout?(chunk: Buffer): void;
+  startupDeadlineMs?: number;
+  startupReadyMarker?: string;
+  diagnose?(event: WorkerProcessDiagnostic): void;
 }
 
 export interface WorkerPersistentProcess {
@@ -546,7 +548,19 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
     };
     const abort = () => stop();
     request.signal.addEventListener("abort", abort, { once: true });
-    child.stdout?.on("data", (chunk: Buffer) => request.onStdout?.(chunk));
+    let startupOutput = "";
+    let startupReady = !request.startupReadyMarker;
+    let resolveStartup!: () => void;
+    let rejectStartup!: (error: Error) => void;
+    const startup = new Promise<void>((resolve, reject) => { resolveStartup = resolve; rejectStartup = reject; });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (startupReady) return;
+      startupOutput = (startupOutput + chunk.toString()).slice(-MAX_DIAGNOSTIC_CHARS);
+      if (startupOutput.includes(request.startupReadyMarker!)) {
+        startupReady = true;
+        resolveStartup();
+      }
+    });
     const exited = new Promise<{ exitCode: number | null; signalCode: NodeJS.Signals | null }>((resolve) => {
       child.once("close", async (exitCode, signalCode) => {
         // A daemon parent can close its stdio while a detached descendant keeps
@@ -557,10 +571,20 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         await waitForProcessGroupExit(child.pid, PROCESS_GROUP_REAP_TIMEOUT_MS);
         if (forceKill) clearTimeout(forceKill);
         request.signal.removeEventListener("abort", abort);
+        if (!startupReady) rejectStartup(new WorkerProcessFailure("worker_process_startup_failed", "retryable", "Worker helper exited before readiness", boundedDiagnostic(startupOutput), exitCode));
         resolve({ exitCode, signalCode });
       });
       child.once("error", () => stop());
     });
+    if (!startupReady) {
+      const deadlineMs = request.startupDeadlineMs ?? 45_000;
+      const timeout = setTimeout(() => {
+        if (startupReady) return;
+        stop();
+        rejectStartup(new WorkerProcessFailure("worker_process_startup_timeout", "retryable", "Worker helper did not become ready", boundedDiagnostic(startupOutput)));
+      }, deadlineMs);
+      try { await startup; } finally { clearTimeout(timeout); }
+    }
     return { exited, stop };
   }
 

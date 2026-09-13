@@ -63,8 +63,6 @@ export async function startYoutubeTokenServer(
   const home = await realpath(serverHome);
   const modules = resolve(home, "node_modules");
   let failure: Error | undefined;
-  let listening = false;
-  let startupOutput = "";
   const child = await workerProcess.start?.({ command: "deno", args: [
     "run", "--cached-only", "--frozen", "--allow-env", "--allow-net",
     `--allow-ffi=${modules}`, `--allow-read=${modules}`,
@@ -79,12 +77,8 @@ export async function startYoutubeTokenServer(
       DENO_NO_UPDATE_CHECK: "1",
     },
     signal,
-    onStdout: (chunk) => {
-      if (!listening) {
-        startupOutput = (startupOutput + chunk.toString()).slice(-2048);
-        listening = startupOutput.includes("Started POT server");
-      }
-    },
+    startupDeadlineMs: 45_000,
+    startupReadyMarker: "Started POT server",
   });
   if (!child) throw new Error("Worker Process Module does not support persistent processes");
   void child.exited.then(({ exitCode, signalCode }) => {
@@ -97,10 +91,6 @@ export async function startYoutubeTokenServer(
       signal.throwIfAborted();
       if (failure) throw failure;
       try {
-        if (!listening) {
-          await sleep(250, undefined, { signal });
-          continue;
-        }
         const response = await fetch(`${YOUTUBE_TOKEN_SERVER_URL}/ping`, {
           signal: AbortSignal.any([signal, AbortSignal.timeout(500)]),
         });

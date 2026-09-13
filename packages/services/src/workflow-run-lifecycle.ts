@@ -1640,6 +1640,7 @@ export class WorkflowRunLifecycle {
     const stopForWorkerShutdown = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", stopForWorkerShutdown, { once: true });
     if (options.signal?.aborted) stopForWorkerShutdown();
+    controller.signal.throwIfAborted();
     let ownershipError: WorkflowAttemptLost | null = null;
     let heartbeatInFlight = false;
     const heartbeatTimer = setInterval(() => {
