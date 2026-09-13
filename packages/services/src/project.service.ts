@@ -161,12 +161,21 @@ type IngestLifecycleStatus =
 	| "ready"
 	| "failed";
 
-interface ClaimedIngestJob {
+export interface ClaimedIngestJob {
 	id: string;
 	projectId: string;
 	jobType: IngestJobType;
 	payload: Prisma.JsonValue;
 	attemptCount: number;
+	claimId: string;
+}
+
+export class IngestJobClaimLost extends Error {
+	readonly code = "ingest_job_claim_lost";
+	constructor(public readonly jobId: string) {
+		super(`Ingest Job ${jobId} is no longer owned by this worker`);
+		this.name = "IngestJobClaimLost";
+	}
 }
 
 const projects = new Map<string, ProjectSnapshot>();
@@ -2803,6 +2812,7 @@ export class ProjectService {
 		// Bounded retry: cap contention retries and
 		// return null so the poller retries next tick instead of recursing.
 		for (let attempt = 0; attempt < 5; attempt++) {
+			const claimId = randomUUID();
 			const queued = await prisma.ingestJob.findFirst({
 				where: {
 					status: "queued",
@@ -2834,6 +2844,8 @@ export class ProjectService {
 				data: {
 					status: "running",
 					startedAt: new Date(),
+					claimId,
+					claimExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
 					attemptCount: {
 						increment: 1,
 					},
@@ -2844,8 +2856,8 @@ export class ProjectService {
 				continue; // lost the race; try the next queued row
 			}
 
-			const claimed = await prisma.ingestJob.findUnique({
-				where: { id: queued.id },
+			const claimed = await prisma.ingestJob.findFirst({
+				where: { id: queued.id, status: "running", claimId },
 			});
 
 			if (!claimed) {
@@ -2858,22 +2870,32 @@ export class ProjectService {
 				jobType: claimed.jobType,
 				payload: claimed.payload,
 				attemptCount: claimed.attemptCount,
+				claimId,
 			};
 		}
 
 		return null;
 	}
 
-	async markIngestJobDownloading(jobId: string) {
-		return this.updateJobIngestLifecycle(jobId, "downloading");
+	async markIngestJobDownloading(jobId: string, claimId: string) {
+		return this.updateJobIngestLifecycle(jobId, claimId, "downloading");
 	}
 
-	async markIngestJobNormalizing(jobId: string) {
-		return this.updateJobIngestLifecycle(jobId, "normalizing");
+	async markIngestJobNormalizing(jobId: string, claimId: string) {
+		return this.updateJobIngestLifecycle(jobId, claimId, "normalizing");
+	}
+
+	async renewIngestJobClaim(jobId: string, claimId: string): Promise<void> {
+		const updated = await this.requirePrisma().ingestJob.updateMany({
+			where: { id: jobId, status: "running", claimId },
+			data: { claimExpiresAt: new Date(Date.now() + 10 * 60 * 1000) },
+		});
+		if (updated.count === 0) throw new IngestJobClaimLost(jobId);
 	}
 
 	async completeIngestJob(
 		jobId: string,
+		claimId: string,
 		input: {
 			sourceStorageKey: string;
 			sourceMediaUrl?: string;
@@ -2895,6 +2917,11 @@ export class ProjectService {
 		}
 
 		await prisma.$transaction(async (tx) => {
+			const settled = await tx.ingestJob.updateMany({
+				where: { id: job.id, status: "running", claimId },
+				data: { status: "completed", lastError: null, completedAt: new Date(), claimExpiresAt: null },
+			});
+			if (settled.count === 0) throw new IngestJobClaimLost(job.id);
 			await tx.project.update({
 				where: { id: job.projectId },
 				data: {
@@ -2914,14 +2941,6 @@ export class ProjectService {
 				},
 			});
 
-			await tx.ingestJob.update({
-				where: { id: job.id },
-				data: {
-					status: "completed",
-					lastError: null,
-					completedAt: new Date(),
-				},
-			});
 		});
 
 		await this.publishIngestLifecycleEvent({
@@ -2951,7 +2970,7 @@ export class ProjectService {
 		}
 	}
 
-	async failIngestJob(jobId: string, errorCode: string, errorMessage: string) {
+	async failIngestJob(jobId: string, claimId: string, errorCode: string, errorMessage: string) {
 		const prisma = this.requirePrisma();
 
 		const job = await prisma.ingestJob.findUnique({ where: { id: jobId } });
@@ -2985,6 +3004,8 @@ export class ProjectService {
 
 		if (decision.outcome === "requeue") {
 			await prisma.$transaction(async (tx) => {
+				const released = await tx.ingestJob.updateMany({ where: { id: job.id, status: "running", claimId }, data: { status: "queued", claimId: null, claimExpiresAt: null, lastError: `${errorCode}: ${errorMessage} (auto-retry, attempt ${job.attemptCount} of ${INGEST_AUTO_RETRY_MAX_ATTEMPTS})` } });
+				if (released.count === 0) throw new IngestJobClaimLost(job.id);
 				await tx.project.update({
 					where: { id: job.projectId },
 					data: {
@@ -2993,16 +3014,6 @@ export class ProjectService {
 					},
 				});
 
-				await tx.ingestJob.update({
-					where: { id: job.id },
-					data: {
-						status: "queued",
-						// Breadcrumb for ops (not user-facing — the project's
-						// ingestErrorCode is cleared above so the UI doesn't show a
-						// stale failure banner while this is quietly retrying).
-						lastError: `${errorCode}: ${errorMessage} (auto-retry, attempt ${job.attemptCount} of ${INGEST_AUTO_RETRY_MAX_ATTEMPTS})`,
-					},
-				});
 			});
 
 			await this.publishIngestLifecycleEvent({
@@ -3019,6 +3030,8 @@ export class ProjectService {
 		const terminalErrorCode = decision.terminalErrorCode;
 
 		await prisma.$transaction(async (tx) => {
+			const settled = await tx.ingestJob.updateMany({ where: { id: job.id, status: "running", claimId }, data: { status: "failed", lastError: `${errorCode}: ${errorMessage}`, completedAt: new Date(), claimExpiresAt: null } });
+			if (settled.count === 0) throw new IngestJobClaimLost(job.id);
 			await tx.project.update({
 				where: { id: job.projectId },
 				data: {
@@ -3027,14 +3040,6 @@ export class ProjectService {
 				},
 			});
 
-			await tx.ingestJob.update({
-				where: { id: job.id },
-				data: {
-					status: "failed",
-					lastError: `${errorCode}: ${errorMessage}`,
-					completedAt: new Date(),
-				},
-			});
 		});
 
 		await this.publishIngestLifecycleEvent({
@@ -3151,32 +3156,28 @@ export class ProjectService {
 
 	private async updateJobIngestLifecycle(
 		jobId: string,
+		claimId: string,
 		ingestStatus: Exclude<IngestLifecycleStatus, "ready" | "failed">,
 	) {
 		const prisma = this.requirePrisma();
 
-		const job = await prisma.ingestJob.findUnique({ where: { id: jobId } });
+		const job = await prisma.ingestJob.findFirst({ where: { id: jobId, status: "running", claimId } });
 
 		if (!job) {
-			throw new ProjectServiceError(
-				"ingest_job_not_found",
-				"Ingest job not found.",
-			);
+			throw new IngestJobClaimLost(jobId);
 		}
+
+		const renewed = await prisma.ingestJob.updateMany({
+			where: { id: job.id, status: "running", claimId },
+			data: { lastError: null, claimExpiresAt: new Date(Date.now() + 10 * 60 * 1000) },
+		});
+		if (renewed.count === 0) throw new IngestJobClaimLost(job.id);
 
 		const projectUpdate = await prisma.project.updateMany({
 			where: { id: job.projectId, ...accessibleProjectWhere() },
-			data: {
-				ingestStatus,
-				ingestErrorCode: null,
-			},
+			data: { ingestStatus, ingestErrorCode: null },
 		});
 		if (projectUpdate.count === 0) throw new ProjectExpiredError();
-
-		await prisma.ingestJob.updateMany({
-			where: { id: job.id, status: "running" },
-			data: { lastError: null },
-		});
 
 		await this.publishIngestLifecycleEvent({
 			projectId: job.projectId,
@@ -3655,8 +3656,9 @@ export class ProjectService {
 			where: {
 				status: "running",
 				OR: [
-					{ startedAt: { lt: cutoff } },
-					{ startedAt: null, updatedAt: { lt: cutoff } },
+					{ claimExpiresAt: { lt: new Date() } },
+					{ claimExpiresAt: null, startedAt: { lt: cutoff } },
+					{ claimExpiresAt: null, startedAt: null, updatedAt: { lt: cutoff } },
 				],
 			},
 			select: { id: true, projectId: true, attemptCount: true },
@@ -3676,15 +3678,18 @@ export class ProjectService {
 			);
 
 			const updated = await prisma.ingestJob.updateMany({
-				where: { id: job.id, status: "running" },
+				where: { id: job.id, status: "running", OR: [{ claimExpiresAt: { lt: new Date() } }, { claimExpiresAt: null }] },
 				data:
 					decision.outcome === "requeue"
 						? {
 								status: "queued",
+								claimId: null,
+								claimExpiresAt: null,
 								lastError: `worker_stalled: requeued (attempt ${job.attemptCount} of ${INGEST_AUTO_RETRY_MAX_ATTEMPTS})`,
 							}
 						: {
 								status: "failed",
+								claimExpiresAt: null,
 								lastError: "worker_stalled: ingest job heartbeat expired",
 								completedAt: new Date(),
 							},

@@ -9,6 +9,7 @@ interface WorkflowAttemptRunner {
   runAttempt<T>(
     attempt: WorkflowAttemptRef,
     handler: (context: WorkflowAttemptContext) => Promise<T>,
+    options?: { signal?: AbortSignal },
   ): Promise<T>;
 }
 
@@ -35,6 +36,8 @@ export async function executeNextWorkflowAttempt<
     error: WorkflowAttemptLost,
     startedAtMs: number,
   ) => void;
+  /** Worker lifetime cancellation stops heartbeats and active subprocesses. */
+  signal?: AbortSignal;
 }): Promise<0 | 1> {
   const claimed = await input.lifecycle.claim(input.stage);
   if (!claimed) return 0;
@@ -43,6 +46,7 @@ export async function executeNextWorkflowAttempt<
   await executeClaimedWorkflowAttempt({
     attempt,
     lifecycle: input.lifecycle,
+    signal: input.signal,
     process: input.process,
     onAttemptLost: (error) =>
       input.onAttemptLost?.(attempt, error, startedAtMs),
@@ -60,10 +64,13 @@ export async function executeClaimedWorkflowAttempt<
     context: WorkflowAttemptContext,
   ) => Promise<void>;
   onAttemptLost?: (error: WorkflowAttemptLost) => void;
+  signal?: AbortSignal;
 }): Promise<"completed" | "lost"> {
   try {
-    await input.lifecycle.runAttempt(input.attempt, (context) =>
-      input.process(input.attempt, context),
+    await input.lifecycle.runAttempt(
+      input.attempt,
+      (context) => input.process(input.attempt, context),
+      { signal: input.signal },
     );
     return "completed";
   } catch (error) {

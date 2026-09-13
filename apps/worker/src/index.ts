@@ -404,6 +404,7 @@ function processNextWorkflowAttempt<
 }) {
 	return executeNextWorkflowAttempt<TStage>({
 		...input,
+		signal: workerShutdown.signal,
 		lifecycle: getWorkflowRunLifecycle(),
 		onAttemptLost: (attempt, error, startedAtMs) =>
 			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
@@ -589,16 +590,24 @@ let loopIntervals: ReturnType<typeof setInterval>[] = [];
 process.once("SIGTERM", beginGracefulShutdown);
 process.once("SIGINT", beginGracefulShutdown);
 
-const youtubeTokenServer = await startYoutubeTokenServer(
+// YouTube is one link-intake dependency. It must never decide whether billing,
+// publishing, or other worker loops can start or remain alive.
+void startYoutubeTokenServer(
   process.env.YTDLP_POT_SERVER_HOME ?? "/opt/youtube-tokens",
   workerShutdown.signal,
-);
-console.warn(JSON.stringify({ level: "info", message: "youtube_network_configured", mode: youtubeProxyUrl ? "proxy" : "direct" }));
-youtubeTokenServer.once("exit", () => {
+).then((youtubeTokenServer) => {
+  console.warn(JSON.stringify({ level: "info", message: "youtube_network_configured", mode: youtubeProxyUrl ? "proxy" : "direct" }));
+  youtubeTokenServer.once("exit", () => {
+    if (workerShutdown.signal.aborted) return;
+    console.warn(JSON.stringify({ level: "warn", message: "youtube_token_server_exited" }));
+  });
+}).catch((error) => {
   if (workerShutdown.signal.aborted) return;
-  console.warn(JSON.stringify({ level: "error", message: "youtube_token_server_exited" }));
-  process.exitCode = 1;
-  beginGracefulShutdown();
+  console.warn(JSON.stringify({
+    level: "warn",
+    message: "youtube_link_intake_unavailable",
+    error: error instanceof Error ? error.message : String(error),
+  }));
 });
 
 server.listen(port, () => {

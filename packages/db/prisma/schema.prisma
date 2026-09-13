@@ -685,6 +685,8 @@ model IngestJob {
   payload         Json
   status          IngestJobStatus @default(queued)
   attemptCount    Int             @default(0)
+  claimId         String?         @db.Uuid
+  claimExpiresAt  DateTime?
   lastError       String?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
@@ -695,6 +697,7 @@ model IngestJob {
   uploadSession   UploadSession?  @relation("UploadSessionIngestJob", fields: [uploadSessionId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
+  @@index([status, claimExpiresAt])
   @@index([projectId, status, createdAt])
 }
 

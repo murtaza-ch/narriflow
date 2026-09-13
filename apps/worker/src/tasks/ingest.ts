@@ -68,6 +68,7 @@ interface IngestJob {
   jobType: "upload_finalize" | "youtube_import" | "rss_import" | "link_import";
   payload: unknown;
   attemptCount: number;
+  claimId: string;
 }
 
 class IngestWorkerError extends Error {
@@ -274,7 +275,7 @@ async function runUploadFinalize(
 ) {
   const verified = readVerifiedUploadPayload(job.payload);
 
-  await projectService.markIngestJobNormalizing(job.id);
+  await projectService.markIngestJobNormalizing(job.id, job.claimId);
 
   // ffprobe reads the header over range requests, so a presigned URL avoids
   // downloading the whole file here while still using the stored object as the
@@ -288,7 +289,7 @@ async function runUploadFinalize(
   }
   const durationSeconds = requireDuration(probedDuration);
 
-  await projectService.completeIngestJob(job.id, {
+  await projectService.completeIngestJob(job.id, job.claimId, {
     sourceStorageKey: verified.storageKey,
     sourceMimeType: verified.contentType,
     sourceSizeBytes: verified.sizeBytes,
@@ -420,7 +421,7 @@ async function runLinkImport(
     );
   }
 
-  await projectService.markIngestJobDownloading(job.id);
+  await projectService.markIngestJobDownloading(job.id, job.claimId);
 
   if (providerDef.strategy === "direct") {
     await runDirectLinkDownload(job, rawUrl, provider, workerProcess, signal);
@@ -513,7 +514,7 @@ async function runYtdlpLinkDownload(
       throw new IngestWorkerError("link_download_missing_file", "yt-dlp did not return a downloaded file path");
     }
 
-    await projectService.markIngestJobNormalizing(job.id);
+    await projectService.markIngestJobNormalizing(job.id, job.claimId);
 
     const fileInfo = await stat(downloadedPath);
     if (fileInfo.size > MAX_UPLOAD_SIZE_BYTES) {
@@ -565,7 +566,7 @@ async function runYtdlpLinkDownload(
       durationSeconds,
     });
 
-    await projectService.completeIngestJob(job.id, {
+    await projectService.completeIngestJob(job.id, job.claimId, {
       sourceStorageKey: key,
       sourceInput: url,
       sourceMimeType: "video/mp4",
@@ -598,7 +599,7 @@ async function runDirectLinkDownload(
     // pre-mapping error/status to classify retryability correctly).
     const downloadMeta = await downloadToFile(downloadUrl, tempFile);
 
-    await projectService.markIngestJobNormalizing(job.id);
+    await projectService.markIngestJobNormalizing(job.id, job.claimId);
 
     const fileInfo = await stat(tempFile);
     const durationSeconds = requireDuration(
@@ -624,7 +625,7 @@ async function runDirectLinkDownload(
       },
     });
 
-    await projectService.completeIngestJob(job.id, {
+    await projectService.completeIngestJob(job.id, job.claimId, {
       sourceStorageKey: key,
       sourceInput: url,
       sourceMimeType: downloadMeta.contentType,
@@ -790,7 +791,7 @@ async function runRssImport(
     throw new IngestWorkerError("rss_missing_enclosure", "episode enclosure URL is required");
   }
 
-  await projectService.markIngestJobDownloading(job.id);
+  await projectService.markIngestJobDownloading(job.id, job.claimId);
 
   return workerProcess.withScratchDirectory("narriflow-rss-", async (tempDir) => {
     let enclosurePath: string;
@@ -803,7 +804,7 @@ async function runRssImport(
     const tempFile = join(tempDir, `source${enclosureExt}`);
     const downloadMeta = await downloadToFile(enclosureUrl, tempFile);
 
-    await projectService.markIngestJobNormalizing(job.id);
+    await projectService.markIngestJobNormalizing(job.id, job.claimId);
 
     const fileInfo = await stat(tempFile);
     const durationSeconds = requireDuration(
@@ -822,7 +823,7 @@ async function runRssImport(
       },
     });
 
-    await projectService.completeIngestJob(job.id, {
+    await projectService.completeIngestJob(job.id, job.claimId, {
       sourceStorageKey: key,
       sourceInput: redactUrlForDisplay(rssUrl),
       sourceMimeType: downloadMeta.contentType,
@@ -839,8 +840,15 @@ export async function processIngestJob(
     workerProcess?: WorkerProcessModule;
   } = {},
 ) {
-  const signal = options.signal ?? new AbortController().signal;
+  const externalSignal = options.signal ?? new AbortController().signal;
+  const ownershipController = new AbortController();
+  const signal = AbortSignal.any([externalSignal, ownershipController.signal]);
   const workerProcess = options.workerProcess ?? productionWorkerProcessModule;
+  const heartbeat = setInterval(() => {
+    void projectService.renewIngestJobClaim(job.id, job.claimId).catch((error) => {
+      ownershipController.abort(error);
+    });
+  }, 2 * 60 * 1000);
   const jobStartedAtMs = Date.now();
   log("info", "ingest_job_started", {
     jobId: job.id,
@@ -871,7 +879,8 @@ export async function processIngestJob(
       totalMs: Date.now() - jobStartedAtMs,
     });
   } catch (error) {
-    signal.throwIfAborted();
+    if (ownershipController.signal.aborted) throw ownershipController.signal.reason;
+    externalSignal.throwIfAborted();
     const normalizedError =
       error instanceof InvalidObjectMetadataError
         ? new IngestWorkerError(
@@ -888,7 +897,7 @@ export async function processIngestJob(
         ? normalizedError.message
         : "Unknown worker error";
 
-    await projectService.failIngestJob(job.id, code, message);
+    await projectService.failIngestJob(job.id, job.claimId, code, message);
     log("error", "ingest_job_failed", {
       jobId: job.id,
       projectId: job.projectId,
@@ -903,5 +912,7 @@ export async function processIngestJob(
       errorCode: code,
       reason: message,
     });
+  } finally {
+    clearInterval(heartbeat);
   }
 }

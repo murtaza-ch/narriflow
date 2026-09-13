@@ -1634,12 +1634,16 @@ export class WorkflowRunLifecycle {
   async runAttempt<T>(
     attempt: WorkflowAttemptRef,
     handler: (context: WorkflowAttemptContext) => Promise<T>,
+    options: { signal?: AbortSignal } = {},
   ): Promise<T> {
     const controller = new AbortController();
+    const stopForWorkerShutdown = () => controller.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", stopForWorkerShutdown, { once: true });
+    if (options.signal?.aborted) stopForWorkerShutdown();
     let ownershipError: WorkflowAttemptLost | null = null;
     let heartbeatInFlight = false;
     const heartbeatTimer = setInterval(() => {
-      if (heartbeatInFlight || ownershipError) return;
+      if (controller.signal.aborted || heartbeatInFlight || ownershipError) return;
       heartbeatInFlight = true;
       void this.heartbeat(attempt)
         .catch(() => {
@@ -1663,6 +1667,7 @@ export class WorkflowRunLifecycle {
       throw error;
     } finally {
       clearInterval(heartbeatTimer);
+      options.signal?.removeEventListener("abort", stopForWorkerShutdown);
     }
   }
 

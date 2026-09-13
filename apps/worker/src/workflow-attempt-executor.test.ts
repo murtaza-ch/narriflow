@@ -122,3 +122,43 @@ test("the next-stage executor claims once and passes the exact attempt and conte
   expect(receivedAttempt).toBe(attempt);
   expect(receivedContext).toBe(context);
 });
+
+test("worker shutdown reaches an active Workflow Attempt", async () => {
+  const shutdown = new AbortController();
+  const attempt = {
+    workflowRunId: "run-shutdown",
+    projectId: "project-shutdown",
+    stage: "stt" as const,
+    attemptId: "attempt-shutdown",
+    attemptCount: 1,
+    status: "running" as const,
+    progress: 0,
+    contentPackId: null,
+    leaseExpiresAt: new Date(),
+    project: { id: "project-shutdown", title: "", sourceMediaUrl: "", sourceType: "url" as const, sourceInput: null, sourceStorageKey: null, sourceMimeType: null, sourceDurationSeconds: null, userId: "user", workspaceId: null },
+  } satisfies ClaimedWorkflowAttempt;
+  let receivedSignal: AbortSignal | null = null;
+  let processingStarted!: () => void;
+  const processing = new Promise<void>((resolve) => { processingStarted = resolve; });
+
+  const executing = executeNextWorkflowAttempt({
+    stage: "stt",
+    signal: shutdown.signal,
+    lifecycle: {
+      claim: async () => attempt,
+      runAttempt: async (_attempt, handler, options) => handler({
+        signal: AbortSignal.any([new AbortController().signal, options?.signal ?? new AbortController().signal]),
+        reportProgress: async () => {},
+      }),
+    },
+    process: async (_attempt, context) => {
+      receivedSignal = context.signal;
+      processingStarted();
+      await new Promise<void>((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+    },
+  });
+  await processing;
+  shutdown.abort(new Error("worker_shutdown"));
+  await executing;
+  expect(receivedSignal?.aborted).toBe(true);
+});
