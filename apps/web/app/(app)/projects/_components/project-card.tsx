@@ -20,30 +20,15 @@ interface ProjectCardProps {
 }
 
 export interface ProjectActivity {
-  /** Badge reflecting the live pipeline stage (ingest, then transcript). */
+	/** Badge reflecting the shared product progress result from the list query. */
   status: BadgeStatus;
   label: string;
-  /** True while ingest or transcription is still running. */
+	/** True while intake or a Workflow Run is still moving. */
   active: boolean;
 }
 
 export function getProjectActivity(project: ProjectListItem): ProjectActivity {
-  const ingest = STATUS_CONFIG[project.ingestStatus] ?? STATUS_CONFIG.queued!;
-  if (project.ingestStatus === "ready") {
-    const transcriptStatus = project.transcript?.status;
-    if (transcriptStatus === "processing") {
-      return { status: "processing", label: "Transcribing", active: true };
-    }
-    if (transcriptStatus === "queued") {
-      return { status: "processing", label: "Transcript queued", active: true };
-    }
-    return { status: ingest.status, label: ingest.label, active: false };
-  }
-  const active =
-    ingest.status === "processing" ||
-    ingest.status === "queued" ||
-    ingest.status === "pending";
-  return { status: ingest.status, label: ingest.label, active };
+	return project.progress;
 }
 
 export function buildProjectMeta(project: ProjectListItem): string {

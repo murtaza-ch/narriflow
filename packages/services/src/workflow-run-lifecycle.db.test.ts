@@ -20,6 +20,7 @@ import {
 } from "./workflow-run-lifecycle";
 import { notificationService } from "./notification.service";
 import { clipService } from "./clip.service";
+import { projectService } from "./project.service";
 
 const databaseUrl = process.env.WORKFLOW_TEST_DATABASE_URL;
 const databaseSchema = process.env.WORKFLOW_TEST_DATABASE_SCHEMA;
@@ -2780,5 +2781,77 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(settled.requestedCount).toBe(5);
     expect(settled.succeededCount).toBe(3);
     expect(settled.failedCount).toBe(2);
+  });
+
+  test("lists a ready source as processing while its current detection run is active", async () => {
+    const { user, workspace, project, run } = await fixture("moment_detection");
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { ingestStatus: "ready" },
+    });
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: { status: "running" },
+    });
+
+    const page = await projectService.listProjectsWithStatsPage(user.id, {
+      workspaceId: workspace.id,
+      status: "processing",
+    });
+
+    expect(page.items.map((item) => item.id)).toContain(project.id);
+    expect(page.items.find((item) => item.id === project.id)?.progress).toEqual({
+      status: "processing",
+      label: "Detecting",
+      active: true,
+    });
+    expect(page.statusCounts.processing).toBe(1);
+  });
+
+  test("paginates downstream processing projects without dropping their filtered count", async () => {
+    const first = await fixture("moment_detection");
+    const secondProject = await prisma.project.create({
+      data: {
+        title: "Second processing project",
+        sourceMediaUrl: "r2://test/second-source.mp4",
+        userId: first.user.id,
+        workspaceId: first.workspace.id,
+        createdByUserId: first.user.id,
+        ingestStatus: "ready",
+      },
+    });
+    const secondRun = await prisma.workflowRun.create({
+      data: {
+        projectId: secondProject.id,
+        idempotencyKey: `second:${randomUUID()}`,
+        stage: "moment_detection",
+        status: "running",
+      },
+    });
+    await prisma.project.updateMany({
+      where: { id: first.project.id },
+      data: { ingestStatus: "ready" },
+    });
+    await prisma.workflowRun.updateMany({
+      where: { id: { in: [first.run.id, secondRun.id] } },
+      data: { status: "running" },
+    });
+
+    const page = await projectService.listProjectsWithStatsPage(first.user.id, {
+      workspaceId: first.workspace.id,
+      status: "processing",
+      limit: 1,
+    });
+    const next = await projectService.listProjectsWithStatsPage(first.user.id, {
+      workspaceId: first.workspace.id,
+      status: "processing",
+      limit: 1,
+      cursor: page.nextCursor,
+    });
+
+    expect(page.totalCount).toBe(2);
+    expect(new Set([...page.items, ...next.items].map((item) => item.id))).toEqual(
+      new Set([first.project.id, secondProject.id]),
+    );
   });
 });

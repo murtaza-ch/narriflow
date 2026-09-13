@@ -53,6 +53,10 @@ jobs:
             command: test:clip-editor-persistence:db
           - domain: Authenticated Request Policy
             command: test:authenticated-request-policy:db
+          - domain: Brand Profiles
+            command: test:brand-profiles:db
+          - domain: Vizard Expansion
+            command: test:vizard-expansion:db
     services:
       postgres:
         image: postgres:17

@@ -107,6 +107,9 @@ const MAX_CONCURRENT_RSS_INGESTS_PER_WORKSPACE = 5;
 export interface ProjectListItem extends ProjectSnapshot {
 	clipCount: number;
 	avgViralityScore: number | null;
+	/** Product-facing pipeline state. Source intake remains separate from
+	 * Workflow Runs; this is their one shared interpretation for project lists. */
+	progress: ProjectListProgress;
 	transcript: {
 		languageCode: string | null;
 		speakerCount: number | null;
@@ -121,6 +124,19 @@ export type ProjectListStatusFilter =
 	| "processing"
 	| "queued"
 	| "failed";
+
+export interface ProjectListProgress {
+	status: Exclude<ProjectListStatusFilter, "all">;
+	label: string;
+	/** Whether a list should continue refreshing this Project. */
+	active: boolean;
+}
+
+export interface ProjectListWorkflowRun {
+	stage: string;
+	status: string;
+	updatedAt: Date | string;
+}
 export type ProjectListSourceFilter =
   "all"
 	| "youtube"
@@ -201,33 +217,68 @@ function decodeProjectCursor(cursor: string | null | undefined) {
 	}
 }
 
-function projectStatusWhere(
-	status: ProjectListStatusFilter,
-): Prisma.ProjectWhereInput {
-	if (status === "all") return {};
-	if (status === "processing") {
-		return {
-			ingestStatus: {
-				in: ["pending", "uploading", "downloading", "normalizing"],
-			},
-		};
-	}
-	return { ingestStatus: status };
+const ACTIVE_WORKFLOW_STATUSES = new Set(["queued", "running", "waiting"]);
+
+const WORKFLOW_PROGRESS_LABELS: Record<string, { active: string; queued: string }> = {
+	stt: { active: "Transcribing", queued: "Transcription queued" },
+	moment_detection: { active: "Detecting", queued: "Detection queued" },
+	clip_rendering: { active: "Rendering", queued: "Render queued" },
+	dubbing: { active: "Dubbing", queued: "Dub queued" },
+};
+
+function workflowProgressLabel(stage: string, status: string) {
+	const label = WORKFLOW_PROGRESS_LABELS[stage];
+	if (label) return status === "queued" ? label.queued : label.active;
+	const readable = stage
+		.split("_")
+		.filter(Boolean)
+		.map((part) => part[0]!.toUpperCase() + part.slice(1))
+		.join(" ");
+	return status === "queued" ? `${readable} queued` : `${readable} in progress`;
 }
 
-function projectListOrderBy(
-	sort: ProjectListSort,
-): Prisma.ProjectOrderByWithRelationInput[] {
-	if (sort === "oldest") return [{ createdAt: "asc" }, { id: "asc" }];
-	if (sort === "title") return [{ title: "asc" }, { id: "asc" }];
-	if (sort === "clips") {
-		return [
-			{ clips: { _count: "desc" } },
-			{ createdAt: "desc" },
-			{ id: "desc" },
-		];
+/**
+ * Resolves the product meaning of Project progress for a list. Intake and
+ * Workflow Runs keep their own lifecycles; only this list-facing interface
+ * joins their current outcomes. A newer Workflow Run wins over an older
+ * failure, while any current queued/running/waiting run keeps the Project
+ * live until it settles.
+ */
+export function deriveProjectListProgress(input: {
+	ingestStatus: PrismaIngestStatus;
+	workflowRuns: readonly ProjectListWorkflowRun[];
+}): ProjectListProgress {
+	if (input.ingestStatus === "failed") {
+		return { status: "failed", label: "Import failed", active: false };
 	}
-	return [{ createdAt: "desc" }, { id: "desc" }];
+	if (input.ingestStatus === "queued" || input.ingestStatus === "pending") {
+		return { status: "queued", label: "Import queued", active: true };
+	}
+	if (input.ingestStatus !== "ready") {
+		return { status: "processing", label: "Importing", active: true };
+	}
+
+	const workflowRuns = [...input.workflowRuns].sort(
+		(left, right) =>
+			new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+	);
+	const activeRun = workflowRuns.find((run) => ACTIVE_WORKFLOW_STATUSES.has(run.status));
+	if (activeRun) {
+		return {
+			status: activeRun.status === "queued" ? "queued" : "processing",
+			label: workflowProgressLabel(activeRun.stage, activeRun.status),
+			active: true,
+		};
+	}
+
+	const latestRun = workflowRuns[0];
+	if (latestRun?.status === "failed") {
+		return { status: "failed", label: `${workflowProgressLabel(latestRun.stage, "running")} failed`, active: false };
+	}
+	if (latestRun?.status === "partial") {
+		return { status: "ready", label: "Partially ready", active: false };
+	}
+	return { status: "ready", label: "Ready", active: false };
 }
 
 function emptyProjectStatusCounts(): Record<ProjectListStatusFilter, number> {
@@ -1340,29 +1391,21 @@ export class ProjectService {
 			);
 			const statusCounts = emptyProjectStatusCounts();
 			for (const project of baseFiltered) {
+				const progress = deriveProjectListProgress({
+					ingestStatus: project.ingestStatus,
+					workflowRuns: [],
+				});
 				statusCounts.all += 1;
-				if (project.ingestStatus === "ready") statusCounts.ready += 1;
-				if (project.ingestStatus === "failed") statusCounts.failed += 1;
-				if (project.ingestStatus === "queued") statusCounts.queued += 1;
-				if (
-					["pending", "uploading", "downloading", "normalizing"].includes(
-						project.ingestStatus,
-					)
-				) {
-					statusCounts.processing += 1;
-				}
+				statusCounts[progress.status] += 1;
 			}
 			const filtered = baseFiltered.filter((project) => {
 				if (status === "all") return true;
-				if (status === "processing") {
-					return [
-						"pending",
-						"uploading",
-						"downloading",
-						"normalizing",
-					].includes(project.ingestStatus);
-				}
-				return project.ingestStatus === status;
+				return (
+					deriveProjectListProgress({
+						ingestStatus: project.ingestStatus,
+						workflowRuns: [],
+					}).status === status
+				);
 			});
 			filtered.sort((left, right) => {
 				if (sort === "oldest") {
@@ -1389,6 +1432,10 @@ export class ProjectService {
 					...project,
 					clipCount: 0,
 					avgViralityScore: null,
+					progress: deriveProjectListProgress({
+						ingestStatus: project.ingestStatus,
+						workflowRuns: [],
+					}),
 					transcript: null,
 				})),
 				nextCursor:
@@ -1401,72 +1448,98 @@ export class ProjectService {
 		}
 
 		const scope = await this.resolveProjectScope(userId, options.workspaceId);
-		const folderWhere: Prisma.ProjectWhereInput = options.folderId
-			? { folderId: options.folderId }
-			: {};
-		const sourceWhere: Prisma.ProjectWhereInput =
-			source === "all" ? {} : { sourceType: source };
-		const queryWhere: Prisma.ProjectWhereInput = query
-			? {
-					OR: [
-						{ title: { contains: query, mode: "insensitive" } },
-						{ sourceMediaUrl: { contains: query, mode: "insensitive" } },
-						{ sourceInput: { contains: query, mode: "insensitive" } },
-					],
-				}
-			: {};
-		const baseWhere: Prisma.ProjectWhereInput = {
-			AND: [
-				scope,
-				accessibleProjectWhere(),
-				folderWhere,
-				sourceWhere,
-				queryWhere,
-			],
+		const workspaceId = scope.workspaceId;
+		const progressConditions = [
+			Prisma.sql`p."workspaceId" = ${workspaceId}`,
+			Prisma.sql`p."purgeStartedAt" IS NULL`,
+			Prisma.sql`(p."expiresAt" IS NULL OR p."expiresAt" > NOW())`,
+		];
+		if (options.folderId) progressConditions.push(Prisma.sql`p."folderId" = ${options.folderId}`);
+		if (source !== "all") progressConditions.push(Prisma.sql`p."sourceType" = CAST(${source} AS "SourceType")`);
+		if (query) {
+			const pattern = `%${query}%`;
+			progressConditions.push(Prisma.sql`(p.title ILIKE ${pattern} OR p."sourceMediaUrl" ILIKE ${pattern} OR p."sourceInput" ILIKE ${pattern})`);
+		}
+		const progressCte = Prisma.sql`
+			WITH listed AS (
+				SELECT
+					p.id,
+					p."ingestStatus",
+					current_run.stage AS "workflowStage",
+					current_run.status AS "workflowStatus",
+					p."createdAt",
+					p.title,
+					CASE
+						WHEN p."ingestStatus" = 'failed' THEN 'failed'
+						WHEN p."ingestStatus" IN ('queued', 'pending') THEN 'queued'
+						WHEN p."ingestStatus" <> 'ready' THEN 'processing'
+						WHEN current_run.status = 'queued' THEN 'queued'
+						WHEN current_run.status IN ('running', 'waiting') THEN 'processing'
+						WHEN current_run.status = 'failed' THEN 'failed'
+						ELSE 'ready'
+					END AS "progressStatus"
+				FROM "Project" p
+				LEFT JOIN LATERAL (
+					SELECT stage, status
+					FROM "WorkflowRun"
+					WHERE "projectId" = p.id
+					ORDER BY "updatedAt" DESC, id DESC
+					LIMIT 1
+				) current_run ON TRUE
+				WHERE ${Prisma.join(progressConditions, " AND ")}
+			)
+		`;
+		const orderBy =
+			sort === "oldest"
+				? Prisma.sql`"createdAt" ASC, id ASC`
+				: sort === "title"
+					? Prisma.sql`title ASC, id ASC`
+					: sort === "clips"
+						? Prisma.sql`(SELECT COUNT(*) FROM "Clip" WHERE "projectId" = listed.id) DESC, "createdAt" DESC, id DESC`
+						: Prisma.sql`"createdAt" DESC, id DESC`;
+		type ProgressRow = {
+			id: string;
+			ingestStatus: PrismaIngestStatus;
+			workflowStage: string | null;
+			workflowStatus: string | null;
+			progressStatus: Exclude<ProjectListStatusFilter, "all">;
 		};
-		const filteredWhere: Prisma.ProjectWhereInput = {
-			AND: [baseWhere, projectStatusWhere(status)],
-		};
-
-		const [rowsWithLookahead, totalCount, statusGroups] = await Promise.all([
-			prisma.project.findMany({
-				where: filteredWhere,
-				orderBy: projectListOrderBy(sort),
-				skip: offset,
-				take: limit + 1,
-			}),
-			prisma.project.count({ where: filteredWhere }),
-			prisma.project.groupBy({
-				by: ["ingestStatus"],
-				where: baseWhere,
-				_count: { _all: true },
-			}),
+		const statusFilter =
+			status === "all" ? Prisma.empty : Prisma.sql`WHERE "progressStatus" = ${status}`;
+		const [pageWithLookahead, countRows] = await Promise.all([
+			prisma.$queryRaw<ProgressRow[]>(Prisma.sql`
+				${progressCte}
+				SELECT id, "ingestStatus", "workflowStage", "workflowStatus", "progressStatus"
+				FROM listed
+				${statusFilter}
+				ORDER BY ${orderBy}
+				OFFSET ${offset} LIMIT ${limit + 1}
+			`),
+			prisma.$queryRaw<Array<{ progressStatus: Exclude<ProjectListStatusFilter, "all">; count: bigint }>>(Prisma.sql`
+				${progressCte}
+				SELECT "progressStatus", COUNT(*)::bigint AS count
+				FROM listed
+				GROUP BY "progressStatus"
+			`),
 		]);
 		const statusCounts = emptyProjectStatusCounts();
-		for (const group of statusGroups) {
-			const count = group._count._all;
-			statusCounts.all += count;
-			if (group.ingestStatus === "ready") statusCounts.ready += count;
-			if (group.ingestStatus === "failed") statusCounts.failed += count;
-			if (group.ingestStatus === "queued") statusCounts.queued += count;
-			if (
-				["pending", "uploading", "downloading", "normalizing"].includes(
-					group.ingestStatus,
-				)
-			) {
-				statusCounts.processing += count;
-			}
+		for (const row of countRows) {
+			statusCounts.all += Number(row.count);
+			statusCounts[row.progressStatus] += Number(row.count);
 		}
+		const totalCount = status === "all"
+			? statusCounts.all
+			: statusCounts[status];
+		const pageRows = pageWithLookahead.slice(0, limit);
 
-		const rows = rowsWithLookahead.slice(0, limit);
-
-		if (rows.length === 0) {
+		if (pageRows.length === 0) {
 			return { items: [], nextCursor: null, totalCount, statusCounts };
 		}
 
-		const projectIds = rows.map((row) => row.id);
+		const projectIds = pageRows.map((row) => row.id);
 
-		const [clipAggregates, transcripts] = await Promise.all([
+		const [projectRows, clipAggregates, transcripts] = await Promise.all([
+			prisma.project.findMany({ where: { id: { in: projectIds } } }),
 			prisma.clip.groupBy({
 				by: ["projectId"],
 				where: { projectId: { in: projectIds } },
@@ -1491,15 +1564,28 @@ export class ProjectService {
 		const transcriptMap = new Map(
 			transcripts.map((entry) => [entry.projectId, entry] as const),
 		);
+		const projectMap = new Map(projectRows.map((row) => [row.id, row] as const));
 
-		const items = rows.map((row) => {
+		const items = pageRows.flatMap((progressRow) => {
+			const row = projectMap.get(progressRow.id);
+			if (!row) return [];
 			const clip = clipMap.get(row.id);
 			const transcript = transcriptMap.get(row.id) ?? null;
 
-			return {
+			return [{
 				...toProjectSnapshot(row),
 				clipCount: clip?._count._all ?? 0,
 				avgViralityScore: clip?._avg.viralityScore ?? null,
+				progress: deriveProjectListProgress({
+					ingestStatus: progressRow.ingestStatus,
+					workflowRuns: progressRow.workflowStage && progressRow.workflowStatus
+						? [{
+							stage: progressRow.workflowStage,
+							status: progressRow.workflowStatus,
+							updatedAt: new Date(),
+						}]
+						: [],
+				}),
 				transcript: transcript
 					? {
 							languageCode: transcript.languageCode,
@@ -1508,13 +1594,13 @@ export class ProjectService {
 							status: transcript.status,
 						}
 					: null,
-			};
+			}];
 		});
 
 		return {
 			items,
 			nextCursor:
-				rowsWithLookahead.length > limit && items.length > 0
+				pageWithLookahead.length > limit && items.length > 0
 					? encodeProjectCursor(offset + items.length)
 					: null,
 			totalCount,

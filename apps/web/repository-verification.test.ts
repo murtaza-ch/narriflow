@@ -52,16 +52,11 @@ describe("critical PostgreSQL CI gates", () => {
     resolve(repositoryRoot, ".github/workflows/ci.yml"),
     "utf8",
   );
-  const commands = [
-    "test:workflow:db",
-    "test:upload-session:db",
-    "test:workspace-billing:db",
-    "test:social-publication:db",
-    "test:clip-editor-persistence:db",
-    "test:authenticated-request-policy:db",
-  ];
+  const commands = Object.keys(packageJson("package.json").scripts ?? {}).filter(
+    (command) => command.startsWith("test:") && command.endsWith(":db"),
+  );
 
-  test("runs all six domains through a parallel matrix", () => {
+  test("runs every disposable-schema database command through a parallel matrix", () => {
     expect(workflow).toContain("postgres-invariants:");
     expect(workflow).toContain("strategy:");
     expect(workflow).toContain("matrix:");

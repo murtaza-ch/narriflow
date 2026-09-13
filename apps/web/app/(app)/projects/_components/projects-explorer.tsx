@@ -209,18 +209,8 @@ function MoveProjectsDialog({
   );
 }
 
-const ACTIVE_INGEST_STATUSES = new Set([
-  "pending",
-  "uploading",
-  "queued",
-  "downloading",
-  "normalizing",
-]);
-
-function isProjectActive(project: ProjectListItem): boolean {
-  if (ACTIVE_INGEST_STATUSES.has(project.ingestStatus)) return true;
-  const transcriptStatus = project.transcript?.status;
-  return transcriptStatus === "queued" || transcriptStatus === "processing";
+export function isProjectActive(project: Pick<ProjectListItem, "progress">): boolean {
+  return project.progress.active;
 }
 
 /** How often the list re-asks the server while something is still processing. */
@@ -313,8 +303,9 @@ export function ProjectsExplorer({
     ? Math.max(lastPage.totalCount, initialTotalCount)
     : initialTotalCount;
 
-  // Live-refresh while any project is still ingesting/transcribing so cards
-  // flip to "ready" (and clips appear) without a manual reload.
+  // The list query resolves one product progress meaning across intake and
+  // Workflow Runs, so polling continues through transcription, detection,
+  // and rendering until every visible Project reaches a terminal outcome.
   const hasActiveProjects = useMemo(
     () => projects.some(isProjectActive),
     [projects],

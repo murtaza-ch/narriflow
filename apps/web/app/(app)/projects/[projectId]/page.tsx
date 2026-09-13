@@ -15,6 +15,7 @@ import {
 	clipService,
 	campaignActionRolloutFromEnv,
 	dubbingService,
+	deriveProjectListProgress,
 	hasFeature,
 	isProgramWriteEnabled,
 	isSocialProviderPublishingEnabled,
@@ -62,7 +63,6 @@ import { ProjectShareButton } from "./project-share-button";
 import { PublishingProvider, ProjectPosts } from "./publishing-provider";
 import { RetryIngestButton } from "./render-clips-button";
 import { AdvancedClipSettings } from "./advanced-clip-settings";
-import { STATUS_CONFIG } from "../_lib/status";
 import { extractYoutubeId, youtubeThumbnailUrl } from "../_lib/youtube";
 import { gradientForId } from "../_lib/gradient";
 import { formatDate, formatDuration } from "@/lib/format";
@@ -497,10 +497,19 @@ export default async function ProjectDetailPage({
 
 	const durationSec = snapshot.project.sourceDurationSeconds;
 
-	// Same status vocabulary as the projects list: interim ingest stages
-	// (uploading/downloading/normalizing) read as processing with stage labels.
-	const ingestBadge =
-		STATUS_CONFIG[snapshot.project.ingestStatus] ?? STATUS_CONFIG.queued!;
+	// The header consumes the same list-facing progress interface. The detail
+	// retains its richer per-stage stepper below; this compact badge only says
+	// whether the Project is still moving or needs attention.
+	const projectProgress = deriveProjectListProgress({
+		ingestStatus: snapshot.project.ingestStatus,
+		workflowRuns: activeRun
+			? [{
+					stage: activeRun.stage,
+					status: activeRun.status,
+					updatedAt: activeRun.updatedAt,
+				}]
+			: [],
+	});
 
 	return (
 		<Stack
@@ -568,10 +577,10 @@ export default async function ProjectDetailPage({
 								<Text fontSize="xs" color="fg.subtle">
 									{formatDate(snapshot.project.createdAt)}
 								</Text>
-								{!isIngestReady && (
+								{(projectProgress.active || projectProgress.status === "failed") && (
 									<StatusBadge
-										status={ingestBadge.status}
-										label={ingestBadge.label}
+										status={projectProgress.status}
+										label={projectProgress.label}
 									/>
 								)}
 							</Flex>

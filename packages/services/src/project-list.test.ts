@@ -1,5 +1,74 @@
 import { describe, expect, test } from "bun:test";
-import { projectService } from "./project.service";
+import { deriveProjectListProgress, projectService } from "./project.service";
+
+describe("Project list progress", () => {
+	test("keeps a project processing through detection after transcription completes", () => {
+		expect(
+			deriveProjectListProgress({
+				ingestStatus: "ready",
+				workflowRuns: [
+					{
+						stage: "stt",
+						status: "completed",
+						updatedAt: "2026-09-13T10:00:00.000Z",
+					},
+					{
+						stage: "moment_detection",
+						status: "running",
+						updatedAt: "2026-09-13T10:01:00.000Z",
+					},
+				],
+			}),
+		).toEqual({ status: "processing", label: "Detecting", active: true });
+	});
+
+	test("keeps queued workflow work visible and makes terminal outcomes useful", () => {
+		expect(
+			deriveProjectListProgress({
+				ingestStatus: "ready",
+				workflowRuns: [
+					{
+						stage: "clip_rendering",
+						status: "queued",
+						updatedAt: "2026-09-13T10:01:00.000Z",
+					},
+				],
+			}),
+		).toEqual({ status: "queued", label: "Render queued", active: true });
+		expect(
+			deriveProjectListProgress({
+				ingestStatus: "ready",
+				workflowRuns: [
+					{
+						stage: "clip_rendering",
+						status: "partial",
+						updatedAt: "2026-09-13T10:01:00.000Z",
+					},
+				],
+			}),
+		).toEqual({ status: "ready", label: "Partially ready", active: false });
+	});
+
+	test("does not let a superseded workflow failure hide a newer completed stage", () => {
+		expect(
+			deriveProjectListProgress({
+				ingestStatus: "ready",
+				workflowRuns: [
+					{
+						stage: "moment_detection",
+						status: "failed",
+						updatedAt: "2026-09-13T10:00:00.000Z",
+					},
+					{
+						stage: "moment_detection",
+						status: "completed",
+						updatedAt: "2026-09-13T10:01:00.000Z",
+					},
+				],
+			}),
+		).toEqual({ status: "ready", label: "Ready", active: false });
+	});
+});
 
 describe("ProjectService.listProjectsWithStatsPage (in-memory)", () => {
   test("filters before paginating and keeps sort order across pages", async () => {
