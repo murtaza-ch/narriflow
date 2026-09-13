@@ -75,4 +75,46 @@ dbDescribe("Ingest Job lifecycle PostgreSQL ownership", () => {
     const untouched = await prisma.ingestJob.findMany({ where: { id: { in: [youtubeLegacy.id, youtubeLink.id] } }, select: { status: true, attemptCount: true } });
     expect(untouched).toEqual([{ status: "queued", attemptCount: 0 }, { status: "queued", attemptCount: 0 }]);
   });
+
+  test("deferred draft handoffs cannot pin a later durable generation handoff", async () => {
+    const suffix = randomUUID();
+    const user = await prisma.user.create({ data: { clerkId: `ingest-db-test:${suffix}`, primaryEmail: `ingest-${suffix}@example.test` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Ingest handoff fairness", ownerUserId: user.id, personalOwnerUserId: user.id, members: { create: { userId: user.id, role: "owner" } } } });
+    for (let index = 0; index < 25; index++) {
+      const project = await prisma.project.create({ data: { title: `Draft ${index}`, sourceMediaUrl: "r2://pending", userId: user.id, workspaceId: workspace.id, createdByUserId: user.id, ingestStatus: "ready" } });
+      await prisma.ingestJob.create({ data: { projectId: project.id, jobType: "link_import", payload: {}, status: "completed", createdAt: new Date(1_000 + index), completedAt: new Date(1_000 + index) } });
+    }
+    const readyProject = await prisma.project.create({ data: { title: "Admitted", sourceMediaUrl: "r2://ready", userId: user.id, workspaceId: workspace.id, createdByUserId: user.id, ingestStatus: "ready" } });
+    const readyJob = await prisma.ingestJob.create({ data: { projectId: readyProject.id, jobType: "link_import", payload: {}, status: "completed", createdAt: new Date(10_000), completedAt: new Date(10_000) } });
+    await prisma.workflowRun.create({ data: { projectId: readyProject.id, stage: "stt", status: "queued", idempotencyKey: `handoff:${suffix}` } });
+    await projectService.processPendingIngestGenerationHandoffs(25);
+    await projectService.processPendingIngestGenerationHandoffs(25);
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: readyJob.id } })).generationHandoffAt).not.toBeNull();
+  });
+
+  test("a transient handoff failure retries durably without another generation run", async () => {
+    const suffix = randomUUID();
+    const user = await prisma.user.create({ data: { clerkId: `ingest-db-test:${suffix}`, primaryEmail: `ingest-${suffix}@example.test` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Ingest handoff retry", ownerUserId: user.id, personalOwnerUserId: user.id, members: { create: { userId: user.id, role: "owner" } } } });
+    const project = await prisma.project.create({ data: { title: "Retry", sourceMediaUrl: "r2://ready", userId: user.id, workspaceId: workspace.id, createdByUserId: user.id, ingestStatus: "ready" } });
+    const job = await prisma.ingestJob.create({ data: { projectId: project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
+    await prisma.workflowRun.create({ data: { projectId: project.id, stage: "stt", status: "queued", idempotencyKey: `handoff-retry:${suffix}` } });
+    const original = projectService.triggerGenerationIfPending.bind(projectService);
+    let calls = 0;
+    (projectService as unknown as { triggerGenerationIfPending: (projectId: string) => Promise<boolean> }).triggerGenerationIfPending = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("transient");
+      return original(project.id);
+    };
+    try {
+      await projectService.processPendingIngestGenerationHandoffs();
+      await prisma.ingestJob.update({ where: { id: job.id }, data: { generationHandoffRetryAt: new Date(Date.now() - 1) } });
+      await projectService.processPendingIngestGenerationHandoffs();
+    } finally {
+      (projectService as unknown as { triggerGenerationIfPending: typeof original }).triggerGenerationIfPending = original;
+    }
+    expect(calls).toBe(2);
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).generationHandoffAt).not.toBeNull();
+    expect(await prisma.workflowRun.count({ where: { projectId: project.id } })).toBe(1);
+  });
 });
