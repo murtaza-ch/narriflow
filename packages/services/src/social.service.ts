@@ -24,6 +24,28 @@ import {
 	validateProviderThumbnailAsset,
 } from "./thumbnail-frame-preparation";
 import { workspaceService } from "./workspace.service";
+
+type SocialPostCursor = { createdAt: string; id: string };
+
+function decodeSocialPostCursor(value: string | undefined): SocialPostCursor | null {
+	if (!value) return null;
+	try {
+		const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+		if (
+			typeof parsed?.id !== "string" ||
+			typeof parsed?.createdAt !== "string" ||
+			Number.isNaN(Date.parse(parsed.createdAt))
+		)
+			return null;
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+function encodeSocialPostCursor(row: { createdAt: Date; id: string }) {
+	return Buffer.from(JSON.stringify({ createdAt: row.createdAt.toISOString(), id: row.id })).toString("base64url");
+}
 import {
 	ExpectedDomainFailureError,
 	type ExpectedDomainFailureCatalog,
@@ -224,10 +246,19 @@ export class SocialService {
 		options: { activeOnly?: boolean; trackedIds?: string[]; cursor?: string } = {},
 	): Promise<{ items: SocialPostSnapshot[]; nextCursor: string | null }> {
 		const prisma = requirePrisma();
+		const cursor = decodeSocialPostCursor(options.cursor);
 		const rows = await prisma.socialPost.findMany({
 			where: {
 				projectId,
 				project: { userId },
+				...(cursor
+					? {
+						OR: [
+							{ createdAt: { lt: new Date(cursor.createdAt) } },
+							{ createdAt: new Date(cursor.createdAt), id: { lt: cursor.id } },
+						],
+					}
+					: {}),
 				...(options.activeOnly
 					? {
 						...(options.trackedIds?.length
@@ -236,7 +267,7 @@ export class SocialService {
 					}
 					: {}),
 			},
-			orderBy: { id: "desc" },
+			orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 			take: 101,
 			...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
 			include: {
@@ -264,7 +295,7 @@ export class SocialService {
 				},
 			},
 		});
-		return { items: rows.slice(0, 100).map(toSocialPostSnapshot), nextCursor: rows.length > 100 ? rows[99]!.id : null };
+		return { items: rows.slice(0, 100).map(toSocialPostSnapshot), nextCursor: rows.length > 100 ? encodeSocialPostCursor(rows[99]!) : null };
 	}
 
 	async schedulePost(
