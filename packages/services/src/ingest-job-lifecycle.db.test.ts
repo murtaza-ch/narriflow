@@ -92,6 +92,22 @@ dbDescribe("Ingest Job lifecycle PostgreSQL ownership", () => {
     expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: readyJob.id } })).generationHandoffAt).not.toBeNull();
   });
 
+  test("due handoff retries stay ahead of newly completed ingests", async () => {
+    const suffix = randomUUID();
+    const user = await prisma.user.create({ data: { clerkId: `ingest-fair-${suffix}`, primaryEmail: `${suffix}@example.test` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Fair retry", ownerUserId: user.id, members: { create: { userId: user.id, role: "owner" } } } });
+    const makeProject = () => prisma.project.create({ data: { title: "Fair handoff", sourceMediaUrl: "r2://ready", userId: user.id, workspaceId: workspace.id, ingestStatus: "ready" } });
+    const retry = await makeProject();
+    const retryJob = await prisma.ingestJob.create({ data: { projectId: retry.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date(Date.now() - 120_000), generationHandoffRetryAt: new Date(Date.now() - 60_000) } });
+    await prisma.workflowRun.create({ data: { projectId: retry.id, stage: "stt", status: "queued", idempotencyKey: suffix } });
+    for (let i = 0; i < 26; i++) {
+      const project = await makeProject();
+      await prisma.ingestJob.create({ data: { projectId: project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
+    }
+    await projectService.processPendingIngestGenerationHandoffs(25);
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: retryJob.id } })).generationHandoffAt).not.toBeNull();
+  });
+
   test("a transient handoff failure retries durably without another generation run", async () => {
     const suffix = randomUUID();
     const user = await prisma.user.create({ data: { clerkId: `ingest-db-test:${suffix}`, primaryEmail: `ingest-${suffix}@example.test` } });
@@ -107,9 +123,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL ownership", () => {
       return original(project.id);
     };
     try {
-      await projectService.processPendingIngestGenerationHandoffs();
+      await projectService.processPendingIngestGenerationHandoffs(1, job.id);
       await prisma.ingestJob.update({ where: { id: job.id }, data: { generationHandoffRetryAt: new Date(Date.now() - 1) } });
-      await projectService.processPendingIngestGenerationHandoffs();
+      await projectService.processPendingIngestGenerationHandoffs(1, job.id);
     } finally {
       (projectService as unknown as { triggerGenerationIfPending: typeof original }).triggerGenerationIfPending = original;
     }

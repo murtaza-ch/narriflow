@@ -2977,10 +2977,18 @@ export class ProjectService {
 	 * recovers on maintenance rather than requiring a user retry. */
 	async processPendingIngestGenerationHandoffs(limit = 25, jobId?: string): Promise<number> {
 		const prisma = this.requirePrisma();
-		const jobs = await prisma.ingestJob.findMany({
-			where: { status: "completed", generationHandoffAt: null, OR: [{ generationHandoffRetryAt: null }, { generationHandoffRetryAt: { lte: new Date() } }], ...(jobId ? { id: jobId } : {}), project: { ingestStatus: "ready" } },
-			select: { id: true, projectId: true }, orderBy: [{ generationHandoffRetryAt: { sort: "asc", nulls: "first" } }, { completedAt: "asc" }, { id: "asc" }], take: limit,
-		});
+		// Compare both new work and retries by when they became eligible. Nulls
+		// first would let a continuous stream of new ingests starve every retry.
+		const jobs = await prisma.$queryRaw<Array<{ id: string; projectId: string }>>(Prisma.sql`
+			SELECT job.id, job."projectId" FROM "IngestJob" job
+			JOIN "Project" project ON project.id = job."projectId"
+			WHERE job.status = 'completed' AND job."generationHandoffAt" IS NULL
+				AND project."ingestStatus" = 'ready'
+				AND (job."generationHandoffRetryAt" IS NULL OR job."generationHandoffRetryAt" <= NOW())
+				${jobId ? Prisma.sql`AND job.id = ${jobId}::uuid` : Prisma.empty}
+			ORDER BY COALESCE(job."generationHandoffRetryAt", job."completedAt", job."createdAt"), job.id
+			LIMIT ${limit}
+		`);
 		let handedOff = 0;
 		for (const pending of jobs) {
 			let admitted = false;
