@@ -3773,6 +3773,112 @@ describe("Clip Composition Plan", () => {
     });
   });
 
+  test("draws Automatic Fit scenes on the clip's resolved background", () => {
+    const source = {
+      identity: "source:automatic-fit-background",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const fitSegment = {
+      subjects: [],
+      startSec: 0,
+      endSec: 4,
+      layout: "single" as const,
+      cxNorm: 0.5,
+      intent: "fit" as const,
+    };
+    const analysis = clipAutoLayoutAnalysisSchema.parse({
+      version: 3,
+      engine: "shot-layout-v3",
+      sourceIdentity: source.identity,
+      analyzedAtISO: "2026-10-04T00:00:00.000Z",
+      clipStartSec: 0,
+      clipEndSec: 4,
+      deletedRanges: [],
+      editedDurationSec: 4,
+      sourceWidth: source.width,
+      sourceHeight: source.height,
+      segments: [fitSegment],
+      noSplitSegments: [fitSegment],
+      shotCount: 1,
+      soloShotCount: 1,
+      multiShotCount: 0,
+      twoUpSegmentCount: 0,
+      speakerCount: 0,
+      mappedSpeakerCount: 0,
+    });
+    const plan = (studioEdits: Record<string, unknown>) => {
+      const result = planClipComposition({
+        document: editorDocumentSchema.parse({
+          version: 2,
+          clipStartSec: 0,
+          clipEndSec: 4,
+          captionPreset: captionPresetSchema.parse({}),
+          transcriptSlice: [],
+          studioEdits: studioEditsSchema.parse(studioEdits),
+          brollUrl: null,
+          deletedRanges: [],
+        }),
+        source,
+        evidence: {
+          automaticLayout: {
+            state: "available",
+            value: {
+              sourceIdentity: source.identity,
+              inputFingerprint: automaticLayoutInputFingerprint({
+                sourceIdentity: source.identity,
+                clipStartSec: 0,
+                clipEndSec: 4,
+                deletedRanges: [],
+                engineVersion: "shot-layout-v3",
+              }),
+              engineVersion: "shot-layout-v3",
+              analysis,
+            },
+          },
+        },
+        assets: { backgroundImage: { state: "missing" } },
+        capabilities: {
+          automaticSpeakerLayout: true,
+          automaticSpeakerEngineVersion: "shot-layout-v3",
+        },
+        targets: [
+          { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+        ],
+      });
+      if (result.status === "invalid") throw new Error(result.error.code);
+      return result.plan.targets[0]!.scenes.flatMap((scene) =>
+        scene.layers.filter((layer) => layer.kind === "background"),
+      );
+    };
+
+    // Auto framing implies background "off": a remembered color stays unused.
+    expect(
+      plan({
+        framing: { mode: "auto" },
+        background: { mode: "off", color: "#123456", imageUrl: null },
+      }),
+    ).toEqual([expect.objectContaining({ color: "#000000", imageRef: null })]);
+
+    // An Auto scene inside a colored Fit clip matches the rest of the clip.
+    expect(
+      plan({
+        framing: { mode: "auto" },
+        background: { mode: "color", color: "#123456", imageUrl: null },
+        sceneLayouts: [
+          {
+            id: "auto-scene",
+            aspectRatio: "9:16",
+            startSec: 0,
+            endSec: 4,
+            preset: "auto",
+          },
+        ],
+      }),
+    ).toEqual([expect.objectContaining({ color: "#123456", imageRef: null })]);
+  });
+
   test("does not manufacture a second speaker when analysis cannot supply one", () => {
     const document = editorDocumentSchema.parse({
       version: 2,

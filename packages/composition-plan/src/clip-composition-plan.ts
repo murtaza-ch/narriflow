@@ -1117,12 +1117,32 @@ function cropTrackForSegmentRole(
   return role === "top" ? automatic.topCropTrack : role === "bottom" ? automatic.bottomCropTrack : undefined;
 }
 
+/** The clip's chosen background behind any scene that shows the full source. */
+interface SceneBackground {
+  readonly color: string;
+  readonly imageRef: string | null;
+}
+
+function resolveSceneBackground(input: ClipCompositionPlanInput): SceneBackground {
+  const background = input.document.studioEdits.background;
+  return {
+    color: background.mode === "off" ? "#000000" : (background.color ?? "#000000"),
+    imageRef:
+      background.mode === "image" &&
+      background.imageUrl &&
+      input.assets.backgroundImage.state === "available"
+        ? input.assets.backgroundImage.ref
+        : null,
+  };
+}
+
 function speakerScenes(input: {
   mode: "auto" | "split";
   source: CompositionSourceFacts;
   target: CompositionTarget;
   segments: readonly (ClipAutoLayoutSegment | ClipSplitLayoutSegment)[];
   overrides: EditorDocument["studioEdits"]["speakerLayoutOverrides"];
+  background: SceneBackground;
 }): CompositionScene[] {
   return input.segments.map((segment, sceneIndex) => {
     const automaticSegment = segment as ClipAutoLayoutSegment;
@@ -1150,8 +1170,8 @@ function speakerScenes(input: {
           {
             id: `layer:background:${input.target.id}:${sceneIndex}`,
             kind: "background",
-            color: "#000000",
-            imageRef: null,
+            color: input.background.color,
+            imageRef: input.background.imageRef,
             destination: { x: 0, y: 0, width: input.target.width, height: input.target.height },
             fit: "cover",
             rotationDeg: 0,
@@ -2607,6 +2627,7 @@ export function planClipComposition(
 ): ClipCompositionPlanResult {
   const invalid = validateInput(input);
   if (invalid) return invalid;
+  const sceneBackground = resolveSceneBackground(input);
 
   const sceneTextRenders = new Map<string, CompositionSceneTextRender>();
   for (const target of input.targets) {
@@ -2926,6 +2947,7 @@ export function planClipComposition(
                 target,
                 segments: fallbackSegments,
                 overrides: input.document.studioEdits.speakerLayoutOverrides,
+                background: sceneBackground,
               })
             : [
                 {
@@ -3005,6 +3027,7 @@ export function planClipComposition(
         target,
         segments: splitEvidence.segments,
         overrides: input.document.studioEdits.speakerLayoutOverrides,
+        background: sceneBackground,
       });
       const resolvedScenes = scenes.flatMap((scene) => {
         const layers = scene.layers.filter(
@@ -3042,6 +3065,7 @@ export function planClipComposition(
           target,
           segments: fallbackSegments,
           overrides: input.document.studioEdits.speakerLayoutOverrides,
+          background: sceneBackground,
         }).map((fallbackScene, index) => ({
           ...fallbackScene,
           id: `${scene.id}:fallback:${index}`,
@@ -3077,6 +3101,7 @@ export function planClipComposition(
                 target,
                 segments: screenFallbackSegments,
                 overrides: input.document.studioEdits.speakerLayoutOverrides,
+                background: sceneBackground,
               })
             : [
                 {
@@ -3228,6 +3253,7 @@ export function planClipComposition(
               target,
               segments,
               overrides: input.document.studioEdits.speakerLayoutOverrides,
+              background: sceneBackground,
             }),
           };
         }
@@ -3387,6 +3413,7 @@ export function planClipComposition(
             target: targetInput,
             segments: automaticAnalysis.segments,
             overrides: input.document.studioEdits.speakerLayoutOverrides,
+            background: sceneBackground,
           })
         : [];
       const automaticDefaultScenes = automaticAnalysis
@@ -3398,6 +3425,7 @@ export function planClipComposition(
               ? automaticAnalysis.segments
               : automaticAnalysis.noSplitSegments,
             overrides: input.document.studioEdits.speakerLayoutOverrides,
+            background: sceneBackground,
           })
         : [];
       const applied = applySceneLayoutSelections({
@@ -3409,16 +3437,8 @@ export function planClipComposition(
         automaticDefaultScenes,
         automaticSegments: automaticAnalysis?.segments ?? [],
         automaticEvidencePending: automaticEvidenceIsProvisional,
-        backgroundImageRef:
-          input.document.studioEdits.background.mode === "image" &&
-          input.document.studioEdits.background.imageUrl &&
-          input.assets.backgroundImage.state === "available"
-            ? input.assets.backgroundImage.ref
-            : null,
-        backgroundColor:
-          input.document.studioEdits.background.mode === "off"
-            ? "#000000"
-            : (input.document.studioEdits.background.color ?? "#000000"),
+        backgroundImageRef: sceneBackground.imageRef,
+        backgroundColor: sceneBackground.color,
       });
       notices.push(...applied.notices);
       return applied.target;
