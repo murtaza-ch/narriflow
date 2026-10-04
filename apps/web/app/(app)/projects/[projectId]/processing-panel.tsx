@@ -13,16 +13,13 @@ import { Button } from "@narriflow/ui/components/button";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Switch } from "@narriflow/ui/components/switch";
 import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
-import { userErrorMessage, type CaptionPresetId } from "@narriflow/validators";
+import { deriveProcessingChecklist, userErrorMessage, type PipelineStepState, type ProcessingStageInput, type CaptionPresetId } from "@narriflow/validators";
 import { AlertTriangle, Check, RotateCcw } from "lucide-react";
 import { formatDuration } from "@/lib/format";
 import {
-  deriveProcessingChecklist,
   ingestRecoveryAction,
   liveIngestStageWord,
   mergeStageWithLiveEvent,
-  type PipelineStepState,
-  type ProcessingStageInput,
 } from "@/lib/project-state";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import {
@@ -172,8 +169,7 @@ export interface ProcessingPanelProps {
   detect: ProcessingStageInput;
   render: ProcessingStageInput;
   mode: "clip" | "caption_only";
-  clipCount: number;
-  hasAnyRendered: boolean;
+  workflowRunId: string | null;
   quotaBlockedMessage: string | null;
   advancedSettingsProps: {
     sourceDurationSec: number | null;
@@ -217,14 +213,17 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
   const transcribeMerged = mergeStageWithLiveEvent(
     props.transcribe,
     latestByStage.stt,
+    props.workflowRunId,
   );
   const detectMerged = mergeStageWithLiveEvent(
     props.detect,
     latestByStage.moment_detection,
+    props.workflowRunId,
   );
   const renderMerged = mergeStageWithLiveEvent(
     props.render,
     latestByStage.clip_rendering,
+    props.workflowRunId,
   );
 
   const nodes = deriveProcessingChecklist({
@@ -233,8 +232,6 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
     detect: detectMerged,
     render: renderMerged,
     mode: props.mode,
-    clipCount: props.clipCount,
-    hasAnyRendered: props.hasAnyRendered,
   });
 
   // Override the Import node's detail with the live-merged stage word — the

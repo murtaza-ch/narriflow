@@ -53,18 +53,15 @@ describe("contentPackSchema", () => {
   });
 });
 
-describe("parseStoredContentPack (legacy DB rows)", () => {
-  test("falls back to brand default for legacy free-form caption presets", () => {
-    // Older rows stored a JSON-stringified preset or a display name instead of
-    // a fixed preset id; these must not throw when read.
-    const legacy = {
+describe("parseStoredContentPack", () => {
+  test("rejects obsolete free-form caption presets instead of changing settings", () => {
+    const stored = {
       ...baseContentPack,
       ...clipLengthPresetRanges.auto,
       captionPreset: '{"fontName":"Bebas Neue","primaryColor":"#FFFFFF"}',
     };
 
-    const parsed = parseStoredContentPack(legacy);
-    expect(parsed.captionPreset).toBe(BRAND_DEFAULT_CAPTION_PRESET_ID);
+    expect(() => parseStoredContentPack(stored)).toThrow();
   });
 
   test("preserves a valid caption preset id", () => {
@@ -74,5 +71,34 @@ describe("parseStoredContentPack (legacy DB rows)", () => {
       captionPreset: "karaoke",
     });
     expect(parsed.captionPreset).toBe("karaoke");
+  });
+
+  test("projects every setting losslessly while excluding storage metadata", () => {
+    const settings = contentPackSchema.parse({
+      ...baseContentPack,
+      ...clipLengthPresetRanges["60_to_120s"],
+      clipLengthPreset: "60_to_120s",
+      defaultAspectRatio: "4:5",
+      mode: "caption_only",
+      autoHook: false,
+      specificMoments: "Keep the closing answer",
+      processingStartSec: 20,
+      processingEndSec: 150,
+    });
+    const projected = parseStoredContentPack({
+      ...settings, id: "pack-id", projectId: "project-id", draft: true,
+      createdAt: new Date(),
+    });
+    expect(projected).toEqual(settings);
+    expect(parseStoredContentPack(projected)).toEqual(settings);
+    expect(Object.keys(projected).sort()).toEqual(Object.keys(settings).sort());
+  });
+
+  test("rejects incomplete and contradictory stored settings", () => {
+    expect(() => parseStoredContentPack({})).toThrow();
+    expect(() => parseStoredContentPack({
+      ...baseContentPack, ...clipLengthPresetRanges.auto,
+      processingStartSec: 50, processingEndSec: 20,
+    })).toThrow();
   });
 });

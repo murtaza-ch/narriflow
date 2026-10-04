@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
-  deriveProcessingChecklist,
-  deriveProjectPipelineStates,
   ingestRecoveryAction,
   liveIngestStageWord,
   mergePipelineStepsWithLiveEvents,
+  mergeStageWithLiveEvent,
   parseWorkflowEventMessage,
   pipelineStepStateWord,
   projectActivityRows,
@@ -44,6 +43,15 @@ function workflowEvent(workflowRunId: string, seq: number) {
 }
 
 describe("workflow event state", () => {
+  test("ingest identities preserve distinct jobs and reject mixed execution identities", () => {
+    const first = { ...workflowEvent(FIRST_RUN_ID, 1), workflowRunId: null, ingestJobId: FIRST_RUN_ID, stage: "ingest" as const };
+    const second = { ...first, ingestJobId: SECOND_RUN_ID, seq: 2 };
+    expect(parseWorkflowEventMessage(JSON.stringify(first))).toEqual(first);
+    expect(parseWorkflowEventMessage(JSON.stringify({ ...first, workflowRunId: FIRST_RUN_ID }))).toBeNull();
+    expect(workflowTerminalEventIdentity(first)).toBe(`${FIRST_RUN_ID}:1`);
+    expect(projectActivityRows([first, second]).map((event) => event.ingestJobId)).toEqual([SECOND_RUN_ID, FIRST_RUN_ID]);
+  });
+
   test("parses the shared event shape and safely rejects malformed messages", () => {
     const event = workflowEvent(FIRST_RUN_ID, 1);
 
@@ -117,93 +125,6 @@ describe("workflow event state", () => {
   });
 });
 
-const EMPTY_PIPELINE = {
-  clipCount: 0,
-  latestRun: null,
-  renderVariants: [],
-  socialPosts: [],
-} as const;
-
-describe("project pipeline state", () => {
-  test.each([
-    ["success wins", { clipCount: 1, latestRun: { stage: "moment_detection", status: "failed" } }, "done"],
-    ["active run", { latestRun: { stage: "moment_detection", status: "running" } }, "active"],
-    ["waiting run", { latestRun: { stage: "moment_detection", status: "waiting" } }, "active"],
-    ["failed run", { latestRun: { stage: "moment_detection", status: "failed" } }, "failed"],
-    ["unrequested", {}, "todo"],
-  ])("derives detection: %s", (_label, override, expected) => {
-    expect(
-      deriveProjectPipelineStates({ ...EMPTY_PIPELINE, ...override }).detect,
-    ).toBe(expected);
-  });
-
-  test.each([
-    [
-      "success wins",
-      [
-        { status: "completed", hasAsset: true },
-        { status: "rendering", hasAsset: false },
-      ],
-      "done",
-    ],
-    ["active variant", [{ status: "pending", hasAsset: false }], "active"],
-    [
-      "all requested variants failed",
-      [
-        { status: "failed", hasAsset: false },
-        { status: "failed", hasAsset: false },
-      ],
-      "failed",
-    ],
-    ["unrequested", [], "todo"],
-  ])("derives rendering: %s", (_label, renderVariants, expected) => {
-    expect(
-      deriveProjectPipelineStates({ ...EMPTY_PIPELINE, renderVariants }).render,
-    ).toBe(expected);
-  });
-
-  test("an active render run stays active after its first asset completes", () => {
-    expect(
-      deriveProjectPipelineStates({
-        ...EMPTY_PIPELINE,
-        latestRun: { stage: "clip_rendering", status: "running" },
-        renderVariants: [
-          { status: "completed", hasAsset: true },
-          { status: "rendering", hasAsset: false },
-        ],
-      }).render,
-    ).toBe("active");
-  });
-
-  test.each([
-    ["success wins", [{ status: "failed" }, { status: "posted" }], "done"],
-    ["active post", [{ status: "scheduled" }], "active"],
-    ["preparing post", [{ status: "preparing_video" }], "active"],
-    ["provider processing", [{ status: "processing" }], "active"],
-    ["reconciling outcome", [{ status: "reconciling" }], "active"],
-    ["failed post", [{ status: "failed" }], "failed"],
-    ["attention required", [{ status: "needs_attention" }], "failed"],
-    ["unrequested", [], "todo"],
-    // Posts orphaned by clip deletion (clipId SetNull — e.g. after
-    // "Regenerate clips") are history, not current pipeline state: a fresh
-    // clip set with zero renders must not show Publish as done.
-    [
-      "orphaned posted post ignored",
-      [{ status: "posted", clipId: null }],
-      "todo",
-    ],
-    [
-      "orphaned failed post ignored",
-      [{ status: "failed", clipId: null }, { status: "scheduled", clipId: "c1" }],
-      "active",
-    ],
-  ])("derives publishing: %s", (_label, socialPosts, expected) => {
-    expect(
-      deriveProjectPipelineStates({ ...EMPTY_PIPELINE, socialPosts }).publish,
-    ).toBe(expected);
-  });
-});
-
 describe("pipeline status copy", () => {
   test("advances adjacent header stages from the same live workflow run", () => {
     const sttCompleted = {
@@ -260,42 +181,12 @@ describe("pipeline status copy", () => {
   });
 });
 
-describe("processing checklist workflow-v2 states", () => {
-  const base = {
-    ingestStatus: "ready",
-    transcribe: { status: "completed" as const, progress: 100, errorCode: null },
-    detect: { status: "completed" as const, progress: 100, errorCode: null },
-    render: { status: "queued" as const, progress: 0, errorCode: null },
-    mode: "clip" as const,
-    clipCount: 2,
-    hasAnyRendered: false,
-  };
 
-  test("detected clips wait for rendering even after the first artifact lands", () => {
-    const nodes = deriveProcessingChecklist({ ...base, hasAnyRendered: true });
-    expect(nodes.find((node) => node.id === "render")?.state).not.toBe("done");
-    expect(nodes.find((node) => node.id === "done")?.state).not.toBe("done");
-  });
 
-  test("waiting remains active", () => {
-    const nodes = deriveProcessingChecklist({
-      ...base,
-      render: { status: "waiting", progress: 40, errorCode: null },
-    });
-    expect(nodes.find((node) => node.id === "render")?.state).toBe("active");
-  });
-
-  test("partial is terminal and keeps successful artifacts usable", () => {
-    const nodes = deriveProcessingChecklist({
-      ...base,
-      render: {
-        status: "partial",
-        progress: 100,
-        errorCode: "partial_render_failure",
-      },
-      hasAnyRendered: true,
-    });
-    expect(nodes.find((node) => node.id === "render")?.state).toBe("done");
-    expect(nodes.find((node) => node.id === "done")?.state).toBe("done");
-  });
+test("processing checklist ignores another run's history just as the header does", () => {
+  const server = { status: "failed" as const, progress: 20, errorCode: "render_failed" };
+  const oldCompletion = workflowEvent(SECOND_RUN_ID, 10);
+  expect(mergeStageWithLiveEvent(server, oldCompletion, FIRST_RUN_ID)).toEqual(server);
+  expect(mergeStageWithLiveEvent(server, oldCompletion, null)).toEqual(server);
+  expect(mergeStageWithLiveEvent(server, workflowEvent(FIRST_RUN_ID, 11), FIRST_RUN_ID)).toEqual({ status: "completed", progress: 100, errorCode: null });
 });

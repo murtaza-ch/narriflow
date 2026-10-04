@@ -20,6 +20,7 @@ import {
 	ProjectHasActiveWorkflowError,
 	ProjectNotFoundError,
 	projectService,
+	getIngestJobLifecycle,
 	workspaceLibraryService,
 	QuotaExceededError,
 	UploadTooLongError,
@@ -57,8 +58,7 @@ export async function createFolderAction(name: string) {
 		return await executeWorkspaceAction("content.edit", async (appUser) => {
 			try {
 				const folder = await workspaceLibraryService.createFolder(
-					appUser.actorUserId,
-					appUser.workspaceId,
+					appUser,
 					name,
 				);
 				revalidatePath("/projects");
@@ -96,8 +96,7 @@ export async function createFolderAction(name: string) {
 export async function deleteFolderAction(folderId: string) {
 	return executeWorkspaceAction("content.edit", async (appUser) => {
 		await workspaceLibraryService.deleteFolder(
-			appUser.actorUserId,
-			appUser.workspaceId,
+			appUser,
 			folderId,
 		);
 		revalidatePath("/projects");
@@ -109,8 +108,7 @@ export async function renameFolderAction(folderId: string, name: string) {
 		return await executeWorkspaceAction("content.edit", async (appUser) => {
 			try {
 				await workspaceLibraryService.renameFolder(
-					appUser.actorUserId,
-					appUser.workspaceId,
+					appUser,
 					folderId,
 					name,
 				);
@@ -149,31 +147,11 @@ export async function moveProjectToFolderAction(
 ) {
 	return executeProjectAction(projectId, "content.edit", async (appUser) => {
 		await workspaceLibraryService.moveProject(
-			appUser.actorUserId,
-			appUser.workspaceId,
+			appUser,
 			projectId,
 			folderId,
 		);
 		revalidatePath("/projects");
-	});
-}
-
-export async function createProjectFormAction(formData: FormData) {
-	return executeWorkspaceAction("content.edit", async (appUser) => {
-	const title = String(formData.get("title") ?? "");
-	const sourceMediaUrl = String(formData.get("sourceMediaUrl") ?? "");
-
-	const project = await projectService.createProject(
-		appUser.actorUserId,
-		{
-			title,
-			sourceMediaUrl,
-		},
-		appUser.workspaceId,
-	);
-
-	revalidatePath("/projects");
-	redirect(`/projects/${project.id}`);
 	});
 }
 
@@ -190,22 +168,11 @@ export async function queueTranscriptionFormAction(formData: FormData) {
 		async (appUser) => {
 
 	try {
-		await projectService.triggerGeneration(
-			appUser.workspaceOwnerUserId,
-			projectId,
-			{
+		await projectService.triggerGeneration(appUser, projectId, {
 				contentPack: readContentPackFromForm(formData),
 				forceRegenerate: false,
 				languageCode: readLanguageCodeFromForm(formData),
-			},
-			idempotencyKey,
-			{
-				workspaceContext: {
-					workspaceId: appUser.workspaceId,
-					actorUserId: appUser.actorUserId,
-				},
-			},
-		);
+			}, idempotencyKey);
 	} catch (error) {
 		if (isPlanLimitError(error)) {
 			revalidatePath(`/projects/${projectId}`);
@@ -267,15 +234,7 @@ export async function regenerateClipsFormAction(formData: FormData) {
 		async (appUser) => {
 
 	try {
-		await clipService.regenerateClips(
-			projectId,
-			idempotencyKey,
-			readContentPackFromForm(formData),
-			{
-				workspaceId: appUser.workspaceId,
-				actorUserId: appUser.actorUserId,
-			},
-		);
+		await clipService.regenerateClips(appUser, projectId, idempotencyKey, readContentPackFromForm(formData));
 	} catch (error) {
 		if (isPlanLimitError(error)) {
 			revalidatePath(`/projects/${projectId}`);
@@ -305,17 +264,7 @@ export async function renderClipsFormAction(formData: FormData) {
 		"processing.consume",
 		async (appUser) => {
 
-	await clipService.triggerClipRendering(
-		projectId,
-		idempotencyKey,
-		{
-			workspaceId: appUser.workspaceId,
-			actorUserId: appUser.actorUserId,
-		},
-		undefined,
-		aspectRatios.length > 0 ? aspectRatios : undefined,
-		"1080p",
-	);
+	await clipService.triggerClipRendering(appUser, projectId, idempotencyKey, undefined, aspectRatios.length > 0 ? aspectRatios : undefined, "1080p");
 
 	revalidatePath(`/projects/${projectId}`);
 	},
@@ -344,7 +293,8 @@ export async function retryIngestFormAction(
 		async (appUser) => {
 
 	try {
-		await projectService.retryFailedIngest(appUser.workspaceOwnerUserId, projectId, {
+		await getIngestJobLifecycle().retry({
+      projectId,
 			workspaceId: appUser.workspaceId,
 			actorUserId: appUser.actorUserId,
 		},
@@ -387,11 +337,7 @@ export async function setNotifyPreferenceAction(
 	}
 	return executeProjectAction(projectId, "content.edit", async (appUser) => {
 	try {
-		await projectService.setProjectNotifyPreference(
-			appUser.workspaceOwnerUserId,
-			projectId,
-			notifyOnComplete,
-		);
+		await projectService.setProjectNotifyPreference(appUser, projectId, notifyOnComplete);
 	} catch (error) {
 		if (!(error instanceof ProjectNotFoundError)) throw error;
 		return {
@@ -426,7 +372,7 @@ export async function deleteProjectFormAction(
 	}
 	return executeProjectAction(projectId, "content.edit", async (appUser) => {
 	try {
-		await projectService.deleteProject(appUser.workspaceOwnerUserId, projectId);
+		await projectService.deleteProject(appUser, projectId);
 	} catch (error) {
 		if (!(error instanceof ProjectNotFoundError)) {
 			const code =

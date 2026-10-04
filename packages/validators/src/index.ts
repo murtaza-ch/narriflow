@@ -29,6 +29,8 @@ export * from "./output-type";
 export * from "./pricing";
 export * from "./billing-copy";
 export * from "./project";
+export * from "./project-progress";
+export * from "./publishing-composition";
 export * from "./review";
 export * from "./silence-detection";
 export * from "./scene-template";

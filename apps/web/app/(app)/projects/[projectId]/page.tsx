@@ -15,7 +15,6 @@ import {
 	clipService,
 	campaignActionRolloutFromEnv,
 	dubbingService,
-	deriveProjectListProgress,
 	hasFeature,
 	isProgramWriteEnabled,
 	isSocialProviderPublishingEnabled,
@@ -29,6 +28,7 @@ import {
 	workspaceService,
 } from "@narriflow/services";
 import {
+	deriveProjectPipeline,
 	BRAND_DEFAULT_CAPTION_PRESET_ID,
 	LEGACY_DEFAULT_CAPTION_PRESET_ID,
 	captionPresetIdSchema,
@@ -68,9 +68,7 @@ import { gradientForId } from "../_lib/gradient";
 import { formatDate, formatDuration } from "@/lib/format";
 import { getDisplayName, getInitials } from "@/lib/account-display";
 import {
-	deriveProjectPipelineStates,
 	type PipelineStepView,
-	type ProcessingStageInput,
 } from "@/lib/project-state";
 import { Stack, Box, Text, Flex, Tabs, Collapsible } from "@chakra-ui/react";
 import {
@@ -171,11 +169,7 @@ export default async function ProjectDetailPage({
 		{ role: appUser.role, status: appUser.status },
 		"review.override",
 	);
-	const snapshot = await projectService.getProjectSnapshot(
-		appUser.actorUserId,
-		projectId,
-		appUser.workspaceId,
-	);
+	const snapshot = await projectService.getProjectSnapshot(appUser, projectId);
 
 	if (!snapshot.project) {
 		notFound();
@@ -197,37 +191,25 @@ export default async function ProjectDetailPage({
 		activeWorkspace,
 	] = await Promise.all([
 		activeTab === "transcript"
-			? projectService.getTranscriptSnapshot(
-					appUser.workspaceOwnerUserId,
-					projectId,
-				)
+			? projectService.getTranscriptSnapshot(appUser, projectId)
 			: Promise.resolve(null),
 		activeTab === "transcript"
 			? Promise.resolve(null)
-			: projectService.getTranscriptStatusSnapshot(
-					appUser.workspaceOwnerUserId,
-					projectId,
-				),
-		clipService.listClips(appUser.workspaceOwnerUserId, projectId),
-		projectService.getLatestContentPack(projectId),
+			: projectService.getTranscriptStatusSnapshot(appUser, projectId),
+		clipService.listClips(appUser, projectId),
+		projectService.getLatestContentPack(appUser, projectId),
 		activeTab === "analytics"
-			? analyticsService.getProjectAnalytics(
-					appUser.workspaceOwnerUserId,
-					projectId,
-				)
+			? analyticsService.getProjectAnalytics(appUser, projectId)
 			: Promise.resolve(null),
-		socialService.listProjectPosts(appUser.workspaceOwnerUserId, projectId),
+		socialService.listProjectPosts(appUser, projectId),
 		activeTab === "posts" || activeTab === "clips"
-			? socialOAuthService.listAccounts(
-					appUser.workspaceOwnerUserId,
-					appUser.workspaceId,
-				)
+			? socialOAuthService.listAccounts(appUser)
 			: Promise.resolve([]),
 		activeTab === "dubbing"
-			? dubbingService.listProjectDubs(appUser.workspaceOwnerUserId, projectId)
+			? dubbingService.listProjectDubs(appUser, projectId)
 			: Promise.resolve([]),
-		projectService.getWorkflowHistory(appUser.workspaceOwnerUserId, projectId),
-		projectService.getUsageSummary(appUser.actorUserId, appUser.workspaceId),
+		projectService.getWorkflowHistory(appUser, projectId),
+		projectService.getUsageSummary(appUser),
 		activeTab === "clips"
 			? brandProfileService.list(brandScope)
 			: Promise.resolve([]),
@@ -340,14 +322,15 @@ export default async function ProjectDetailPage({
 	// Pipeline derivation from existing workflow/status data.
 	const activeRun = snapshot.activeRun;
 	const renderVariants = clips.flatMap((clip) => clip.renderVariants);
-	const pipelineStates = deriveProjectPipelineStates({
+	const pipelineStates = deriveProjectPipeline({
+		ingestStatus: snapshot.project.ingestStatus,
+		transcript,
 		clipCount: clips.length,
 		latestRun: activeRun,
 		renderVariants,
 		socialPosts: socialPosts.items,
 	});
 	const detectionInFlight = pipelineStates.detect === "active";
-	const hasAnyRendered = renderVariants.some((render) => render.hasAsset);
 	const hasRenderableClips = clips.length > 0;
 
 	// Link-first split (Phase 0/1): the latest pack may still be a draft — a
@@ -376,46 +359,7 @@ export default async function ProjectDetailPage({
 		? `Monthly limit reached during processing (${usage.limitMinutes} min/mo; ${usage.usedMinutes} min used) on the ${usage.tier} plan.`
 		: null;
 
-	const transcribeStage: ProcessingStageInput =
-		activeRun?.stage === "stt"
-			? {
-					status: activeRun.status as ProcessingStageInput["status"],
-					progress: activeRun.progress,
-					errorCode: activeRun.errorCode,
-				}
-			: transcriptReady
-				? { status: "completed", progress: 100, errorCode: null }
-				: transcript?.status === "failed"
-					? {
-							status: "failed",
-							progress: 0,
-							errorCode: transcript.errorCode ?? null,
-						}
-					: { status: null, progress: 0, errorCode: null };
-
-	const detectStage: ProcessingStageInput =
-		activeRun?.stage === "moment_detection"
-			? {
-					status: activeRun.status as ProcessingStageInput["status"],
-					progress: activeRun.progress,
-					errorCode: activeRun.errorCode,
-				}
-			: clips.length > 0
-				? { status: "completed", progress: 100, errorCode: null }
-				: { status: null, progress: 0, errorCode: null };
-
-	// Detection queues a separate render run. Read that run's status while
-	// it is active, then fall back to completed artifacts.
-	const renderStage: ProcessingStageInput =
-		activeRun?.stage === "clip_rendering"
-			? {
-					status: activeRun.status as ProcessingStageInput["status"],
-					progress: activeRun.progress,
-					errorCode: activeRun.errorCode,
-				}
-			: hasAnyRendered
-				? { status: "completed", progress: 100, errorCode: null }
-				: { status: null, progress: 0, errorCode: null };
+	const { transcribe: transcribeStage, detect: detectStage, render: renderStage } = pipelineStates.processingStages;
 
 	// Phase 2a — the Clips tab shows the processing panel instead of the
 	// Step 01/02 form cards whenever a run is in flight, or ingest is still
@@ -432,47 +376,28 @@ export default async function ProjectDetailPage({
 				runInFlight ||
 				runFailed ||
 				quotaBlockedMidFlight
-			: !renderStageSucceeded);
+			: pipelineStates.hasUnfinishedProcessing || !renderStageSucceeded);
 
 	const steps: PipelineStepView[] = [
 		{
 			label: "Ingest",
-			state:
-				snapshot.project.ingestStatus === "ready"
-					? "done"
-					: snapshot.project.ingestStatus === "failed"
-						? "failed"
-						: "active",
+			state: pipelineStates.ingest,
 			status: snapshot.project.ingestStatus,
 		},
 		{
 			label: "Transcribe",
-			state: transcriptReady
-				? "done"
-				: transcriptInFlight
-					? "active"
-					: transcript?.status === "failed"
-						? "failed"
-						: "todo",
-			status:
-				activeRun?.stage === "stt" ? activeRun.status : transcript?.status,
+			state: pipelineStates.transcribe,
+			status: transcribeStage.status,
 		},
 		{
 			label: "Detect",
 			state: pipelineStates.detect,
-			status: activeRun?.stage === "moment_detection" ? activeRun.status : null,
+			status: detectStage.status,
 		},
 		{
 			label: "Render",
 			state: pipelineStates.render,
-			status:
-				activeRun?.stage === "clip_rendering"
-					? activeRun.status
-					: renderVariants.some((variant) => variant.status === "rendering")
-						? "running"
-						: renderVariants.some((variant) => variant.status === "pending")
-							? "queued"
-							: null,
+			status: renderStage.status,
 		},
 		{
 			label: "Publish",
@@ -482,19 +407,7 @@ export default async function ProjectDetailPage({
 
 	const durationSec = snapshot.project.sourceDurationSeconds;
 
-	// The header consumes the same list-facing progress interface. The detail
-	// retains its richer per-stage stepper below; this compact badge only says
-	// whether the Project is still moving or needs attention.
-	const projectProgress = deriveProjectListProgress({
-		ingestStatus: snapshot.project.ingestStatus,
-		workflowRuns: activeRun
-			? [{
-					stage: activeRun.stage,
-					status: activeRun.status,
-					updatedAt: activeRun.updatedAt,
-				}]
-			: [],
-	});
+	const projectProgress = snapshot.progress;
 
 	return (
 		<Stack
@@ -847,8 +760,7 @@ export default async function ProjectDetailPage({
 										detect={detectStage}
 										render={renderStage}
 										mode={generationMode}
-										clipCount={clips.length}
-										hasAnyRendered={hasAnyRendered}
+										workflowRunId={activeRun?.workflowRunId ?? null}
 										quotaBlockedMessage={quotaBlockedMessage}
 										advancedSettingsProps={advancedSettingsProps}
 										defaultSourceLanguageCode={snapshot.project.languageCode}

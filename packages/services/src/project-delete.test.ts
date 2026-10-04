@@ -3,9 +3,6 @@ import {
 	planProjectStorageDeletion,
 	deleteProjectStorageObjects,
 	runProjectDeletion,
-	ProjectAccessDeniedError,
-	ProjectNotFoundError,
-	projectService,
 	type ProjectDeletionAccessResult,
 	type ProjectDeletionDeps,
 	type ProjectDeletionRow,
@@ -290,61 +287,5 @@ describe("runProjectDeletion", () => {
 
 		expect(first).toEqual({ kind: "deleted" });
 		expect(second).toEqual({ kind: "not_found" });
-	});
-});
-
-describe("ProjectService.deleteProject (no database configured)", () => {
-	// Matches this package's documented "no DATABASE_URL" test mode: the
-	// service falls back to its in-memory project map.
-	test("deletes an owned project and leaves it unreachable afterward", async () => {
-		const project = await projectService.createProject("delete-test-user-a", {
-			title: "Owned project",
-			sourceMediaUrl: "https://example.com/a.mp4",
-		});
-
-		await expect(
-			projectService.deleteProject("delete-test-user-a", project.id),
-		).resolves.toBeUndefined();
-		expect(
-			await projectService.getProjectAccess("delete-test-user-a", project.id),
-		).toBe("missing");
-	});
-
-	test("throws ProjectNotFoundError for an id that was never created", async () => {
-		await expect(
-			projectService.deleteProject(
-				"delete-test-user-a",
-				"00000000-0000-4000-8000-000000000000",
-			),
-		).rejects.toBeInstanceOf(ProjectNotFoundError);
-	});
-
-	test("throws ProjectAccessDeniedError when the project belongs to someone else", async () => {
-		const project = await projectService.createProject("delete-test-owner", {
-			title: "Not yours",
-			sourceMediaUrl: "https://example.com/b.mp4",
-		});
-
-		await expect(
-			projectService.deleteProject("delete-test-intruder", project.id),
-		).rejects.toBeInstanceOf(ProjectAccessDeniedError);
-
-		// Access denial must not have deleted it out from under the owner.
-		expect(
-			await projectService.getProjectAccess("delete-test-owner", project.id),
-		).toBe("owned");
-	});
-
-	test("idempotent re-delete: deleting an already-deleted project throws ProjectNotFoundError instead of crashing", async () => {
-		const project = await projectService.createProject("delete-test-user-c", {
-			title: "Ephemeral",
-			sourceMediaUrl: "https://example.com/c.mp4",
-		});
-
-		await projectService.deleteProject("delete-test-user-c", project.id);
-
-		await expect(
-			projectService.deleteProject("delete-test-user-c", project.id),
-		).rejects.toBeInstanceOf(ProjectNotFoundError);
 	});
 });

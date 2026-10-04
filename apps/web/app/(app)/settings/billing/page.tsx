@@ -22,7 +22,7 @@ export default async function BillingPage({
   const appUser = await admitWorkspacePage("content.view");
   const [billingView, usedMinutes, params] = await Promise.all([
     billingService.readBillingState(appUser.workspaceId),
-    projectService.getWorkspaceMonthlyUsageMinutes(appUser.workspaceId),
+    projectService.getUsageSummary(appUser).then((usage) => usage.usedMinutes),
     searchParams,
   ]);
   const tier = billingView.plan;

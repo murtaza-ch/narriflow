@@ -7,10 +7,7 @@ import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 
 export default async function UsageSettingsPage() {
   const appUser = await admitWorkspacePage("content.view");
-  const [tier, usedMinutes] = await Promise.all([
-    projectService.getWorkspacePricingTier(appUser.workspaceId),
-    projectService.getWorkspaceMonthlyUsageMinutes(appUser.workspaceId),
-  ]);
+  const { tier, usedMinutes } = await projectService.getUsageSummary(appUser);
   const limit = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
   const percent = Math.min(100, Math.round((usedMinutes / Math.max(1, limit)) * 100),
   );

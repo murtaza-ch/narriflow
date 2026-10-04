@@ -7,7 +7,7 @@ export {
 } from "./caption-preset";
 import { brollCuesArraySchema } from "./broll";
 import { captionPresetSchema } from "./caption-preset";
-import { clipPlatformTargetSchema } from "./content-pack";
+import { contentPackSchema, clipPlatformTargetSchema } from "./content-pack";
 import { studioEditsSchema } from "./studio-edits";
 import { transcriptUtteranceSchema } from "./transcript";
 
@@ -315,7 +315,7 @@ export const clipDownloadQuerySchema = z.object({
 // camelCase BrollCue shape used everywhere past this LLM response boundary.
 // Deliberately lenient (no upper bound on string length or array size) beyond
 // what OpenAI's strict-mode JSON schema requires: brollCuesArraySchema already
-// re-validates the normalized cues downstream (apps/worker/src/tasks/render-clips.ts)
+// re-validates the normalized cues downstream (apps/worker/src/tasks/clip-render-attempt.ts)
 // and degrades gracefully to the keyword-derived query on failure, so this layer
 // should never be the reason a whole clip gets dropped over an oversized B-roll field.
 const clipDetectionBrollCueSchema = z.object({
@@ -370,3 +370,9 @@ export type UpdateClipTranscriptSlice = z.infer<typeof updateClipTranscriptSlice
 export type UpdateClipBroll = z.infer<typeof updateClipBrollSchema>;
 export type CreateClipFromSelection = z.infer<typeof createClipFromSelectionSchema>;
 export type BrollSearchQuery = z.infer<typeof brollSearchQuerySchema>;
+
+
+export const regenerateClipsRequestSchema = z.object({
+  contentPack: contentPackSchema,
+}).strict();
+export type RegenerateClipsRequest = z.infer<typeof regenerateClipsRequestSchema>;

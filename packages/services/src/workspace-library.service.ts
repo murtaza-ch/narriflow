@@ -1,12 +1,25 @@
 import { getPrismaClient } from "@narriflow/db/client";
+import { Prisma } from "@prisma/client";
 import type {
+	IngestStatus as PrismaIngestStatus,
+	TranscriptStatus as PrismaTranscriptStatus,
 	ClipAspectRatio,
 	ClipExportStatus,
 	SocialPlatform,
 	SocialPostStatus,
 } from "@prisma/client";
-import type { SocialPostSnapshot } from "@narriflow/validators";
+import {
+	deriveProjectListProgress,
+	type ProjectListProgress,
+	type SocialPostSnapshot,
+} from "@narriflow/validators";
+import { toProjectSnapshot, type ProjectSnapshot } from "./project-snapshot";
+import {
+	projectProgressStatusSql,
+	projectProgressWorkflowOrderSql,
+} from "./project-progress";
 
+import type { ActorScope } from "./actor-scope";
 import { accessibleProjectWhere } from "./project-access";
 import {
 	ExpectedDomainFailureError,
@@ -86,16 +99,313 @@ function nextLibraryCursor(rows: { id: string; createdAt: Date }[]) {
 		: null;
 }
 
+export interface ProjectListItem extends ProjectSnapshot {
+	clipCount: number;
+	avgViralityScore: number | null;
+	/** Product-facing pipeline state. Source intake remains separate from
+	 * Workflow Runs; this is their one shared interpretation for project lists. */
+	progress: ProjectListProgress;
+	transcript: {
+		languageCode: string | null;
+		speakerCount: number | null;
+		durationSeconds: number | null;
+		status: PrismaTranscriptStatus;
+	} | null;
+}
+
+export type ProjectListStatusFilter =
+	| "all"
+	| "ready"
+	| "processing"
+	| "queued"
+	| "failed";
+
+export type ProjectListSourceFilter =
+	| "all"
+	| "youtube"
+	| "link"
+	| "upload"
+	| "rss";
+export type ProjectListSort = "newest" | "oldest" | "title" | "clips";
+
+export interface ProjectListPage {
+	items: ProjectListItem[];
+	nextCursor: string | null;
+	totalCount: number;
+	statusCounts: Record<ProjectListStatusFilter, number>;
+}
+
+const DEFAULT_PROJECT_PAGE_SIZE = 50;
+const MAX_PROJECT_PAGE_SIZE = 100;
+
+function clampProjectPageSize(limit?: number) {
+	if (!Number.isFinite(limit ?? DEFAULT_PROJECT_PAGE_SIZE)) {
+		return DEFAULT_PROJECT_PAGE_SIZE;
+	}
+
+	return Math.max(
+		1,
+		Math.min(
+			MAX_PROJECT_PAGE_SIZE,
+			Math.floor(limit ?? DEFAULT_PROJECT_PAGE_SIZE),
+		),
+	);
+}
+
+function encodeProjectCursor(offset: number) {
+	return Buffer.from(JSON.stringify({ offset })).toString("base64url");
+}
+
+function decodeProjectCursor(cursor: string | null | undefined) {
+	if (!cursor) return 0;
+
+	try {
+		const parsed = JSON.parse(
+			Buffer.from(cursor, "base64url").toString("utf8"),
+		) as { offset?: unknown };
+
+		return typeof parsed.offset === "number" &&
+			Number.isSafeInteger(parsed.offset) &&
+			parsed.offset >= 0
+			? parsed.offset
+			: 0;
+	} catch {
+		return 0;
+	}
+}
+
+function emptyProjectStatusCounts(): Record<ProjectListStatusFilter, number> {
+	return { all: 0, ready: 0, processing: 0, queued: 0, failed: 0 };
+}
+
 export class WorkspaceLibraryService {
-	async search(userId: string, workspaceId: string, query: string) {
-		await workspaceService.requireActor(userId, workspaceId, "content.view");
+	async listProjects(
+		scope: ActorScope,
+		options: {
+			limit?: number;
+			cursor?: string | null;
+			folderId?: string;
+			query?: string;
+			status?: ProjectListStatusFilter;
+			source?: ProjectListSourceFilter;
+			sort?: ProjectListSort;
+		} = {},
+	): Promise<ProjectListPage> {
+		const limit = clampProjectPageSize(options.limit);
+		const offset = decodeProjectCursor(options.cursor);
+		const query = options.query?.trim().slice(0, 200) ?? "";
+		const status = options.status ?? "all";
+		const source = options.source ?? "all";
+		const sort = options.sort ?? "newest";
+		const prisma = requiredPrisma();
+
+		await workspaceService.requireActor(
+			scope.actorUserId,
+			scope.workspaceId,
+			"content.view",
+		);
+		const workspaceId = scope.workspaceId;
+		const progressConditions = [
+			Prisma.sql`p."workspaceId" = ${workspaceId}`,
+			Prisma.sql`p."purgeStartedAt" IS NULL`,
+			Prisma.sql`(p."expiresAt" IS NULL OR p."expiresAt" > NOW())`,
+		];
+		if (options.folderId)
+			progressConditions.push(Prisma.sql`p."folderId" = ${options.folderId}`);
+		if (source !== "all")
+			progressConditions.push(
+				Prisma.sql`p."sourceType" = CAST(${source} AS "SourceType")`,
+			);
+		if (query) {
+			const pattern = `%${query
+				.replaceAll("\\", "\\\\")
+				.replaceAll("%", "\\%")
+				.replaceAll("_", "\\_")}%`;
+			progressConditions.push(
+				Prisma.sql`(p.title ILIKE ${pattern} ESCAPE E'\\\\' OR p."sourceMediaUrl" ILIKE ${pattern} ESCAPE E'\\\\' OR p."sourceInput" ILIKE ${pattern} ESCAPE E'\\\\')`,
+			);
+		}
+		const progressStatus = projectProgressStatusSql({
+			ingestStatus: Prisma.sql`p."ingestStatus"`,
+			workflowStatus: Prisma.sql`current_run.status`,
+		});
+		const workflowOrder = projectProgressWorkflowOrderSql();
+		const progressCte = Prisma.sql`
+			WITH listed AS (
+				SELECT
+					p.id,
+					p."ingestStatus",
+					current_run.id AS "workflowRunId",
+					current_run."updatedAt" AS "workflowUpdatedAt",
+					current_run.stage AS "workflowStage",
+					current_run.status AS "workflowStatus",
+					p."createdAt",
+					p.title,
+					${progressStatus} AS "progressStatus"
+				FROM "Project" p
+				LEFT JOIN LATERAL (
+					SELECT id, "updatedAt", stage, status
+					FROM "WorkflowRun"
+					WHERE "projectId" = p.id
+					ORDER BY ${workflowOrder}
+					LIMIT 1
+				) current_run ON TRUE
+				WHERE ${Prisma.join(progressConditions, " AND ")}
+			)
+		`;
+		const orderBy =
+			sort === "oldest"
+				? Prisma.sql`"createdAt" ASC, id ASC`
+				: sort === "title"
+					? Prisma.sql`title ASC, id ASC`
+					: sort === "clips"
+						? Prisma.sql`(SELECT COUNT(*) FROM "Clip" WHERE "projectId" = listed.id) DESC, "createdAt" DESC, id DESC`
+						: Prisma.sql`"createdAt" DESC, id DESC`;
+		type ProgressRow = {
+			id: string;
+			ingestStatus: PrismaIngestStatus;
+			workflowRunId: string | null;
+			workflowUpdatedAt: Date | null;
+			workflowStage: string | null;
+			workflowStatus: string | null;
+			progressStatus: Exclude<ProjectListStatusFilter, "all">;
+		};
+		const statusFilter =
+			status === "all"
+				? Prisma.empty
+				: Prisma.sql`WHERE "progressStatus" = ${status}`;
+		const [pageWithLookahead, countRows] = await Promise.all([
+			prisma.$queryRaw<ProgressRow[]>(Prisma.sql`
+				${progressCte}
+				SELECT id, "ingestStatus", "workflowRunId", "workflowUpdatedAt", "workflowStage", "workflowStatus", "progressStatus"
+				FROM listed
+				${statusFilter}
+				ORDER BY ${orderBy}
+				OFFSET ${offset} LIMIT ${limit + 1}
+			`),
+			prisma.$queryRaw<
+				Array<{
+					progressStatus: Exclude<ProjectListStatusFilter, "all">;
+					count: bigint;
+				}>
+			>(Prisma.sql`
+				${progressCte}
+				SELECT "progressStatus", COUNT(*)::bigint AS count
+				FROM listed
+				GROUP BY "progressStatus"
+			`),
+		]);
+		const statusCounts = emptyProjectStatusCounts();
+		for (const row of countRows) {
+			statusCounts.all += Number(row.count);
+			statusCounts[row.progressStatus] += Number(row.count);
+		}
+		const totalCount =
+			status === "all" ? statusCounts.all : statusCounts[status];
+		const pageRows = pageWithLookahead.slice(0, limit);
+
+		if (pageRows.length === 0) {
+			return { items: [], nextCursor: null, totalCount, statusCounts };
+		}
+
+		const projectIds = pageRows.map((row) => row.id);
+
+		const [projectRows, clipAggregates, transcripts] = await Promise.all([
+			prisma.project.findMany({
+				where: {
+					id: { in: projectIds },
+					workspaceId,
+					...accessibleProjectWhere(),
+				},
+			}),
+			prisma.clip.groupBy({
+				by: ["projectId"],
+				where: { projectId: { in: projectIds } },
+				_count: { _all: true },
+				_avg: { viralityScore: true },
+			}),
+			prisma.transcript.findMany({
+				where: { projectId: { in: projectIds } },
+				select: {
+					projectId: true,
+					languageCode: true,
+					speakerCount: true,
+					durationSeconds: true,
+					status: true,
+				},
+			}),
+		]);
+
+		const clipMap = new Map(
+			clipAggregates.map((entry) => [entry.projectId, entry] as const),
+		);
+		const transcriptMap = new Map(
+			transcripts.map((entry) => [entry.projectId, entry] as const),
+		);
+		const projectMap = new Map(
+			projectRows.map((row) => [row.id, row] as const),
+		);
+
+		const items = pageRows.flatMap((progressRow) => {
+			const row = projectMap.get(progressRow.id);
+			if (!row) return [];
+			const clip = clipMap.get(row.id);
+			const transcript = transcriptMap.get(row.id) ?? null;
+
+			return [
+				{
+					...toProjectSnapshot(row),
+					clipCount: clip?._count._all ?? 0,
+					avgViralityScore: clip?._avg.viralityScore ?? null,
+					progress: deriveProjectListProgress({
+						ingestStatus: progressRow.ingestStatus,
+						workflowRuns:
+							progressRow.workflowRunId &&
+							progressRow.workflowUpdatedAt &&
+							progressRow.workflowStage &&
+							progressRow.workflowStatus
+								? [
+										{
+											id: progressRow.workflowRunId,
+											stage: progressRow.workflowStage,
+											status: progressRow.workflowStatus,
+											updatedAt: progressRow.workflowUpdatedAt,
+										},
+									]
+								: [],
+					}),
+					transcript: transcript
+						? {
+								languageCode: transcript.languageCode,
+								speakerCount: transcript.speakerCount,
+								durationSeconds: transcript.durationSeconds,
+								status: transcript.status,
+							}
+						: null,
+				},
+			];
+		});
+
+		return {
+			items,
+			nextCursor:
+				pageWithLookahead.length > limit && items.length > 0
+					? encodeProjectCursor(offset + items.length)
+					: null,
+			totalCount,
+			statusCounts,
+		};
+	}
+
+	async search(scope: ActorScope, query: string) {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		const q = query.trim().slice(0, 120);
 		if (q.length < 2) return [];
 		const prisma = requiredPrisma();
 		const [projects, folders, clips] = await Promise.all([
 			prisma.project.findMany({
 				where: {
-					workspaceId,
+					workspaceId: scope.workspaceId,
 					...accessibleProjectWhere(),
 					title: { contains: q, mode: "insensitive" },
 				},
@@ -104,7 +414,7 @@ export class WorkspaceLibraryService {
 				take: 8,
 			}),
 			prisma.workspaceFolder.findMany({
-				where: { workspaceId, name: { contains: q, mode: "insensitive" } },
+				where: { workspaceId: scope.workspaceId, name: { contains: q, mode: "insensitive" } },
 				select: {
 					id: true,
 					name: true,
@@ -115,7 +425,7 @@ export class WorkspaceLibraryService {
 			}),
 			prisma.clip.findMany({
 				where: {
-					project: { workspaceId, ...accessibleProjectWhere() },
+					project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
 					OR: [
 						{ title: { contains: q, mode: "insensitive" } },
 						{ hookText: { contains: q, mode: "insensitive" } },
@@ -158,10 +468,10 @@ export class WorkspaceLibraryService {
 		];
 	}
 
-	async listFolders(userId: string, workspaceId: string) {
-		await workspaceService.requireActor(userId, workspaceId, "content.view");
+	async listFolders(scope: ActorScope) {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		return requiredPrisma().workspaceFolder.findMany({
-			where: { workspaceId },
+			where: { workspaceId: scope.workspaceId },
 			select: {
 				id: true,
 				name: true,
@@ -172,30 +482,29 @@ export class WorkspaceLibraryService {
 		});
 	}
 
-	async createFolder(userId: string, workspaceId: string, name: string) {
-		await workspaceService.requireActor(userId, workspaceId, "content.edit");
+	async createFolder(scope: ActorScope, name: string) {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
 		const safeName = validFolderName(name);
 		return requiredPrisma().workspaceFolder.create({
 			data: {
-				workspaceId,
+				workspaceId: scope.workspaceId,
 				name: safeName,
 				normalizedName: normalizedFolderName(safeName),
-				createdByUserId: userId,
+				createdByUserId: scope.actorUserId,
 			},
 			select: { id: true, name: true, createdAt: true },
 		});
 	}
 
 	async renameFolder(
-		userId: string,
-		workspaceId: string,
+		scope: ActorScope,
 		folderId: string,
 		name: string,
 	) {
-		await workspaceService.requireActor(userId, workspaceId, "content.edit");
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
 		const safeName = validFolderName(name);
 		const updated = await requiredPrisma().workspaceFolder.updateMany({
-			where: { id: folderId, workspaceId },
+			where: { id: folderId, workspaceId: scope.workspaceId },
 			data: { name: safeName, normalizedName: normalizedFolderName(safeName) },
 		});
 		if (updated.count === 0) {
@@ -206,12 +515,12 @@ export class WorkspaceLibraryService {
 		}
 	}
 
-	async deleteFolder(userId: string, workspaceId: string, folderId: string) {
-		await workspaceService.requireActor(userId, workspaceId, "content.edit");
+	async deleteFolder(scope: ActorScope, folderId: string) {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
 		const prisma = requiredPrisma();
 		await prisma.$transaction(async (tx) => {
 			const folder = await tx.workspaceFolder.findFirst({
-				where: { id: folderId, workspaceId },
+				where: { id: folderId, workspaceId: scope.workspaceId },
 				select: { id: true },
 			});
 			if (!folder) {
@@ -221,7 +530,7 @@ export class WorkspaceLibraryService {
 				);
 			}
 			await tx.project.updateMany({
-				where: { workspaceId, folderId },
+				where: { workspaceId: scope.workspaceId, folderId },
 				data: { folderId: null },
 			});
 			await tx.workspaceFolder.delete({ where: { id: folderId } });
@@ -229,16 +538,15 @@ export class WorkspaceLibraryService {
 	}
 
 	async moveProject(
-		userId: string,
-		workspaceId: string,
+		scope: ActorScope,
 		projectId: string,
 		folderId: string | null,
 	) {
-		await workspaceService.requireActor(userId, workspaceId, "content.edit");
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
 		const prisma = requiredPrisma();
 		if (folderId) {
 			const folder = await prisma.workspaceFolder.findFirst({
-				where: { id: folderId, workspaceId },
+				where: { id: folderId, workspaceId: scope.workspaceId },
 			});
 			if (!folder) {
 				throw new WorkspaceLibraryError(
@@ -248,8 +556,8 @@ export class WorkspaceLibraryService {
 			}
 		}
 		const updated = await prisma.project.updateMany({
-			where: { id: projectId, workspaceId, ...accessibleProjectWhere() },
-			data: { folderId, updatedByUserId: userId },
+			where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+			data: { folderId, updatedByUserId: scope.actorUserId },
 		});
 		if (updated.count === 0) {
 			throw new WorkspaceLibraryError(
@@ -260,8 +568,7 @@ export class WorkspaceLibraryService {
 	}
 
 	async listExports(
-		userId: string,
-		workspaceId: string,
+		scope: ActorScope,
 		filters: {
 			status?: ClipExportStatus | "processing";
 			query?: string;
@@ -272,10 +579,10 @@ export class WorkspaceLibraryService {
 			cursor?: string;
 		} = {},
 	) {
-		await workspaceService.requireActor(userId, workspaceId, "content.view");
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		const rows = await requiredPrisma().clipExport.findMany({
 			where: {
-				workspaceId,
+				workspaceId: scope.workspaceId,
 				AND: libraryContinuation(filters.cursor),
 				...(filters.status === "processing"
 					? {
@@ -367,12 +674,12 @@ export class WorkspaceLibraryService {
 		};
 	}
 
-	async listExportProjects(userId: string, workspaceId: string) {
-		await workspaceService.requireActor(userId, workspaceId, "content.view");
+	async listExportProjects(scope: ActorScope) {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		return requiredPrisma().project.findMany({
 			where: {
-				workspaceId,
-				clipExports: { some: { workspaceId } },
+				workspaceId: scope.workspaceId,
+				clipExports: { some: { workspaceId: scope.workspaceId } },
 				...accessibleProjectWhere(),
 			},
 			select: { id: true, title: true },
@@ -382,8 +689,7 @@ export class WorkspaceLibraryService {
 	}
 
 	async listCalendarPosts(
-		userId: string,
-		workspaceId: string,
+		scope: ActorScope,
 		filters: {
 			from: Date;
 			to: Date;
@@ -393,10 +699,10 @@ export class WorkspaceLibraryService {
 			projectId?: string;
 		},
 	) {
-		await workspaceService.requireActor(userId, workspaceId, "content.view");
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		const rows = await requiredPrisma().socialPost.findMany({
 			where: {
-				workspaceId,
+				workspaceId: scope.workspaceId,
 				scheduledFor: { gte: filters.from, lte: filters.to },
 				...(filters.status ? { status: filters.status } : {}),
 				...(filters.platform ? { platform: filters.platform } : {}),
@@ -459,19 +765,19 @@ export class WorkspaceLibraryService {
 		}));
 	}
 
-	async getCalendarFilters(userId: string, workspaceId: string) {
-		await workspaceService.requireActor(userId, workspaceId, "content.view");
+	async getCalendarFilters(scope: ActorScope) {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		const prisma = requiredPrisma();
 		const [accounts, projects] = await Promise.all([
 			prisma.socialAccount.findMany({
-				where: { workspaceId, status: { not: "revoked" } },
+				where: { workspaceId: scope.workspaceId, status: { not: "revoked" } },
 				select: { id: true, displayName: true, platform: true },
 				orderBy: { displayName: "asc" },
 			}),
 			prisma.project.findMany({
 				where: {
-					workspaceId,
-					socialPosts: { some: { workspaceId } },
+					workspaceId: scope.workspaceId,
+					socialPosts: { some: { workspaceId: scope.workspaceId } },
 					...accessibleProjectWhere(),
 				},
 				select: { id: true, title: true },
@@ -482,20 +788,19 @@ export class WorkspaceLibraryService {
 	}
 
 	async getCalendarComposerOptions(
-		userId: string,
-		workspaceId: string,
+		scope: ActorScope,
 		options: { query?: string; cursor?: string } = {},
 	) {
 		await workspaceService.requireActor(
-			userId,
-			workspaceId,
+			scope.actorUserId,
+			scope.workspaceId,
 			"publishing.manage",
 		);
 		const prisma = requiredPrisma();
 		const [clips, accounts] = await Promise.all([
 			prisma.clip.findMany({
 				where: {
-					project: { workspaceId, ...accessibleProjectWhere() },
+					project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
 					AND: libraryContinuation(options.cursor),
 					...(options.query?.trim()
 						? {
@@ -520,7 +825,7 @@ export class WorkspaceLibraryService {
 				take: 101,
 			}),
 			prisma.socialAccount.findMany({
-				where: { workspaceId, status: "active" },
+				where: { workspaceId: scope.workspaceId, status: "active" },
 				select: { id: true, platform: true, displayName: true, handle: true },
 				orderBy: [{ platform: "asc" }, { displayName: "asc" }],
 			}),

@@ -174,17 +174,13 @@ describe("isProjectSourcePurgeEligible", () => {
 });
 
 describe("purgeExpiredProjectSources / purgeOldWorkflowEvents (no database configured)", () => {
-  // This package's tests run without DATABASE_URL set, matching
-  // getPrismaClient()'s documented "no database" fallback. Both jobs must be
-  // safe no-ops in that mode rather than throwing, since the worker reaper
-  // calls them unconditionally on every tick.
-  test("purgeExpiredProjectSources resolves to 0 without touching R2 or the DB", async () => {
-    await expect(purgeExpiredProjectSources()).resolves.toBe(0);
-    await expect(purgeExpiredProjectSources(30)).resolves.toBe(0);
+  test("source cleanup rejects a missing database instead of reporting a successful empty sweep", async () => {
+    await expect(purgeExpiredProjectSources()).rejects.toThrow("DATABASE_URL is required for Project maintenance");
+    await expect(purgeExpiredProjectSources(30)).rejects.toThrow("DATABASE_URL is required for Project maintenance");
   });
 
-  test("purgeOldWorkflowEvents resolves to 0 without touching the DB", async () => {
-    await expect(purgeOldWorkflowEvents()).resolves.toBe(0);
-    await expect(purgeOldWorkflowEvents(7)).resolves.toBe(0);
+  test("workflow history cleanup rejects a missing database instead of reporting a successful empty sweep", async () => {
+    await expect(purgeOldWorkflowEvents()).rejects.toThrow("DATABASE_URL is required for Project maintenance");
+    await expect(purgeOldWorkflowEvents(7)).rejects.toThrow("DATABASE_URL is required for Project maintenance");
   });
 });

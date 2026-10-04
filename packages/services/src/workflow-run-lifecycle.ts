@@ -61,8 +61,8 @@ export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef {
     sourceStorageKey: string | null;
     sourceMimeType: string | null;
     sourceDurationSeconds: number | null;
-    userId: string;
-    workspaceId: string | null;
+    createdByUserId: string | null;
+    workspaceId: string;
   };
 }
 
@@ -173,7 +173,7 @@ export interface WorkflowLifecycleDependencies {
   ) => Promise<void>;
   publishRedis?: (event: WorkflowStageUpdatedEvent) => Promise<boolean>;
   handoffNotification?: (
-    payload: RenderTerminalNotificationPayload,
+    payload: NonNullable<WorkflowStageUpdatedEvent["notification"]>,
   ) => Promise<void>;
 }
 
@@ -332,12 +332,10 @@ export class WorkflowRunLifecycle {
       dependencies.handoffNotification ??
       (async (payload) => {
         const outcome: NotificationOutcome =
-          payload.kind === "clip_render.failed"
-            ? "generation_failed"
-            : "clips_ready";
+          payload.kind === "ingest.failed" ? "import_failed" : payload.kind === "clip_render.failed" ? "generation_failed" : "clips_ready";
         await notificationService.handoff({
           projectId: payload.projectId,
-          sourceId: payload.workflowRunId,
+          sourceId: payload.kind === "ingest.failed" ? payload.ingestJobId : payload.workflowRunId,
           outcome,
         });
       });
@@ -618,6 +616,63 @@ export class WorkflowRunLifecycle {
     }
   }
 
+  /** Recovers unassigned render work without creating another active run.
+   * Admission, its event, and pending export linkage share the Project lock
+   * and transaction used by ordinary render admission. */
+  async rescuePendingClipRenderingRun(): Promise<string | null> {
+    const candidate = await this.prisma.clipRender.findFirst({
+      where: {
+        status: "pending",
+        workflowRunId: null,
+        clip: {
+          project: {
+            ...accessibleProjectWhere(),
+            workflowRuns: {
+              none: {
+                stage: "clip_rendering",
+                status: { in: ["queued", "running", "waiting"] },
+              },
+            },
+          },
+        },
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { clip: { select: { projectId: true } } },
+    });
+    if (!candidate) return null;
+    const projectId = candidate.clip.projectId;
+
+    return this.transaction(async (tx) => {
+      await this.lockAdmissionProject(tx, projectId);
+      const project = await tx.project.findFirst({
+        where: {
+          id: projectId,
+          ...accessibleProjectWhere(),
+          clips: { some: { renders: { some: { status: "pending", workflowRunId: null } } } },
+          workflowRuns: {
+            none: {
+              stage: "clip_rendering",
+              status: { in: ["queued", "running", "waiting"] },
+            },
+          },
+        },
+        select: { id: true },
+      });
+      if (!project) return null;
+
+      const run = await this.admitWithinTransaction(tx, {
+        projectId,
+        idempotencyKey: `render-rescue:${randomUUID()}`,
+        stage: "clip_rendering",
+      });
+      await tx.clipExport.updateMany({
+        where: { projectId, status: { in: ["queued", "rendering"] } },
+        data: { workflowRunId: run.id },
+      });
+      return run.id;
+    });
+  }
+
   /** Admits a run and persists its domain handoff in the same transaction.
    * Workers can never claim a queued run whose required domain row is still
    * missing. The project advisory lock preserves the ordinary admission
@@ -641,6 +696,7 @@ export class WorkflowRunLifecycle {
           select: { id: true },
         });
         if (active) throw new Error("workflow_stage_admission_busy");
+        if (input.contentPackId) await this.requireCommittedContentPack(tx, input.projectId, input.contentPackId);
         admitted = await this.admitWithinTransaction(tx, { ...input, contentPackId: input.contentPackId ?? null });
       }
       const value = await handoff(tx, admitted);
@@ -813,7 +869,7 @@ export class WorkflowRunLifecycle {
               sourceStorageKey: true,
               sourceMimeType: true,
               sourceDurationSeconds: true,
-              userId: true,
+              createdByUserId: true,
               workspaceId: true,
             },
           },

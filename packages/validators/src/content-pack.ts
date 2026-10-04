@@ -102,22 +102,10 @@ export const contentPackSchema = z.object({
 
 export type ContentPack = z.infer<typeof contentPackSchema>;
 
-/**
- * Parses a ContentPack row read from the database. Tolerant of legacy
- * `captionPreset` values written before preset IDs became a fixed enum — an
- * unrecognized value falls back to the brand default instead of throwing, so
- * older projects can still (re)generate. Always use this for DB reads; use
- * `contentPackSchema` directly only for validating fresh client input.
- */
+/** Validates stored settings and projects exactly the canonical Content Pack
+ * fields. Database identity, draft state, and timestamps stay with storage. */
 export function parseStoredContentPack(row: unknown): ContentPack {
-  const record = (
-    row && typeof row === "object" ? row : {}
-  ) as Record<string, unknown>;
-  const captionPreset = captionPresetIdSchema.safeParse(record.captionPreset)
-    .success
-    ? record.captionPreset
-    : BRAND_DEFAULT_CAPTION_PRESET_ID;
-  return contentPackSchema.parse({ ...record, captionPreset });
+  return contentPackSchema.parse(row);
 }
 
 export type ClipGenerationMode = z.infer<typeof clipGenerationModeSchema>;

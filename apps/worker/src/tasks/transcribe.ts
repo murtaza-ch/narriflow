@@ -576,7 +576,7 @@ export async function processTranscriptRun(
     }
 
     const apiKey = getRequiredAssemblyAiApiKey();
-    const languageCode = await projectService.getProjectLanguageCode(run.projectId);
+    const languageCode = await projectService.getProjectLanguageCodeForWorker(run.projectId);
 
     const submitStartedAtMs = Date.now();
     const { transcriptId } = await submitAssemblyAiJob(run, apiKey, context.reportProgress, {

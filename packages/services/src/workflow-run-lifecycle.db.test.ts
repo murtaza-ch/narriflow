@@ -10,7 +10,7 @@ import {
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { workflowStageUpdatedEventSchema } from "@narriflow/validators";
+import { CLIP_AUTO_LAYOUT_ENGINE, CLIP_AUTO_LAYOUT_VERSION, workflowStageUpdatedEventSchema } from "@narriflow/validators";
 import { Pool } from "pg";
 import {
   type WorkflowAttemptRef,
@@ -21,6 +21,7 @@ import {
 import { notificationService } from "./notification.service";
 import { clipService } from "./clip.service";
 import { projectService } from "./project.service";
+import { workspaceLibraryService } from "./workspace-library.service";
 
 const databaseUrl = process.env.WORKFLOW_TEST_DATABASE_URL;
 const databaseSchema = process.env.WORKFLOW_TEST_DATABASE_SCHEMA;
@@ -67,6 +68,9 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   });
 
   beforeEach(async () => {
+    await prisma.workspace.deleteMany({
+      where: { owner: { clerkId: { startsWith: "workflow-db-test:" } } },
+    });
     await prisma.user.deleteMany({
       where: { clerkId: { startsWith: "workflow-db-test:" } },
     });
@@ -100,7 +104,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: {
         title: "Workflow lifecycle test",
         sourceMediaUrl: "r2://test/source.mp4",
-        userId: user.id,
         workspaceId: workspace.id,
         createdByUserId: user.id,
       },
@@ -499,9 +502,9 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(state).toMatchObject({
       sourceStorageKey: `projects/${project.id}/source/input.mp4`,
       sourceDurationSeconds: 42,
-      userId: user.id,
       workspaceId: workspace.id,
-      ownerTier: "pro",
+      pricingTier: "pro",
+      workspaceOwnerUserId: user.id,
       brandSnapshot: {
         status: "available",
         value: { primaryColor: "#123456" },
@@ -1736,7 +1739,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: {
         title: "Other workflow project",
         sourceMediaUrl: "r2://test/other.mp4",
-        userId: user.id,
         workspaceId: workspace.id,
         createdByUserId: user.id,
       },
@@ -2260,8 +2262,8 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const input = {
       clipId: clip.id,
       analysis: {
-        version: 2,
-        engine: "shot-layout-v2",
+        version: CLIP_AUTO_LAYOUT_VERSION,
+        engine: CLIP_AUTO_LAYOUT_ENGINE,
         sourceIdentity: "source:current",
       },
       editorRevision: clip.editorRevision,
@@ -2560,7 +2562,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: {
         title: "Other workflow project",
         sourceMediaUrl: "r2://test/other.mp4",
-        userId: user.id,
         workspaceId: workspace.id,
         createdByUserId: user.id,
       },
@@ -2803,8 +2804,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: { status: "running" },
     });
 
-    const page = await projectService.listProjectsWithStatsPage(user.id, {
-      workspaceId: workspace.id,
+    const page = await workspaceLibraryService.listProjects({ actorUserId: user.id, workspaceId: workspace.id }, {
       status: "processing",
     });
 
@@ -2823,7 +2823,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: {
         title: "Second processing project",
         sourceMediaUrl: "r2://test/second-source.mp4",
-        userId: first.user.id,
         workspaceId: first.workspace.id,
         createdByUserId: first.user.id,
         ingestStatus: "ready",
@@ -2846,13 +2845,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: { status: "running" },
     });
 
-    const page = await projectService.listProjectsWithStatsPage(first.user.id, {
-      workspaceId: first.workspace.id,
+    const page = await workspaceLibraryService.listProjects({ actorUserId: first.user.id, workspaceId: first.workspace.id }, {
       status: "processing",
       limit: 1,
     });
-    const next = await projectService.listProjectsWithStatsPage(first.user.id, {
-      workspaceId: first.workspace.id,
+    const next = await workspaceLibraryService.listProjects({ actorUserId: first.user.id, workspaceId: first.workspace.id }, {
       status: "processing",
       limit: 1,
       cursor: page.nextCursor,
@@ -2884,14 +2881,12 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       },
     });
 
-    const page = await projectService.listProjectsWithStatsPage(user.id, {
-      workspaceId: workspace.id,
+    const page = await workspaceLibraryService.listProjects({ actorUserId: user.id, workspaceId: workspace.id }, {
       status: "processing",
     });
     const snapshot = await projectService.getProjectSnapshot(
-      user.id,
+      { actorUserId: user.id, workspaceId: workspace.id },
       project.id,
-      workspace.id,
     );
 
     expect(page.items.find((item) => item.id === project.id)?.progress).toEqual({
@@ -2900,6 +2895,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       active: true,
     });
     expect(snapshot.activeRun?.stage).toBe("clip_rendering");
+    expect(snapshot.progress).toEqual(page.items.find((item) => item.id === project.id)?.progress);
   });
 
   test("treats search wildcards as literal text", async () => {
@@ -2912,14 +2908,12 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: {
         title: "100xxready",
         sourceMediaUrl: "r2://test/non-literal-match.mp4",
-        userId: user.id,
         workspaceId: workspace.id,
         createdByUserId: user.id,
       },
     });
 
-    const page = await projectService.listProjectsWithStatsPage(user.id, {
-      workspaceId: workspace.id,
+    const page = await workspaceLibraryService.listProjects({ actorUserId: user.id, workspaceId: workspace.id }, {
       query: "100%_ready",
     });
 

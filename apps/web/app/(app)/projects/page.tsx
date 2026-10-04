@@ -8,7 +8,6 @@ import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import {
   isRetentionEnforcementActive,
-  projectService,
   type ProjectListSort,
   type ProjectListSourceFilter,
   type ProjectListStatusFilter,
@@ -136,8 +135,7 @@ async function ProjectsHeader({
     appUser.workspace.status === "active";
   const activeFolder = params.folder
     ? (await workspaceLibraryService.listFolders(
-        appUser.actorUserId,
-        appUser.workspaceId,
+        appUser,
       )).find((folder) => folder.id === params.folder)
     : undefined;
 
@@ -185,15 +183,8 @@ async function ProjectsData({
     ? (params.sort as ProjectListSort)
     : "newest";
   const [page, folders] = await Promise.all([
-    projectService.listProjectsWithStatsPage(appUser.actorUserId, {
-      workspaceId: appUser.workspaceId,
-      folderId: params.folder,
-      query,
-      status,
-      source,
-      sort,
-    }),
-    workspaceLibraryService.listFolders(appUser.actorUserId, appUser.workspaceId,
+    workspaceLibraryService.listProjects(appUser, {folderId: params.folder, query, status, source, sort}),
+    workspaceLibraryService.listFolders(appUser,
     ),
   ]);
   const items = page.items;

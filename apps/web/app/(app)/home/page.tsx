@@ -1,5 +1,5 @@
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
-import { isRetentionEnforcementActive, projectService,
+import { isRetentionEnforcementActive, workspaceLibraryService,
 } from "@narriflow/services";
 import { DashboardView } from "./dashboard-view";
 
@@ -14,13 +14,7 @@ function greetingForHour(hour: number): string {
 
 export default async function HomePage() {
   const appUser = await admitWorkspacePage("content.view");
-  const recentProjects = await projectService.listProjectsWithStatsPage(
-    appUser.actorUserId,
-    {
-      limit: RECENT_PROJECTS_LIMIT,
-      workspaceId: appUser.workspaceId,
-    },
-  );
+  const recentProjects = await workspaceLibraryService.listProjects(appUser, {limit: RECENT_PROJECTS_LIMIT});
   const firstName = appUser.firstName?.trim();
   const hourGreeting = greetingForHour(new Date().getHours());
   const greeting = firstName ? `${hourGreeting}, ${firstName}` : hourGreeting;

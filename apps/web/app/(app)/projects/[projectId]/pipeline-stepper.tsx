@@ -5,9 +5,9 @@ import { AudioLines, Circle, Download, Film, ScanSearch, Send, type LucideIcon }
 import {
   mergePipelineStepsWithLiveEvents,
   pipelineStepStateWord,
-  type PipelineStepState,
   type PipelineStepView,
 } from "@/lib/project-state";
+import type { PipelineStepState } from "@narriflow/validators";
 import { useProjectEvents } from "./project-events-provider";
 
 const STEP_ICONS: Record<string, LucideIcon> = {

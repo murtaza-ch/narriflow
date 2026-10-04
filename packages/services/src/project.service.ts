@@ -1,17 +1,15 @@
-import { randomUUID } from "node:crypto";
+import type { ActorScope } from "./actor-scope";
+import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { Prisma } from "@prisma/client";
 import type {
-	IngestJobType,
 	IngestStatus as PrismaIngestStatus,
 	Project,
 	Transcript as PrismaTranscript,
-	TranscriptStatus as PrismaTranscriptStatus,
 	WorkflowRun as PrismaWorkflowRun,
 } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
 	ASSEMBLYAI_SPEECH_MODEL_CHAIN,
-	parseStoredContentPack,
 	createProjectSchema,
 	detectLinkProvider,
 	generateProjectRequestSchema,
@@ -25,7 +23,10 @@ import {
 	rssPreviewSchema,
 	sourceLanguageCodeSchema,
 	workflowStageUpdatedEventSchema,
+	type WorkflowStageUpdatedEvent,
 	contentPackSchema,
+	parseStoredContentPack,
+	deriveProjectListProgress,
 	PLATFORM_PLAYBOOK_VERSION,
 	type ContentPack,
 	type CreateProjectInput,
@@ -35,7 +36,6 @@ import {
 	type RssImportInput,
 	type TranscriptExportFormat,
 	type TranscriptSnapshot,
-	type WorkflowStageUpdatedEvent,
 } from "@narriflow/validators";
 import { deleteObject } from "./r2-storage";
 import { brandTemplateService } from "./brand-template.service";
@@ -44,7 +44,6 @@ import type { BrandActorScope } from "./brand-ownership";
 import {
 	autoTriggerIdempotencyKey,
 	isUniqueConstraintError,
-	selectActionablePack,
 	type FinalizeSetupResult,
 } from "./generation-sequencing";
 import { fetchRssFeed, redactUrlForDisplay } from "./rss";
@@ -52,27 +51,9 @@ import {
 	buildTranscriptSnapshot,
 	exportTranscript,
 } from "./transcript.service";
-import {
-	getLastWorkflowSeq,
-	getWorkflowEventsSince,
-	publishIngestWorkflowStageUpdated,
-} from "./workflow.service";
-import {
-	deriveProjectListProgress,
-	projectProgressStatusSql,
-	projectProgressWorkflowOrderSql,
-	type ProjectListProgress,
-} from "./project-progress";
-export {
-	deriveProjectListProgress,
-	type ProjectListProgress,
-	type ProjectListWorkflowRun,
-} from "./project-progress";
-import {
-	ProjectExpiredError,
-	projectRetentionService,
-	type RetentionPolicyKey,
-} from "./project-retention.service";
+import { getLastWorkflowSeq, getWorkflowEventsSince } from "./workflow.service";
+import { toProjectSnapshot, type ProjectSnapshot } from "./project-snapshot";
+import { projectRetentionService } from "./project-retention.service";
 import { accessibleProjectWhere } from "./project-access";
 import {
 	ExpectedDomainFailureError,
@@ -82,160 +63,18 @@ import {
 	workspaceService,
 	type WorkspaceCapability,
 } from "./workspace.service";
-import {
-	getWorkflowRunLifecycle,
-} from "./workflow-run-lifecycle";
-
-interface ProjectSnapshot {
-	id: string;
-	userId: string;
-	workspaceId: string | null;
-	folderId?: string | null;
-	title: string;
-	sourceMediaUrl: string;
-	sourceType: "upload" | "youtube" | "rss" | "link";
-	sourceProvider: string | null;
-	sourceInput: string | null;
-	sourceStorageKey: string | null;
-	sourceMimeType: string | null;
-	sourceSizeBytes: number | null;
-	sourceDurationSeconds: number | null;
-	languageCode: string | null;
-	brandProfileId: string | null;
-	brandTemplateId: string | null;
-	ingestStatus: PrismaIngestStatus;
-	ingestErrorCode: string | null;
-	ingestCompletedAt: string | null;
-	notifyOnComplete: boolean;
-	retentionPolicyKey: RetentionPolicyKey | null;
-	expiresAt: string | null;
-	persisted: boolean;
-	createdAt: string;
-}
+import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
 const MAX_CONCURRENT_RSS_INGESTS_PER_WORKSPACE = 5;
 
-export interface ProjectListItem extends ProjectSnapshot {
-	clipCount: number;
-	avgViralityScore: number | null;
-	/** Product-facing pipeline state. Source intake remains separate from
-	 * Workflow Runs; this is their one shared interpretation for project lists. */
-	progress: ProjectListProgress;
-	transcript: {
-		languageCode: string | null;
-		speakerCount: number | null;
-		durationSeconds: number | null;
-		status: PrismaTranscriptStatus;
-	} | null;
-}
-
-export type ProjectListStatusFilter =
-  "all"
-	| "ready"
-	| "processing"
-	| "queued"
-	| "failed";
-
-export type ProjectListSourceFilter =
-  "all"
-	| "youtube"
-	| "link"
-	| "upload"
-	| "rss";
-export type ProjectListSort = "newest" | "oldest" | "title" | "clips";
-
-export interface ProjectListPage {
-	items: ProjectListItem[];
-	nextCursor: string | null;
-	totalCount: number;
-	statusCounts: Record<ProjectListStatusFilter, number>;
-}
-
 type ProjectAccessResult = "owned" | "forbidden" | "missing";
-
-type IngestLifecycleStatus =
-  "queued"
-	| "downloading"
-	| "normalizing"
-	| "ready"
-	| "failed";
-
-export interface ClaimedIngestJob {
-	id: string;
-	projectId: string;
-	jobType: IngestJobType;
-	payload: Prisma.JsonValue;
-	attemptCount: number;
-	claimId: string;
-}
-
-export class IngestJobClaimLost extends Error {
-	readonly code = "ingest_job_claim_lost";
-	constructor(public readonly jobId: string) {
-		super(`Ingest Job ${jobId} is no longer owned by this worker`);
-		this.name = "IngestJobClaimLost";
-	}
-}
-
-const projects = new Map<string, ProjectSnapshot>();
-const idempotencyRuns = new Map<string, string>();
 
 const STT_PROVIDER = "assemblyai";
 const STT_PROVIDER_MODEL = ASSEMBLYAI_SPEECH_MODEL_CHAIN.join(",");
-const DEFAULT_PROJECT_PAGE_SIZE = 50;
-const MAX_PROJECT_PAGE_SIZE = 100;
 // Defensive upper bound on how many persisted WorkflowEvent rows a single
 // project page fetch will ever pull for the Activity tab; the client applies
 // its own tighter display cap (PROJECT_EVENT_ROW_LIMIT) on top of this.
 const WORKFLOW_HISTORY_FETCH_LIMIT = 200;
-
-function clampProjectPageSize(limit?: number) {
-	if (!Number.isFinite(limit ?? DEFAULT_PROJECT_PAGE_SIZE)) {
-		return DEFAULT_PROJECT_PAGE_SIZE;
-	}
-
-	return Math.max(
-		1,
-		Math.min(
-			MAX_PROJECT_PAGE_SIZE,
-			Math.floor(limit ?? DEFAULT_PROJECT_PAGE_SIZE),
-		),
-	);
-}
-
-function encodeProjectCursor(offset: number) {
-	return Buffer.from(JSON.stringify({ offset })).toString("base64url");
-}
-
-function decodeProjectCursor(cursor: string | null | undefined) {
-	if (!cursor) return 0;
-
-	try {
-		const parsed = JSON.parse(
-			Buffer.from(cursor, "base64url").toString("utf8"),
-		) as { offset?: unknown };
-
-		return typeof parsed.offset === "number" &&
-			Number.isSafeInteger(parsed.offset) &&
-			parsed.offset >= 0
-			? parsed.offset
-			: 0;
-	} catch {
-		return 0;
-	}
-}
-
-function emptyProjectStatusCounts(): Record<ProjectListStatusFilter, number> {
-	return { all: 0, ready: 0, processing: 0, queued: 0, failed: 0 };
-}
-
-function getIdempotencyKey(projectId: string, idempotencyKey: string) {
-	return `${projectId}:${idempotencyKey}`;
-}
-
-function hasDatabase() {
-	return Boolean(getPrismaClient());
-}
 
 function isMissingObjectError(error: unknown) {
 	if (typeof error !== "object" || error === null) return false;
@@ -251,50 +90,6 @@ function isMissingObjectError(error: unknown) {
 		return codes.every((code) => ["NoSuchKey", "NotFound"].includes(code));
 	}
 	return ["NoSuchKey", "NotFound"].includes(String(candidate.name ?? ""));
-}
-
-function bigintToNumber(value: bigint | number | null) {
-	if (value === null) {
-		return null;
-	}
-
-	return Number(value);
-}
-
-function buildR2Uri(key: string) {
-	const bucket = process.env.R2_BUCKET ?? "unknown-bucket";
-	return `r2://${bucket}/${key}`;
-}
-
-function toProjectSnapshot(row: Project): ProjectSnapshot {
-	return {
-		id: row.id,
-		userId: row.userId,
-		workspaceId: row.workspaceId,
-		folderId: row.folderId,
-		title: row.title,
-		sourceMediaUrl: row.sourceMediaUrl,
-		sourceType: row.sourceType,
-		sourceProvider: row.sourceProvider,
-		sourceInput: row.sourceInput,
-		sourceStorageKey: row.sourceStorageKey,
-		sourceMimeType: row.sourceMimeType,
-		sourceSizeBytes: bigintToNumber(row.sourceSizeBytes),
-		sourceDurationSeconds: row.sourceDurationSeconds,
-		languageCode: row.languageCode,
-		brandProfileId: row.brandProfileId,
-		brandTemplateId: row.brandTemplateId,
-		ingestStatus: row.ingestStatus,
-		ingestErrorCode: row.ingestErrorCode,
-		ingestCompletedAt: row.ingestCompletedAt
-			? row.ingestCompletedAt.toISOString()
-			: null,
-		notifyOnComplete: row.notifyOnComplete,
-		retentionPolicyKey: row.retentionPolicyKey as RetentionPolicyKey | null,
-		expiresAt: row.expiresAt?.toISOString() ?? null,
-		persisted: true,
-		createdAt: row.createdAt.toISOString(),
-	};
 }
 
 function toWorkflowRunSnapshot(row: PrismaWorkflowRun) {
@@ -330,46 +125,8 @@ function toTranscriptSnapshot(row: PrismaTranscript): TranscriptSnapshot {
 	});
 }
 
-function ingestToWorkflowStage(status: IngestLifecycleStatus) {
-	if (status === "queued") {
-		return "ingest_queued" as const;
-	}
-
-	if (status === "downloading") {
-		return "ingest_downloading" as const;
-	}
-
-	if (status === "normalizing") {
-		return "ingest_normalizing" as const;
-	}
-
-	if (status === "ready") {
-		return "ingest_ready" as const;
-	}
-
-	return "ingest" as const;
-}
-
-function ingestProgress(status: IngestLifecycleStatus) {
-	if (status === "queued") {
-		return 5;
-	}
-
-	if (status === "downloading") {
-		return 40;
-	}
-
-	if (status === "normalizing") {
-		return 75;
-	}
-
-	return 100;
-}
-
 export const projectFailureCatalog = {
 	idempotency_key_required: "invalid",
-	ingest_not_failed: "conflict",
-	ingest_retry_limit_exceeded: "conflict",
 	link_unsupported_source: "unprocessable",
 	project_access_denied: "forbidden",
 	project_deletion_incomplete: "unavailable",
@@ -383,8 +140,6 @@ export const projectFailureCatalog = {
 	rss_episode_count_invalid: "invalid",
 	rss_episode_not_found: "missing",
 	rss_ingest_job_missing: "unavailable",
-	ingest_job_not_found: "missing",
-	ingest_retry_source_not_found: "missing",
 	transcript_not_found: "missing",
 	transcript_not_ready: "conflict",
 	upload_too_long: "payment_required",
@@ -400,12 +155,15 @@ export class ProjectServiceError extends ExpectedDomainFailureError<ProjectFailu
 	}
 }
 
-export class QuotaExceededError extends ExpectedDomainFailureError<"quota_exceeded", {
-	tier: string;
-	limitMinutes: number;
-	usedMinutes: number;
-	requestedMinutes: number;
-}> {
+export class QuotaExceededError extends ExpectedDomainFailureError<
+	"quota_exceeded",
+	{
+		tier: string;
+		limitMinutes: number;
+		usedMinutes: number;
+		requestedMinutes: number;
+	}
+> {
 	constructor(
 		message: string,
 		details: {
@@ -425,11 +183,14 @@ export class QuotaExceededError extends ExpectedDomainFailureError<"quota_exceed
 	}
 }
 
-export class UploadTooLongError extends ExpectedDomainFailureError<"upload_too_long", {
-	tier: string;
-	maxSeconds: number;
-	seconds: number;
-}> {
+export class UploadTooLongError extends ExpectedDomainFailureError<
+	"upload_too_long",
+	{
+		tier: string;
+		maxSeconds: number;
+		seconds: number;
+	}
+> {
 	constructor(
 		message: string,
 		details: {
@@ -446,249 +207,6 @@ export class UploadTooLongError extends ExpectedDomainFailureError<"upload_too_l
 		});
 		this.name = "UploadTooLongError";
 	}
-}
-
-/** Total ingest attempts (original + retries) allowed per project before
- *  retryFailedIngest refuses and tells the user to start a new upload. */
-export const MAX_INGEST_RETRY_ATTEMPTS = 5;
-
-export class IngestRetryLimitExceededError extends ExpectedDomainFailureError<
-	"ingest_retry_limit_exceeded",
-	{ maxAttempts: number }
-> {
-	constructor(maxAttempts: number) {
-		super({
-			code: "ingest_retry_limit_exceeded",
-			kind: projectFailureCatalog.ingest_retry_limit_exceeded,
-			message: `This upload has failed ${maxAttempts} times and can't be retried again automatically.`,
-			details: { maxAttempts },
-		});
-		this.name = "IngestRetryLimitExceededError";
-	}
-}
-
-export class IngestNotFailedError extends ExpectedDomainFailureError<"ingest_not_failed"> {
-	constructor() {
-		super({
-			code: "ingest_not_failed",
-			kind: projectFailureCatalog.ingest_not_failed,
-			message: "This project's ingest isn't in a failed state.",
-		});
-		this.name = "IngestNotFailedError";
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Automatic job-level retry policy: requeue-with-backoff for IngestJob and
-// WorkflowRun (stt/moment_detection/clip_rendering/dubbing), bounded by
-// IngestJob.attemptCount / WorkflowRun.attemptCount (each incremented once
-// per claim — see claimNextIngestJob and WorkflowRunLifecycle).
-//
-// This is the OUTER layer. apps/worker/src/tasks/{ingest,transcribe,
-// detect-clips,render-clips,dubbing}.ts already retry a handful of their own
-// sub-operations IN-PROCESS (a few seconds of jittered backoff, all within
-// the SAME claimed attempt) before giving up and calling one of the
-// fail*/reap* methods below with a terminal-looking error code. Before this
-// policy existed, that call always meant permanent failure — verified in
-// production: a Google Drive import died on "The socket connection was
-// closed unexpectedly" with attemptCount: 1, and nothing ever retried it.
-// This policy decides what happens instead: give the job/run a fresh, later
-// attempt (a new claim, a new in-process retry budget, quite possibly a
-// different worker process), or accept the failure as permanent.
-//
-// Distinct from the user-facing manual retry (retryFailedIngest /
-// triggerGeneration / regenerateClips / triggerClipRendering): those always
-// create a BRAND NEW IngestJob/WorkflowRun row with attemptCount back at 0,
-// so they keep working unmodified once the caps below are exhausted on the
-// old row. retryFailedIngest's own cap (MAX_INGEST_RETRY_ATTEMPTS, counted as
-// IngestJob *rows* for the project) never even observes this layer's
-// requeues, since a requeue reuses the same row instead of creating a new
-// one — the two caps can't fight each other by construction.
-// ---------------------------------------------------------------------------
-
-/** How many times an ingest job / workflow run may be automatically requeued
- *  after a retryable failure (including a stalled-worker reap) before it is
- *  given up on for good. Deliberately smaller than, and independent of,
- *  MAX_INGEST_RETRY_ATTEMPTS above: these are "free", system-initiated
- *  attempts, while MAX_INGEST_RETRY_ATTEMPTS governs the separate,
- *  user-initiated "Retry ingest" budget. */
-export const INGEST_AUTO_RETRY_MAX_ATTEMPTS = 3;
-
-/** Base delay for the exponential requeue backoff (doubles per attempt: 30s,
- *  60s, ...). See claimBackoffWhereClauses for how this is enforced without
- *  a `nextAttemptAt` column. */
-const AUTO_RETRY_BASE_DELAY_MS = 30_000;
-
-/** Terminal codes recorded once the caps above are reached on an
- *  otherwise-retryable failure — kept distinct from the original error code
- *  so the UI (userErrorMessage, packages/validators/src/error-messages.ts)
- *  can tell the user this was retried automatically rather than rejected
- *  outright. A permanent failure (PERMANENT_FAILURE_CODES) keeps its own
- *  specific code instead of either of these. */
-export const INGEST_RETRIES_EXHAUSTED_CODE = "ingest_retries_exhausted";
-
-/**
- * Error codes that must never be auto-retried: the input, credentials, or
- * plan are the actual problem, so retrying changes nothing and only delays
- * the (identical) terminal failure the user needs to act on. Sourced by
- * reading every `throw new IngestWorkerError(...)` / `throw new
- * WorkflowWorkerError(...)` in apps/worker/src/tasks/{ingest,transcribe,
- * detect-clips,render-clips,dubbing}.ts (those files can't import this
- * policy, so keep this list in sync by hand if their codes change).
- *
- * Everything NOT listed here (including codes this list doesn't yet know
- * about) defaults to retryable in isAutoRetryableFailureCode below — bounded
- * by the attempt caps above, so the worst case for a permanent failure we
- * failed to enumerate is a couple of wasted, backed-off attempts before it
- * fails the same way anyway. That default is deliberate: it's what would
- * have caught the production incident this policy exists to fix.
- */
-export const PERMANENT_FAILURE_CODES: ReadonlySet<string> = new Set([
-	// SSRF-guard rejection / unsupported or invalid input URL
-	// (packages/services/src/url-guard.ts, apps/worker/src/tasks/ingest.ts)
-	"remote_url_unsafe",
-	"link_unsupported_source",
-	"link_missing_url",
-	"link_download_missing_file",
-	"rss_missing_enclosure",
-	"youtube_missing_url", // legacy pre-unification codes, kept for old data
-	"youtube_unsupported_source",
-	// Unsupported / invalid / oversized media — the same file fails the same
-	// way every time
-	"remote_media_invalid_content_type",
-	"remote_media_too_large",
-	"media_duration_unavailable",
-	"invalid_source_dimensions",
-	"unsupported_aspect_ratio",
-	// Plan / quota limits (won't change mid-retry)
-	"ingest_max_duration_exceeded",
-	"quota_exceeded",
-	"requires_pro_plan",
-	"requires_creator_plan",
-	// Auth / environment configuration — retrying the job can't fix a missing
-	// key or binary
-	"assemblyai_api_key_missing",
-	"openai_api_key_missing",
-	"openai_quota_exhausted",
-	"worker_command_missing",
-	"source_provider_access_denied",
-	// Malformed job/payload: a bug, not a blip
-	"worker_invalid_payload",
-	"worker_unknown_job_type",
-	"upload_finalize_missing_key",
-	"storage_metadata_invalid",
-	// Missing prerequisite data that this same job/run cannot itself create
-	"workflow_source_missing",
-	"source_storage_key_missing",
-	"base_render_missing",
-	"no_renderable_clips",
-	"no_clips_detected",
-	"transcript_not_ready",
-	"transcript_processing_window_empty",
-	"dub_transcript_empty",
-	"broll_cutaways_empty",
-]);
-
-/**
- * Error codes explicitly confirmed retryable, called out even though they'd
- * hit the same default as any other unlisted code — worth being explicit
- * because each one looks like it should be permanent at first glance:
- *
- *  - remote_fetch_timeout / worker_command_timeout: apps/worker/src/tasks/
- *    ingest.ts deliberately excludes these from ITS OWN in-process retry
- *    (PERMANENT_INGEST_ERROR_CODES there) — but only because those calls
- *    already run with multi-minute-to-hour timeouts, so retrying
- *    immediately in-process would double an already-long single attempt.
- *    That's a cost decision, not a "this will never work" one; a fresh
- *    attempt later (this layer) is exactly the right place to retry them.
- *  - source_download_failed: render-clips.ts downloading our OWN R2 object,
- *    not a remote user URL — a failure here is an internal storage blip,
- *    not a bad input.
- *  - worker_stalled: assigned by the reapers below when a worker crashed
- *    mid-run. The job/run itself never got a chance to fail on its own
- *    merits, which makes this the single most retryable failure mode there
- *    is.
- */
-export const TRANSIENT_FAILURE_CODES: ReadonlySet<string> = new Set([
-	"remote_fetch_timeout",
-	"worker_command_timeout",
-	"source_download_failed",
-	"worker_stalled",
-]);
-
-export function isAutoRetryableFailureCode(errorCode: string): boolean {
-	return !PERMANENT_FAILURE_CODES.has(errorCode);
-}
-
-export type AutoRetryDecision =
-  { outcome: "requeue" }
-	| { outcome: "permanent"; terminalErrorCode: string };
-
-/**
- * The single decision this whole policy boils down to, applied identically
- * to ingest jobs and workflow runs, and to both an explicit failure and a
- * reaped Ingest Job stall (reapStuckIngestJobs below calls this
- * with errorCode "worker_stalled"): retry if the error looks transient AND
- * there's still budget, otherwise stop for good. `attemptCount` is the count
- * *as of this failure* (already incremented at claim time), so
- * `attemptCount < maxAttempts` reads as "this was attempt N of maxAttempts,
- * try again."
- */
-export function decideAutoRetry(
-	attemptCount: number,
-	errorCode: string,
-	maxAttempts: number,
-	exhaustedErrorCode: string,
-): AutoRetryDecision {
-	if (isAutoRetryableFailureCode(errorCode) && attemptCount < maxAttempts) {
-		return { outcome: "requeue" };
-	}
-	return {
-		outcome: "permanent",
-		terminalErrorCode: isAutoRetryableFailureCode(errorCode)
-			? exhaustedErrorCode
-			: errorCode,
-	};
-}
-
-/** Exponential backoff, doubling per attempt (attempt 1 -> base, attempt 2
- *  -> 2x base, ...). Only ever consulted for attemptCount >= 1 — see
- *  claimBackoffWhereClauses. */
-export function autoRetryBackoffMs(
-	attemptCount: number,
-	baseDelayMs: number = AUTO_RETRY_BASE_DELAY_MS,
-): number {
-	return baseDelayMs * 2 ** Math.max(0, attemptCount - 1);
-}
-
-/**
- * Backoff without a schema migration. IngestJob/WorkflowRun have no
- * `nextAttemptAt` column, and this task is scoped to not add one, so
- * eligibility is expressed against the attemptCount + updatedAt columns that
- * already exist — Prisma bumps `updatedAt` on every write, including the
- * requeue writes in failIngestJob / fail*WorkflowRun / the reapers below. A
- * never-claimed row (attemptCount 0) is always eligible, exactly as today; a
- * requeued one becomes eligible again only once its own exponential-backoff
- * window has elapsed since the write that requeued it.
- *
- * Spread into the `OR` of claimNextIngestJob's
- * `where` alongside their other (AND-ed) conditions, e.g.
- * `{ status: "queued", OR: claimBackoffWhereClauses(CAP) }`.
- */
-export function claimBackoffWhereClauses(
-	maxAutoRetryAttempts: number,
-	nowMs: number = Date.now(),
-): Array<{ attemptCount: number; updatedAt?: { lt: Date } }> {
-	const clauses: Array<{ attemptCount: number; updatedAt?: { lt: Date } }> = [
-		{ attemptCount: 0 },
-	];
-	for (let attempt = 1; attempt < maxAutoRetryAttempts; attempt++) {
-		clauses.push({
-			attemptCount: attempt,
-			updatedAt: { lt: new Date(nowMs - autoRetryBackoffMs(attempt)) },
-		});
-	}
-	return clauses;
 }
 
 // ---------------------------------------------------------------------------
@@ -713,13 +231,13 @@ export class ProjectNotFoundError extends ExpectedDomainFailureError<"project_no
 }
 
 export class LinkUnsupportedSourceError extends ExpectedDomainFailureError<"link_unsupported_source"> {
-  constructor() {
+	constructor() {
 		super({
 			code: "link_unsupported_source",
 			kind: projectFailureCatalog.link_unsupported_source,
 			message: "This link source is not supported.",
 		});
-    this.name = "LinkUnsupportedSourceError";
+		this.name = "LinkUnsupportedSourceError";
 	}
 }
 
@@ -887,7 +405,7 @@ export interface ProjectDeletionDeps {
 	getAccessAndRow: () => Promise<ProjectDeletionAccessResult>;
 	deleteObject: (key: string) => Promise<unknown>;
 	isMissingObjectError: (error: unknown) => boolean;
-	/** Conditioned delete (e.g. `deleteMany({ where: { id, userId } })`) so a
+	/** Conditioned delete (e.g. `deleteMany({ where: { id, workspaceId } })`) so a
 	 *  row a concurrent call already removed resolves to count 0 instead of
 	 *  throwing — this is what makes repeated/racing calls safe. */
 	deleteProjectRow: () => Promise<{ count: number }>;
@@ -958,77 +476,35 @@ export class ProjectService {
 		return prisma;
 	}
 
-	private async resolveWriteOwnership(
-		userId: string,
-		workspaceId?: string,
+	private requireActor(
+		scope: ActorScope,
 		capability: WorkspaceCapability = "content.edit",
 	) {
-		if (!hasDatabase()) {
-			return {
-				// In-memory development mode has no Workspace table. Reuse the actor
-				// id as a deterministic synthetic scope so the return type remains
-				// non-null and tests still exercise tenant separation.
-				workspaceId: workspaceId ?? userId,
-				actorUserId: userId,
-				legacyOwnerUserId: userId,
-			};
-		}
-
-		const ownership = await workspaceService.resolveLegacyOwnership(
-			userId,
-			workspaceId,
-		);
-		await workspaceService.requireActor(
-			userId,
-			ownership.workspaceId,
+		return workspaceService.requireActor(
+			scope.actorUserId,
+			scope.workspaceId,
 			capability,
 		);
-		return ownership;
 	}
 
 	private async resolveProjectScope(
-		userId: string,
-		workspaceId?: string,
-		capability: "content.view" | "content.edit" = "content.view",
+		scope: ActorScope,
+		capability: WorkspaceCapability = "content.view",
 	): Promise<Prisma.ProjectWhereInput> {
-		const targetWorkspaceId =
-			workspaceId ?? (await workspaceService.getPersonalWorkspaceId(userId));
-		const actor = await workspaceService.requireActor(
-			userId,
-			targetWorkspaceId,
-			capability,
-		);
+		const actor = await this.requireActor(scope, capability);
 		return { workspaceId: actor.workspaceId };
 	}
 
 	async getProjectAccess(
-		userId: string,
+		scope: ActorScope,
 		projectId: string,
-		workspaceId?: string,
 	): Promise<ProjectAccessResult> {
-		const prisma = getPrismaClient();
+		const prisma = this.requirePrisma();
 
-		if (!prisma) {
-			const project = projects.get(projectId);
-
-			if (!project) {
-				return "missing";
-			}
-
-			if (
-				project.expiresAt &&
-				new Date(project.expiresAt).getTime() <= Date.now()
-			) {
-				return "missing";
-			}
-			return project.userId === userId ? "owned" : "forbidden";
-		}
-
-		const scope = await this.resolveProjectScope(userId, workspaceId);
+		const projectWhere = await this.resolveProjectScope(scope);
 		const project = await prisma.project.findUnique({
 			where: { id: projectId },
 			select: {
-				userId: true,
 				workspaceId: true,
 				expiresAt: true,
 				purgeStartedAt: true,
@@ -1046,7 +522,7 @@ export class ProjectService {
 			return "missing";
 		}
 		const scopeMatch = await prisma.project.count({
-			where: { id: projectId, AND: [scope] },
+			where: { id: projectId, AND: [projectWhere] },
 		});
 		return scopeMatch > 0 ? "owned" : "forbidden";
 	}
@@ -1072,19 +548,8 @@ export class ProjectService {
 	 * studioEdits.music.url (external HTTP URLs, not objects this project
 	 * owns in R2).
 	 */
-	async deleteProject(userId: string, projectId: string): Promise<void> {
-		if (!hasDatabase()) {
-			const existing = projects.get(projectId);
-			if (!existing) {
-				throw new ProjectNotFoundError();
-			}
-			if (existing.userId !== userId) {
-				throw new ProjectAccessDeniedError();
-			}
-			projects.delete(projectId);
-			return;
-		}
-
+	async deleteProject(scope: ActorScope, projectId: string): Promise<void> {
+		await this.requireActor(scope, "content.edit");
 		const prisma = this.requirePrisma();
 
 		const outcome = await runProjectDeletion({
@@ -1092,7 +557,9 @@ export class ProjectService {
 				const project = await prisma.project.findUnique({
 					where: { id: projectId },
 					select: {
-						userId: true,
+						workspaceId: true,
+						expiresAt: true,
+						purgeStartedAt: true,
 						sourceStorageKey: true,
 						transcript: { select: { rawStorageKey: true } },
 						clips: {
@@ -1129,9 +596,15 @@ export class ProjectService {
 				if (!project) {
 					return { access: "missing", row: null };
 				}
-				if (project.userId !== userId) {
+				if (project.workspaceId !== scope.workspaceId) {
 					return { access: "forbidden", row: null };
 				}
+
+				if (
+					project.purgeStartedAt ||
+					(project.expiresAt && project.expiresAt <= new Date())
+				)
+					return { access: "missing", row: null };
 
 				return {
 					access: "owned",
@@ -1162,7 +635,11 @@ export class ProjectService {
 			isMissingObjectError,
 			deleteProjectRow: async () => {
 				const result = await prisma.project.deleteMany({
-					where: { id: projectId, userId },
+					where: {
+						id: projectId,
+						workspaceId: scope.workspaceId,
+						...accessibleProjectWhere(),
+					},
 				});
 				return { count: result.count };
 			},
@@ -1193,421 +670,21 @@ export class ProjectService {
 		}
 	}
 
-	async listProjects(userId: string, workspaceId?: string) {
-		const prisma = getPrismaClient();
-
-		if (!prisma) {
-			return Array.from(projects.values())
-				.filter(
-					(project) =>
-						project.userId === userId &&
-						(!project.expiresAt ||
-							new Date(project.expiresAt).getTime() > Date.now()),
-				)
-				.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-		}
-
-		const scope = await this.resolveProjectScope(userId, workspaceId);
-		const rows = await prisma.project.findMany({
-			where: { AND: [scope, accessibleProjectWhere()] },
-			orderBy: { createdAt: "desc" },
-			take: 50,
-		});
-
-		return rows.map((row) => toProjectSnapshot(row));
-	}
-
-	async getDashboardStats(
-		userId: string,
-		workspaceId: string,
-	): Promise<{
-		total: number;
-		processing: number;
-		completed: number;
-		tier: PricingTier;
-		usedMinutes: number;
-		limitMinutes: number;
-	}> {
-		const prisma = getPrismaClient();
-
-		if (!prisma) {
-			const owned = Array.from(projects.values()).filter(
-				(project) =>
-					project.userId === userId &&
-					(!project.expiresAt ||
-						new Date(project.expiresAt).getTime() > Date.now()),
-			);
-			return {
-				total: owned.length,
-				processing: 0,
-				completed: 0,
-				tier: "free",
-				usedMinutes: 0,
-				limitMinutes: MONTHLY_PROCESSING_MINUTE_LIMITS.free,
-			};
-		}
-
-		const accessible = accessibleProjectWhere();
-		const scope = await this.resolveProjectScope(userId, workspaceId);
-		const actor = await workspaceService.requireActor(userId, workspaceId);
-		const [total, processing, completed, tier, usedMinutes] = await Promise.all(
-			[
-				prisma.project.count({ where: { AND: [scope, accessible] } }),
-				// Active pipeline: ingest still moving, or a workflow run queued/running.
-				prisma.project.count({
-					where: {
-						AND: [scope, accessible],
-						OR: [
-							{
-								ingestStatus: {
-									in: [
-										"pending",
-										"uploading",
-										"queued",
-										"downloading",
-										"normalizing",
-									],
-								},
-							},
-							{
-								workflowRuns: {
-									some: { status: { in: ["queued", "running", "waiting"] } },
-								},
-							},
-						],
-					},
-				}),
-				// Produced output: at least one detected clip.
-				prisma.project.count({
-					where: { AND: [scope, accessible], clips: { some: {} } },
-				}),
-				resolvePricingTier(actor.pricingTier),
-				this.getWorkspaceMonthlyUsageMinutes(workspaceId),
-			],
-		);
-
-		return {
-			total,
-			processing,
-			completed,
-			tier,
-			usedMinutes,
-			limitMinutes: MONTHLY_PROCESSING_MINUTE_LIMITS[tier],
-		};
-	}
-
-	async listProjectsWithStatsPage(
-		userId: string,
-		options: {
-			limit?: number;
-			cursor?: string | null;
-			workspaceId?: string;
-			folderId?: string;
-			query?: string;
-			status?: ProjectListStatusFilter;
-			source?: ProjectListSourceFilter;
-			sort?: ProjectListSort;
-		} = {},
-	): Promise<ProjectListPage> {
-		const limit = clampProjectPageSize(options.limit);
-		const offset = decodeProjectCursor(options.cursor);
-		const query = options.query?.trim().slice(0, 200) ?? "";
-		const status = options.status ?? "all";
-		const source = options.source ?? "all";
-		const sort = options.sort ?? "newest";
-		const prisma = getPrismaClient();
-
-		if (!prisma) {
-			const baseFiltered = Array.from(projects.values()).filter(
-				(project) =>
-					project.userId === userId &&
-					(!options.workspaceId ||
-						project.workspaceId === options.workspaceId) &&
-					(!options.folderId || project.folderId === options.folderId) &&
-					(source === "all" || project.sourceType === source) &&
-					(!query ||
-						[project.title, project.sourceMediaUrl, project.sourceInput ?? ""]
-							.join(" ")
-							.toLocaleLowerCase()
-							.includes(query.toLocaleLowerCase())) &&
-					(!project.expiresAt ||
-						new Date(project.expiresAt).getTime() > Date.now()),
-			);
-			const statusCounts = emptyProjectStatusCounts();
-			for (const project of baseFiltered) {
-				const progress = deriveProjectListProgress({
-					ingestStatus: project.ingestStatus,
-					workflowRuns: [],
-				});
-				statusCounts.all += 1;
-				statusCounts[progress.status] += 1;
-			}
-			const filtered = baseFiltered.filter((project) => {
-				if (status === "all") return true;
-				return (
-					deriveProjectListProgress({
-						ingestStatus: project.ingestStatus,
-						workflowRuns: [],
-					}).status === status
-				);
-			});
-			filtered.sort((left, right) => {
-				if (sort === "oldest") {
-					return (
-						left.createdAt.localeCompare(right.createdAt) ||
-						left.id.localeCompare(right.id)
-					);
-				}
-				if (sort === "title") {
-					return (
-						left.title.localeCompare(right.title) ||
-						left.id.localeCompare(right.id)
-					);
-				}
-				return (
-					right.createdAt.localeCompare(left.createdAt) ||
-					right.id.localeCompare(left.id)
-				);
-			});
-			const page = filtered.slice(offset, offset + limit);
-
-			return {
-				items: page.map((project) => ({
-					...project,
-					clipCount: 0,
-					avgViralityScore: null,
-					progress: deriveProjectListProgress({
-						ingestStatus: project.ingestStatus,
-						workflowRuns: [],
-					}),
-					transcript: null,
-				})),
-				nextCursor:
-					offset + page.length < filtered.length && page.length > 0
-						? encodeProjectCursor(offset + page.length)
-						: null,
-				totalCount: filtered.length,
-				statusCounts,
-			};
-		}
-
-		const scope = await this.resolveProjectScope(userId, options.workspaceId);
-		const workspaceId = scope.workspaceId;
-		const progressConditions = [
-			Prisma.sql`p."workspaceId" = ${workspaceId}`,
-			Prisma.sql`p."purgeStartedAt" IS NULL`,
-			Prisma.sql`(p."expiresAt" IS NULL OR p."expiresAt" > NOW())`,
-		];
-		if (options.folderId) progressConditions.push(Prisma.sql`p."folderId" = ${options.folderId}`);
-		if (source !== "all") progressConditions.push(Prisma.sql`p."sourceType" = CAST(${source} AS "SourceType")`);
-		if (query) {
-			const pattern = `%${query
-				.replaceAll("\\", "\\\\")
-				.replaceAll("%", "\\%")
-				.replaceAll("_", "\\_")}%`;
-			progressConditions.push(Prisma.sql`(p.title ILIKE ${pattern} ESCAPE E'\\\\' OR p."sourceMediaUrl" ILIKE ${pattern} ESCAPE E'\\\\' OR p."sourceInput" ILIKE ${pattern} ESCAPE E'\\\\')`);
-		}
-		const progressStatus = projectProgressStatusSql({
-			ingestStatus: Prisma.sql`p."ingestStatus"`,
-			workflowStatus: Prisma.sql`current_run.status`,
-		});
-		const workflowOrder = projectProgressWorkflowOrderSql();
-		const progressCte = Prisma.sql`
-			WITH listed AS (
-				SELECT
-					p.id,
-					p."ingestStatus",
-					current_run.stage AS "workflowStage",
-					current_run.status AS "workflowStatus",
-					p."createdAt",
-					p.title,
-					${progressStatus} AS "progressStatus"
-				FROM "Project" p
-				LEFT JOIN LATERAL (
-					SELECT stage, status
-					FROM "WorkflowRun"
-					WHERE "projectId" = p.id
-					ORDER BY ${workflowOrder}
-					LIMIT 1
-				) current_run ON TRUE
-				WHERE ${Prisma.join(progressConditions, " AND ")}
-			)
-		`;
-		const orderBy =
-			sort === "oldest"
-				? Prisma.sql`"createdAt" ASC, id ASC`
-				: sort === "title"
-					? Prisma.sql`title ASC, id ASC`
-					: sort === "clips"
-						? Prisma.sql`(SELECT COUNT(*) FROM "Clip" WHERE "projectId" = listed.id) DESC, "createdAt" DESC, id DESC`
-						: Prisma.sql`"createdAt" DESC, id DESC`;
-		type ProgressRow = {
-			id: string;
-			ingestStatus: PrismaIngestStatus;
-			workflowStage: string | null;
-			workflowStatus: string | null;
-			progressStatus: Exclude<ProjectListStatusFilter, "all">;
-		};
-		const statusFilter =
-			status === "all" ? Prisma.empty : Prisma.sql`WHERE "progressStatus" = ${status}`;
-		const [pageWithLookahead, countRows] = await Promise.all([
-			prisma.$queryRaw<ProgressRow[]>(Prisma.sql`
-				${progressCte}
-				SELECT id, "ingestStatus", "workflowStage", "workflowStatus", "progressStatus"
-				FROM listed
-				${statusFilter}
-				ORDER BY ${orderBy}
-				OFFSET ${offset} LIMIT ${limit + 1}
-			`),
-			prisma.$queryRaw<Array<{ progressStatus: Exclude<ProjectListStatusFilter, "all">; count: bigint }>>(Prisma.sql`
-				${progressCte}
-				SELECT "progressStatus", COUNT(*)::bigint AS count
-				FROM listed
-				GROUP BY "progressStatus"
-			`),
-		]);
-		const statusCounts = emptyProjectStatusCounts();
-		for (const row of countRows) {
-			statusCounts.all += Number(row.count);
-			statusCounts[row.progressStatus] += Number(row.count);
-		}
-		const totalCount = status === "all"
-			? statusCounts.all
-			: statusCounts[status];
-		const pageRows = pageWithLookahead.slice(0, limit);
-
-		if (pageRows.length === 0) {
-			return { items: [], nextCursor: null, totalCount, statusCounts };
-		}
-
-		const projectIds = pageRows.map((row) => row.id);
-
-		const [projectRows, clipAggregates, transcripts] = await Promise.all([
-			prisma.project.findMany({ where: { id: { in: projectIds } } }),
-			prisma.clip.groupBy({
-				by: ["projectId"],
-				where: { projectId: { in: projectIds } },
-				_count: { _all: true },
-				_avg: { viralityScore: true },
-			}),
-			prisma.transcript.findMany({
-				where: { projectId: { in: projectIds } },
-				select: {
-					projectId: true,
-					languageCode: true,
-					speakerCount: true,
-					durationSeconds: true,
-					status: true,
-				},
-			}),
-		]);
-
-		const clipMap = new Map(
-			clipAggregates.map((entry) => [entry.projectId, entry] as const),
-		);
-		const transcriptMap = new Map(
-			transcripts.map((entry) => [entry.projectId, entry] as const),
-		);
-		const projectMap = new Map(projectRows.map((row) => [row.id, row] as const));
-
-		const items = pageRows.flatMap((progressRow) => {
-			const row = projectMap.get(progressRow.id);
-			if (!row) return [];
-			const clip = clipMap.get(row.id);
-			const transcript = transcriptMap.get(row.id) ?? null;
-
-			return [{
-				...toProjectSnapshot(row),
-				clipCount: clip?._count._all ?? 0,
-				avgViralityScore: clip?._avg.viralityScore ?? null,
-				progress: deriveProjectListProgress({
-					ingestStatus: progressRow.ingestStatus,
-					workflowRuns: progressRow.workflowStage && progressRow.workflowStatus
-						? [{
-							stage: progressRow.workflowStage,
-							status: progressRow.workflowStatus,
-							updatedAt: new Date(),
-						}]
-						: [],
-				}),
-				transcript: transcript
-					? {
-							languageCode: transcript.languageCode,
-							speakerCount: transcript.speakerCount,
-							durationSeconds: transcript.durationSeconds,
-							status: transcript.status,
-						}
-					: null,
-			}];
-		});
-
-		return {
-			items,
-			nextCursor:
-				pageWithLookahead.length > limit && items.length > 0
-					? encodeProjectCursor(offset + items.length)
-					: null,
-			totalCount,
-			statusCounts,
-		};
-	}
-
-	async listProjectsWithStats(userId: string): Promise<ProjectListItem[]> {
-		const page = await this.listProjectsWithStatsPage(userId);
-		return page.items;
-	}
-
-	async createProject(
-		userId: string,
-		input: CreateProjectInput,
-		workspaceId?: string,
-	) {
+	async createProject(scope: ActorScope, input: CreateProjectInput) {
 		const parsed = createProjectSchema.parse(input);
 		const createdAt = new Date();
-		const ownership = await this.resolveWriteOwnership(userId, workspaceId);
+		const actor = await this.requireActor(scope);
 		const retention = await projectRetentionService.assignmentForWorkspace(
-			ownership.workspaceId,
+			actor.workspaceId,
 			createdAt,
 		);
-
-		if (!hasDatabase()) {
-			const project: ProjectSnapshot = {
-				id: randomUUID(),
-				userId: ownership.legacyOwnerUserId,
-				workspaceId: ownership.workspaceId,
-				title: parsed.title,
-				sourceMediaUrl: parsed.sourceMediaUrl,
-				sourceType: "upload",
-				sourceProvider: null,
-				sourceInput: parsed.sourceMediaUrl,
-				sourceStorageKey: null,
-				sourceMimeType: null,
-				sourceSizeBytes: null,
-				sourceDurationSeconds: null,
-				languageCode: parsed.languageCode ?? null,
-				brandProfileId: null,
-				brandTemplateId: null,
-				ingestStatus: "ready",
-				ingestErrorCode: null,
-				ingestCompletedAt: new Date().toISOString(),
-				notifyOnComplete: true,
-				retentionPolicyKey: retention?.retentionPolicyKey ?? null,
-				expiresAt: retention?.expiresAt.toISOString() ?? null,
-				persisted: false,
-				createdAt: createdAt.toISOString(),
-			};
-
-			projects.set(project.id, project);
-			return project;
-		}
 
 		const prisma = this.requirePrisma();
 		const project = await prisma.project.create({
 			data: {
-				userId: ownership.legacyOwnerUserId,
-				workspaceId: ownership.workspaceId,
-				createdByUserId: ownership.actorUserId,
-				updatedByUserId: ownership.actorUserId,
+				workspaceId: actor.workspaceId,
+				createdByUserId: actor.actorUserId,
+				updatedByUserId: actor.actorUserId,
 				title: parsed.title,
 				sourceMediaUrl: parsed.sourceMediaUrl,
 				sourceType: "upload",
@@ -1624,68 +701,49 @@ export class ProjectService {
 		return toProjectSnapshot(project);
 	}
 
-	async updateProjectLanguage(
-		userId: string,
-		projectId: string,
-		languageCode: string | null,
-	) {
-		if (!hasDatabase()) {
-			const existing = projects.get(projectId);
-			if (!existing || existing.userId !== userId) return;
-			return;
-		}
+	async getProjectSnapshot(scope: ActorScope, projectId: string) {
 		const prisma = this.requirePrisma();
-		await prisma.project.updateMany({
-			where: { id: projectId, userId },
-			data: { languageCode },
+
+		const projectWhere = await this.resolveProjectScope(scope);
+		const row = await prisma.project.findFirst({
+			where: { id: projectId, AND: [projectWhere, accessibleProjectWhere()] },
 		});
-	}
-
-	async getProjectSnapshot(
-		userId: string,
-		projectId: string,
-		workspaceId?: string,
-	) {
-		const prisma = getPrismaClient();
-
-		if (!prisma) {
-			const inMemory = projects.get(projectId) ?? null;
-			const project = inMemory?.userId === userId ? inMemory : null;
+		if (!row)
 			return {
-				project,
+				project: null,
+				progress: null,
 				activeRun: null,
 				lastSeq: 0,
 				ingestAttemptCount: 0,
 			};
-		}
-
-		const scope = await this.resolveProjectScope(userId, workspaceId);
-		const [row, activeWorkflowRun, latestRun, lastSeq, ingestAttemptCount] = await Promise.all([
-			prisma.project.findFirst({
-				where: { id: projectId, AND: [scope, accessibleProjectWhere()] },
-			}),
-			prisma.workflowRun.findFirst({
-				where: { projectId, status: { in: ["queued", "running", "waiting"] } },
-				orderBy: { updatedAt: "desc" },
-			}),
-			prisma.workflowRun.findFirst({
-				where: { projectId },
-				orderBy: { updatedAt: "desc" },
-			}),
-			getLastWorkflowSeq(projectId),
-			// Total ingest attempts so far (original + retries) — lets the project
-			// page decide whether "Retry ingest" is still allowed.
-			prisma.ingestJob.count({ where: { projectId } }),
-		]);
-		const project = row ? toProjectSnapshot(row) : null;
+		const [activeWorkflowRun, latestRun, lastSeq, ingestAttemptCount] =
+			await Promise.all([
+				prisma.workflowRun.findFirst({
+					where: {
+						projectId,
+						status: { in: ["queued", "running", "waiting"] },
+					},
+					orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+				}),
+				prisma.workflowRun.findFirst({
+					where: { projectId },
+					orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+				}),
+				getLastWorkflowSeq(projectId),
+				// Total ingest attempts so far (original + retries) — lets the project
+				// page decide whether "Retry ingest" is still allowed.
+				prisma.ingestJob.count({ where: { projectId } }),
+			]);
+		const project = toProjectSnapshot(row);
+		const relevantRun = activeWorkflowRun ?? latestRun;
 
 		return {
 			project,
-			activeRun: activeWorkflowRun
-				? toWorkflowRunSnapshot(activeWorkflowRun)
-				: latestRun
-					? toWorkflowRunSnapshot(latestRun)
-					: null,
+			progress: deriveProjectListProgress({
+				ingestStatus: row.ingestStatus,
+				workflowRuns: relevantRun ? [relevantRun] : [],
+			}),
+			activeRun: relevantRun ? toWorkflowRunSnapshot(relevantRun) : null,
 			lastSeq,
 			ingestAttemptCount,
 		};
@@ -1698,10 +756,10 @@ export class ProjectService {
 	 * the payload defensively; the client applies its own tighter display cap.
 	 */
 	async getWorkflowHistory(
-		userId: string,
+		scope: ActorScope,
 		projectId: string,
 	): Promise<WorkflowStageUpdatedEvent[]> {
-		const access = await this.getProjectAccess(userId, projectId);
+		const access = await this.getProjectAccess(scope, projectId);
 		if (access !== "owned") {
 			return [];
 		}
@@ -1719,19 +777,24 @@ export class ProjectService {
 		return validated;
 	}
 
-	async getIngestSnapshot(userId: string, projectId: string) {
+	async getIngestSnapshot(scope: ActorScope, projectId: string) {
+		await this.requireActor(scope, "content.view");
 		const prisma = this.requirePrisma();
 		const [row, activeWorkflowRun, latestRun, lastSeq] = await Promise.all([
 			prisma.project.findFirst({
-				where: { id: projectId, userId, ...accessibleProjectWhere() },
+				where: {
+					id: projectId,
+					workspaceId: scope.workspaceId,
+					...accessibleProjectWhere(),
+				},
 			}),
 			prisma.workflowRun.findFirst({
 				where: { projectId, status: { in: ["queued", "running", "waiting"] } },
-				orderBy: { updatedAt: "desc" },
+				orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
 			}),
 			prisma.workflowRun.findFirst({
 				where: { projectId },
-				orderBy: { updatedAt: "desc" },
+				orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
 			}),
 			getLastWorkflowSeq(projectId),
 		]);
@@ -1740,19 +803,30 @@ export class ProjectService {
 			return null;
 		}
 
+		const relevantRun = activeWorkflowRun ?? latestRun;
 		return {
 			project: toProjectSnapshot(row),
-			activeRun: activeWorkflowRun
-				? toWorkflowRunSnapshot(activeWorkflowRun)
-				: latestRun
-					? toWorkflowRunSnapshot(latestRun)
-					: null,
+			progress: deriveProjectListProgress({
+				ingestStatus: row.ingestStatus,
+				workflowRuns: relevantRun ? [relevantRun] : [],
+			}),
+			activeRun: relevantRun ? toWorkflowRunSnapshot(relevantRun) : null,
 			lastSeq,
 		};
 	}
 
-	async getWorkflowRun(projectId: string, workflowRunId: string) {
+	async getWorkflowRun(
+		scope: ActorScope,
+		projectId: string,
+		workflowRunId: string,
+	) {
+		const projectWhere = await this.resolveProjectScope(scope);
 		const prisma = this.requirePrisma();
+		const project = await prisma.project.findFirst({
+			where: { id: projectId, AND: [projectWhere, accessibleProjectWhere()] },
+			select: { id: true },
+		});
+		if (!project) return { run: null, lastSeq: 0 };
 		const [dbRun, lastSeq] = await Promise.all([
 			// Scope by projectId so a run from another tenant's project can't be read
 			// by passing a foreign workflowRunId to an owned project's route.
@@ -1768,12 +842,16 @@ export class ProjectService {
 		};
 	}
 
-	async getTranscriptSnapshot(userId: string, projectId: string) {
+	async getTranscriptSnapshot(scope: ActorScope, projectId: string) {
+		await this.requireActor(scope, "content.view");
 		const prisma = this.requirePrisma();
 		const row = await prisma.transcript.findFirst({
 			where: {
 				projectId,
-				project: { userId, ...accessibleProjectWhere() },
+				project: {
+					workspaceId: scope.workspaceId,
+					...accessibleProjectWhere(),
+				},
 			},
 		});
 
@@ -1782,12 +860,16 @@ export class ProjectService {
 
 	/** Status-only project-page read. Keeps the multi-thousand-word utterance
 	 * payload off routes whose selected tab does not render the transcript. */
-	async getTranscriptStatusSnapshot(userId: string, projectId: string) {
+	async getTranscriptStatusSnapshot(scope: ActorScope, projectId: string) {
+		await this.requireActor(scope, "content.view");
 		const prisma = this.requirePrisma();
 		return prisma.transcript.findFirst({
 			where: {
 				projectId,
-				project: { userId, ...accessibleProjectWhere() },
+				project: {
+					workspaceId: scope.workspaceId,
+					...accessibleProjectWhere(),
+				},
 			},
 			select: { status: true, errorCode: true },
 		});
@@ -1799,12 +881,16 @@ export class ProjectService {
 	 * re-validating ~8k word objects on every request added seconds of
 	 * latency to an endpoint whose consumer re-normalizes anyway.
 	 */
-	async getTranscriptUtterancesRaw(userId: string, projectId: string) {
+	async getTranscriptUtterancesRaw(scope: ActorScope, projectId: string) {
+		await this.requireActor(scope, "content.view");
 		const prisma = this.requirePrisma();
 		const row = await prisma.transcript.findFirst({
 			where: {
 				projectId,
-				project: { userId, ...accessibleProjectWhere() },
+				project: {
+					workspaceId: scope.workspaceId,
+					...accessibleProjectWhere(),
+				},
 				status: "completed",
 			},
 			select: { utterancesJson: true },
@@ -1814,11 +900,11 @@ export class ProjectService {
 	}
 
 	async getTranscriptExport(
-		userId: string,
+		scope: ActorScope,
 		projectId: string,
 		format: TranscriptExportFormat,
 	) {
-		const transcript = await this.getTranscriptSnapshot(userId, projectId);
+		const transcript = await this.getTranscriptSnapshot(scope, projectId);
 
 		if (!transcript) {
 			throw new ProjectServiceError(
@@ -1851,8 +937,9 @@ export class ProjectService {
 		};
 	}
 
-	async getWorkspaceMonthlyUsageMinutes(workspaceId: string): Promise<number> {
-		if (!hasDatabase()) return 0;
+	private async getWorkspaceMonthlyUsageMinutes(
+		workspaceId: string,
+	): Promise<number> {
 		const prisma = this.requirePrisma();
 		const startOfMonth = new Date();
 		startOfMonth.setUTCDate(1);
@@ -1864,8 +951,9 @@ export class ProjectService {
 		return processingMinutesFromSeconds(agg._sum.sourceDurationSeconds ?? 0);
 	}
 
-	async getWorkspacePricingTier(workspaceId: string): Promise<PricingTier> {
-		if (!hasDatabase()) return "free";
+	private async getWorkspacePricingTier(
+		workspaceId: string,
+	): Promise<PricingTier> {
 		const workspace = await this.requirePrisma().workspace.findUnique({
 			where: { id: workspaceId },
 			select: { pricingTier: true },
@@ -1879,11 +967,10 @@ export class ProjectService {
 		return resolvePricingTier(workspace.pricingTier);
 	}
 
-	async assertWorkspaceWithinQuota(
+	private async assertWorkspaceWithinQuota(
 		workspaceId: string,
 		requestedSeconds = 0,
 	): Promise<void> {
-		if (!hasDatabase()) return;
 		const [tier, used] = await Promise.all([
 			this.getWorkspacePricingTier(workspaceId),
 			this.getWorkspaceMonthlyUsageMinutes(workspaceId),
@@ -1910,10 +997,31 @@ export class ProjectService {
 	 * per-upload length cap for the user's plan tier.
 	 */
 	async assertProjectGenerationAllowed(
+		scope: ActorScope,
+		projectId: string,
+	): Promise<void> {
+		await this.requireActor(scope, "processing.consume");
+		await this.assertProjectGenerationBudget(projectId, scope.workspaceId);
+	}
+
+	/** Continues a durably admitted job without using creator attribution as authority. */
+	async assertProjectGenerationAllowedForWorker(
 		projectId: string,
 		workspaceId: string,
 	): Promise<void> {
-		if (!hasDatabase()) return;
+		const workspace = await this.requirePrisma().workspace.findUnique({
+			where: { id: workspaceId },
+			select: { status: true },
+		});
+		if (!workspace || workspace.status !== "active")
+			throw new ProjectAccessDeniedError();
+		await this.assertProjectGenerationBudget(projectId, workspaceId);
+	}
+
+	private async assertProjectGenerationBudget(
+		projectId: string,
+		workspaceId: string,
+	): Promise<void> {
 		const prisma = this.requirePrisma();
 		const [tier, used, project] = await Promise.all([
 			this.getWorkspacePricingTier(workspaceId),
@@ -1922,10 +1030,13 @@ export class ProjectService {
 				where: {
 					id: projectId,
 					workspaceId,
+					...accessibleProjectWhere(),
 				},
 				select: { sourceDurationSeconds: true },
 			}),
 		]);
+
+		if (!project) throw new ProjectNotFoundError();
 
 		const minuteLimit = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
 		if (used > minuteLimit) {
@@ -1955,190 +1066,75 @@ export class ProjectService {
 	}
 
 	async triggerGeneration(
-		userId: string,
+		scope: ActorScope,
 		projectId: string,
 		input: GenerateProjectInput,
 		idempotencyKey: string,
-		options: {
-			/**
-			 * Reuse this committed ContentPack instead of creating a new row, and
-			 * bind the run to it. Set by the link-first setup paths; the legacy
-			 * form/API paths still create their own pack.
-			 */
-			existingContentPackId?: string;
-			workspaceContext: { workspaceId: string; actorUserId: string };
-		},
+		options: { existingContentPackId?: string } = {},
 	) {
 		const parsed = generateProjectRequestSchema.parse(input);
-
-		await workspaceService.requireActor(
-			options.workspaceContext.actorUserId,
-			options.workspaceContext.workspaceId,
-			"processing.consume",
-		);
-
-		// Enforce plan-tier processing-minute quota + per-upload length cap.
-		await this.assertProjectGenerationAllowed(
-			projectId,
-			options.workspaceContext.workspaceId,
-		);
-
-		if (!idempotencyKey) {
+		await this.requireActor(scope, "processing.consume");
+		await this.assertProjectGenerationBudget(projectId, scope.workspaceId);
+		if (!idempotencyKey)
 			throw new ProjectServiceError(
 				"idempotency_key_required",
 				"An idempotency key is required.",
 			);
-		}
-
-		if (!hasDatabase()) {
-			const project = projects.get(projectId);
-			if (!project || project.userId !== userId) {
-				throw new ProjectNotFoundError();
-			}
-
-			if (project.ingestStatus !== "ready") {
-				throw new ProjectServiceError(
-					"project_ingest_not_ready",
-					"Project ingest is not ready.",
-				);
-			}
-		} else {
-			const prisma = this.requirePrisma();
-
-			const project = await prisma.project.findFirst({
-				where: {
-					id: projectId,
-					...(options?.workspaceContext
-						? { workspaceId: options.workspaceContext.workspaceId }
-						: { userId }),
-				},
-				select: {
-					id: true,
-					ingestStatus: true,
-					transcript: {
-						select: {
-							status: true,
-						},
-					},
-				},
-			});
-
-			if (!project) {
-				throw new ProjectNotFoundError();
-			}
-
-			if (project.ingestStatus !== "ready") {
-				throw new ProjectServiceError(
-					"project_ingest_not_ready",
-					"Project ingest is not ready.",
-				);
-			}
-
-			if (!parsed.forceRegenerate) {
-				const reusable =
-					await getWorkflowRunLifecycle().findReusableGenerationRun(
-						projectId,
-						project.transcript?.status === "completed",
-					);
-				if (reusable) {
-					return {
-						workflowRunId: reusable.id,
-						acceptedAt: reusable.updatedAt.toISOString(),
-						initialSeq: await getLastWorkflowSeq(projectId),
-					};
-				}
-			}
-		}
-
-		// Idempotency: prefer the durable DB unique constraint (survives restarts and
-		// works across multiple instances); the in-memory map is only the no-DB path.
-		if (!hasDatabase()) {
-			const existingRunId = idempotencyRuns.get(
-				getIdempotencyKey(projectId, idempotencyKey),
+		const prisma = this.requirePrisma();
+		const project = await prisma.project.findFirst({
+			where: {
+				id: projectId,
+				workspaceId: scope.workspaceId,
+				...accessibleProjectWhere(),
+			},
+			select: {
+				id: true,
+				ingestStatus: true,
+				transcript: { select: { status: true } },
+			},
+		});
+		if (!project) throw new ProjectNotFoundError();
+		if (project.ingestStatus !== "ready")
+			throw new ProjectServiceError(
+				"project_ingest_not_ready",
+				"Project ingest is not ready.",
 			);
-			if (existingRunId) {
+		if (!parsed.forceRegenerate) {
+			const reusable =
+				await getWorkflowRunLifecycle().findReusableGenerationRun(
+					projectId,
+					project.transcript?.status === "completed",
+				);
+			if (reusable)
 				return {
-					workflowRunId: existingRunId,
-					acceptedAt: new Date().toISOString(),
+					workflowRunId: reusable.id,
+					acceptedAt: reusable.updatedAt.toISOString(),
 					initialSeq: await getLastWorkflowSeq(projectId),
 				};
-			}
 		}
-
-		let workflowRunId: string = randomUUID();
-		idempotencyRuns.set(
-			getIdempotencyKey(projectId, idempotencyKey),
-			workflowRunId,
-		);
-
-		if (hasDatabase()) {
-			const contentPackId = options?.existingContentPackId ?? null;
-			const admitted = await getWorkflowRunLifecycle().admitTranscript({
-				projectId,
-				idempotencyKey,
-				contentPackId,
-				contentPack: contentPackId
-					? undefined
-					: {
-							outputTypes: parsed.contentPack.outputTypes,
-							clipGenerationMode: parsed.contentPack.clipGenerationMode,
-							clipCountTarget: parsed.contentPack.clipCountTarget,
-							clipDurationSecTarget: parsed.contentPack.clipDurationSecTarget,
-							minDurationSec: parsed.contentPack.minDurationSec,
-							preferredMinDurationSec:
-								parsed.contentPack.preferredMinDurationSec,
-							preferredMaxDurationSec:
-								parsed.contentPack.preferredMaxDurationSec,
-							maxDurationSec: parsed.contentPack.maxDurationSec,
-							platformTargets: parsed.contentPack.platformTargets,
-							toneConstraints: parsed.contentPack.toneConstraints,
-							captionPreset: parsed.contentPack.captionPreset,
-							platformPlaybookVersion:
-								parsed.contentPack.platformPlaybookVersion,
-							mode: parsed.contentPack.mode,
-							autoHook: parsed.contentPack.autoHook,
-							specificMoments: parsed.contentPack.specificMoments,
-							processingStartSec: parsed.contentPack.processingStartSec,
-							processingEndSec: parsed.contentPack.processingEndSec,
-							clipLengthPreset: parsed.contentPack.clipLengthPreset,
-							defaultAspectRatio: parsed.contentPack.defaultAspectRatio,
-						},
-				languageCode: parsed.languageCode,
-				transcriptProvider: STT_PROVIDER,
-				transcriptProviderModel: STT_PROVIDER_MODEL,
-			});
-			workflowRunId = admitted.id;
-			idempotencyRuns.set(
-				getIdempotencyKey(projectId, idempotencyKey),
-				workflowRunId,
-			);
-
-			return {
-				workflowRunId,
-				acceptedAt: new Date().toISOString(),
-				initialSeq: await getLastWorkflowSeq(projectId),
-			};
-		}
-
+		const contentPackId = options.existingContentPackId ?? null;
+		const admitted = await getWorkflowRunLifecycle().admitTranscript({
+			projectId,
+			idempotencyKey,
+			contentPackId,
+			contentPack: contentPackId
+				? undefined
+				: parseStoredContentPack(parsed.contentPack),
+			languageCode: parsed.languageCode,
+			transcriptProvider: STT_PROVIDER,
+			transcriptProviderModel: STT_PROVIDER_MODEL,
+		});
 		return {
-			workflowRunId,
+			workflowRunId: admitted.id,
 			acceptedAt: new Date().toISOString(),
-			initialSeq: 0,
+			initialSeq: await getLastWorkflowSeq(projectId),
 		};
 	}
 
-	async queueLinkIngest(
-		userId: string,
-		input: LinkIngestInput,
-		workspaceId?: string,
-	) {
+	async queueLinkIngest(scope: ActorScope, input: LinkIngestInput) {
 		const parsed = linkIngestSchema.parse(input);
 		const prisma = this.requirePrisma();
-		const ownership = await this.resolveWriteOwnership(
-			userId,
-			workspaceId,
-			"processing.consume",
-		);
+		const actor = await this.requireActor(scope, "processing.consume");
 
 		// Idempotent replay: the same commit token returns the already-created
 		// project instead of importing twice (double-click, retried request).
@@ -2148,7 +1144,7 @@ export class ProjectService {
 				include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
 			});
 			if (existing) {
-				if (existing.workspaceId !== ownership.workspaceId) {
+				if (existing.workspaceId !== actor.workspaceId) {
 					throw new ProjectNotFoundError();
 				}
 				return {
@@ -2158,7 +1154,7 @@ export class ProjectService {
 			}
 		}
 
-		await this.assertWorkspaceWithinQuota(ownership.workspaceId);
+		await this.assertWorkspaceWithinQuota(actor.workspaceId);
 
 		const provider = detectLinkProvider(parsed.url);
 		if (!provider) {
@@ -2166,29 +1162,9 @@ export class ProjectService {
 		}
 		const sourceType = provider === "youtube" ? "youtube" : "link";
 
-		let brandActorScope: BrandActorScope | null = null;
-		if (parsed.brandProfileId) {
-			const [actor, workspace] = await Promise.all([
-					workspaceService.requireActor(
-						ownership.actorUserId,
-						ownership.workspaceId,
-						"content.view",
-					),
-					prisma.workspace.findUnique({
-						where: { id: ownership.workspaceId },
-						select: { personalOwnerUserId: true },
-					}),
-				]);
-			brandActorScope = {
-				actorUserId: ownership.actorUserId,
-				workspaceId: ownership.workspaceId,
-				workspaceOwnerUserId: actor.workspaceOwnerUserId,
-				role: actor.role,
-				status: actor.status,
-				pricingTier: actor.pricingTier,
-				isPersonalWorkspace: workspace?.personalOwnerUserId !== null,
-			};
-		}
+		const brandActorScope: BrandActorScope | null = parsed.brandProfileId
+			? actor
+			: null;
 		const profileResolved = brandActorScope
 			? await brandProfileService.resolveForProject(brandActorScope, {
 					profileId: parsed.brandProfileId!,
@@ -2198,16 +1174,16 @@ export class ProjectService {
 		const brandResolved = profileResolved
 			? null
 			: await brandTemplateService.resolveSnapshotForUser(
-					ownership.legacyOwnerUserId,
+					actor.workspaceOwnerUserId,
 					parsed.brandTemplateId ?? null,
 					{
-						workspaceId: ownership.workspaceId,
-						actorUserId: ownership.actorUserId,
+						workspaceId: actor.workspaceId,
+						actorUserId: actor.actorUserId,
 					},
 				);
 		const createdAt = new Date();
 		const retention = await projectRetentionService.assignmentForWorkspace(
-			ownership.workspaceId,
+			actor.workspaceId,
 			createdAt,
 		);
 
@@ -2230,10 +1206,9 @@ export class ProjectService {
 			const created = await prisma.$transaction(async (tx) => {
 				const createdProject = await tx.project.create({
 					data: {
-						userId: ownership.legacyOwnerUserId,
-						workspaceId: ownership.workspaceId,
-						createdByUserId: ownership.actorUserId,
-						updatedByUserId: ownership.actorUserId,
+						workspaceId: actor.workspaceId,
+						createdByUserId: actor.actorUserId,
+						updatedByUserId: actor.actorUserId,
 						title: parsed.title ?? "Link Import",
 						sourceMediaUrl: parsed.url,
 						sourceType,
@@ -2242,7 +1217,8 @@ export class ProjectService {
 						ingestStatus: "queued",
 						languageCode: parsed.languageCode ?? null,
 						commitToken: parsed.commitToken ?? null,
-						brandTemplateId: profileResolved?.templateId ?? brandResolved?.templateId ?? null,
+						brandTemplateId:
+							profileResolved?.templateId ?? brandResolved?.templateId ?? null,
 						brandSnapshot: profileResolved?.templateSnapshot
 							? (profileResolved.templateSnapshot as unknown as Prisma.InputJsonValue)
 							: brandResolved
@@ -2260,8 +1236,8 @@ export class ProjectService {
 				if (profileResolved && brandActorScope) {
 					await tx.programAnalyticsEvent.create({
 						data: {
-							workspaceId: ownership.workspaceId,
-							actorUserId: ownership.actorUserId,
+							workspaceId: actor.workspaceId,
+							actorUserId: actor.actorUserId,
 							projectId: createdProject.id,
 							type: "brand_profile_applied",
 							metadata: {
@@ -2277,40 +1253,20 @@ export class ProjectService {
 					});
 				}
 
-				const createdJob = await tx.ingestJob.create({
-					data: {
-						projectId: createdProject.id,
-						jobType: "link_import",
-						payload: {
-							url: parsed.url,
-							provider,
-							requestedTitle: parsed.title ?? null,
-						},
+				const createdJob = await getIngestJobLifecycle().enqueue(tx, {
+					projectId: createdProject.id,
+					jobType: "link_import",
+					payload: {
+						url: parsed.url,
+						provider,
+						requestedTitle: parsed.title ?? null,
 					},
 				});
 
 				await tx.contentPack.create({
 					data: {
 						projectId: createdProject.id,
-						outputTypes: draftPack.outputTypes,
-						clipGenerationMode: draftPack.clipGenerationMode,
-						clipCountTarget: draftPack.clipCountTarget,
-						clipDurationSecTarget: draftPack.clipDurationSecTarget,
-						minDurationSec: draftPack.minDurationSec,
-						preferredMinDurationSec: draftPack.preferredMinDurationSec,
-						preferredMaxDurationSec: draftPack.preferredMaxDurationSec,
-						maxDurationSec: draftPack.maxDurationSec,
-						platformTargets: draftPack.platformTargets,
-						toneConstraints: draftPack.toneConstraints,
-						captionPreset: draftPack.captionPreset,
-						platformPlaybookVersion: draftPack.platformPlaybookVersion,
-						mode: draftPack.mode,
-						autoHook: draftPack.autoHook,
-						specificMoments: draftPack.specificMoments,
-						processingStartSec: draftPack.processingStartSec,
-						processingEndSec: draftPack.processingEndSec,
-						clipLengthPreset: draftPack.clipLengthPreset,
-						defaultAspectRatio: draftPack.defaultAspectRatio,
+						...parseStoredContentPack(draftPack),
 						draft: true,
 					},
 				});
@@ -2326,7 +1282,7 @@ export class ProjectService {
 					where: { commitToken: parsed.commitToken },
 					include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
 				});
-				if (winner && winner.workspaceId === ownership.workspaceId) {
+				if (winner && winner.workspaceId === actor.workspaceId) {
 					return {
 						project: toProjectSnapshot(winner),
 						queuedJobId: winner.ingestJobs[0]?.id ?? null,
@@ -2336,21 +1292,14 @@ export class ProjectService {
 			throw error;
 		}
 
-		await this.publishIngestLifecycleEvent({
-			projectId: project.id,
-			workflowRunId: jobId,
-			ingestStatus: "queued",
-			eventStatus: "queued",
-			errorCode: null,
-		});
-
 		return {
 			project: toProjectSnapshot(project),
 			queuedJobId: jobId,
 		};
 	}
 
-	async previewRssFeed(rssUrl: string) {
+	async previewRssFeed(scope: ActorScope, rssUrl: string) {
+		await this.requireActor(scope, "processing.consume");
 		const parsed = rssPreviewSchema.parse({ rssUrl });
 		const feed = await fetchRssFeed(parsed.rssUrl);
 
@@ -2362,9 +1311,8 @@ export class ProjectService {
 	}
 
 	async importFromRss(
-		userId: string,
+		scope: ActorScope,
 		input: RssImportInput,
-		workspaceId?: string,
 		generationContext?: {
 			contentPack: ContentPack;
 			languageCode: string | null;
@@ -2373,7 +1321,7 @@ export class ProjectService {
 		const parsed = rssImportSchema.parse(input);
 		// Authorize before performing remote network I/O. importResolvedRssEpisodes
 		// repeats this check because it is also called directly by Autopilot.
-		await this.resolveWriteOwnership(userId, workspaceId, "processing.consume");
+		await this.requireActor(scope, "processing.consume");
 		const feed = await fetchRssFeed(parsed.rssUrl);
 		const episodesById = new Map(
 			feed.episodes.map((episode) => [episode.id, episode]),
@@ -2390,7 +1338,7 @@ export class ProjectService {
 		});
 
 		return this.importResolvedRssEpisodes(
-			userId,
+			scope,
 			{
 				rssUrl: feed.finalUrl,
 				episodes,
@@ -2398,7 +1346,6 @@ export class ProjectService {
 				brandTemplateId: parsed.brandTemplateId,
 				commitToken: parsed.commitToken,
 			},
-			workspaceId,
 			{ generationContext },
 		);
 	}
@@ -2409,7 +1356,7 @@ export class ProjectService {
 	 * which re-fetches and resolves client-submitted IDs server-side.
 	 */
 	async importResolvedRssEpisodes(
-		userId: string,
+		scope: ActorScope,
 		input: {
 			rssUrl: string;
 			episodes: Array<{
@@ -2424,7 +1371,6 @@ export class ProjectService {
 			brandTemplateId?: string | null;
 			commitToken?: string;
 		},
-		workspaceId?: string,
 		options: {
 			generationContext?: {
 				contentPack: ContentPack;
@@ -2447,11 +1393,7 @@ export class ProjectService {
 		}
 
 		const prisma = this.requirePrisma();
-		const ownership = await this.resolveWriteOwnership(
-			userId,
-			workspaceId,
-			"processing.consume",
-		);
+		const actor = await this.requireActor(scope, "processing.consume");
 
 		if (options.autopilotRuleId && input.episodes.length === 1) {
 			const existing = await prisma.autopilotEpisode.findUnique({
@@ -2470,7 +1412,7 @@ export class ProjectService {
 				include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
 			});
 			if (existing) {
-				if (existing.workspaceId !== ownership.workspaceId) {
+				if (existing.workspaceId !== actor.workspaceId) {
 					throw new ProjectNotFoundError();
 				}
 				const queuedJobId = existing.ingestJobs[0]?.id;
@@ -2491,7 +1433,7 @@ export class ProjectService {
 			where: {
 				jobType: "rss_import",
 				status: { in: ["queued", "running"] },
-				project: { workspaceId: ownership.workspaceId },
+				project: { workspaceId: actor.workspaceId },
 			},
 		});
 		if (activeRssIngests >= MAX_CONCURRENT_RSS_INGESTS_PER_WORKSPACE) {
@@ -2505,17 +1447,14 @@ export class ProjectService {
 			(total, episode) => total + (episode.durationSeconds ?? 0),
 			0,
 		);
-		await this.assertWorkspaceWithinQuota(
-			ownership.workspaceId,
-			requestedSeconds,
-		);
+		await this.assertWorkspaceWithinQuota(actor.workspaceId, requestedSeconds);
 
 		const brandResolved = await brandTemplateService.resolveSnapshotForUser(
-			ownership.legacyOwnerUserId,
+			actor.workspaceOwnerUserId,
 			input.brandTemplateId ?? null,
 			{
-				workspaceId: ownership.workspaceId,
-				actorUserId: ownership.actorUserId,
+				workspaceId: actor.workspaceId,
+				actorUserId: actor.actorUserId,
 			},
 		);
 
@@ -2527,7 +1466,7 @@ export class ProjectService {
 		for (const episode of input.episodes) {
 			const createdAt = new Date();
 			const retention = await projectRetentionService.assignmentForWorkspace(
-				ownership.workspaceId,
+				actor.workspaceId,
 				createdAt,
 			);
 			let project: Project;
@@ -2547,10 +1486,9 @@ export class ProjectService {
 
 					const createdProject = await tx.project.create({
 						data: {
-							userId: ownership.legacyOwnerUserId,
-							workspaceId: ownership.workspaceId,
-							createdByUserId: ownership.actorUserId,
-							updatedByUserId: ownership.actorUserId,
+							workspaceId: actor.workspaceId,
+							createdByUserId: actor.actorUserId,
+							updatedByUserId: actor.actorUserId,
 							title: input.titlePrefix
 								? `${input.titlePrefix} - ${episode.title}`
 								: episode.title,
@@ -2572,40 +1510,19 @@ export class ProjectService {
 						},
 					});
 
-					const createdJob = await tx.ingestJob.create({
-						data: {
-							projectId: createdProject.id,
-							jobType: "rss_import",
-							payload: { rssUrl: input.rssUrl, episode },
-						},
+					const createdJob = await getIngestJobLifecycle().enqueue(tx, {
+						projectId: createdProject.id,
+						jobType: "rss_import",
+						payload: { rssUrl: input.rssUrl, episode },
 					});
 
 					if (options.generationContext) {
-						const contentPack = contentPackSchema.parse(
-							options.generationContext.contentPack,
-						);
 						await tx.contentPack.create({
 							data: {
 								projectId: createdProject.id,
-								outputTypes: contentPack.outputTypes,
-								clipGenerationMode: contentPack.clipGenerationMode,
-								clipCountTarget: contentPack.clipCountTarget,
-								clipDurationSecTarget: contentPack.clipDurationSecTarget,
-								minDurationSec: contentPack.minDurationSec,
-								preferredMinDurationSec: contentPack.preferredMinDurationSec,
-								preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
-								maxDurationSec: contentPack.maxDurationSec,
-								platformTargets: contentPack.platformTargets,
-								toneConstraints: contentPack.toneConstraints,
-								captionPreset: contentPack.captionPreset,
-								platformPlaybookVersion: contentPack.platformPlaybookVersion,
-								mode: contentPack.mode,
-								autoHook: contentPack.autoHook,
-								specificMoments: contentPack.specificMoments,
-								processingStartSec: contentPack.processingStartSec,
-								processingEndSec: contentPack.processingEndSec,
-								clipLengthPreset: contentPack.clipLengthPreset,
-								defaultAspectRatio: contentPack.defaultAspectRatio,
+								...parseStoredContentPack(
+									options.generationContext.contentPack,
+								),
 							},
 						});
 					}
@@ -2647,7 +1564,7 @@ export class ProjectService {
 								ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 },
 							},
 						});
-						if (winner && winner.workspaceId === ownership.workspaceId) {
+						if (winner && winner.workspaceId === actor.workspaceId) {
 							const queuedJobId = winner.ingestJobs[0]?.id;
 							if (!queuedJobId) {
 								throw new ProjectServiceError(
@@ -2670,496 +1587,12 @@ export class ProjectService {
 				project: toProjectSnapshot(project),
 				queuedJobId: jobId,
 			});
-
-			await this.publishIngestLifecycleEvent({
-				projectId: project.id,
-				workflowRunId: jobId,
-				ingestStatus: "queued",
-				eventStatus: "queued",
-				errorCode: null,
-			});
 		}
 
 		return {
 			count: createdProjects.length,
 			projects: createdProjects,
 		};
-	}
-
-	/**
-	 * Repairs the narrow enqueue/completion race where a render is inserted
-	 * after a running worker took its snapshot but after that worker checked
-	 * for follow-up work. The pending ClipRender row is durable, so each render
-	 * poll ensures it has a live WorkflowRun before attempting a claim.
-	 * Multi-worker races collapse through the database's partial one-live-run
-	 * index; this is intentionally not dependent on Redis delivery.
-	 */
-	async ensurePendingClipRenderingRun(): Promise<string | null> {
-		const prisma = this.requirePrisma();
-		const orphan = await prisma.clipRender.findFirst({
-			where: {
-				status: "pending",
-				clip: {
-					project: {
-						...accessibleProjectWhere(),
-						workflowRuns: {
-							none: {
-								stage: "clip_rendering",
-								status: { in: ["queued", "running", "waiting"] },
-							},
-						},
-					},
-				},
-			},
-			orderBy: { createdAt: "asc" },
-			select: { clip: { select: { projectId: true } } },
-		});
-		if (!orphan) return null;
-
-		const run = await getWorkflowRunLifecycle().admit({
-			projectId: orphan.clip.projectId,
-			idempotencyKey: `render-rescue:${randomUUID()}`,
-			stage: "clip_rendering",
-		});
-
-		await prisma.clipExport.updateMany({
-			where: {
-				projectId: orphan.clip.projectId,
-				status: { in: ["queued", "rendering"] },
-			},
-			data: { workflowRunId: run.id },
-		});
-		return run.id;
-	}
-
-	async claimNextIngestJob(options: { youtubeAvailable?: boolean } = {}): Promise<ClaimedIngestJob | null> {
-		const prisma = this.requirePrisma();
-
-		// Bounded retry: cap contention retries and
-		// return null so the poller retries next tick instead of recursing.
-		for (let attempt = 0; attempt < 5; attempt++) {
-			const claimId = randomUUID();
-			const queued = await prisma.ingestJob.findFirst({
-				where: {
-					status: "queued",
-					...(options.youtubeAvailable === false ? {
-						OR: [
-							{ jobType: { in: ["upload_finalize", "rss_import"] } },
-							{ jobType: "link_import", NOT: { payload: { path: ["provider"], equals: "youtube" } } },
-						],
-					} : {}),
-					project: accessibleProjectWhere(),
-					// Backoff gate for a requeued job (see claimBackoffWhereClauses):
-					// a never-claimed job (attemptCount 0) is always eligible; a
-					// previously-failed/stalled one waits out its exponential window.
-					AND: [
-						{ OR: claimBackoffWhereClauses(INGEST_AUTO_RETRY_MAX_ATTEMPTS) },
-						{ project: { workspace: { status: "active" } } },
-					],
-				},
-				orderBy: { createdAt: "asc" },
-			});
-
-			if (!queued) {
-				return null;
-			}
-
-			const update = await prisma.ingestJob.updateMany({
-				where: {
-					id: queued.id,
-					status: "queued",
-					project: {
-						...accessibleProjectWhere(),
-						workspace: { status: "active" },
-					},
-				},
-				data: {
-					status: "running",
-					startedAt: new Date(),
-					claimId,
-					claimExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
-					attemptCount: {
-						increment: 1,
-					},
-				},
-			});
-
-			if (update.count === 0) {
-				continue; // lost the race; try the next queued row
-			}
-
-			const claimed = await prisma.ingestJob.findFirst({
-				where: { id: queued.id, status: "running", claimId },
-			});
-
-			if (!claimed) {
-				return null;
-			}
-
-			return {
-				id: claimed.id,
-				projectId: claimed.projectId,
-				jobType: claimed.jobType,
-				payload: claimed.payload,
-				attemptCount: claimed.attemptCount,
-				claimId,
-			};
-		}
-
-		return null;
-	}
-
-	async markIngestJobDownloading(jobId: string, claimId: string) {
-		return this.updateJobIngestLifecycle(jobId, claimId, "downloading");
-	}
-
-	async markIngestJobNormalizing(jobId: string, claimId: string) {
-		return this.updateJobIngestLifecycle(jobId, claimId, "normalizing");
-	}
-
-	async renewIngestJobClaim(jobId: string, claimId: string): Promise<void> {
-		const updated = await this.requirePrisma().ingestJob.updateMany({
-			where: { id: jobId, status: "running", claimId, claimExpiresAt: { gt: new Date() } },
-			data: { claimExpiresAt: new Date(Date.now() + 10 * 60 * 1000) },
-		});
-		if (updated.count === 0) throw new IngestJobClaimLost(jobId);
-	}
-
-	async completeIngestJob(
-		jobId: string,
-		claimId: string,
-		input: {
-			sourceStorageKey: string;
-			sourceMediaUrl?: string;
-			sourceInput?: string | null;
-			sourceMimeType?: string | null;
-			sourceSizeBytes?: number | null;
-			sourceDurationSeconds?: number | null;
-		},
-	) {
-		const prisma = this.requirePrisma();
-
-		const job = await prisma.ingestJob.findUnique({ where: { id: jobId } });
-
-		if (!job) {
-			throw new ProjectServiceError(
-				"ingest_job_not_found",
-				"Ingest job not found.",
-			);
-		}
-
-		await prisma.$transaction(async (tx) => {
-			const settled = await tx.ingestJob.updateMany({
-				where: { id: job.id, status: "running", claimId, claimExpiresAt: { gt: new Date() } },
-				data: { status: "completed", lastError: null, completedAt: new Date(), claimExpiresAt: null, generationHandoffAt: null, generationHandoffRetryAt: null },
-			});
-			if (settled.count === 0) throw new IngestJobClaimLost(job.id);
-			await tx.project.update({
-				where: { id: job.projectId },
-				data: {
-					sourceStorageKey: input.sourceStorageKey,
-					sourceMediaUrl:
-						input.sourceMediaUrl ?? buildR2Uri(input.sourceStorageKey),
-					sourceInput: input.sourceInput ?? undefined,
-					sourceMimeType: input.sourceMimeType ?? undefined,
-					sourceSizeBytes:
-						typeof input.sourceSizeBytes === "number"
-							? BigInt(input.sourceSizeBytes)
-							: undefined,
-					sourceDurationSeconds: input.sourceDurationSeconds ?? undefined,
-					ingestStatus: "ready",
-					ingestErrorCode: null,
-					ingestCompletedAt: new Date(),
-				},
-			});
-
-		});
-
-		await this.publishIngestLifecycleEvent({
-			projectId: job.projectId,
-			workflowRunId: job.id,
-			ingestStatus: "ready",
-			eventStatus: "completed",
-			errorCode: null,
-		});
-
-		try {
-			await this.processPendingIngestGenerationHandoffs(1, job.id);
-		} catch (error) {
-			// The durable handoff intent remains pending and maintenance retries it.
-			console.warn(
-				JSON.stringify({
-					level: "error",
-					message: "trigger_generation_after_ingest_failed",
-					projectId: job.projectId,
-					error: error instanceof Error ? error.message : String(error),
-				}),
-			);
-		}
-	}
-
-	/** Completed ingest leaves a durable handoff intent until its idempotent
-	 * generation admission succeeds. A crash after source acceptance therefore
-	 * recovers on maintenance rather than requiring a user retry. */
-	async processPendingIngestGenerationHandoffs(limit = 25, jobId?: string): Promise<number> {
-		const prisma = this.requirePrisma();
-		// Compare both new work and retries by when they became eligible. Nulls
-		// first would let a continuous stream of new ingests starve every retry.
-		const jobs = await prisma.$queryRaw<Array<{ id: string; projectId: string }>>(Prisma.sql`
-			SELECT job.id, job."projectId" FROM "IngestJob" job
-			JOIN "Project" project ON project.id = job."projectId"
-			WHERE job.status = 'completed' AND job."generationHandoffAt" IS NULL
-				AND project."ingestStatus" = 'ready'
-				AND (job."generationHandoffRetryAt" IS NULL OR job."generationHandoffRetryAt" <= NOW())
-				${jobId ? Prisma.sql`AND job.id = ${jobId}::uuid` : Prisma.empty}
-			ORDER BY COALESCE(job."generationHandoffRetryAt", job."completedAt", job."createdAt"), job.id
-			LIMIT ${limit}
-		`);
-		let handedOff = 0;
-		for (const pending of jobs) {
-			let admitted = false;
-			try {
-				admitted = await this.triggerGenerationIfPending(pending.projectId);
-			} catch (error) {
-				console.warn(JSON.stringify({ level: "warn", message: "ingest_generation_handoff_deferred", jobId: pending.id, projectId: pending.projectId, error: error instanceof Error ? error.message : String(error) }));
-				await prisma.ingestJob.updateMany({ where: { id: pending.id, generationHandoffAt: null }, data: { generationHandoffRetryAt: new Date(Date.now() + 60_000) } });
-				continue;
-			}
-			if (!admitted) {
-				// A prior attempt may have admitted the run and crashed before it
-				// acknowledged this intent. Only that durable run proves handoff;
-				// missing/draft configuration stays pending for finalize-setup.
-				const existing = await prisma.workflowRun.findFirst({ where: { projectId: pending.projectId } });
-				if (!existing) {
-					await prisma.ingestJob.updateMany({ where: { id: pending.id, generationHandoffAt: null }, data: { generationHandoffRetryAt: new Date(Date.now() + 60_000) } });
-					continue;
-				}
-			}
-			const settled = await prisma.ingestJob.updateMany({
-				where: { id: pending.id, status: "completed", generationHandoffAt: null },
-				data: { generationHandoffAt: new Date(), generationHandoffRetryAt: null },
-			});
-			handedOff += settled.count;
-		}
-		return handedOff;
-	}
-
-	async failIngestJob(jobId: string, claimId: string, errorCode: string, errorMessage: string) {
-		const prisma = this.requirePrisma();
-
-		const job = await prisma.ingestJob.findUnique({ where: { id: jobId } });
-
-		if (!job) {
-			throw new ProjectServiceError(
-				"ingest_job_not_found",
-				"Ingest job not found.",
-			);
-		}
-
-		const decision = decideAutoRetry(
-			job.attemptCount,
-			errorCode,
-			INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-			INGEST_RETRIES_EXHAUSTED_CODE,
-		);
-
-		console.warn(
-			JSON.stringify({
-				level: "warn",
-				message: "ingest_job_failure_decision",
-				jobId: job.id,
-				projectId: job.projectId,
-				errorCode,
-				attemptCount: job.attemptCount,
-				maxAttempts: INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-				outcome: decision.outcome,
-			}),
-		);
-
-		if (decision.outcome === "requeue") {
-			await prisma.$transaction(async (tx) => {
-				const released = await tx.ingestJob.updateMany({ where: { id: job.id, status: "running", claimId, claimExpiresAt: { gt: new Date() } }, data: { status: "queued", claimId: null, claimExpiresAt: null, lastError: `${errorCode}: ${errorMessage} (auto-retry, attempt ${job.attemptCount} of ${INGEST_AUTO_RETRY_MAX_ATTEMPTS})` } });
-				if (released.count === 0) throw new IngestJobClaimLost(job.id);
-				await tx.project.update({
-					where: { id: job.projectId },
-					data: {
-						ingestStatus: "queued",
-						ingestErrorCode: null,
-					},
-				});
-
-			});
-
-			await this.publishIngestLifecycleEvent({
-				projectId: job.projectId,
-				workflowRunId: job.id,
-				ingestStatus: "queued",
-				eventStatus: "queued",
-				errorCode: null,
-				retrying: true,
-			});
-			return;
-		}
-
-		const terminalErrorCode = decision.terminalErrorCode;
-
-		await prisma.$transaction(async (tx) => {
-			const settled = await tx.ingestJob.updateMany({ where: { id: job.id, status: "running", claimId, claimExpiresAt: { gt: new Date() } }, data: { status: "failed", lastError: `${errorCode}: ${errorMessage}`, completedAt: new Date(), claimExpiresAt: null } });
-			if (settled.count === 0) throw new IngestJobClaimLost(job.id);
-			await tx.project.update({
-				where: { id: job.projectId },
-				data: {
-					ingestStatus: "failed",
-					ingestErrorCode: terminalErrorCode,
-				},
-			});
-
-		});
-
-		await this.publishIngestLifecycleEvent({
-			projectId: job.projectId,
-			workflowRunId: job.id,
-			ingestStatus: "failed",
-			eventStatus: "failed",
-			errorCode: terminalErrorCode,
-		});
-	}
-
-	/**
-	 * Re-queues ingest for a project stuck in ingestStatus "failed": clones the
-	 * most recent IngestJob's jobType + payload into a brand-new job (a fresh
-	 * createdAt keeps it fair in claimNextIngestJob's global FIFO instead of
-	 * letting an old retry jump the queue) and flips the project back to
-	 * "queued". Bounded by MAX_INGEST_RETRY_ATTEMPTS (counting the original
-	 * attempt); once reached, callers must tell the user to start over.
-	 *
-	 * The failed -> queued transition is a conditional updateMany so a
-	 * double-click or a race with another retry can't enqueue two jobs.
-	 */
-	async retryFailedIngest(
-		userId: string,
-		projectId: string,
-		workspaceContext?: { workspaceId: string; actorUserId: string },
-	) {
-		const prisma = this.requirePrisma();
-
-		if (workspaceContext) {
-			await workspaceService.requireActor(
-				workspaceContext.actorUserId,
-				workspaceContext.workspaceId,
-				"processing.consume",
-			);
-		}
-
-		const project = await prisma.project.findFirst({
-			where: {
-				id: projectId,
-				...(workspaceContext
-					? { workspaceId: workspaceContext.workspaceId }
-					: { userId }),
-			},
-			select: { id: true, ingestStatus: true },
-		});
-
-		if (!project) {
-			throw new ProjectNotFoundError();
-		}
-
-		if (project.ingestStatus !== "failed") {
-			throw new IngestNotFailedError();
-		}
-
-		const [attemptCount, lastJob] = await Promise.all([
-			prisma.ingestJob.count({ where: { projectId } }),
-			prisma.ingestJob.findFirst({
-				where: { projectId },
-				orderBy: { createdAt: "desc" },
-			}),
-		]);
-
-		if (!lastJob) {
-			throw new ProjectServiceError(
-				"ingest_retry_source_not_found",
-				"No prior ingest job was found to retry.",
-			);
-		}
-
-		if (attemptCount >= MAX_INGEST_RETRY_ATTEMPTS) {
-			throw new IngestRetryLimitExceededError(MAX_INGEST_RETRY_ATTEMPTS);
-		}
-
-		const claim = await prisma.project.updateMany({
-			where: {
-				id: projectId,
-				ingestStatus: "failed",
-				...(workspaceContext
-					? { workspaceId: workspaceContext.workspaceId }
-					: { userId }),
-			},
-			data: { ingestStatus: "queued", ingestErrorCode: null },
-		});
-
-		if (claim.count === 0) {
-			// Another retry (or the worker itself) already moved this project out
-			// of "failed" between our read and this write.
-			throw new IngestNotFailedError();
-		}
-
-		const job = await prisma.ingestJob.create({
-			data: {
-				projectId,
-				jobType: lastJob.jobType,
-				payload: lastJob.payload as unknown as Prisma.InputJsonValue,
-			},
-		});
-
-		await this.publishIngestLifecycleEvent({
-			projectId,
-			workflowRunId: job.id,
-			ingestStatus: "queued",
-			eventStatus: "queued",
-			errorCode: null,
-		});
-
-		return {
-			queuedJobId: job.id,
-			attemptsUsed: attemptCount + 1,
-			maxAttempts: MAX_INGEST_RETRY_ATTEMPTS,
-		};
-	}
-
-	private async updateJobIngestLifecycle(
-		jobId: string,
-		claimId: string,
-		ingestStatus: Exclude<IngestLifecycleStatus, "ready" | "failed">,
-	) {
-		const prisma = this.requirePrisma();
-
-		const job = await prisma.ingestJob.findFirst({ where: { id: jobId, status: "running", claimId, claimExpiresAt: { gt: new Date() } } });
-
-		if (!job) {
-			throw new IngestJobClaimLost(jobId);
-		}
-
-		const renewed = await prisma.ingestJob.updateMany({
-			where: { id: job.id, status: "running", claimId, claimExpiresAt: { gt: new Date() } },
-			data: { lastError: null, claimExpiresAt: new Date(Date.now() + 10 * 60 * 1000) },
-		});
-		if (renewed.count === 0) throw new IngestJobClaimLost(job.id);
-
-		const projectUpdate = await prisma.project.updateMany({
-			where: { id: job.projectId, ...accessibleProjectWhere() },
-			data: { ingestStatus, ingestErrorCode: null },
-		});
-		if (projectUpdate.count === 0) throw new ProjectExpiredError();
-
-		await this.publishIngestLifecycleEvent({
-			projectId: job.projectId,
-			workflowRunId: job.id,
-			ingestStatus,
-			eventStatus: "running",
-			errorCode: null,
-		});
 	}
 
 	async getTranscriptForWorker(projectId: string) {
@@ -3169,176 +1602,47 @@ export class ProjectService {
 		});
 	}
 
-	async getLatestContentPack(projectId: string) {
+	async getLatestContentPack(scope: ActorScope, projectId: string) {
+		await this.requireActor(scope, "content.view");
 		const prisma = this.requirePrisma();
 		return prisma.contentPack.findFirst({
-			where: { projectId },
+			where: {
+				projectId,
+				project: {
+					workspaceId: scope.workspaceId,
+					...accessibleProjectWhere(),
+				},
+			},
 			orderBy: { createdAt: "desc" },
 		});
 	}
 
-	async getProjectBrandSnapshot(projectId: string): Promise<unknown | null> {
+	async getProjectBrandSnapshot(
+		scope: ActorScope,
+		projectId: string,
+	): Promise<unknown | null> {
+		await this.requireActor(scope, "content.view");
 		const prisma = this.requirePrisma();
-		const row = await prisma.project.findUnique({
-			where: { id: projectId },
+		const row = await prisma.project.findFirst({
+			where: {
+				id: projectId,
+				workspaceId: scope.workspaceId,
+				...accessibleProjectWhere(),
+			},
 			select: { brandSnapshot: true },
 		});
 		return row?.brandSnapshot ?? null;
 	}
 
-	async getProjectLanguageCode(projectId: string): Promise<string | null> {
+	async getProjectLanguageCodeForWorker(
+		projectId: string,
+	): Promise<string | null> {
 		const prisma = this.requirePrisma();
 		const row = await prisma.project.findUnique({
 			where: { id: projectId },
 			select: { languageCode: true },
 		});
 		return row?.languageCode ?? null;
-	}
-
-	async prepareGenerationContext(
-		userId: string,
-		projectId: string,
-		contentPack: ContentPack,
-		languageCode: string | null,
-	) {
-		const prisma = this.requirePrisma();
-
-		const project = await prisma.project.findFirst({
-			where: { id: projectId, userId },
-			select: {
-				id: true,
-				workspaceId: true,
-				brandSnapshot: true,
-				brandTemplateId: true,
-			},
-		});
-
-		if (!project) {
-			throw new ProjectNotFoundError();
-		}
-
-		let brandSnapshotData:
-      Prisma.InputJsonValue
-			| typeof Prisma.JsonNull
-			| undefined;
-		let brandTemplateIdData: string | null | undefined;
-		if (!project.brandSnapshot) {
-			const brandResolved = await brandTemplateService.resolveSnapshotForUser(
-				userId,
-				null,
-				project.workspaceId
-					? { workspaceId: project.workspaceId, actorUserId: userId }
-					: undefined,
-			);
-			if (brandResolved) {
-				brandSnapshotData =
-					brandResolved.snapshot as unknown as Prisma.InputJsonValue;
-				brandTemplateIdData = brandResolved.templateId;
-			}
-		}
-
-		await prisma.$transaction(async (tx) => {
-			await tx.project.update({
-				where: { id: projectId },
-				data: {
-					languageCode,
-					...(brandSnapshotData !== undefined && {
-						brandSnapshot: brandSnapshotData,
-					}),
-					...(brandTemplateIdData !== undefined && {
-						brandTemplateId: brandTemplateIdData,
-					}),
-				},
-			});
-
-			await tx.contentPack.create({
-				data: {
-					projectId,
-					outputTypes: contentPack.outputTypes,
-					clipGenerationMode: contentPack.clipGenerationMode,
-					clipCountTarget: contentPack.clipCountTarget,
-					clipDurationSecTarget: contentPack.clipDurationSecTarget,
-					minDurationSec: contentPack.minDurationSec,
-					preferredMinDurationSec: contentPack.preferredMinDurationSec,
-					preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
-					maxDurationSec: contentPack.maxDurationSec,
-					platformTargets: contentPack.platformTargets,
-					toneConstraints: contentPack.toneConstraints,
-					captionPreset: contentPack.captionPreset,
-					platformPlaybookVersion: contentPack.platformPlaybookVersion,
-					mode: contentPack.mode,
-					autoHook: contentPack.autoHook,
-					specificMoments: contentPack.specificMoments,
-					processingStartSec: contentPack.processingStartSec,
-					processingEndSec: contentPack.processingEndSec,
-				},
-			});
-		});
-	}
-
-	async triggerGenerationIfPending(projectId: string): Promise<boolean> {
-		const prisma = this.requirePrisma();
-
-		const project = await prisma.project.findUnique({
-			where: { id: projectId },
-			select: {
-				id: true,
-				userId: true,
-				workspaceId: true,
-				ingestStatus: true,
-				languageCode: true,
-			},
-		});
-
-		if (!project || project.ingestStatus !== "ready") {
-			return false;
-		}
-
-		const [latestRun, recentPacks] = await Promise.all([
-			prisma.workflowRun.findFirst({
-				where: { projectId },
-				orderBy: { updatedAt: "desc" },
-			}),
-			prisma.contentPack.findMany({
-				where: { projectId },
-				orderBy: { createdAt: "desc" },
-				take: 5,
-			}),
-		]);
-
-		if (latestRun) return false;
-
-		// Latest pack overall; STOP if it is a draft (Step 2 not finished) —
-		// never fall back to an older committed pack with stale settings.
-		const actionablePack = selectActionablePack(recentPacks);
-		if (!actionablePack) return false;
-
-		const contentPack = parseStoredContentPack(actionablePack);
-		const storedLanguageCode = sourceLanguageCodeSchema.safeParse(
-			project.languageCode,
-		);
-
-		await this.triggerGeneration(
-			project.userId,
-			projectId,
-			{
-				contentPack,
-				forceRegenerate: false,
-				languageCode: storedLanguageCode.success
-					? storedLanguageCode.data
-					: null,
-			},
-			autoTriggerIdempotencyKey(projectId, actionablePack.id),
-			{
-				existingContentPackId: actionablePack.id,
-				workspaceContext: {
-					workspaceId: project.workspaceId,
-					actorUserId: project.userId,
-				},
-			},
-		);
-
-		return true;
 	}
 
 	/**
@@ -3352,15 +1656,20 @@ export class ProjectService {
 	 * idempotency key collapses a double-claim to one run.
 	 */
 	async finalizeGenerationSetup(
-		userId: string,
+		scope: ActorScope,
 		projectId: string,
 		contentPack: ContentPack,
 		languageCode: string | null,
 	): Promise<FinalizeSetupResult> {
+		await this.requireActor(scope, "processing.consume");
 		const prisma = this.requirePrisma();
 
 		const project = await prisma.project.findFirst({
-			where: { id: projectId, userId },
+			where: {
+				id: projectId,
+				workspaceId: scope.workspaceId,
+				...accessibleProjectWhere(),
+			},
 			select: { id: true, workspaceId: true, ingestStatus: true },
 		});
 		if (!project) {
@@ -3369,7 +1678,7 @@ export class ProjectService {
 
 		const existingRun = await prisma.workflowRun.findFirst({
 			where: { projectId },
-			orderBy: { updatedAt: "desc" },
+			orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
 			select: { id: true },
 		});
 		if (existingRun) {
@@ -3382,28 +1691,7 @@ export class ProjectService {
 			};
 		}
 
-		const packData = {
-			outputTypes: contentPack.outputTypes,
-			clipGenerationMode: contentPack.clipGenerationMode,
-			clipCountTarget: contentPack.clipCountTarget,
-			clipDurationSecTarget: contentPack.clipDurationSecTarget,
-			minDurationSec: contentPack.minDurationSec,
-			preferredMinDurationSec: contentPack.preferredMinDurationSec,
-			preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
-			maxDurationSec: contentPack.maxDurationSec,
-			platformTargets: contentPack.platformTargets,
-			toneConstraints: contentPack.toneConstraints,
-			captionPreset: contentPack.captionPreset,
-			platformPlaybookVersion: contentPack.platformPlaybookVersion,
-			mode: contentPack.mode,
-			autoHook: contentPack.autoHook,
-			specificMoments: contentPack.specificMoments,
-			processingStartSec: contentPack.processingStartSec,
-			processingEndSec: contentPack.processingEndSec,
-			clipLengthPreset: contentPack.clipLengthPreset,
-			defaultAspectRatio: contentPack.defaultAspectRatio,
-			draft: false,
-		};
+		const packData = { ...parseStoredContentPack(contentPack), draft: false };
 
 		// Upsert-in-place: repeated Configure updates the same row, never
 		// inserts. A pack already bound to a WorkflowRun is immutable — a
@@ -3432,7 +1720,7 @@ export class ProjectService {
 			// The latest pack is already bound to a run (concurrent finalize won).
 			const boundRun = await prisma.workflowRun.findFirst({
 				where: { projectId },
-				orderBy: { updatedAt: "desc" },
+				orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
 				select: { id: true },
 			});
 			return {
@@ -3443,13 +1731,21 @@ export class ProjectService {
 		}
 
 		await prisma.project.update({
-			where: { id: projectId },
-			data: { languageCode },
+			where: {
+				id: projectId,
+				workspaceId: scope.workspaceId,
+				...accessibleProjectWhere(),
+			},
+			data: { languageCode, updatedByUserId: scope.actorUserId },
 		});
 
 		// Pack committed — NOW read ingest state (the ordering invariant).
 		const fresh = await prisma.project.findUnique({
-			where: { id: projectId },
+			where: {
+				id: projectId,
+				workspaceId: scope.workspaceId,
+				...accessibleProjectWhere(),
+			},
 			select: { ingestStatus: true },
 		});
 		const ingestStatus = fresh?.ingestStatus ?? project.ingestStatus;
@@ -3460,7 +1756,7 @@ export class ProjectService {
 
 		const parsedLanguage = sourceLanguageCodeSchema.safeParse(languageCode);
 		const result = await this.triggerGeneration(
-			userId,
+			scope,
 			projectId,
 			{
 				contentPack,
@@ -3470,10 +1766,6 @@ export class ProjectService {
 			autoTriggerIdempotencyKey(projectId, committedPack.id),
 			{
 				existingContentPackId: committedPack.id,
-				workspaceContext: {
-					workspaceId: project.workspaceId,
-					actorUserId: userId,
-				},
 			},
 		);
 
@@ -3490,14 +1782,19 @@ export class ProjectService {
 	 * false) once a run exists — the settings already fed a claim.
 	 */
 	async saveGenerationDraft(
-		userId: string,
+		scope: ActorScope,
 		projectId: string,
 		contentPack: ContentPack,
 		languageCode: string | null,
 	): Promise<boolean> {
+		await this.requireActor(scope, "processing.consume");
 		const prisma = this.requirePrisma();
 		const project = await prisma.project.findFirst({
-			where: { id: projectId, userId },
+			where: {
+				id: projectId,
+				workspaceId: scope.workspaceId,
+				...accessibleProjectWhere(),
+			},
 			select: { id: true },
 		});
 		if (!project) throw new ProjectNotFoundError();
@@ -3508,28 +1805,7 @@ export class ProjectService {
 		});
 		if (existingRun) return false;
 
-		const draftData = {
-			outputTypes: contentPack.outputTypes,
-			clipGenerationMode: contentPack.clipGenerationMode,
-			clipCountTarget: contentPack.clipCountTarget,
-			clipDurationSecTarget: contentPack.clipDurationSecTarget,
-			minDurationSec: contentPack.minDurationSec,
-			preferredMinDurationSec: contentPack.preferredMinDurationSec,
-			preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
-			maxDurationSec: contentPack.maxDurationSec,
-			platformTargets: contentPack.platformTargets,
-			toneConstraints: contentPack.toneConstraints,
-			captionPreset: contentPack.captionPreset,
-			platformPlaybookVersion: contentPack.platformPlaybookVersion,
-			mode: contentPack.mode,
-			autoHook: contentPack.autoHook,
-			specificMoments: contentPack.specificMoments,
-			processingStartSec: contentPack.processingStartSec,
-			processingEndSec: contentPack.processingEndSec,
-			clipLengthPreset: contentPack.clipLengthPreset,
-			defaultAspectRatio: contentPack.defaultAspectRatio,
-			draft: true,
-		};
+		const draftData = { ...parseStoredContentPack(contentPack), draft: true };
 
 		await prisma.$transaction(async (tx) => {
 			const latest = await tx.contentPack.findFirst({
@@ -3546,46 +1822,44 @@ export class ProjectService {
 				await tx.contentPack.create({ data: { projectId, ...draftData } });
 			}
 			await tx.project.update({
-				where: { id: projectId },
-				data: { languageCode },
+				where: {
+					id: projectId,
+					workspaceId: scope.workspaceId,
+					...accessibleProjectWhere(),
+				},
+				data: { languageCode, updatedByUserId: scope.actorUserId },
 			});
 		});
 		return true;
 	}
 
-	/**
-	 * The pack a worker task must use for a claimed run: the run's bound pack.
-	 * Falls back to the latest committed pack only for pre-split legacy runs
-	 * that carry no binding.
-	 */
+	/** A worker reads only the committed ContentPack bound to its claimed run. */
 	async getContentPackForRun(run: {
-		id: string;
 		projectId: string;
-		contentPackId?: string | null;
+		contentPackId: string | null;
 	}) {
 		const prisma = this.requirePrisma();
-		if (run.contentPackId) {
-			const bound = await prisma.contentPack.findUnique({
-				where: { id: run.contentPackId },
-			});
-			if (bound) return bound;
-		}
+		if (!run.contentPackId) return null;
 		return prisma.contentPack.findFirst({
-			where: { projectId: run.projectId, draft: false },
-			orderBy: { createdAt: "desc" },
+			where: { id: run.contentPackId, projectId: run.projectId, draft: false },
 		});
 	}
 
 	/** Per-project "email me when clips are ready" preference. */
 	async setProjectNotifyPreference(
-		userId: string,
+		scope: ActorScope,
 		projectId: string,
 		notifyOnComplete: boolean,
 	): Promise<void> {
+		await this.requireActor(scope, "content.edit");
 		const prisma = this.requirePrisma();
 		const updated = await prisma.project.updateMany({
-			where: { id: projectId, userId },
-			data: { notifyOnComplete },
+			where: {
+				id: projectId,
+				workspaceId: scope.workspaceId,
+				...accessibleProjectWhere(),
+			},
+			data: { notifyOnComplete, updatedByUserId: scope.actorUserId },
 		});
 		if (updated.count === 0) {
 			throw new ProjectNotFoundError();
@@ -3593,16 +1867,14 @@ export class ProjectService {
 	}
 
 	/** Read-only usage summary for the import pre-flight UI. */
-	async getUsageSummary(
-		userId: string,
-		workspaceId: string,
-	): Promise<{
+	async getUsageSummary(scope: ActorScope): Promise<{
 		tier: PricingTier;
 		usedMinutes: number;
 		limitMinutes: number;
 		maxUploadSeconds: number;
 	}> {
-		const actor = await workspaceService.requireActor(userId, workspaceId);
+		const actor = await this.requireActor(scope, "content.view");
+		const workspaceId = scope.workspaceId;
 		const tier = resolvePricingTier(actor.pricingTier);
 		const usedMinutes = await this.getWorkspaceMonthlyUsageMinutes(workspaceId);
 		return {
@@ -3611,120 +1883,6 @@ export class ProjectService {
 			limitMinutes: MONTHLY_PROCESSING_MINUTE_LIMITS[tier],
 			maxUploadSeconds: MAX_UPLOAD_LENGTH_SECONDS[tier],
 		};
-	}
-
-	/**
-	 * Fails ingest jobs left `running` by a crashed worker and moves the project
-	 * to a terminal ingest failure. Otherwise uploads/imports can spin forever
-	 * even though no worker owns the job anymore.
-	 */
-	async reapStuckIngestJobs(stallTimeoutMs = 30 * 60 * 1000): Promise<number> {
-		if (!hasDatabase()) return 0;
-		const prisma = this.requirePrisma();
-		const cutoff = new Date(Date.now() - stallTimeoutMs);
-
-		const stalled = await prisma.ingestJob.findMany({
-			where: {
-				status: "running",
-				OR: [
-					{ claimExpiresAt: { lt: new Date() } },
-					{ claimExpiresAt: null, startedAt: { lt: cutoff } },
-					{ claimExpiresAt: null, startedAt: null, updatedAt: { lt: cutoff } },
-				],
-			},
-			select: { id: true, projectId: true, attemptCount: true },
-		});
-
-		let reaped = 0;
-		for (const job of stalled) {
-			// A worker crashing mid-run is the most retryable failure mode there
-			// is — the job never got a chance to fail on its own merits — so this
-			// goes through the exact same decideAutoRetry cap as an explicit
-			// failure rather than always killing the job outright.
-			const decision = decideAutoRetry(
-				job.attemptCount,
-				"worker_stalled",
-				INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-				INGEST_RETRIES_EXHAUSTED_CODE,
-			);
-
-			const reapedAtomically = await prisma.$transaction(async (tx) => {
-				const updated = await tx.ingestJob.updateMany({
-					where: { id: job.id, status: "running", OR: [{ claimExpiresAt: { lt: new Date() } }, { claimExpiresAt: null }] },
-					data:
-					decision.outcome === "requeue"
-						? {
-								status: "queued",
-								claimId: null,
-								claimExpiresAt: null,
-								lastError: `worker_stalled: requeued (attempt ${job.attemptCount} of ${INGEST_AUTO_RETRY_MAX_ATTEMPTS})`,
-							}
-						: {
-								status: "failed",
-								claimExpiresAt: null,
-								lastError: "worker_stalled: ingest job heartbeat expired",
-								completedAt: new Date(),
-							},
-				});
-				if (updated.count === 0) return false;
-				await tx.project.updateMany({
-					where: { id: job.projectId },
-					data:
-					decision.outcome === "requeue"
-						? { ingestStatus: "queued", ingestErrorCode: null }
-						: {
-								ingestStatus: "failed",
-								ingestErrorCode: decision.terminalErrorCode,
-							},
-				});
-				return true;
-			});
-			if (!reapedAtomically) continue;
-
-			reaped += 1;
-			console.warn(
-				JSON.stringify({
-					level: "warn",
-					message: "ingest_job_stall_decision",
-					jobId: job.id,
-					projectId: job.projectId,
-					attemptCount: job.attemptCount,
-					maxAttempts: INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-					outcome: decision.outcome,
-				}),
-			);
-			await this.publishIngestLifecycleEvent({
-				projectId: job.projectId,
-				workflowRunId: job.id,
-				ingestStatus: decision.outcome === "requeue" ? "queued" : "failed",
-				eventStatus: decision.outcome === "requeue" ? "queued" : "failed",
-				errorCode:
-					decision.outcome === "requeue" ? null : decision.terminalErrorCode,
-			}).catch(() => {});
-		}
-
-		return reaped;
-	}
-
-	private async publishIngestLifecycleEvent(input: {
-		projectId: string;
-		workflowRunId: string;
-		ingestStatus: IngestLifecycleStatus;
-		eventStatus: "queued" | "running" | "completed" | "failed";
-		errorCode: string | null;
-		retrying?: boolean;
-	}) {
-		await publishIngestWorkflowStageUpdated({
-			event: "workflow.stage.updated",
-			projectId: input.projectId,
-			workflowRunId: input.workflowRunId,
-			stage: input.retrying
-				? "ingest_retrying"
-				: ingestToWorkflowStage(input.ingestStatus),
-			status: input.eventStatus,
-			progress: input.retrying ? 40 : ingestProgress(input.ingestStatus),
-			errorCode: input.errorCode,
-		});
 	}
 }
 
@@ -3820,7 +1978,8 @@ export async function purgeExpiredProjectSources(
 	retentionDays = DEFAULT_SOURCE_RETENTION_DAYS,
 ): Promise<number> {
 	const prisma = getPrismaClient();
-	if (!prisma) return 0;
+	if (!prisma)
+		throw new Error("DATABASE_URL is required for Project maintenance");
 
 	const candidates = await prisma.project.findMany({
 		where: {
@@ -3924,7 +2083,8 @@ export async function purgeOldWorkflowEvents(
 	olderThanDays = DEFAULT_WORKFLOW_EVENT_RETENTION_DAYS,
 ): Promise<number> {
 	const prisma = getPrismaClient();
-	if (!prisma) return 0;
+	if (!prisma)
+		throw new Error("DATABASE_URL is required for Project maintenance");
 
 	const res = await prisma.workflowEvent.deleteMany({
 		where: {

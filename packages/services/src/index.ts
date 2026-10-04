@@ -124,8 +124,6 @@ export {
 	computePacingScore,
 	computePlatformScore,
 	computeViralityScore,
-	type ClipPendingPreview,
-	type ClipPendingAutoLayoutAnalysis,
 	type ClipDuplicationStorageAdapter,
 	type MotionRenderAnalyticsMetadata,
 } from "./clip.service";
@@ -196,8 +194,6 @@ export {
 	ProjectService,
 	QuotaExceededError,
 	UploadTooLongError,
-	IngestNotFailedError,
-	IngestRetryLimitExceededError,
 	LinkUnsupportedSourceError,
 	ProjectAccessDeniedError,
 	ProjectDeletionIncompleteError,
@@ -205,33 +201,12 @@ export {
 	ProjectHasActiveWorkflowError,
 	ProjectNotFoundError,
 	ProjectServiceError,
-	MAX_INGEST_RETRY_ATTEMPTS,
 	purgeExpiredProjectSources,
 	purgeOldWorkflowEvents,
 	isProjectSourcePurgeEligible,
 	retentionCutoffDate,
-	deriveProjectListProgress,
-	type ProjectListItem,
-	type ProjectListPage,
-	type ProjectListProgress,
-	type ProjectListWorkflowRun,
-	type ProjectListSort,
-	type ProjectListSourceFilter,
-	type ProjectListStatusFilter,
 	type ProjectFailureCode,
 	type ProjectSourcePurgeCandidate,
-	// Automatic job-level retry policy (requeue-with-backoff for IngestJob /
-	// WorkflowRun) — see the "Automatic job-level retry policy" comment block
-	// in project.service.ts for the full design.
-	INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-	INGEST_RETRIES_EXHAUSTED_CODE,
-	PERMANENT_FAILURE_CODES,
-	TRANSIENT_FAILURE_CODES,
-	isAutoRetryableFailureCode,
-	decideAutoRetry,
-	autoRetryBackoffMs,
-	claimBackoffWhereClauses,
-	type AutoRetryDecision,
 } from "./project.service";
 export {
 	createUploadSessionModule,
@@ -365,7 +340,14 @@ export {
 export {
 	PublicationIntentConflictError,
 	PublicationIntentStateError,
+	createSocialPublicationScheduling,
+	type SchedulePublicationInput,
+	type PublicationSchedulingActor,
 } from "./social-publication-scheduling";
+export {
+	createProductionSocialPublicationScheduling,
+	socialPublicationScheduling,
+} from "./social-publication-scheduling-runtime";
 export {
 	createReviewApprovalGate,
 	ReviewApprovalGateError,
@@ -525,3 +507,21 @@ export {
 	socialPublishingOptions,
 	refreshTikTokInbox,
 } from "./social-publishing-options";
+
+export {
+	INGEST_AUTO_RETRY_MAX_ATTEMPTS,
+	INGEST_RETRIES_EXHAUSTED_CODE,
+	PERMANENT_FAILURE_CODES,
+	TRANSIENT_FAILURE_CODES,
+	isAutoRetryableFailureCode,
+	decideAutoRetry,
+	autoRetryBackoffMs,
+	claimBackoffWhereClauses,
+	type AutoRetryDecision,
+} from "./processing-retry-policy";
+export { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
+export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestRetryLimitExceededError, MAX_INGEST_RETRY_ATTEMPTS, type ClaimedIngestJob, type IngestClaimRef, type IngestExecutionContext, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
+
+export { LayoutEvidenceLifecycle, LayoutEvidenceClaimLost, type ClipPendingPreview, type ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
+export { getLayoutEvidenceLifecycle } from "./layout-evidence-runtime";
+export type { ActorScope } from "./actor-scope";
