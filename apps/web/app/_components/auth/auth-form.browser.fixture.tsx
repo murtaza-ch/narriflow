@@ -129,6 +129,17 @@ describe("custom authentication forms", () => {
     expect(activate).toHaveBeenCalledWith({ session: "signed-in" });
     expect([...browser.document.querySelectorAll("a")].every((a) => !a.href.includes("test-password") && !a.href.includes("user%40"))).toBe(true);
   });
+  test("mode tabs switch with the destination and give way to the footer once a code is pending", async () => {
+    const link = (text: string) => [...browser.document.querySelectorAll("a")].find((a) => a.textContent === text);
+    await render("sign-in");
+    expect(link("Create account")?.getAttribute("href")).toBe("/?auth=sign-up&redirect_url=%2Fprojects%2Fabc%3Fclip%3D123");
+    expect(link("Sign in")?.getAttribute("href")).toBe("/?auth=sign-in&redirect_url=%2Fprojects%2Fabc%3Fclip%3D123");
+    await act(async () => root?.unmount());
+    await render("sign-up"); await enter("auth-email", "new@example.test"); await enter("auth-password", "test-password"); await submit();
+    expect(browser.document.querySelector("#auth-code")).not.toBeNull();
+    expect(link("Create account")).toBeUndefined();
+    expect(link("Sign in")?.getAttribute("href")).toBe("/?auth=sign-in&redirect_url=%2Fprojects%2Fabc%3Fclip%3D123");
+  });
   test("password recovery stays in the modal and finishes through provisioning", async () => {
     signin.create = mock(async () => signin);
     await render("forgot-password"); await enter("auth-email", "user@example.test"); await submit();
@@ -378,7 +389,7 @@ describe("callback and homepage modal", () => {
     expect(browser.document.body.textContent).toContain("Reset your password");
     await act(async () => navigate("/")); expect(browser.document.querySelector('[role="dialog"]')).toBeNull();
     await act(async () => navigate("/?auth=sign-in&redirect_url=%2Fupload%3Fsource%3Dabc"));
-    expect(browser.document.body.textContent).toContain("Sign in to Narriflow");
+    expect(browser.document.body.textContent).toContain("Welcome back");
     expect(browser.document.querySelector('a[href*="forgot-password"]')?.getAttribute("href")).toContain("redirect_url=%2Fupload%3Fsource%3Dabc");
   });
 });

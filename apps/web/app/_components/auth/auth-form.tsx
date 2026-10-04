@@ -4,19 +4,28 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSignIn, useSignUp } from "@clerk/nextjs";
-import { Box, Dialog, Flex, Stack, Text } from "@chakra-ui/react";
-import { KeyRound } from "lucide-react";
+import { Box, Dialog, Flex, InputGroup, Stack, Text } from "@chakra-ui/react";
+import { ArrowRight, LockKeyhole, Mail, ShieldCheck } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
 import { LabeledDivider } from "@narriflow/ui/components/divider";
+import { Logo } from "@narriflow/ui/components/logo";
 import { authContinuationHref, authEntryHref, oauthCallbackHref, type AuthMode } from "@/lib/auth-entry";
 import { advanceSignIn, advanceSignUp, supportsPasskeys, type AuthProgress, type AuthStep, type SignIn, type SignUp } from "@/lib/auth-flow";
 import { PasswordInput } from "./password-input";
-import { OAuthButtonRow, type OAuthStrategy } from "./oauth-buttons";
+import { SignInMethods, type SignInMethod } from "./sign-in-methods";
+import { AuthModeTabs } from "./auth-mode-tabs";
 import { FormError } from "./form-error";
 import { ResendButton } from "./resend-button";
 import { getClerkErrorMessage } from "./clerk-error";
+
+/** Auth fields and the submit button share one 44px control height. */
+const FIELD = { size: "md", h: "11" } as const;
+const ARROW_NUDGE = {
+  "& > svg": { transition: "transform 160ms cubic-bezier(0.22, 1, 0.36, 1)" },
+  "&:hover:not(:disabled) > svg": { transform: "translateX(3px)" },
+} as const;
 
 export function AuthForm({ mode, destination }: { mode: AuthMode; destination: string | null }) {
   const router = useRouter();
@@ -29,7 +38,7 @@ export function AuthForm({ mode, destination }: { mode: AuthMode; destination: s
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const [oauth, setOAuth] = useState<OAuthStrategy | null>(null);
+  const [method, setMethod] = useState<SignInMethod | null>(null);
   const [passkeysSupported, setPasskeysSupported] = useState(false);
   const busy = useRef(false);
   const continuationStarted = useRef(false);
@@ -66,7 +75,7 @@ export function AuthForm({ mode, destination }: { mode: AuthMode; destination: s
     } finally {
       busy.current = false;
       setPending(false);
-      setOAuth(null);
+      setMethod(null);
     }
   }, [loaded]);
 
@@ -131,18 +140,16 @@ export function AuthForm({ mode, destination }: { mode: AuthMode; destination: s
     });
   }
 
-  async function startOAuth(strategy: OAuthStrategy) {
+  async function selectMethod(selected: SignInMethod) {
     await run(async () => {
-      setOAuth(strategy);
+      setMethod(selected);
+      if (selected === "passkey") {
+        const result = await signInHook.signIn?.authenticateWithPasskey({ flow: "discoverable" });
+        if (result) await finish(await advanceSignIn(result));
+        return;
+      }
       const attempt = formMode === "sign-up" ? signUpHook.signUp : signInHook.signIn;
-      await attempt?.authenticateWithRedirect({ strategy, redirectUrl: oauthCallbackHref(destination), redirectUrlComplete: completion });
-    });
-  }
-
-  async function signInWithPasskey() {
-    await run(async () => {
-      const result = await signInHook.signIn?.authenticateWithPasskey({ flow: "discoverable" });
-      if (result) await finish(await advanceSignIn(result));
+      await attempt?.authenticateWithRedirect({ strategy: selected, redirectUrl: oauthCallbackHref(destination), redirectUrlComplete: completion });
     });
   }
 
@@ -172,50 +179,60 @@ export function AuthForm({ mode, destination }: { mode: AuthMode; destination: s
   const showEmail = step === "collect-email" || (step === "credentials" && formMode !== "continue");
   const showPassword = step === "reset-password" || step === "new-password" || (step === "credentials" && showProviders);
   const showCode = verifying || step === "reset-password";
-  const title = verifying ? "Verify your email" : step === "collect-email" ? "Add your email" : step === "reset-password" || step === "new-password" ? "Set a new password" : formMode === "forgot-password" ? "Reset your password" : formMode === "sign-up" ? "Create your account" : formMode === "continue" ? "Complete your account" : "Sign in to Narriflow";
+  const title = verifying ? "Verify your email" : step === "collect-email" ? "Add your email" : step === "reset-password" || step === "new-password" ? "Set a new password" : formMode === "forgot-password" ? "Reset your password" : formMode === "sign-up" ? "Create your account" : formMode === "continue" ? "Complete your account" : "Welcome back";
   const submitLabel = verifying ? "Verify email" : step === "collect-email" ? "Continue" : step === "reset-password" || step === "new-password" ? "Save password" : formMode === "forgot-password" ? "Send reset code" : formMode === "sign-up" ? "Create free account" : "Sign in";
 
-  return <Stack gap="5" aria-busy={pending}>
-    <Stack gap="2" pe="5">
-      <Text color="accent.fg" fontSize="sm" fontWeight="600">Narriflow</Text>
-      <Dialog.Title ref={titleRef} tabIndex={-1} outline="none" fontFamily="display" fontSize="2xl" lineHeight="1.2">{title}</Dialog.Title>
-      <Dialog.Description color="fg.muted" fontSize="sm">
-        {showCode ? `Enter the code sent to ${email || "your email"}.` : step === "collect-email" ? "Use an email address to secure your account." : formMode === "forgot-password" ? "We’ll email you a code to reset your password." : "Your free workspace is ready when you are."}
-      </Dialog.Description>
+  return <Stack gap="6" aria-busy={pending}>
+    <Stack gap="5" pe="5">
+      <Logo size="lg" showWordmark={false} />
+      <Stack gap="1.5">
+        <Dialog.Title ref={titleRef} tabIndex={-1} outline="none" fontSize="24px" fontWeight="600" letterSpacing="-0.035em" lineHeight="1.15">{title}</Dialog.Title>
+        <Dialog.Description color="fg.muted" fontSize="sm">
+          {showCode ? `Enter the code sent to ${email || "your email"}.` : step === "collect-email" ? "Use an email address to secure your account." : formMode === "forgot-password" ? "We’ll email you a code to reset your password." : step === "credentials" && formMode === "sign-in" ? "Sign in to your Narriflow workspace." : "Your free workspace is ready when you are."}
+        </Dialog.Description>
+      </Stack>
     </Stack>
     {showProviders && <>
-      <OAuthButtonRow pending={oauth} disabled={!loaded || pending} onSelect={startOAuth} />
-      {formMode === "sign-in" && passkeysSupported && <Button variant="outline" type="button" disabled={!loaded || pending} onClick={signInWithPasskey}><KeyRound size={17} />Sign in with a passkey</Button>}
-      <LabeledDivider label="or use email" />
+      <AuthModeTabs mode={formMode === "sign-up" ? "sign-up" : "sign-in"} destination={destination} disabled={pending} />
+      <Stack gap="5">
+        <SignInMethods pending={method} disabled={!loaded || pending} passkey={formMode === "sign-in" && passkeysSupported} onSelect={selectMethod} />
+        <LabeledDivider />
+      </Stack>
     </>}
     <form onSubmit={submit}>
       <Stack gap="4">
         {showEmail && <Stack gap="1.5">
           <Label htmlFor="auth-email">Email</Label>
-          <Input id="auth-email" name="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" disabled={pending} />
+          <InputGroup startElement={<Mail size={16} />} startElementProps={{ color: "fg.subtle" }}>
+            <Input id="auth-email" name="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" disabled={pending} {...FIELD} />
+          </InputGroup>
         </Stack>}
         {showCode && <Stack gap="1.5">
           <Label htmlFor="auth-code">Verification code</Label>
-          <Input id="auth-code" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required value={code} onChange={(e) => setCode(e.target.value)} disabled={pending} />
+          <InputGroup startElement={<ShieldCheck size={16} />} startElementProps={{ color: "fg.subtle" }}>
+            <Input id="auth-code" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required value={code} onChange={(e) => setCode(e.target.value)} disabled={pending} {...FIELD} />
+          </InputGroup>
         </Stack>}
         {showPassword && <Stack gap="1.5">
           <Flex justify="space-between" align="center">
             <Label htmlFor="auth-password">{step === "credentials" ? "Password" : "New password"}</Label>
-            {formMode === "sign-in" && step === "credentials" && <Link href={authEntryHref("forgot-password", destination)} replace scroll={false} aria-disabled={pending} onClick={(e) => { if (pending) e.preventDefault(); }}><Text as="span" color="fg.muted" fontSize="xs" textDecoration="underline">Forgot password?</Text></Link>}
+            {formMode === "sign-in" && step === "credentials" && <Link href={authEntryHref("forgot-password", destination)} replace scroll={false} aria-disabled={pending} onClick={(e) => { if (pending) e.preventDefault(); }}><Text as="span" color="fg.muted" fontSize="xs" transition="color 120ms ease" _hover={{ color: "fg", textDecoration: "underline", textUnderlineOffset: "3px" }}>Forgot password?</Text></Link>}
           </Flex>
-          <PasswordInput id="auth-password" name="password" autoComplete={formMode === "sign-in" && step === "credentials" ? "current-password" : "new-password"} required value={password} onChange={(e) => setPassword(e.target.value)} disabled={pending} />
+          <PasswordInput id="auth-password" name="password" autoComplete={formMode === "sign-in" && step === "credentials" ? "current-password" : "new-password"} placeholder={step === "credentials" && formMode === "sign-in" ? "Your password" : "At least 8 characters"} required value={password} onChange={(e) => setPassword(e.target.value)} disabled={pending} startElement={<LockKeyhole size={16} />} {...FIELD} />
         </Stack>}
         <Box id="clerk-captcha" />
         <FormError message={error} />
         {formMode === "continue" && step === "credentials" && error && <Button type="button" onClick={() => run(async () => { if (signUpHook.signUp) await finish(await advanceSignUp(signUpHook.signUp)); })} disabled={pending}>Try again</Button>}
-        {(showEmail || showPassword || showCode) && <Button type="submit" width="full" loading={pending} disabled={!loaded}>{submitLabel}</Button>}
+        {(showEmail || showPassword || showCode) && <Button type="submit" width="full" loading={pending} disabled={!loaded} css={ARROW_NUDGE} {...FIELD}>{submitLabel}<ArrowRight size={16} /></Button>}
         {showCode && <ResendButton onResend={resend} disabled={pending} />}
         {(step !== "credentials" || (formMode === "continue" && error)) && <Button type="button" variant="ghost" disabled={pending} onClick={startOver}>Use a different email</Button>}
       </Stack>
     </form>
-    <Text textAlign="center" fontSize="sm" color="fg.muted">
+    {showProviders ? formMode === "sign-up" && <Text textAlign="center" fontSize="xs" lineHeight="1.5" color="fg.subtle">
+      By continuing you agree to the <Link href="/terms" target="_blank" rel="noopener noreferrer"><Text as="span" textDecoration="underline" textUnderlineOffset="2px">Terms</Text></Link> and <Link href="/privacy" target="_blank" rel="noopener noreferrer"><Text as="span" textDecoration="underline" textUnderlineOffset="2px">Privacy Policy</Text></Link>.
+    </Text> : <Text textAlign="center" fontSize="sm" color="fg.muted">
       {formMode === "sign-up" || formMode === "continue" ? "Already have an account? " : formMode === "forgot-password" ? "Back to " : "New to Narriflow? "}
       <Link href={authEntryHref(formMode === "sign-in" ? "sign-up" : "sign-in", destination)} replace scroll={false} aria-disabled={pending} onClick={(e) => { if (pending) e.preventDefault(); }}><Text as="span" color="fg" fontWeight="500" textDecoration="underline">{formMode === "sign-in" ? "Create an account" : "Sign in"}</Text></Link>
-    </Text>
+    </Text>}
   </Stack>;
 }
