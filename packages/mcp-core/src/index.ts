@@ -20,6 +20,7 @@ const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: tru
 const admission = new McpToolAdmission(workspaceService);
 export interface NarriflowMcpServerOptions {
   appOrigin?: string;
+  protocolEra?: "modern" | "legacy";
   authenticatePrincipal?: () => Promise<NarriflowMcpPrincipal>;
   assertNewMutationAllowed?: (context: { tool: NarriflowMcpToolName; principal: NarriflowMcpPrincipal; workspaceId: string }) => void | Promise<void>;
   appConnectDomains?: string[];
@@ -93,7 +94,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
   server.registerTool("narriflow_get_clip", { ...config("Review a clip", "Read timing, scores and editor revision, then open visual review in Narriflow", clipOutput, readOnly, "clip-review"), inputSchema: schemas.mcpGetClipSchema }, (input) => execute("narriflow_get_clip", clipOutput, async (current) => {
     const actor = await workspace("narriflow_get_clip", current, input.workspaceId);
     const facts = await clipService.getClipReviewFacts(actor, input.projectId, input.clipId, input);
-    const preview = supportsNarriflowApps(server.server.getClientCapabilities()) && facts.hasPreview ? await clipService.getClipPreviewSource(actor, input.projectId, input.clipId) : null;
+    const preview = supportsNarriflowApps(server.server.getClientCapabilities(), options.protocolEra) && facts.hasPreview ? await clipService.getClipPreviewSource(actor, input.projectId, input.clipId) : null;
     return { data: { clip: mcpClip(facts, appOrigin, input.includeTranscriptExcerpt) }, ...(preview?.previewUrl ? { _meta: { previewMediaUrl: preview.previewUrl, previewStartSec: preview.previewStartSec, previewDurationSec: preview.previewDurationSec } } : {}) };
   }));
   server.registerTool("narriflow_submit_video", { ...config("Submit a video link", "Atomically import supported media with committed clip generation settings", schemas.mcpOperationSchema, write, "progress"), inputSchema: schemas.mcpSubmitVideoSchema }, (input) => execute("narriflow_submit_video", schemas.mcpOperationSchema, async (current) => {
@@ -203,7 +204,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
     const actor = await workspace("narriflow_publish_social_publication_again", current, input.workspaceId);
     return { data: await socialService.republishPublication(actor, input.socialPostId, { reason: input.reason, duplicateRiskAcknowledged: input.duplicateRiskAcknowledged }, undefined, mutation("narriflow_publish_social_publication_again", current, actor.workspaceId, input.clientIdempotencyKey)) };
   }));
-  registerNarriflowMcpApps(server, { appOrigin, connectDomains: options.appConnectDomains, resourceDomains: options.appResourceDomains,
+  registerNarriflowMcpApps(server, { appOrigin, protocolEra: options.protocolEra, connectDomains: options.appConnectDomains, resourceDomains: options.appResourceDomains,
     callUpload: async (action, input) => {
       try {
       const current = await currentPrincipal();

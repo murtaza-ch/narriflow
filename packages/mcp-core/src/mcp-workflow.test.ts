@@ -11,9 +11,9 @@ const principal = { kind: "oauth" as const, userId, clientId: "test-client", sco
 const clients: Client[] = [];
 const mocks: Array<{ mockRestore(): void }> = [];
 afterEach(async () => { for (const mock of mocks.splice(0)) mock.mockRestore(); await Promise.all(clients.splice(0).map((client) => client.close())); });
-async function connect(subject: NarriflowMcpPrincipal = principal, options: NarriflowMcpServerOptions = {}, confirm?: () => boolean) {
-  const handler = createMcpHandler(() => buildNarriflowMcpServer(subject, { appOrigin: "https://narriflow.test", ...options }));
-  const client = new Client({ name: "workflow-test", version: "1" }, { versionNegotiation: { mode: "auto" }, ...(confirm ? { capabilities: { elicitation: { form: {} } } } : {}) });
+async function connect(subject: NarriflowMcpPrincipal = principal, options: NarriflowMcpServerOptions = {}, confirm?: () => boolean, mode: "auto" | "legacy" = "auto") {
+  const handler = createMcpHandler(({ era }) => buildNarriflowMcpServer(subject, { appOrigin: "https://narriflow.test", protocolEra: era, ...options }));
+  const client = new Client({ name: "workflow-test", version: "1" }, { versionNegotiation: { mode }, capabilities: { ...(confirm ? { elicitation: { form: {} } } : {}), ...(mode === "legacy" ? { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } } : {}) } });
   if (confirm) client.setRequestHandler("elicitation/create", async () => ({ action: confirm() ? "accept" : "decline", content: { confirm: true } }));
   clients.push(client);
   await client.connect(new StreamableHTTPClientTransport(new URL("https://narriflow.test/mcp"), { fetch: (input, init) => handler.fetch(new Request(input, init)) }));
@@ -44,6 +44,20 @@ describe("Compact MCP workflow", () => {
     const withExcerpt = await client.callTool({ name: "narriflow_list_clips", arguments: { workspaceId, projectId, includeTranscriptExcerpt: true, limit: 5 } });
     expect(withExcerpt.structuredContent).toMatchObject({ data: { items: [{ transcriptExcerpt: "Requested words only" }] } });
     expect(read).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId }), projectId, expect.objectContaining({ limit: 5, includeTranscriptExcerpt: true }));
+  });
+
+  test("legacy clip cards receive private preview metadata without exposing it to the model", async () => {
+    admitActor();
+    const clipId = "00000000-0000-4000-8000-000000000004";
+    mocks.push(spyOn(clipService, "getClipReviewFacts").mockResolvedValue({ id: clipId, projectId, editorRevision: 7, index: 0, status: "edited", startSec: 10, endSec: 40, durationSec: 30, title: "A useful moment", hookText: "The hook", reasoning: "Clear payoff", category: "insight", platformFit: ["youtube_shorts"], viralityScore: 80, hookStrengthScore: 75, emotionalIntensityScore: 50, storyCompletenessScore: 80, pacingScore: 70, durationOptimalityScore: 95, hasPreview: true, createdAt: "2026-10-05T00:00:00.000Z" }));
+    const preview = spyOn(clipService, "getClipPreviewSource").mockResolvedValue({ previewUrl: "https://bucket.storage.test/private-preview", previewStartSec: 0, previewDurationSec: 60, waveformPeaksUrl: null });
+    mocks.push(preview);
+    const result = await (await connect(principal, {}, undefined, "legacy")).callTool({ name: "narriflow_get_clip", arguments: { workspaceId, projectId, clipId } });
+    expect(result.isError).not.toBe(true);
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), projectId, clipId);
+    expect(result._meta).toMatchObject({ previewMediaUrl: "https://bucket.storage.test/private-preview", previewStartSec: 0, previewDurationSec: 60 });
+    expect(JSON.stringify(result.content)).not.toContain("private-preview");
+    expect(JSON.stringify(result.structuredContent)).not.toContain("private-preview");
   });
 
   test("generation admits the canonical settings and returns the durable workflow ID", async () => {

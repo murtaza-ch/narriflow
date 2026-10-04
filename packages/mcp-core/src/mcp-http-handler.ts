@@ -24,15 +24,15 @@ export interface NarriflowMcpHttpDependencies {
   allowedOrigins(): string[];
   resourceMetadataUrl(): string;
   checkRateLimit(key: string, limit: number, window: number): Promise<RateLimitResult>;
-  buildServer(principal: NarriflowMcpPrincipal, options: { assertNewMutationAllowed(): void }): McpServer | Server | Promise<McpServer | Server>;
+  buildServer(principal: NarriflowMcpPrincipal, options: { protocolEra: "modern" | "legacy"; assertNewMutationAllowed(): void }): McpServer | Server | Promise<McpServer | Server>;
   diagnostic?: typeof recordMcpDiagnostic;
 }
 
 export function createNarriflowMcpHttpHandler(deps: NarriflowMcpHttpDependencies) {
   const diagnostic = deps.diagnostic ?? recordMcpDiagnostic;
-  const handler = createMcpHandler(({ authInfo }) => {
+  const handler = createMcpHandler(({ authInfo, era }) => {
     const limiter = authInfo?.extra?.mcpLimiter as RateLimitResult;
-    return deps.buildServer(principalFromMcpAuth(authInfo), { assertNewMutationAllowed: () => requireMcpMutationLimiter(limiter) });
+    return deps.buildServer(principalFromMcpAuth(authInfo), { protocolEra: era, assertNewMutationAllowed: () => requireMcpMutationLimiter(limiter) });
   });
   return async (input: Request): Promise<Response> => {
     const started = performance.now();

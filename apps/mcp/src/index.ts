@@ -13,6 +13,7 @@ const verifier = createNarriflowTokenVerifier({
 const authenticate = async () => principalFromMcpAuth(await verifier.verifyAccessToken(secret));
 const initialPrincipal = await authenticate();
 const admission = createAuthenticatedStdioTransport({ wire: new StdioServerTransport(), authenticate, checkRateLimit });
-serveStdio(() => buildNarriflowMcpServer(initialPrincipal, {
+serveStdio(({ era }) => buildNarriflowMcpServer(initialPrincipal, {
+  protocolEra: era,
   authenticatePrincipal: admission.authenticatePrincipal, assertNewMutationAllowed: admission.assertNewMutationAllowed,
 }), { transport: admission.transport });

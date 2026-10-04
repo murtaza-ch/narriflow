@@ -25,6 +25,7 @@ const meta = {
 
 function harness() {
 	const factories: string[] = [];
+	const eras: string[] = [];
 	let active = true;
 	const fetch = createNarriflowMcpHttpHandler({
 		verifier: {
@@ -58,8 +59,9 @@ function harness() {
 			availability: "available",
 		}),
 		diagnostic: () => {},
-		buildServer(principal) {
+		buildServer(principal, options) {
 			factories.push(principal.userId);
+			eras.push(options.protocolEra);
 			const server = new McpServer(
 				{ name: "acceptance", version: "1" },
 				{
@@ -87,6 +89,7 @@ function harness() {
 	return {
 		fetch,
 		factories,
+		eras,
 		revoke: () => {
 			active = false;
 		},
@@ -127,6 +130,7 @@ describe("Authenticated stateless MCP wire", () => {
 		const body = await response.json();
 		expect(body.result.resultType).toBe("complete");
 		expect(h.factories).toEqual(["caller-a"]);
+		expect(h.eras).toEqual(["modern"]);
 	});
 
 	test("older clients use the same request factory and current credentials", async () => {
@@ -153,6 +157,7 @@ describe("Authenticated stateless MCP wire", () => {
 			});
 			expect(first.structuredContent).toEqual({ callerUserId: "caller-a" });
 			expect(seenVersions).toContain("2025-11-25");
+			expect(h.eras.every((era) => era === "legacy")).toBe(true);
 			h.revoke();
 			await expect(
 				client.callTool({ name: "narriflow_get_project", arguments: {} }),
