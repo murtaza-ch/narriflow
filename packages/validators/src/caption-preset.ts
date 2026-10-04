@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 export const BRAND_DEFAULT_CAPTION_PRESET_ID = "brand_default";
-export const LEGACY_DEFAULT_CAPTION_PRESET_ID = "default";
 
 /**
  * Number of words shown together as one caption cue. Shared by the studio
@@ -434,7 +433,6 @@ export const CAPTION_PRESETS = [
 
 export const captionPresetIds = [
   BRAND_DEFAULT_CAPTION_PRESET_ID,
-  LEGACY_DEFAULT_CAPTION_PRESET_ID,
   ...CAPTION_PRESETS.map((preset) => preset.id),
 ] as const;
 
@@ -447,7 +445,7 @@ export const captionPresetOptions = [
 ] as const;
 
 export function isBrandDefaultCaptionPresetId(id: string) {
-  return id === BRAND_DEFAULT_CAPTION_PRESET_ID || id === LEGACY_DEFAULT_CAPTION_PRESET_ID;
+  return id === BRAND_DEFAULT_CAPTION_PRESET_ID;
 }
 
 export function getCaptionPresetById(id: string): NamedCaptionPreset | undefined {

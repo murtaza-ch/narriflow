@@ -3079,7 +3079,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       }
       if (!this.identity) return "unavailable";
       const outcome = await dependencies.drafts.write({
-        formatVersion: 2,
+        formatVersion: 1,
         key,
         projectId: this.identity.projectId,
         clipId: this.identity.clipId,
@@ -3131,7 +3131,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     try {
       const outcome = await dependencies.drafts.write({
         ...draft,
-        formatVersion: 2,
+        formatVersion: 1,
         ownershipGeneration,
         writerId: this.writerId,
         updatedAt: dependencies.runtime.now(),

@@ -10,7 +10,7 @@ import {
 	type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 
-export const ASSISTED_COPY_PROMPT_VERSION = "assisted-social-copy-v2";
+export const ASSISTED_COPY_PROMPT_VERSION = "assisted-social-copy-v1";
 
 export type AssistedCopyVariant = {
 	id: string;

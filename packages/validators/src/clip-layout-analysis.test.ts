@@ -5,12 +5,11 @@ import {
   parseClipLayoutAnalysis,
   parseClipLayoutAnalysisFailure,
   type ClipLayoutAnalysis,
-  type ClipLayoutAnalysisV2,
 } from "./clip-layout-analysis";
 
-const validWithRect: ClipLayoutAnalysisV2 = {
-  version: 2,
-  engine: "screen-layout-v2",
+const validWithRect: ClipLayoutAnalysis = {
+  version: 1,
+  engine: "screen-layout-v1",
   sourceIdentity: "source:0123456789abcdef",
   inputFingerprint: "0123456789abcdef",
   sourceWidth: 1920,
@@ -72,20 +71,20 @@ const validInsufficientSamples: ClipLayoutAnalysis = {
   faceBandSegments: null,
 };
 
-const validV2 = validWithRect;
+const validCurrent = validWithRect;
 
 describe("clipLayoutAnalysisSchema", () => {
-  test("accepts only the exact screen-layout-v2 evidence discriminator", () => {
+  test("accepts only the exact screen-layout-v1 evidence discriminator", () => {
     expect(
       clipLayoutAnalysisSchema.safeParse({
         ...validWithRect,
-        engine: "screen-layout-v2",
+        engine: "screen-layout-v1",
       }).success,
     ).toBe(true);
     expect(
       clipLayoutAnalysisSchema.safeParse({
         ...validWithRect,
-        engine: "screen-layout-v1",
+        engine: "screen-layout-v99",
       }).success,
     ).toBe(false);
   });
@@ -97,14 +96,14 @@ describe("clipLayoutAnalysisSchema", () => {
     expect(parsed).toEqual(validWithRect);
   });
 
-  test("round-trips identity-complete v2 Screen composition evidence", () => {
-    expect(clipLayoutAnalysisSchema.parse(validV2)).toEqual(validV2);
+  test("round-trips identity-complete Screen composition evidence", () => {
+    expect(clipLayoutAnalysisSchema.parse(validCurrent)).toEqual(validCurrent);
   });
 
   test("parses identity-bound Screen failures without treating them as analysis", () => {
     const failure = clipLayoutAnalysisFailureSchema.parse({
-      version: 2,
-      engine: "screen-layout-v2",
+      version: 1,
+      engine: "screen-layout-v1",
       state: "failed",
       sourceIdentity: "source:0123456789abcdef",
       inputFingerprint: "0123456789abcdef",
@@ -115,19 +114,19 @@ describe("clipLayoutAnalysisSchema", () => {
     expect(parseClipLayoutAnalysis(failure)).toBeNull();
   });
 
-  test("rejects malformed v2 identity, dimensions, and face-band evidence", () => {
+  test("rejects malformed identity, dimensions, and face-band evidence", () => {
     expect(
       clipLayoutAnalysisSchema.safeParse({
-        ...validV2,
+        ...validCurrent,
         inputFingerprint: "not-a-fingerprint",
       }).success,
     ).toBe(false);
     expect(
-      clipLayoutAnalysisSchema.safeParse({ ...validV2, sourceWidth: 0 }).success,
+      clipLayoutAnalysisSchema.safeParse({ ...validCurrent, sourceWidth: 0 }).success,
     ).toBe(false);
     expect(
       clipLayoutAnalysisSchema.safeParse({
-        ...validV2,
+        ...validCurrent,
         faceBandSegments: [],
       }).success,
     ).toBe(false);
@@ -278,8 +277,8 @@ describe("parseClipLayoutAnalysis", () => {
   });
 
   test("reads the current version and rejects unknown evidence versions", () => {
-    expect(parseClipLayoutAnalysis(validV2)).toEqual(validV2);
-    const futureVersion = { ...validWithRect, version: 3 };
+    expect(parseClipLayoutAnalysis(validCurrent)).toEqual(validCurrent);
+    const futureVersion = { ...validWithRect, version: 99 };
     expect(() => parseClipLayoutAnalysis(futureVersion)).toThrow(
       "unsupported_clip_composition_evidence_version",
     );

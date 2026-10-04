@@ -83,8 +83,6 @@ enum TranscriptStatus {
 
 enum ClipStatus {
   detected
-  accepted
-  rejected
   edited
 }
 
@@ -112,6 +110,11 @@ enum ClipRenderStatus {
   rendering
   completed
   failed
+}
+
+enum ClipRenderFailureDisposition {
+  retryable
+  permanent
 }
 
 enum ClipExportStatus {
@@ -673,24 +676,24 @@ model UploadSession {
 }
 
 model IngestJob {
-  id              String          @id @default(uuid()) @db.Uuid
-  projectId       String          @db.Uuid
-  jobType         IngestJobType
-  payload         Json
-  status          IngestJobStatus @default(queued)
-  attemptCount    Int             @default(0)
-  claimId         String?         @db.Uuid
-  claimExpiresAt  DateTime?
-  generationHandoffAt DateTime?
+  id                       String          @id @default(uuid()) @db.Uuid
+  projectId                String          @db.Uuid
+  jobType                  IngestJobType
+  payload                  Json
+  status                   IngestJobStatus @default(queued)
+  attemptCount             Int             @default(0)
+  claimId                  String?         @db.Uuid
+  claimExpiresAt           DateTime?
+  generationHandoffAt      DateTime?
   generationHandoffRetryAt DateTime?
-  lastError       String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  startedAt       DateTime?
-  completedAt     DateTime?
-  uploadSessionId String?         @unique @db.Uuid
-  project         Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  uploadSession   UploadSession?  @relation("UploadSessionIngestJob", fields: [uploadSessionId], references: [id], onDelete: SetNull)
+  lastError                String?
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+  startedAt                DateTime?
+  completedAt              DateTime?
+  uploadSessionId          String?         @unique @db.Uuid
+  project                  Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploadSession            UploadSession?  @relation("UploadSessionIngestJob", fields: [uploadSessionId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([status, claimExpiresAt])
@@ -703,15 +706,14 @@ model WorkflowEvent {
   id                      String    @id @default(uuid()) @db.Uuid
   projectId               String    @db.Uuid
   workflowRunId           String?   @db.Uuid
-  ingestJobId              String?   @db.Uuid
+  ingestJobId             String?   @db.Uuid
   seq                     Int
   stage                   String
   status                  String
   progress                Int       @default(0)
   errorCode               String?
   emittedAt               DateTime
-  /// Nullable only for historical rows predating durable event deduplication.
-  dedupeKey               String?   @unique
+  dedupeKey               String    @unique
   eventType               String    @default("workflow.stage.updated")
   payload                 Json?
   availableAt             DateTime  @default(now())
@@ -760,7 +762,7 @@ model User {
   ownedWorkspaces                 Workspace[]                      @relation("WorkspaceOwner")
   personalWorkspace               Workspace?                       @relation("PersonalWorkspaceOwner")
   createdProjects                 Project[]                        @relation("ProjectCreatedBy")
-  createdAutopilotRules           AutopilotRule[]                    @relation("AutopilotRuleCreatedBy")
+  createdAutopilotRules           AutopilotRule[]                  @relation("AutopilotRuleCreatedBy")
   socialAccounts                  SocialAccount[]
   socialOAuthStates               SocialOAuthState[]
   workspaceMemberships            WorkspaceMember[]
@@ -796,7 +798,6 @@ model Workspace {
   pricingTier            PricingTier     @default(free)
   defaultBrandTemplateId String?         @db.Uuid
   defaultBrandProfileId  String?         @db.Uuid
-  seatLimit              Int             @default(1)
   createdAt              DateTime        @default(now())
   updatedAt              DateTime        @updatedAt
 
@@ -893,6 +894,7 @@ model WorkspaceCheckoutAttempt {
   billingAccount WorkspaceBillingAccount @relation(fields: [billingAccountId], references: [id], onDelete: Cascade)
 
   @@index([billingAccountId, createdAt])
+  @@index([customerOperationKey])
 }
 
 model WorkspaceBillingTransition {
@@ -906,7 +908,6 @@ model WorkspaceBillingTransition {
   reason               String
   effectiveAt          DateTime
   observedAt           DateTime
-  sourceEventId        String?
   sourceSubscriptionId String?
   createdAt            DateTime        @default(now())
 
@@ -1159,7 +1160,7 @@ model Clip {
   // restores from it, so later boundary/transcript writes can never destroy
   // the starting point.
   editorRevision        Int   @default(0)
-  editorDocumentVersion Int   @default(2)
+  editorDocumentVersion Int   @default(1)
   deletedRanges         Json?
   editorOriginal        Json?
   sceneBlocks           Json  @default("[]")
@@ -1274,36 +1275,29 @@ model MediaCleanupObligation {
 }
 
 model ClipRender {
-  id                 String           @id @default(uuid()) @db.Uuid
-  clipId             String           @db.Uuid
+  id                 String                        @id @default(uuid()) @db.Uuid
+  clipId             String                        @db.Uuid
   aspectRatio        ClipAspectRatio
-  status             ClipRenderStatus @default(pending)
+  status             ClipRenderStatus              @default(pending)
   storageKey         String?
   sizeBytes          BigInt?
   durationSec        Float?
   errorCode          String?
   /// Informational Render Work Set lineage. Workflow Attempt fencing remains
   /// the only authority for mutating this variant.
-  workflowRunId      String?          @db.Uuid
-  /// Recovery classification for a failed variant: retryable or permanent.
-  /// This remains text so old generated clients stay compatible during the
-  /// dark rollout; the database check constraint closes the allowed values.
-  failureDisposition String?
+  workflowRunId      String?                       @db.Uuid
+  /// Recovery classification for a failed variant.
+  failureDisposition ClipRenderFailureDisposition?
   /// Fencing reference to the parent Workflow Attempt. It is not an
   /// independent lease or retry counter.
-  workflowAttemptId  String?          @db.Uuid
+  workflowAttemptId  String?                       @db.Uuid
   startedAt          DateTime?
   completedAt        DateTime?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
-  /// Resolution this render was produced at ("720p" | "1080p", validated at
-  /// the application layer by clipRenderResolutionSchema — vizard-parity
-  /// Phase C export options). Non-null, defaults to "1080p". Forward-looking
-  /// only: existing free-tier rows predating this column were actually
-  /// downscaled to 720p-class output by the worker's old hardcoded
-  /// applyFreeTierTreatment flag, but this default does not retroactively
-  /// describe what those historical rows were rendered at.
-  resolution         String           @default("1080p")
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
+  /// Resolution this render was produced at ("720p" | "1080p"), validated by
+  /// clipRenderResolutionSchema.
+  resolution         String                        @default("1080p")
 
   // Export-bound rows are immutable render jobs. They carry a frozen clip
   // snapshot and survive later editor saves; ordinary rows keep acting as the
@@ -1945,20 +1939,20 @@ model AssistedCopyGeneration {
 }
 
 model AssistedCopyVariant {
-  id                      String         @id @default(uuid()) @db.Uuid
-  generationId            String         @db.Uuid
-  platform                SocialPlatform
-  caption                 String         @db.Text
-  hashtags                Json
-  title                   String?
-  model                   String
-  promptVersion           String
-  moderationOutcome       String
-  originalFingerprint     String
-  createdAt               DateTime       @default(now())
-  updatedAt               DateTime       @updatedAt
+  id                  String         @id @default(uuid()) @db.Uuid
+  generationId        String         @db.Uuid
+  platform            SocialPlatform
+  caption             String         @db.Text
+  hashtags            Json
+  title               String?
+  model               String
+  promptVersion       String
+  moderationOutcome   String
+  originalFingerprint String
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
 
-  generation  AssistedCopyGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  generation AssistedCopyGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
 
   @@unique([generationId, platform])
 }
@@ -1999,17 +1993,16 @@ model ThumbnailFrameOperation {
 }
 
 model GeneratedMediaUsageReservation {
-  id            String                    @id @default(uuid()) @db.Uuid
-  jobId         String                    @unique @db.Uuid
-  workspaceId   String                    @db.Uuid
-  actorUserId   String                    @db.Uuid
-  policy        String
-  status        GeneratedMediaUsageStatus @default(reserved)
-  reservedUnits Int                       @default(1)
-  actualUnits   Int?
-  reason        String?
-  createdAt     DateTime                  @default(now())
-  settledAt     DateTime?
+  id          String                    @id @default(uuid()) @db.Uuid
+  jobId       String                    @unique @db.Uuid
+  workspaceId String                    @db.Uuid
+  actorUserId String                    @db.Uuid
+  policy      String
+  status      GeneratedMediaUsageStatus @default(reserved)
+  actualUnits Int?
+  reason      String?
+  createdAt   DateTime                  @default(now())
+  settledAt   DateTime?
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   actor     User      @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
@@ -2166,8 +2159,8 @@ model AudioAssetFavorite {
 }
 
 model SocialPost {
-  deliveryMode SocialDeliveryMode @default(direct)
-  publishedVideos PublishedSocialVideo[]
+  deliveryMode             SocialDeliveryMode             @default(direct)
+  publishedVideos          PublishedSocialVideo[]
   id                       String                         @id @default(uuid()) @db.Uuid
   projectId                String                         @db.Uuid
   workspaceId              String?                        @db.Uuid
@@ -2211,12 +2204,12 @@ model SocialPost {
 }
 
 model FrozenPublicationState {
-  deliveryMode SocialDeliveryMode @default(direct)
-  id                  String          @id @default(uuid()) @db.Uuid
-  socialPostId        String          @unique @db.Uuid
-  clipExportId        String          @db.Uuid
-  clipExportVariantId String          @db.Uuid
-  socialAccountId     String?         @db.Uuid
+  deliveryMode        SocialDeliveryMode @default(direct)
+  id                  String             @id @default(uuid()) @db.Uuid
+  socialPostId        String             @unique @db.Uuid
+  clipExportId        String             @db.Uuid
+  clipExportVariantId String             @db.Uuid
+  socialAccountId     String?            @db.Uuid
   platform            SocialPlatform
   editorRevision      Int
   exportFingerprint   String
@@ -2228,7 +2221,7 @@ model FrozenPublicationState {
   providerSettings    Json
   capabilityVersion   String
   scheduledFor        DateTime
-  createdAt           DateTime        @default(now())
+  createdAt           DateTime           @default(now())
   mediaReadyAt        DateTime?
 
   socialPost        SocialPost                 @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
@@ -2323,10 +2316,10 @@ model PublicationClaim {
 }
 
 model ProviderReceipt {
-  deliveryMode SocialDeliveryMode @default(direct)
-  inboxDeliveredAt DateTime?
-  id                            String         @id @default(uuid()) @db.Uuid
-  attemptId                     String         @unique @db.Uuid
+  deliveryMode                  SocialDeliveryMode @default(direct)
+  inboxDeliveredAt              DateTime?
+  id                            String             @id @default(uuid()) @db.Uuid
+  attemptId                     String             @unique @db.Uuid
   platform                      SocialPlatform
   receiptId                     String
   platformPostId                String?
@@ -2335,11 +2328,11 @@ model ProviderReceipt {
   providerProcessingStatus      String?
   providerProcessingFailureCode String?
   providerVisibility            String?
-  enrichmentClaimId             String?        @unique
+  enrichmentClaimId             String?            @unique
   enrichmentLeaseExpiresAt      DateTime?
   enrichmentNextCheckAt         DateTime?
-  enrichmentCheckCount          Int            @default(0)
-  createdAt                     DateTime       @default(now())
+  enrichmentCheckCount          Int                @default(0)
+  createdAt                     DateTime           @default(now())
   enrichedAt                    DateTime?
 
   attempt SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
@@ -2420,11 +2413,12 @@ model ProgramAnalyticsEvent {
 }
 
 model PublishedSocialVideo {
-  id String @id @default(uuid()) @db.Uuid
-  socialPostId String @db.Uuid
+  id             String     @id @default(uuid()) @db.Uuid
+  socialPostId   String     @db.Uuid
   platformPostId String
-  externalUrl String?
-  publishedAt DateTime @default(now())
-  socialPost SocialPost @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  externalUrl    String?
+  publishedAt    DateTime   @default(now())
+  socialPost     SocialPost @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+
   @@unique([socialPostId, platformPostId])
 }

@@ -90,7 +90,7 @@ describe("scene layout selections", () => {
 
   test("rebases intervals when source footage is deleted", () => {
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 10,
       clipEndSec: 20,
       captionPreset: captionPresetSchema.parse({}),
@@ -112,7 +112,7 @@ describe("scene layout selections", () => {
 
   test("editor documents reject intervals beyond the edited source duration", () => {
     const parsed = editorDocumentSchema.safeParse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),

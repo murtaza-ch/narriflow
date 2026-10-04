@@ -29,7 +29,7 @@ export const clipLengthPresetSchema = z.enum([
 export const defaultAspectRatioSchema = z.enum(["9:16", "1:1", "16:9", "4:5"]);
 
 /** Single source of truth for the playbook version stamped on new packs. */
-export const PLATFORM_PLAYBOOK_VERSION = "2026.2";
+export const PLATFORM_PLAYBOOK_VERSION = "platform-playbook-v1";
 
 export const contentPackSchema = z.object({
   outputTypes: z.array(outputTypeSchema).min(1),

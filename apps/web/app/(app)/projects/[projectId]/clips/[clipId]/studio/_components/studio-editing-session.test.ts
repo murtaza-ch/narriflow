@@ -11,7 +11,7 @@ import type { TimelineSegment } from "./studio-types";
 
 function makeDocument(): EditorDocument {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -292,7 +292,7 @@ describe("StudioEditingSession document and history seam", () => {
       beepSettings: null,
       captionMaskPolicy: null,
       suggestionFingerprint: "d".repeat(64),
-      policyVersion: "auto-censor-2026-09-01.1",
+      policyVersion: "auto-censor-v1",
       enabled: true,
     });
     session.dispatch({

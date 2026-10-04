@@ -65,7 +65,7 @@ try {
     "packages/db/prisma/migrations",
   );
   const migrationDirectories = readdirSync(migrationsRoot)
-    .filter((entry) => /^\d+_/.test(entry))
+    .filter((entry) => existsSync(resolve(migrationsRoot, entry, "migration.sql")))
     .sort();
   const client = await pool.connect();
   try {

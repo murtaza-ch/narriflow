@@ -94,36 +94,6 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     });
   });
 
-  test("legacy persisted JSON (no sourceAudio, no music fades, no logo) parses to full defaults", () => {
-    // Shape stored before this change landed — no `sourceAudio` key at all,
-    // and `music` missing `fadeInSec`/`fadeOutSec`, no `logo` key at all.
-    const legacy = {
-      textLayers: [],
-      transition: { type: "fade", durationSec: 0.5 },
-      music: {
-        url: "https://cdn.example/track.mp3",
-        title: "Background bed",
-        volume: 42,
-        startOffsetSec: 8,
-      },
-    };
-
-    const parsed = studioEditsSchema.parse(legacy);
-
-    expect(parsed.sourceAudio).toEqual({ volume: 100, muted: false });
-    expect(parsed.music.url).toBe("https://cdn.example/track.mp3");
-    expect(parsed.music.volume).toBe(42);
-    expect(parsed.music.startOffsetSec).toBe(8);
-    expect(parsed.music.fadeInSec).toBe(0);
-    expect(parsed.music.fadeOutSec).toBe(0);
-    expect(parsed.transition).toEqual({ type: "fade", durationSec: 0.5 });
-    expect(parsed.logo).toEqual({
-      enabled: true,
-      position: null,
-      opacity: null,
-      scalePct: null,
-    });
-  });
 
   test("parse({}) defaults background to off/null/null", () => {
     const parsed = studioEditsSchema.parse({});
@@ -134,18 +104,6 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     });
   });
 
-  test("legacy persisted JSON (no background key at all) parses to the off default", () => {
-    const legacy = {
-      textLayers: [],
-      transition: { type: "none", durationSec: 0.4 },
-    };
-    const parsed = studioEditsSchema.parse(legacy);
-    expect(parsed.background).toEqual({
-      mode: "off",
-      color: null,
-      imageUrl: null,
-    });
-  });
 
   test("accepts explicit color/image background values", () => {
     const color = studioEditsSchema.parse({
@@ -291,18 +249,6 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     expect(parsed.framing).toEqual({ mode: "auto" });
   });
 
-  test("legacy persisted JSON (no framing key at all) parses to the auto default — spurious-dirty guard", () => {
-    // Same shape a document saved before this feature landed would have —
-    // this must parse identically to a freshly-defaulted document so an
-    // old clip doesn't appear dirty on load just because `framing` is new.
-    const legacy = {
-      textLayers: [],
-      transition: { type: "none", durationSec: 0.4 },
-      background: { mode: "off", color: null, imageUrl: null },
-    };
-    const parsed = studioEditsSchema.parse(legacy);
-    expect(parsed.framing).toEqual({ mode: "auto" });
-  });
 
   test("accepts an explicit center framing mode", () => {
     const parsed = studioEditsSchema.parse({ framing: { mode: "center" } });
@@ -314,30 +260,12 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     expect(parsed.framing).toEqual({ mode: "split" });
   });
 
-  test("legacy persisted JSON (no framing key at all) still parses to auto, unaffected by split's addition", () => {
-    const legacy = {
-      textLayers: [],
-      transition: { type: "none", durationSec: 0.4 },
-      background: { mode: "off", color: null, imageUrl: null },
-    };
-    const parsed = studioEditsSchema.parse(legacy);
-    expect(parsed.framing).toEqual({ mode: "auto" });
-  });
 
   test("accepts an explicit screen framing mode", () => {
     const parsed = studioEditsSchema.parse({ framing: { mode: "screen" } });
     expect(parsed.framing).toEqual({ mode: "screen" });
   });
 
-  test("legacy persisted JSON (no framing key at all) still parses to auto, unaffected by screen's addition", () => {
-    const legacy = {
-      textLayers: [],
-      transition: { type: "none", durationSec: 0.4 },
-      background: { mode: "off", color: null, imageUrl: null },
-    };
-    const parsed = studioEditsSchema.parse(legacy);
-    expect(parsed.framing).toEqual({ mode: "auto" });
-  });
 
   test("rejects an invalid framing mode (fit is not a framing value)", () => {
     expect(() =>
@@ -531,25 +459,6 @@ describe("studioMusicSchema assetId/ducking + studioSfxPlacementSchema (Music/SF
     expect(parsed.sfx).toEqual([]);
   });
 
-  test("legacy persisted JSON (no assetId/ducking/sfx keys at all) parses to full defaults", () => {
-    const legacy = {
-      textLayers: [],
-      transition: { type: "none", durationSec: 0.4 },
-      music: {
-        url: "https://cdn.example/track.mp3",
-        title: "Background bed",
-        volume: 42,
-        startOffsetSec: 8,
-        fadeInSec: 0,
-        fadeOutSec: 0,
-      },
-    };
-    const parsed = studioEditsSchema.parse(legacy);
-    expect(parsed.music.assetId).toBeNull();
-    expect(parsed.music.ducking).toBe(false);
-    expect(parsed.music.url).toBe("https://cdn.example/track.mp3");
-    expect(parsed.sfx).toEqual([]);
-  });
 
   test("accepts an explicit assetId + ducking on music", () => {
     const parsed = studioEditsSchema.parse({

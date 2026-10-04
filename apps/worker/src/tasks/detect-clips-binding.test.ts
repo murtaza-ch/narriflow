@@ -16,7 +16,7 @@ const attempt: ClaimedWorkflowAttempt = {
 function storedPack(): StoredContentPack {
   return {
     ...contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 10, clipDurationSecTarget: 45,
-      platformPlaybookVersion: "2026.2", mode: "caption_only", processingStartSec: 5, processingEndSec: 35 }),
+      platformPlaybookVersion: "platform-playbook-v1", mode: "caption_only", processingStartSec: 5, processingEndSec: 35 }),
     id: "bound-pack", projectId: "project", draft: false, createdAt: new Date(), updatedAt: new Date(),
   };
 }

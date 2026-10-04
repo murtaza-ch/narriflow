@@ -33,7 +33,7 @@ const OPEN_PAYLOAD = {
       platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
       toneConstraints: ["concise"],
       captionPreset: "brand_default",
-      platformPlaybookVersion: "2026.2",
+      platformPlaybookVersion: "platform-playbook-v1",
       mode: "clip",
       autoHook: true,
       specificMoments: "",

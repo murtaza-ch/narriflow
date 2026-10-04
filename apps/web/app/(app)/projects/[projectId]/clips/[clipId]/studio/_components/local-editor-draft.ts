@@ -13,7 +13,7 @@ export const EDITOR_LEASE_TTL_MS = 8_000;
 export const EDITOR_LEASE_HEARTBEAT_MS = 2_500;
 
 export interface StoredEditorDraft {
-  formatVersion: 2;
+  formatVersion: 1;
   key: string;
   projectId: string;
   clipId: string;
@@ -170,7 +170,7 @@ export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null
     typeof updatedAt !== "number" ||
     !Number.isFinite(updatedAt) ||
     typeof writerId !== "string" ||
-    formatVersion !== 2 ||
+    formatVersion !== 1 ||
     typeof ownershipGeneration !== "number" ||
     !Number.isInteger(ownershipGeneration) ||
     ownershipGeneration < 0 ||

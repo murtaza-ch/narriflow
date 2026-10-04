@@ -9,7 +9,7 @@ import { motionRenderAnalyticsMetadata } from "./clip.service";
 describe("motion render analytics", () => {
   test("records only bounded motion classifications and counts", () => {
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 3,
       captionPreset: captionPresetSchema.parse({}),

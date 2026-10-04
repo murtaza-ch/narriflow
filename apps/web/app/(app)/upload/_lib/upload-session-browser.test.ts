@@ -1611,7 +1611,7 @@ describe("Upload Session browser adapter", () => {
     storage.setItem(
       UPLOAD_RESUME_STORAGE_KEY,
       JSON.stringify({
-        version: 3,
+        version: 1,
         clientIdempotencyKey: "22222222-3333-4444-8555-666666666666",
         sessionId: "aaaaaaaa-3333-4333-8333-aaaaaaaaaaaa",
         projectId: "bbbbbbbb-4444-4444-8444-bbbbbbbbbbbb",
@@ -2074,7 +2074,7 @@ describe("Upload Session browser adapter", () => {
     storage.setItem(
       UPLOAD_RESUME_STORAGE_KEY,
       JSON.stringify({
-        version: 3,
+        version: 1,
         clientIdempotencyKey: "55555555-6666-4777-8888-999999999999",
         sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -2143,7 +2143,7 @@ describe("Upload Session browser adapter", () => {
     storage.setItem(
       UPLOAD_RESUME_STORAGE_KEY,
       JSON.stringify({
-        version: 3,
+        version: 1,
         clientIdempotencyKey: "77777777-8888-4999-8aaa-bbbbbbbbbbbb",
         sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         projectId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
@@ -2204,7 +2204,7 @@ describe("Upload Session browser adapter", () => {
     storage.setItem(
       UPLOAD_RESUME_STORAGE_KEY,
       JSON.stringify({
-        version: 3,
+        version: 1,
         clientIdempotencyKey: "89898989-9999-4aaa-8bbb-cccccccccccc",
         sessionId: "aaaaaaaa-dddd-4eee-8fff-bbbbbbbbbbbb",
         projectId: "bbbbbbbb-eeee-4fff-8aaa-cccccccccccc",
@@ -2261,7 +2261,7 @@ describe("Upload Session browser adapter", () => {
     storage.setItem(
       UPLOAD_RESUME_STORAGE_KEY,
       JSON.stringify({
-        version: 3,
+        version: 1,
         clientIdempotencyKey: "88888888-9999-4aaa-8bbb-cccccccccccc",
         sessionId: "aaaaaaaa-cccc-4ddd-8eee-ffffffffffff",
         projectId: "bbbbbbbb-dddd-4eee-8fff-aaaaaaaaaaaa",

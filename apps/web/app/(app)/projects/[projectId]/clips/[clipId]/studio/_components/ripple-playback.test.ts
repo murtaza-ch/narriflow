@@ -17,7 +17,7 @@ describe("stepRipple", () => {
     expect(stepRipple(map, 25).atEnd).toBe(false);
   });
 
-  test("identity map ends at clipEndSec - epsilon, matching legacy slack", () => {
+  test("identity map ends at clipEndSec - epsilon", () => {
     const map = buildEditedTimeMap([], { startSec: 0, endSec: 20 });
 
     const justBefore = stepRipple(map, 20 - RIPPLE_END_EPSILON_SEC - 0.001);

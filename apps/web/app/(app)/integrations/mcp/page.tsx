@@ -243,7 +243,7 @@ export default async function McpIntegrationPage() {
             title="Generic Streamable HTTP"
             label="OAUTH / KEY"
             steps={[
-              "Use MCP Streamable HTTP rather than the legacy SSE transport.",
+              "Use MCP Streamable HTTP.",
               "Prefer OAuth discovery for an interactive user; otherwise send a scoped nf_ key in the Authorization header.",
               "Start with narriflow_list_workspaces and pass workspaceId explicitly when needed.",
             ]}

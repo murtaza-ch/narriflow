@@ -54,7 +54,7 @@ import {
 
 export { SCENE_LAYOUT_PRESET_CATALOG } from "./scene-layout-presets";
 
-export const CLIP_COMPOSITION_PLAN_VERSION = 2 as const;
+export const CLIP_COMPOSITION_PLAN_VERSION = 1 as const;
 export const CLIP_COMPOSITION_MAX_TARGETS = 4;
 export const CLIP_COMPOSITION_MAX_SERIALIZED_BYTES = 1024 * 1024;
 export const CLIP_AUDIO_FADE_IN_SEC = 0.04;

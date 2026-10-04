@@ -9,7 +9,6 @@ import {
   CLIP_MIN_DURATION_SEC,
   CLIP_TITLE_MAX_LENGTH,
   CLIP_TITLE_SUGGESTION_COUNT,
-  LEGACY_DEFAULT_CAPTION_PRESET_ID,
   brollCuesArraySchema,
   buildTranscriptSliceForWindow,
   captionPresetSchema,
@@ -152,10 +151,7 @@ export function resolveClipCaptionPresetForContentPack(
       ? captionPresetId
       : BRAND_DEFAULT_CAPTION_PRESET_ID;
 
-  if (
-    isBrandDefaultCaptionPresetId(id) ||
-    id === LEGACY_DEFAULT_CAPTION_PRESET_ID
-  ) {
+  if (isBrandDefaultCaptionPresetId(id)) {
     return templateCaptionPreset;
   }
 
@@ -245,11 +241,7 @@ async function resolveRequestedResolution(
 function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
   const aspectRatioDb = clipAspectRatioDbSchema.parse(render.aspectRatio);
   const aspectRatio = clipAspectRatioFromDb[aspectRatioDb];
-  // Tolerant parse: rows written before this column existed (or by a future
-  // rollback) still need a valid variant snapshot — fall back to the
-  // column's own DB default rather than throwing.
-  const resolution =
-    clipRenderResolutionSchema.safeParse(render.resolution).data ?? "1080p";
+  const resolution = clipRenderResolutionSchema.parse(render.resolution);
 
   return {
     aspectRatio,
@@ -2535,7 +2527,7 @@ export class ClipService {
   }
 
   /** Reads the small peaks sibling for the authenticated same-origin API.
-   * Missing/silent/legacy/malformed artifacts are normal and return null. */
+   * Missing, silent, or malformed artifacts are normal and return null. */
   async getClipPreviewPeaks(
     scope: ActorScope,
     projectId: string,

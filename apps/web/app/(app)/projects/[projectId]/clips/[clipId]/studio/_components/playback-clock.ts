@@ -5,7 +5,7 @@ import type { StudioEditingSession } from "./studio-editing-session";
 
 type Listener = () => void;
 
-/** Read-only compatibility projection for time-based presentation consumers.
+/** Read-only playback projection for time-based presentation consumers.
  * Commands go through Studio session intents; this interface cannot mutate
  * playback or address an HTML media element. */
 export interface PlaybackClock {

@@ -5,7 +5,6 @@ export interface RenderConfigWarning {
 }
 
 export interface RenderConfig {
-  readonly clipRenderAttemptEnabled: boolean;
   readonly sourceMode: "ranged" | "download";
   readonly uploadConcurrency: number;
   readonly x264Preset: string;
@@ -83,10 +82,6 @@ function binaryFlag(
 
 function featureEnabled(environment: RenderEnvironment, name: string): boolean {
   return binaryFlag(environment, name, true);
-}
-
-function explicitlyEnabled(environment: RenderEnvironment, name: string): boolean {
-  return binaryFlag(environment, name, false);
 }
 
 export function parseRenderConfig(
@@ -176,10 +171,6 @@ export function parseRenderConfig(
   }
 
   return Object.freeze({
-    clipRenderAttemptEnabled: explicitlyEnabled(
-      environment,
-      "WORKER_CLIP_RENDER_ATTEMPT_ENABLED",
-    ),
     sourceMode,
     uploadConcurrency,
     x264Preset,

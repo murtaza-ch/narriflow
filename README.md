@@ -181,18 +181,21 @@ flowchart TD
 
 Use app-local env files instead of inventing a root `.env`.
 
-### Keep local and deployed development isolated
+### Use the shared development resources
 
-The local web app and worker must use the same local development database, and
-the deployed web app (Vercel) and worker (Railway) must use the same
-deployed development database. These database connections also carry the
-durable ingest and workflow queues, so never start a local worker with the
-deployed database URL. For local development, install Redis with
-`brew install redis && brew services start redis` and set
-`UPSTASH_REDIS_URL=redis://127.0.0.1:6379` in both local app files. The deployed
-environment keeps its existing Upstash Redis settings. Use separate R2 buckets
-for local and deployed data; environment prefixes are not implemented. Redis
-carries live events, while R2 stores source media and renders.
+Local apps, Vercel, and Railway share the Neon `narriflow-dev` project's
+`deployed-dev` branch and `neondb` database, the `narriflow-dev` R2 bucket,
+and Upstash `narriflow-dev-live`. PostgreSQL carries the durable ingest and
+workflow queues. A local worker can process jobs created on Vercel, and the
+Railway worker can process jobs created on localhost. Redis broadcasts their
+live events to both web apps.
+
+Copy shared database, storage, and Redis settings from the Railway `dev`
+worker into the app-local env files. Keep localhost URLs, development mode,
+and native media-tool paths local. Provider accounts and data encryption keys
+must agree so either worker can resume a job. A local Redis service is not
+needed. The shared bucket must allow localhost and the deployed web origin in
+its CORS rules.
 
 Run the network-free identity check before starting localhost:
 
@@ -201,14 +204,14 @@ bun run env:check
 ```
 
 It reads `apps/web/.env.local`, `apps/worker/.env`, and `packages/db/.env`, then
-compares their local database host/port/database/schema, R2 bucket, and Redis
+compares their database host/port/database/schema, R2 account/bucket, and Redis
 endpoint without printing credentials. Redis may be absent from both local app
 files. This validates local file consistency only; it does not inspect or
 compare Vercel, Railway, or Upstash runtime settings. The Prisma CLI uses
 `DIRECT_URL` from
 `packages/db/.env` in preference to `DATABASE_URL`, so keep both values on the
-same environment branch. Apply migrations separately to each database before
-starting that environment.
+shared branch. Apply migrations once to the shared database before starting
+new code locally or deploying it.
 
 See the [environment runbook](docs/runbooks/environments.md) for the current
 resource assignments and deployment steps.
@@ -258,7 +261,6 @@ Minimum values for the current clips workflow:
 
 Useful runtime settings:
 
-- `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=1` enables rendering for a fresh local setup after migrations. Missing, empty, or `0` leaves render work unclaimed. See the [render operations guide](docs/runbooks/clip-render-attempt-rollout.md) before changing an existing worker pool.
 - `PORT=4001`
 - `INGEST_POLL_INTERVAL_MS=2500`
 - `ASSEMBLYAI_POLL_INTERVAL_MS=5000`
@@ -424,7 +426,7 @@ The package commands load `packages/db/prisma.config.ts`, which prefers `DIRECT_
 
 ## Local pipeline
 
-Set `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=1` in `apps/worker/.env` for local rendering, then run the apps in separate terminals:
+Run the apps in separate terminals:
 
 ```bash
 bun --cwd apps/web run dev
@@ -478,7 +480,6 @@ For a quality bakeoff against older archived outputs, run the same source media 
 
 - `DATABASE_URL` points to a live Postgres database.
 - All committed Prisma migrations have been applied.
-- `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=1` is set for the local render worker.
 - Web and worker env files both exist.
 - R2 credentials work from both processes.
 - `ASSEMBLYAI_API_KEY` is present in the worker.

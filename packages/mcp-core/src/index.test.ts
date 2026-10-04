@@ -15,12 +15,11 @@ afterEach(async () => {
 
 async function connect(
   principal: NarriflowMcpPrincipal,
-  versionNegotiation: { mode: "auto" } | { mode: "legacy" } = { mode: "auto" },
 ) {
   const handler = createMcpHandler(() => buildNarriflowMcpServer(principal));
   const client = new Client(
     { name: "narriflow-mcp-test", version: "1.0.0" },
-    { versionNegotiation },
+    { versionNegotiation: { mode: "auto" } },
   );
   clients.push(client);
   const transport = new StreamableHTTPClientTransport(new URL("https://narriflow.test/mcp"), {
@@ -65,22 +64,6 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       tools.find((tool) => tool.name === "narriflow_publish_social_publication_again")
         ?.annotations?.destructiveHint,
     ).toBe(true);
-  });
-
-  test("keeps the legacy stateless protocol available during client migration", async () => {
-    const client = await connect(
-      {
-        kind: "oauth",
-        userId: "00000000-0000-4000-8000-000000000001",
-        clientId: "test-legacy-client",
-        scopes: ["openid"],
-      },
-      { mode: "legacy" },
-    );
-
-    const { tools } = await client.listTools();
-    expect(tools).toHaveLength(11);
-    expect(tools.some((tool) => tool.name === "narriflow_list_workspaces")).toBe(true);
   });
 
   test("returns a cacheable modern discovery document without issuing a session", async () => {

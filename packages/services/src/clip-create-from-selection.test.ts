@@ -349,9 +349,8 @@ describe("planStudioEditsForClipFromSelection", () => {
     expect(result!.sfx).toEqual([]);
     expect(result!.sceneLayouts).toEqual([]);
     expect(result!.transition).toEqual(sourceStudioEdits.transition);
-    // Packet A (AudioAsset foundation) added assetId/ducking to the music
-    // schema — schema defaults fill both in even though the source fixture
-    // predates those fields, same as any other legacy-shaped studioEdits.
+    // Schema defaults fill in assetId/ducking when the source fixture omits
+    // them, as they do for any partial studioEdits.
     expect(result!.music).toEqual({
       ...sourceStudioEdits.music,
       assetId: null,

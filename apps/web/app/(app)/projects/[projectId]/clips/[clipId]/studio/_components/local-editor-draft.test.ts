@@ -27,7 +27,7 @@ import {
 
 function makeDocument(): EditorDocument {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -41,7 +41,7 @@ function makeDocument(): EditorDocument {
 function makeDraft(overrides: Partial<StoredEditorDraft> = {}): StoredEditorDraft {
   const baseDocument = makeDocument();
   return {
-    formatVersion: 2,
+    formatVersion: 1,
     key: editorDraftKey("project", "clip"),
     projectId: "project",
     clipId: "clip",
@@ -86,7 +86,7 @@ describe("local editor draft recovery", () => {
 
   test("rejects drafts that do not use the current format", () => {
     const current = makeDraft();
-    expect(parseStoredEditorDraft({ ...current, formatVersion: 1 })).toBeNull();
+    expect(parseStoredEditorDraft({ ...current, formatVersion: 99 })).toBeNull();
     const { formatVersion: _formatVersion, ...unversioned } = current;
     expect(parseStoredEditorDraft(unversioned)).toBeNull();
   });

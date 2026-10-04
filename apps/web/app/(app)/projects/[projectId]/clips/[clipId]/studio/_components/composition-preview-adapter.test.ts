@@ -32,7 +32,7 @@ import {
 function centerPlan() {
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 6,
       captionPreset: captionPresetSchema.parse({}),
@@ -88,14 +88,14 @@ describe("composition preview adapter", () => {
       reducedMotion: true,
     });
     expect(() =>
-      adoptCompositionMotion({ ...motion, version: 2 } as never, fixture.activeRange.startSec, false),
+      adoptCompositionMotion({ ...motion, version: 99 } as never, fixture.activeRange.startSec, false),
     ).toThrow("unsupported_composition_motion_version");
   });
 
   test("adopts every shared transition and media fixture", () => {
     for (const fixture of MOTION_ADAPTER_FIXTURES.transitions) {
       const document = editorDocumentSchema.parse({
-        version: 2,
+        version: 1,
         clipStartSec: 0,
         clipEndSec: 3,
         captionPreset: captionPresetSchema.parse({}),
@@ -416,7 +416,7 @@ describe("composition preview adapter", () => {
   test("adopts an audio-only audiogram without pretending its background will render", () => {
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
         clipStartSec: 0,
         clipEndSec: 6,
         captionPreset: captionPresetSchema.parse({}),
@@ -583,7 +583,7 @@ describe("composition preview adapter", () => {
     const adopted = adoptCompositionPreview(centerPlan(), "9:16", 6);
 
     expect(adopted).toEqual({
-      planVersion: 2,
+      planVersion: 1,
       planFingerprint: expect.any(String),
       mainMediaKey: "preview:key-1",
       canvas: { width: 1080, height: 1920, divisibleBy: 2 },
@@ -842,7 +842,7 @@ describe("composition preview adapter", () => {
     const base = centerPlan();
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
         clipStartSec: 0,
         clipEndSec: 6,
         captionPreset: captionPresetSchema.parse({}),
@@ -899,7 +899,7 @@ describe("composition preview adapter", () => {
   test("adopts only active planned visual layers in stable z-order at boundaries", () => {
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
         clipStartSec: 0,
         clipEndSec: 6,
         captionPreset: captionPresetSchema.parse({ visible: false }),
@@ -963,7 +963,7 @@ describe("composition preview adapter", () => {
 
   test("adopts an inserted scene that intentionally has no source-video layer", () => {
     const base = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 6,
       captionPreset: captionPresetSchema.parse({}),

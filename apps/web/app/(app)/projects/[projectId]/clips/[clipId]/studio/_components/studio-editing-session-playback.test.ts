@@ -32,7 +32,7 @@ function makeDocument(
   deletedRanges: Array<{ startSec: number; endSec: number }> = [],
 ): EditorDocument {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,

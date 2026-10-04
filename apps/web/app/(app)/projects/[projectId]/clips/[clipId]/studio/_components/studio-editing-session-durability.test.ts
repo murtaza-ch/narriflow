@@ -133,7 +133,7 @@ class ForcedCoordinationHub {
 
 function makeDocument(brollUrl: string | null = null): EditorDocument {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -147,7 +147,7 @@ function makeDocument(brollUrl: string | null = null): EditorDocument {
 function makeTimedDocument(brollUrl: string | null = null): EditorDocument {
   const sceneId = "8ab9d330-688f-4574-932c-27ac661245c1";
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     ...makeDocument(brollUrl),
     sceneBlocks: [{
       schemaVersion: 1,
@@ -252,7 +252,7 @@ test("recovers a conflict-free Device Draft before accepting mutations", async (
   const cloud = makeDocument();
   const recovered = makeTimedDocument("https://cdn.example.com/recovered.mp4");
   const draft: StudioDraftRecord = {
-    formatVersion: 2,
+    formatVersion: 1,
     key: "project:clip",
     projectId: "project",
     clipId: "clip",
@@ -321,7 +321,7 @@ test("recovers a conflict-free Device Draft before accepting mutations", async (
 test("re-fences a recovered version-two draft before the new writer becomes editable", async () => {
   const cloud = makeDocument();
   const prior: StudioDraftRecord = {
-    formatVersion: 2,
+    formatVersion: 1,
     key: "project:clip",
     projectId: "project",
     clipId: "clip",
@@ -367,7 +367,7 @@ test("re-fences a recovered version-two draft before the new writer becomes edit
 
   await waitForSnapshot(session, (value) => value.status === "ready");
   expect(fenced).toMatchObject({
-    formatVersion: 2,
+    formatVersion: 1,
     ownershipGeneration: 5,
     writerId: "writer-new",
     document: { brollUrl: "https://cdn.example.com/prior.mp4" },
@@ -379,7 +379,7 @@ test("keeps an overlapping Device Draft durable until the user chooses it", asyn
   const device = makeDocument("https://device.example.com/video.mp4");
   const cloud = makeDocument("https://cloud.example.com/video.mp4");
   const draft: StudioDraftRecord = {
-    formatVersion: 2,
+    formatVersion: 1,
     key: "project:clip",
     projectId: "project",
     clipId: "clip",
@@ -554,7 +554,7 @@ test("marks an edit durable only after its fenced Device Draft write completes",
   );
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({
-    formatVersion: 2,
+    formatVersion: 1,
     key: "project:clip",
     baseRevision: 3,
     writerId: "writer-a",
@@ -1041,7 +1041,7 @@ test("loses write ownership when draft fencing reports a newer generation", asyn
     {
       drafts: {
         load: async () => ({
-          formatVersion: 2,
+          formatVersion: 1,
           key: "project:clip",
           projectId: "project",
           clipId: "clip",

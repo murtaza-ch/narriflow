@@ -11,7 +11,7 @@ const actor: ActorScope = {
   actorUserId: "actual-actor", workspaceId: "active-workspace", workspaceOwnerUserId: "workspace-owner", workspaceName: "Workspace",
   role: "editor", status: "active", pricingTier: "creator", isPersonalWorkspace: false, workspaceSelectionChanged: false,
 };
-const pack = contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 3, clipDurationSecTarget: 45, platformPlaybookVersion: "2026.2" });
+const pack = contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 3, clipDurationSecTarget: 45, platformPlaybookVersion: "platform-playbook-v1" });
 function testApp(role: ActorScope["role"] = "editor") {
   const calls: unknown[][] = [];
   const policy = createAuthenticatedRequestPolicy({

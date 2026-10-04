@@ -204,8 +204,8 @@ export interface ResolvedSpeakerLayoutScene {
 }
 
 /** Structural subset shared by persisted auto-layout segments and the
- * worker's in-memory SplitLayoutSegment. Optional framing fields preserve
- * the legacy defaults for plans produced before vertical/zoom analysis. */
+ * worker's in-memory SplitLayoutSegment. Split segments may omit vertical
+ * framing and zoom; resolution then centers vertically at zoom 1. */
 export type SpeakerLayoutBaseSegment =
   | {
       startSec: number;

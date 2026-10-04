@@ -138,10 +138,10 @@ async function runCommand(
   return safeOutput;
 }
 
-function httpClient(url: URL, secret: string, mode: "auto" | "legacy") {
+function httpClient(url: URL, secret: string) {
   const client = new Client(
-    { name: `narriflow-e2e-${mode}`, version: "1.0.0" },
-    { versionNegotiation: { mode } },
+    { name: "narriflow-e2e-http", version: "1.0.0" },
+    { versionNegotiation: { mode: "auto" } },
   );
   const transport = new StreamableHTTPClientTransport(url, {
     authProvider: { token: async () => secret },
@@ -310,7 +310,7 @@ async function main() {
     assert.match(unauthorized.headers.get("www-authenticate") ?? "", /^Bearer /);
     progress("HTTP bearer challenge: passed");
 
-    const modern = httpClient(mcpUrl, key.secret, "auto");
+    const modern = httpClient(mcpUrl, key.secret);
     clients.push(modern.client);
     await modern.client.connect(modern.transport);
     const tools = await modern.client.listTools();
@@ -354,12 +354,6 @@ async function main() {
     assert.equal(boundary.isError, true);
     assert.match(textContent(boundary), /bound to a different workspace/);
     progress("official SDK over modern HTTP with real billing/data authorization: passed");
-
-    const legacy = httpClient(mcpUrl, key.secret, "legacy");
-    clients.push(legacy.client);
-    await legacy.client.connect(legacy.transport);
-    assert.equal((await legacy.client.listTools()).tools.length, expectedTools.length);
-    progress("official SDK legacy compatibility over HTTP: passed");
 
     const stdio = new Client(
       { name: "narriflow-e2e-stdio", version: "1.0.0" },

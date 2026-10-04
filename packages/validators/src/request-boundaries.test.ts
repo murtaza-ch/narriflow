@@ -21,7 +21,7 @@ const autopilotInput = {
     outputTypes: ["short_clip"],
     clipCountTarget: 3,
     clipDurationSecTarget: 45,
-    platformPlaybookVersion: "2026.2",
+    platformPlaybookVersion: "platform-playbook-v1",
   },
 };
 const socialScheduleInput = {

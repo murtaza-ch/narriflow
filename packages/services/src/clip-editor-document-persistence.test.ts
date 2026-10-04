@@ -38,7 +38,7 @@ function utterance(text: string, startSec = 10): TranscriptUtterance {
 
 function document(overrides: Partial<EditorDocument> = {}): EditorDocument {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 10,
     clipEndSec: 30,
     captionPreset: DEFAULT_CAPTION_PRESET,

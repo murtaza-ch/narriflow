@@ -8,7 +8,7 @@ import {
 import type { CensorSegment, SceneBlock } from "./timed-edits";
 import { z } from "zod";
 
-export const AUTO_CENSOR_POLICY_VERSION = "auto-censor-2026-09-01.1";
+export const AUTO_CENSOR_POLICY_VERSION = "auto-censor-v1";
 
 export const projectCensorTermsSchema = z
   .array(z.string().trim().min(1).max(80))

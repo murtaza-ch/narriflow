@@ -92,37 +92,20 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     expect((await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).editorRevision).toBe(saved.revision);
   });
 
-  test("obsolete automatic layout evidence is reclaimed without losing the claim fence", async () => {
+  test("unknown automatic layout evidence is not upgraded or claimed", async () => {
     const f = await fixture();
     const evidence = new LayoutEvidenceLifecycle({ prisma });
+    const unknownEvidence = { version: 99, engine: "shot-layout-v99" };
     await prisma.clip.update({
       where: { id: f.clip.id },
-      data: {
-        autoLayoutStatus: "completed",
-        autoLayoutAnalysis: { version: 1, engine: "shot-layout-v1" },
-        viralityScore: 99,
-      },
+      data: { autoLayoutStatus: "completed", autoLayoutAnalysis: unknownEvidence },
     });
 
-    const claim = await evidence.claimAutomatic(60_000);
-    expect(claim?.id).toBe(f.clip.id);
-    if (!claim) throw new Error("expected stale analysis to be reclaimed");
-    const claimed = await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } });
-    expect(claimed.autoLayoutStatus).toBe("processing");
-    expect(claimed.autoLayoutAnalysis).toBeNull();
-    expect(claimed.autoLayoutClaimToken).toBe(claim.autoLayoutClaimToken);
-    expect((await evidence.claimAutomatic(60_000))?.id).not.toBe(f.clip.id);
-    expect(await evidence.deferAutomatic(
-      f.clip.id,
-      randomUUID(),
-      new Date(Date.now() + 60_000),
-    )).toBe(false);
-    expect(await evidence.deferAutomatic(
-      f.clip.id,
-      claim.autoLayoutClaimToken,
-      new Date(Date.now() + 60_000),
-    )).toBe(true);
-    expect((await evidence.claimAutomatic(60_000))?.id).not.toBe(f.clip.id);
+    expect(await evidence.claimAutomatic(60_000)).toBeNull();
+    const stored = await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } });
+    expect(stored.autoLayoutStatus).toBe("completed");
+    expect(stored.autoLayoutAnalysis).toEqual(unknownEvidence);
+    expect(stored.autoLayoutClaimToken).toBeNull();
   });
 
   test("automatic evidence rejects expired and edited claim owners", async () => {
@@ -391,9 +374,9 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
         previewStorageKey: `projects/${f.project.id}/clips/rebuilt-preview.mp4`,
         previewStartSec: 8,
         previewDurationSec: 28,
-        layoutAnalysis: { version: 2 },
-        autoLayoutAnalysis: { version: 2 },
-        splitLayoutAnalysis: { version: 2 },
+        layoutAnalysis: { version: 1 },
+        autoLayoutAnalysis: { version: 1 },
+        splitLayoutAnalysis: { version: 1 },
       },
     });
     await prisma.clipRender.create({

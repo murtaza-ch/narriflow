@@ -118,7 +118,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     ).rejects.toMatchObject({ code: "P2002" });
   });
 
-  test("represents pending, paid, past-due, and conflicted cutover fixtures", async () => {
+  test("represents pending, paid, past-due, and conflicted billing states", async () => {
     const pending = await createWorkspace("fixture-pending");
     const paid = await createWorkspace("fixture-paid");
     const pastDue = await createWorkspace("fixture-past-due");

@@ -1325,7 +1325,7 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
 // (negative delta) decreases clipStartSec (extends earlier); dragging the
 // end handle right (positive delta) increases clipEndSec (extends later).
 //
-// PERFORMANCE CONTRACT (matches the legacy trim dialog's own drag): the
+// PERFORMANCE CONTRACT (matches the Trim/Extend dialog's own drag): the
 // candidate boundary and its floating delta label are painted IMPERATIVELY
 // via direct DOM mutation on every pointermove — no React state, no segment
 // rebuild — because a full re-render (let alone a segment rebuild) per
@@ -1372,7 +1372,7 @@ const TrimHandle = memo(function TrimHandle({
   const labelRef = useRef<HTMLDivElement>(null);
 
   // Warm the full-project transcript on grab (not on hover/mount) — a trim
-  // handle is grabbed far less often than the legacy dialog is opened, and
+  // handle is grabbed far less often than the Trim/Extend dialog is opened, and
   // fetching ~1-2MB of transcript for every studio session regardless of
   // whether trim is ever used would be wasteful. Session-cached (see
   // trim-transcript-cache.ts), so a second grab in the same tab is instant.

@@ -227,7 +227,7 @@ function testComposition(params: {
 	const transcriptSlice = [...captionTranscript, ...duckingTranscript];
 	const result = planClipComposition({
 		document: editorDocumentSchema.parse({
-			version: 2,
+			version: 1,
 			clipStartSec: 0,
 			clipEndSec: duration,
 			captionPreset,
@@ -302,7 +302,7 @@ function testComposition(params: {
 		},
 		capabilities: {
 			automaticSpeakerLayout: true,
-			automaticSpeakerEngineVersion: "shot-layout-v3",
+			automaticSpeakerEngineVersion: "shot-layout-v1",
 		},
 		targets: [
 			{
@@ -421,7 +421,7 @@ function buildAudiogramArgs(
 	});
 	const result = planClipComposition({
 		document: editorDocumentSchema.parse({
-			version: 2,
+			version: 1,
 			clipStartSec: 0,
 			clipEndSec: params.clipDurationSec,
 			captionPreset,
@@ -468,7 +468,7 @@ function buildAudiogramArgs(
 		},
 		capabilities: {
 			automaticSpeakerLayout: true,
-			automaticSpeakerEngineVersion: "shot-layout-v3",
+			automaticSpeakerEngineVersion: "shot-layout-v1",
 		},
 		targets: [
 			{
@@ -551,7 +551,7 @@ function countDialogues(ass: string): number {
 
 test("planned ASS serialization preserves the planner's punctuation filtering and cue boundaries", () => {
 	const document = editorDocumentSchema.parse({
-		version: 2,
+		version: 1,
 		clipStartSec: 0,
 		clipEndSec: 2,
 		captionPreset: { ...preset("karaoke"), punctuation: false },
@@ -577,7 +577,7 @@ test("planned ASS serialization preserves the planner's punctuation filtering an
 		assets: { backgroundImage: { state: "missing" } },
 		capabilities: {
 			automaticSpeakerLayout: true,
-			automaticSpeakerEngineVersion: "shot-layout-v3",
+			automaticSpeakerEngineVersion: "shot-layout-v1",
 		},
 		targets: [
 			{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },

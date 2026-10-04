@@ -43,7 +43,7 @@ describe("normalizeCensorAudioSchedule", () => {
         : null,
       captionMaskPolicy: null,
       suggestionFingerprint: "a".repeat(64),
-      policyVersion: "auto-censor-2026-09-01.1",
+      policyVersion: "auto-censor-v1",
       enabled: true,
     });
 
@@ -104,7 +104,7 @@ describe("normalizeCensorAudioSchedule", () => {
         beepSettings: { frequencyHz: 800, levelDb: -18 },
         captionMaskPolicy: null,
         suggestionFingerprint: "b".repeat(64),
-        policyVersion: "auto-censor-2026-09-01.1",
+        policyVersion: "auto-censor-v1",
         enabled: true,
       }],
     });
@@ -130,7 +130,7 @@ describe("normalizeCensorAudioSchedule", () => {
         beepSettings: { frequencyHz: 1_000, levelDb: -8 },
         captionMaskPolicy: null,
         suggestionFingerprint: "c".repeat(64),
-        policyVersion: "auto-censor-2026-09-01.1",
+        policyVersion: "auto-censor-v1",
         enabled: true,
       }],
     });
@@ -169,7 +169,7 @@ describe("normalizeCensorAudioSchedule", () => {
         beepSettings: null,
         captionMaskPolicy: null,
         suggestionFingerprint: "d".repeat(64),
-        policyVersion: "auto-censor-2026-09-01.1",
+        policyVersion: "auto-censor-v1",
         enabled: true,
       }],
     });

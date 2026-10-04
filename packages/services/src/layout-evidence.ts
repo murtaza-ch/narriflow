@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
-  CLIP_AUTO_LAYOUT_ENGINE,
-  CLIP_AUTO_LAYOUT_VERSION,
   clipAutoLayoutAnalysisSchema,
   getEffectiveClipTiming,
   type ClipAutoLayoutAnalysis,
@@ -72,21 +70,7 @@ interface LayoutEvidenceLifecycleDependencies {
 }
 
 const autoLayoutEvidenceNeedsRefreshWhere = {
-  OR: [
-    { autoLayoutAnalysis: { equals: Prisma.DbNull } },
-    {
-      autoLayoutAnalysis: {
-        path: ["version"],
-        not: CLIP_AUTO_LAYOUT_VERSION,
-      },
-    },
-    {
-      autoLayoutAnalysis: {
-        path: ["engine"],
-        not: CLIP_AUTO_LAYOUT_ENGINE,
-      },
-    },
-  ],
+  autoLayoutAnalysis: { equals: Prisma.DbNull },
 } satisfies Prisma.ClipWhereInput;
 
 function autoLayoutClaimStateWhere(now: Date): Prisma.ClipWhereInput {

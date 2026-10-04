@@ -19,7 +19,7 @@ const CLIP_ID = "50000000-0000-4000-8000-000000000001";
 
 function document(): EditorDocument {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 0,
     clipEndSec: 20,
     captionPreset: captionPresetSchema.parse({}),
@@ -217,7 +217,7 @@ describe("Clip Editor HTTP routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ revision: 7, document: { version: 2 } });
+    expect(await response.json()).toMatchObject({ revision: 7, document: { version: 1 } });
   });
 
   test("rejects an invalid Clip Editor Document replacement", async () => {
@@ -263,7 +263,7 @@ describe("Clip Editor HTTP routes", () => {
     ]);
     expect(await response.json()).toMatchObject({
       revision: 8,
-      document: { version: 2 },
+      document: { version: 1 },
       clip: { id: CLIP_ID },
     });
   });

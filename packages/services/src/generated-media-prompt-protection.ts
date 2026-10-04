@@ -125,7 +125,7 @@ export function createGeneratedMediaPromptProtection(
       const cipher = createCipheriv("aes-256-gcm", encryptionKey, iv);
       const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
       return [
-        "v2",
+        "v1",
         activeKeyVersion,
         iv.toString("base64url"),
         cipher.getAuthTag().toString("base64url"),
@@ -135,7 +135,7 @@ export function createGeneratedMediaPromptProtection(
     reveal(value) {
       const [formatVersion, keyVersion, ivRaw, tagRaw, ciphertextRaw, extra] = value.split(":");
       if (
-        formatVersion !== "v2" || !keyVersion || !ivRaw || !tagRaw ||
+        formatVersion !== "v1" || !keyVersion || !ivRaw || !tagRaw ||
         !ciphertextRaw || extra !== undefined
       ) {
         throw new GeneratedMediaPromptProtectionError("Protected prompt format is invalid");

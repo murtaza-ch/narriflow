@@ -53,20 +53,22 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 - App-local env files: `apps/web/.env.local`, `apps/worker/.env`, `packages/db/.env`. Never a root `.env`. See `README.md`.
 - `.env*` is gitignored — never commit real secrets.
 
-### Local and deployed development must stay separate
+### Shared development resources
 
-| Resource | Local | Deployed dev |
-| --- | --- | --- |
-| Neon branch / database | `local-murtaza` / `narriflow_local` | `deployed-dev` / `neondb` |
-| Redis | `redis://127.0.0.1:6379` | Deployed Upstash database |
-| R2 bucket | `narriflow-local-murtaza` | `narriflow-dev` |
-| Applications | Local web and worker via `bun run dev` | Vercel `narriflow-dev` and Railway `@narriflow/worker` in environment `dev` |
+Local apps and deployed development apps intentionally use the same resources.
 
-- PostgreSQL owns the durable `IngestJob` and `WorkflowRun` queues. Never start a local worker against the deployed database; it can claim deployed jobs and run maintenance or publishing against deployed data.
-- Keep web, worker, and migration connections on the same database within each environment. Prisma prefers `DIRECT_URL` over `DATABASE_URL`; verify both before migrations. The inherited `neondb` on the local branch is unused; local applications must use `narriflow_local`.
-- Keep Redis and R2 separate too. Use the local bucket's scoped credentials, and never download deployed variables over local env files or copy deployed jobs into the local database.
-- Before local startup, run `brew services start redis` and `bun run env:check`. The check validates local file consistency only; it does not verify deployed settings or prove isolation from deployed resources.
-- Apply migrations separately to the intended database before running new code. Pushing to GitHub `dev` triggers both deployed applications. See [the environment runbook](docs/runbooks/environments.md) for resource IDs and setup details.
+| Resource | Shared selection |
+| --- | --- |
+| Neon project / branch / database | `narriflow-dev` / `deployed-dev` / `neondb` |
+| Redis | Upstash `narriflow-dev-live` |
+| R2 bucket | `narriflow-dev` |
+| Applications | Local web and worker via `bun run dev`; Vercel `narriflow-dev`; Railway `@narriflow/worker` in environment `dev` |
+
+- PostgreSQL owns the durable `IngestJob` and `WorkflowRun` queues. Local and Railway workers share the queue and can process jobs created by either web app. Maintenance and publishing also affect the shared data.
+- Keep web, worker, and migration connections on this same database. Prisma prefers `DIRECT_URL` over `DATABASE_URL`; verify both before migrations.
+- Use the same R2 bucket/account, Upstash endpoint, provider accounts, and data encryption keys everywhere. Sync shared resource settings from Railway's `dev` worker selectively; retain localhost URLs, development mode, and native tool paths in local files.
+- Run `bun run env:check` before local startup. It checks local file consistency without printing secrets; deployed settings must be checked separately. A local Redis service is not needed.
+- Apply migrations once to the shared database before running new code. Pushing to GitHub `dev` triggers both deployed applications. See [the environment runbook](docs/runbooks/environments.md) for resource IDs and setup details.
 
 ## Pre-production compatibility policy
 

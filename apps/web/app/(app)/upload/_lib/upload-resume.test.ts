@@ -69,7 +69,7 @@ describe("Upload Session browser resume record", () => {
     expect(storage.values.has(UPLOAD_RESUME_STORAGE_KEY)).toBe(false);
   });
 
-  test("rejects corrupt and legacy records without exposing provider details", () => {
+  test("rejects corrupt and other-version records without exposing provider details", () => {
     expect(parseStoredUploadResume("not-json", FINGERPRINT)).toEqual({
       kind: "discard",
       reason: "corrupt",
@@ -84,7 +84,7 @@ describe("Upload Session browser resume record", () => {
         }),
         FINGERPRINT,
       ),
-    ).toEqual({ kind: "discard", reason: "legacy" });
+    ).toEqual({ kind: "discard", reason: "corrupt" });
 
     const current = JSON.stringify({
       ...createPendingUploadResume({

@@ -166,7 +166,7 @@ describe("project pipeline state", () => {
 });
 
 
-describe("processing checklist workflow-v2 states", () => {
+describe("processing checklist workflow states", () => {
   const base = {
     ingestStatus: "ready",
     transcribe: { status: "completed" as const, progress: 100, errorCode: null },

@@ -1185,7 +1185,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       where: { id: variant.id },
       data: {
         status: "failed",
-        errorCode: "legacy_render_failure",
+        errorCode: "unclassified_render_failure",
         failureDisposition: null,
       },
     });
@@ -1202,7 +1202,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       await prisma.clipRender.findUniqueOrThrow({ where: { id: variant.id } }),
     ).toMatchObject({
       status: "failed",
-      errorCode: "legacy_render_failure",
+      errorCode: "unclassified_render_failure",
       failureDisposition: null,
     });
   });
@@ -1748,7 +1748,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       clipCountTarget: 3,
       clipDurationSecTarget: 45,
       toneConstraints: [],
-      captionPreset: "default",
+      captionPreset: "brand_default",
       platformPlaybookVersion: "test",
     };
     const [otherPack, draftPack] = await Promise.all([
@@ -1803,7 +1803,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         maxDurationSec: 90,
         platformTargets: ["tiktok"],
         toneConstraints: [],
-        captionPreset: "default",
+        captionPreset: "brand_default",
         platformPlaybookVersion: "test",
         mode: "clip",
         autoHook: true,
@@ -2094,7 +2094,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     await expect(
       firstLifecycle.setClipLayoutAnalysisFailure(first, {
         clipId: clip.id,
-        failure: { version: 2, state: "failed" },
+        failure: { version: 1, state: "failed" },
         editorRevision: clip.editorRevision,
         previewStorageKey: "stale-preview",
       }),
@@ -2159,7 +2159,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     await expect(
       lifecycle.setClipLayoutAnalysisFailure(attempt, {
         clipId: unownedClip.id,
-        failure: { version: 2, state: "failed" },
+        failure: { version: 1, state: "failed" },
         editorRevision: unownedClip.editorRevision,
         previewStorageKey: "unowned-preview",
       }),
@@ -2207,7 +2207,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     await expect(
       lifecycle.setClipLayoutAnalysisFailure(attempt, {
         clipId: ownedClip.id,
-        failure: { version: 2, state: "failed" },
+        failure: { version: 1, state: "failed" },
         editorRevision: ownedClip.editorRevision + 1,
         previewStorageKey: ownedPreviewStorageKey,
       }),
@@ -2236,7 +2236,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(storedUnowned.splitLayoutAnalysis).toBeNull();
   });
 
-  test("automatic-layout evidence replaces a stale engine then stays create-only", async () => {
+  test("automatic-layout evidence is create-only and never upgrades unknown engines", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
     const previewStorageKey = `previews/${clip.id}/current.mp4`;
@@ -2244,7 +2244,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       where: { id: clip.id },
       data: {
         previewStorageKey,
-        autoLayoutAnalysis: { version: 1, sourceIdentity: "source:stale" },
+        autoLayoutAnalysis: { version: 99, engine: "shot-layout-v99" },
         autoLayoutStatus: "completed",
       },
     });
@@ -2269,6 +2269,12 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       editorRevision: clip.editorRevision,
       previewStorageKey,
     };
+    await expect(
+      lifecycle.completeClipAutoLayoutAnalysis(attempt, input),
+    ).resolves.toBe(false);
+    expect((await prisma.clip.findUniqueOrThrow({ where: { id: clip.id } })).autoLayoutAnalysis)
+      .toEqual({ version: 99, engine: "shot-layout-v99" });
+    await prisma.clip.update({ where: { id: clip.id }, data: { autoLayoutAnalysis: Prisma.DbNull } });
     await expect(
       lifecycle.completeClipAutoLayoutAnalysis(attempt, input),
     ).resolves.toBe(true);
@@ -2609,13 +2615,17 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const offsetPool = new Pool({ connectionString: databaseUrl,
       options: "-c timezone=Asia/Karachi", max: 1 });
     const offsetPrisma = new PrismaClient({ adapter: new PrismaPg(offsetPool,
-      databaseSchema ? { schema: databaseSchema } : undefined) });
+      databaseSchema ? { schema: databaseSchema } : undefined),
+      transactionOptions: { maxWait: 120_000, timeout: 120_000 } });
     try {
       const lifecycle = new WorkflowRunLifecycle({ prisma: offsetPrisma,
         leaseOwner: randomUUID(), leaseDurationMs: 10_000, heartbeatIntervalMs: 1_000 });
       const attempt = await lifecycle.claim("dubbing");
       if (!attempt) throw new Error("claim missing");
-      const remaining = attempt.leaseExpiresAt.getTime() - Date.now();
+      const clock = await offsetPool.query<{ databaseNow: Date }>(
+        'SELECT clock_timestamp() AS "databaseNow"',
+      );
+      const remaining = attempt.leaseExpiresAt.getTime() - clock.rows[0]!.databaseNow.getTime();
       expect(remaining).toBeGreaterThan(0);
       expect(remaining).toBeLessThanOrEqual(10_000);
       await lifecycle.heartbeat(attempt);

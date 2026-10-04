@@ -13,7 +13,7 @@ import {
 
 describe("clip export motion entitlement", () => {
   const motionDocument = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 0,
     clipEndSec: 10,
     captionPreset: {},
@@ -110,7 +110,7 @@ describe("clip export storage and sharing", () => {
     const visualId = "11111111-1111-4111-8111-111111111111";
     const fontId = "22222222-2222-4222-8222-222222222222";
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 10,
       captionPreset: {},

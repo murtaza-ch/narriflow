@@ -17,7 +17,7 @@ import {
 
 function makeDocument(brollUrl: string | null = null): EditorDocument {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -31,7 +31,7 @@ function makeDocument(brollUrl: string | null = null): EditorDocument {
 function makeTimedDocument(): EditorDocument {
   const sceneId = "8ab9d330-688f-4574-932c-27ac661245c1";
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     ...makeDocument(),
     sceneBlocks: [{
       schemaVersion: 1,
@@ -977,7 +977,7 @@ test("waits for startup recovery before preparing the exact cloud revision", asy
   expect(settled).toBe(false);
 
   draftLoad.resolve({
-    formatVersion: 2,
+    formatVersion: 1,
     key: "project:clip",
     projectId: "project",
     clipId: "clip",

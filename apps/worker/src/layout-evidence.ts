@@ -14,10 +14,11 @@ import {
   CLIP_AUTO_LAYOUT_ENGINE,
   CLIP_AUTO_LAYOUT_VERSION,
   SCREEN_LAYOUT_ENGINE_VERSION,
+  SCREEN_LAYOUT_VERSION,
   clipAutoLayoutAnalysisSchema,
   clipAutoLayoutMatchesInputs,
   clipLayoutAnalysisFailureSchema,
-  clipLayoutAnalysisV2Schema,
+  clipLayoutAnalysisSchema,
   clipSplitLayoutFailureSchema,
   parseClipAutoLayoutAnalysis,
   parseClipLayoutAnalysis,
@@ -259,13 +260,13 @@ export class LayoutEvidence {
       const reason = pip ? "analysis_unavailable" : "detection_unavailable";
       this.availability.screenLayout = { state: "failed", reason };
       this.deps.diagnose("clip_screen_pip_fallback", { clipId: this.input.clip.id, phase: "media_analysis", analysisMode: "picture_in_picture", fallbackMode: "speaker_band", failureCode: reason, disposition: "degraded", durationMs: 0 });
-      await this.persist({ kind: "screen-failure", value: clipLayoutAnalysisFailureSchema.parse({ version: 2, engine: SCREEN_LAYOUT_ENGINE_VERSION, state: "failed", sourceIdentity: this.input.source.identity, inputFingerprint: this.fingerprint(SCREEN_LAYOUT_ENGINE_VERSION, "screen"), analyzedAtISO: new Date(this.deps.now()).toISOString(), reason }) });
+      await this.persist({ kind: "screen-failure", value: clipLayoutAnalysisFailureSchema.parse({ version: SCREEN_LAYOUT_VERSION, engine: SCREEN_LAYOUT_ENGINE_VERSION, state: "failed", sourceIdentity: this.input.source.identity, inputFingerprint: this.fingerprint(SCREEN_LAYOUT_ENGINE_VERSION, "screen"), analyzedAtISO: new Date(this.deps.now()).toISOString(), reason }) });
       return;
     }
     const rect = selectPipRect(pip.candidates);
     const decision = decidePipUsage({ segmentExtracted: true, detection: pip, selectedRect: rect, faceConfirmed: confirmsFaceInRect(face.samples, rect), screencastThreshold: this.input.pipMotionThreshold });
     this.deps.diagnose(decision.useRect ? "clip_screen_pip_selected" : "clip_screen_pip_fallback", { clipId: this.input.clip.id, phase: "media_analysis", analysisMode: "picture_in_picture", selectedMode: decision.useRect ? "pip_crop" : undefined, fallbackMode: decision.useRect ? undefined : "speaker_band", failureCode: decision.useRect ? undefined : decision.reason, disposition: decision.useRect ? "available" : "degraded", analysisSource: "fresh", durationMs: 0 });
-    const value = clipLayoutAnalysisV2Schema.parse({ ...this.envelopeBase(), version: 2, engine: SCREEN_LAYOUT_ENGINE_VERSION, inputFingerprint: this.fingerprint(SCREEN_LAYOUT_ENGINE_VERSION, "screen"), sourceStartSec: this.input.clip.startSec, sourceDurationSec: this.rawDurationSec, movingPxFrac: pip.movingPxFrac, insufficientSamples: pip.insufficientSamples, pipRect: rect, pipUsable: decision.useRect, faceBandSegments: faceBandSegmentsForCompositionPlan({ samples: face.samples, cutPlan: this.cutPlan, clipStartSec: this.input.clip.startSec, editedDurationSec: this.durationSec }) });
+    const value = clipLayoutAnalysisSchema.parse({ ...this.envelopeBase(), version: SCREEN_LAYOUT_VERSION, engine: SCREEN_LAYOUT_ENGINE_VERSION, inputFingerprint: this.fingerprint(SCREEN_LAYOUT_ENGINE_VERSION, "screen"), sourceStartSec: this.input.clip.startSec, sourceDurationSec: this.rawDurationSec, movingPxFrac: pip.movingPxFrac, insufficientSamples: pip.insufficientSamples, pipRect: rect, pipUsable: decision.useRect, faceBandSegments: faceBandSegmentsForCompositionPlan({ samples: face.samples, cutPlan: this.cutPlan, clipStartSec: this.input.clip.startSec, editedDurationSec: this.durationSec }) });
     await this.persist({ kind: "screen", value });
     this.setScreen(value, "analysis");
   }

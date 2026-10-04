@@ -59,14 +59,14 @@ describe("planClipStorageDeletion", () => {
     expect(keys).toContain("projects/p1/previews/c1/attempt-1.peaks.json");
   });
 
-  test("never throws for a legacy/malformed previewStorageKey that doesn't end in .mp4", () => {
+  test("never throws for a malformed previewStorageKey that doesn't end in .mp4", () => {
     const keys = planClipStorageDeletion(
       storageSnapshot({
-        previewStorageKey: "projects/p1/previews/c1/legacy.mov",
+        previewStorageKey: "projects/p1/previews/c1/preview.mov",
       }),
     );
 
-    expect(keys).toContain("projects/p1/previews/c1/legacy.mov");
+    expect(keys).toContain("projects/p1/previews/c1/preview.mov");
     expect(keys).not.toContain(null);
   });
 

@@ -19,7 +19,7 @@ import {
 
 function centerDocument() {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 10,
     clipEndSec: 20,
     captionPreset: captionPresetSchema.parse({}),
@@ -34,7 +34,7 @@ function centerDocument() {
 
 function fitDocument() {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 0,
     clipEndSec: 12,
     captionPreset: captionPresetSchema.parse({}),
@@ -75,7 +75,7 @@ describe("Clip Composition Plan", () => {
         assets: { backgroundImage: { state: "missing" } },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v3",
+          automaticSpeakerEngineVersion: "shot-layout-v1",
         },
         targets: [
           {
@@ -110,7 +110,7 @@ describe("Clip Composition Plan", () => {
   test("plans Scene Block and B-roll motion with transition precedence", () => {
     const sceneId = "10000000-0000-4000-8000-000000000001";
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 4,
       captionPreset: captionPresetSchema.parse({ visible: false }),
@@ -176,7 +176,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         {
@@ -236,7 +236,7 @@ describe("Clip Composition Plan", () => {
       locale: "en",
     });
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 4,
       captionPreset: captionPresetSchema.parse({}),
@@ -265,7 +265,7 @@ describe("Clip Composition Plan", () => {
           beepSettings: null,
           captionMaskPolicy: { replacement: "first_character", preservePunctuation: true },
           suggestionFingerprint: "a".repeat(64),
-          policyVersion: "auto-censor-2026-09-01.1",
+          policyVersion: "auto-censor-v1",
           enabled: true,
         },
         {
@@ -279,7 +279,7 @@ describe("Clip Composition Plan", () => {
           beepSettings: { frequencyHz: 1_000, levelDb: -12 },
           captionMaskPolicy: null,
           suggestionFingerprint: "b".repeat(64),
-          policyVersion: "auto-censor-2026-09-01.1",
+          policyVersion: "auto-censor-v1",
           enabled: true,
         },
       ],
@@ -289,7 +289,7 @@ describe("Clip Composition Plan", () => {
       source: { identity: "source:censor", kind: "video", width: 1920, height: 1080, hasAudio: true },
       evidence: { automaticLayout: { state: "missing" } },
       assets: { backgroundImage: { state: "missing" } },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
 
@@ -309,7 +309,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans one edited-time audio schedule for source, music, ducking, and sound effects", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 10,
       clipEndSec: 20,
       captionPreset: captionPresetSchema.parse({}),
@@ -371,7 +371,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -431,7 +431,7 @@ describe("Clip Composition Plan", () => {
   test("scales boundary fades for sub-160ms clips so export filters never overlap", () => {
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
         clipStartSec: 0,
         clipEndSec: 0.1,
         captionPreset: captionPresetSchema.parse({}),
@@ -451,7 +451,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -479,7 +479,7 @@ describe("Clip Composition Plan", () => {
     };
     const makeDocument = (withVisualEdit: boolean) =>
       editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
         clipStartSec: 0,
         clipEndSec: 12,
         captionPreset: captionPresetSchema.parse(
@@ -538,7 +538,7 @@ describe("Clip Composition Plan", () => {
         },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v3",
+          automaticSpeakerEngineVersion: "shot-layout-v1",
         },
         targets: [
           { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -556,7 +556,7 @@ describe("Clip Composition Plan", () => {
 
   test("omits unavailable optional audio independently and scopes stable notices", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 10,
       captionPreset: captionPresetSchema.parse({}),
@@ -596,7 +596,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -634,7 +634,7 @@ describe("Clip Composition Plan", () => {
 
   test("degrades an available SFX fact whose duration cannot own a stop time", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -674,7 +674,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -705,7 +705,7 @@ describe("Clip Composition Plan", () => {
     }));
     const duration = words.at(-1)!.endSec + 1;
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: duration,
       captionPreset: captionPresetSchema.parse({}),
@@ -766,7 +766,7 @@ describe("Clip Composition Plan", () => {
       assets,
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -802,7 +802,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans audio-only input as the existing audiogram and makes unsupported backgrounds explicit", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 12,
       captionPreset: captionPresetSchema.parse({ highlightColor: "#00FF88" }),
@@ -830,7 +830,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "available", ref: "background:one" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -884,7 +884,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -895,7 +895,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "missing" as const } },
     });
     const autoDocument = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       ...centerDocument(),
       studioEdits: studioEditsSchema.parse({
         framing: { mode: "auto" },
@@ -941,7 +941,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -956,7 +956,7 @@ describe("Clip Composition Plan", () => {
     if (first.status === "invalid" || second.status === "invalid") {
       throw new Error("expected a valid Center plan");
     }
-    expect(first.plan.version).toBe(2);
+    expect(first.plan.version).toBe(1);
     expect(first.plan.fingerprint).toMatch(/^[0-9a-f]{16}$/);
     expect(second.plan.fingerprint).toBe(first.plan.fingerprint);
     expect(first.plan.editedDurationSec).toBe(8);
@@ -1032,7 +1032,7 @@ describe("Clip Composition Plan", () => {
 
   test("splices inserted scenes into one contiguous preview and render timeline", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       ...centerDocument(),
       sceneBlocks: [
         { id: "8ab9d330-688f-4574-932c-27ac661245c1", schemaVersion: 1, anchorSec: 0, durationSec: 2, content: { kind: "text", text: "Opening", fontFamily: "Arial", fontAsset: null, color: "#FFFFFF", backgroundColor: "#111827" }, motion: { entrance: "fade", exit: "fade" }, templateSnapshot: null },
@@ -1044,7 +1044,7 @@ describe("Clip Composition Plan", () => {
       source: { identity: "source:scenes", kind: "video", width: 1920, height: 1080 },
       evidence: { automaticLayout: { state: "missing" } },
       assets: { backgroundImage: { state: "missing" } },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
     expect(result.status).toBe("ready");
@@ -1091,7 +1091,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         {
@@ -1105,7 +1105,7 @@ describe("Clip Composition Plan", () => {
 
     expect(result.status).toBe("ready");
     if (result.status === "invalid") throw new Error(result.error.code);
-    expect(result.plan.version).toBe(2);
+    expect(result.plan.version).toBe(1);
     expect(result.plan.targets[0]?.scenes[0]?.layers[0]).toMatchObject({
       kind: "inserted-scene",
       textRender: {
@@ -1151,7 +1151,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         {
@@ -1211,7 +1211,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         {
@@ -1274,7 +1274,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         {
@@ -1331,7 +1331,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -1421,7 +1421,7 @@ describe("Clip Composition Plan", () => {
         sceneVisuals: { [imageSceneId]: { state: "failed" } },
         sceneFonts: { [textSceneId]: { state: "pending" } },
       },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
     expect(result.status).toBe("pending");
@@ -1444,7 +1444,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -1514,7 +1514,7 @@ describe("Clip Composition Plan", () => {
 
   test("requests missing Auto evidence once and plans target-specific speaker scenes when it arrives", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 10,
       clipEndSec: 20,
       captionPreset: captionPresetSchema.parse({}),
@@ -1531,7 +1531,7 @@ describe("Clip Composition Plan", () => {
     };
     const capabilities = {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v3",
+      automaticSpeakerEngineVersion: "shot-layout-v1",
     };
     const targets = [
       { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -1550,11 +1550,11 @@ describe("Clip Composition Plan", () => {
       clipStartSec: 10,
       clipEndSec: 20,
       deletedRanges: [],
-      engineVersion: "shot-layout-v3",
+      engineVersion: "shot-layout-v1",
     });
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 3,
-      engine: "shot-layout-v3",
+      version: 1,
+      engine: "shot-layout-v1",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 10,
@@ -1599,7 +1599,7 @@ describe("Clip Composition Plan", () => {
           value: {
             sourceIdentity: source.identity,
             inputFingerprint: fingerprint,
-            engineVersion: "shot-layout-v3",
+            engineVersion: "shot-layout-v1",
             analysis,
           },
         },
@@ -1617,7 +1617,7 @@ describe("Clip Composition Plan", () => {
       {
         key: `automatic-speaker-layout:${fingerprint}`,
         kind: "automatic-speaker-layout",
-        engineVersion: "shot-layout-v3",
+        engineVersion: "shot-layout-v1",
       },
     ]);
     expect(missing.plan.targets.map((target) => target.effectiveMode)).toEqual([
@@ -1665,7 +1665,7 @@ describe("Clip Composition Plan", () => {
 
   test("invalidates Auto evidence when its source identity or relevant window fingerprint is stale", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -1675,8 +1675,8 @@ describe("Clip Composition Plan", () => {
       deletedRanges: [],
     });
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 3,
-      engine: "shot-layout-v3",
+      version: 1,
+      engine: "shot-layout-v1",
       sourceIdentity: "source:old",
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 0,
@@ -1703,7 +1703,7 @@ describe("Clip Composition Plan", () => {
           value: {
             sourceIdentity: "source:old",
             inputFingerprint: "stale",
-            engineVersion: "shot-layout-v3",
+            engineVersion: "shot-layout-v1",
             analysis,
           },
         },
@@ -1711,7 +1711,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
@@ -1745,7 +1745,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "failed" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
     });
     const disabled = planClipComposition({
@@ -1753,7 +1753,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "disabled" } },
       capabilities: {
         automaticSpeakerLayout: false,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
     });
     const versionMismatch = planClipComposition({
@@ -1768,16 +1768,16 @@ describe("Clip Composition Plan", () => {
               clipStartSec: 0,
               clipEndSec: 5,
               deletedRanges: [],
-              engineVersion: "shot-layout-v3",
+              engineVersion: "shot-layout-v1",
             }),
-            engineVersion: "shot-layout-v3",
-            analysis: { ...analysis, version: 3 } as never,
+            engineVersion: "shot-layout-v1",
+            analysis: { ...analysis, version: 99 } as never,
           },
         },
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
     });
     expect(failed).toMatchObject({
@@ -1805,7 +1805,7 @@ describe("Clip Composition Plan", () => {
 
   test("applies aspect-specific manual overrides after analysis without freezing caller state", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -1856,8 +1856,8 @@ describe("Clip Composition Plan", () => {
       height: 1080,
     };
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 3,
-      engine: "shot-layout-v3",
+      version: 1,
+      engine: "shot-layout-v1",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 0,
@@ -1884,7 +1884,7 @@ describe("Clip Composition Plan", () => {
       clipStartSec: 0,
       clipEndSec: 5,
       deletedRanges: [],
-      engineVersion: "shot-layout-v3",
+      engineVersion: "shot-layout-v1",
     });
     const result = planClipComposition({
       document,
@@ -1895,7 +1895,7 @@ describe("Clip Composition Plan", () => {
           value: {
             sourceIdentity: source.identity,
             inputFingerprint,
-            engineVersion: "shot-layout-v3",
+            engineVersion: "shot-layout-v1",
             analysis,
           },
         },
@@ -1903,7 +1903,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
@@ -1933,7 +1933,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
     };
     const target = { id: "one", aspectRatio: "9:16" as const, width: 1080, height: 1920 };
@@ -1971,7 +1971,7 @@ describe("Clip Composition Plan", () => {
         assets: { backgroundImage: { state: "missing" } },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v3",
+          automaticSpeakerEngineVersion: "shot-layout-v1",
         },
         targets,
       });
@@ -2014,7 +2014,7 @@ describe("Clip Composition Plan", () => {
         assets: { backgroundImage: { state: "failed" } },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v3",
+          automaticSpeakerEngineVersion: "shot-layout-v1",
         },
         targets,
       });
@@ -2039,7 +2039,7 @@ describe("Clip Composition Plan", () => {
 
   test("deduplicates missing Auto evidence across targets and unrelated edits", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       ...centerDocument(),
       studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
     });
@@ -2050,7 +2050,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -2061,7 +2061,7 @@ describe("Clip Composition Plan", () => {
     const unrelated = planClipComposition({
       ...input,
       document: editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
         ...document,
         studioEdits: {
           ...document.studioEdits,
@@ -2085,10 +2085,10 @@ describe("Clip Composition Plan", () => {
         { startSec: 4, endSec: 5 },
         { startSec: 7, endSec: 8 },
       ],
-      engineVersion: "shot-layout-v3",
+      engineVersion: "shot-layout-v1",
     });
     const reordered = automaticLayoutInputFingerprint({
-      engineVersion: "shot-layout-v3",
+      engineVersion: "shot-layout-v1",
       deletedRanges: [
         { startSec: 7, endSec: 8 },
         { startSec: 4, endSec: 5 },
@@ -2104,7 +2104,7 @@ describe("Clip Composition Plan", () => {
   test("keeps the validated 128-scene tracked two-up, four-target Automatic boundary bounded", () => {
     const startedAt = performance.now();
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 128,
       captionPreset: captionPresetSchema.parse({}),
@@ -2136,8 +2136,8 @@ describe("Clip Composition Plan", () => {
       cropTrack: [{ timeSec: index, cxNorm: 0.5, cyNorm: 0.5 }, { timeSec: index + 1, cxNorm: 0.55, cyNorm: 0.5 }],
     }));
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 3,
-      engine: "shot-layout-v3",
+      version: 1,
+      engine: "shot-layout-v1",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 0,
@@ -2160,7 +2160,7 @@ describe("Clip Composition Plan", () => {
       clipStartSec: 0,
       clipEndSec: 128,
       deletedRanges: [],
-      engineVersion: "shot-layout-v3",
+      engineVersion: "shot-layout-v1",
     });
     const input = {
       document,
@@ -2171,7 +2171,7 @@ describe("Clip Composition Plan", () => {
           value: {
             sourceIdentity: source.identity,
             inputFingerprint,
-            engineVersion: "shot-layout-v3",
+            engineVersion: "shot-layout-v1",
             analysis,
           },
         },
@@ -2179,7 +2179,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -2233,7 +2233,7 @@ describe("Clip Composition Plan", () => {
       studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
     });
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 3, engine: "shot-layout-v3", sourceIdentity: source.identity,
+      version: 1, engine: "shot-layout-v1", sourceIdentity: source.identity,
       analyzedAtISO: "2026-10-04T00:00:00.000Z", clipStartSec: 0, clipEndSec: 8,
       deletedRanges: document.deletedRanges, editedDurationSec: 6, sourceWidth: 1920, sourceHeight: 1080,
       segments: [{ startSec: 0, endSec: 6, layout: "single", cxNorm: 0.3, cyNorm: 0.5, zoom: 1.1,
@@ -2250,11 +2250,11 @@ describe("Clip Composition Plan", () => {
       document, source,
       evidence: { automaticLayout: { state: "available" as const, value: {
         sourceIdentity: source.identity,
-        inputFingerprint: automaticLayoutInputFingerprint({ sourceIdentity: source.identity, clipStartSec: 0, clipEndSec: 8, deletedRanges: document.deletedRanges, engineVersion: "shot-layout-v3" }),
-        engineVersion: "shot-layout-v3", analysis,
+        inputFingerprint: automaticLayoutInputFingerprint({ sourceIdentity: source.identity, clipStartSec: 0, clipEndSec: 8, deletedRanges: document.deletedRanges, engineVersion: "shot-layout-v1" }),
+        engineVersion: "shot-layout-v1", analysis,
       } } },
       assets: { backgroundImage: { state: "missing" as const } },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
       targets: [{ id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 }],
     };
     const base = planClipComposition(input);
@@ -2291,7 +2291,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans explicit Split scenes per target with distinct crops and encodable 4:5 tiles", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -2350,7 +2350,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
         explicitSplitLayout: true,
         splitEngineVersion: engineVersion,
       },
@@ -2415,7 +2415,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans Screen PiP, face-band, and static fallbacks from one evidence contract", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 2,
       clipEndSec: 10,
       captionPreset: captionPresetSchema.parse({}),
@@ -2430,7 +2430,7 @@ describe("Clip Composition Plan", () => {
       width: 1920,
       height: 1080,
     };
-    const engineVersion = "screen-layout-v2";
+    const engineVersion = "screen-layout-v1";
     const common = {
       document,
       source,
@@ -2438,7 +2438,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
         screenLayout: true,
         screenEngineVersion: engineVersion,
       },
@@ -2571,7 +2571,7 @@ describe("Clip Composition Plan", () => {
 
   test("rejects Split when exact 4:5 tile geometry or clamped crops duplicate tiles", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -2618,7 +2618,7 @@ describe("Clip Composition Plan", () => {
         assets: { backgroundImage: { state: "missing" as const } },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v3",
+          automaticSpeakerEngineVersion: "shot-layout-v1",
           explicitSplitLayout: true,
           splitEngineVersion: engineVersion,
         },
@@ -2643,7 +2643,7 @@ describe("Clip Composition Plan", () => {
 
   test("uses a static Screen speaker tile when the face band has no lateral crop room", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -2658,7 +2658,7 @@ describe("Clip Composition Plan", () => {
       width: 1080,
       height: 1920,
     };
-    const engineVersion = "screen-layout-v2";
+    const engineVersion = "screen-layout-v1";
     const result = planClipComposition({
       document,
       source,
@@ -2690,7 +2690,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
         screenLayout: true,
         screenEngineVersion: engineVersion,
       },
@@ -2705,7 +2705,7 @@ describe("Clip Composition Plan", () => {
 
   test("keeps Split failure, stale-evidence, and edited-timeline fallbacks typed", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 10,
       captionPreset: captionPresetSchema.parse({}),
@@ -2727,7 +2727,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
         explicitSplitLayout: true,
         splitEngineVersion: engineVersion,
       },
@@ -2800,7 +2800,7 @@ describe("Clip Composition Plan", () => {
 
   test("keeps Screen PiP gating and unavailable-analysis fallbacks explicit", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -2815,7 +2815,7 @@ describe("Clip Composition Plan", () => {
       width: 1920,
       height: 1080,
     };
-    const engineVersion = "screen-layout-v2";
+    const engineVersion = "screen-layout-v1";
     const fingerprint = screenLayoutInputFingerprint({
       sourceIdentity: source.identity,
       clipStartSec: 0,
@@ -2829,7 +2829,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
         screenLayout: true,
         screenEngineVersion: engineVersion,
       },
@@ -2903,7 +2903,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans resolved B-roll windows as edited-time layers over the existing base composition", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 10,
       clipEndSec: 20,
       captionPreset: captionPresetSchema.parse({}),
@@ -2937,7 +2937,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -2973,7 +2973,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans a generated still as a B-roll image layer without provider URLs in the document", () => {
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 10,
       captionPreset: captionPresetSchema.parse({}),
@@ -3006,7 +3006,7 @@ describe("Clip Composition Plan", () => {
           placements: [{ id: "generated-1", ref: "visual_asset:still", kind: "image", startSec: 2, endSec: 6 }],
         },
       },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
 
@@ -3021,7 +3021,7 @@ describe("Clip Composition Plan", () => {
 
   test("keeps automatic speaker scenes below B-roll and makes Split fallback truthful for the whole target", () => {
     const automaticDocument = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -3037,8 +3037,8 @@ describe("Clip Composition Plan", () => {
       height: 1080,
     };
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 3,
-      engine: "shot-layout-v3",
+      version: 1,
+      engine: "shot-layout-v1",
       sourceIdentity: source.identity,
       clipStartSec: 0,
       clipEndSec: 8,
@@ -3071,9 +3071,9 @@ describe("Clip Composition Plan", () => {
           clipStartSec: 0,
           clipEndSec: 8,
           deletedRanges: [],
-          engineVersion: "shot-layout-v3",
+          engineVersion: "shot-layout-v1",
         }),
-        engineVersion: "shot-layout-v3",
+        engineVersion: "shot-layout-v1",
         analysis,
       },
     };
@@ -3090,7 +3090,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
         explicitSplitLayout: true,
         splitEngineVersion: "explicit-split-v1",
       },
@@ -3136,7 +3136,7 @@ describe("Clip Composition Plan", () => {
 
   test("omits failed optional B-roll without degrading the requested base mode", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       ...centerDocument(),
       brollUrl: "https://example.com/missing.mp4",
     });
@@ -3150,7 +3150,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -3173,7 +3173,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans the complete timed visual stack in edited time and omits only an unavailable logo", () => {
     const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       clipStartSec: 10,
       clipEndSec: 20,
       captionPreset: captionPresetSchema.parse({
@@ -3232,7 +3232,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         {
@@ -3364,7 +3364,7 @@ describe("Clip Composition Plan", () => {
       height: 1080,
     };
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 10,
       captionPreset: captionPresetSchema.parse({}),
@@ -3408,9 +3408,9 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
         screenLayout: true,
-        screenEngineVersion: "screen-layout-v2",
+        screenEngineVersion: "screen-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -3423,8 +3423,8 @@ describe("Clip Composition Plan", () => {
     ]);
 
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 3,
-      engine: "shot-layout-v3",
+      version: 1,
+      engine: "shot-layout-v1",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-09-13T00:00:00.000Z",
       clipStartSec: 0,
@@ -3457,9 +3457,9 @@ describe("Clip Composition Plan", () => {
               clipStartSec: 0,
               clipEndSec: 10,
               deletedRanges: [],
-              engineVersion: "shot-layout-v3",
+              engineVersion: "shot-layout-v1",
             }),
-            engineVersion: "shot-layout-v3",
+            engineVersion: "shot-layout-v1",
             analysis,
           },
         },
@@ -3468,9 +3468,9 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
         screenLayout: true,
-        screenEngineVersion: "screen-layout-v2",
+        screenEngineVersion: "screen-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -3501,7 +3501,7 @@ describe("Clip Composition Plan", () => {
       height: 1080,
     };
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 10,
       captionPreset: captionPresetSchema.parse({}),
@@ -3562,8 +3562,8 @@ describe("Clip Composition Plan", () => {
       deletedRanges: [],
     });
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 3,
-      engine: "shot-layout-v3",
+      version: 1,
+      engine: "shot-layout-v1",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-09-13T00:00:00.000Z",
       clipStartSec: 0,
@@ -3598,7 +3598,7 @@ describe("Clip Composition Plan", () => {
       clipStartSec: 0,
       clipEndSec: 10,
       deletedRanges: [],
-      engineVersion: "shot-layout-v3",
+      engineVersion: "shot-layout-v1",
     });
     const result = planClipComposition({
       document,
@@ -3609,7 +3609,7 @@ describe("Clip Composition Plan", () => {
           value: {
             sourceIdentity: source.identity,
             inputFingerprint: fingerprint,
-            engineVersion: "shot-layout-v3",
+            engineVersion: "shot-layout-v1",
             analysis,
           },
         },
@@ -3617,7 +3617,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "horizontal", aspectRatio: "16:9", width: 1920, height: 1080 },
@@ -3666,7 +3666,7 @@ describe("Clip Composition Plan", () => {
 
   test("keeps stale background images out of a color-backed Fit scene", () => {
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 4,
       captionPreset: captionPresetSchema.parse({}),
@@ -3703,7 +3703,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "available", ref: "background:stale" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -3721,7 +3721,7 @@ describe("Clip Composition Plan", () => {
 
   test("uses black for a Fit scene when background is off despite stale values", () => {
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 4,
       captionPreset: captionPresetSchema.parse({}),
@@ -3758,7 +3758,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "available", ref: "background:stale" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -3789,8 +3789,8 @@ describe("Clip Composition Plan", () => {
       intent: "fit" as const,
     };
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 3,
-      engine: "shot-layout-v3",
+      version: 1,
+      engine: "shot-layout-v1",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-10-04T00:00:00.000Z",
       clipStartSec: 0,
@@ -3811,7 +3811,7 @@ describe("Clip Composition Plan", () => {
     const plan = (studioEdits: Record<string, unknown>) => {
       const result = planClipComposition({
         document: editorDocumentSchema.parse({
-          version: 2,
+          version: 1,
           clipStartSec: 0,
           clipEndSec: 4,
           captionPreset: captionPresetSchema.parse({}),
@@ -3831,9 +3831,9 @@ describe("Clip Composition Plan", () => {
                 clipStartSec: 0,
                 clipEndSec: 4,
                 deletedRanges: [],
-                engineVersion: "shot-layout-v3",
+                engineVersion: "shot-layout-v1",
               }),
-              engineVersion: "shot-layout-v3",
+              engineVersion: "shot-layout-v1",
               analysis,
             },
           },
@@ -3841,7 +3841,7 @@ describe("Clip Composition Plan", () => {
         assets: { backgroundImage: { state: "missing" } },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v3",
+          automaticSpeakerEngineVersion: "shot-layout-v1",
         },
         targets: [
           { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -3881,7 +3881,7 @@ describe("Clip Composition Plan", () => {
 
   test("does not manufacture a second speaker when analysis cannot supply one", () => {
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 4,
       captionPreset: captionPresetSchema.parse({}),
@@ -3913,7 +3913,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v3",
+        automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },

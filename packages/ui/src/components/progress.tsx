@@ -7,7 +7,7 @@ export interface ProgressProps {
 /**
  * Progress — Blueline meter styling on the Chakra Progress primitive:
  * 3px bg.muted track, ultramarine fill, full radius. For static values
- * prefer `Meter`; this wrapper stays for API compatibility.
+ * prefer `Meter`.
  */
 export function Progress({ value }: ProgressProps) {
   return (

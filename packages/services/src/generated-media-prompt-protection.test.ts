@@ -47,7 +47,7 @@ describe("generated media prompt protection", () => {
     expect(rotatedDeployment.fingerprint("private context")).toBe(
       firstDeployment.fingerprint("private context"),
     );
-    expect(rotatedDeployment.protect("private context")).toStartWith("v2:production-v2:");
+    expect(rotatedDeployment.protect("private context")).toStartWith("v1:production-v2:");
   });
 
   test("loads and validates the complete production key contract from env", () => {
@@ -82,6 +82,7 @@ describe("generated media prompt protection", () => {
       fingerprintKey,
     });
     const protectedPrompt = protection.protect("private context");
+    expect(() => protection.reveal(protectedPrompt.replace("v1:", "v2:"))).toThrow("format");
     expect(() => protection.reveal(`${protectedPrompt}tampered`)).toThrow();
     expect(() => protection.reveal(protectedPrompt.replace("production-v1", "retired-v0"))).toThrow(
       "key version",

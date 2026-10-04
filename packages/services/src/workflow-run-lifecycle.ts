@@ -2,8 +2,6 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-  CLIP_AUTO_LAYOUT_ENGINE,
-  CLIP_AUTO_LAYOUT_VERSION,
   workflowStageUpdatedEventSchema,
 } from "@narriflow/validators";
 import type {
@@ -1462,21 +1460,7 @@ export class WorkflowRunLifecycle {
           projectId: attempt.projectId,
           editorRevision: input.editorRevision,
           previewStorageKey: input.previewStorageKey,
-          OR: [
-            { autoLayoutAnalysis: { equals: Prisma.DbNull } },
-            {
-              autoLayoutAnalysis: {
-                path: ["version"],
-                not: CLIP_AUTO_LAYOUT_VERSION,
-              },
-            },
-            {
-              autoLayoutAnalysis: {
-                path: ["engine"],
-                not: CLIP_AUTO_LAYOUT_ENGINE,
-              },
-            },
-          ],
+          autoLayoutAnalysis: { equals: Prisma.DbNull },
         },
         data: {
           autoLayoutAnalysis: input.analysis,
@@ -2742,7 +2726,6 @@ export class WorkflowRunLifecycle {
     const now = new Date();
     const candidates = await this.prisma.workflowEvent.findMany({
       where: {
-        dedupeKey: { not: null },
         deadLetteredAt: null,
         nextDeliveryAt: { lte: now },
         OR: [
@@ -2784,7 +2767,7 @@ export class WorkflowRunLifecycle {
           deliveryAttempts: { increment: 1 },
         },
       });
-      if (claimed.count === 0 || !event.dedupeKey) continue;
+      if (claimed.count === 0) continue;
 
       try {
         const parsed = workflowStageUpdatedEventSchema.parse(event.payload);

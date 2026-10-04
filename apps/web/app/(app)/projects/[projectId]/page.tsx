@@ -30,7 +30,6 @@ import {
 import {
 	deriveProjectPipeline,
 	BRAND_DEFAULT_CAPTION_PRESET_ID,
-	LEGACY_DEFAULT_CAPTION_PRESET_ID,
 	captionPresetIdSchema,
 	defaultAspectRatioSchema,
 	processingMinutesFromSeconds,
@@ -299,11 +298,9 @@ export default async function ProjectDetailPage({
 	const captionPresetParsed = captionPresetIdSchema.safeParse(
 		latestContentPack?.captionPreset,
 	);
-	const defaultCaptionPreset =
-		captionPresetParsed.success &&
-		captionPresetParsed.data !== LEGACY_DEFAULT_CAPTION_PRESET_ID
-			? captionPresetParsed.data
-			: BRAND_DEFAULT_CAPTION_PRESET_ID;
+	const defaultCaptionPreset = captionPresetParsed.success
+		? captionPresetParsed.data
+		: BRAND_DEFAULT_CAPTION_PRESET_ID;
 	// Raw Prisma column, not the zod-narrowed union — parse it the same way
 	// defaultCaptionPreset does above, rather than casting.
 	const defaultAspectRatioParsed = defaultAspectRatioSchema.safeParse(
@@ -702,7 +699,7 @@ export default async function ProjectDetailPage({
 				>
 					<ProjectTabs clipsCountBadge={<TabCountBadge count={clips.length} />}>
 						{/* CLIPS — processing panel while a run/ingest is in flight, ranked
-            results once clips exist, legacy step cards otherwise. */}
+            results once clips exist, setup step cards otherwise. */}
 						<Tabs.Content value="clips" pt="6">
 							{activeTab === "clips" ? (
 								isDraftPack ? (

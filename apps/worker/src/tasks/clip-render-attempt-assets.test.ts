@@ -59,7 +59,7 @@ function fixture(input: {
     clip: {
       id: "clip-scenes", index: 0, startSec: 0, endSec: 10, llmModel: "caption-only",
       transcriptSlice: [], deletedRanges: null, captionPreset: null, studioEdits: null,
-      editorDocumentVersion: 2,
+      editorDocumentVersion: 1,
       sceneBlocks: [scene(1, imageContent, 1), scene(2, textContent, 4),
         ...(input.duplicates ? [scene(3, imageContent, 7), scene(4, textContent, 9)] : [])],
       censorSegments: [], mediaMotions: [], brollCues: null, brollUrl: null, category: "other",
@@ -84,7 +84,7 @@ function fixture(input: {
       title: "Scene assets", sourceStorageKey: "source/input.mp4", sourceDurationSeconds: 10,
       workspaceId: WORKSPACE_ID,
     } },
-    config: parseRenderConfig({ WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1", WORKER_RENDER_SOURCE_MODE: "download",
+    config: parseRenderConfig({ WORKER_RENDER_SOURCE_MODE: "download",
       WORKER_LAYOUT_ENGINE: "0", WORKER_SCREEN_LAYOUT: "0", WORKER_SPLIT: "0", WORKER_BROLL: "0" }),
     lifecycle: {
       beginRenderWorkSet: async (owned) => { expect(owned).toEqual(attempt); return { variantIds: [pendingRender.id] }; },

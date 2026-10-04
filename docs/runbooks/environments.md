@@ -1,69 +1,95 @@
-# Local and deployed environments
+# Shared development environment
 
-This runbook records the two isolated development environments. Do not copy
-secrets between them or download deployed variables over local env files.
+Local web and worker processes, Vercel, and Railway use one development data
+set. This is the standard setup for Narriflow's pre-production development.
 
-## Local
+## Resources
 
-- Neon branch: `local-murtaza` (`br-steep-breeze-aiwp6wmc`)
-- Database: `narriflow_local`
-- Redis: `redis://127.0.0.1:6379`, installed with `brew install redis` and run with `brew services start redis`
-- R2 bucket: `narriflow-local-murtaza`, using scoped credentials
-- R2 CORS allows `http://localhost:3000` and `http://127.0.0.1:3000`.
-- R2 aborts incomplete multipart uploads after seven days.
+| Resource | Selection |
+| --- | --- |
+| Neon project | `narriflow-dev` (`fragrant-sun-47011044`) |
+| Neon branch | `deployed-dev` (`br-fragrant-lab-aim9z0dg`) |
+| PostgreSQL database | `neondb` |
+| Pooled host | `ep-floral-dream-aiy6m4jd-pooler.c-4.us-east-1.aws.neon.tech` |
+| Direct host | `ep-floral-dream-aiy6m4jd.c-4.us-east-1.aws.neon.tech` |
+| R2 bucket | `narriflow-dev` |
+| Cloudflare account | `5359f28d385b8632c3abee12d1f5b011` |
+| Upstash database | `narriflow-dev-live` (`af538fa1-440d-47ed-896e-c78ae9a6a409`) |
+| Redis endpoint | `solid-monkey-116348.upstash.io:6379`, with TLS |
+| Vercel app | `narriflow-dev`, at `https://narriflow-dev.vercel.app` |
+| Railway project | `narriflow-dev` (`3dbc2617-db01-4c86-a3f7-2d5b2ae5bc00`) |
+| Railway environment | `dev` (`a7248225-c37b-4054-80a3-045424c006a0`) |
+| Railway worker | `@narriflow/worker` (`194b54c2-54c8-41ff-ac1f-1d496e1611b7`) |
 
-The local branch inherited the default `neondb` database, but the applications
-point only to the clean `narriflow_local` database. No inherited jobs were
-consumed. Local web and worker settings live in `apps/web/.env.local` and
-`apps/worker/.env`; migration settings live in `packages/db/.env`.
+## Local configuration
 
-Start Redis, verify the three local env files, and then start both applications:
+Keep secrets in `apps/web/.env.local`, `apps/worker/.env`, and
+`packages/db/.env`. Never create a root `.env` or commit real credentials.
+
+Use the Railway worker's `dev` variables as the source for shared resource
+settings. Set `DATABASE_URL` to the pooled connection and `DIRECT_URL` to the
+direct connection, both for `neondb` on the shared branch. Web and worker use
+the shared `R2_ACCOUNT_ID`, `R2_BUCKET`, R2 credentials, `UPSTASH_REDIS_URL`, and
+`UPSTASH_REDIS_TOKEN`. Keep provider accounts and data encryption keys aligned
+across the apps so jobs can move between worker processes.
+
+Keep `NODE_ENV=development`, `NEXT_PUBLIC_APP_URL=http://localhost:3000`, and
+native Python/model/yt-dlp paths in the local files. Do not replace a whole
+local env file with Railway's container-specific settings.
+
+The R2 bucket's CORS rules must include `http://localhost:3000`,
+`http://127.0.0.1:3000`, and `https://narriflow-dev.vercel.app`. Keep its
+seven-day incomplete multipart upload cleanup enabled.
+
+Before starting localhost:
 
 ```sh
-brew services start redis
 bun run env:check
 bun run dev
 ```
 
-The root command starts the web app and worker together. Both databases have
-the complete 91-migration chain applied.
+The check compares local database identities, including any app `DIRECT_URL`,
+R2 account/bucket, and Redis endpoint without printing secrets. It does not
+connect to providers or inspect deployed variables. A local Redis service is
+not needed.
 
-## Deployed development
+## Workers and migrations
 
-- Web: Vercel project `narriflow-dev`, at `narriflow-dev.vercel.app`
-- Worker: Railway project `narriflow-dev`, service `@narriflow/worker`, environment `dev`
-- Neon branch: `deployed-dev` (`br-fragrant-lab-aim9z0dg`)
-- Database: `neondb`
-- Redis: the existing deployed Upstash database
-- R2 bucket: `narriflow-dev`
+`bun run dev` starts both the web app and a local worker. Local and Railway
+workers compete for the same durable queues through PostgreSQL claims and
+leases. Either can process jobs created by either web app. Maintenance,
+publishing, and data deletion affect that same shared data set.
 
-The GitHub `dev` integration auto-deploys the Vercel web app and Railway
-worker. Apply migrations before starting the deployed processes:
+For web-only development using the Railway worker:
+
+```sh
+bun run --cwd apps/web dev
+```
+
+Prisma prefers `DIRECT_URL` over `DATABASE_URL`. Apply each migration once to
+the shared database before running code that requires it:
 
 ```sh
 bun run --cwd packages/db prisma:migrate:deploy
 ```
 
-Run that command with the deployed database variables in the deployment
-environment. Do not use it with local `packages/db/.env`, and do not overwrite
-local files by downloading deployment variables.
+The GitHub `dev` integration deploys the Vercel app and Railway worker.
+Railway also runs the migration deployment command before starting its worker.
+Disposable-schema database tests still create their own schemas and must clean
+them up after the run.
 
-## Verification on 13 September 2026
+## Fresh data and current contracts
 
-Vercel and Railway deployed commit `43be5e9` successfully. Railway applied its
-pre-deploy migration check with no pending migrations. Its YouTube helper
-started successfully. The previously failing YouTube source downloaded on
-Railway and passed ffprobe validation: 955 seconds, 151,272,773 bytes. This is
-a successful access test, not a guarantee against future provider restrictions.
+Upload resume, Clip Editor Document, local Studio drafts, layout evidence,
+composition plans, publishing intents, and protected generated-media prompts
+use their current version 1 contracts. Unknown versions are rejected. These readers
+do not upgrade unknown stored versions or automatically replace unknown layout
+evidence. Provider API versions follow each provider's contract.
 
-The new local QA project `864531e8-7ceb-4cc9-b25b-9dad493ba601` completed import,
-transcription, detection, and automatic rendering of three clips. All three
-rendered objects were verified in the local R2 bucket. This project is absent
-from the deployed database, which retained its seven existing projects.
-
-`bun run env:check`, lint, typecheck, and the fast test command passed. The
-checker and this runbook are local working-tree additions beyond the deployed
-commit.
+Apply `20261004000000_fresh_development_contracts` with writers stopped, then
+run local web, deployed web, and workers from the same code revision. The
+migration removes retired fields and statuses and aligns the database with
+Prisma. Keep the applied migration history so a new database can be recreated.
 
 ## Layout evidence worker configuration
 

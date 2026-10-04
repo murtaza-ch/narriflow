@@ -27,8 +27,8 @@ export interface EffectiveLogoSettings {
  *  - `enabled: false` turns the logo off for this clip regardless of the
  *    snapshot (there is no snapshot-level "enabled" — presence of a logo
  *    asset is implied by a non-null `logoStorageKey`).
- *  - No override at all (`overrides` null/undefined, e.g. legacy studioEdits
- *    that predate this field) behaves exactly like the all-null default:
+ *  - No override at all (`overrides` null/undefined) behaves exactly like
+ *    the all-null default:
  *    enabled, fully inheriting the snapshot.
  *
  * Shared by the Clip Render Attempt and the Studio preview overlay

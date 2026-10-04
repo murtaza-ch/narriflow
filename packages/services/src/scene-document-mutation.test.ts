@@ -41,7 +41,7 @@ function enableSceneWrites() {
 
 function baseDocument(): EditorDocument {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 0,
     clipEndSec: 20,
     captionPreset: captionPresetSchema.parse({}),

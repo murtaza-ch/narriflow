@@ -220,7 +220,7 @@ export function publicationIntentHash(input: SchedulePublicationInput): string {
 	return createHash("sha256")
 		.update(
 			canonicalJson({
-				contract: "social-publication-intent-v3",
+				contract: "social-publication-intent-v1",
 				immediate: input.immediate === true,
 				workspaceId: input.workspaceId,
 				projectId: input.projectId,

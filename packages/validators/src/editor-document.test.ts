@@ -47,7 +47,7 @@ function makeUtterance(
 
 function makeDocument(): EditorDocument {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -221,7 +221,7 @@ describe("Clip Editor Document equality", () => {
       },
     ];
     const populated = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
       ...document,
       studioEdits: {
         ...document.studioEdits,

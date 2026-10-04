@@ -466,7 +466,6 @@ const autopilotLoop = createPollLoop("autopilot", async () => {
 
 /** CPU-bound stage: clip rendering only. */
 const renderLoop = createPollLoop("render", async () => {
-	if (!renderConfig.clipRenderAttemptEnabled) return 0;
 	const lifecycle = getWorkflowRunLifecycle();
 	await lifecycle.rescuePendingClipRenderingRun();
 	return processNextWorkflowAttempt({
@@ -571,7 +570,7 @@ const server = createServer(async (req, res) => {
 				ok: true,
 				service: "narriflow-worker",
 		render: {
-					enabled: renderConfig.clipRenderAttemptEnabled,
+					enabled: true,
 		},
 		youtubeLinkIntake: { available: youtubeLinkIntakeAvailable },
 				queue: {

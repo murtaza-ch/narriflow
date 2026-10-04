@@ -38,6 +38,7 @@ import {
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   SCREEN_LAYOUT_ENGINE_VERSION,
+  SCREEN_LAYOUT_VERSION,
   speakerLayoutOverrideFromScene,
   type LogoPosition,
   type SpeakerLayerRole,
@@ -651,7 +652,7 @@ export function VideoPreview() {
       ? splitLayoutAnalysis
       : null;
   const exactScreenLayoutAnalysis =
-    layoutAnalysis?.version === 2 &&
+    layoutAnalysis?.version === SCREEN_LAYOUT_VERSION &&
     layoutAnalysis.sourceIdentity === compositionSourceIdentity &&
     layoutAnalysis.inputFingerprint === screenFingerprint
       ? layoutAnalysis

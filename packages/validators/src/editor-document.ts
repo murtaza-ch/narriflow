@@ -52,9 +52,9 @@ import {
 // fragments. Clip boundaries are part of the document so in-studio trim
 // (Phase B step 13) becomes just another undoable mutation.
 
-export const EDITOR_DOCUMENT_VERSION = 2 as const;
+export const EDITOR_DOCUMENT_VERSION = 1 as const;
 
-const editorDocumentV2Schema = z
+export const editorDocumentSchema = z
   .strictObject({
     version: z.literal(EDITOR_DOCUMENT_VERSION),
     clipStartSec: z.number().nonnegative(),
@@ -179,11 +179,9 @@ const editorDocumentV2Schema = z
   });
 
 function validatedTimedMutation(current: EditorDocument, candidate: EditorDocument): EditorDocument {
-  const parsed = editorDocumentV2Schema.safeParse(candidate);
+  const parsed = editorDocumentSchema.safeParse(candidate);
   return parsed.success ? parsed.data : current;
 }
-
-export const editorDocumentSchema = editorDocumentV2Schema;
 
 export type EditorDocument = z.infer<typeof editorDocumentSchema>;
 
@@ -205,8 +203,7 @@ export function editorDocumentUsesMotion(document: EditorDocument): boolean {
 /**
  * Optimistic-concurrency save envelope: the client sends the revision it
  * loaded (`baseRevision`) with the full document; the server accepts only if
- * the stored revision still matches, then increments. Replaces the previous
- * unversioned three-PATCH autosave (studio-shell.tsx:529).
+ * the stored revision still matches, then increments.
  */
 export const saveEditorDocumentSchema = z.object({
   baseRevision: z.number().int().nonnegative(),

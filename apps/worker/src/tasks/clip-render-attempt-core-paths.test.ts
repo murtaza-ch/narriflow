@@ -103,7 +103,7 @@ function clipFixture(input: {
 		studioEdits: input.hasStudioEdit
 			? { sourceAudio: { volume: 100, muted: true } }
 			: null,
-		editorDocumentVersion: 2,
+		editorDocumentVersion: 1,
 		sceneBlocks: [],
 		censorSegments: [],
 		mediaMotions: [],
@@ -366,7 +366,6 @@ function createCoreRenderPathTracer(input: {
 			},
 		},
 		config: parseRenderConfig({
-			WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1",
 			WORKER_RENDER_SOURCE_MODE: input.sourceAccess ? "ranged" : "download",
 			WORKER_LAYOUT_ENGINE: "0",
 			WORKER_SCREEN_LAYOUT: "0",
@@ -1022,7 +1021,7 @@ function buildBaselineCommands(input: {
 		}[output.aspectRatio];
 		const planned = planClipComposition({
 			document: editorDocumentSchema.parse({
-				version: 2,
+				version: 1,
 				clipStartSec: 0,
 				clipEndSec: clipDurationSec,
 				captionPreset: captionPresetSchema.parse({}),
@@ -1041,7 +1040,7 @@ function buildBaselineCommands(input: {
 			assets: { backgroundImage: { state: "missing" } },
 			capabilities: {
 				automaticSpeakerLayout: true,
-				automaticSpeakerEngineVersion: "shot-layout-v3",
+				automaticSpeakerEngineVersion: "shot-layout-v1",
 			},
 			targets: [
 				{
@@ -1170,7 +1169,7 @@ for (const fixture of topologyFixtures) {
 		expect(harness.diagnostics).toContainEqual({
 			message: "clip_composition_resources",
 			context: expect.objectContaining({
-				planVersion: 2,
+				planVersion: 1,
 				planFingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
 				requestedMode: expect.any(String),
 				effectiveModes: expect.any(Array),
@@ -2555,8 +2554,8 @@ test("ClipRenderAttempt always compiles Screen through the shared plan", async (
 		}),
 	});
 	expect(harness.persistedScreenLayouts.at(-1)).toMatchObject({
-		version: 2,
-		engine: "screen-layout-v2",
+		version: 1,
+		engine: "screen-layout-v1",
 		sourceIdentity: expect.any(String),
 		inputFingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
 		sourceWidth: 1920,
@@ -2567,18 +2566,18 @@ test("ClipRenderAttempt always compiles Screen through the shared plan", async (
 	});
 });
 
-test("ClipRenderAttempt reuses matching Screen v2 evidence without rerunning or downgrading face analysis", async () => {
+test("ClipRenderAttempt reuses matching Screen evidence without rerunning or downgrading face analysis", async () => {
 	const sourceIdentity = compositionAssetRef(
 		"source",
 		"20000000-0000-4000-8000-000000000702",
 	);
-	const engine = "screen-layout-v2";
+	const engine = "screen-layout-v1";
 	const harness = createCoreRenderPathTracer({
 		topology: "single-video",
 		clipOverrides: {
 			studioEdits: { framing: { mode: "screen" } },
 			layoutAnalysis: {
-				version: 2,
+				version: 1,
 				engine,
 				sourceIdentity,
 				inputFingerprint: screenLayoutInputFingerprint({
@@ -2960,8 +2959,8 @@ test("ClipRenderAttempt reuses matching durable Automatic evidence without rerun
 		topology: "studio-per-output",
 		clipOverrides: {
 			autoLayoutAnalysis: {
-				version: 3,
-				engine: "shot-layout-v3",
+				version: 1,
+				engine: "shot-layout-v1",
 				sourceIdentity,
 				analyzedAtISO: "2026-08-26T00:00:00.000Z",
 				clipStartSec: 2,

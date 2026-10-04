@@ -263,7 +263,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 						outputTypes: ["short_clip"],
 						clipCountTarget: 3,
 						clipDurationSecTarget: 30,
-						platformPlaybookVersion: "2026.2",
+						platformPlaybookVersion: "platform-playbook-v1",
 					},
 					nextRunAt: new Date(0),
 				},
@@ -607,7 +607,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					outputTypes: ["short_clip"],
 					clipCountTarget: 3,
 					clipDurationSecTarget: 30,
-					platformPlaybookVersion: "2026.2",
+					platformPlaybookVersion: "platform-playbook-v1",
 				},
 				nextRunAt: new Date(0),
 			},
@@ -714,7 +714,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 						outputTypes: ["short_clip"],
 						clipCountTarget: 3,
 						clipDurationSecTarget: 30,
-						platformPlaybookVersion: "2026.2",
+						platformPlaybookVersion: "platform-playbook-v1",
 					},
 					nextRunAt: new Date(0),
 				},
@@ -802,7 +802,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					outputTypes: ["short_clip"],
 					clipCountTarget: 3,
 					clipDurationSecTarget: 30,
-					platformPlaybookVersion: "2026.2",
+					platformPlaybookVersion: "platform-playbook-v1",
 				},
 				nextRunAt: new Date(0),
 			},
@@ -2587,7 +2587,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			},
 		});
 		const retainedScene = editorDocumentSchema.parse({
-			version: 2,
+			version: 1,
 			clipStartSec: 0,
 			clipEndSec: 10,
 			captionPreset: {},
@@ -2728,7 +2728,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		});
 		expect(frozen.content).toMatchObject({ kind: "text", text: "Launch day" });
 		const document = editorDocumentSchema.parse({
-			version: 2,
+			version: 1,
 			clipStartSec: 0,
 			clipEndSec: 10,
 			captionPreset: {},
@@ -2870,7 +2870,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		});
 		expect(
 			Reflect.get(render.clipSnapshot as object, "editorDocumentVersion"),
-		).toBe(2);
+		).toBe(1);
 		expect(
 			Reflect.get(render.clipSnapshot as object, "sceneBlocks"),
 		).toHaveLength(2);

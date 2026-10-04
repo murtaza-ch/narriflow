@@ -179,7 +179,7 @@ describe("clipAutoLayoutAnalysisSchema", () => {
       parseClipAutoLayoutAnalysis({ ...valid, engine: "shot-layout-v99" }),
     ).toThrow("unsupported_clip_composition_evidence_version");
     expect(() =>
-      parseClipAutoLayoutAnalysis({ ...valid, version: 1, engine: "shot-layout-v1" }),
+      parseClipAutoLayoutAnalysis({ ...valid, version: 99, engine: "shot-layout-v99" }),
     ).toThrow("unsupported_clip_composition_evidence_version");
     expect(() =>
       parseClipSplitLayoutAnalysis({

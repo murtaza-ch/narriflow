@@ -23,7 +23,7 @@ const pool = new Pool({ connectionString: databaseUrl, max: 1 });
 
 try {
   await pool.query(`CREATE SCHEMA "${schema}"`);
-  const migrations = readdirSync(resolve(root, "packages/db/prisma/migrations")).filter((entry) => /^\d+_/.test(entry)).sort();
+  const migrations = readdirSync(resolve(root, "packages/db/prisma/migrations")).filter((entry) => existsSync(resolve(root, "packages/db/prisma/migrations", entry, "migration.sql"))).sort();
   const client = await pool.connect();
   try {
     await client.query(`SET search_path TO "${schema}"`);

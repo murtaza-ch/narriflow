@@ -20,8 +20,8 @@ import { deletedRangesSchema } from "./edit-ranges";
 const unitInterval = z.number().finite().min(0).max(1);
 const positiveZoom = z.number().finite().min(1).max(4);
 
-export const CLIP_AUTO_LAYOUT_VERSION = 3 as const;
-export const CLIP_AUTO_LAYOUT_ENGINE = "shot-layout-v3" as const;
+export const CLIP_AUTO_LAYOUT_VERSION = 1 as const;
+export const CLIP_AUTO_LAYOUT_ENGINE = "shot-layout-v1" as const;
 
 export const clipAutoLayoutSubjectSchema = z.object({
   id: z.string().min(1).max(100),

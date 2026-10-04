@@ -40,7 +40,7 @@ const colorScene = (id: string, anchorSec: number, durationSec = 2) => ({
   templateSnapshot: null,
 });
 
-describe("Clip Editor Document v2", () => {
+describe("Clip Editor Document", () => {
   test("uses one bounded media-motion vocabulary for scenes and placements", () => {
     const entrances = [
       "none",
@@ -95,7 +95,7 @@ describe("Clip Editor Document v2", () => {
   test("accepts only the current strict document version", () => {
 		const current = currentDocument();
 		expect(editorDocumentSchema.parse(current)).toEqual(current);
-		expect(() => editorDocumentSchema.parse(({ ...current, version: 1 }))).toThrow();
+		expect(() => editorDocumentSchema.parse(({ ...current, version: 99 }))).toThrow();
 		expect(() => editorDocumentSchema.parse(({ ...current, version: undefined }))).toThrow();
   });
 
@@ -350,7 +350,7 @@ describe("Clip Editor Document v2", () => {
       beepSettings: null,
       captionMaskPolicy: null,
       suggestionFingerprint: "c".repeat(64),
-      policyVersion: "auto-censor-2026-09-01.1",
+      policyVersion: "auto-censor-v1",
       enabled: true,
     });
     const reviewed = [

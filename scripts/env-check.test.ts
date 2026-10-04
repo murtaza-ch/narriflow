@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { checkEnvironmentValues } from "./env-check";
 
-const database = "postgresql://user:password@ep-local-pooler.us-east-1.aws.neon.tech/narriflow?schema=public";
-const directDatabase = "postgresql://user:password@ep-local.us-east-1.aws.neon.tech/narriflow?schema=public";
-const redis = "rediss://:secret@local.upstash.io/0";
+const database = "postgresql://user:password@ep-dev-pooler.us-east-1.aws.neon.tech/neondb?schema=public";
+const directDatabase = "postgresql://user:password@ep-dev.us-east-1.aws.neon.tech/neondb?schema=public";
+const redis = "rediss://:secret@dev.upstash.io/0";
 
 function values(overrides: Record<string, string> = {}) {
   return {
     DATABASE_URL: database,
     DIRECT_URL: directDatabase,
-    R2_BUCKET: "narriflow-local",
+    R2_ACCOUNT_ID: "shared-account",
+    R2_BUCKET: "narriflow-dev",
     UPSTASH_REDIS_URL: redis,
     ...overrides,
   };
@@ -23,13 +24,19 @@ describe("env check", () => {
   test("reports database, bucket, and Redis mismatches without exposing values", () => {
     const issues = checkEnvironmentValues(
       values({ R2_BUCKET: "web" }),
-      values({ DATABASE_URL: database.replace("narriflow", "other"), R2_BUCKET: "worker", UPSTASH_REDIS_URL: "rediss://:secret@other.upstash.io/1" }),
+      values({ DATABASE_URL: database.replace("neondb", "other"), R2_ACCOUNT_ID: "other-account", R2_BUCKET: "worker", UPSTASH_REDIS_URL: "rediss://:secret@other.upstash.io/1" }),
       values(),
     );
     expect(issues.map((issue) => issue.message).join(" ")).toContain("PostgreSQL identities");
     expect(issues.map((issue) => issue.message).join(" ")).toContain("R2_BUCKET");
+    expect(issues.map((issue) => issue.message).join(" ")).toContain("R2_ACCOUNT_ID");
     expect(issues.map((issue) => issue.message).join(" ")).toContain("Redis endpoints");
     expect(JSON.stringify(issues)).not.toContain("secret");
+  });
+
+  test("rejects an app direct connection to another database", () => {
+    const issues = checkEnvironmentValues(values(), values({ DIRECT_URL: directDatabase.replace("neondb", "other") }), values());
+    expect(issues.map((issue) => issue.message)).toContain("web, worker, and db PostgreSQL identities do not agree");
   });
 
   test("keeps non-Neon pooler names, checks ports, and uses Redis port 6379 for TLS", () => {
@@ -57,6 +64,8 @@ describe("env check", () => {
       "worker is missing DATABASE_URL",
       "db is missing DATABASE_URL",
       "db is missing DIRECT_URL",
+      "web is missing R2_ACCOUNT_ID",
+      "worker is missing R2_ACCOUNT_ID",
       "web is missing R2_BUCKET",
       "worker is missing R2_BUCKET",
     ]));

@@ -53,7 +53,7 @@ test("tracked two-up uses the final scene clock across an inserted block in actu
     shotCount: 1, soloShotCount: 0, multiShotCount: 1, twoUpSegmentCount: 1, speakerCount: 0, mappedSpeakerCount: 0,
   });
   const document = editorDocumentSchema.parse({
-    version: 2, clipStartSec: 0, clipEndSec: 5,
+    version: 1, clipStartSec: 0, clipEndSec: 5,
     captionPreset: captionPresetSchema.parse({ visible: false }), transcriptSlice: [],
     studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }), brollUrl: null, deletedRanges: [],
     sceneBlocks: [{ id: "38784fe0-1640-4079-ad09-7f88ab9da720", schemaVersion: 1, anchorSec: 1, durationSec: 1, content: { kind: "color", color: "#000000" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null }],

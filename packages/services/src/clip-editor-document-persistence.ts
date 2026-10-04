@@ -5,6 +5,7 @@ import {
   CLIP_MAX_DURATION_SEC,
   CLIP_MIN_DURATION_SEC,
   DEFAULT_CAPTION_PRESET,
+  EDITOR_DOCUMENT_VERSION,
   applyStudioEditsPatchSchema,
   captionPresetSchema,
   deletedRangesEqual,
@@ -1051,7 +1052,7 @@ function decodeStoredDocument(row: unknown): EditorDocument {
   const sceneBlocks = Reflect.get(row, "sceneBlocks");
   const censorSegments = Reflect.get(row, "censorSegments");
   const mediaMotions = Reflect.get(row, "mediaMotions");
-  if (editorDocumentVersion !== 2) {
+  if (editorDocumentVersion !== EDITOR_DOCUMENT_VERSION) {
     persistenceError("unsupported_editor_document_version", "Stored Clip Editor Document uses an unsupported version");
   }
   if (
@@ -1080,7 +1081,7 @@ function decodeStoredDocument(row: unknown): EditorDocument {
     persistenceError("corrupt_stored_document", "Stored Clip Editor Document is malformed");
   }
   const decoded = editorDocumentSchema.safeParse({
-    version: 2,
+    version: EDITOR_DOCUMENT_VERSION,
     sceneBlocks,
     censorSegments,
     mediaMotions,

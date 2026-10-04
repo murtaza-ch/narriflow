@@ -8,7 +8,7 @@ test("orphan reconciliation is project-scoped, attempt-only, and dry-run first",
   const referenced = `projects/${projectId}/renders/clip/9x16-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.mp4`;
   const orphan = `projects/${projectId}/exports/export/variant-9x16-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.mp4`;
   const protectedKey = `projects/${projectId}/renders/clip/1x1-cccccccc-cccc-4ccc-8ccc-cccccccccccc.mp4`;
-  const legacy = `projects/${projectId}/renders/clip/9x16.mp4`;
+  const invalidKey = `projects/${projectId}/renders/clip/9x16.mp4`;
   const deleted: string[] = [];
   const listedPrefixes: string[] = [];
   const diagnostics: Array<Record<string, unknown>> = [];
@@ -22,7 +22,7 @@ test("orphan reconciliation is project-scoped, attempt-only, and dry-run first",
             { key: referenced, lastModified: old },
             { key: orphan, lastModified: old },
             { key: protectedKey, lastModified: young },
-            { key: legacy, lastModified: old },
+            { key: invalidKey, lastModified: old },
           ].filter((object) => object.key.startsWith(prefix)),
           nextContinuationToken: null,
         };

@@ -57,12 +57,17 @@ export function checkEnvironmentValues(
   const workerDatabase = required(worker, "DATABASE_URL", "worker", issues);
   const dbDatabase = required(db, "DATABASE_URL", "db", issues);
   const directDatabase = required(db, "DIRECT_URL", "db", issues);
-  const databaseIdentities = [
+  const databaseIdentities: [string, string | null][] = [
     ["web DATABASE_URL", databaseIdentity(webDatabase)],
     ["worker DATABASE_URL", databaseIdentity(workerDatabase)],
     ["db DATABASE_URL", databaseIdentity(dbDatabase)],
     ["db DIRECT_URL", databaseIdentity(directDatabase)],
-  ] as const;
+  ];
+  for (const [label, values] of [["web", web], ["worker", worker]] as const) {
+    if (values.DIRECT_URL?.trim()) {
+      databaseIdentities.push([`${label} DIRECT_URL`, databaseIdentity(values.DIRECT_URL.trim())]);
+    }
+  }
   for (const [label, identity] of databaseIdentities) {
     if (!identity) issues.push({ message: `${label} is not a valid PostgreSQL URL` });
   }
@@ -71,6 +76,11 @@ export function checkEnvironmentValues(
     issues.push({ message: "web, worker, and db PostgreSQL identities do not agree" });
   }
 
+  const webAccount = required(web, "R2_ACCOUNT_ID", "web", issues);
+  const workerAccount = required(worker, "R2_ACCOUNT_ID", "worker", issues);
+  if (webAccount && workerAccount && webAccount !== workerAccount) {
+    issues.push({ message: "web and worker R2_ACCOUNT_ID values do not agree" });
+  }
   const webBucket = required(web, "R2_BUCKET", "web", issues);
   const workerBucket = required(worker, "R2_BUCKET", "worker", issues);
   if (webBucket && workerBucket && webBucket !== workerBucket) {
@@ -114,6 +124,6 @@ if (import.meta.main) {
     for (const issue of issues) console.error(`- ${issue.message}`);
     process.exitCode = 1;
   } else {
-    console.log("Environment check passed: database, R2 bucket, and Redis identities agree.");
+    console.log("Environment check passed: database, R2 account/bucket, and Redis identities agree.");
   }
 }

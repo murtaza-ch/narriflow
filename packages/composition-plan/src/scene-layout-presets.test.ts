@@ -46,7 +46,7 @@ function planPreset(
   },
 ) {
   const document = editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 0,
     clipEndSec: 4,
     captionPreset: captionPresetSchema.parse({}),

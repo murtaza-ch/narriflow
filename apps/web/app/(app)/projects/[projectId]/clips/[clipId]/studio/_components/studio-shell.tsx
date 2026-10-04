@@ -31,6 +31,7 @@ import {
   normalizeDeletedRanges,
   resolveEffectiveFramingMode,
   SCREEN_LAYOUT_ENGINE_VERSION,
+  SCREEN_LAYOUT_VERSION,
   buildTranscriptSliceForWindow,
   mergeCorrectedWordsIntoWindow,
   type TranscriptUtterance,
@@ -921,7 +922,7 @@ export function StudioShell({
           })),
   );
   const screenEvidenceMatchesDocument = Boolean(
-    (layoutAnalysis?.version === 2 &&
+    (layoutAnalysis?.version === SCREEN_LAYOUT_VERSION &&
       layoutAnalysis.engine === SCREEN_LAYOUT_ENGINE_VERSION &&
       layoutAnalysis.sourceIdentity === compositionSourceIdentity &&
       layoutAnalysis.inputFingerprint ===
@@ -964,7 +965,7 @@ export function StudioShell({
         setLayoutAnalysis(failed ? null : next);
         setLayoutAnalysisFailure(failed ? next : null);
         if (
-          next?.version === 2 &&
+          next?.version === SCREEN_LAYOUT_VERSION &&
           next.engine === SCREEN_LAYOUT_ENGINE_VERSION &&
           next.sourceIdentity === compositionSourceIdentity &&
           next.inputFingerprint ===
@@ -1515,9 +1516,8 @@ export function StudioShell({
     const editedTime = playbackClock.getSnapshot();
     // Same base rule as deleteSelectedSegment's fix 8 below: `segments` are
     // authored against the EFFECTIVE clip start (`effectiveClipStartSec`),
-    // not `doc.clipStartSec` — the two can disagree on legacy rows (and,
-    // post Phase B step 13, momentarily right after a trim if this ever ran
-    // before the resegment dispatch settled).
+    // not `doc.clipStartSec` — the two can disagree momentarily right after a
+    // trim if this runs before the resegment dispatch settles.
     const unsnappedSourceSec = editedToSource(editedTimeMap, editedTime);
     const unsnappedRelativeTime = unsnappedSourceSec - effectiveClipStartSec;
     const active = segments.find(
@@ -1602,8 +1602,7 @@ export function StudioShell({
     // `buildSegmentsFromUtterances`) are built against the EFFECTIVE clip
     // start (`effectiveClipStartSec` below), which is NOT always
     // `doc.clipStartSec` (the persisted, raw `clip.startSec`): they can
-    // disagree on legacy rows whose stored boundary didn't land exactly on a
-    // word/sentence edge before the finalize-once boundary overhaul. Rebase
+    // disagree right after a trim, before the resegment dispatch settles. Rebase
     // against the SAME base the segments were actually built from, not the
     // document's, so the absolute range handed to `deleteRange` can't
     // silently shift by however far the two happen to disagree.

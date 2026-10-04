@@ -408,7 +408,7 @@ export function createBulkSocialScheduling(dependencies: {
 			const clipIds = [...new Set(input.items.map((item) => item.clipId))];
 			const slots = existing ? [] : publishingSlots({ ...input, clipIds }, dependencies.now());
 			const requestFingerprint = sha256({
-				contract: "publishing-v2",
+				contract: "publishing-v1",
 				...input,
 			});
 			const plans = input.items.map((item) => ({

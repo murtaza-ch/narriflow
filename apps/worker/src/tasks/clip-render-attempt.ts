@@ -1423,15 +1423,6 @@ async function uploadRenderedOutput(params: {
 	return true;
 }
 
-class ClipRenderAttemptDisabled extends Error {
-	readonly code = "clip_render_attempt_disabled";
-
-	constructor() {
-		super("Clip Render Attempt claiming is disabled");
-		this.name = "ClipRenderAttemptDisabled";
-	}
-}
-
 export class ClipRenderAttempt {
 	readonly #run: WorkflowRunJob;
 	readonly #config: Readonly<RenderConfig>;
@@ -1449,9 +1440,6 @@ export class ClipRenderAttempt {
 		attempt: ClipRenderingWorkflowAttempt,
 		context: WorkflowAttemptContext,
 	): Promise<RenderWorkSetOutcome> {
-		if (!this.#config.clipRenderAttemptEnabled) {
-			throw new ClipRenderAttemptDisabled();
-		}
 		if (
 			attempt.workflowRunId !== this.#run.id ||
 			attempt.projectId !== this.#run.projectId

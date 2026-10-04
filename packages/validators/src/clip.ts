@@ -26,12 +26,6 @@ export const clipCategorySchema = z.enum([
 
 export const clipStatusSchema = z.enum([
   "detected",
-  // "accepted"/"rejected" are legacy-only: the accept/reject feature was
-  // removed (market parity — Vizard has no curation gate), but rows written
-  // before the removal may still carry these values, so parsing must
-  // tolerate them. Nothing sets them anymore.
-  "accepted",
-  "rejected",
   "edited",
 ]);
 
@@ -217,14 +211,14 @@ export const clipSnapshotSchema = z.object({
 });
 
 /** Shortest a clip's [startSec, endSec) window may ever be — enforced by the
- *  legacy boundaries endpoint (`updateClipBoundariesSchema` below) and reused
+ *  clip-length dialog's boundaries endpoint (`updateClipBoundariesSchema` below) and reused
  *  by the in-studio trim path (vizard-parity.md Phase B step 13:
  *  `saveClipEditorDocument`'s boundary-change validation, plus the client's
  *  drag-guard on the trim handles) so the two paths can never disagree about
  *  how short a clip is allowed to get. */
 export const CLIP_MIN_DURATION_SEC = 10;
 /** Longest a clip's [startSec, endSec) window may ever be — enforced by the
- *  legacy boundaries endpoint (below) AND by in-studio trim (vizard-parity.md
+ *  clip-length dialog's boundaries endpoint (below) AND by in-studio trim (vizard-parity.md
  *  Phase B closing review finding 3): trim handles clamp to this ceiling
  *  client-side (timeline.tsx's `TrimHandle`) exactly the way they already
  *  clamp to `CLIP_MIN_DURATION_SEC`, since the server now rejects a

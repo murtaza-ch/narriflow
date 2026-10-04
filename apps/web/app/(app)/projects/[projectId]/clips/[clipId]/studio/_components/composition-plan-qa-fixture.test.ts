@@ -26,7 +26,7 @@ describe("Clip Composition Plan browser fixture", () => {
 
   test("adds long multilingual Scene copy to preview planning without changing the saved document", () => {
     const document = editorDocumentSchema.parse({
-      version: 2,
+      version: 1,
       clipStartSec: 0,
       clipEndSec: 6,
       captionPreset: captionPresetSchema.parse({}),

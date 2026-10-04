@@ -1,9 +1,5 @@
-export const UPLOAD_RESUME_VERSION = 3;
-export const UPLOAD_RESUME_STORAGE_KEY = "narriflow.upload.session.v3";
-export const LEGACY_UPLOAD_RESUME_STORAGE_KEYS = [
-  "narriflow.upload.session.v1",
-  "narriflow.upload.session.v2",
-] as const;
+export const UPLOAD_RESUME_VERSION = 1;
+export const UPLOAD_RESUME_STORAGE_KEY = "narriflow.upload.session";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,7 +22,7 @@ export interface UploadResumeRecord {
 
 export type UploadResumeParseResult =
   | { kind: "resume"; record: UploadResumeRecord }
-  | { kind: "discard"; reason: "legacy" | "corrupt" | "other_file" }
+  | { kind: "discard"; reason: "corrupt" | "other_file" }
   | { kind: "none" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -85,9 +81,6 @@ export function parseStoredUploadResume(
   } catch {
     return { kind: "discard", reason: "corrupt" };
   }
-  if (isRecord(value) && value.version !== UPLOAD_RESUME_VERSION) {
-    return { kind: "discard", reason: "legacy" };
-  }
   if (
     !isRecord(value) ||
     value.version !== UPLOAD_RESUME_VERSION ||
@@ -140,7 +133,6 @@ export function loadUploadResume(
   storage: UploadResumeStorage,
   expectedFingerprint: string,
 ) {
-  for (const key of LEGACY_UPLOAD_RESUME_STORAGE_KEYS) remove(storage, key);
   let raw: string | null;
   try {
     raw = storage.getItem(UPLOAD_RESUME_STORAGE_KEY);

@@ -12,7 +12,7 @@ import { editorDocumentUsesMotion } from "@narriflow/validators";
 
 function baseDocument() {
   return editorDocumentSchema.parse({
-    version: 2,
+    version: 1,
     clipStartSec: 0,
     clipEndSec: 3,
     captionPreset: captionPresetSchema.parse({}),

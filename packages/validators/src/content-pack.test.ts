@@ -14,7 +14,7 @@ const baseContentPack = {
   platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
   toneConstraints: ["concise"],
   captionPreset: BRAND_DEFAULT_CAPTION_PRESET_ID,
-  platformPlaybookVersion: "2026.2",
+  platformPlaybookVersion: "platform-playbook-v1",
   mode: "clip",
   autoHook: true,
   specificMoments: "",

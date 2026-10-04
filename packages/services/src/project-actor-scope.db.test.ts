@@ -217,7 +217,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 				clipCountTarget: 3,
 				clipDurationSecTarget: 45,
 				toneConstraints: [],
-				captionPreset: "default",
+				captionPreset: "brand_default",
 				platformPlaybookVersion: "test",
 			},
 		});
@@ -470,7 +470,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			outputTypes: ["short_clip"],
 			clipCountTarget: 4,
 			clipDurationSecTarget: 45,
-			captionPreset: "default",
+			captionPreset: "brand_default",
 			platformPlaybookVersion: "binding-test",
 		});
 		const bound = await prisma.contentPack.create({
@@ -536,7 +536,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			maxDurationSec: 130,
 			platformTargets: ["facebook_reels"],
 			toneConstraints: ["concise"],
-			captionPreset: "default",
+			captionPreset: "brand_default",
 			platformPlaybookVersion: "roundtrip-test",
 			mode: "caption_only",
 			autoHook: false,

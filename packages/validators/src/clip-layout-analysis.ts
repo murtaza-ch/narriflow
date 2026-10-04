@@ -6,7 +6,8 @@ import {
 import { deletedRangesSchema } from "./edit-ranges";
 
 /** Exact discriminator for the complete Screen evidence contract. */
-export const SCREEN_LAYOUT_ENGINE_VERSION = "screen-layout-v2" as const;
+export const SCREEN_LAYOUT_VERSION = 1 as const;
+export const SCREEN_LAYOUT_ENGINE_VERSION = "screen-layout-v1" as const;
 
 /**
  * Identity-complete Screen composition evidence stored on
@@ -68,8 +69,8 @@ const clipLayoutAnalysisBaseSchema = z.object({
 });
 
 /** Identity-complete Screen composition evidence shared by Studio and export. */
-export const clipLayoutAnalysisV2Schema = clipLayoutAnalysisBaseSchema.extend({
-  version: z.literal(2),
+export const clipLayoutAnalysisSchema = clipLayoutAnalysisBaseSchema.extend({
+  version: z.literal(SCREEN_LAYOUT_VERSION),
   engine: z.literal(SCREEN_LAYOUT_ENGINE_VERSION),
   sourceIdentity: z.string().min(1),
   inputFingerprint: z.string().regex(/^[0-9a-f]{16}$/),
@@ -83,10 +84,8 @@ export const clipLayoutAnalysisV2Schema = clipLayoutAnalysisBaseSchema.extend({
     .nullable(),
 });
 
-export const clipLayoutAnalysisSchema = clipLayoutAnalysisV2Schema;
-
 export const clipLayoutAnalysisFailureSchema = z.object({
-  version: z.literal(2),
+  version: z.literal(SCREEN_LAYOUT_VERSION),
   engine: z.literal(SCREEN_LAYOUT_ENGINE_VERSION),
   state: z.literal("failed"),
   sourceIdentity: z.string().min(1),
@@ -102,7 +101,6 @@ export const clipLayoutAnalysisFailureSchema = z.object({
 });
 
 export type ClipLayoutAnalysis = z.infer<typeof clipLayoutAnalysisSchema>;
-export type ClipLayoutAnalysisV2 = z.infer<typeof clipLayoutAnalysisV2Schema>;
 export type ClipLayoutAnalysisFailure = z.infer<
   typeof clipLayoutAnalysisFailureSchema
 >;
@@ -121,7 +119,7 @@ export function parseClipLayoutAnalysis(
 ): ClipLayoutAnalysis | null {
   if (value === null || value === undefined) return null;
   assertSupportedClipCompositionEvidenceVersion(value, {
-    version: 2,
+    version: SCREEN_LAYOUT_VERSION,
     engine: SCREEN_LAYOUT_ENGINE_VERSION,
   });
   const result = clipLayoutAnalysisSchema.safeParse(value);
@@ -133,7 +131,7 @@ export function parseClipLayoutAnalysisFailure(
 ): ClipLayoutAnalysisFailure | null {
   if (value === null || value === undefined) return null;
   assertSupportedClipCompositionEvidenceVersion(value, {
-    version: 2,
+    version: SCREEN_LAYOUT_VERSION,
     engine: SCREEN_LAYOUT_ENGINE_VERSION,
   });
   const result = clipLayoutAnalysisFailureSchema.safeParse(value);

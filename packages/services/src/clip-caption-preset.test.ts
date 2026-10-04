@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
-  LEGACY_DEFAULT_CAPTION_PRESET_ID,
   captionPresetSchema,
 } from "@narriflow/validators";
 import { resolveClipCaptionPresetForContentPack } from "./clip.service";
@@ -21,10 +20,10 @@ describe("resolveClipCaptionPresetForContentPack", () => {
     ).toEqual(templatePreset);
   });
 
-  test("uses brand template preset for legacy default", () => {
+  test("falls back to the brand template preset for an unknown id", () => {
     expect(
       resolveClipCaptionPresetForContentPack(
-        LEGACY_DEFAULT_CAPTION_PRESET_ID,
+        "not-a-preset",
         templatePreset,
       ),
     ).toEqual(templatePreset);
