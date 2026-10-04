@@ -4,14 +4,14 @@
 
 **Blocked by:** [04 - Apps and upload delivery](04-apps-upload.md).
 
-**Status:** claimed
+**Status:** done
 
 **Owner:** root
 
 - [x] Replace generic response dumps with explicit product layouts; hide signed URLs and internal IDs.
 - [x] Keep preview, score summary and Studio action compact; give upload a clear picker, selection and transfer states.
 - [x] Respect host light/dark theme, keyboard focus and narrow card widths.
-- [ ] Preserve Upload Session and exact-publication decision behavior; verify real bridge rendering and publish a new resource version.
+- [x] Preserve Upload Session and exact-publication decision behavior; verify real bridge rendering and publish a new resource version.
 
 ## Design
 
@@ -29,4 +29,6 @@ Implemented purpose-specific projections in `mcp-apps/v2/views.ts` and a static 
 
 A temporary localhost host using the installed AppBridge and PostMessageTransport rendered the actual generated templates in Chrome. Wide 800px and narrow 390px layouts were inspected; narrow clip, upload and confirmation cards had matching client/scroll widths. Theme changes propagated from the host. A generated local fixture file enabled upload selection; a simulated failed open retained that selection and allowed retry. A simulated decline disabled further decisions. No shared-storage upload or real publication was performed. Screenshots are saved in the task's local visualization directory.
 
-Repository lint, typecheck, fast tests and build pass. MCP integration passes 156 tests with 745 assertions. Live deployed v2 read-back and a fresh Codex card remain to be recorded.
+Repository lint, typecheck, fast tests and build pass. MCP integration passes 156 tests with 745 assertions. Export refresh, selected-export navigation and terminal scheduling also passed the final localhost bridge walkthrough.
+
+Commit `658c9fe15de53587ff1756df908595544867951c` is pushed to dev. Vercel deployment `dpl_AmwFVewf7bMiLpvU8sWyq4Qep7o1` reached READY with the canonical alias assigned. All four v2 resources are readable through the actual connected Codex MCP server, with the expected MIME type and themed template. Fresh clip review and upload handoff calls succeeded. A full live file transfer and a visual observation of the new Codex card remain tracked in ticket 06; the localhost screenshots establish the implemented layout without claiming those client gates passed.
