@@ -42,8 +42,8 @@ export function hexToRgba(hex: string, opacity: number): string {
 // next/font/google, exposed as CSS variables. This map resolves a preset's
 // fontName to that variable so every preview renderer agrees with the export
 // instead of silently falling back to a system font. "Impact" is proprietary,
-// so — mirroring the worker's substitution in render-clips.ts — it resolves
-// to Anton.
+// so it resolves to Anton, matching the composition FFmpeg adapter's
+// caption font alias.
 const CAPTION_FONT_VARIABLES: Record<string, string> = {
   Montserrat: "var(--font-caption-montserrat)",
   "Bebas Neue": "var(--font-caption-bebas-neue)",
@@ -73,8 +73,8 @@ export function resolveCaptionFontFamily(fontName: string): string {
  *    caption family, so anything else (previously "900"/"600") silently
  *    collapses to the nearest loaded weight — 700 either way, erasing the
  *    non-bold presets' distinction in preview.
- *  - the worker: render-clips.ts's libass force_style sets `Bold=1` or
- *    `Bold=0`, which libass's built-in fonts render as 700/400.
+ *  - export: the composition FFmpeg adapter serializes the caption preset
+ *    into an ASS style with Bold=-1 or Bold=0, selecting bold or regular.
  * The ONE place every caption-text renderer should go through for weight,
  * mirroring resolveCaptionFontFamily above.
  */

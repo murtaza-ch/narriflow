@@ -1,7 +1,9 @@
 import {
   CAPTION_CHUNK_SIZE,
   CAPTION_POSITION_Y_DEFAULTS,
+  CLIP_AUTO_LAYOUT_MAX_SEGMENTS,
   CLIP_AUTO_LAYOUT_VERSION,
+  CLIP_SPLIT_LAYOUT_MAX_SEGMENTS,
   DUCKING_DEFAULTS,
   buildEditedTimeMap,
   capDuckingWindows,
@@ -54,7 +56,7 @@ export { SCENE_LAYOUT_PRESET_CATALOG } from "./scene-layout-presets";
 
 export const CLIP_COMPOSITION_PLAN_VERSION = 2 as const;
 export const CLIP_COMPOSITION_MAX_TARGETS = 4;
-export const CLIP_COMPOSITION_MAX_SERIALIZED_BYTES = 512 * 1024;
+export const CLIP_COMPOSITION_MAX_SERIALIZED_BYTES = 1024 * 1024;
 export const CLIP_AUDIO_FADE_IN_SEC = 0.04;
 export const CLIP_AUDIO_FADE_OUT_SEC = 0.12;
 export const SCENE_CONTINUITY_EPSILON_SEC = 0.075;
@@ -245,11 +247,17 @@ export interface CompositionRect {
   readonly height: number;
 }
 
+export interface CompositionCropKeyframe extends CompositionRect {
+  readonly timeSec: number;
+}
+
 export interface CompositionSourceVideoLayer {
   readonly id: string;
   readonly kind: "source-video";
   readonly sourceRef: string;
   readonly sourceCrop: CompositionRect;
+  /** Present only for automatic, non-overridden within-shot tracking. */
+  readonly sourceCropTrack?: readonly CompositionCropKeyframe[];
   readonly destination: CompositionRect;
   readonly fit: "cover" | "contain";
   readonly rotationDeg: number;
@@ -262,6 +270,30 @@ export interface CompositionSourceVideoLayer {
     readonly defaultTransform: SpeakerLayerTransform;
     readonly overrideId: string | null;
     readonly subjectId?: string;
+  };
+}
+
+/** Preview and FFmpeg use this same linear interpolation. Tracks never cross
+ * scene boundaries, so a source cut remains an instant cut. */
+export function interpolateCompositionCropTrack(
+  crop: CompositionRect,
+  track: readonly CompositionCropKeyframe[] | undefined,
+  timeSec: number,
+): CompositionRect {
+  if (!track || track.length === 0) return crop;
+  if (timeSec <= track[0]!.timeSec) return track[0]!;
+  const last = track[track.length - 1]!;
+  if (timeSec >= last.timeSec) return last;
+  const rightIndex = track.findIndex((keyframe) => keyframe.timeSec >= timeSec);
+  const right = track[rightIndex]!;
+  const left = track[rightIndex - 1]!;
+  const fraction = (timeSec - left.timeSec) / (right.timeSec - left.timeSec);
+  const lerp = (a: number, b: number) => a + (b - a) * fraction;
+  return {
+    x: lerp(left.x, right.x),
+    y: lerp(left.y, right.y),
+    width: lerp(left.width, right.width),
+    height: lerp(left.height, right.height),
   };
 }
 
@@ -936,6 +968,23 @@ function cropForSpeakerLayer(
   };
 }
 
+function cropTrackForSpeakerLayer(
+  source: CompositionSourceFacts,
+  destination: CompositionRect,
+  transform: SpeakerLayerTransform,
+  track: readonly { timeSec: number; cxNorm: number; cyNorm: number }[] | undefined,
+): readonly CompositionCropKeyframe[] | undefined {
+  if (!track || track.length === 0) return undefined;
+  return track.map((keyframe) => ({
+    ...cropForSpeakerLayer(source, destination, {
+      ...transform,
+      cropCxNorm: keyframe.cxNorm,
+      cropCyNorm: keyframe.cyNorm,
+    }),
+    timeSec: keyframe.timeSec,
+  }));
+}
+
 function targetSupportsTwoUp(
   source: CompositionSourceFacts,
   target: CompositionTarget,
@@ -972,8 +1021,9 @@ function cropsAreLaterallyDistinct(
 function segmentsAreComplete(
   segments: readonly (ClipAutoLayoutSegment | ClipSplitLayoutSegment)[],
   editedDurationSec: number,
+  maxSegments: number,
 ): boolean {
-  if (segments.length === 0 || segments.length > 64) return false;
+  if (segments.length === 0 || segments.length > maxSegments) return false;
   let cursor = 0;
   for (const segment of segments) {
     if (
@@ -1057,6 +1107,16 @@ function canonicalSplitTransforms(
   ];
 }
 
+function cropTrackForSegmentRole(
+  segment: ClipAutoLayoutSegment | ClipSplitLayoutSegment,
+  role: SpeakerLayerRole,
+) {
+  if (!("subjects" in segment)) return undefined;
+  const automatic = segment as ClipAutoLayoutSegment;
+  if (automatic.layout === "single") return automatic.cropTrack;
+  return role === "top" ? automatic.topCropTrack : role === "bottom" ? automatic.bottomCropTrack : undefined;
+}
+
 function speakerScenes(input: {
   mode: "auto" | "split";
   source: CompositionSourceFacts;
@@ -1065,6 +1125,7 @@ function speakerScenes(input: {
   overrides: EditorDocument["studioEdits"]["speakerLayoutOverrides"];
 }): CompositionScene[] {
   return input.segments.map((segment, sceneIndex) => {
+    const automaticSegment = segment as ClipAutoLayoutSegment;
     const defaults = resolveSpeakerLayoutScene(
       segment,
       [],
@@ -1075,6 +1136,37 @@ function speakerScenes(input: {
       input.overrides,
       input.target.aspectRatio,
     );
+    if (
+      input.mode === "auto" &&
+      automaticSegment.layout === "single" &&
+      automaticSegment.intent === "fit" &&
+      !resolved.overrideId
+    ) {
+      return {
+        id: `scene:auto:${input.target.id}:${sceneIndex}`,
+        startSec: segment.startSec,
+        endSec: segment.endSec,
+        layers: [
+          {
+            id: `layer:background:${input.target.id}:${sceneIndex}`,
+            kind: "background",
+            color: "#000000",
+            imageRef: null,
+            destination: { x: 0, y: 0, width: input.target.width, height: input.target.height },
+            fit: "cover",
+            rotationDeg: 0,
+            opacity: 1,
+            zIndex: 0,
+          },
+          fullSourceLayer(
+            input.source,
+            containedDestination(input.source, input.target),
+            `layer:source:${input.target.id}:${sceneIndex}`,
+            1,
+          ),
+        ],
+      };
+    }
     const canonical =
       input.mode === "split"
         ? canonicalSplitTransforms(segment, input.target)
@@ -1111,6 +1203,16 @@ function speakerScenes(input: {
             destination,
             transform,
           ),
+          ...(!resolved.overrideId
+            ? {
+                sourceCropTrack: cropTrackForSpeakerLayer(
+                  input.source,
+                  destination,
+                  transform,
+                  cropTrackForSegmentRole(segment, transform.role),
+                ),
+              }
+            : {}),
           destination,
           fit: "cover" as const,
           rotationDeg: transform.rotationDeg,
@@ -1567,7 +1669,7 @@ function applySceneLayoutSelections(input: {
         layoutSelection: selection
           ? { id: selection.id, preset: selection.preset }
           : null,
-        layers: layers ?? base.layers,
+        layers: sourceLayersForRange(layers ?? base.layers, startSec, endSec),
       });
     }
   }
@@ -1621,6 +1723,37 @@ function validAutomaticLayoutEvidence(
   }
 
   return analysis;
+}
+
+function sourceLayersForRange(
+  layers: readonly CompositionLayer[],
+  startSec: number,
+  endSec: number,
+  shiftSec = 0,
+): readonly CompositionLayer[] {
+  return layers.map((layer) => {
+    if (layer.kind !== "source-video" || !layer.sourceCropTrack?.length) return layer;
+    const endpoint = (timeSec: number): CompositionCropKeyframe => {
+      const crop = interpolateCompositionCropTrack(layer.sourceCrop, layer.sourceCropTrack, timeSec);
+      return {
+        timeSec: timeSec + shiftSec,
+        x: Math.round(crop.x),
+        y: Math.round(crop.y),
+        width: Math.round(crop.width),
+        height: Math.round(crop.height),
+      };
+    };
+    return {
+      ...layer,
+      sourceCropTrack: [
+        endpoint(startSec),
+        ...layer.sourceCropTrack
+          .filter((frame) => frame.timeSec > startSec + 0.001 && frame.timeSec < endSec - 0.001)
+          .map((frame) => ({ ...frame, timeSec: frame.timeSec + shiftSec })),
+        endpoint(endSec),
+      ],
+    };
+  });
 }
 
 function addBrollLayers(
@@ -1686,7 +1819,7 @@ function addBrollLayers(
         id: `${baseScene.id}:slice:${scenes.length}`,
         startSec,
         endSec,
-        layers: brollLayer ? [...baseScene.layers, brollLayer] : baseScene.layers,
+        layers: sourceLayersForRange(brollLayer ? [...baseScene.layers, brollLayer] : baseScene.layers, startSec, endSec),
       });
     }
   }
@@ -1889,6 +2022,7 @@ function addInsertedSceneBlocks(
       startSec: startSec + shift,
       endSec: endSec + shift,
       sourceRange: { startSec, endSec },
+      layers: sourceLayersForRange(base.layers, startSec, endSec, shift),
     });
   }
   const insertedScenes: CompositionScene[] = anchored.map(({ block }) => ({
@@ -2664,10 +2798,12 @@ export function planClipComposition(
     segmentsAreComplete(
       splitAvailability.value.segments,
       editedTimeMap.editedDurationSec,
+      CLIP_SPLIT_LAYOUT_MAX_SEGMENTS,
     ) &&
     segmentsAreComplete(
       splitAvailability.value.fallbackSegments,
       editedTimeMap.editedDurationSec,
+      CLIP_SPLIT_LAYOUT_MAX_SEGMENTS,
     )
       ? splitAvailability.value
       : null;
@@ -2705,6 +2841,7 @@ export function planClipComposition(
       segmentsAreComplete(
         screenAvailability.value.faceBand.segments,
         editedTimeMap.editedDurationSec,
+        CLIP_AUTO_LAYOUT_MAX_SEGMENTS,
       ))
       ? screenAvailability.value
       : null;
@@ -3085,50 +3222,12 @@ export function planClipComposition(
             requestedMode,
             effectiveMode: "auto",
             canvas,
-            scenes: segments.map((segment, sceneIndex) => {
-              const defaults = resolveSpeakerLayoutScene(
-                segment,
-                [],
-                target.aspectRatio,
-              );
-              const resolved = resolveSpeakerLayoutScene(
-                segment,
-                input.document.studioEdits.speakerLayoutOverrides,
-                target.aspectRatio,
-              );
-              return {
-                id: `scene:auto:${target.id}:${sceneIndex}`,
-                startSec: segment.startSec,
-                endSec: segment.endSec,
-                layers: resolved.layers.map((transform, layerIndex) => {
-                  const destination = framePixels(transform, target);
-                  return {
-                    id: `layer:speaker:${transform.role}:${target.id}:${sceneIndex}`,
-                    kind: "source-video" as const,
-                    sourceRef: input.source.identity,
-                    sourceCrop: cropForSpeakerLayer(
-                      input.source,
-                      destination,
-                      transform,
-                    ),
-                    destination,
-                    fit: "cover" as const,
-                    rotationDeg: transform.rotationDeg,
-                    opacity: 1,
-                    zIndex: layerIndex,
-                    speaker: {
-                      role: transform.role,
-                      transform: { ...transform },
-                      defaultTransform: {
-                        ...defaults.layers.find(
-                          (candidate) => candidate.role === transform.role,
-                        )!,
-                      },
-                      overrideId: resolved.overrideId,
-                    },
-                  };
-                }),
-              };
+            scenes: speakerScenes({
+              mode: "auto",
+              source: input.source,
+              target,
+              segments,
+              overrides: input.document.studioEdits.speakerLayoutOverrides,
             }),
           };
         }

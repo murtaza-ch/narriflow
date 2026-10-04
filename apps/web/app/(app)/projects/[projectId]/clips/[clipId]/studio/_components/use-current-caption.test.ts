@@ -4,10 +4,9 @@ import type { TranscriptUtterance } from "@narriflow/validators";
 import { getCurrentCaptionState } from "./use-current-caption";
 
 // Vizard-parity Phase B hardening, fix 1: getCurrentCaptionState used to
-// chunk the RAW utterance.words, while the worker's own
-// generateSrtFromSlice/generateAssFromSlice (apps/worker/src/tasks/
-// render-clips.ts) drop fully-deleted words BEFORE chunking. These tests
-// pin the preview's word filtering to the exact same predicate the worker
+// chunk the RAW utterance.words, while the Clip Composition Plan drops
+// fully-deleted words BEFORE chunking. These tests
+// pin the preview's word filtering to the same predicate the planner
 // uses (`sourceRangeToEdited(...) !== null`), so a mid-utterance deletion
 // can't leave the preview showing a deleted word or a chunk boundary that
 // disagrees with what actually gets burned into the export.
@@ -31,12 +30,8 @@ function makeUtterance(words: Array<[string, number, number]>): TranscriptUttera
 }
 
 describe("getCurrentCaptionState — deleted-word filtering (worker fixture parity)", () => {
-  // Mirrors the exact fixture in apps/worker/src/tasks/render-clips.test.ts
-  // (~line 1424): window 0-30, a single cut [10,15), and an utterance whose
-  // middle word falls fully inside that cut. The worker's own test asserts
-  // generateSrtFromSlice emits "before after" (not "before gone after") with
-  // "after" retimed onto the edited timeline at 16s — this test asserts the
-  // STUDIO PREVIEW agrees.
+  // A word wholly inside [10, 15) disappears. The later word moves to 16s
+  // on the edited clock, matching the shared caption cue contract used in export.
   const map = buildEditedTimeMap([{ startSec: 10, endSec: 15 }], { startSec: 0, endSec: 30 });
   const utterance = makeUtterance([
     ["before", 4, 5],

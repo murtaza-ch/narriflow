@@ -90,8 +90,7 @@ const captionOpenSans = Open_Sans({
   preload: false,
 });
 // "Impact" is proprietary, so the worker substitutes Anton for burn-in
-// (apps/worker/src/tasks/render-clips.ts: `Impact: "Anton"`) — mirror that
-// mapping so an "Impact" preset previews as what will actually be exported.
+// through its composition adapter. Use the same family for Studio preview.
 const captionAnton = Anton({
   subsets: ["latin"],
   weight: ["400"],

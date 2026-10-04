@@ -2569,7 +2569,7 @@ export function Timeline() {
                     <Flex
 							key={cutaway.renderId}
                       as="button"
-							aria-label={`${cutaway.manual ? "B-roll" : `Automatic B-roll ${index + 1}`}, ${formatTimecode(cutaway.baseStartSec)} to ${formatTimecode(cutaway.baseEndSec)}`}
+							aria-label={`${cutaway.manual ? "B-roll" : `Automatic B-roll ${index + 1}`}, ${formatTimecode(cutaway.compositeStartSec)} to ${formatTimecode(cutaway.compositeEndSec)}`}
                       title={cutaway.query}
                       position="absolute"
                       top="2px"

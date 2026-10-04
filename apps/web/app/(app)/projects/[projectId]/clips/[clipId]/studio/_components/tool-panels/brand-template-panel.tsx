@@ -29,7 +29,7 @@ const LOGO_POSITIONS: LogoPosition[] = [
 
 /** Mini position picker: a bordered "frame" with a dot at each of the 9
  *  candidate spots, mirroring where the logo will actually sit on the
- *  canvas (buildLogoOverlayPosition in render-clips.ts uses the same
+ *  canvas (the composition FFmpeg adapter's logo placement uses the same
  *  left/center/right x top/mid/bottom split). */
 function LogoPositionPicker({
   value,

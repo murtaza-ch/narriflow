@@ -17,10 +17,8 @@ import type { ClipCategory } from "./clip";
 // --- LLM-cued B-roll placement -------------------------------------------
 
 /**
- * One B-roll cutaway suggestion from the clip-detection LLM call. Optional on
- * the detection response/DB row so existing clips (and any concurrently
- * in-flight schema changes) keep working — see broll.ts/render-clips.ts,
- * which fall back to the keyword query path whenever cues are absent.
+ * One B-roll cutaway suggestion from clip detection. The B-roll task can derive
+ * keyword queries when analysis does not provide these optional suggestions.
  */
 export const brollCueSchema = z.object({
   atSec: z.number().min(0),
@@ -57,10 +55,8 @@ export function pexelsOrientationForAspectRatio(
 
 /**
  * Picks the orientation to search for when a clip renders multiple aspect
- * ratios at once: majority vote across outputs, ties broken toward portrait
- * (the common case for social clips). Previously this was inlined in
- * render-clips.ts as a portrait-vs-landscape binary that silently dropped
- * "square" — a 1:1-only render always resolved to landscape.
+ * ratios at once: majority vote across outputs, ties broken toward portrait.
+ * Square output participates in the vote, including a 1:1-only render.
  */
 export function dominantPexelsOrientation(
   aspectRatios: ClipAspectRatio[],

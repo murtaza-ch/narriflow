@@ -3,6 +3,7 @@ import {
   COMPOSITION_MOTION_VERSION,
   SCENE_CONTINUITY_EPSILON_SEC,
   assertCompositionSceneTextRender,
+  interpolateCompositionCropTrack,
   sampleCompositionMotion,
   type ClipCompositionPlan,
   type ClipCompositionPlanResult,
@@ -425,6 +426,7 @@ export function plannedCompositionVideoStyle(
   source: { width: number; height: number },
   destinationPixels: { width: number; height: number },
   visible: boolean,
+  timeSec?: number,
 ) {
   if (layer.fit === "contain") {
     return {
@@ -436,11 +438,16 @@ export function plannedCompositionVideoStyle(
       display: visible ? "block" : "none",
     };
   }
+  const crop = interpolateCompositionCropTrack(
+    layer.sourceCrop,
+    layer.sourceCropTrack,
+    timeSec ?? layer.sourceCropTrack?.[0]?.timeSec ?? 0,
+  );
   const normalized = {
-    x: layer.sourceCrop.x / source.width,
-    y: layer.sourceCrop.y / source.height,
-    width: layer.sourceCrop.width / source.width,
-    height: layer.sourceCrop.height / source.height,
+    x: crop.x / source.width,
+    y: crop.y / source.height,
+    width: crop.width / source.width,
+    height: crop.height / source.height,
   };
   const width = destinationPixels.width / normalized.width;
   const height = destinationPixels.height / normalized.height;

@@ -6,6 +6,7 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
+  interpolateCompositionCropTrack,
   planClipComposition,
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
@@ -59,7 +60,6 @@ import type { NormalizedCropRect } from "./normalized-crop";
 import {
   activeAutoLayoutSegment,
   resetSpeakerLayerTransform,
-  speakerLayerCropRect,
 } from "./auto-layout-preview";
 import { InteractiveSpeakerLayer } from "./interactive-speaker-layer";
 import {
@@ -98,15 +98,15 @@ import { applyStudioMotionPreview } from "./studio-editing-session";
 const SLOW_LOAD_HINT_MS = 10_000;
 
 /** Absolute-position styles for the 3x3 `LogoPosition` grid, mirroring
- *  `buildLogoOverlayPosition` in render-clips.ts (left/right/center-x,
+ *  logo placement in the composition FFmpeg adapter (left/right/center-x,
  *  top/bottom/center-y) so preview placement matches burn-in. `marginPx` is
  *  in canvas-local pixels (see `LOGO_MARGIN_FRACTION`). */
 function logoPositionStyle(
   position: LogoPosition,
   marginPx: number,
 ): React.CSSProperties {
-  // Mirrors buildLogoOverlayPosition's split("-") parsing: "center" alone
-  // has no second segment, so it falls through both branches below to the
+  // Mirror the FFmpeg adapter's logoOverlayPosition split("-") parsing.
+  // "center" alone has no second segment, so it falls through both branches to the
   // centered default — matching the worker exactly.
   const [vertical, horizontal] = position.split("-");
   const style: React.CSSProperties = { position: "absolute" };
@@ -207,17 +207,8 @@ function explicitCropVideoStyle(
 // centers ~0.438/0.562 — far from the intended left/right seats, and close
 // enough to each other to read as near-duplicate tiles.
 //
-// The fix (cheapest option that's still EXACT, not just closer): `0%` and
-// `100%`. Those two values are defined as "anchor the overflow's start/end
-// edge to the container's start/end edge" — they bypass the `p*(1-r)+r/2`
-// formula entirely (there's no scaling-dependent midpoint to get wrong at
-// the edges). That's also exactly what the render's own `cropXForCenter`
-// produces at ITS clamped extremes (`x=0`, `x=srcWidth-cropW`) for sources
-// too narrow to give the two seats real lateral separation — preview and
-// render agree at the boundary case, and for the common two-shot framing
-// (seats genuinely near the left/right edges of frame) `0%`/`100%` is a
-// reasonable stand-in for a per-shot detected center, same "good enough"
-// preview stance as before.
+// Anchoring to the source's left edge keeps the initial media position stable
+// before the planned layer transform is applied.
 const SPLIT_TOP_TILE_CX = 0;
 
 const PILL_STYLES = {
@@ -1574,18 +1565,19 @@ export function VideoPreview() {
   );
   const plannedMainSourceLayer = plannedSourceLayers[0];
   const autoMainCrop = useMemo(() => {
-    if (!autoMainLayer || !sourceDims) return null;
-    if (plannedMainSourceLayer) {
-      if (!plannedSourceDims) return null;
-      return {
-        x: plannedMainSourceLayer.sourceCrop.x / plannedSourceDims.width,
-        y: plannedMainSourceLayer.sourceCrop.y / plannedSourceDims.height,
-        w: plannedMainSourceLayer.sourceCrop.width / plannedSourceDims.width,
-        h: plannedMainSourceLayer.sourceCrop.height / plannedSourceDims.height,
-      };
-    }
-    return speakerLayerCropRect(autoMainLayer, aspectRatio, sourceDims);
-  }, [autoMainLayer, plannedMainSourceLayer, plannedSourceDims, sourceDims, aspectRatio]);
+    if (!plannedMainSourceLayer || !plannedSourceDims) return null;
+    const crop = interpolateCompositionCropTrack(
+      plannedMainSourceLayer.sourceCrop,
+      plannedMainSourceLayer.sourceCropTrack,
+      currentTime,
+    );
+    return {
+      x: crop.x / plannedSourceDims.width,
+      y: crop.y / plannedSourceDims.height,
+      w: crop.width / plannedSourceDims.width,
+      h: crop.height / plannedSourceDims.height,
+    };
+  }, [plannedMainSourceLayer, plannedSourceDims, currentTime]);
   const secondarySourceLayers = plannedSourceLayers.slice(1);
   const secondarySourceCrops = secondarySourceLayers.map(
     (layer): SplitSecondaryTileCropRect | null => {
@@ -1598,11 +1590,16 @@ export function VideoPreview() {
       ) {
         return null;
       }
+      const crop = interpolateCompositionCropTrack(
+        layer.sourceCrop,
+        layer.sourceCropTrack,
+        currentTime,
+      );
       return {
-        x: layer.sourceCrop.x / plannedSourceDims.width,
-        y: layer.sourceCrop.y / plannedSourceDims.height,
-        w: layer.sourceCrop.width / plannedSourceDims.width,
-        h: layer.sourceCrop.height / plannedSourceDims.height,
+        x: crop.x / plannedSourceDims.width,
+        y: crop.y / plannedSourceDims.height,
+        w: crop.width / plannedSourceDims.width,
+        h: crop.height / plannedSourceDims.height,
         tileWidthPx:
           previewWidth * (layer.destination.width / compositionPreview.canvas.width),
         tileHeightPx:
@@ -1644,6 +1641,7 @@ export function VideoPreview() {
                 (compositionPreview?.canvas.height ?? 1)),
           },
           previewPhase === "ready",
+          currentTime,
         )
       : null;
   const plannedSourceFrameStyle =

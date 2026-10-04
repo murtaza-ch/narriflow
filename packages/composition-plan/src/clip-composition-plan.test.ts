@@ -10,6 +10,7 @@ import {
 } from "@narriflow/validators";
 import {
   automaticLayoutInputFingerprint,
+  interpolateCompositionCropTrack,
   CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
   planClipComposition,
   screenLayoutInputFingerprint,
@@ -74,7 +75,7 @@ describe("Clip Composition Plan", () => {
         assets: { backgroundImage: { state: "missing" } },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v2",
+          automaticSpeakerEngineVersion: "shot-layout-v3",
         },
         targets: [
           {
@@ -175,7 +176,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         {
@@ -288,7 +289,7 @@ describe("Clip Composition Plan", () => {
       source: { identity: "source:censor", kind: "video", width: 1920, height: 1080, hasAudio: true },
       evidence: { automaticLayout: { state: "missing" } },
       assets: { backgroundImage: { state: "missing" } },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v2" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
 
@@ -370,7 +371,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -450,7 +451,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -537,7 +538,7 @@ describe("Clip Composition Plan", () => {
         },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v2",
+          automaticSpeakerEngineVersion: "shot-layout-v3",
         },
         targets: [
           { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -595,7 +596,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -673,7 +674,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -765,7 +766,7 @@ describe("Clip Composition Plan", () => {
       assets,
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -829,7 +830,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "available", ref: "background:one" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -883,7 +884,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -940,7 +941,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -1043,7 +1044,7 @@ describe("Clip Composition Plan", () => {
       source: { identity: "source:scenes", kind: "video", width: 1920, height: 1080 },
       evidence: { automaticLayout: { state: "missing" } },
       assets: { backgroundImage: { state: "missing" } },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v2" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
     expect(result.status).toBe("ready");
@@ -1090,7 +1091,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         {
@@ -1150,7 +1151,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         {
@@ -1210,7 +1211,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         {
@@ -1273,7 +1274,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         {
@@ -1330,7 +1331,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -1420,7 +1421,7 @@ describe("Clip Composition Plan", () => {
         sceneVisuals: { [imageSceneId]: { state: "failed" } },
         sceneFonts: { [textSceneId]: { state: "pending" } },
       },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v2" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
     expect(result.status).toBe("pending");
@@ -1443,7 +1444,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -1530,7 +1531,7 @@ describe("Clip Composition Plan", () => {
     };
     const capabilities = {
       automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v2",
+      automaticSpeakerEngineVersion: "shot-layout-v3",
     };
     const targets = [
       { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -1549,11 +1550,11 @@ describe("Clip Composition Plan", () => {
       clipStartSec: 10,
       clipEndSec: 20,
       deletedRanges: [],
-      engineVersion: "shot-layout-v2",
+      engineVersion: "shot-layout-v3",
     });
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 2,
-      engine: "shot-layout-v2",
+      version: 3,
+      engine: "shot-layout-v3",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 10,
@@ -1598,7 +1599,7 @@ describe("Clip Composition Plan", () => {
           value: {
             sourceIdentity: source.identity,
             inputFingerprint: fingerprint,
-            engineVersion: "shot-layout-v2",
+            engineVersion: "shot-layout-v3",
             analysis,
           },
         },
@@ -1616,7 +1617,7 @@ describe("Clip Composition Plan", () => {
       {
         key: `automatic-speaker-layout:${fingerprint}`,
         kind: "automatic-speaker-layout",
-        engineVersion: "shot-layout-v2",
+        engineVersion: "shot-layout-v3",
       },
     ]);
     expect(missing.plan.targets.map((target) => target.effectiveMode)).toEqual([
@@ -1674,8 +1675,8 @@ describe("Clip Composition Plan", () => {
       deletedRanges: [],
     });
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 2,
-      engine: "shot-layout-v2",
+      version: 3,
+      engine: "shot-layout-v3",
       sourceIdentity: "source:old",
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 0,
@@ -1702,7 +1703,7 @@ describe("Clip Composition Plan", () => {
           value: {
             sourceIdentity: "source:old",
             inputFingerprint: "stale",
-            engineVersion: "shot-layout-v2",
+            engineVersion: "shot-layout-v3",
             analysis,
           },
         },
@@ -1710,7 +1711,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
@@ -1744,7 +1745,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "failed" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
     });
     const disabled = planClipComposition({
@@ -1752,7 +1753,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "disabled" } },
       capabilities: {
         automaticSpeakerLayout: false,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
     });
     const versionMismatch = planClipComposition({
@@ -1767,16 +1768,16 @@ describe("Clip Composition Plan", () => {
               clipStartSec: 0,
               clipEndSec: 5,
               deletedRanges: [],
-              engineVersion: "shot-layout-v2",
+              engineVersion: "shot-layout-v3",
             }),
-            engineVersion: "shot-layout-v2",
+            engineVersion: "shot-layout-v3",
             analysis: { ...analysis, version: 3 } as never,
           },
         },
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
     });
     expect(failed).toMatchObject({
@@ -1855,8 +1856,8 @@ describe("Clip Composition Plan", () => {
       height: 1080,
     };
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 2,
-      engine: "shot-layout-v2",
+      version: 3,
+      engine: "shot-layout-v3",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 0,
@@ -1866,7 +1867,7 @@ describe("Clip Composition Plan", () => {
       sourceWidth: 1920,
       sourceHeight: 1080,
       segments: [
-        { subjects: [{ id: "person-0", cxNorm: 0.25, cyNorm: 0.5, zoom: 1 }, { id: "person-1", cxNorm: 0.75, cyNorm: 0.5, zoom: 1 }],  startSec: 0, endSec: 5, layout: "two-up", topCxNorm: 0.25, bottomCxNorm: 0.75 },
+        { subjects: [{ id: "person-0", cxNorm: 0.25, cyNorm: 0.5, zoom: 1 }, { id: "person-1", cxNorm: 0.75, cyNorm: 0.5, zoom: 1 }], startSec: 0, endSec: 5, layout: "two-up", topCxNorm: 0.25, bottomCxNorm: 0.75, topCropTrack: [{ timeSec: 0, cxNorm: 0.25, cyNorm: 0.5 }, { timeSec: 5, cxNorm: 0.4, cyNorm: 0.5 }], bottomCropTrack: [{ timeSec: 0, cxNorm: 0.75, cyNorm: 0.5 }, { timeSec: 5, cxNorm: 0.6, cyNorm: 0.5 }] },
       ],
       noSplitSegments: [
         { subjects: [{ id: "person-0", cxNorm: 0.5, cyNorm: 0.5, zoom: 1 }],  startSec: 0, endSec: 5, layout: "single", cxNorm: 0.5 },
@@ -1883,7 +1884,7 @@ describe("Clip Composition Plan", () => {
       clipStartSec: 0,
       clipEndSec: 5,
       deletedRanges: [],
-      engineVersion: "shot-layout-v2",
+      engineVersion: "shot-layout-v3",
     });
     const result = planClipComposition({
       document,
@@ -1894,7 +1895,7 @@ describe("Clip Composition Plan", () => {
           value: {
             sourceIdentity: source.identity,
             inputFingerprint,
-            engineVersion: "shot-layout-v2",
+            engineVersion: "shot-layout-v3",
             analysis,
           },
         },
@@ -1902,7 +1903,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
@@ -1917,6 +1918,9 @@ describe("Clip Composition Plan", () => {
         defaultTransform: { frameX: 0, frameWidth: 1, cropZoom: 1 },
       },
     });
+    const topLayer = result.plan.targets[0]?.scenes[0]?.layers[0];
+    if (topLayer?.kind !== "source-video") throw new Error("expected source layer");
+    expect(topLayer.sourceCropTrack).toBeUndefined();
     expect(Object.isFrozen(document.studioEdits.speakerLayoutOverrides[0])).toBe(false);
     expect(Object.isFrozen(document.studioEdits.speakerLayoutOverrides[0]?.layers[0])).toBe(false);
   });
@@ -1929,7 +1933,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
     };
     const target = { id: "one", aspectRatio: "9:16" as const, width: 1080, height: 1920 };
@@ -1967,7 +1971,7 @@ describe("Clip Composition Plan", () => {
         assets: { backgroundImage: { state: "missing" } },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v2",
+          automaticSpeakerEngineVersion: "shot-layout-v3",
         },
         targets,
       });
@@ -2010,7 +2014,7 @@ describe("Clip Composition Plan", () => {
         assets: { backgroundImage: { state: "failed" } },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v2",
+          automaticSpeakerEngineVersion: "shot-layout-v3",
         },
         targets,
       });
@@ -2046,7 +2050,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
@@ -2081,10 +2085,10 @@ describe("Clip Composition Plan", () => {
         { startSec: 4, endSec: 5 },
         { startSec: 7, endSec: 8 },
       ],
-      engineVersion: "shot-layout-v2",
+      engineVersion: "shot-layout-v3",
     });
     const reordered = automaticLayoutInputFingerprint({
-      engineVersion: "shot-layout-v2",
+      engineVersion: "shot-layout-v3",
       deletedRanges: [
         { startSec: 7, endSec: 8 },
         { startSec: 4, endSec: 5 },
@@ -2097,12 +2101,12 @@ describe("Clip Composition Plan", () => {
     expect(reordered).toBe(first);
   });
 
-  test("keeps the validated 64-scene, four-target Automatic boundary bounded", () => {
+  test("keeps the validated 128-scene tracked two-up, four-target Automatic boundary bounded", () => {
     const startedAt = performance.now();
     const document = editorDocumentSchema.parse({
     version: 2,
       clipStartSec: 0,
-      clipEndSec: 64,
+      clipEndSec: 128,
       captionPreset: captionPresetSchema.parse({}),
       transcriptSlice: [],
       studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
@@ -2115,78 +2119,82 @@ describe("Clip Composition Plan", () => {
       width: 1920,
       height: 1080,
     };
-    const segments = Array.from({ length: 64 }, (_, index) => ({ subjects: [{ id: "person-0", cxNorm: 0.25, cyNorm: 0.5, zoom: 1 }, { id: "person-1", cxNorm: 0.75, cyNorm: 0.5, zoom: 1 }],
+    const segments = Array.from({ length: 128 }, (_, index) => ({ subjects: [{ id: "person-0", cxNorm: 0.25, cyNorm: 0.5, zoom: 1 }, { id: "person-1", cxNorm: 0.75, cyNorm: 0.5, zoom: 1 }],
       startSec: index,
       endSec: index + 1,
       layout: "two-up" as const,
       topCxNorm: 0.25,
       bottomCxNorm: 0.75,
+      topCropTrack: [{ timeSec: index, cxNorm: 0.25, cyNorm: 0.5 }, { timeSec: index + 1, cxNorm: 0.3, cyNorm: 0.5 }],
+      bottomCropTrack: [{ timeSec: index, cxNorm: 0.75, cyNorm: 0.5 }, { timeSec: index + 1, cxNorm: 0.7, cyNorm: 0.5 }],
     }));
-    const noSplitSegments = Array.from({ length: 64 }, (_, index) => ({ subjects: [{ id: "person-0", cxNorm: 0.5, cyNorm: 0.5, zoom: 1 }],
+    const noSplitSegments = Array.from({ length: 128 }, (_, index) => ({ subjects: [{ id: "person-0", cxNorm: 0.5, cyNorm: 0.5, zoom: 1 }],
       startSec: index,
       endSec: index + 1,
       layout: "single" as const,
       cxNorm: 0.5,
+      cropTrack: [{ timeSec: index, cxNorm: 0.5, cyNorm: 0.5 }, { timeSec: index + 1, cxNorm: 0.55, cyNorm: 0.5 }],
     }));
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 2,
-      engine: "shot-layout-v2",
+      version: 3,
+      engine: "shot-layout-v3",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 0,
-      clipEndSec: 64,
+      clipEndSec: 128,
       deletedRanges: [],
-      editedDurationSec: 64,
+      editedDurationSec: 128,
       sourceWidth: 960,
       sourceHeight: 540,
       segments,
       noSplitSegments,
-      shotCount: 64,
+      shotCount: 128,
       soloShotCount: 0,
-      multiShotCount: 64,
-      twoUpSegmentCount: 64,
+      multiShotCount: 128,
+      twoUpSegmentCount: 128,
       speakerCount: 2,
       mappedSpeakerCount: 2,
     });
     const inputFingerprint = automaticLayoutInputFingerprint({
       sourceIdentity: source.identity,
       clipStartSec: 0,
-      clipEndSec: 64,
+      clipEndSec: 128,
       deletedRanges: [],
-      engineVersion: "shot-layout-v2",
+      engineVersion: "shot-layout-v3",
     });
-    const result = planClipComposition({
+    const input = {
       document,
       source,
       evidence: {
         automaticLayout: {
-          state: "available",
+          state: "available" as const,
           value: {
             sourceIdentity: source.identity,
             inputFingerprint,
-            engineVersion: "shot-layout-v2",
+            engineVersion: "shot-layout-v3",
             analysis,
           },
         },
       },
-      assets: { backgroundImage: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
-        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
-        { id: "square", aspectRatio: "1:1", width: 1080, height: 1080 },
-        { id: "landscape", aspectRatio: "16:9", width: 1920, height: 1080 },
-        { id: "portrait", aspectRatio: "4:5", width: 1080, height: 1350 },
+        { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+        { id: "square", aspectRatio: "1:1" as const, width: 1080, height: 1080 },
+        { id: "landscape", aspectRatio: "16:9" as const, width: 1920, height: 1080 },
+        { id: "portrait", aspectRatio: "4:5" as const, width: 1080, height: 1350 },
       ],
-    });
+    };
+    const result = planClipComposition(input);
 
     expect(result.status).toBe("ready");
     expect(performance.now() - startedAt).toBeLessThan(1_000);
     if (result.status === "invalid") throw new Error(result.error.code);
     expect(result.plan.targets.map((target) => target.scenes.length)).toEqual([
-      64, 64, 64, 64,
+      128, 128, 128, 128,
     ]);
     expect(new TextEncoder().encode(JSON.stringify(result.plan)).byteLength).toBeLessThanOrEqual(
       CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
@@ -2200,6 +2208,85 @@ describe("Clip Composition Plan", () => {
       return transition;
     });
     expect(compiledMotionTargets).toHaveLength(4);
+    const track = (index: number, center: number) => Array.from({ length: 48 }, (_, key) => ({
+      timeSec: index + key / 47,
+      cxNorm: center + Math.sin(key) * 0.03,
+      cyNorm: 0.5,
+    }));
+    const maximalAnalysis = clipAutoLayoutAnalysisSchema.parse({
+      ...analysis,
+      segments: segments.map((segment, index) => ({ ...segment, topCropTrack: track(index, 0.25), bottomCropTrack: track(index, 0.75) })),
+      noSplitSegments: noSplitSegments.map((segment, index) => ({ ...segment, cropTrack: track(index, 0.5) })),
+    });
+    const oversized = planClipComposition({
+      ...input,
+      evidence: { automaticLayout: { ...input.evidence.automaticLayout, value: { ...input.evidence.automaticLayout.value, analysis: maximalAnalysis } } },
+    });
+    expect(oversized).toEqual({ status: "invalid", error: { code: "plan_size_exceeded" } });
+  });
+
+  test("clips and shifts tracked crops for opening, middle, and closing inserts after source cuts", () => {
+    const source = { identity: "source:insert-tracks", kind: "video" as const, width: 1920, height: 1080 };
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(), clipStartSec: 0, clipEndSec: 8,
+      deletedRanges: [{ startSec: 3, endSec: 5 }],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
+    });
+    const analysis = clipAutoLayoutAnalysisSchema.parse({
+      version: 3, engine: "shot-layout-v3", sourceIdentity: source.identity,
+      analyzedAtISO: "2026-10-04T00:00:00.000Z", clipStartSec: 0, clipEndSec: 8,
+      deletedRanges: document.deletedRanges, editedDurationSec: 6, sourceWidth: 1920, sourceHeight: 1080,
+      segments: [{ startSec: 0, endSec: 6, layout: "single", cxNorm: 0.3, cyNorm: 0.5, zoom: 1.1,
+        subjects: [{ id: "speaker", cxNorm: 0.3, cyNorm: 0.5, zoom: 1.1 }],
+        cropTrack: [{ timeSec: 0, cxNorm: 0.3, cyNorm: 0.5 }, { timeSec: 6, cxNorm: 0.7, cyNorm: 0.5 }],
+      }],
+      noSplitSegments: [{ startSec: 0, endSec: 6, layout: "single", cxNorm: 0.3, cyNorm: 0.5, zoom: 1.1,
+        subjects: [{ id: "speaker", cxNorm: 0.3, cyNorm: 0.5, zoom: 1.1 }],
+        cropTrack: [{ timeSec: 0, cxNorm: 0.3, cyNorm: 0.5 }, { timeSec: 6, cxNorm: 0.7, cyNorm: 0.5 }],
+      }],
+      shotCount: 1, soloShotCount: 1, multiShotCount: 0, twoUpSegmentCount: 0, speakerCount: 1, mappedSpeakerCount: 1,
+    });
+    const input = {
+      document, source,
+      evidence: { automaticLayout: { state: "available" as const, value: {
+        sourceIdentity: source.identity,
+        inputFingerprint: automaticLayoutInputFingerprint({ sourceIdentity: source.identity, clipStartSec: 0, clipEndSec: 8, deletedRanges: document.deletedRanges, engineVersion: "shot-layout-v3" }),
+        engineVersion: "shot-layout-v3", analysis,
+      } } },
+      assets: { backgroundImage: { state: "missing" as const } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
+      targets: [{ id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 }],
+    };
+    const base = planClipComposition(input);
+    const broll = planClipComposition({ ...input, assets: { ...input.assets, broll: { state: "available", placements: [{ id: "cutaway", ref: "asset:cutaway", kind: "image", startSec: 2, endSec: 4 }] } } });
+    if (broll.status === "invalid") throw new Error("expected tracked B-roll plan");
+    for (const scene of broll.plan.targets[0]!.scenes) {
+      const layer = scene.layers.find(layer => layer.kind === "source-video")!;
+      if (layer.kind !== "source-video") throw new Error("expected tracked source");
+      expect(layer.sourceCropTrack!.map(frame => frame.timeSec)).toEqual([scene.startSec, scene.endSec]);
+    }
+    const sceneBlocks = [[0, 1], [3, 2], [8, 1]].map(([anchorSec, durationSec], index) => ({
+      schemaVersion: 1, id: `10000000-0000-4000-8000-00000000000${index + 1}`, anchorSec, durationSec,
+      content: { kind: "color", color: "#000000" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null,
+    }));
+    const inserted = planClipComposition({ ...input, document: editorDocumentSchema.parse({ ...document, sceneBlocks }) });
+    if (base.status === "invalid" || inserted.status === "invalid") throw new Error("expected tracked plans");
+    expect(inserted.plan.editedDurationSec).toBe(10);
+    const original = base.plan.targets[0]!.scenes[0]!.layers.find(layer => layer.kind === "source-video")!;
+    if (original.kind !== "source-video") throw new Error("expected source video");
+    const fragments = inserted.plan.targets[0]!.scenes.filter(scene => scene.sourceRange !== null);
+    expect(fragments.map(scene => [scene.startSec, scene.endSec])).toEqual([[1, 3], [5, 8], [9, 10]]);
+    for (const scene of fragments) {
+      const layer = scene.layers.find(layer => layer.kind === "source-video")!;
+      if (layer.kind !== "source-video") throw new Error("expected tracked source");
+      expect(layer.sourceCropTrack!.map(frame => frame.timeSec)).toEqual([scene.startSec, scene.endSec]);
+      for (const timeSec of [scene.startSec, (scene.startSec + scene.endSec) / 2, scene.endSec]) {
+        const expected = interpolateCompositionCropTrack(original.sourceCrop, original.sourceCropTrack, scene.sourceRange!.startSec + timeSec - scene.startSec);
+        const actual = interpolateCompositionCropTrack(layer.sourceCrop, layer.sourceCropTrack, timeSec);
+        expect(Math.abs(actual.x - expected.x)).toBeLessThanOrEqual(1);
+        expect(actual.width).toBe(expected.width);
+      }
+    }
   });
 
   test("plans explicit Split scenes per target with distinct crops and encodable 4:5 tiles", () => {
@@ -2263,7 +2350,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
         explicitSplitLayout: true,
         splitEngineVersion: engineVersion,
       },
@@ -2351,7 +2438,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
         screenLayout: true,
         screenEngineVersion: engineVersion,
       },
@@ -2531,7 +2618,7 @@ describe("Clip Composition Plan", () => {
         assets: { backgroundImage: { state: "missing" as const } },
         capabilities: {
           automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v2",
+          automaticSpeakerEngineVersion: "shot-layout-v3",
           explicitSplitLayout: true,
           splitEngineVersion: engineVersion,
         },
@@ -2603,7 +2690,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
         screenLayout: true,
         screenEngineVersion: engineVersion,
       },
@@ -2640,7 +2727,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
         explicitSplitLayout: true,
         splitEngineVersion: engineVersion,
       },
@@ -2742,7 +2829,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
         screenLayout: true,
         screenEngineVersion: engineVersion,
       },
@@ -2850,7 +2937,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -2919,7 +3006,7 @@ describe("Clip Composition Plan", () => {
           placements: [{ id: "generated-1", ref: "visual_asset:still", kind: "image", startSec: 2, endSec: 6 }],
         },
       },
-      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v2" },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v3" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
 
@@ -2950,8 +3037,8 @@ describe("Clip Composition Plan", () => {
       height: 1080,
     };
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 2,
-      engine: "shot-layout-v2",
+      version: 3,
+      engine: "shot-layout-v3",
       sourceIdentity: source.identity,
       clipStartSec: 0,
       clipEndSec: 8,
@@ -2984,9 +3071,9 @@ describe("Clip Composition Plan", () => {
           clipStartSec: 0,
           clipEndSec: 8,
           deletedRanges: [],
-          engineVersion: "shot-layout-v2",
+          engineVersion: "shot-layout-v3",
         }),
-        engineVersion: "shot-layout-v2",
+        engineVersion: "shot-layout-v3",
         analysis,
       },
     };
@@ -3003,7 +3090,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
         explicitSplitLayout: true,
         splitEngineVersion: "explicit-split-v1",
       },
@@ -3063,7 +3150,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -3145,7 +3232,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "missing" as const } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         {
@@ -3321,7 +3408,7 @@ describe("Clip Composition Plan", () => {
       },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
         screenLayout: true,
         screenEngineVersion: "screen-layout-v2",
       },
@@ -3336,8 +3423,8 @@ describe("Clip Composition Plan", () => {
     ]);
 
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 2,
-      engine: "shot-layout-v2",
+      version: 3,
+      engine: "shot-layout-v3",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-09-13T00:00:00.000Z",
       clipStartSec: 0,
@@ -3370,9 +3457,9 @@ describe("Clip Composition Plan", () => {
               clipStartSec: 0,
               clipEndSec: 10,
               deletedRanges: [],
-              engineVersion: "shot-layout-v2",
+              engineVersion: "shot-layout-v3",
             }),
-            engineVersion: "shot-layout-v2",
+            engineVersion: "shot-layout-v3",
             analysis,
           },
         },
@@ -3381,7 +3468,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
         screenLayout: true,
         screenEngineVersion: "screen-layout-v2",
       },
@@ -3475,8 +3562,8 @@ describe("Clip Composition Plan", () => {
       deletedRanges: [],
     });
     const analysis = clipAutoLayoutAnalysisSchema.parse({
-      version: 2,
-      engine: "shot-layout-v2",
+      version: 3,
+      engine: "shot-layout-v3",
       sourceIdentity: source.identity,
       analyzedAtISO: "2026-09-13T00:00:00.000Z",
       clipStartSec: 0,
@@ -3511,7 +3598,7 @@ describe("Clip Composition Plan", () => {
       clipStartSec: 0,
       clipEndSec: 10,
       deletedRanges: [],
-      engineVersion: "shot-layout-v2",
+      engineVersion: "shot-layout-v3",
     });
     const result = planClipComposition({
       document,
@@ -3522,7 +3609,7 @@ describe("Clip Composition Plan", () => {
           value: {
             sourceIdentity: source.identity,
             inputFingerprint: fingerprint,
-            engineVersion: "shot-layout-v2",
+            engineVersion: "shot-layout-v3",
             analysis,
           },
         },
@@ -3530,7 +3617,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "horizontal", aspectRatio: "16:9", width: 1920, height: 1080 },
@@ -3616,7 +3703,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "available", ref: "background:stale" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -3671,7 +3758,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "available", ref: "background:stale" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
@@ -3720,7 +3807,7 @@ describe("Clip Composition Plan", () => {
       assets: { backgroundImage: { state: "missing" } },
       capabilities: {
         automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v2",
+        automaticSpeakerEngineVersion: "shot-layout-v3",
       },
       targets: [
         { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },

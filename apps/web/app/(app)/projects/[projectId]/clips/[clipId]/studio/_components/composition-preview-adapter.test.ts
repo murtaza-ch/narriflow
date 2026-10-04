@@ -771,6 +771,26 @@ describe("composition preview adapter", () => {
     });
   });
 
+  test("samples the same automatic crop track at the requested preview time", () => {
+    const layer = centerPlan().targets[0]!.scenes[0]!.layers[0]!;
+    if (layer.kind !== "source-video") throw new Error("expected source layer");
+    const style = plannedCompositionVideoStyle(
+      {
+        ...layer,
+        sourceCrop: { x: 0, y: 0, width: 960, height: 1080 },
+        sourceCropTrack: [
+          { x: 0, y: 0, width: 960, height: 1080, timeSec: 0 },
+          { x: 480, y: 0, width: 960, height: 1080, timeSec: 4 },
+        ],
+      },
+      { width: 1920, height: 1080 },
+      { width: 540, height: 607.5 },
+      true,
+      2,
+    );
+    expect(style).toMatchObject({ left: "-135px", width: "1080px" });
+  });
+
   test("mounts the secondary tile only for a two-layer planned scene", () => {
     const single = adoptCompositionPreview(centerPlan(), "9:16", 0);
     const splitSingle = {

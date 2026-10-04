@@ -31,8 +31,8 @@ export interface EffectiveLogoSettings {
  *    that predate this field) behaves exactly like the all-null default:
  *    enabled, fully inheriting the snapshot.
  *
- * Pure and shared verbatim by the worker (burn-in, render-clips.ts) and the
- * studio preview overlay (video-preview.tsx) so the two can never fork.
+ * Shared by the Clip Render Attempt and the Studio preview overlay
+ * so export and preview resolve the same settings.
  */
 export function resolveEffectiveLogoSettings(
   snapshot: LogoSnapshotSettings,

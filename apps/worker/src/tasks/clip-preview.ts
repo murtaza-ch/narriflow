@@ -9,8 +9,8 @@
  * Audio-only sources (podcast MP3/WAV/M4A — a first-class Narriflow source
  * type, not an edge case) get an "audiogram" proxy instead of no proxy at
  * all: an animated ffmpeg `showwaves` waveform over a solid background,
- * mirroring the treatment render-clips.ts's `buildAudiogramArgs` gives the
- * real render, but capped at 540p with no burned-in captions (the studio
+ * matching the Clip Composition Plan's audiogram presentation, but capped
+ * at 540p with no burned-in captions (the studio
  * overlays captions in HTML at preview time). These clips must never be
  * left with nothing to preview — that's worse than the pre-proxy
  * full-source-streaming behaviour this feature exists to replace. Telling
@@ -24,7 +24,7 @@
  * workflow-run machinery — a proxy is either present or it isn't, there's
  * no "run" to track.
  *
- * See apps/worker/src/tasks/render-clips.ts / broll.ts for the house style
+ * See apps/worker/src/tasks/clip-render-attempt.ts / broll.ts for the house style
  * this mirrors (structured logs, small env-overridable encode knobs,
  * `-ss` before `-i` for a fast seek, per-item try/catch so one bad clip
  * never fails the batch).
@@ -33,7 +33,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
-  clipService,
+  getLayoutEvidenceLifecycle,
   deleteObject,
   derivePeaksStorageKey,
   presignDownloadUrl,
@@ -45,7 +45,7 @@ import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import type { CaptionPreset } from "@narriflow/validators";
 import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
 
-type ClipPendingPreview = Awaited<ReturnType<typeof clipService.getClipsNeedingPreview>>[number];
+import type { ClipPendingPreview } from "@narriflow/services";
 
 function log(level: "info" | "warn" | "error", message: string, context?: Record<string, unknown>) {
   // Structured logs per CLAUDE.md: console.warn(JSON.stringify({level,message,...ctx})).
@@ -60,10 +60,8 @@ function log(level: "info" | "warn" | "error", message: string, context?: Record
 }
 
 // ─── Env-overridable encode knobs ──────────────────────────────────────────
-// Small, cheap-to-tune constants (mirrors render-clips.ts's WORKER_X264_*
-// pattern) — kept local to this file since render-clips.ts's own helpers
-// aren't exported and its own knobs target the full-quality render, not a
-// throwaway preview.
+// Preview-specific encode settings stay local to this task. Full-quality
+// export uses the Clip Render Attempt's render configuration.
 
 const DEFAULT_PREVIEW_BATCH_SIZE = 5;
 const DEFAULT_PREVIEW_PADDING_SEC = 4;
@@ -75,10 +73,8 @@ const DEFAULT_PREVIEW_X264_CRF = "30";
 const DEFAULT_PREVIEW_AUDIO_BITRATE = "64k";
 // A preview cut now runs on its own poll loop rather than inside the shared
 // I/O mutex (see index.ts), but it can still race a full clip render for
-// CPU on the same box — render-clips.ts's own comment measured that ffmpeg
-// already saturates all cores per job, so an uncapped preview encode would
-// contend with an in-progress render. Two threads keeps a ~4-45s preview cut
-// fast without meaningfully starving a render.
+// CPU on the same box. Cap preview encoding at two threads to limit
+// contention with full-quality export.
 const DEFAULT_PREVIEW_X264_THREADS = "2";
 
 /** Presign lifetime for the streamed source. Kept generous even though each
@@ -385,8 +381,8 @@ export function previewTimeToSourceTime(
 }
 
 /**
- * Mirrors how render outputs are keyed (`projects/<id>/renders/<clipId>/...`
- * in render-clips.ts) under a clearly-separate `previews` namespace —
+ * Uses a separate `previews` namespace from the Clip Render Attempt's
+ * `projects/<id>/renders/<clipId>/...` output keys —
  * deliberately **attempt-unique**, never derivable from just `(projectId,
  * clipId)`.
  *
@@ -468,8 +464,7 @@ export function buildClipPreviewArgs(params: {
     params.x264Preset ?? previewX264Preset(),
     "-crf",
     params.x264Crf ?? previewX264Crf(),
-    // Capped so a preview cut can't saturate the box while a full render
-    // (which already uses every core — see render-clips.ts) is in progress.
+    // Bound preview CPU use while full-quality export is in progress.
     "-threads",
     params.x264Threads ?? previewX264Threads(),
     "-pix_fmt",
@@ -495,9 +490,8 @@ export function buildClipPreviewArgs(params: {
     args.push("-an");
   }
 
-  // Explicit output-duration bound (belt-and-suspenders, matches
-  // render-clips.ts's own convention) — whatever the input read did, the
-  // encoded output can never exceed the requested window.
+  // Bound the encoded output to the requested preview window even if the
+  // source input lasts longer.
   args.push(
     "-t",
     params.windowDurationSec.toFixed(3),
@@ -514,15 +508,13 @@ export function buildClipPreviewArgs(params: {
 // ─── Audio-only ("audiogram") preview path ─────────────────────────────────
 // Podcast/audio sources have no video frame to cut+scale, so instead of
 // leaving them with no preview at all (the pre-existing behaviour), this
-// mirrors render-clips.ts's `buildAudiogramArgs` treatment for the real
-// render: an animated waveform over a solid background. Kept deliberately
+// matches the Clip Composition Plan's audiogram presentation: an animated
+// waveform over a solid background. Kept deliberately
 // cheaper than the render — this file's own 540p-equivalent encode knobs,
 // and no burned-in captions/text-layers/transitions/music (all real-render-
 // only concerns; the studio overlays captions in HTML at preview time).
 
-/** #RRGGBB -> 0xRRGGBB for the ffmpeg `color`/`showwaves` filters. Mirrors
- *  render-clips.ts's private helper of the same name (not exported there,
- *  so duplicated here — see this file's header). */
+/** #RRGGBB -> 0xRRGGBB for the preview's ffmpeg `color`/`showwaves` filters. */
 function hexToFfmpegRgb(hex: string): string {
   return `0x${hex.replace("#", "").slice(0, 6)}`;
 }
@@ -555,8 +547,8 @@ export function audiogramPreviewDimensions(
 /**
  * Builds the ffmpeg args for one audio-only clip's preview: an animated
  * `showwaves` waveform, colored from the caption preset's highlight color
- * exactly like render-clips.ts's `buildAudiogramArgs` (falling back to the
- * same schema-derived default when no preset is available), composited
+ * like the Clip Composition Plan's audiogram layer, with the schema default
+ * when no preset is available. It is composited
  * over a solid background at a fixed 16:9 canvas. Same fast `-ss`-before-
  * `-i` seek and padded-window semantics as {@link buildClipPreviewArgs} —
  * callers pass the identical `computeClipPreviewWindow` output.
@@ -574,10 +566,7 @@ export function buildAudiogramPreviewArgs(params: {
   x264Threads?: string;
 }): string[] {
   const { width: W, height: H } = audiogramPreviewDimensions(params.maxHeight);
-  // Matches render-clips.ts's buildAudiogramArgs background color exactly,
-  // to keep the preview in visual lockstep with the real render. Not
-  // exported there (a local literal inside that function), so duplicated
-  // rather than imported.
+  // Match the background color of the Clip Composition Plan's audiogram layer.
   const bgColor = "0x0F172A";
   const waveColor = hexToFfmpegRgb(
     params.captionPreset?.highlightColor ?? DEFAULT_CAPTION_PRESET.highlightColor,
@@ -935,7 +924,7 @@ async function cutAndUploadClipPreview(params: {
     peaksKey = persisted ? candidatePeaksKey : null;
   }
 
-  const result = await clipService.completeClipPreview(clip.id, {
+  const result = await getLayoutEvidenceLifecycle().completePreview(clip.id, {
     storageKey: key,
     startSec: window.startSec,
     durationSec: window.durationSec,
@@ -947,6 +936,7 @@ async function cutAndUploadClipPreview(params: {
     // stale attempt instead of persisting a proxy for the wrong window.
     expectedClipStartSec: clip.startSec,
     expectedClipEndSec: clip.endSec,
+    expectedEditorRevision: clip.editorRevision,
   });
 
   if (!result.persisted) {
@@ -998,7 +988,7 @@ export async function processPendingClipPreviews(
   // broken top-ranked clips would fill the batch every tick and nothing below
   // them would ever be attempted.
   const nowMs = Date.now();
-  const pool = await clipService.getClipsNeedingPreview(
+  const pool = await getLayoutEvidenceLifecycle().listPendingPreviews(
     previewCandidatePoolSize(),
   );
   const eligible = pool.filter(

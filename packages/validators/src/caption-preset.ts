@@ -92,9 +92,9 @@ const TRAILING_CAPTION_PUNCT_RE = new RegExp(
 
 /**
  * Shared pure helper — the ONE place caption cue text is formatted for
- * punctuation display, consumed by BOTH the worker's SRT/ASS builders
- * (`render-clips.ts`) and the studio preview (`caption-style-engine.tsx`'s
- * `CaptionCue`) so preview and burn-in can never fork. When `punctuation` is
+ * punctuation display, consumed by Clip Composition Plan caption cues and the
+ * studio preview (`caption-style-engine.tsx`'s `CaptionCue`) so preview and
+ * burn-in can never fork. When `punctuation` is
  * false, strips leading/trailing punctuation from the token while preserving
  * intra-word apostrophes/hyphens; a token that is pure punctuation (e.g.
  * "...") collapses to `""` — callers (cue builders) must skip empty tokens

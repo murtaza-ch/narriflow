@@ -1906,6 +1906,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 
   private seekPlayback(editedTimeSec: number): void {
+    const wasPlayingInsertedScene = this.playback.state === "playing" && this.insertedSceneId !== null;
     this.clearInsertedScenePlayback();
     const bounded = Number.isFinite(editedTimeSec)
       ? Math.max(0, Math.min(this.compositeDurationFor(this.unified.doc.present), editedTimeSec))
@@ -1913,12 +1914,16 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     this.playbackSourceTimeSec = this.sourceAnchorForEditedTime(bounded);
     this.pendingCompositeSeekTimeSec = bounded;
     this.replacePlayback({ editedTimeSec: bounded });
+    if (this.playback.state === "playing" && this.startInsertedSceneAt(bounded)) return;
     if (this.mediaAssetKey) {
       this.dependencies?.media?.command({
         type: "seek",
         binding: this.playback.mediaBinding,
         mediaTimeSec: this.playbackSourceTimeSec - this.mediaOffsetSec,
       });
+      if (wasPlayingInsertedScene) {
+        this.dependencies?.media?.command({ type: "play", binding: this.playback.mediaBinding });
+      }
     }
   }
 
@@ -2113,8 +2118,9 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         this.replacePlayback({ state: "paused" });
         break;
       case "ended":
-        this.parkPlaybackAtEnd();
-        break;
+        if (this.insertedSceneId) return;
+        this.projectMediaTime(this.playbackMap.clipEndSec - this.mediaOffsetSec);
+        return;
       case "seeked":
         this.pendingMediaSeekSourceSec = null;
         this.projectMediaTime(event.mediaTimeSec);
@@ -2128,13 +2134,15 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
 
   private projectMediaTime(mediaTimeSec: number): void {
     if (this.insertedSceneId) return;
-    const sourceTimeSec = mediaTimeSec + this.mediaOffsetSec;
-    const step = stepRipple(this.playbackMap, sourceTimeSec);
-    if (step.atEnd) {
-      this.parkPlaybackAtEnd();
-      this.publish();
+    // Every instant inside an inserted Scene shares one source anchor. A
+    // paused composite seek remains authoritative after media acknowledgments;
+    // projecting that anchor would jump directly to the end of the insertion.
+    if (this.playback.state === "paused" && this.insertedSceneAt(this.playback.editedTimeSec)) {
+      this.pendingCompositeSeekTimeSec = null;
       return;
     }
+    const sourceTimeSec = mediaTimeSec + this.mediaOffsetSec;
+    const step = stepRipple(this.playbackMap, sourceTimeSec);
     if (step.skipToSourceSec !== undefined) {
       this.playbackSourceTimeSec = step.skipToSourceSec;
       if (
@@ -2168,6 +2176,11 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         return;
       }
     }
+    if (step.atEnd) {
+      this.parkPlaybackAtEnd();
+      this.publish();
+      return;
+    }
     this.replacePlayback({
       editedTimeSec: pendingComposite ?? baseEditedToComposite(this.unified.doc.present, step.editedTime),
     });
@@ -2194,15 +2207,12 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 
   private sourceAnchorForEditedTime(editedTimeSec: number): number {
-    const durationSec = this.compositeDurationFor(this.unified.doc.present);
-    const anchoredEditedTimeSec =
-      durationSec > 0 && editedTimeSec >= durationSec
-        ? Math.max(0, durationSec - 0.001)
-        : editedTimeSec;
-    return editedToSource(
-      this.playbackMap,
-      compositeToBaseEdited(this.unified.doc.present, anchoredEditedTimeSec),
-    );
+    const baseTimeSec = compositeToBaseEdited(this.unified.doc.present, editedTimeSec);
+    const baseDurationSec = this.playbackMap.editedDurationSec;
+    const anchoredBaseTimeSec = baseDurationSec > 0 && baseTimeSec >= baseDurationSec
+      ? Math.max(0, baseDurationSec - 0.001)
+      : baseTimeSec;
+    return editedToSource(this.playbackMap, anchoredBaseTimeSec);
   }
 
   private insertedSceneAt(editedTimeSec: number) {
@@ -2218,11 +2228,14 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     const entry = this.insertedSceneAt(editedTimeSec);
     if (!dependencies || !entry || this.playback.state !== "playing") return false;
     this.clearInsertedScenePlayback();
+    // The virtual Scene clock now owns the requested composite position.
+    // A delayed source acknowledgment after it finishes must not restore it.
+    this.pendingCompositeSeekTimeSec = null;
     const bounded = Math.max(entry.scene.anchorSec, editedTimeSec);
     this.insertedSceneId = entry.scene.id;
     this.insertedSceneTimerStartedAt = dependencies.runtime.now();
     this.insertedSceneTimerStartSec = bounded;
-    this.playbackSourceTimeSec = editedToSource(this.playbackMap, entry.baseAnchorSec);
+    this.playbackSourceTimeSec = this.sourceAnchorForEditedTime(bounded);
     this.replacePlayback({ editedTimeSec: bounded });
     if (this.mediaAssetKey) {
       dependencies.media?.command({ type: "pause", binding: this.playback.mediaBinding });
@@ -2275,8 +2288,13 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
     this.clearInsertedScenePlayback();
     this.replacePlayback({ editedTimeSec: endTime });
-    this.playbackSourceTimeSec = editedToSource(this.playbackMap, entry.baseAnchorSec);
+    this.playbackSourceTimeSec = this.sourceAnchorForEditedTime(endTime);
     if (this.startInsertedSceneAt(endTime)) return;
+    if (endTime >= this.compositeDurationFor(this.unified.doc.present) - 0.0005) {
+      this.parkPlaybackAtEnd();
+      this.publish();
+      return;
+    }
     if (this.mediaAssetKey) {
       dependencies.media?.command({
         type: "seek",

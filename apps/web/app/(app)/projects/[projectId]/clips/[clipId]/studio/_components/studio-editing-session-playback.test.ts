@@ -96,8 +96,8 @@ function makeSession(
   media: InMemoryMediaAdapter,
   ownership: "writer" | "reader" = "writer",
   runtime = new ManualRuntime(),
+  document = makeDocument(),
 ) {
-  const document = makeDocument();
   return createStudioEditingSession(
     {
       projectId: "project",
@@ -135,6 +135,20 @@ function makeSession(
       media,
     },
   );
+}
+
+function insertedSceneDocument(): EditorDocument {
+  const document = makeDocument();
+  document.sceneBlocks = [{
+    id: "8b16c1ce-6aaa-4fe0-88f2-6528a9193df1",
+    schemaVersion: 1,
+    anchorSec: 4.414,
+    durationSec: 3,
+    content: { kind: "text", text: "Timing verification", color: "#FFFFFF", fontFamily: "Archivo", fontAsset: null, backgroundColor: "#111827" },
+    motion: { entrance: "fade", exit: "fade", durationSec: 0.5 },
+    templateSnapshot: null,
+  }];
+  return document;
 }
 
 describe("StudioEditingSession playback seam", () => {
@@ -373,6 +387,181 @@ describe("StudioEditingSession playback seam", () => {
       { type: "seek", binding, mediaTimeSec: 9 },
       { type: "play", binding },
     ]);
+  });
+
+  for (const eventOrder of [
+    ["seeked", "time", "time"],
+    ["time", "seeked", "time"],
+    ["time", "time", "seeked"],
+  ] as const) {
+    test(`explicit inserted Scene seek survives ${eventOrder.join("/ ")} and plays its complete duration`, async () => {
+      const media = new InMemoryMediaAdapter();
+      const runtime = new ManualRuntime();
+      const session = makeSession(media, "writer", runtime, insertedSceneDocument());
+      while (session.getSnapshot().status !== "ready") await Promise.resolve();
+      const binding = session.getSnapshot().playback.mediaBinding;
+      const anchorSec = 4.414;
+      const mediaAnchorSec = 8.414;
+      session.dispatch({ type: "playback.seek", editedTimeSec: anchorSec });
+      for (const type of eventOrder) {
+        media.emit({ type, binding, mediaTimeSec: mediaAnchorSec });
+        expect(session.getSnapshot().playback).toMatchObject({ editedTimeSec: anchorSec, state: "paused" });
+      }
+      const beforePlay = media.commands.length;
+      session.dispatch({ type: "playback.play" });
+      expect(media.commands.slice(beforePlay)).toEqual([
+        { type: "pause", binding },
+        { type: "seek", binding, mediaTimeSec: mediaAnchorSec },
+      ]);
+      // Valid old source events cannot replace the inserted Scene's clock.
+      media.emit({ type: "seeked", binding, mediaTimeSec: mediaAnchorSec });
+      media.emit({ type: "time", binding, mediaTimeSec: mediaAnchorSec + 0.03 });
+      runtime.advance(1_000);
+      expect(session.getSnapshot().playback.editedTimeSec).toBe(anchorSec + 1);
+      runtime.advance(1_000);
+      expect(session.getSnapshot().playback.editedTimeSec).toBe(anchorSec + 2);
+      expect(media.commands.slice(beforePlay).some((command) => command.type === "play")).toBe(false);
+      runtime.advance(1_000);
+      expect(session.getSnapshot().playback.editedTimeSec).toBe(anchorSec + 3);
+      expect(media.commands.slice(-2)).toEqual([
+        { type: "seek", binding, mediaTimeSec: mediaAnchorSec },
+        { type: "play", binding },
+      ]);
+      media.emit({ type: "seeked", binding, mediaTimeSec: mediaAnchorSec });
+      media.emit({ type: "time", binding, mediaTimeSec: mediaAnchorSec + 0.03 });
+      expect(session.getSnapshot().playback.editedTimeSec).toBeCloseTo(anchorSec + 3.03, 6);
+      expect(session.getSnapshot().playback.state).toBe("playing");
+    });
+  }
+
+  test("playing immediately after an inserted seek cannot rewind on the first post-Scene source acknowledgment", async () => {
+    const media = new InMemoryMediaAdapter();
+    const runtime = new ManualRuntime();
+    const session = makeSession(media, "writer", runtime, insertedSceneDocument());
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    const binding = session.getSnapshot().playback.mediaBinding;
+    session.dispatch({ type: "playback.seek", editedTimeSec: 4.414 });
+    // No source event consumed the requested composite seek before Play.
+    session.dispatch({ type: "playback.play" });
+    runtime.advance(3_000);
+    media.emit({ type: "seeked", binding, mediaTimeSec: 8.414 });
+    expect(session.getSnapshot().playback.editedTimeSec).toBeCloseTo(7.414, 6);
+  });
+
+  test("paused inserted Scene interiors survive source samples and resume from their composite position", async () => {
+    const media = new InMemoryMediaAdapter();
+    const runtime = new ManualRuntime();
+    const session = makeSession(media, "writer", runtime, insertedSceneDocument());
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    const binding = session.getSnapshot().playback.mediaBinding;
+    session.dispatch({ type: "playback.seek", editedTimeSec: 4.414 });
+    session.dispatch({ type: "playback.play" });
+    runtime.advance(1_000);
+    session.dispatch({ type: "playback.pause" });
+    media.emit({ type: "seeked", binding, mediaTimeSec: 8.414 });
+    media.emit({ type: "time", binding, mediaTimeSec: 8.444 });
+    runtime.advance(5_000);
+    expect(session.getSnapshot().playback).toMatchObject({ editedTimeSec: 5.414, state: "paused" });
+    session.dispatch({ type: "playback.play" });
+    runtime.advance(1_000);
+    expect(session.getSnapshot().playback.editedTimeSec).toBe(6.414);
+    runtime.advance(1_000);
+    expect(session.getSnapshot().playback.editedTimeSec).toBe(7.414);
+    expect(media.commands.at(-1)?.type).toBe("play");
+  });
+
+  test("seeking into an inserted Scene during source playback hands off to the composite clock", async () => {
+    const media = new InMemoryMediaAdapter();
+    const runtime = new ManualRuntime();
+    const session = makeSession(media, "writer", runtime, insertedSceneDocument());
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    const binding = session.getSnapshot().playback.mediaBinding;
+    session.dispatch({ type: "playback.play" });
+    const beforeSeek = media.commands.length;
+    session.dispatch({ type: "playback.seek", editedTimeSec: 5.414 });
+    expect(media.commands.slice(beforeSeek)).toEqual([
+      { type: "pause", binding },
+      { type: "seek", binding, mediaTimeSec: 8.414 },
+    ]);
+    media.emit({ type: "seeked", binding, mediaTimeSec: 8.414 });
+    media.emit({ type: "time", binding, mediaTimeSec: 8.444 });
+    runtime.advance(1_000);
+    expect(session.getSnapshot().playback.editedTimeSec).toBe(6.414);
+    runtime.advance(1_000);
+    expect(session.getSnapshot().playback).toMatchObject({ editedTimeSec: 7.414, state: "playing" });
+    expect(media.commands.at(-1)?.type).toBe("play");
+  });
+
+  for (const paused of [false, true]) {
+    test(`seeking from an inserted Scene into source ${paused ? "keeps playback paused" : "resumes source playback"}`, async () => {
+      const media = new InMemoryMediaAdapter();
+      const runtime = new ManualRuntime();
+      const session = makeSession(media, "writer", runtime, insertedSceneDocument());
+      while (session.getSnapshot().status !== "ready") await Promise.resolve();
+      const binding = session.getSnapshot().playback.mediaBinding;
+      session.dispatch({ type: "playback.play" });
+      session.dispatch({ type: "playback.seek", editedTimeSec: 5.414 });
+      runtime.advance(1_000);
+      if (paused) session.dispatch({ type: "playback.pause" });
+      const beforeSeek = media.commands.length;
+      session.dispatch({ type: "playback.seek", editedTimeSec: 10 });
+      expect(media.commands.slice(beforeSeek)).toEqual([
+        { type: "seek", binding, mediaTimeSec: 11 },
+        ...(paused ? [] : [{ type: "play" as const, binding }]),
+      ]);
+      media.emit({ type: "seeked", binding, mediaTimeSec: 11 });
+      runtime.advance(5_000);
+      expect(session.getSnapshot().playback).toMatchObject({ editedTimeSec: 10, state: paused ? "paused" : "playing" });
+      if (!paused) {
+        media.emit({ type: "time", binding, mediaTimeSec: 11.5 });
+        expect(session.getSnapshot().playback.editedTimeSec).toBe(10.5);
+      }
+    });
+  }
+
+  for (const endEvent of ["time", "ended"] as const) {
+    test(`source ${endEvent} hands playback to an inserted End Scene before parking`, async () => {
+      const media = new InMemoryMediaAdapter();
+      const runtime = new ManualRuntime();
+      const document = insertedSceneDocument();
+      document.sceneBlocks[0]!.anchorSec = 30;
+      const session = makeSession(media, "writer", runtime, document);
+      while (session.getSnapshot().status !== "ready") await Promise.resolve();
+      const binding = session.getSnapshot().playback.mediaBinding;
+      session.dispatch({ type: "playback.play" });
+      media.emit({ type: "time", binding, mediaTimeSec: 33 });
+      const beforeEnd = media.commands.length;
+      media.emit(endEvent === "time"
+        ? { type: "time", binding, mediaTimeSec: 34 }
+        : { type: "ended", binding });
+      expect(session.getSnapshot().playback).toMatchObject({ editedTimeSec: 30, state: "playing", durationSec: 33 });
+      expect(media.commands.slice(beforeEnd).map((command) => command.type)).toEqual(["pause", "seek"]);
+      // A late source end event must not end the independent Scene clock.
+      media.emit({ type: "ended", binding });
+      runtime.advance(2_000);
+      expect(session.getSnapshot().playback).toMatchObject({ editedTimeSec: 32, state: "playing" });
+      runtime.advance(1_000);
+      expect(session.getSnapshot().playback).toMatchObject({ editedTimeSec: 33, state: "paused" });
+      expect(media.commands.slice(beforeEnd).some((command) => command.type === "play")).toBe(false);
+    });
+  }
+
+  test("an End Scene after a tail cut holds the last kept source frame", async () => {
+    const media = new InMemoryMediaAdapter();
+    const runtime = new ManualRuntime();
+    const document = makeDocument([{ startSec: 30, endSec: 40 }]);
+    document.sceneBlocks = [{ ...insertedSceneDocument().sceneBlocks[0]!, anchorSec: 20 }];
+    const session = makeSession(media, "writer", runtime, document);
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    const binding = session.getSnapshot().playback.mediaBinding;
+    session.dispatch({ type: "playback.play" });
+    media.emit({ type: "time", binding, mediaTimeSec: 23 });
+    media.emit({ type: "time", binding, mediaTimeSec: 24 });
+    expect(session.getSnapshot().playback).toMatchObject({ editedTimeSec: 20, state: "playing" });
+    expect(media.commands.at(-1)).toEqual({ type: "seek", binding, mediaTimeSec: 23.999 });
+    runtime.advance(3_000);
+    expect(session.getSnapshot().playback).toMatchObject({ editedTimeSec: 23, state: "paused" });
+    expect(media.commands.at(-1)).toEqual({ type: "seek", binding, mediaTimeSec: 23.999 });
   });
 
   test("parks on the last kept frame when playback reaches a tail cut", async () => {
