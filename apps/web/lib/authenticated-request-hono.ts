@@ -1,4 +1,5 @@
 import type { Context, Next } from "hono";
+import { matchedRoutes } from "hono/route";
 import { isExpectedDomainFailure } from "@narriflow/services";
 import {
   authenticatedRequestPolicy,
@@ -61,6 +62,11 @@ async function runAuthenticatedRequestHonoMiddleware(
 
   const declaration = matchBrowserSessionHonoSurface(c.req.method, path);
   if (!declaration) {
+    // No handler follows this middleware, so Hono has no operation to admit.
+    // A registered handler without a policy declaration still fails closed.
+    if (matchedRoutes(c).length === c.req.routeIndex + 1) {
+      return c.notFound();
+    }
     const requestId = crypto.randomUUID();
     console.warn(
       JSON.stringify({

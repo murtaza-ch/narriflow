@@ -1,4 +1,5 @@
 export interface SocialPublicationOperatorArgs {
+  actorUserId: string;
   workspaceId: string;
   socialPostId: string;
   recheck: false;
@@ -63,10 +64,10 @@ export function parseSocialPublicationOperatorArgs(
   if (!socialPostId || !UUID.test(socialPostId)) {
     throw new Error("--post must be a valid Social Post UUID");
   }
-  if (!recheck) return { workspaceId, socialPostId, recheck: false };
   if (!actorUserId || !UUID.test(actorUserId)) {
-    throw new Error("--actor must be a valid User UUID for --recheck");
+    throw new Error("--actor must be a valid User UUID");
   }
+  if (!recheck) return { actorUserId, workspaceId, socialPostId, recheck: false };
   const normalizedReason = reason?.trim() ?? "";
   if (normalizedReason.length < 1 || normalizedReason.length > 500) {
     throw new Error("--reason must contain 1 to 500 characters for --recheck");

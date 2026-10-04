@@ -1,3 +1,5 @@
+import { workspaceService } from "./workspace.service";
+import { accessibleProjectWhere } from "./project-access";
 import { randomUUID } from "node:crypto";
 import { Prisma, type SocialPlatform } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -312,6 +314,7 @@ async function loadRecoveryTarget(
     where: {
       id: input.socialPostId,
       workspaceId: input.workspaceId,
+      project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() },
       ...(input.projectId ? { projectId: input.projectId } : {}),
     },
     include: {
@@ -337,14 +340,17 @@ async function loadRecoveryTarget(
 
 export const socialPublicationRecovery = {
   async inspect(input: {
+    actorUserId: string;
     workspaceId: string;
     projectId?: string;
     socialPostId: string;
   }) {
+    await workspaceService.requireActor(input.actorUserId, input.workspaceId, "content.view");
     const post = await requirePrisma().socialPost.findFirst({
       where: {
         id: input.socialPostId,
         workspaceId: input.workspaceId,
+        project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() },
         ...(input.projectId ? { projectId: input.projectId } : {}),
       },
       select: {
@@ -425,6 +431,7 @@ export const socialPublicationRecovery = {
       now?: Date;
     } & RecheckSocialPublicationInput,
   ) {
+    await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
     const parsed = recheckSocialPublicationSchema.parse({ reason: input.reason });
     const now = input.now ?? new Date();
     const result = await requirePrisma().$transaction(async (tx) => {
@@ -488,6 +495,7 @@ export const socialPublicationRecovery = {
       now?: Date;
     } & ConfirmSocialPublicationInput,
   ) {
+    await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
     const parsed = confirmSocialPublicationSchema.parse({
       reason: input.reason,
       evidenceKind: input.evidenceKind,
@@ -499,6 +507,7 @@ export const socialPublicationRecovery = {
       where: {
         id: input.socialPostId,
         workspaceId: input.workspaceId,
+        project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() },
         ...(input.projectId ? { projectId: input.projectId } : {}),
       },
       select: {
@@ -668,6 +677,7 @@ export const socialPublicationRecovery = {
       now?: Date;
     } & RepublishSocialPublicationInput,
   ) {
+    await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
     const parsed = republishSocialPublicationSchema.parse({
       reason: input.reason,
       duplicateRiskAcknowledged: input.duplicateRiskAcknowledged,

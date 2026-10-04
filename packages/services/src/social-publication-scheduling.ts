@@ -1,30 +1,10 @@
-import { socialPublishingOptions } from "./social-publishing-options";
-import { createHash, randomUUID } from "node:crypto";
-import { Prisma } from "@prisma/client";
-import { getPrismaClient } from "@narriflow/db/client";
-import {
-	clipAspectRatioFromDb,
-	clipAspectRatioToDb,
-	type ClipAspectRatio,
-	type ClipRenderResolution,
-	type SocialPlatform,
-} from "@narriflow/validators";
-import { clipExportService } from "./clip-export.service";
-import { accessibleProjectWhere } from "./project-access";
-import {
-	isSocialProviderPublishingEnabled,
-	socialPublicationCapabilityVersion,
-} from "./social-publication-config";
-import { workspaceService } from "./workspace.service";
-import { reviewApprovalGate } from "./review-approval-gate.prisma";
-import type {
-	ReviewApprovalPrincipal,
-	ReviewApprovalResult,
-} from "./review-approval-gate";
-import {
-	ExpectedDomainFailureError,
-	type ExpectedDomainFailureCatalog,
-} from "./expected-domain-failure";
+import { createHash } from "node:crypto";
+import type { Prisma } from "@prisma/client";
+import { workspaceAllowsCapability, type ClipAspectRatio, type ClipRenderResolution, type SocialPlatform, type SocialDeliveryMode, type SocialPostStatus } from "@narriflow/validators";
+import type { BrandActorScope } from "./brand-ownership";
+import { ThumbnailPreparationError, validateThumbnailSelection, validateProviderThumbnailAsset, type ThumbnailSelection } from "./thumbnail-frame-preparation";
+import type { ReviewApprovalPrincipal, ReviewApprovalResult } from "./review-approval-gate";
+import { ExpectedDomainFailureError, type ExpectedDomainFailureCatalog } from "./expected-domain-failure";
 
 export type FrozenPublicationState = {
 	deliveryMode?: import("@narriflow/validators").SocialDeliveryMode;
@@ -44,14 +24,12 @@ export type FrozenPublicationState = {
 	scheduledFor: Date;
 };
 
-export type PublicationIntentStatus =
-	| "preparing_video"
-	| "scheduled"
-	| "cancelled";
+export type PublicationIntentStatus = SocialPostStatus;
+export type PublicationSchedulingActor = BrandActorScope;
 
 export type PublicationIntent = {
 	id: string;
-	ownerUserId: string;
+	createdByUserId: string;
 	workspaceId: string;
 	projectId: string;
 	clipId: string;
@@ -67,7 +45,6 @@ export type PublicationIntent = {
 
 export type SchedulePublicationInput = {
 	actorUserId: string;
-	ownerUserId: string;
 	workspaceId: string;
 	projectId: string;
 	clientIdempotencyKey: string;
@@ -83,12 +60,70 @@ export type SchedulePublicationInput = {
 	scheduledFor: Date;
 	immediate?: boolean;
 	providerSettings: Prisma.JsonObject;
+	deliveryMode?: SocialDeliveryMode;
+	assistedCopyVariantId?: string | null;
+	thumbnail?: ThumbnailSelection | null;
 	reviewOverrideReason?: string | null;
 };
 
 export type PublicationFreezeResult =
 	| { kind: "ready"; state: FrozenPublicationState }
 	| { kind: "preparing"; state: FrozenPublicationState };
+
+export type PublicationExportFacts = {
+	id: string;
+	workspaceId: string | null;
+	projectId: string;
+	clipId: string;
+	editorRevision: number;
+	resolution: string;
+	fingerprint: string;
+	variants: Array<{
+		id: string;
+		aspectRatio: ClipAspectRatio;
+		resolution: string;
+		status: string;
+		storageKey: string | null;
+		sizeBytes: number | null;
+		durationSec: number | null;
+	}>;
+};
+
+export interface PublicationFreezePorts {
+	providerEnabled(platform: SocialPlatform): boolean;
+	capabilityVersion(platform: SocialPlatform): string;
+	projectExists(input: { workspaceId: string; projectId: string }): Promise<boolean>;
+	readClip(input: { workspaceId: string; projectId: string; clipId: string }): Promise<{ editorRevision: number } | null>;
+	readAccount(accountId: string): Promise<{
+		workspaceId: string | null;
+		platform: SocialPlatform;
+		status: string;
+		expiresAt: Date | null;
+		canRefresh: boolean;
+	} | null>;
+	readExport(exportId: string): Promise<PublicationExportFacts | null>;
+	createExport(input: SchedulePublicationInput): Promise<string>;
+	tiktokOptions(input: { workspaceId: string; accountId: string }): Promise<{
+		inboxEnabled: boolean;
+		directEnabled: boolean;
+		privacyOptions: string[];
+		commentDisabled: boolean;
+		duetDisabled: boolean;
+		stitchDisabled: boolean;
+		maximumDurationSec: number;
+	}>;
+	requireCopyProvenance(input: {
+		workspaceId: string; projectId: string; clipId: string;
+		platform: SocialPlatform; variantId: string;
+	}): Promise<void>;
+	readThumbnailAsset(input: { actor: PublicationSchedulingActor; selection: ThumbnailSelection }): Promise<{
+		id: string; contentType: string; sizeBytes: bigint;
+	} | null>;
+	thumbnailFrameMatches(input: {
+		workspaceId: string; projectId: string; clipId: string; assetId: string;
+		sourceTimeMs: number; exportVariantId: string; aspectRatio: ClipAspectRatio; editorRevision: number;
+	}): Promise<boolean>;
+}
 
 export interface PublicationSchedulingStore {
 	open(input: {
@@ -120,7 +155,6 @@ const publicationIntentFailureCatalog = {
 	publication_export_mismatch: "conflict",
 	publication_export_variant_missing: "missing",
 	publication_intent_conflict: "conflict",
-	publication_intent_active: "conflict",
 	publication_intent_incomplete: "unprocessable",
 	publication_media_preparation_failed: "unavailable",
 	publication_schedule_in_past: "invalid",
@@ -159,13 +193,13 @@ export class PublicationIntentStateError extends ExpectedDomainFailureError<Publ
 }
 
 export function socialAccountCanPublishAt(
-	account: { expiresAt: Date | null; refreshTokenEncrypted: string | null },
+	account: { expiresAt: Date | null; canRefresh: boolean },
 	now: Date,
 ): boolean {
 	return (
 		!account.expiresAt ||
 		account.expiresAt > now ||
-		Boolean(account.refreshTokenEncrypted)
+		account.canRefresh
 	);
 }
 
@@ -186,7 +220,7 @@ export function publicationIntentHash(input: SchedulePublicationInput): string {
 	return createHash("sha256")
 		.update(
 			canonicalJson({
-				contract: "social-publication-intent-v2",
+				contract: "social-publication-intent-v3",
 				immediate: input.immediate === true,
 				workspaceId: input.workspaceId,
 				projectId: input.projectId,
@@ -201,10 +235,112 @@ export function publicationIntentHash(input: SchedulePublicationInput): string {
 				resolution: input.resolution,
 				scheduledFor: input.scheduledFor.toISOString(),
 				providerSettings: input.providerSettings,
+				deliveryMode: input.deliveryMode ?? "direct",
+				assistedCopyVariantId: input.assistedCopyVariantId ?? null,
+				thumbnail: input.thumbnail ?? null,
 				reviewOverrideReason: input.reviewOverrideReason?.trim() || null,
 			}),
 		)
 		.digest("hex");
+}
+
+async function freezePublication(
+	input: SchedulePublicationInput,
+	actor: PublicationSchedulingActor,
+	ports: PublicationFreezePorts,
+	now: Date,
+): Promise<PublicationFreezeResult> {
+	if (!ports.providerEnabled(input.platform)) {
+		throw new PublicationIntentStateError("social_provider_publishing_disabled", "Publishing for this provider is not enabled yet");
+	}
+	if (!await ports.projectExists(input)) {
+		throw new PublicationIntentStateError("project_not_found", "Project not found");
+	}
+	const clip = await ports.readClip(input);
+	if (!clip) throw new PublicationIntentStateError("clip_not_found", "Clip not found");
+	if (clip.editorRevision !== input.expectedEditorRevision) {
+		throw new PublicationIntentStateError("editor_revision_conflict", "The clip changed before the publication intent was frozen");
+	}
+	if (input.accountId) {
+		const account = await ports.readAccount(input.accountId);
+		if (!account || account.workspaceId !== input.workspaceId || account.platform !== input.platform || account.status !== "active") {
+			throw new PublicationIntentStateError("social_account_unavailable", "The selected social account is unavailable for this platform");
+		}
+		if (!socialAccountCanPublishAt(account, now)) {
+			throw new PublicationIntentStateError("social_account_expired", "The selected social account token has expired");
+		}
+	}
+	const deliveryMode = input.deliveryMode ?? "direct";
+	const providerSettings: Prisma.JsonObject = {
+		...input.providerSettings,
+		deliveryMode,
+		confirmedBy: input.actorUserId,
+	};
+	if (input.assistedCopyVariantId) {
+		await ports.requireCopyProvenance({
+			workspaceId: input.workspaceId, projectId: input.projectId, clipId: input.clipId,
+			platform: input.platform, variantId: input.assistedCopyVariantId,
+		});
+		providerSettings.assistedCopyVariantId = input.assistedCopyVariantId;
+	}
+	let thumbnailAssetId: string | null = null;
+	if (input.thumbnail) {
+		const normalized = validateThumbnailSelection({ platform: input.platform, selection: input.thumbnail });
+		const asset = await ports.readThumbnailAsset({ actor, selection: input.thumbnail });
+		if (!asset) throw new ThumbnailPreparationError("thumbnail_asset_unavailable", "The selected thumbnail is missing or was deleted");
+		validateProviderThumbnailAsset({ platform: input.platform, contentType: asset.contentType, sizeBytes: asset.sizeBytes });
+		thumbnailAssetId = asset.id;
+		Object.assign(providerSettings, normalized);
+	}
+	const exportId = input.clipExportId ?? await ports.createExport(input);
+	const exported = await ports.readExport(exportId);
+	if (!exported || exported.workspaceId !== input.workspaceId || exported.projectId !== input.projectId ||
+		exported.clipId !== input.clipId || exported.editorRevision !== input.expectedEditorRevision || exported.resolution !== input.resolution) {
+		throw new PublicationIntentStateError("publication_export_mismatch", "The selected Clip Export is no longer current for this publication");
+	}
+	const variant = exported.variants.find((candidate) =>
+		(!input.clipExportVariantId || candidate.id === input.clipExportVariantId) &&
+		candidate.aspectRatio === input.aspectRatio && candidate.resolution === input.resolution);
+	if (!variant) throw new PublicationIntentStateError("publication_export_variant_missing", "The exact Clip Export Variant could not be prepared");
+	if (variant.status === "failed") throw new PublicationIntentStateError("publication_media_preparation_failed", "The exact Clip Export Variant failed to render");
+	if (input.clipExportId && (variant.status !== "completed" || !variant.storageKey || variant.sizeBytes === null || variant.durationSec === null)) {
+		throw new PublicationIntentStateError("publication_media_preparation_failed", "Prepare the selected video before submitting.");
+	}
+	if (input.thumbnail?.source === "extracted_frame" && !await ports.thumbnailFrameMatches({
+		workspaceId: input.workspaceId, projectId: input.projectId, clipId: input.clipId,
+		assetId: thumbnailAssetId!, sourceTimeMs: input.thumbnail.sourceTimeMs!,
+		exportVariantId: variant.id, aspectRatio: input.aspectRatio, editorRevision: input.expectedEditorRevision,
+	})) {
+		throw new ThumbnailPreparationError("thumbnail_export_mismatch", "The frame does not belong to the selected export revision");
+	}
+	if (input.platform === "tiktok" && input.accountId) {
+		const options = await ports.tiktokOptions({ workspaceId: input.workspaceId, accountId: input.accountId });
+		const inbox = deliveryMode === "tiktok_inbox";
+		if (inbox ? !options.inboxEnabled : !options.directEnabled) {
+			throw new PublicationIntentStateError("social_account_scope_missing", "Reconnect TikTok to allow this delivery mode.");
+		}
+		if (!inbox && (!options.privacyOptions.includes(String(providerSettings.tiktokPrivacyLevel ?? "")) ||
+			(options.commentDisabled && providerSettings.disableComment !== true) ||
+			(options.duetDisabled && providerSettings.disableDuet !== true) ||
+			(options.stitchDisabled && providerSettings.disableStitch !== true))) {
+			throw new PublicationIntentStateError("tiktok_creator_settings_changed", "TikTok settings changed. Reload the account settings and review this post.");
+		}
+		if (variant.durationSec && variant.durationSec > options.maximumDurationSec) {
+			throw new PublicationIntentStateError("tiktok_video_too_long", "This video exceeds the account's duration limit.");
+		}
+	}
+	const state: FrozenPublicationState = {
+		deliveryMode, clipExportId: exported.id, clipExportVariantId: variant.id,
+		editorRevision: exported.editorRevision, exportFingerprint: exported.fingerprint,
+		storageKey: variant.status === "completed" ? variant.storageKey : null,
+		sizeBytes: variant.status === "completed" ? variant.sizeBytes : null,
+		durationSec: variant.status === "completed" ? variant.durationSec : null,
+		aspectRatio: input.aspectRatio, caption: input.caption, providerSettings,
+		socialAccountId: input.accountId, platform: input.platform,
+		capabilityVersion: input.accountId === null ? "publication-webhook-v1" : ports.capabilityVersion(input.platform),
+		scheduledFor: input.scheduledFor,
+	};
+	return { kind: state.storageKey !== null && state.sizeBytes !== null && state.durationSec !== null ? "ready" : "preparing", state };
 }
 
 export function createSocialPublicationScheduling(dependencies: {
@@ -213,7 +349,7 @@ export function createSocialPublicationScheduling(dependencies: {
 		actorUserId: string;
 		workspaceId: string;
 		permission: "publishing.manage";
-	}): Promise<void>;
+	}): Promise<PublicationSchedulingActor>;
 	authorizeReview(input: {
 		principal: ReviewApprovalPrincipal;
 		workspaceId: string;
@@ -222,19 +358,24 @@ export function createSocialPublicationScheduling(dependencies: {
 		idempotencyKey: string;
 		overrideReason?: string | null;
 	}): Promise<ReviewApprovalResult>;
-	freeze(input: SchedulePublicationInput): Promise<PublicationFreezeResult>;
+	freezePorts: PublicationFreezePorts;
 	createId(): string;
 	now(): Date;
 }) {
 	return {
 		async schedule(
 			input: SchedulePublicationInput,
+			options?: { actor: PublicationSchedulingActor },
 		): Promise<PublicationIntent> {
-			await dependencies.authorize({
+			const actor = options?.actor ?? await dependencies.authorize({
 				actorUserId: input.actorUserId,
 				workspaceId: input.workspaceId,
 				permission: "publishing.manage",
 			});
+			if (actor.actorUserId !== input.actorUserId || actor.workspaceId !== input.workspaceId ||
+				!workspaceAllowsCapability(actor, "publishing.manage")) {
+				throw new ExpectedDomainFailureError({ code: "workspace_access_denied", kind: "forbidden", message: "You do not have permission to publish in this Workspace" });
+			}
 			const immutableRequestHash = publicationIntentHash(input);
 			return dependencies.store.open({
 				workspaceId: input.workspaceId,
@@ -247,7 +388,7 @@ export function createSocialPublicationScheduling(dependencies: {
 							"Choose a future publish time",
 						);
 					}
-					const frozen = await dependencies.freeze(input);
+					const frozen = await freezePublication(input, actor, dependencies.freezePorts, dependencies.now());
 					const review = await dependencies.authorizeReview({
 						principal: {
 							kind: "workspace_user",
@@ -275,7 +416,7 @@ export function createSocialPublicationScheduling(dependencies: {
 						frozen.state.sizeBytes !== null;
 					return {
 						id: dependencies.createId(),
-						ownerUserId: input.ownerUserId,
+						createdByUserId: input.actorUserId,
 						workspaceId: input.workspaceId,
 						projectId: input.projectId,
 						clipId: input.clipId,
@@ -452,537 +593,4 @@ export function createInMemoryPublicationSchedulingStore(): PublicationSchedulin
 			return intents.size;
 		},
 	};
-}
-
-const publicationIntentInclude = {
-	frozenState: true,
-} satisfies Prisma.SocialPostInclude;
-
-type PublicationIntentRow = Prisma.SocialPostGetPayload<{
-	include: typeof publicationIntentInclude;
-}>;
-
-function requirePrisma() {
-	const prisma = getPrismaClient();
-	if (!prisma) throw new Error("Database client unavailable");
-	return prisma;
-}
-
-function toPublicationIntent(row: PublicationIntentRow): PublicationIntent {
-	const frozen = row.frozenState;
-	if (
-		!row.workspaceId ||
-		!row.createdByUserId ||
-		!row.clipId ||
-		!row.clientIdempotencyKey ||
-		!row.immutableRequestHash ||
-		!frozen
-	) {
-		throw new PublicationIntentStateError(
-			"publication_intent_incomplete",
-			"The Social Post does not contain a complete frozen publication intent",
-		);
-	}
-	const status =
-		row.status === "preparing_video" ||
-		row.status === "scheduled" ||
-		row.status === "cancelled"
-			? row.status
-			: null;
-	if (!status) {
-		throw new PublicationIntentStateError(
-			"publication_intent_active",
-			"The Social Post is already in provider execution",
-		);
-	}
-	return {
-		id: row.id,
-		ownerUserId: row.createdByUserId,
-		workspaceId: row.workspaceId,
-		projectId: row.projectId,
-		clipId: row.clipId,
-		clientIdempotencyKey: row.clientIdempotencyKey,
-		immutableRequestHash: row.immutableRequestHash,
-		status,
-		submissionEligible:
-			status === "scheduled" &&
-			frozen.storageKey !== null &&
-			frozen.sizeBytes !== null &&
-			frozen.durationSec !== null,
-		reviewApprovalOverrideId: row.reviewApprovalOverrideId,
-		frozen: {
-			clipExportId: frozen.clipExportId,
-			deliveryMode: frozen.deliveryMode,
-			clipExportVariantId: frozen.clipExportVariantId,
-			editorRevision: frozen.editorRevision,
-			exportFingerprint: frozen.exportFingerprint,
-			storageKey: frozen.storageKey,
-			sizeBytes: frozen.sizeBytes === null ? null : Number(frozen.sizeBytes),
-			durationSec: frozen.durationSec,
-			aspectRatio: clipAspectRatioFromDb[frozen.aspectRatio],
-			caption: frozen.caption,
-			providerSettings:
-				frozen.providerSettings &&
-				typeof frozen.providerSettings === "object" &&
-				!Array.isArray(frozen.providerSettings)
-					? (frozen.providerSettings as Prisma.JsonObject)
-					: {},
-			socialAccountId: frozen.socialAccountId,
-			platform: frozen.platform,
-			capabilityVersion: frozen.capabilityVersion,
-			scheduledFor: frozen.scheduledFor,
-		},
-		createdAt: row.createdAt,
-		updatedAt: row.updatedAt,
-	};
-}
-
-async function readIntentByKey(
-	workspaceId: string,
-	clientIdempotencyKey: string,
-) {
-	return requirePrisma().socialPost.findUnique({
-		where: {
-			workspaceId_clientIdempotencyKey: {
-				workspaceId,
-				clientIdempotencyKey,
-			},
-		},
-		include: publicationIntentInclude,
-	});
-}
-
-export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
-	async open(input) {
-		const existing = await readIntentByKey(
-			input.workspaceId,
-			input.clientIdempotencyKey,
-		);
-		if (existing) {
-			if (existing.immutableRequestHash !== input.immutableRequestHash) {
-				throw new PublicationIntentConflictError();
-			}
-			return toPublicationIntent(existing);
-		}
-
-		const candidate = await input.create();
-		try {
-			const created = await requirePrisma().$transaction(
-				async (tx) => {
-					const replay = await tx.socialPost.findUnique({
-						where: {
-							workspaceId_clientIdempotencyKey: {
-								workspaceId: input.workspaceId,
-								clientIdempotencyKey: input.clientIdempotencyKey,
-							},
-						},
-						include: publicationIntentInclude,
-					});
-					if (replay) {
-						if (replay.immutableRequestHash !== input.immutableRequestHash) {
-							throw new PublicationIntentConflictError();
-						}
-						return replay;
-					}
-
-					const row = await tx.socialPost.create({
-						data: {
-							id: candidate.id,
-							workspaceId: candidate.workspaceId,
-							createdByUserId: candidate.ownerUserId,
-							projectId: candidate.projectId,
-							clipId: candidate.clipId,
-							socialAccountId: candidate.frozen.socialAccountId,
-							platform: candidate.frozen.platform,
-							status: candidate.status,
-							clientIdempotencyKey: candidate.clientIdempotencyKey,
-							immutableRequestHash: candidate.immutableRequestHash,
-							caption: candidate.frozen.caption,
-							deliveryMode: candidate.frozen.deliveryMode ?? "direct",
-							aspectRatio: clipAspectRatioToDb[candidate.frozen.aspectRatio],
-							scheduledFor: candidate.frozen.scheduledFor,
-							metadata: candidate.frozen.providerSettings,
-							reviewApprovalOverrideId: candidate.reviewApprovalOverrideId,
-							frozenState: {
-								create: {
-									clipExportId: candidate.frozen.clipExportId,
-									clipExportVariantId: candidate.frozen.clipExportVariantId,
-									socialAccountId: candidate.frozen.socialAccountId,
-									platform: candidate.frozen.platform,
-									editorRevision: candidate.frozen.editorRevision,
-									exportFingerprint: candidate.frozen.exportFingerprint,
-									storageKey: candidate.frozen.storageKey,
-									sizeBytes: candidate.frozen.sizeBytes,
-									durationSec: candidate.frozen.durationSec,
-									aspectRatio:
-										clipAspectRatioToDb[candidate.frozen.aspectRatio],
-									caption: candidate.frozen.caption,
-									deliveryMode: candidate.frozen.deliveryMode ?? "direct",
-									providerSettings: candidate.frozen.providerSettings,
-									capabilityVersion: candidate.frozen.capabilityVersion,
-									scheduledFor: candidate.frozen.scheduledFor,
-									mediaReadyAt: candidate.submissionEligible
-										? candidate.createdAt
-										: null,
-								},
-							},
-						},
-						include: publicationIntentInclude,
-					});
-					await tx.projectAnalyticsEvent.create({
-						data: {
-							projectId: candidate.projectId,
-							clipId: candidate.clipId,
-							type: "social_scheduled",
-							platform: candidate.frozen.platform,
-							metadata: {
-								socialPostId: candidate.id,
-								preparation: candidate.status === "preparing_video",
-							},
-						},
-					});
-					if (candidate.reviewApprovalOverrideId) {
-						await tx.projectAnalyticsEvent.create({
-							data: {
-								projectId: candidate.projectId,
-								clipId: candidate.clipId,
-								type: "review_approval_overridden",
-								platform: candidate.frozen.platform,
-								metadata: {
-									socialPostId: candidate.id,
-									reviewApprovalOverrideId: candidate.reviewApprovalOverrideId,
-									exportId: candidate.frozen.clipExportId,
-								},
-							},
-						});
-					}
-					return row;
-				},
-				{ isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-			);
-			return toPublicationIntent(created);
-		} catch (error) {
-			if (
-				error instanceof Prisma.PrismaClientKnownRequestError &&
-				(error.code === "P2002" || error.code === "P2034")
-			) {
-				const replay = await readIntentByKey(
-					input.workspaceId,
-					input.clientIdempotencyKey,
-				);
-				if (replay) {
-					if (replay.immutableRequestHash !== input.immutableRequestHash) {
-						throw new PublicationIntentConflictError();
-					}
-					return toPublicationIntent(replay);
-				}
-			}
-			throw error;
-		}
-	},
-
-	async read(workspaceId, postId) {
-		const row = await requirePrisma().socialPost.findFirst({
-			where: { id: postId, workspaceId },
-			include: publicationIntentInclude,
-		});
-		return row ? toPublicationIntent(row) : null;
-	},
-
-	async cancel(input) {
-		return requirePrisma().$transaction(async (tx) => {
-			const cancelled = await tx.socialPost.updateMany({
-				where: {
-					id: input.postId,
-					workspaceId: input.workspaceId,
-					status: { in: ["preparing_video", "scheduled"] },
-				},
-				data: { status: "cancelled" },
-			});
-			if (cancelled.count === 0) {
-				const exists = await tx.socialPost.findFirst({
-					where: { id: input.postId, workspaceId: input.workspaceId },
-					select: { id: true },
-				});
-				throw new PublicationIntentStateError(
-					exists ? "publication_already_started" : "social_post_not_found",
-					exists
-						? "The Social Post can no longer be cancelled"
-						: "Social Post not found",
-				);
-			}
-			await tx.socialPublicationAttempt.deleteMany({
-				where: {
-					socialPostId: input.postId,
-					phase: "retry_scheduled",
-					currentClaimId: null,
-				},
-			});
-			const row = await tx.socialPost.findUniqueOrThrow({
-				where: { id: input.postId },
-				include: publicationIntentInclude,
-			});
-			await tx.projectAnalyticsEvent.create({
-				data: {
-					projectId: row.projectId,
-					clipId: row.clipId,
-					type: "social_cancelled",
-					platform: row.platform,
-					metadata: { socialPostId: row.id },
-				},
-			});
-			return toPublicationIntent(row);
-		});
-	},
-
-	async recordExportReady(input) {
-		await requirePrisma().$transaction(async (tx) => {
-			const states = await tx.frozenPublicationState.findMany({
-				where: {
-					clipExportVariantId: input.clipExportVariantId,
-					socialPost: { status: "preparing_video" },
-				},
-				select: { id: true, socialPostId: true },
-			});
-			if (states.length === 0) return;
-			await tx.frozenPublicationState.updateMany({
-				where: { id: { in: states.map((state) => state.id) } },
-				data: {
-					storageKey: input.storageKey,
-					sizeBytes: input.sizeBytes,
-					durationSec: input.durationSec,
-					mediaReadyAt: input.now,
-				},
-			});
-			await tx.socialPost.updateMany({
-				where: {
-					id: { in: states.map((state) => state.socialPostId) },
-					status: "preparing_video",
-				},
-				data: { status: "scheduled" },
-			});
-		});
-	},
-};
-
-export function createProductionSocialPublicationScheduling() {
-	return createSocialPublicationScheduling({
-		store: prismaPublicationSchedulingStore,
-		authorize: async ({ actorUserId, workspaceId, permission }) => {
-			await workspaceService.requireActor(actorUserId, workspaceId, permission);
-		},
-		authorizeReview: (input) => reviewApprovalGate.authorize(input),
-		async freeze(input) {
-			if (!isSocialProviderPublishingEnabled(input.platform)) {
-				throw new PublicationIntentStateError(
-					"social_provider_publishing_disabled",
-					"Publishing for this provider is not enabled yet",
-				);
-			}
-			const prisma = requirePrisma();
-			const project = await prisma.project.findFirst({
-				where: {
-					id: input.projectId,
-					workspaceId: input.workspaceId,
-					...accessibleProjectWhere(),
-				},
-				select: { id: true },
-			});
-			if (!project) {
-				throw new PublicationIntentStateError(
-					"project_not_found",
-					"Project not found",
-				);
-			}
-			const clip = await prisma.clip.findFirst({
-				where: { id: input.clipId, projectId: input.projectId },
-				select: { id: true, editorRevision: true },
-			});
-			if (!clip) {
-				throw new PublicationIntentStateError(
-					"clip_not_found",
-					"Clip not found",
-				);
-			}
-			if (clip.editorRevision !== input.expectedEditorRevision) {
-				throw new PublicationIntentStateError(
-					"editor_revision_conflict",
-					"The clip changed before the publication intent was frozen",
-				);
-			}
-			if (input.accountId) {
-				const account = await prisma.socialAccount.findFirst({
-					where: {
-						id: input.accountId,
-						workspaceId: input.workspaceId,
-						platform: input.platform,
-						status: "active",
-					},
-					select: { id: true, expiresAt: true, refreshTokenEncrypted: true },
-				});
-				if (!account) {
-					throw new PublicationIntentStateError(
-						"social_account_unavailable",
-						"The selected social account is unavailable for this platform",
-					);
-				}
-				if (!socialAccountCanPublishAt(account, new Date())) {
-					await prisma.socialAccount.updateMany({
-						where: { id: account.id, status: "active" },
-						data: { status: "expired" },
-					});
-					throw new PublicationIntentStateError(
-						"social_account_expired",
-						"The selected social account token has expired",
-					);
-				}
-			}
-
-			const requestedExportId = input.clipExportId
-				? input.clipExportId
-				: (
-						await clipExportService.create(
-							input.projectId,
-							input.clipId,
-							{
-								expectedRevision: input.expectedEditorRevision,
-								aspectRatios: [input.aspectRatio],
-								resolution: input.resolution,
-							},
-							`social:${input.workspaceId}:${input.clientIdempotencyKey}`,
-							{
-								workspaceId: input.workspaceId,
-								actorUserId: input.actorUserId,
-							},
-						)
-					).export.id;
-			const row = await prisma.clipExport.findFirst({
-				where: {
-					id: requestedExportId,
-					workspaceId: input.workspaceId,
-					projectId: input.projectId,
-					clipId: input.clipId,
-					editorRevision: input.expectedEditorRevision,
-					resolution: input.resolution,
-				},
-				include: {
-					variants: {
-						where: {
-							...(input.clipExportVariantId
-								? { id: input.clipExportVariantId }
-								: {}),
-							aspectRatio: clipAspectRatioToDb[input.aspectRatio],
-							resolution: input.resolution,
-						},
-					},
-				},
-			});
-			if (!row) {
-				throw new PublicationIntentStateError(
-					"publication_export_mismatch",
-					"The selected Clip Export is no longer current for this publication",
-				);
-			}
-			const variant = row.variants[0];
-			if (!variant) {
-				throw new PublicationIntentStateError(
-					"publication_export_variant_missing",
-					"The exact Clip Export Variant could not be prepared",
-				);
-			}
-			if (variant.status === "failed") {
-				throw new PublicationIntentStateError(
-					"publication_media_preparation_failed",
-					"The exact Clip Export Variant failed to render",
-				);
-			}
-			if (
-				input.clipExportId &&
-				(variant.status !== "completed" ||
-					!variant.storageKey ||
-					variant.sizeBytes === null ||
-					variant.durationSec === null)
-			) {
-				throw new PublicationIntentStateError(
-					"publication_media_preparation_failed",
-					"Prepare the selected video before submitting.",
-				);
-			}
-
-			if (input.platform === "tiktok" && input.accountId) {
-				const options = await socialPublishingOptions(
-					input.workspaceId,
-					input.accountId,
-				);
-				const inbox = input.providerSettings.deliveryMode === "tiktok_inbox";
-				if (inbox ? !options.inboxEnabled : !options.directEnabled)
-					throw new PublicationIntentStateError(
-						"social_account_scope_missing",
-						"Reconnect TikTok to allow this delivery mode.",
-					);
-				if (
-					!inbox &&
-					(!options.privacyOptions.includes(
-						String(input.providerSettings.tiktokPrivacyLevel ?? ""),
-					) ||
-						(options.commentDisabled &&
-							input.providerSettings.disableComment !== true) ||
-						(options.duetDisabled &&
-							input.providerSettings.disableDuet !== true) ||
-						(options.stitchDisabled &&
-							input.providerSettings.disableStitch !== true))
-				)
-					throw new PublicationIntentStateError(
-						"tiktok_creator_settings_changed",
-						"TikTok settings changed. Reload the account settings and review this post.",
-					);
-				if (
-					variant.durationSec &&
-					variant.durationSec > options.maximumDurationSec
-				)
-					throw new PublicationIntentStateError(
-						"tiktok_video_too_long",
-						"This video exceeds the account’s duration limit.",
-					);
-			}
-			const state: FrozenPublicationState = {
-				deliveryMode:
-					input.providerSettings.deliveryMode === "tiktok_inbox"
-						? "tiktok_inbox"
-						: "direct",
-				clipExportId: row.id,
-				clipExportVariantId: variant.id,
-				editorRevision: row.editorRevision,
-				exportFingerprint: row.fingerprint,
-				storageKey: variant.status === "completed" ? variant.storageKey : null,
-				sizeBytes:
-					variant.status === "completed" && variant.sizeBytes !== null
-						? Number(variant.sizeBytes)
-						: null,
-				durationSec:
-					variant.status === "completed" ? variant.durationSec : null,
-				aspectRatio: input.aspectRatio,
-				caption: input.caption,
-				providerSettings: input.providerSettings,
-				socialAccountId: input.accountId,
-				platform: input.platform,
-				capabilityVersion:
-					input.accountId === null
-						? "publication-webhook-v1"
-						: socialPublicationCapabilityVersion(input.platform),
-				scheduledFor: input.scheduledFor,
-			};
-			return {
-				kind:
-					state.storageKey !== null &&
-					state.sizeBytes !== null &&
-					state.durationSec !== null
-						? "ready"
-						: "preparing",
-				state,
-			};
-		},
-		createId: randomUUID,
-		now: () => new Date(),
-	});
 }

@@ -1,3 +1,6 @@
+import type { ActorScope } from "./actor-scope";
+import { workspaceService } from "./workspace.service";
+import { accessibleProjectWhere } from "./project-access";
 import { getPrismaClient } from "@narriflow/db/client";
 import { SOCIAL_PROVIDER_CAPABILITIES } from "@narriflow/validators";
 import { socialOAuthService } from "./social-oauth.service";
@@ -38,10 +41,13 @@ async function tiktokRead(token: string, path: string, body: object = {}) {
 		);
 	return value.data;
 }
-export async function socialPublishingOptions(
-	workspaceId: string,
-	accountId: string,
-) {
+export async function socialPublishingOptions(scope: ActorScope, accountId: string) {
+	await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
+	return readSocialPublishingOptionsForAccount(scope.workspaceId, accountId);
+}
+
+/** Reads provider settings after the caller has admitted a publishing actor. */
+export async function readSocialPublishingOptionsForAccount(workspaceId: string, accountId: string) {
 	const row = await getPrismaClient()?.socialAccount.findFirst({
 		where: { id: accountId, workspaceId },
 	});
@@ -81,15 +87,17 @@ export async function socialPublishingOptions(
 	};
 }
 export async function refreshTikTokInbox(
-	workspaceId: string,
+	scope: ActorScope,
 	projectId: string,
 	postId: string,
 ) {
+	await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
 	const row = await getPrismaClient()?.socialPost.findFirst({
 		where: {
 			id: postId,
 			projectId,
-			workspaceId,
+			workspaceId: scope.workspaceId,
+			project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
 			deliveryMode: "tiktok_inbox",
 			status: { in: ["inbox_delivered", "posted"] },
 		},

@@ -7,21 +7,21 @@ function write(value: unknown) {
 
 try {
   const input = parseSocialPublicationOperatorArgs(process.argv.slice(2));
+  const scope = { actorUserId: input.actorUserId, workspaceId: input.workspaceId };
   const before = await socialService.inspectPublication(
-    input.workspaceId,
+    scope,
     input.socialPostId,
   );
   if (!input.recheck) {
     write({ mode: "inspect", inspection: before });
   } else {
     const reconciliation = await socialService.recheckPublication(
-      input.workspaceId,
-      input.actorUserId,
+      scope,
       input.socialPostId,
       { reason: input.reason },
     );
     const after = await socialService.inspectPublication(
-      input.workspaceId,
+      scope,
       input.socialPostId,
     );
     write({ mode: "recheck", reconciliation, before, after });

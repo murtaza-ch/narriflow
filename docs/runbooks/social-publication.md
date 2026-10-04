@@ -51,11 +51,11 @@ Structured `social_publication_metric` events provide counters and timers for qu
 
 Never delete a Provider Receipt, rewrite attempt lineage, release another live claim, or manually reuse an attempt idempotency key.
 
-Use the identifier-safe operator command for one post:
+Use the identifier-safe operator command for one post. The actor must have current access to that Workspace:
 
 ```sh
 bun --filter @narriflow/services social-publication:operator -- \
-  --workspace <workspace-uuid> --post <social-post-uuid>
+  --workspace <workspace-uuid> --post <social-post-uuid> --actor <user-uuid>
 ```
 
 Request targeted reconciliation only after confirming the account still permits provider reads. This reuses the existing attempt and cannot submit a new post:

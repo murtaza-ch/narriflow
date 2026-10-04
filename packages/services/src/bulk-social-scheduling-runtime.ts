@@ -6,7 +6,6 @@ import {
 	publishingPreviewSchema,
 	type BulkSocialScheduleRequest,
 } from "@narriflow/validators";
-import { composeAssistedCopyCaption } from "./assisted-social-copy";
 import {
 	BulkSocialSchedulingError,
 	bulkScheduleDeterministicUuid,
@@ -18,7 +17,7 @@ import {
 } from "./bulk-social-scheduling";
 import { hasFeature } from "./plan-features";
 import { accessibleProjectWhere } from "./project-access";
-import { socialService } from "./social.service";
+import { createProductionSocialPublicationScheduling } from "./social-publication-scheduling-runtime";
 import { workspaceService } from "./workspace.service";
 
 const operationInclude = {
@@ -334,6 +333,7 @@ export const prismaBulkScheduleStore: BulkScheduleStore = {
 };
 
 function productionModule() {
+	const admission = createProductionSocialPublicationScheduling();
 	return createBulkSocialScheduling({
 		store: prismaBulkScheduleStore,
 		authorize: async ({
@@ -362,74 +362,35 @@ function productionModule() {
 			});
 			if (!workspace)
 				throw new BulkSocialSchedulingError("workspace_not_found");
-			const project = await requirePrisma().project.findFirst({
-				where: { id: projectId, workspaceId, ...accessibleProjectWhere() },
-				select: {
-					id: true,
-					_count: { select: { clips: { where: { id: { in: clipIds } } } } },
-				},
-			});
-			if (!project || (!replay && project._count.clips !== new Set(clipIds).size)) {
-				throw new BulkSocialSchedulingError(
-					"campaign_schedule_clip_not_found",
-					"Every selected clip must belong to the active project",
-				);
-			}
-			return { pricingTier: actor.pricingTier, timeZone: workspace.timezone };
-		},
-		async recover(input) {
-			const post = await requirePrisma().socialPost.findFirst({
-				where: { workspaceId: input.workspaceId, projectId: input.projectId, clientIdempotencyKey: input.clientIdempotencyKey },
-				select: { id: true, status: true },
-			});
-			return post ? { socialPostId: post.id, status: post.status === "preparing_video" ? "preparing_video" : "scheduled" } : null;
-		},
-		async schedule(input) {
-			const workspace = await requirePrisma().workspace.findUnique({
-				where: { id: input.workspaceId },
-				select: { ownerUserId: true },
-			});
-			if (!workspace)
-				throw new BulkSocialSchedulingError("workspace_not_found");
-			const post = await socialService.schedulePost(
-				workspace.ownerUserId,
-				input.projectId,
-				{
-					clientIdempotencyKey: input.clientIdempotencyKey,
-					deliveryMode: input.deliveryMode,
-					immediate: input.immediate,
-					clipId: input.clipId,
-					expectedEditorRevision: input.expectedEditorRevision,
-					clipExportId: input.clipExportId,
-					clipExportVariantId: input.clipExportVariantId,
-					accountId: input.accountId,
-					platform: input.platform,
-					caption: composeAssistedCopyCaption(input),
-					aspectRatio: input.aspectRatio,
-					resolution: input.resolution,
-					scheduledFor: input.scheduledFor.toISOString(),
-					providerSettings: {
-						...input.providerSettings,
-						...(input.title &&
-						input.deliveryMode === "direct" &&
-						input.platform !== "tiktok"
-							? { title: input.title }
-							: {}),
+			if (!replay) {
+				const project = await requirePrisma().project.findFirst({
+					where: { id: projectId, workspaceId, ...accessibleProjectWhere() },
+					select: {
+						id: true,
+						_count: { select: { clips: { where: { id: { in: clipIds } } } } },
 					},
-					assistedCopyVariantId: input.assistedCopyVariantId,
-					thumbnail: input.thumbnail,
-					reviewOverrideReason: input.reviewOverrideReason,
-				},
-				{ workspaceId: input.workspaceId, actorUserId: input.actorUserId },
-			);
+				});
+				if (!project || project._count.clips !== new Set(clipIds).size) {
+					throw new BulkSocialSchedulingError(
+						"campaign_schedule_clip_not_found",
+						"Every selected clip must belong to the active project",
+					);
+				}
+			}
 			return {
-				socialPostId: post.id,
-				status:
-					post.status === "preparing_video"
-						? ("preparing_video" as const)
-						: ("scheduled" as const),
+				actor: {
+					actorUserId: actor.actorUserId,
+					workspaceId: actor.workspaceId,
+					workspaceOwnerUserId: actor.workspaceOwnerUserId,
+					role: actor.role,
+					status: actor.status,
+					pricingTier: actor.pricingTier,
+					isPersonalWorkspace: actor.isPersonalWorkspace,
+				},
+				timeZone: workspace.timezone,
 			};
 		},
+		schedule: admission.schedule,
 		createId: randomUUID,
 		now: () => new Date(),
 	});

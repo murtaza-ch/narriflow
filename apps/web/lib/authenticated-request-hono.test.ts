@@ -51,6 +51,49 @@ function testApp(
 }
 
 describe("authenticated request Hono middleware", () => {
+  test.each(["GET", "POST", "PUT", "PATCH", "DELETE"])(
+    "returns Hono's 404 for an unmatched %s request without resolving an actor",
+    async (method) => {
+      const execute = mock(() => {
+        throw new Error("Unknown routes must not enter actor admission");
+      });
+      const app = new Hono().basePath("/api");
+      app.use("*", createAuthenticatedRequestHonoMiddleware({ execute }));
+      app.get("/projects", () => Response.json({ projects: [] }));
+      app.notFound((c) => c.json({ error: "not_found" }, 404));
+
+      const response = await app.request("/api/unknown-route", { method });
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "not_found" });
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
+  test("returns 404 for an unsupported method on a known path", async () => {
+    const response = await testApp(() => Response.json({ projects: [] }))
+      .request("/api/projects", { method: "PUT" });
+
+    expect(response.status).toBe(404);
+  });
+
+  test.each(["get", "all"] as const)(
+    "refuses an undeclared registered %s handler before it runs",
+    async (method) => {
+      const handler = mock(() => Response.json({ privateData: "hidden" }));
+      const app = testApp(() => Response.json({ projects: [] }));
+      app[method]("/undeclared", handler);
+
+      const response = await app.request("/api/undeclared");
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({
+        error: "request_policy_missing",
+      });
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
   test("normalizes literal handler failures with the policy request ID", async () => {
     const response = await testApp(() =>
       Response.json(

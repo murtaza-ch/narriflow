@@ -18,10 +18,9 @@ import {
 	ProviderReceiptConflictError,
 	publicationOperationLookupHash,
 } from "./social-publication-attempt";
-import {
-	prismaPublicationSchedulingStore,
-	PublicationIntentConflictError,
-} from "./social-publication-scheduling";
+import { PublicationIntentConflictError, PublicationIntentStateError } from "./social-publication-scheduling";
+import { createProductionSocialPublicationScheduling, prismaPublicationSchedulingStore } from "./social-publication-scheduling-runtime";
+import { socialService } from "./social.service";
 import {
 	socialPublicationRecovery,
 	SocialPublicationRecoveryError,
@@ -114,7 +113,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			data: {
 				title: "Publication fixture",
 				sourceMediaUrl: "r2://test/source.mp4",
-				userId: user.id,
+
 				workspaceId: workspace.id,
 				createdByUserId: user.id,
 			},
@@ -224,8 +223,8 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 	) {
 		return {
 			id: input.id,
+			createdByUserId: fixture.user.id,
 			workspaceId: fixture.workspace.id,
-			ownerUserId: fixture.user.id,
 			projectId: fixture.project.id,
 			clipId: fixture.clip.id,
 			clientIdempotencyKey: input.key,
@@ -359,6 +358,116 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				}),
 			}),
 		).rejects.toBeInstanceOf(PublicationIntentConflictError);
+	});
+
+	test("replays a concurrent committed intent after mutable admission rejects", async () => {
+		const f = await fixture();
+		const candidate = frozenCandidate(f, { id: randomUUID(), key: randomUUID(), hash: "mutable-race", accountId: f.firstAccount.id, scheduledFor: new Date(Date.now() + 3_600_000) });
+		let entered!: () => void;
+		let release!: () => void;
+		const started = new Promise<void>((resolve) => { entered = resolve; });
+		const continueFailure = new Promise<void>((resolve) => { release = resolve; });
+		const request = { workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey, immutableRequestHash: candidate.immutableRequestHash };
+		const rejected = prismaPublicationSchedulingStore.open({ ...request, create: async () => {
+			entered();
+			await continueFailure;
+			throw new PublicationIntentStateError("editor_revision_conflict", "Revision changed during concurrent freeze");
+		} });
+		await started;
+		const committed = await prismaPublicationSchedulingStore.open({ ...request, create: async () => candidate });
+		release();
+		expect(await rejected).toEqual(committed);
+		expect(await prisma.socialPost.count({ where: { workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey } })).toBe(1);
+	});
+
+	test("replays every advanced post state without refreezing or reopening eligibility", async () => {
+		const f = await fixture();
+		const candidate = frozenCandidate(f, { id: randomUUID(), key: randomUUID(), hash: "advanced-replay", accountId: f.firstAccount.id, scheduledFor: new Date(Date.now() + 3_600_000) });
+		const request = { workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey, immutableRequestHash: candidate.immutableRequestHash };
+		const first = await prismaPublicationSchedulingStore.open({ ...request, create: async () => candidate });
+		for (const status of ["publishing", "processing", "reconciling", "posted", "failed", "needs_attention", "inbox_delivered", "cancelled"] as const) {
+			await prisma.socialPost.update({ where: { id: first.id }, data: { status } });
+			const replay = await prismaPublicationSchedulingStore.open({ ...request, create: async () => { throw new Error("Committed post must not refreeze"); } });
+			expect(replay).toMatchObject({ id: first.id, status, submissionEligible: false, frozen: first.frozen });
+			expect(await prisma.socialPost.findUniqueOrThrow({ where: { id: first.id }, select: { status: true } })).toEqual({ status });
+		}
+		expect(await prisma.frozenPublicationState.count({ where: { socialPostId: first.id } })).toBe(1);
+	});
+
+	test("production admission replays before changed project, revision, account and elapsed schedule", async () => {
+		const f = await fixture();
+		const admission = createProductionSocialPublicationScheduling();
+		const input = {
+			actorUserId: f.user.id, workspaceId: f.workspace.id, projectId: f.project.id,
+			clientIdempotencyKey: randomUUID(), clipId: f.clip.id, expectedEditorRevision: f.clip.editorRevision,
+			clipExportId: f.clipExport.id, clipExportVariantId: f.variant.id, accountId: f.firstAccount.id,
+			platform: "youtube_shorts" as const, caption: "Replay exact content", aspectRatio: "9:16" as const,
+			resolution: "1080p" as const, scheduledFor: new Date(Date.now() - 60_000), immediate: true, providerSettings: {},
+		};
+		const first = await admission.schedule(input);
+		await prisma.$transaction([
+			prisma.clip.update({ where: { id: f.clip.id }, data: { editorRevision: { increment: 1 } } }),
+			prisma.socialAccount.update({ where: { id: f.firstAccount.id }, data: { status: "expired", expiresAt: new Date(Date.now() - 60_000) } }),
+			prisma.project.update({ where: { id: f.project.id }, data: { expiresAt: new Date(Date.now() - 60_000) } }),
+			prisma.socialPost.update({ where: { id: first.id }, data: { status: "posted" } }),
+		]);
+		const replay = await admission.schedule(input);
+		expect(replay).toMatchObject({ id: first.id, status: "posted", submissionEligible: false, frozen: first.frozen });
+		await expect(admission.schedule({ ...input, deliveryMode: "tiktok_inbox" })).rejects.toBeInstanceOf(PublicationIntentConflictError);
+	});
+
+	test("production admission records the editor and preserves that creator across another editor and owner changes", async () => {
+		const f = await fixture();
+		const editor = await prisma.user.create({ data: { clerkId: `publication-editor:${randomUUID()}` } });
+		const otherEditor = await prisma.user.create({ data: { clerkId: `publication-editor:${randomUUID()}` } });
+		await prisma.workspaceMember.createMany({ data: [editor, otherEditor].map((user) => ({ workspaceId: f.workspace.id, userId: user.id, role: "editor" as const })) });
+		const admission = createProductionSocialPublicationScheduling();
+		const input = {
+			actorUserId: editor.id, workspaceId: f.workspace.id, projectId: f.project.id,
+			clientIdempotencyKey: randomUUID(), clipId: f.clip.id, expectedEditorRevision: f.clip.editorRevision,
+			clipExportId: f.clipExport.id, clipExportVariantId: f.variant.id, accountId: f.firstAccount.id,
+			platform: "youtube_shorts" as const, caption: "Admitted by editor", aspectRatio: "9:16" as const,
+			resolution: "1080p" as const, scheduledFor: new Date(), immediate: true, providerSettings: {},
+		};
+		const first = await admission.schedule(input);
+		expect(first.createdByUserId).toBe(editor.id);
+		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { ownerUserId: otherEditor.id } });
+		await prisma.socialPost.update({ where: { id: first.id }, data: { status: "posted" } });
+		const replay = await admission.schedule({ ...input, actorUserId: otherEditor.id });
+		expect(replay).toMatchObject({ id: first.id, createdByUserId: editor.id, status: "posted", submissionEligible: false });
+		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: first.id } })).createdByUserId).toBe(editor.id);
+		await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: editor.id } }, data: { role: "viewer" } });
+		await expect(admission.schedule({ ...input, clientIdempotencyKey: randomUUID() })).rejects.toMatchObject({ code: "workspace_access_denied" });
+	});
+
+	test("expired credential rejection does not mutate the account", async () => {
+		const f = await fixture();
+		await prisma.socialAccount.update({ where: { id: f.firstAccount.id }, data: { expiresAt: new Date(Date.now() - 60_000), refreshTokenEncrypted: null } });
+		await expect(createProductionSocialPublicationScheduling().schedule({
+			actorUserId: f.user.id, workspaceId: f.workspace.id, projectId: f.project.id,
+			clientIdempotencyKey: randomUUID(), clipId: f.clip.id, expectedEditorRevision: f.clip.editorRevision,
+			clipExportId: f.clipExport.id, clipExportVariantId: f.variant.id, accountId: f.firstAccount.id,
+			platform: "youtube_shorts", caption: "Expired credential", aspectRatio: "9:16", resolution: "1080p",
+			scheduledFor: new Date(Date.now() + 3_600_000), providerSettings: {},
+		})).rejects.toMatchObject({ code: "social_account_expired" });
+		expect(await prisma.socialAccount.findUniqueOrThrow({ where: { id: f.firstAccount.id }, select: { status: true } })).toEqual({ status: "active" });
+	});
+
+	test("cancel, list and metrics snapshots preserve the latest provider receipt fields", async () => {
+		const f = await fixture();
+		const candidate = frozenCandidate(f, { id: randomUUID(), key: randomUUID(), hash: "cancel-receipt", accountId: f.firstAccount.id, scheduledFor: new Date(Date.now() + 3_600_000) });
+		const post = await prismaPublicationSchedulingStore.open({ workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey, immutableRequestHash: candidate.immutableRequestHash, create: async () => candidate });
+		const frozen = await prisma.frozenPublicationState.findUniqueOrThrow({ where: { socialPostId: post.id } });
+		await prisma.socialPublicationAttempt.create({ data: {
+			socialPostId: post.id, frozenStateId: frozen.id, attemptNumber: 1, idempotencyKey: randomUUID(), phase: "failed",
+			nextActionAt: new Date(), processingDeadline: new Date(), reconciliationDeadline: new Date(),
+			receipt: { create: { platform: "youtube_shorts", receiptId: `receipt:${post.id}`, providerProcessingStatus: "failed", providerProcessingFailureCode: "video_processing_failed", providerVisibility: "unlisted" } },
+		} });
+		const expectedReceipt = { providerProcessingStatus: "failed", providerProcessingFailureCode: "video_processing_failed", providerVisibility: "unlisted" };
+		const list = await socialService.listProjectPosts({ actorUserId: f.user.id, workspaceId: f.workspace.id }, f.project.id);
+		expect(list.items.find((item) => item.id === post.id)).toMatchObject(expectedReceipt);
+		expect(await socialService.recordMetricsForPostId(post.id, { views: 10, likes: 1, comments: 0, shares: 0, saves: 0 })).toMatchObject(expectedReceipt);
+		expect(await socialService.cancelPost({ workspaceId: f.workspace.id, actorUserId: f.user.id }, f.project.id, post.id)).toMatchObject({ status: "cancelled", ...expectedReceipt });
 	});
 
 	test("admits distinct publications to one account at the same time", async () => {
@@ -1092,6 +1201,37 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		).toBe(true);
 	});
 
+	test("recovery authorizes the actual member and conceals inactive Projects", async () => {
+		const f = await fixture();
+		const target = await attentionPublication(f, "actor-scope");
+		const editor = await prisma.user.create({ data: { clerkId: `recovery-editor:${randomUUID()}` } });
+		const member = await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: editor.id, role: "viewer" } });
+		const scope = { actorUserId: editor.id, workspaceId: f.workspace.id };
+		const operations = [
+			() => socialService.recheckPublication(scope, target.socialPostId, { reason: "Check exact provider state" }, f.project.id),
+			() => socialService.confirmPublication(scope, target.socialPostId, { reason: "Confirm visible publication", evidenceKind: "manual_unvalidated", externalUrl: "https://youtube.com/shorts/actor-proof" }, f.project.id),
+			() => socialService.republishPublication(scope, target.socialPostId, { reason: "Retry uncertain publication", duplicateRiskAcknowledged: true }, f.project.id),
+			() => socialService.cancelPost(scope, f.project.id, target.socialPostId),
+		];
+		expect(await socialService.inspectPublication(scope, target.socialPostId, f.project.id)).toMatchObject({ id: target.socialPostId });
+		for (const operation of operations) await expect(operation()).rejects.toMatchObject({ code: "workspace_access_denied" });
+		await prisma.workspaceMember.delete({ where: { id: member.id } });
+		for (const operation of operations) await expect(operation()).rejects.toMatchObject({ code: "workspace_access_denied" });
+		await expect(socialService.inspectPublication(scope, target.socialPostId)).rejects.toMatchObject({ code: "workspace_access_denied" });
+		await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: editor.id, role: "editor" } });
+		for (const lifecycle of [{ expiresAt: new Date(Date.now() - 1000) }, { expiresAt: null, purgeStartedAt: new Date() }]) {
+			await prisma.project.update({ where: { id: f.project.id }, data: lifecycle });
+			await expect(socialService.inspectPublication(scope, target.socialPostId)).rejects.toMatchObject({ code: "social_publication_not_found" });
+			for (const operation of operations.slice(0, 3)) await expect(operation()).rejects.toMatchObject({ code: "social_publication_not_found" });
+			await expect(operations[3]!()).rejects.toMatchObject({ code: "social_post_not_found" });
+		}
+		expect(await prisma.publicationManualDecision.count({ where: { socialPostId: target.socialPostId } })).toBe(0);
+		expect(await prisma.socialPost.findUnique({ where: { id: target.socialPostId } })).toMatchObject({ status: "needs_attention" });
+		await prisma.project.update({ where: { id: f.project.id }, data: { expiresAt: null, purgeStartedAt: null } });
+		expect(await operations[0]!()).toMatchObject({ status: "reconciling" });
+		expect(await prisma.publicationManualDecision.findFirst({ where: { socialPostId: target.socialPostId } })).toMatchObject({ actorUserId: editor.id });
+	});
+
 	test("manual recheck reuses the uncertain attempt and records an audit decision", async () => {
 		const f = await fixture();
 		const target = await attentionPublication(f, "recheck");
@@ -1216,6 +1356,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		const target = await attentionPublication(f, "scope");
 		await expect(
 			socialPublicationRecovery.inspect({
+				actorUserId: f.user.id,
 				workspaceId: f.workspace.id,
 				projectId: randomUUID(),
 				socialPostId: target.socialPostId,

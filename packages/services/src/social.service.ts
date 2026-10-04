@@ -1,30 +1,21 @@
+import type { ActorScope } from "./actor-scope";
+import { workspaceService } from "./workspace.service";
+import { accessibleProjectWhere } from "./project-access";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-	clipAspectRatioToDb,
-	scheduleSocialPostSchema,
 	socialPostMetricsSchema,
-	type ScheduleSocialPostInput,
 	type SocialPostMetricsInput,
 	type SocialPostSnapshot,
 	type ConfirmSocialPublicationInput,
 	type RecheckSocialPublicationInput,
 	type RepublishSocialPublicationInput,
 } from "@narriflow/validators";
-import { assistedSocialCopyService } from "./assisted-social-copy-runtime";
-import { brandOwnerWhere } from "./brand-ownership";
-import { createProductionSocialPublicationScheduling } from "./social-publication-scheduling";
+import { socialPublicationScheduling } from "./social-publication-scheduling-runtime";
 import {
 	allowedSocialPublicationActions,
 	socialPublicationRecovery,
 } from "./social-publication-recovery";
-import {
-	ThumbnailPreparationError,
-	validateThumbnailSelection,
-	validateProviderThumbnailAsset,
-} from "./thumbnail-frame-preparation";
-import { workspaceService } from "./workspace.service";
-
 type SocialPostCursor = { createdAt: string; id: string };
 
 function decodeSocialPostCursor(value: string | undefined): SocialPostCursor | null {
@@ -52,9 +43,6 @@ import {
 	type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 
-const socialPublicationScheduling =
-	createProductionSocialPublicationScheduling();
-
 const socialServiceFailureCatalog = {
 	social_post_not_found: "missing",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -79,6 +67,31 @@ function requirePrisma() {
 	}
 	return prisma;
 }
+
+const socialPostSnapshotInclude = {
+				publishedVideos: true,
+				socialAccount: {
+					select: { displayName: true, handle: true, status: true },
+				},
+				workspace: { select: { status: true } },
+				publicationAttempts: {
+					orderBy: { attemptNumber: "desc" },
+					take: 1,
+					select: {
+						receipt: {
+							select: {
+								providerProcessingStatus: true,
+								providerProcessingFailureCode: true,
+								providerVisibility: true,
+							},
+						},
+					},
+				},
+				metrics: {
+					orderBy: { capturedAt: "desc" },
+					take: 1,
+				},
+			} satisfies Prisma.SocialPostInclude;
 
 function toSocialPostSnapshot(row: {
 	id: string;
@@ -181,28 +194,26 @@ function toSocialPostSnapshot(row: {
 }
 
 export class SocialService {
-	inspectPublication(
-		workspaceId: string,
+	async inspectPublication(
+		scope: ActorScope,
 		socialPostId: string,
 		projectId?: string,
 	) {
 		return socialPublicationRecovery.inspect({
-			workspaceId,
+			...scope,
 			socialPostId,
 			projectId,
 		});
 	}
 
 	recheckPublication(
-		workspaceId: string,
-		actorUserId: string,
+		scope: ActorScope,
 		socialPostId: string,
 		input: RecheckSocialPublicationInput,
 		projectId?: string,
 	) {
 		return socialPublicationRecovery.recheck({
-			workspaceId,
-			actorUserId,
+			...scope,
 			socialPostId,
 			projectId,
 			...input,
@@ -210,15 +221,13 @@ export class SocialService {
 	}
 
 	confirmPublication(
-		workspaceId: string,
-		actorUserId: string,
+		scope: ActorScope,
 		socialPostId: string,
 		input: ConfirmSocialPublicationInput,
 		projectId?: string,
 	) {
 		return socialPublicationRecovery.confirmPublished({
-			workspaceId,
-			actorUserId,
+			...scope,
 			socialPostId,
 			projectId,
 			...input,
@@ -226,15 +235,13 @@ export class SocialService {
 	}
 
 	republishPublication(
-		workspaceId: string,
-		actorUserId: string,
+		scope: ActorScope,
 		socialPostId: string,
 		input: RepublishSocialPublicationInput,
 		projectId?: string,
 	) {
 		return socialPublicationRecovery.publishAgain({
-			workspaceId,
-			actorUserId,
+			...scope,
 			socialPostId,
 			projectId,
 			...input,
@@ -242,16 +249,18 @@ export class SocialService {
 	}
 
 	async listProjectPosts(
-		userId: string,
+		scope: ActorScope,
 		projectId: string,
 		options: { activeOnly?: boolean; trackedIds?: string[]; cursor?: string } = {},
 	): Promise<{ items: SocialPostSnapshot[]; nextCursor: string | null }> {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		const prisma = requirePrisma();
 		const cursor = decodeSocialPostCursor(options.cursor);
 		const rows = await prisma.socialPost.findMany({
 			where: {
 				projectId,
-				project: { userId },
+				workspaceId: scope.workspaceId,
+				project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
 				...(cursor
 					? {
 						OR: [
@@ -270,187 +279,24 @@ export class SocialService {
 			},
 			orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 			take: 101,
-			include: {
-				publishedVideos: true,
-				socialAccount: {
-					select: { displayName: true, handle: true, status: true },
-				},
-				workspace: { select: { status: true } },
-				publicationAttempts: {
-					orderBy: { attemptNumber: "desc" },
-					take: 1,
-					select: {
-						receipt: {
-							select: {
-								providerProcessingStatus: true,
-								providerProcessingFailureCode: true,
-								providerVisibility: true,
-							},
-						},
-					},
-				},
-				metrics: {
-					orderBy: { capturedAt: "desc" },
-					take: 1,
-				},
-			},
+			include: socialPostSnapshotInclude,
 		});
 		return { items: rows.slice(0, 100).map(toSocialPostSnapshot), nextCursor: rows.length > 100 ? encodeSocialPostCursor(rows[99]!) : null };
 	}
 
-	async schedulePost(
-		userId: string,
-		projectId: string,
-		input: ScheduleSocialPostInput,
-		workspaceContext: { workspaceId: string; actorUserId: string },
-	): Promise<SocialPostSnapshot> {
-		const parsed = scheduleSocialPostSchema.parse(input);
-		const prisma = requirePrisma();
-		const scheduledFor = new Date(parsed.scheduledFor);
-		const providerSettings = {
-			...parsed.providerSettings,
-			deliveryMode: parsed.deliveryMode,
-			confirmedBy: workspaceContext.actorUserId,
-		} as Prisma.JsonObject;
-		if (parsed.assistedCopyVariantId) {
-			await assistedSocialCopyService.requireProvenance({
-				workspaceId: workspaceContext.workspaceId,
-				projectId,
-				clipId: parsed.clipId,
-				platform: parsed.platform,
-				variantId: parsed.assistedCopyVariantId,
-			});
-			providerSettings.assistedCopyVariantId = parsed.assistedCopyVariantId;
-		}
-		if (parsed.thumbnail) {
-			const actor = await workspaceService.requireActor(
-				workspaceContext.actorUserId,
-				workspaceContext.workspaceId,
-				"publishing.manage",
-			);
-			const normalized = validateThumbnailSelection({
-				platform: parsed.platform,
-				selection: parsed.thumbnail,
-			});
-			const asset = await prisma.visualAsset.findFirst({
-				where: {
-					id: parsed.thumbnail.assetId,
-					...brandOwnerWhere({
-						actorUserId: workspaceContext.actorUserId,
-						workspaceId: actor.workspaceId,
-						workspaceOwnerUserId: actor.workspaceOwnerUserId,
-						role: actor.role,
-						status: actor.status,
-						pricingTier: actor.pricingTier,
-						isPersonalWorkspace: actor.isPersonalWorkspace,
-					}),
-					fingerprint: parsed.thumbnail.fingerprint,
-					provenance: parsed.thumbnail.source,
-					kind: "image",
-					deletedAt: null,
-				},
-				select: { id: true, contentType: true, sizeBytes: true },
-			});
-			if (!asset) {
-				throw new ThumbnailPreparationError(
-					"thumbnail_asset_unavailable",
-					"The selected thumbnail is missing or was deleted",
-				);
-			}
-			validateProviderThumbnailAsset({
-				platform: parsed.platform,
-				contentType: asset.contentType,
-				sizeBytes: asset.sizeBytes,
-			});
-			if (parsed.thumbnail.source === "extracted_frame") {
-				const operation = await prisma.thumbnailFrameOperation.findFirst({
-					where: {
-						resultAssetId: asset.id,
-						workspaceId: workspaceContext.workspaceId,
-						projectId,
-						clipId: parsed.clipId,
-						sourceTimeMs: parsed.thumbnail.sourceTimeMs!,
-						status: "completed",
-						exportVariantId: parsed.clipExportVariantId,
-						exportVariant: {
-							aspectRatio: clipAspectRatioToDb[parsed.aspectRatio],
-							export: { editorRevision: parsed.expectedEditorRevision },
-						},
-					},
-					select: { id: true },
-				});
-				if (!operation) {
-					throw new ThumbnailPreparationError(
-						"thumbnail_export_mismatch",
-						"The frame does not belong to the selected export revision",
-					);
-				}
-			}
-			Object.assign(providerSettings, normalized);
-		}
-		const intent = await socialPublicationScheduling.schedule({
-			immediate: parsed.immediate,
-			actorUserId: workspaceContext.actorUserId,
-			ownerUserId: userId,
-			workspaceId: workspaceContext.workspaceId,
-			projectId,
-			clientIdempotencyKey: parsed.clientIdempotencyKey,
-			clipId: parsed.clipId,
-			expectedEditorRevision: parsed.expectedEditorRevision,
-			clipExportId: parsed.clipExportId,
-			clipExportVariantId: parsed.clipExportVariantId,
-			accountId: parsed.accountId,
-			platform: parsed.platform,
-			caption: parsed.caption,
-			aspectRatio: parsed.aspectRatio,
-			resolution: parsed.resolution,
-			scheduledFor,
-			providerSettings,
-			reviewOverrideReason: parsed.reviewOverrideReason,
-		});
-
-		const row = await prisma.socialPost.findUnique({
-			where: { id: intent.id },
-			include: {
-				publishedVideos: true,
-				socialAccount: {
-					select: { displayName: true, handle: true, status: true },
-				},
-				workspace: { select: { status: true } },
-				publicationAttempts: {
-					orderBy: { attemptNumber: "desc" },
-					take: 1,
-					select: {
-						receipt: {
-							select: {
-								providerProcessingStatus: true,
-								providerProcessingFailureCode: true,
-								providerVisibility: true,
-							},
-						},
-					},
-				},
-				metrics: {
-					orderBy: { capturedAt: "desc" },
-					take: 1,
-				},
-			},
-		});
-		if (!row) throw new Error("social post not found after scheduling");
-		return toSocialPostSnapshot(row);
-	}
-
 	async cancelPost(
+		scope: ActorScope,
 		projectId: string,
 		postId: string,
-		workspaceContext: { workspaceId: string; actorUserId: string },
 	): Promise<SocialPostSnapshot> {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
 		const prisma = requirePrisma();
 		const existing = await prisma.socialPost.findFirst({
 			where: {
 				id: postId,
 				projectId,
-				workspaceId: workspaceContext.workspaceId,
+				workspaceId: scope.workspaceId,
+				project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
 			},
 			select: { id: true },
 		});
@@ -458,48 +304,20 @@ export class SocialService {
 			throw new SocialServiceError("social_post_not_found");
 		}
 		await socialPublicationScheduling.cancel({
-			actorUserId: workspaceContext.actorUserId,
-			workspaceId: workspaceContext.workspaceId,
+			actorUserId: scope.actorUserId,
+			workspaceId: scope.workspaceId,
 			postId,
 		});
 
 		const row = await prisma.socialPost.findUnique({
 			where: { id: postId },
-			include: {
-				publishedVideos: true,
-				socialAccount: {
-					select: { displayName: true, handle: true, status: true },
-				},
-				workspace: { select: { status: true } },
-				metrics: {
-					orderBy: { capturedAt: "desc" },
-					take: 1,
-				},
-			},
+			include: socialPostSnapshotInclude,
 		});
 		if (!row) {
 			throw new SocialServiceError("social_post_not_found");
 		}
 
 		return toSocialPostSnapshot(row);
-	}
-
-	async recordPostMetrics(
-		userId: string,
-		projectId: string,
-		postId: string,
-		input: SocialPostMetricsInput,
-	) {
-		const prisma = requirePrisma();
-		const post = await prisma.socialPost.findFirst({
-			where: { id: postId, projectId, project: { userId } },
-			select: { id: true },
-		});
-		if (!post) {
-			throw new SocialServiceError("social_post_not_found");
-		}
-
-		return this.recordMetricsForPostId(post.id, input);
 	}
 
 	async recordMetricsForPostId(postId: string, input: SocialPostMetricsInput) {
@@ -535,30 +353,7 @@ export class SocialService {
 
 		const updated = await prisma.socialPost.findUnique({
 			where: { id: post.id },
-			include: {
-				publishedVideos: true,
-				socialAccount: {
-					select: { displayName: true, handle: true, status: true },
-				},
-				workspace: { select: { status: true } },
-				publicationAttempts: {
-					orderBy: { attemptNumber: "desc" },
-					take: 1,
-					select: {
-						receipt: {
-							select: {
-								providerProcessingStatus: true,
-								providerProcessingFailureCode: true,
-								providerVisibility: true,
-							},
-						},
-					},
-				},
-				metrics: {
-					orderBy: { capturedAt: "desc" },
-					take: 1,
-				},
-			},
+			include: socialPostSnapshotInclude,
 		});
 
 		if (!updated) {

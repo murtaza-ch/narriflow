@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { SocialPlatform } from "@narriflow/validators";
+import { composeAssistedCopyCaption } from "./assisted-social-copy";
 import type {
-	ClipAspectRatio,
-	ClipRenderResolution,
-	SocialPlatform,
-} from "@narriflow/validators";
-import type { ThumbnailSelection } from "./thumbnail-frame-preparation";
+	PublicationIntent,
+	PublicationSchedulingActor,
+	SchedulePublicationInput,
+} from "./social-publication-scheduling";
 import {
 	ExpectedDomainFailureError,
 	type ExpectedDomainFailureCatalog,
@@ -378,35 +379,10 @@ export function createBulkSocialScheduling(dependencies: {
 		bulk: boolean;
 		replay: boolean;
 		permission: "publishing.manage";
-	}): Promise<{ pricingTier: string; timeZone: string }>;
-	schedule(input: {
-		actorUserId: string;
-		workspaceId: string;
-		projectId: string;
-		clientIdempotencyKey: string;
-		clipId: string;
-		expectedEditorRevision: number;
-		clipExportId: string;
-		clipExportVariantId: string;
-		accountId: string;
-		platform: SocialPlatform;
-		caption: string;
-		hashtags: string[];
-		title: string | null;
-		providerSettings: Record<string, unknown>;
-		assistedCopyVariantId: string | null;
-		deliveryMode: import("@narriflow/validators").SocialDeliveryMode;
-		aspectRatio: ClipAspectRatio;
-		resolution: ClipRenderResolution;
-		thumbnail: ThumbnailSelection | null;
-		immediate: boolean;
-		scheduledFor: Date;
-		reviewOverrideReason?: string | null;
-	}): Promise<{
-		socialPostId: string;
-		status: "preparing_video" | "scheduled";
-	}>;
-	recover(input: { workspaceId: string; projectId: string; clientIdempotencyKey: string }): Promise<{ socialPostId: string; status: "preparing_video" | "scheduled" } | null>;
+	}): Promise<{ actor: PublicationSchedulingActor; timeZone: string }>;
+	schedule(input: SchedulePublicationInput, options: {
+		actor: PublicationSchedulingActor;
+	}): Promise<Pick<PublicationIntent, "id">>;
 	createId(): string;
 	now(): Date;
 }) {
@@ -453,7 +429,7 @@ export function createBulkSocialScheduling(dependencies: {
 				idempotencyKey: input.idempotencyKey,
 				requestFingerprint,
 				actorUserId: input.actorUserId,
-				pricingTier: access.pricingTier,
+				pricingTier: access.actor.pricingTier,
 				validatedOptions: {
 					startDate: input.startDate,
 					timeZone: input.timeZone,
@@ -512,10 +488,12 @@ export function createBulkSocialScheduling(dependencies: {
 					clipExportVariantId: plan.clip.exportVariantId,
 					accountId: plan.account.accountId,
 					platform: plan.account.platform,
-					caption: plan.copy!.caption,
-					hashtags: [...plan.copy!.hashtags],
-					title: plan.copy!.title,
-					providerSettings: plan.clip.providerSettings,
+					caption: composeAssistedCopyCaption(plan.copy!),
+					providerSettings: {
+						...plan.clip.providerSettings,
+						...(plan.copy!.title && plan.clip.deliveryMode === "direct" && plan.clip.platform !== "tiktok"
+							? { title: plan.copy!.title } : {}),
+					},
 					deliveryMode: plan.clip.deliveryMode,
 					assistedCopyVariantId: plan.copy!.variantId,
 					aspectRatio: plan.clip.aspectRatio,
@@ -525,7 +503,7 @@ export function createBulkSocialScheduling(dependencies: {
 						(item) => item.requestKey === plan.requestKey,
 					)!.scheduledFor!,
 					reviewOverrideReason: input.reviewOverrideReason,
-				});
+				}, { actor: access.actor });
 
 			for (const plan of plans) {
 				const claimed = await dependencies.store.claimItem(
@@ -547,34 +525,30 @@ export function createBulkSocialScheduling(dependencies: {
 					);
 					continue;
 				}
-				const identity = {
-					workspaceId: input.workspaceId, projectId: input.projectId,
-					clientIdempotencyKey: bulkScheduleDeterministicUuid(`${input.workspaceId}:${input.projectId}:${plan.requestKey}`),
-				};
 				const uncertain = () => new BulkSocialSchedulingError(
 					"campaign_schedule_item_failed",
 					"The submission may have been accepted. Check the previous submission to recover its result.", true,
 				);
-				let scheduled: Awaited<ReturnType<typeof admit>>;
-				try {
-					// Recovery reads the durable intent before mutable admission checks.
-					scheduled = await dependencies.recover(identity) ?? await admit(plan);
-				} catch (error) {
-					let recovered: Awaited<ReturnType<typeof dependencies.recover>>;
-					try { recovered = await dependencies.recover(identity); }
-					catch { throw uncertain(); }
-					if (recovered) scheduled = recovered;
-					else {
-						// Only a known rejection with a confirmed absent intent is terminal.
-						if (!(error instanceof ExpectedDomainFailureError)) throw uncertain();
+				let scheduled: Awaited<ReturnType<typeof admit>> | null = null;
+				for (let attempt = 0; attempt < 2; attempt += 1) {
+					try {
+						// The admission owns durable replay before every mutable check.
+						scheduled = await admit(plan);
+						break;
+					} catch (error) {
+						if (!(error instanceof ExpectedDomainFailureError)) {
+							if (attempt === 1) throw uncertain();
+							continue;
+						}
 						const retryable = error.kind === "rate_limited" || error.kind === "unavailable";
 						await dependencies.store.settleItem(opened.operation.id, plan.requestKey, claimed.claimToken, {
 							status: retryable ? "failed" : "ineligible", errorCode: error.code, retryable, socialPostId: null,
 						});
-						continue;
+						break;
 					}
 				}
-				const patch = { status: "succeeded" as const, errorCode: null, retryable: false, socialPostId: scheduled.socialPostId };
+				if (!scheduled) continue;
+				const patch = { status: "succeeded" as const, errorCode: null, retryable: false, socialPostId: scheduled.id };
 				try {
 					await dependencies.store.settleItem(opened.operation.id, plan.requestKey, claimed.claimToken, patch);
 				} catch {

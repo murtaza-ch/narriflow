@@ -1,3 +1,6 @@
+import { workspaceService } from "./workspace.service";
+import { accessibleProjectWhere } from "./project-access";
+import type { ActorScope } from "./actor-scope";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -193,7 +196,6 @@ type ApplyCampaignStyleResult = ReturnType<typeof campaignOperationSnapshot> & {
 type CampaignMotionActorScope = {
   actorUserId: string;
   workspaceId: string;
-  workspaceOwnerUserId: string;
   projectId: string;
   pricingTier: PricingTier;
   role: WorkspaceAccessRole;
@@ -213,7 +215,7 @@ type CampaignBundleActorScope = {
 };
 type CampaignBundleAccessScope = Pick<
   CampaignBundleActorScope,
-  "workspaceId" | "projectId" | "role" | "status"
+  "actorUserId" | "workspaceId" | "projectId" | "role" | "status"
 >;
 type CampaignBrandActorScope = BrandActorScope & {
   projectId: string;
@@ -265,7 +267,7 @@ async function resolveExportBundleSelection(
     where: {
       projectId: scope.projectId,
       id: { in: input.clips.map((clip) => clip.clipId) },
-      project: { workspaceId: scope.workspaceId },
+      project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
     },
     select: {
       id: true,
@@ -552,7 +554,7 @@ async function resolveProjectBrandProfileSelection(
   input: ApplyProjectBrandProfileSelectedInput,
 ) {
   const project = await requirePrisma().project.findFirst({
-    where: { id: scope.projectId, workspaceId: scope.workspaceId },
+    where: { id: scope.projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
     select: {
       brandProfileId: true,
       brandProfileSnapshot: true,
@@ -617,7 +619,7 @@ async function resolveMemberStyleSelection(
 ) {
   const prisma = requirePrisma();
   const project = await prisma.project.findFirst({
-    where: { id: scope.projectId, workspaceId: scope.workspaceId },
+    where: { id: scope.projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
     select: { brandProfileId: true },
   });
   if (!project) {
@@ -688,6 +690,19 @@ type ExportBundleAdmission = { projectId: string; idempotencyKey: string; stage:
 const defaultExportBundleAdmission = (input: ExportBundleAdmission) => getWorkflowRunLifecycle().admit(input);
 type AtomicExportBundleAdmission = <T>(input: ExportBundleAdmission, handoff: (tx: Prisma.TransactionClient, run: { id: string; created: boolean }) => Promise<T>) => Promise<{ id: string; created: boolean; handoff: T }>;
 
+async function authorizeCampaignProject<T extends ActorScope & { projectId: string }>(
+  scope: T,
+  capability: import("./workspace.service").WorkspaceCapability,
+) {
+  const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability);
+  const project = await requirePrisma().project.findFirst({
+    where: { id: scope.projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+    select: { id: true },
+  });
+  if (!project) throw new CampaignOperationError("campaign_operation_not_found", "Project was not found");
+  return { ...scope, ...actor };
+}
+
 export class CampaignOperationService {
   private readonly admitExportBundleWithHandoff: AtomicExportBundleAdmission | null;
 
@@ -702,7 +717,6 @@ export class CampaignOperationService {
       CampaignBrandActorScope,
       | "actorUserId"
       | "workspaceId"
-      | "workspaceOwnerUserId"
       | "projectId"
       | "pricingTier"
       | "idempotencyKey"
@@ -753,7 +767,7 @@ export class CampaignOperationService {
       where: {
         id: { in: input.clips.map((clip) => clip.clipId) },
         projectId: scope.projectId,
-        project: { workspaceId: scope.workspaceId },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       select: { id: true },
     });
@@ -854,7 +868,7 @@ export class CampaignOperationService {
         const current = await clipEditorDocumentPersistence.readDocument({
           actorUserId: scope.actorUserId,
           workspaceId: scope.workspaceId,
-          workspaceOwnerUserId: scope.workspaceOwnerUserId,
+
           projectId: scope.projectId,
           clipId: requested.clipId,
         });
@@ -873,7 +887,7 @@ export class CampaignOperationService {
           const mutation = await clipEditorDocumentPersistence.mutateDocument({
             actorUserId: scope.actorUserId,
             workspaceId: scope.workspaceId,
-            workspaceOwnerUserId: scope.workspaceOwnerUserId,
+
             projectId: scope.projectId,
             clipId: requested.clipId,
             intent: {
@@ -965,6 +979,7 @@ export class CampaignOperationService {
     retryOfId?: string;
     execute(clipIds: string[]): Promise<RenderResult>;
   }): Promise<RenderResult | (RenderResult & { operationId: string; replayed: boolean })> {
+    input = await authorizeCampaignProject(input, "processing.consume");
     const normalizedIds = [...new Set(input.clipIds)].sort();
     // Recording the pre-existing render-selected path is a rollout concern,
     // not a paid entitlement. With recording disabled, preserve its exact
@@ -1008,7 +1023,7 @@ export class CampaignOperationService {
         throw error;
       }
     }
-    const clips = await prisma.clip.findMany({ where: { projectId: input.projectId, id: { in: normalizedIds }, project: { workspaceId: input.workspaceId } }, select: { id: true, editorRevision: true } });
+    const clips = await prisma.clip.findMany({ where: { projectId: input.projectId, id: { in: normalizedIds }, project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() } }, select: { id: true, editorRevision: true } });
     const byId = new Map(clips.map((clip) => [clip.id, clip]));
     let operation;
     const operationClaimToken = randomUUID();
@@ -1073,6 +1088,7 @@ export class CampaignOperationService {
     resolution: ClipRenderResolution;
     execute(clipIds: string[]): Promise<RenderResult>;
   }) {
+    input = await authorizeCampaignProject(input, "processing.consume");
     assertCampaignActionWriteEnabled("render_selected");
     const source = await requirePrisma().campaignOperation.findFirst({
       where: {
@@ -1103,7 +1119,8 @@ export class CampaignOperationService {
     }
   }
 
-  async listExportBundles(scope: { workspaceId: string; projectId: string }) {
+  async listExportBundles(scope: ActorScope & { projectId: string }) {
+    scope = await authorizeCampaignProject(scope, "content.view");
     const bundles = await requirePrisma().exportBundle.findMany({
       where: { operation: { workspaceId: scope.workspaceId, projectId: scope.projectId } },
       orderBy: { createdAt: "desc" },
@@ -1126,7 +1143,8 @@ export class CampaignOperationService {
     }));
   }
 
-  async listOperations(scope: { workspaceId: string; projectId: string }) {
+  async listOperations(scope: ActorScope & { projectId: string }) {
+    scope = await authorizeCampaignProject(scope, "content.view");
     return requirePrisma().campaignOperation.findMany({
       where: { workspaceId: scope.workspaceId, projectId: scope.projectId },
       orderBy: { createdAt: "desc" },
@@ -1139,13 +1157,14 @@ export class CampaignOperationService {
     });
   }
 
-  async getExportBundle(scope: { workspaceId: string; projectId: string }, bundleId: string) {
+  async getExportBundle(scope: ActorScope & { projectId: string }, bundleId: string) {
     const bundle = (await this.listExportBundles(scope)).find((candidate) => candidate.id === bundleId);
     if (!bundle) throw new CampaignOperationError("export_bundle_not_found", "Export bundle was not found");
     return bundle;
   }
 
   async getExportBundleDownload(scope: CampaignBundleAccessScope, bundleId: string) {
+    scope = await authorizeCampaignProject(scope, "content.download");
     assertCampaignBundleAllowed(scope);
     const bundle = await requirePrisma().exportBundle.findFirst({
       where: { id: bundleId, operation: { workspaceId: scope.workspaceId, projectId: scope.projectId } },
@@ -1161,6 +1180,7 @@ export class CampaignOperationService {
     scope: CampaignBundleAccessScope & { pricingTier: PricingTier },
     value: unknown,
   ) {
+    scope = await authorizeCampaignProject(scope, "content.download");
     assertCampaignActionWriteEnabled("export_bundle");
     assertCampaignBundleAllowed(scope);
     if (!hasFeature(scope.pricingTier, "export.bundles")) {
@@ -1190,6 +1210,7 @@ export class CampaignOperationService {
   }
 
   async retryExportBundle(scope: CampaignBundleActorScope, bundleId: string) {
+    scope = await authorizeCampaignProject(scope, "content.download");
 		assertCampaignActionWriteEnabled("export_bundle");
 		assertCampaignBundleAllowed(scope);
 		const bundle = await requirePrisma().exportBundle.findFirst({
@@ -1201,6 +1222,7 @@ export class CampaignOperationService {
 	}
 
 	async retryExportBundleOperation(scope: CampaignBundleActorScope, operationId: string) {
+    scope = await authorizeCampaignProject(scope, "content.download");
 		assertCampaignActionWriteEnabled("export_bundle");
 		assertCampaignBundleAllowed(scope);
 		const source = await requirePrisma().campaignOperation.findFirst({
@@ -1222,6 +1244,7 @@ export class CampaignOperationService {
   }
 
   async createExportBundle(scope: CampaignBundleActorScope, value: unknown): Promise<{ operationId: string; workflowRunId: string; manifest: ExportBundleManifest; replayed: boolean }> {
+    scope = await authorizeCampaignProject(scope, "content.download");
     assertCampaignActionWriteEnabled("export_bundle");
     assertCampaignBundleAllowed(scope);
     if (!hasFeature(scope.pricingTier, "export.bundles")) throw new CampaignOperationError("export_bundle_feature_unavailable", "Export bundles are not available on this plan");
@@ -1343,6 +1366,7 @@ export class CampaignOperationService {
   async getEditorActionCatalog(
     scope: BrandActorScope & { projectId: string },
   ) {
+    scope = await authorizeCampaignProject(scope, "content.view");
     if (
       !workspaceAllowsCapability(
         { role: scope.role, status: scope.status },
@@ -1355,7 +1379,7 @@ export class CampaignOperationService {
       );
     }
     const project = await requirePrisma().project.findFirst({
-      where: { id: scope.projectId, workspaceId: scope.workspaceId },
+      where: { id: scope.projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       select: {
         brandProfileId: true,
         brandProfileSnapshot: true,
@@ -1496,6 +1520,7 @@ export class CampaignOperationService {
     scope: BrandActorScope & { projectId: string },
     value: unknown,
   ) {
+    scope = await authorizeCampaignProject(scope, "content.view");
     if (
       !workspaceAllowsCapability(
         { role: scope.role, status: scope.status },
@@ -1558,7 +1583,7 @@ export class CampaignOperationService {
       where: {
         id: { in: clips.map((clip) => clip.clipId) },
         projectId: scope.projectId,
-        project: { workspaceId: scope.workspaceId },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       select: { id: true },
     });
@@ -1585,7 +1610,7 @@ export class CampaignOperationService {
         const current = await clipEditorDocumentPersistence.readDocument({
           actorUserId: scope.actorUserId,
           workspaceId: scope.workspaceId,
-          workspaceOwnerUserId: scope.workspaceOwnerUserId,
+
           projectId: scope.projectId,
           clipId: selected.clipId,
         });
@@ -1712,6 +1737,7 @@ export class CampaignOperationService {
     scope: CampaignBrandActorScope,
     value: unknown,
   ): Promise<ApplyCampaignStyleResult> {
+    scope = await authorizeCampaignProject(scope, "content.edit");
     assertCampaignActionWriteEnabled("apply_brand_profile");
     assertProgramWriteEnabled("brand_kit_projection");
     assertCampaignBrandApplicationAllowed(scope);
@@ -1751,6 +1777,7 @@ export class CampaignOperationService {
     scope: CampaignBrandActorScope,
     value: unknown,
   ): Promise<ApplyCampaignStyleResult> {
+    scope = await authorizeCampaignProject(scope, "content.edit");
     assertCampaignActionWriteEnabled("apply_style");
     assertProgramWriteEnabled("brand_kit_projection");
     assertCampaignBrandApplicationAllowed(scope);
@@ -1795,6 +1822,7 @@ export class CampaignOperationService {
     templateId: string,
     value: unknown,
   ): Promise<ApplySceneTemplateResult> {
+    scope = await authorizeCampaignProject(scope, "content.edit");
     assertCampaignActionWriteEnabled("apply_scene_template");
     assertProgramWriteEnabled("scene_templates");
     assertCampaignBrandApplicationAllowed(scope);
@@ -1835,7 +1863,7 @@ export class CampaignOperationService {
       where: {
         id: { in: orderedClips.map((clip) => clip.clipId) },
         projectId: scope.projectId,
-        project: { workspaceId: scope.workspaceId },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       select: { id: true },
     });
@@ -1900,7 +1928,7 @@ export class CampaignOperationService {
         const current = await clipEditorDocumentPersistence.readDocument({
           actorUserId: scope.actorUserId,
           workspaceId: scope.workspaceId,
-          workspaceOwnerUserId: scope.workspaceOwnerUserId,
+
           projectId: scope.projectId,
           clipId: requested.clipId,
         });
@@ -1941,7 +1969,7 @@ export class CampaignOperationService {
               const mutation = await clipEditorDocumentPersistence.mutateDocument({
                 actorUserId: scope.actorUserId,
                 workspaceId: scope.workspaceId,
-                workspaceOwnerUserId: scope.workspaceOwnerUserId,
+
                 projectId: scope.projectId,
                 clipId: requested.clipId,
                 intent: { kind: "replace", baseRevision: current.revision, document: next },
@@ -2004,6 +2032,7 @@ export class CampaignOperationService {
     scope: CampaignMotionActorScope,
     value: unknown,
   ): Promise<ApplyMotionSelectedResult> {
+    scope = await authorizeCampaignProject(scope, "content.edit");
     assertCampaignActionWriteEnabled("apply_motion");
     if (
       !workspaceAllowsCapability(
@@ -2069,7 +2098,7 @@ export class CampaignOperationService {
       where: {
         id: { in: orderedClips.map((clip) => clip.clipId) },
         projectId: scope.projectId,
-        project: { workspaceId: scope.workspaceId },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       select: { id: true },
     });
@@ -2172,7 +2201,7 @@ export class CampaignOperationService {
         const current = await clipEditorDocumentPersistence.readDocument({
           actorUserId: scope.actorUserId,
           workspaceId: scope.workspaceId,
-          workspaceOwnerUserId: scope.workspaceOwnerUserId,
+
           projectId: scope.projectId,
           clipId: requested.clipId,
         });
@@ -2191,7 +2220,7 @@ export class CampaignOperationService {
           const mutation = await clipEditorDocumentPersistence.mutateDocument({
             actorUserId: scope.actorUserId,
             workspaceId: scope.workspaceId,
-            workspaceOwnerUserId: scope.workspaceOwnerUserId,
+
             projectId: scope.projectId,
             clipId: requested.clipId,
             intent: {

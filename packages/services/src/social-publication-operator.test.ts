@@ -6,19 +6,23 @@ const POST_ID = "22222222-2222-4222-8222-222222222222";
 const ACTOR_ID = "33333333-3333-4333-8333-333333333333";
 
 describe("Social Publication operator command", () => {
-  test("defaults to identifier-safe read-only inspection", () => {
+  test("requires actual actor scope for identifier-safe read-only inspection", () => {
     expect(
       parseSocialPublicationOperatorArgs([
         "--workspace",
         WORKSPACE_ID,
         "--post",
         POST_ID,
+        "--actor",
+        ACTOR_ID,
       ]),
     ).toEqual({
+      actorUserId: ACTOR_ID,
       workspaceId: WORKSPACE_ID,
       socialPostId: POST_ID,
       recheck: false,
     });
+    expect(() => parseSocialPublicationOperatorArgs(["--workspace", WORKSPACE_ID, "--post", POST_ID])).toThrow("--actor");
   });
 
   test("requires actor and bounded reason for targeted reconciliation", () => {

@@ -5,6 +5,12 @@ import {
 	createInMemoryBulkScheduleStore,
 	resolveWorkspaceLocalDateTime,
 } from "./bulk-social-scheduling";
+import {
+	createInMemoryPublicationSchedulingStore,
+	createSocialPublicationScheduling,
+	type PublicationFreezePorts,
+	type SchedulePublicationInput,
+} from "./social-publication-scheduling";
 
 const CLIP_A = "00000000-0000-4000-8000-000000000001";
 const CLIP_B = "00000000-0000-4000-8000-000000000002";
@@ -66,14 +72,22 @@ const INPUT = {
 	dstDisambiguation: null,
 };
 
+const ACTOR = {
+	actorUserId: INPUT.actorUserId,
+	workspaceId: INPUT.workspaceId,
+	workspaceOwnerUserId: INPUT.actorUserId,
+	role: "owner" as const,
+	status: "active" as const,
+	pricingTier: "pro" as const,
+	isPersonalWorkspace: false,
+};
+
 function harness(
 	schedule: Parameters<
 		typeof createBulkSocialScheduling
 	>[0]["schedule"] = async (item) => ({
-		socialPostId: item.clientIdempotencyKey,
-		status: "scheduled" as const,
+		id: item.clientIdempotencyKey,
 	}),
-	recover: Parameters<typeof createBulkSocialScheduling>[0]["recover"] = async () => null,
 ) {
 	let id = 100;
 	const store = createInMemoryBulkScheduleStore();
@@ -81,9 +95,8 @@ function harness(
 		store,
 		module: createBulkSocialScheduling({
 			store,
-			authorize: async () => ({ pricingTier: "pro", timeZone: INPUT.timeZone }),
+			authorize: async () => ({ actor: ACTOR, timeZone: INPUT.timeZone }),
 			schedule,
-			recover,
 			createId: () =>
 				`00000000-0000-4000-8000-${String(++id).padStart(12, "0")}`,
 			now: () => new Date("2026-09-02T10:00:00.000Z"),
@@ -199,7 +212,7 @@ describe("bulk social scheduling", () => {
 				clipExportVariantId: item.clipExportVariantId,
 				scheduledFor: item.scheduledFor,
 			});
-			return { socialPostId: item.clientIdempotencyKey, status: "scheduled" };
+			return { id: item.clientIdempotencyKey };
 		});
 
 		const result = await module.schedule(INPUT);
@@ -230,6 +243,60 @@ describe("bulk social scheduling", () => {
 		});
 	});
 
+	test("passes the approved actor and exact copy, delivery, and thumbnail inputs to admission", async () => {
+		const requests: SchedulePublicationInput[] = [];
+		const actors: unknown[] = [];
+		const { module } = harness(async (input, options) => {
+			requests.push(input);
+			actors.push(options.actor);
+			return { id: "post" };
+		});
+		const thumbnail = { assetId: "00000000-0000-4000-8000-000000000055", fingerprint: "thumbnail-hash", source: "uploaded" as const, sourceTimeMs: null };
+		await module.schedule({ ...INPUT, items: [{ ...INPUT.items[0]!, thumbnail }] });
+		expect(actors).toEqual([ACTOR]);
+		expect(requests[0]).toMatchObject({
+			actorUserId: INPUT.actorUserId,
+			workspaceId: INPUT.workspaceId, projectId: INPUT.projectId,
+			clipId: CLIP_A, expectedEditorRevision: 4,
+			clipExportId: EXPORT_A, clipExportVariantId: VARIANT_A,
+			caption: "First clip\n\n#Narriflow", deliveryMode: "direct",
+			assistedCopyVariantId: INPUT.items[0]!.copy.variantId, thumbnail,
+			providerSettings: { title: "Publish with precision" },
+		});
+	});
+
+	test("concurrent bulk submissions admit each item once and converge to one operation", async () => {
+		const admitted: string[] = [];
+		const { module } = harness(async (input) => {
+			admitted.push(input.clientIdempotencyKey);
+			await Promise.resolve();
+			return { id: input.clientIdempotencyKey };
+		});
+		const [first, concurrent] = await Promise.all([module.schedule(INPUT), module.schedule(INPUT)]);
+		const replay = await module.schedule(INPUT);
+		expect(first.id).toBe(concurrent.id);
+		expect(replay.id).toBe(first.id);
+		expect(replay.status).toBe("completed");
+		expect(replay.counts).toEqual({ succeeded: 2, ineligible: 0, failed: 0 });
+		expect(admitted).toHaveLength(2);
+		expect(new Set(admitted).size).toBe(2);
+	});
+
+	test("conflicts on changed delivery, copy provenance, or thumbnail before calling admission", async () => {
+		let calls = 0;
+		const { module } = harness(async () => { calls += 1; return { id: "post" }; });
+		const item = INPUT.items[0]!;
+		await module.schedule({ ...INPUT, items: [item] });
+		for (const changed of [
+			{ ...item, deliveryMode: "tiktok_inbox" as const },
+			{ ...item, copy: { ...item.copy, variantId: "00000000-0000-4000-8000-000000000054" } },
+			{ ...item, thumbnail: { assetId: "00000000-0000-4000-8000-000000000055", fingerprint: "new-hash", source: "uploaded" as const, sourceTimeMs: null } },
+		]) {
+			await expect(module.schedule({ ...INPUT, items: [changed] })).rejects.toMatchObject({ code: "campaign_schedule_idempotency_conflict" });
+		}
+		expect(calls).toBe(1);
+	});
+
 	test("schedules valid items when approval, account, or rate-limit checks fail", async () => {
 		const { module } = harness(async (item) => {
 			if (item.clipId === CLIP_A) {
@@ -239,7 +306,7 @@ describe("bulk social scheduling", () => {
 					false,
 				);
 			}
-			return { socialPostId: item.clientIdempotencyKey, status: "scheduled" };
+			return { id: item.clientIdempotencyKey };
 		});
 
 		const result = await module.schedule(INPUT);
@@ -280,7 +347,7 @@ describe("bulk social scheduling", () => {
 		let calls = 0;
 		const { module } = harness(async (item) => {
 			calls += 1;
-			return { socialPostId: item.clientIdempotencyKey, status: "scheduled" };
+			return { id: item.clientIdempotencyKey };
 		});
 
 		const first = await module.schedule(INPUT);
@@ -310,16 +377,12 @@ describe("bulk social scheduling", () => {
 		const admitted = new Map<string, string>();
 		const module = createBulkSocialScheduling({
 			store,
-			authorize: async () => ({ pricingTier: "pro", timeZone: INPUT.timeZone }),
-			recover: async ({ clientIdempotencyKey }) => {
-				const socialPostId = admitted.get(clientIdempotencyKey);
-				return socialPostId ? { socialPostId, status: "scheduled" } : null;
-			},
+			authorize: async () => ({ actor: ACTOR, timeZone: INPUT.timeZone }),
 			schedule: async (item) => {
 				const existing = admitted.get(item.clientIdempotencyKey);
 				const socialPostId = existing ?? `post-${admitted.size + 1}`;
 				admitted.set(item.clientIdempotencyKey, socialPostId);
-				return { socialPostId, status: "scheduled" as const };
+				return { id: socialPostId };
 			},
 			createId: () => crypto.randomUUID(),
 			now: () => new Date("2026-09-02T10:00:00.000Z"),
@@ -349,10 +412,7 @@ describe("bulk social scheduling", () => {
 				loseResult = false;
 				throw new Error("connection lost after Social Post commit");
 			}
-			return { socialPostId, status: "scheduled" };
-		}, async ({ clientIdempotencyKey }) => {
-			const socialPostId = admitted.get(clientIdempotencyKey);
-			return socialPostId ? { socialPostId, status: "scheduled" } : null;
+			return { id: socialPostId };
 		});
 
 		const first = await module.schedule({ ...INPUT, items: [INPUT.items[0]!] });
@@ -363,20 +423,22 @@ describe("bulk social scheduling", () => {
 		expect(admitted.size).toBe(1);
 	});
 
-	test("recovers committed intent despite changed admission facts and replays after timezone changes", async () => {
+	test("replays committed intent before changed facts and timezone can reject it", async () => {
 		const posts = new Map<string, string>();
 		let timeZone = INPUT.timeZone;
 		let now = new Date("2026-09-02T10:00:00Z");
+		let mutableChecks = 0;
+		let eligible = true;
 		const module = createBulkSocialScheduling({
-			store: createInMemoryBulkScheduleStore(),
-			authorize: async () => ({ pricingTier: "pro", timeZone }),
-			recover: async ({ clientIdempotencyKey }) => {
-				const socialPostId = posts.get(clientIdempotencyKey);
-				return socialPostId ? { socialPostId, status: "scheduled" } : null;
-			},
+			store: createInMemoryBulkScheduleStore(() => now),
+			authorize: async () => ({ actor: ACTOR, timeZone }),
 			schedule: async ({ clientIdempotencyKey }) => {
-				if (posts.has(clientIdempotencyKey)) throw new BulkSocialSchedulingError("social_account_expired");
+				const existing = posts.get(clientIdempotencyKey);
+				if (existing) return { id: existing };
+				mutableChecks += 1;
+				if (!eligible) throw new BulkSocialSchedulingError("social_account_expired");
 				posts.set(clientIdempotencyKey, "committed-post");
+				eligible = false;
 				throw new Error("result read unavailable");
 			},
 			createId: () => crypto.randomUUID(), now: () => now,
@@ -389,20 +451,146 @@ describe("bulk social scheduling", () => {
 		const replay = await module.schedule(input);
 		expect(replay).toMatchObject({ id: first.id, status: "completed", replayed: true });
 		expect(posts.size).toBe(1);
+		expect(mutableChecks).toBe(1);
 	});
 
-	test("keeps unresolved admission running until the original claim can recover", async () => {
+	test.each(["publishing", "processing", "reconciling", "posted", "failed", "inbox_delivered", "cancelled"] as const)(
+		"recovers %s admission after interrupted Campaign settlement without reopening eligibility",
+		async (status) => {
+			let now = new Date("2026-09-02T10:00:00Z");
+			let settlementAvailable = false;
+			let mutableChecks = 0;
+			const posts = new Map<string, { id: string; status: string }>();
+			const backingStore = createInMemoryBulkScheduleStore(() => now);
+			const scheduleCalls: SchedulePublicationInput[] = [];
+			const module = createBulkSocialScheduling({
+				store: {
+					...backingStore,
+					async settleItem(...args) {
+						if (!settlementAvailable) throw new Error("Campaign settlement unavailable");
+						return backingStore.settleItem(...args);
+					},
+				},
+				authorize: async () => ({ actor: ACTOR, timeZone: INPUT.timeZone }),
+				schedule: async (request) => {
+					scheduleCalls.push(structuredClone(request));
+					const existing = posts.get(request.clientIdempotencyKey);
+					if (existing) return existing;
+					mutableChecks += 1;
+					const post = { id: "original-post", status: "scheduled" };
+					posts.set(request.clientIdempotencyKey, post);
+					return post;
+				},
+				createId: () => crypto.randomUUID(), now: () => now,
+			});
+			const input = { ...INPUT, scheduleMode: "now" as const, items: [INPUT.items[0]!] };
+			await expect(module.schedule(input)).rejects.toMatchObject({ code: "campaign_schedule_item_failed" });
+			for (const post of posts.values()) post.status = status;
+			const waiting = await module.schedule(input);
+			expect(waiting.status).toBe("running");
+			expect(waiting.items[0]?.status).toBe("processing");
+			settlementAvailable = true;
+			now = new Date("2026-09-02T10:11:00Z");
+			const recovered = await module.schedule(input);
+			expect(recovered.status).toBe("completed");
+			expect(recovered.items[0]?.socialPostId).toBe("original-post");
+			expect(scheduleCalls).toHaveLength(2);
+			expect(scheduleCalls[1]).toEqual(scheduleCalls[0]);
+			expect([...posts.values()]).toEqual([{ id: "original-post", status }]);
+			expect(mutableChecks).toBe(1);
+		},
+	);
+
+	test("the shared admission replays a posted intent after bulk settlement and mutable facts are lost", async () => {
+		let now = new Date("2026-09-02T10:00:00Z");
+		let mutableReads = 0;
+		let principalAdmissions = 0;
+		let reviewAdmissions = 0;
+		let unavailable = false;
+		let providerPosted = false;
+		let settleAvailable = false;
+		const intentStore = createInMemoryPublicationSchedulingStore();
+		const freezePorts: PublicationFreezePorts = {
+			providerEnabled: () => true, capabilityVersion: () => "capability-v1",
+			projectExists: async () => { mutableReads += 1; if (unavailable) throw new Error("project reader unavailable"); return true; },
+			readClip: async () => ({ editorRevision: 4 }),
+			readAccount: async () => ({ workspaceId: INPUT.workspaceId, platform: "youtube_shorts", status: "active", expiresAt: null, canRefresh: false }),
+			readExport: async () => ({
+				id: EXPORT_A, workspaceId: INPUT.workspaceId, projectId: INPUT.projectId, clipId: CLIP_A,
+				editorRevision: 4, resolution: "1080p", fingerprint: "frozen-export",
+				variants: [{ id: VARIANT_A, aspectRatio: "9:16", resolution: "1080p", status: "completed", storageKey: "local/export.mp4", sizeBytes: 42_000, durationSec: 30 }],
+			}),
+			createExport: async () => { throw new Error("bulk uses an exact prepared Export"); },
+			tiktokOptions: async () => { throw new Error("not a TikTok request"); },
+			requireCopyProvenance: async () => { if (unavailable) throw new Error("copy provenance unavailable"); },
+			readThumbnailAsset: async () => null, thumbnailFrameMatches: async () => false,
+		};
+		const admission = createSocialPublicationScheduling({
+			store: {
+				...intentStore,
+				async open(input) {
+					const intent = await intentStore.open(input);
+					return providerPosted ? { ...intent, status: "posted" as const, submissionEligible: false } : intent;
+				},
+			},
+			authorize: async () => { principalAdmissions += 1; return ACTOR; },
+			authorizeReview: async ({ exportIds }) => {
+				reviewAdmissions += 1;
+				return { allowed: true, items: exportIds.map((exportId) => ({ exportId, eligibility: "approved", overrideAuditId: null })) };
+			},
+			freezePorts, createId: () => "original-post", now: () => now,
+		});
+		const backingStore = createInMemoryBulkScheduleStore(() => now);
+		const results: Array<Awaited<ReturnType<typeof admission.schedule>>> = [];
+		const module = createBulkSocialScheduling({
+			store: {
+				...backingStore,
+				async settleItem(...args) {
+					if (!settleAvailable) throw new Error("bulk settlement unavailable");
+					return backingStore.settleItem(...args);
+				},
+			},
+			authorize: async () => ({ actor: ACTOR, timeZone: INPUT.timeZone }),
+			schedule: async (input, options) => {
+				const result = await admission.schedule(input, options);
+				results.push(result);
+				return result;
+			},
+			createId: () => crypto.randomUUID(), now: () => now,
+		});
+		const input = { ...INPUT, items: [INPUT.items[0]!] };
+		await expect(module.schedule(input)).rejects.toMatchObject({ code: "campaign_schedule_item_failed" });
+		providerPosted = true;
+		unavailable = true;
+		settleAvailable = true;
+		now = new Date("2027-01-01T00:00:00Z");
+		const replay = await module.schedule(input);
+		expect(replay.items[0]).toMatchObject({ status: "succeeded", socialPostId: "original-post" });
+		expect(results[1]).toMatchObject({ status: "posted", submissionEligible: false, frozen: results[0]!.frozen });
+		expect(results[1]!.immutableRequestHash).toBe(results[0]!.immutableRequestHash);
+		expect(await intentStore.count()).toBe(1);
+		expect(mutableReads).toBe(1);
+		expect(reviewAdmissions).toBe(1);
+		expect(principalAdmissions).toBe(0);
+	});
+
+	test("keeps unknown admission running until the same request can replay its accepted post", async () => {
 		let now = new Date("2026-09-02T10:00:00Z");
 		let available = false;
 		let admitted = false;
+		let mutableChecks = 0;
 		const module = createBulkSocialScheduling({
 			store: createInMemoryBulkScheduleStore(() => now),
-			authorize: async () => ({ pricingTier: "pro", timeZone: INPUT.timeZone }),
-			recover: async () => {
-				if (!available && admitted) throw new Error("database unavailable");
-				return admitted ? { socialPostId: "original-post", status: "scheduled" } : null;
+			authorize: async () => ({ actor: ACTOR, timeZone: INPUT.timeZone }),
+			schedule: async () => {
+				if (admitted) {
+					if (!available) throw new Error("database unavailable");
+					return { id: "original-post" };
+				}
+				mutableChecks += 1;
+				admitted = true;
+				throw new Error("response lost");
 			},
-			schedule: async () => { admitted = true; throw new Error("response lost"); },
 			createId: () => crypto.randomUUID(), now: () => now,
 		});
 		const input = { ...INPUT, items: [INPUT.items[0]!] };
@@ -415,6 +603,7 @@ describe("bulk social scheduling", () => {
 		const recovered = await module.schedule(input);
 		expect(recovered.status).toBe("completed");
 		expect(recovered.items[0]?.socialPostId).toBe("original-post");
+		expect(mutableChecks).toBe(1);
 	});
 
 	test("replays partial results and gives an explicit corrected submission a new identity", async () => {
@@ -428,7 +617,7 @@ describe("bulk social scheduling", () => {
 					"Rate limited",
 					true,
 				);
-			return { socialPostId: item.clientIdempotencyKey, status: "scheduled" };
+			return { id: item.clientIdempotencyKey };
 		});
 		const first = await module.schedule(INPUT);
 		const replay = await module.schedule(INPUT);
@@ -448,7 +637,7 @@ describe("bulk social scheduling", () => {
 		const seen: Array<{ caption: string; scheduledFor: Date }> = [];
 		const { module } = harness(async (item) => {
 			seen.push(item);
-			return { socialPostId: item.clientIdempotencyKey, status: "scheduled" };
+			return { id: item.clientIdempotencyKey };
 		});
 		await module.schedule({
 			...INPUT,
@@ -463,8 +652,8 @@ describe("bulk social scheduling", () => {
 			],
 		});
 		expect(seen.map((v) => v.caption)).toEqual([
-			"First clip",
-			"Independent account wording",
+			"First clip\n\n#Narriflow",
+			"Independent account wording\n\n#Narriflow",
 		]);
 		expect(seen[0]!.scheduledFor).toEqual(seen[1]!.scheduledFor);
 	});

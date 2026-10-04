@@ -339,7 +339,6 @@ describe("authenticated request inventory", () => {
       ["POST", "/ingest/rss/preview", "rss-preview:workspace-a", 20, 60],
       ["POST", "/ingest/rss/import", "rss-import:workspace-a", 5, 60],
       ["POST", "/projects/p1/content-suite", "content-suite:actor-a", 30, 60],
-      ["POST", "/projects/p1/social-posts", "social-posts:actor-a", 30, 60],
       ["POST", "/projects/p1/dubs", "dubs:actor-a", 20, 60],
       [
         "POST",

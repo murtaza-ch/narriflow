@@ -2,7 +2,6 @@ import {
 	socialPublishingOptions,
 	refreshTikTokInbox,
 } from "@narriflow/services";
-import { publishingPreviewSchema } from "@narriflow/validators";
 import { Hono } from "hono";
 import { handle } from "hono/vercel";
 import {
@@ -13,7 +12,6 @@ import {
 } from "@/lib/authenticated-request-hono";
 import {
 	applyCaptionPresetToAllSchema,
-	type BulkSocialScheduleRequest,
 	type GenerateAssistedCopyRequest,
 	type RequestThumbnailFrameInput,
 	applyStudioEditsToAllSchema,
@@ -23,7 +21,6 @@ import {
 	createClipExportSchema,
 	createClipShareLinkSchema,
 	clipDownloadQuerySchema,
-	contentPackSchema,
 	autopilotRuleInputSchema,
 	autopilotRuleUpdateSchema,
 	duplicateBrandTemplateSchema,
@@ -38,12 +35,7 @@ import {
 	requestClipDubSchema,
 	rssImportSchema,
 	rssPreviewSchema,
-	scheduleSocialPostSchema,
-	recheckSocialPublicationSchema,
-	confirmSocialPublicationSchema,
-	republishSocialPublicationSchema,
 	socialPlatformSchema,
-	socialPostMetricsSchema,
 	transcriptExportFormatSchema,
 	triggerClipRenderSchema,
 	brollSearchQuerySchema,
@@ -110,7 +102,9 @@ import { createUploadSessionHttpRoutes } from "./upload-session-http";
 import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
 import { createBrandProfileRoutes } from "./brand-profile-routes";
+import { createClipGenerationHttpRoutes } from "./clip-generation-http";
 import { createClipEditorHttpRoutes } from "./clip-editor-http";
+import { createSocialPublicationHttpRoutes } from "./social-publication-http";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
@@ -204,6 +198,24 @@ app.route(
 	}),
 );
 
+app.route(
+  "/",
+  createSocialPublicationHttpRoutes({
+    getActor: authenticatedHonoActor,
+    getInput: authenticatedHonoInput,
+    social: socialService,
+    bulk: bulkSocialSchedulingService,
+    publishingOptions: socialPublishingOptions,
+    refreshInbox: refreshTikTokInbox,
+  }),
+);
+
+app.route("/", createClipGenerationHttpRoutes({
+  getActor: authenticatedHonoActor,
+  getInput: authenticatedHonoInput,
+  clip: clipService,
+}));
+
 function getOAuthOrigin(requestUrl: string) {
 	return resolveCanonicalAppOrigin({
 		configuredOrigin: process.env.NEXT_PUBLIC_APP_URL,
@@ -219,10 +231,7 @@ app.get("/health", (c) => c.json({ ok: true, service: "narriflow-web-api" }));
 app.get("/autopilot/rules", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
-	const rules = await autopilotService.listRules(
-		appUser.workspaceOwnerUserId,
-		appUser.workspaceId,
-	);
+	const rules = await autopilotService.listRules(appUser);
 	return c.json({ rules }, 200);
 });
 
@@ -235,11 +244,7 @@ app.post("/autopilot/rules", async (c) => {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
 
-	const rule = await autopilotService.createRule(
-		appUser.workspaceOwnerUserId,
-		parsed.data,
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	const rule = await autopilotService.createRule(appUser, parsed.data);
 	return c.json(rule, 201);
 });
 
@@ -252,34 +257,21 @@ app.patch("/autopilot/rules/:ruleId", async (c) => {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
 
-	const rule = await autopilotService.updateRule(
-		appUser.workspaceOwnerUserId,
-		c.req.param("ruleId"),
-		parsed.data,
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	const rule = await autopilotService.updateRule(appUser, c.req.param("ruleId"), parsed.data);
 	return c.json(rule, 200);
 });
 
 app.delete("/autopilot/rules/:ruleId", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
-	await autopilotService.deleteRule(
-		appUser.workspaceOwnerUserId,
-		c.req.param("ruleId"),
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	await autopilotService.deleteRule(appUser, c.req.param("ruleId"));
 	return c.json({ ok: true }, 200);
 });
 
 app.post("/autopilot/rules/:ruleId/run-now", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
-	const rule = await autopilotService.triggerRuleNow(
-		appUser.workspaceOwnerUserId,
-		c.req.param("ruleId"),
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	const rule = await autopilotService.triggerRuleNow(appUser, c.req.param("ruleId"));
 	return c.json(rule, 200);
 });
 
@@ -310,27 +302,14 @@ app.get("/projects", async (c) => {
 		? (sortRaw as ProjectListSort | undefined)
 		: undefined;
 
-	const page = await projectService.listProjectsWithStatsPage(
-		appUser.actorUserId,
-		{
-			limit,
-			cursor,
-			workspaceId: appUser.workspaceId,
-			folderId,
-			query,
-			status,
-			source,
-			sort,
-		},
-	);
+	const page = await workspaceLibraryService.listProjects(appUser, {limit, cursor, folderId, query, status, source, sort});
 	return c.json(page, 200);
 });
 
 app.get("/workspace/search", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 	const results = await workspaceLibraryService.search(
-		appUser.actorUserId,
-		appUser.workspaceId,
+		appUser,
 		c.req.query("q") ?? "",
 	);
 	return c.json({ results }, 200);
@@ -338,10 +317,7 @@ app.get("/workspace/search", async (c) => {
 
 app.get("/workspace/exports/:exportId/download", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const exported = await clipExportService.getWorkspaceOwned(
-		appUser.workspaceId,
-		c.req.param("exportId"),
-	);
+	const exported = await clipExportService.getWorkspaceOwned(appUser, c.req.param("exportId"));
 	if (!exported) return c.json({ error: "export_not_found" }, 404);
 	const requestedVariantId = c.req.query("variant");
 	const variant = requestedVariantId
@@ -407,18 +383,7 @@ app.post("/projects/:id/generate", async (c) => {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
 
-	const result = await projectService.triggerGeneration(
-		appUser.workspaceOwnerUserId,
-		projectId,
-		parsed.data,
-		idempotencyKey,
-		{
-			workspaceContext: {
-				workspaceId: appUser.workspaceId,
-				actorUserId: appUser.actorUserId,
-			},
-		},
-	);
+	const result = await projectService.triggerGeneration(appUser, projectId, parsed.data, idempotencyKey);
 	return c.json(result, 202);
 });
 
@@ -426,10 +391,7 @@ app.get("/projects/:id", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
 	const projectId = c.req.param("id");
-	const snapshot = await projectService.getProjectSnapshot(
-		appUser.workspaceOwnerUserId,
-		projectId,
-	);
+	const snapshot = await projectService.getProjectSnapshot(appUser, projectId);
 
 	if (!snapshot.project) {
 		return c.json({ error: "project_not_found" }, 404);
@@ -439,10 +401,12 @@ app.get("/projects/:id", async (c) => {
 });
 
 app.get("/projects/:id/runs/:workflowRunId", async (c) => {
+	const appUser = authenticatedHonoActor(c);
 	const projectId = c.req.param("id");
 
 	const workflowRunId = c.req.param("workflowRunId");
 	const snapshot = await projectService.getWorkflowRun(
+		appUser,
 		projectId,
 		workflowRunId,
 	);
@@ -461,10 +425,7 @@ app.get("/projects/:id/transcript", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
 	const projectId = c.req.param("id");
-	const transcript = await projectService.getTranscriptSnapshot(
-		appUser.workspaceOwnerUserId,
-		projectId,
-	);
+	const transcript = await projectService.getTranscriptSnapshot(appUser, projectId);
 
 	if (!transcript) {
 		return c.json(
@@ -483,10 +444,7 @@ app.get("/projects/:id/transcript/utterances", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
 	const projectId = c.req.param("id");
-	const utterances = await projectService.getTranscriptUtterancesRaw(
-		appUser.workspaceOwnerUserId,
-		projectId,
-	);
+	const utterances = await projectService.getTranscriptUtterancesRaw(appUser, projectId);
 
 	if (utterances === null) {
 		return c.json(
@@ -518,11 +476,7 @@ app.get("/projects/:id/transcript/export", async (c) => {
 		);
 	}
 
-	const exported = await projectService.getTranscriptExport(
-		appUser.workspaceOwnerUserId,
-		projectId,
-		format.data,
-	);
+	const exported = await projectService.getTranscriptExport(appUser, projectId, format.data);
 	c.header("Content-Type", exported.contentType);
 	c.header(
 		"Content-Disposition",
@@ -549,15 +503,12 @@ app.post("/ingest/link", async (c) => {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
 
-	const response = await projectService.queueLinkIngest(
-		appUser.actorUserId,
-		parsed.data,
-		appUser.workspaceId,
-	);
+	const response = await projectService.queueLinkIngest(appUser, parsed.data);
 	return c.json(response, 202);
 });
 
 app.post("/ingest/rss/preview", async (c) => {
+	const appUser = authenticatedHonoActor(c);
 	const payload = await c.req.json().catch(() => null);
 	const parsed = rssPreviewSchema.safeParse(payload);
 
@@ -565,7 +516,7 @@ app.post("/ingest/rss/preview", async (c) => {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
 
-	const response = await projectService.previewRssFeed(parsed.data.rssUrl);
+	const response = await projectService.previewRssFeed(appUser, parsed.data.rssUrl);
 	return c.json(response, 200);
 });
 
@@ -579,11 +530,7 @@ app.post("/ingest/rss/import", async (c) => {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
 
-	const response = await projectService.importFromRss(
-		appUser.actorUserId,
-		parsed.data,
-		appUser.workspaceId,
-	);
+	const response = await projectService.importFromRss(appUser, parsed.data);
 	return c.json(response, 202);
 });
 
@@ -591,10 +538,7 @@ app.get("/ingest/:projectId", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
 	const projectId = c.req.param("projectId");
-	const snapshot = await projectService.getIngestSnapshot(
-		appUser.workspaceOwnerUserId,
-		projectId,
-	);
+	const snapshot = await projectService.getIngestSnapshot(appUser, projectId);
 
 	if (!snapshot) {
 		return c.json({ error: "project_not_found" }, 404);
@@ -609,10 +553,7 @@ app.get("/projects/:id/clips", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
 	const projectId = c.req.param("id");
-	const clips = await clipService.listClips(
-		appUser.workspaceOwnerUserId,
-		projectId,
-	);
+	const clips = await clipService.listClips(appUser, projectId);
 	return c.json({ clips }, 200);
 });
 
@@ -622,11 +563,7 @@ app.get("/projects/:id/clips", async (c) => {
  * dependency without putting video bytes through the web service. */
 app.get("/projects/:id/clips/:clipId/preview-peaks", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const peaks = await clipService.getClipPreviewPeaks(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		c.req.param("clipId"),
-	);
+	const peaks = await clipService.getClipPreviewPeaks(appUser, c.req.param("id"), c.req.param("clipId"));
 	if (!peaks) return c.body(null, 204);
 	c.header("Cache-Control", "private, max-age=3600, immutable");
 	return c.json(peaks, 200);
@@ -645,11 +582,7 @@ app.post("/projects/:id/clips/:clipId/title-suggestions", async (c) => {
 
 	const projectId = c.req.param("id");
 
-	const titles = await clipService.suggestClipTitles(
-		appUser.workspaceOwnerUserId,
-		projectId,
-		c.req.param("clipId"),
-	);
+	const titles = await clipService.suggestClipTitles(appUser, projectId, c.req.param("clipId"));
 	return c.json({ titles }, 200);
 });
 
@@ -665,11 +598,7 @@ app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
 	// from fanning out into dozens of copies.
 	const projectId = c.req.param("id");
 
-	const clip = await clipService.duplicateClip(
-		appUser.workspaceOwnerUserId,
-		projectId,
-		c.req.param("clipId"),
-	);
+	const clip = await clipService.duplicateClip(appUser, projectId, c.req.param("clipId"));
 	return c.json(clip, 201);
 });
 
@@ -701,12 +630,7 @@ app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
 		return c.json({ error: "invalid_input" }, 400);
 	}
 
-	const clip = await clipService.createClipFromSelection(
-		appUser.workspaceOwnerUserId,
-		projectId,
-		c.req.param("clipId"),
-		parsed.data,
-	);
+	const clip = await clipService.createClipFromSelection(appUser, projectId, c.req.param("clipId"), parsed.data);
 	return c.json(clip, 201);
 });
 
@@ -721,43 +645,8 @@ app.delete("/projects/:id/clips/:clipId", async (c) => {
 
 	const projectId = c.req.param("id");
 
-	await clipService.deleteClip(
-		appUser.workspaceOwnerUserId,
-		projectId,
-		c.req.param("clipId"),
-	);
+	await clipService.deleteClip(appUser, projectId, c.req.param("clipId"));
 	return c.json({ ok: true }, 200);
-});
-
-app.post("/projects/:id/clips/regenerate", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-
-	const projectId = c.req.param("id");
-
-	const idempotencyKey = c.req.header("idempotency-key") ?? "";
-
-	if (!idempotencyKey) {
-		return c.json(
-			{ error: "invalid_input", message: "Missing idempotency-key header" },
-			400,
-		);
-	}
-
-	const payload = await c.req.json().catch(() => ({}));
-	const contentPackParsed = contentPackSchema.safeParse(payload?.contentPack);
-	const contentPack = contentPackParsed.success
-		? contentPackParsed.data
-		: undefined;
-	const result = await clipService.regenerateClips(
-		projectId,
-		idempotencyKey,
-		contentPack,
-		{
-			workspaceId: appUser.workspaceId,
-			actorUserId: appUser.actorUserId,
-		},
-	);
-	return c.json(result, 202);
 });
 
 // --- Clip rendering routes ---
@@ -784,26 +673,9 @@ app.post("/projects/:id/clips/render", async (c) => {
 	}
 
 	const execute = (clipIds?: string[]) =>
-		clipService.triggerClipRendering(
-			projectId,
-			idempotencyKey,
-			{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-			clipIds,
-			parsed.data.aspectRatios,
-			parsed.data.resolution,
-		);
+		clipService.triggerClipRendering(appUser, projectId, idempotencyKey, clipIds, parsed.data.aspectRatios, parsed.data.resolution);
 	const result = parsed.data.clipIds
-		? await campaignOperationService.renderSelected({
-				actorUserId: appUser.actorUserId,
-				workspaceId: appUser.workspaceId,
-				projectId,
-				pricingTier: resolvePricingTier(appUser.pricingTier),
-				idempotencyKey,
-				clipIds: parsed.data.clipIds,
-				aspectRatios: parsed.data.aspectRatios,
-				resolution: parsed.data.resolution,
-				execute,
-			})
+		? await campaignOperationService.renderSelected({actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), idempotencyKey, clipIds: parsed.data.clipIds, aspectRatios: parsed.data.aspectRatios, resolution: parsed.data.resolution, execute})
 		: await execute();
 	return c.json(result, 202);
 });
@@ -817,15 +689,7 @@ app.post("/projects/:id/export-bundles", async (c) => {
 	}>(c);
 	return c.json(
 		await campaignOperationService.createExportBundle(
-			{
-				actorUserId: appUser.actorUserId,
-				workspaceId: appUser.workspaceId,
-				projectId: id,
-				pricingTier: resolvePricingTier(appUser.pricingTier),
-				role: appUser.role,
-				status: appUser.status,
-				idempotencyKey,
-			},
+			{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey},
 			body,
 		),
 		202,
@@ -840,13 +704,7 @@ app.post("/projects/:id/export-bundles/preview", async (c) => {
 	}>(c);
 	return c.json(
 		await campaignOperationService.previewExportBundle(
-			{
-				workspaceId: appUser.workspaceId,
-				projectId: id,
-				pricingTier: resolvePricingTier(appUser.pricingTier),
-				role: appUser.role,
-				status: appUser.status,
-			},
+			{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status},
 			body,
 		),
 		200,
@@ -858,10 +716,7 @@ app.get("/projects/:id/export-bundles", async (c) => {
 	const projectId = c.req.param("id");
 	return c.json(
 		{
-			bundles: await campaignOperationService.listExportBundles({
-				workspaceId: appUser.workspaceId,
-				projectId,
-			}),
+			bundles: await campaignOperationService.listExportBundles({actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId}),
 		},
 		200,
 	);
@@ -872,10 +727,7 @@ app.get("/projects/:id/campaign-operations", async (c) => {
 	const projectId = c.req.param("id");
 	return c.json(
 		{
-			operations: await campaignOperationService.listOperations({
-				workspaceId: appUser.workspaceId,
-				projectId,
-			}),
+			operations: await campaignOperationService.listOperations({actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId}),
 		},
 		200,
 	);
@@ -947,72 +799,13 @@ app.post("/projects/:id/thumbnail-frames/:operationId/retry", async (c) => {
 	);
 });
 
-app.post("/projects/:id/campaign-operations/schedule/preview", async (c) => {
-	const actor = authenticatedHonoActor(c);
-	return c.json(
-		await bulkSocialSchedulingService.preview(
-			actor.actorUserId,
-			actor.workspaceId,
-			publishingPreviewSchema.parse(await c.req.json()),
-		),
-	);
-});
-app.get(
-	"/projects/:id/social-accounts/:accountId/publishing-options",
-	async (c) => {
-		const actor = authenticatedHonoActor(c);
-		return c.json(
-			await socialPublishingOptions(
-				actor.workspaceId,
-				c.req.param("accountId"),
-			),
-		);
-	},
-);
-app.post("/projects/:id/social-posts/:postId/refresh-inbox", async (c) => {
-	const actor = authenticatedHonoActor(c);
-	return c.json(
-		await refreshTikTokInbox(
-			actor.workspaceId,
-			c.req.param("id"),
-			c.req.param("postId"),
-		),
-	);
-});
-
-app.post("/projects/:id/campaign-operations/schedule", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-	const { id: projectId, body } = authenticatedHonoInput<{
-		id: string;
-		body: BulkSocialScheduleRequest;
-	}>(c);
-	return c.json(
-		await bulkSocialSchedulingService.schedule({
-			actorUserId: appUser.actorUserId,
-			workspaceId: appUser.workspaceId,
-			projectId,
-			value: body,
-		}),
-		201,
-	);
-});
-
 app.get(
 	"/projects/:id/campaign-operations/editor-action-catalog",
 	async (c) => {
 		const appUser = authenticatedHonoActor(c);
 		const projectId = c.req.param("id");
 		return c.json(
-			await campaignOperationService.getEditorActionCatalog({
-				actorUserId: appUser.actorUserId,
-				workspaceId: appUser.workspaceId,
-				workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-				role: appUser.role,
-				status: appUser.status,
-				pricingTier: appUser.pricingTier,
-				isPersonalWorkspace: appUser.isPersonalWorkspace,
-				projectId,
-			}),
+			await campaignOperationService.getEditorActionCatalog({actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, workspaceOwnerUserId: appUser.workspaceOwnerUserId, role: appUser.role, status: appUser.status, pricingTier: appUser.pricingTier, isPersonalWorkspace: appUser.isPersonalWorkspace, projectId}),
 			200,
 		);
 	},
@@ -1028,16 +821,7 @@ app.post(
 		}>(c);
 		return c.json(
 			await campaignOperationService.previewEditorAction(
-				{
-					actorUserId: appUser.actorUserId,
-					workspaceId: appUser.workspaceId,
-					workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-					role: appUser.role,
-					status: appUser.status,
-					pricingTier: appUser.pricingTier,
-					isPersonalWorkspace: appUser.isPersonalWorkspace,
-					projectId,
-				},
+				{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, workspaceOwnerUserId: appUser.workspaceOwnerUserId, role: appUser.role, status: appUser.status, pricingTier: appUser.pricingTier, isPersonalWorkspace: appUser.isPersonalWorkspace, projectId},
 				body,
 			),
 			200,
@@ -1060,18 +844,7 @@ app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
 	}>(c);
 	return c.json(
 		await campaignOperationService.applyProjectBrandProfileSelected(
-			{
-				actorUserId: appUser.actorUserId,
-				workspaceId: appUser.workspaceId,
-				workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-				role: appUser.role,
-				status: appUser.status,
-				pricingTier: appUser.pricingTier,
-				isPersonalWorkspace: appUser.isPersonalWorkspace,
-				projectId,
-				idempotencyKey,
-				retryOfId,
-			},
+			{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, workspaceOwnerUserId: appUser.workspaceOwnerUserId, role: appUser.role, status: appUser.status, pricingTier: appUser.pricingTier, isPersonalWorkspace: appUser.isPersonalWorkspace, projectId, idempotencyKey, retryOfId},
 			body,
 		),
 		200,
@@ -1093,18 +866,7 @@ app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
 	}>(c);
 	return c.json(
 		await campaignOperationService.applyStyleSelected(
-			{
-				actorUserId: appUser.actorUserId,
-				workspaceId: appUser.workspaceId,
-				workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-				role: appUser.role,
-				status: appUser.status,
-				pricingTier: appUser.pricingTier,
-				isPersonalWorkspace: appUser.isPersonalWorkspace,
-				projectId,
-				idempotencyKey,
-				retryOfId,
-			},
+			{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, workspaceOwnerUserId: appUser.workspaceOwnerUserId, role: appUser.role, status: appUser.status, pricingTier: appUser.pricingTier, isPersonalWorkspace: appUser.isPersonalWorkspace, projectId, idempotencyKey, retryOfId},
 			body,
 		),
 		200,
@@ -1126,17 +888,7 @@ app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
 	}>(c);
 	return c.json(
 		await campaignOperationService.applyMotionSelected(
-			{
-				actorUserId: appUser.actorUserId,
-				workspaceId: appUser.workspaceId,
-				workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-				projectId,
-				pricingTier: resolvePricingTier(appUser.pricingTier),
-				role: appUser.role,
-				status: appUser.status,
-				idempotencyKey,
-				retryOfId,
-			},
+			{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey, retryOfId},
 			body,
 		),
 		200,
@@ -1151,7 +903,7 @@ app.get("/projects/:id/export-bundles/:bundleId", async (c) => {
 	}>(c);
 	return c.json(
 		await campaignOperationService.getExportBundle(
-			{ workspaceId: appUser.workspaceId, projectId },
+			{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId},
 			bundleId,
 		),
 		200,
@@ -1171,15 +923,7 @@ app.post("/projects/:id/export-bundles/:bundleId/retry", async (c) => {
 	}>(c);
 	return c.json(
 		await campaignOperationService.retryExportBundle(
-			{
-				actorUserId: appUser.actorUserId,
-				workspaceId: appUser.workspaceId,
-				projectId,
-				pricingTier: resolvePricingTier(appUser.pricingTier),
-				role: appUser.role,
-				status: appUser.status,
-				idempotencyKey,
-			},
+			{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey},
 			bundleId,
 		),
 		202,
@@ -1201,15 +945,7 @@ app.post(
 		}>(c);
 		return c.json(
 			await campaignOperationService.retryExportBundleOperation(
-				{
-					actorUserId: appUser.actorUserId,
-					workspaceId: appUser.workspaceId,
-					projectId,
-					pricingTier: resolvePricingTier(appUser.pricingTier),
-					role: appUser.role,
-					status: appUser.status,
-					idempotencyKey,
-				},
+				{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey},
 				operationId,
 			),
 			202,
@@ -1224,12 +960,7 @@ app.get("/projects/:id/export-bundles/:bundleId/download", async (c) => {
 		bundleId: string;
 	}>(c);
 	const url = await campaignOperationService.getExportBundleDownload(
-		{
-			workspaceId: appUser.workspaceId,
-			projectId,
-			role: appUser.role,
-			status: appUser.status,
-		},
+		{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, role: appUser.role, status: appUser.status},
 		bundleId,
 	);
 	return c.redirect(url, 307);
@@ -1249,18 +980,7 @@ app.post(
 				retryOfId?: string;
 			}>(c);
 		const result = await campaignOperationService.applySceneTemplate(
-			{
-				actorUserId: appUser.actorUserId,
-				workspaceId: appUser.workspaceId,
-				workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-				role: appUser.role,
-				status: appUser.status,
-				pricingTier: appUser.pricingTier,
-				isPersonalWorkspace: appUser.isPersonalWorkspace,
-				projectId: id,
-				idempotencyKey,
-				retryOfId,
-			},
+			{actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, workspaceOwnerUserId: appUser.workspaceOwnerUserId, role: appUser.role, status: appUser.status, pricingTier: appUser.pricingTier, isPersonalWorkspace: appUser.isPersonalWorkspace, projectId: id, idempotencyKey, retryOfId},
 			profileId,
 			templateId,
 			body,
@@ -1489,11 +1209,11 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
 		);
 	}
 	const result = await clipExportService.create(
+		appUser,
 		c.req.param("id"),
 		c.req.param("clipId"),
 		parsed.data,
 		idempotencyKey,
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
 	);
 	return c.json(
 		result,
@@ -1505,10 +1225,7 @@ app.get("/projects/:id/exports/current", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 	return c.json(
 		{
-			exports: await clipExportService.listCurrentProjectExports(
-				appUser.workspaceId,
-				c.req.param("id"),
-			),
+			exports: await clipExportService.listCurrentProjectExports(appUser, c.req.param("id")),
 		},
 		200,
 		{ "Cache-Control": "private, no-store" },
@@ -1517,26 +1234,14 @@ app.get("/projects/:id/exports/current", async (c) => {
 
 app.get("/projects/:id/clips/:clipId/exports/:exportId", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const result = await clipExportService.getOwned(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		c.req.param("clipId"),
-		c.req.param("exportId"),
-		appUser.workspaceId,
-	);
+	const result = await clipExportService.getOwned(appUser, c.req.param("id"), c.req.param("clipId"), c.req.param("exportId"));
 	if (!result) return c.json({ error: "export_not_found" }, 404);
 	return c.json(result, 200, { "Cache-Control": "private, no-store" });
 });
 
 app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const result = await clipExportService.retryFailed(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		c.req.param("clipId"),
-		c.req.param("exportId"),
-		appUser.workspaceId,
-	);
+	const result = await clipExportService.retryFailed(appUser, c.req.param("id"), c.req.param("clipId"), c.req.param("exportId"));
 	return c.json(result, 202);
 });
 
@@ -1553,14 +1258,7 @@ app.post(
 				400,
 			);
 		}
-		const result = await clipExportService.createShareLink(
-			appUser.workspaceOwnerUserId,
-			c.req.param("id"),
-			c.req.param("clipId"),
-			c.req.param("exportId"),
-			parsed.data.expiresInDays,
-			appUser.workspaceId,
-		);
+		const result = await clipExportService.createShareLink(appUser, c.req.param("id"), c.req.param("clipId"), c.req.param("exportId"), parsed.data.expiresInDays);
 		return c.json(result, 201, { "Cache-Control": "private, no-store" });
 	},
 );
@@ -1569,13 +1267,7 @@ app.delete(
 	"/projects/:id/clips/:clipId/exports/:exportId/share-links",
 	async (c) => {
 		const appUser = authenticatedHonoActor(c);
-		const result = await clipExportService.revokeShareLinks(
-			appUser.workspaceOwnerUserId,
-			c.req.param("id"),
-			c.req.param("clipId"),
-			c.req.param("exportId"),
-			appUser.workspaceId,
-		);
+		const result = await clipExportService.revokeShareLinks(appUser, c.req.param("id"), c.req.param("clipId"), c.req.param("exportId"));
 		return c.json(result, 200);
 	},
 );
@@ -1592,7 +1284,6 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
 	const result = await clipEditorDocumentPersistence.mutateProjectSelection({
 		actorUserId: appUser.actorUserId,
 		workspaceId: appUser.workspaceId,
-		workspaceOwnerUserId: appUser.workspaceOwnerUserId,
 		projectId,
 		excludeClipId: parsed.data.excludeClipId,
 		intent: {
@@ -1615,7 +1306,6 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
 	const result = await clipEditorDocumentPersistence.mutateProjectSelection({
 		actorUserId: appUser.actorUserId,
 		workspaceId: appUser.workspaceId,
-		workspaceOwnerUserId: appUser.workspaceOwnerUserId,
 		projectId,
 		excludeClipId: parsed.data.excludeClipId,
 		intent: { kind: "patch_studio_edits", patches: parsed.data.patches },
@@ -1655,10 +1345,7 @@ app.get("/broll/search", async (c) => {
 app.get("/projects/:id/content-suite", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 	const projectId = c.req.param("id");
-	const assets = await contentSuiteService.list(
-		appUser.workspaceOwnerUserId,
-		projectId,
-	);
+	const assets = await contentSuiteService.list(appUser, projectId);
 	return c.json({ assets }, 200);
 });
 
@@ -1671,12 +1358,7 @@ app.post("/projects/:id/content-suite", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
-	const assets = await contentSuiteService.generate(
-		appUser.actorUserId,
-		appUser.workspaceId,
-		projectId,
-		parsed.data.types,
-	);
+	const assets = await contentSuiteService.generate(appUser, projectId, parsed.data.types);
 	return c.json({ assets }, 200);
 });
 
@@ -1684,10 +1366,7 @@ app.post("/projects/:id/content-suite", async (c) => {
 
 app.get("/projects/:id/analytics", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const analytics = await analyticsService.getProjectAnalytics(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-	);
+	const analytics = await analyticsService.getProjectAnalytics(appUser, c.req.param("id"));
 	return c.json(analytics, 200);
 });
 
@@ -1695,10 +1374,7 @@ app.get("/projects/:id/analytics", async (c) => {
 
 app.get("/social/accounts", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const accounts = await socialOAuthService.listAccounts(
-		appUser.workspaceOwnerUserId,
-		appUser.workspaceId,
-	);
+	const accounts = await socialOAuthService.listAccounts(appUser);
 	return c.json({ accounts }, 200);
 });
 
@@ -1729,10 +1405,7 @@ app.get("/social/oauth/start/:platform", async (c) => {
 
 	const redirectPath = safeSocialRedirectPath(c.req.query("redirect"));
 	try {
-		const url = await socialOAuthService.createAuthorizationUrl({
-			userId: appUser.workspaceOwnerUserId,
-			workspaceId: appUser.workspaceId,
-			actorUserId: appUser.actorUserId,
+		const url = await socialOAuthService.createAuthorizationUrl(appUser, {
 			platform: parsedPlatform.data,
 			origin,
 			redirectPath,
@@ -1812,11 +1485,7 @@ app.get("/social/oauth/facebook-selection/:token", async (c) => {
 	try {
 		return c.json(
 			{
-				pages: await socialOAuthService.getFacebookPageSelection(
-					appUser.workspaceOwnerUserId,
-					appUser.workspaceId,
-					token,
-				),
+				pages: await socialOAuthService.getFacebookPageSelection(appUser, token),
 			},
 			200,
 		);
@@ -1852,12 +1521,7 @@ app.post("/social/oauth/facebook-selection/:token", async (c) => {
 		return c.json({ error: "invalid_input" }, 400);
 	}
 	try {
-		const account = await socialOAuthService.completeFacebookPageSelection(
-			appUser.workspaceOwnerUserId,
-			appUser.workspaceId,
-			token,
-			payload.pageId,
-		);
+		const account = await socialOAuthService.completeFacebookPageSelection(appUser, token, payload.pageId);
 		return c.json({ account }, 201);
 	} catch (error) {
 		const code =
@@ -1879,161 +1543,15 @@ app.post("/social/oauth/facebook-selection/:token", async (c) => {
 
 app.delete("/social/accounts/:accountId", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	await socialOAuthService.disconnectAccount(
-		appUser.workspaceOwnerUserId,
-		c.req.param("accountId"),
-		appUser.workspaceId,
-	);
+	await socialOAuthService.disconnectAccount(appUser, c.req.param("accountId"));
 	return c.json({ ok: true }, 200);
-});
-
-// --- Social scheduling metadata ---
-
-app.get("/projects/:id/social-posts", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-	const postPage = await socialService.listProjectPosts(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		{
-			activeOnly: c.req.query("active") === "1",
-			trackedIds: (c.req.query("tracked") ?? "").split(",").filter(Boolean),
-			cursor: c.req.query("cursor") ?? undefined,
-		},
-	);
-	return c.json({ posts: postPage.items, nextCursor: postPage.nextCursor }, 200);
-});
-
-app.post("/projects/:id/social-posts", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-	const projectId = c.req.param("id");
-	const parsed = scheduleSocialPostSchema.safeParse(
-		await c.req.json().catch(() => ({})),
-	);
-	if (!parsed.success) {
-		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
-	}
-	const post = await socialService.schedulePost(
-		appUser.workspaceOwnerUserId,
-		projectId,
-		parsed.data,
-		{
-			workspaceId: appUser.workspaceId,
-			actorUserId: appUser.actorUserId,
-		},
-	);
-	return c.json(post, 201);
-});
-
-app.delete("/projects/:id/social-posts/:postId", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-	const post = await socialService.cancelPost(
-		c.req.param("id"),
-		c.req.param("postId"),
-		{
-			workspaceId: appUser.workspaceId,
-			actorUserId: appUser.actorUserId,
-		},
-	);
-	return c.json(post, 200);
-});
-
-app.get("/projects/:id/social-posts/:postId/publication", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-	return c.json(
-		await socialService.inspectPublication(
-			appUser.workspaceId,
-			c.req.param("postId"),
-			c.req.param("id"),
-		),
-		200,
-	);
-});
-
-app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-	const parsed = recheckSocialPublicationSchema.safeParse(
-		await c.req.json().catch(() => ({})),
-	);
-	if (!parsed.success) {
-		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
-	}
-	return c.json(
-		await socialService.recheckPublication(
-			appUser.workspaceId,
-			appUser.actorUserId,
-			c.req.param("postId"),
-			parsed.data,
-			c.req.param("id"),
-		),
-		200,
-	);
-});
-
-app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-	const parsed = confirmSocialPublicationSchema.safeParse(
-		await c.req.json().catch(() => ({})),
-	);
-	if (!parsed.success) {
-		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
-	}
-	return c.json(
-		await socialService.confirmPublication(
-			appUser.workspaceId,
-			appUser.actorUserId,
-			c.req.param("postId"),
-			parsed.data,
-			c.req.param("id"),
-		),
-		200,
-	);
-});
-
-app.post("/projects/:id/social-posts/:postId/publish-again", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-	const parsed = republishSocialPublicationSchema.safeParse(
-		await c.req.json().catch(() => ({})),
-	);
-	if (!parsed.success) {
-		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
-	}
-	return c.json(
-		await socialService.republishPublication(
-			appUser.workspaceId,
-			appUser.actorUserId,
-			c.req.param("postId"),
-			parsed.data,
-			c.req.param("id"),
-		),
-		201,
-	);
-});
-
-app.post("/projects/:id/social-posts/:postId/metrics", async (c) => {
-	const appUser = authenticatedHonoActor(c);
-	const parsed = socialPostMetricsSchema.safeParse(
-		await c.req.json().catch(() => ({})),
-	);
-	if (!parsed.success) {
-		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
-	}
-	const post = await socialService.recordPostMetrics(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		c.req.param("postId"),
-		parsed.data,
-	);
-	return c.json(post, 201);
 });
 
 // --- Voiceover dubbing ---
 
 app.get("/projects/:id/dubs", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const dubs = await dubbingService.listProjectDubs(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-	);
+	const dubs = await dubbingService.listProjectDubs(appUser, c.req.param("id"));
 	return c.json({ dubs }, 200);
 });
 
@@ -2052,13 +1570,7 @@ app.post("/projects/:id/dubs", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
-	const result = await dubbingService.requestClipDub(
-		appUser.actorUserId,
-		appUser.workspaceId,
-		c.req.param("id"),
-		idempotencyKey,
-		parsed.data,
-	);
+	const result = await dubbingService.requestClipDub(appUser, c.req.param("id"), idempotencyKey, parsed.data);
 	return c.json(result, 202);
 });
 
@@ -2070,12 +1582,7 @@ app.get("/projects/:id/dubs/:dubId/download", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
-	const result = await dubbingService.getDubDownloadUrl(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		c.req.param("dubId"),
-		parsed.data.asset,
-	);
+	const result = await dubbingService.getDubDownloadUrl(appUser, c.req.param("id"), c.req.param("dubId"), parsed.data.asset);
 	return c.json(result, 200);
 });
 
@@ -2088,11 +1595,7 @@ app.get("/projects/:id/clips/previews", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
-	const result = await clipService.getProjectClipPreviewUrls(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		parsed.data.aspectRatio,
-	);
+	const result = await clipService.getProjectClipPreviewUrls(appUser, c.req.param("id"), parsed.data.aspectRatio);
 	return c.json(result, 200);
 });
 
@@ -2105,12 +1608,7 @@ app.get("/projects/:id/clips/:clipId/download", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
-	const result = await clipService.getClipDownloadUrl(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		c.req.param("clipId"),
-		parsed.data.aspectRatio,
-	);
+	const result = await clipService.getClipDownloadUrl(appUser, c.req.param("id"), c.req.param("clipId"), parsed.data.aspectRatio);
 	return c.json(result, 200);
 });
 
@@ -2130,31 +1628,19 @@ app.get("/projects/:id/clips/:clipId/file", async (c) => {
 		);
 	}
 
-	const result = await clipService.getClipDownloadUrl(
-		appUser.workspaceOwnerUserId,
-		projectId,
-		c.req.param("clipId"),
-		parsedQuery.data.aspectRatio,
-	);
+	const result = await clipService.getClipDownloadUrl(appUser, projectId, c.req.param("clipId"), parsedQuery.data.aspectRatio);
 	return c.redirect(result.downloadUrl, 302);
 });
 
 app.get("/brand-templates", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const result = await brandTemplateService.list(appUser.workspaceOwnerUserId, {
-		workspaceId: appUser.workspaceId,
-		actorUserId: appUser.actorUserId,
-	});
+	const result = await brandTemplateService.list(appUser);
 	return c.json(result, 200);
 });
 
 app.get("/brand-templates/:id", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const template = await brandTemplateService.get(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	const template = await brandTemplateService.get(appUser, c.req.param("id"));
 	return c.json(template, 200);
 });
 
@@ -2165,11 +1651,7 @@ app.post("/brand-templates", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
-	const template = await brandTemplateService.create(
-		appUser.workspaceOwnerUserId,
-		parsed.data,
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	const template = await brandTemplateService.create(appUser, parsed.data);
 	return c.json(template, 201);
 });
 
@@ -2180,32 +1662,19 @@ app.patch("/brand-templates/:id", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
-	const template = await brandTemplateService.update(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		parsed.data,
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	const template = await brandTemplateService.update(appUser, c.req.param("id"), parsed.data);
 	return c.json(template, 200);
 });
 
 app.delete("/brand-templates/:id", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	await brandTemplateService.softDelete(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	await brandTemplateService.softDelete(appUser, c.req.param("id"));
 	return c.json({ ok: true }, 200);
 });
 
 app.post("/brand-templates/:id/set-default", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	await brandTemplateService.setDefault(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	await brandTemplateService.setDefault(appUser, c.req.param("id"));
 	return c.json({ ok: true }, 200);
 });
 
@@ -2216,12 +1685,7 @@ app.post("/brand-templates/:id/duplicate", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
-	const template = await brandTemplateService.duplicate(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		parsed.data.name,
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	const template = await brandTemplateService.duplicate(appUser, c.req.param("id"), parsed.data.name);
 	return c.json(template, 201);
 });
 
@@ -2233,21 +1697,13 @@ app.post("/brand-templates/logo/presign", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
-	const result = await brandTemplateService.presignLogoUpload(
-		appUser.workspaceOwnerUserId,
-		parsed.data,
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	const result = await brandTemplateService.presignLogoUpload(appUser, parsed.data);
 	return c.json(result, 200);
 });
 
 app.get("/brand-templates/:id/logo-url", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const url = await brandTemplateService.getLogoDownloadUrl(
-		appUser.workspaceOwnerUserId,
-		c.req.param("id"),
-		{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-	);
+	const url = await brandTemplateService.getLogoDownloadUrl(appUser, c.req.param("id"));
 	if (!url) return c.json({ error: "brand_template_logo_missing" }, 404);
 	return c.json({ url }, 200);
 });

@@ -1,5 +1,9 @@
 import { publishingPreviewSchema } from "@narriflow/validators";
 import {
+	regenerateClipsRequestSchema,
+	recheckSocialPublicationSchema,
+	confirmSocialPublicationSchema,
+	republishSocialPublicationSchema,
 	brandFontFinalizeSchema,
 	bulkSocialScheduleSchema,
 	generateAssistedCopySchema,
@@ -239,12 +243,10 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 	project("PUT", "/projects/:id/clips/:clipId/editor", "content.edit"),
 	project("POST", "/projects/:id/clips/:clipId/editor/reset", "content.edit"),
 	project("DELETE", "/projects/:id/clips/:clipId", "content.edit"),
-	project(
-		"POST",
-		"/projects/:id/clips/regenerate",
-		"processing.consume",
-		actorRate("regenerate", 20),
-	),
+	{
+    ...project("POST", "/projects/:id/clips/regenerate", "processing.consume", actorRate("regenerate", 20)),
+    input: idempotentBodyInput(regenerateClipsRequestSchema, ["id"]),
+  },
 	project(
 		"POST",
 		"/projects/:id/clips/render",
@@ -558,39 +560,30 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 		path: "/social/accounts/:accountId",
 		capability: "social.manage",
 	},
-	project("GET", "/projects/:id/social-posts", "content.view"),
-	project(
-		"POST",
-		"/projects/:id/social-posts",
-		"publishing.manage",
-		actorRate("social-posts", 30),
-	),
-	project("DELETE", "/projects/:id/social-posts/:postId", "publishing.manage"),
-	project(
-		"GET",
-		"/projects/:id/social-posts/:postId/publication",
-		"content.view",
-	),
-	project(
-		"POST",
-		"/projects/:id/social-posts/:postId/recheck",
-		"publishing.manage",
-	),
-	project(
-		"POST",
-		"/projects/:id/social-posts/:postId/confirm",
-		"publishing.manage",
-	),
-	project(
-		"POST",
-		"/projects/:id/social-posts/:postId/publish-again",
-		"publishing.manage",
-	),
-	project(
-		"POST",
-		"/projects/:id/social-posts/:postId/metrics",
-		"publishing.manage",
-	),
+	{
+		...project("GET", "/projects/:id/social-posts", "content.view"),
+		input: paramsInput("id"),
+	},
+	{
+		...project("DELETE", "/projects/:id/social-posts/:postId", "publishing.manage"),
+		input: paramsInput("id", "postId"),
+	},
+	{
+		...project("GET", "/projects/:id/social-posts/:postId/publication", "content.view"),
+		input: paramsInput("id", "postId"),
+	},
+	{
+		...project("POST", "/projects/:id/social-posts/:postId/recheck", "publishing.manage"),
+		input: bodyInput(recheckSocialPublicationSchema, ["id", "postId"]),
+	},
+	{
+		...project("POST", "/projects/:id/social-posts/:postId/confirm", "publishing.manage"),
+		input: bodyInput(confirmSocialPublicationSchema, ["id", "postId"]),
+	},
+	{
+		...project("POST", "/projects/:id/social-posts/:postId/publish-again", "publishing.manage"),
+		input: bodyInput(republishSocialPublicationSchema, ["id", "postId"]),
+	},
 	project("GET", "/projects/:id/dubs", "content.view"),
 	project(
 		"POST",
@@ -933,12 +926,6 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
 		"app/(app)/projects/actions.ts",
 		"moveProjectToFolderAction",
 		"project",
-		"content.edit",
-	),
-	action(
-		"app/(app)/projects/actions.ts",
-		"createProjectFormAction",
-		"workspace",
 		"content.edit",
 	),
 	action(
