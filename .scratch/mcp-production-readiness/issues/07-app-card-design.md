@@ -32,3 +32,5 @@ A temporary localhost host using the installed AppBridge and PostMessageTranspor
 Repository lint, typecheck, fast tests and build pass. MCP integration passes 156 tests with 745 assertions. Export refresh, selected-export navigation and terminal scheduling also passed the final localhost bridge walkthrough.
 
 Commit `658c9fe15de53587ff1756df908595544867951c` is pushed to dev. Vercel deployment `dpl_AmwFVewf7bMiLpvU8sWyq4Qep7o1` reached READY with the canonical alias assigned. All four v2 resources are readable through the actual connected Codex MCP server, with the expected MIME type and themed template. Fresh clip review and upload handoff calls succeeded. A full live file transfer and a visual observation of the new Codex card remain tracked in ticket 06; the localhost screenshots establish the implemented layout without claiming those client gates passed.
+
+After refreshing the connection, the user confirmed that the new layout displays in Codex. The current server's resource discovery and clip template read use v2. In-card playback, button interaction and live file transfer remain separate acceptance checks in ticket 06.
