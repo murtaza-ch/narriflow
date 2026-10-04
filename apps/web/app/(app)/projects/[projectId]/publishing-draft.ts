@@ -1,33 +1,17 @@
-import { z } from "zod";
 import {
-	socialDeliveryModeSchema,
-	socialThumbnailSelectionSchema,
-	publishingTimingSchema,
+	type PublishingDraft,
 	type ClipSnapshot,
 	type ClipExportSnapshot,
 	type SocialPlatform,
 	SOCIAL_PROVIDER_CAPABILITIES,
 } from "@narriflow/validators";
 
-export const publishingDraftSchema = z.object({
-	caption: z.string(),
-	title: z.string(),
-	variantId: z.string().nullable(),
-	deliveryMode: socialDeliveryModeSchema,
-	settings: z.record(z.string(), z.unknown()),
-	thumbnail: socialThumbnailSelectionSchema.nullable(),
-	revision: z.number().int(),
-	edited: z.boolean(),
-	generated: z.boolean(),
-	editVersion: z.number().int(),
-	reviewedRevision: z.number().int(),
-});
-export type PublishingDraft = z.infer<typeof publishingDraftSchema>;
-export const savedPublishingSchema = z.object({
-	drafts: z.record(z.string(), publishingDraftSchema),
-	accountIds: z.array(z.string()),
-	timing: publishingTimingSchema,
-});
+// Access storage only when the client session opens, never during rendering.
+export const browserPublishingStorage = {
+	getItem: (key: string) => window.localStorage.getItem(key),
+	setItem: (key: string, value: string) => window.localStorage.setItem(key, value),
+	removeItem: (key: string) => window.localStorage.removeItem(key),
+};
 export function publishingDraftKey(clipId: string, accountId: string) {
 	return `${clipId}:${accountId}`;
 }

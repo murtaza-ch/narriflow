@@ -13,6 +13,7 @@ import {
 	useEffectEvent,
 	useRef,
 	useState,
+	useSyncExternalStore,
 	type ReactNode,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -48,33 +49,28 @@ import { Textarea } from "@narriflow/ui/components/textarea";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
-	bulkSocialScheduleSchema,
 	clipExportSnapshotSchema,
 	socialPostSnapshotSchema,
 	SOCIAL_PROVIDER_CAPABILITIES,
-	type BulkSocialScheduleRequest,
+	type BulkSocialScheduleOutcome,
+	type PublishingDraft,
 	type ClipSnapshot,
 	type ClipExportSnapshot,
 	type SocialAccountSnapshot,
-	type SocialPlatform,
 	type SocialPostSnapshot,
-	type PublishingPreviewRequest,
 } from "@narriflow/validators";
-import { formatDateInputInTimeZone, formatDuration } from "@/lib/format";
+import { formatDuration } from "@/lib/format";
 import {
 	isLiveSocialPostSnapshot,
 	SOCIAL_PLATFORM_LABELS,
 } from "@/lib/social-post-status";
 import {
-	PublishingRequestError,
-	applyGeneratedDescription,
-	blankPublishingDraft,
+	browserPublishingStorage,
 	currentPublicationExport,
 	publishingDraftKey,
 	publishingRequest,
-	savedPublishingSchema,
-	type PublishingDraft,
 } from "./publishing-draft";
+import { createPublishingCompositionSession, type PublishingCompositionSession, type PublishingOptions } from "./publishing-composition-session";
 import { PublishingPosts } from "./publishing-posts";
 import { PublishingCover } from "./publishing-cover";
 
@@ -149,6 +145,14 @@ export function PublishingProvider({
 	children,
 	...config
 }: Config & { children: ReactNode }) {
+	const session = useMemo(() => createPublishingCompositionSession({
+		scope: { actorId: config.actorId, workspaceId: config.workspaceId, projectId: config.projectId },
+		storage: browserPublishingStorage,
+		createId: () => crypto.randomUUID(),
+		now: () => new Date(),
+	}), [config.actorId, config.workspaceId, config.projectId]);
+	const composition = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+	useEffect(() => session.reconcile({ clips: config.clips, accounts: config.accounts, workspaceTimezone: config.workspaceTimezone, facebookPublishingEnabled: config.facebookPublishingEnabled }), [session, config.clips, config.accounts, config.workspaceTimezone, config.facebookPublishingEnabled]);
 	const triggerRef = useRef<HTMLElement | null>(null);
 	const [posts, setPosts] = useState(config.initialPosts);
 	const [nextPostsCursor, setNextPostsCursor] = useState(config.initialPostsCursor);
@@ -209,20 +213,8 @@ export function PublishingProvider({
 				document.activeElement instanceof HTMLElement
 					? document.activeElement
 					: null;
-			try {
-				const raw = localStorage.getItem(
-					`narriflow:publishing:${config.actorId}:${config.workspaceId}:${config.projectId}:submission`,
-				);
-				const saved = raw
-					? bulkSocialScheduleSchema.safeParse(JSON.parse(raw))
-					: null;
-				if (saved?.success) next = saved.data.items.map((item) => item.clipId);
-			} catch {}
-			setIds(
-				[...new Set(next)].filter((id) =>
-					config.clips.some((c) => c.id === id),
-				),
-			);
+			session.open(next, { clips: config.clips, accounts: config.accounts, workspaceTimezone: config.workspaceTimezone, facebookPublishingEnabled: config.facebookPublishingEnabled });
+			setIds(session.getSnapshot().clipIds);
 			setExportId(preferred);
 			setMode("compose");
 			setOpen(true);
@@ -230,9 +222,10 @@ export function PublishingProvider({
 		[
 			config.clips,
 			config.canPublish,
-			config.actorId,
-			config.workspaceId,
-			config.projectId,
+			session,
+			config.accounts,
+			config.workspaceTimezone,
+			config.facebookPublishingEnabled,
 		],
 	);
 	function viewPosts(next: string[]) {
@@ -258,7 +251,13 @@ export function PublishingProvider({
 			router.replace(`?${next.toString()}`, { scroll: false });
 		}
 	}, [deepLink, compose, params, router]);
-	const selected = ids.flatMap((id) => {
+	const onSubmitted = async (outcome: BulkResult) => {
+		setSubmission(outcome);
+		setIds(session.getSnapshot().clipIds);
+		setMode("posts");
+		await refresh().catch(() => setStatusError("Posts could not be refreshed. Your submission has been saved."));
+	};
+	const selected = (mode === "compose" ? composition.clipIds : ids).flatMap((id) => {
 		const clip = config.clips.find((c) => c.id === id);
 		return clip ? [clip] : [];
 	});
@@ -322,22 +321,17 @@ export function PublishingProvider({
 							<Drawer.CloseTrigger asChild>
 								<CloseButton size="sm" aria-label="Close publishing drawer" />
 							</Drawer.CloseTrigger>
-							{mode === "compose" && selected.length > 0 ? (
+							{mode === "compose" && selected.length > 0 && !composition.recoveryUnavailable ? (
 								<PublishingComposer
 									config={config}
+									session={session}
 									clips={selected}
 									preferredExportId={exportId}
 									open={open}
-									onSubmitted={async (outcome) => {
-										setSubmission(outcome);
-										setMode("posts");
-										await refresh().catch(() =>
-											setStatusError(
-												"Posts could not be refreshed. Your submission has been saved.",
-											),
-										);
-									}}
+									onSubmitted={onSubmitted}
 								/>
+							) : mode === "compose" && (composition.pending || composition.recoveryUnavailable) ? (
+								<PublishingRecoveryComposer session={session} onSubmitted={onSubmitted} projectId={config.projectId} />
 							) : (
 								<Drawer.Body p={{ base: "4", md: "6" }} overflowY="auto">
 									{submission?.items.some(
@@ -406,99 +400,56 @@ export function PublishingProvider({
 	);
 }
 
-type Options = {
-	privacyOptions: string[];
-	commentDisabled: boolean;
-	duetDisabled: boolean;
-	stitchDisabled: boolean;
-	maximumDurationSec: number;
-	inboxEnabled: boolean;
-	directEnabled: boolean;
-};
-type Generated = {
-	id: string;
-	platform: SocialPlatform;
-	caption: string;
-	hashtags: string[];
-	title: string | null;
-};
-type BulkResult = {
-	status: string;
-	items: Array<{
-		clipId: string;
-		accountId: string;
-		status: string;
-		socialPostId: string | null;
-		errorCode: string | null;
-		retryable: boolean;
-	}>;
-	counts: { succeeded: number; failed: number; ineligible: number };
-};
+type Options = PublishingOptions;
+type BulkResult = BulkSocialScheduleOutcome;
+function PublishingRecoveryComposer({ session, onSubmitted, projectId }: { session: PublishingCompositionSession; onSubmitted(outcome: BulkResult): Promise<void>; projectId: string }) {
+	const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+	return <>
+		<Drawer.Body p={{ base: "4", md: "6" }}>
+			<Text>{snapshot.recoveryUnavailable ? "Saved publishing information could not be read. Check it before composing another post." : "The previous submission is saved. Check its result before composing another post."}</Text>
+			{snapshot.error && <Text role="status" color="warning.fg" mt="3">{snapshot.error}</Text>}
+		</Drawer.Body>
+		<Drawer.Footer><Button size="sm" disabled={snapshot.busy || (!snapshot.pending && !snapshot.recoveryUnavailable)} onClick={() => void session.submit({ exports: [], options: {} }, (payload) => publishingRequest(`/api/projects/${projectId}/campaign-operations/schedule`, payload)).then((outcome) => outcome ? onSubmitted(outcome) : undefined)}>
+			{snapshot.busy && <Spinner size="xs" />} Check previous submission
+		</Button></Drawer.Footer>
+	</>;
+}
 function PublishingComposer({
 	config,
+	session,
 	clips,
 	preferredExportId,
 	open,
 	onSubmitted,
 }: {
 	config: Config;
+	session: PublishingCompositionSession;
 	clips: ClipSnapshot[];
 	preferredExportId?: string;
 	open: boolean;
 	onSubmitted(outcome: BulkResult): Promise<void>;
 }) {
 	const router = useRouter();
-	const storageKey = `narriflow:publishing:${config.actorId}:${config.workspaceId}:${config.projectId}`;
-	const pendingKey = `${storageKey}:submission`;
-	const outcomeKey = `${storageKey}:outcome`;
-	const [restored, setRestored] = useState(false);
-	const [drafts, setDrafts] = useState<Record<string, PublishingDraft>>({});
-	const draftRef = useRef(drafts);
-	draftRef.current = drafts;
-	const [accountIds, setAccountIds] = useState<string[]>([]);
+	const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+	const { restored, drafts, accountIds, timing, copyErrors, busy, pending, result, error, generating, generationNeeded } = snapshot;
+	const setError = session.setError;
+	const setTiming = session.updateTiming;
 	const [activeId, setActiveId] = useState(clips[0]!.id);
 	const [exports, setExports] = useState<ClipExportSnapshot[]>([]);
 	const [options, setOptions] = useState<Record<string, Options>>({});
 	const [optionErrors, setOptionErrors] = useState<Record<string, string>>({});
-	const [timing, setTiming] = useState<
-		Omit<PublishingPreviewRequest, "clipIds">
-	>({
-		scheduleMode: "now",
-		startDate: formatDateInputInTimeZone(
-			new Date(),
-			config.workspaceTimezone,
-			1,
-		),
-		timeZone: config.workspaceTimezone,
-		postingWindow: { start: "09:00", end: "17:00" },
-		frequency: { unit: "hours", value: 2 },
-		dstDisambiguation: null,
-	});
 	const [slots, setSlots] = useState<
 		Array<{ clipId: string; scheduledFor: string }>
 	>([]);
 	const [previewError, setPreviewError] = useState("");
-	const [error, setError] = useState("");
-	const [copyErrors, setCopyErrors] = useState<Record<string, string>>({});
-	const [busy, setBusy] = useState(false);
 	const [renderBusy, setRenderBusy] = useState(false);
-	const [pending, setPending] = useState<BulkSocialScheduleRequest | null>(
-		null,
-	);
-	const [result, setResult] = useState<BulkResult | null>(null);
 	const [override, setOverride] = useState("");
-	const [approvalBlocked, setApprovalBlocked] = useState(false);
+	const approvalBlocked = result?.items.some((item) => item.errorCode === "review_approval_required") ?? false;
 	const [instruction, setInstruction] = useState("");
 	const [lockedPhrases, setLockedPhrases] = useState("");
 	const [lockedHashtags, setLockedHashtags] = useState("");
 	const [replaceScope, setReplaceScope] = useState<string | null>(null);
 	const [coverAccount, setCoverAccount] = useState<string | null>(null);
-	const generating = useRef(new Set<string>());
-	const [, setGenerationTick] = useState(0);
-	const generatedCopies = useRef<Record<string, Generated>>({});
-	const generationRequests = useRef<
-		Record<string, { key: string; signature: string }>
-	>({});
 	const eligible = useMemo(
 		() =>
 			config.accounts.filter(
@@ -533,153 +484,9 @@ function PublishingComposer({
 			),
 		[clips, accounts],
 	);
-	const initialized = useRef(false);
 	useEffect(() => {
-		if (initialized.current) return;
-		initialized.current = true;
-		try {
-			const raw = localStorage.getItem(storageKey);
-			const saved = raw
-				? savedPublishingSchema.safeParse(JSON.parse(raw))
-				: null;
-			if (saved?.success) {
-				setDrafts(saved.data.drafts);
-				if (Object.values(saved.data.drafts).some((draft) => draft.thumbnail)) {
-					void publishingRequest<{
-						assets: Array<{ id: string; fingerprint: string }>;
-					}>("/api/visual-assets")
-						.then(({ assets }) => {
-							const missing = new Set(
-								Object.entries(saved.data.drafts)
-									.filter(
-										([, draft]) =>
-											draft.thumbnail &&
-											!assets.some(
-												(asset) =>
-													asset.id === draft.thumbnail!.assetId &&
-													asset.fingerprint === draft.thumbnail!.fingerprint,
-											),
-									)
-									.map(([key]) => key),
-							);
-							if (!missing.size) return;
-							setDrafts((current) =>
-								Object.fromEntries(
-									Object.entries(current).map(([key, draft]) => [
-										key,
-										missing.has(key) &&
-										draft.thumbnail?.assetId ===
-											saved.data.drafts[key]?.thumbnail?.assetId
-											? { ...draft, thumbnail: null }
-											: draft,
-									]),
-								),
-							);
-							setError(
-								"A saved cover is no longer available. Review the default cover or choose another before submitting.",
-							);
-						})
-						.catch(() =>
-							setError(
-								"Saved covers could not be checked. They will be validated again when you submit.",
-							),
-						);
-				}
-				setAccountIds(
-					eligible.length === 1
-						? [eligible[0]!.id]
-						: saved.data.accountIds.filter((id) =>
-								eligible.some((a) => a.id === id),
-							),
-				);
-				setTiming({
-					...saved.data.timing,
-					scheduleMode:
-						clips.length === 1 && saved.data.timing.scheduleMode === "spread"
-							? "scheduled"
-							: saved.data.timing.scheduleMode,
-					timeZone: config.workspaceTimezone,
-				});
-			} else if (eligible.length === 1) setAccountIds([eligible[0]!.id]);
-			const previousOutcome = localStorage.getItem(outcomeKey);
-			if (previousOutcome) {
-				const value = JSON.parse(previousOutcome) as BulkResult;
-				if (Array.isArray(value.items)) {
-					setResult(value);
-					setApprovalBlocked(
-						value.items.some((i) => i.errorCode === "review_approval_required"),
-					);
-				}
-			}
-			const previous = localStorage.getItem(pendingKey);
-			if (previous) {
-				const parsed = bulkSocialScheduleSchema.safeParse(JSON.parse(previous));
-				if (parsed.success) {
-					setPending(parsed.data);
-					setAccountIds([
-						...new Set(parsed.data.items.map((item) => item.accountId)),
-					]);
-				}
-			}
-			const savedCopies = localStorage.getItem(`${storageKey}:copy`);
-			if (savedCopies) generatedCopies.current = JSON.parse(savedCopies);
-			const generations = localStorage.getItem(`${storageKey}:generations`);
-			if (generations) generationRequests.current = JSON.parse(generations);
-		} catch {
-			setError(
-				"Browser storage is unavailable. Keep this page open to retain your draft.",
-			);
-		}
-		setRestored(true);
-	}, [
-		storageKey,
-		pendingKey,
-		outcomeKey,
-		eligible,
-		config.workspaceTimezone,
-		clips.length,
-	]);
-	useEffect(() => {
-		if (!restored) return;
-		try {
-			localStorage.setItem(
-				storageKey,
-				JSON.stringify({ drafts, accountIds, timing }),
-			);
-		} catch {
-			setError("This browser could not save your draft. Keep this page open.");
-		}
-	}, [restored, drafts, accountIds, timing, storageKey]);
-	useEffect(() => {
-		if (!restored) return;
-		setDrafts((current) => {
-			const next = { ...current };
-			let changed = false;
-			for (const p of pairs) {
-				const d = next[p.key];
-				if (!d) {
-					const blank = blankPublishingDraft(p.clip, p.account.platform);
-					const seed =
-						generatedCopies.current[
-							`${p.clip.id}:${p.clip.editorRevision}:${p.account.platform}`
-						];
-					next[p.key] = seed
-						? applyGeneratedDescription(blank, 0, seed)
-						: blank;
-					changed = true;
-				} else if (d.revision !== p.clip.editorRevision) {
-					next[p.key] = {
-						...d,
-						revision: p.clip.editorRevision,
-						thumbnail: null,
-						editVersion: d.editVersion + 1,
-					};
-					changed = true;
-				}
-			}
-			return changed ? next : current;
-		});
-	}, [restored, pairs]);
+		void session.checkSavedCovers(() => publishingRequest("/api/visual-assets"));
+	}, [session]);
 	const refreshExports = useCallback(async () => {
 		const response = await publishingRequest<{ exports: unknown }>(
 			`/api/projects/${config.projectId}/exports/current`,
@@ -704,7 +511,7 @@ function PublishingComposer({
 			5000,
 		);
 		return () => clearInterval(timer);
-	}, [open, refreshExports]);
+	}, [open, refreshExports, setError]);
 	useEffect(() => {
 		let alive = true;
 		for (const account of accounts) {
@@ -761,145 +568,15 @@ function PublishingComposer({
 		};
 	}, [timingSignature, open, config.projectId]);
 	function update(key: string, patch: Partial<PublishingDraft>) {
-		setDrafts((current) => {
-			const d = current[key];
-			return d
-				? {
-						...current,
-						[key]: {
-							...d,
-							...patch,
-							edited: true,
-							editVersion: d.editVersion + 1,
-						},
-					}
-				: current;
-		});
-		setError("");
+		session.updateDraft(key, patch);
 	}
-	async function generate(
-		clip: ClipSnapshot,
-		targets: typeof pairs,
-		force = false,
-	) {
-		const platforms = [...new Set(targets.map((t) => t.account.platform))];
-		if (!platforms.length) return;
-		const requestName = `${clip.id}:${clip.editorRevision}:${platforms.join(",")}`;
-		if (generating.current.has(requestName)) return;
-		generating.current.add(requestName);
-		setGenerationTick((n) => n + 1);
-		const versions = new Map(
-			targets.map((t) => [t.key, draftRef.current[t.key]?.editVersion ?? 0]),
-		);
-		const input = {
-			clipId: clip.id,
-			platforms,
-			campaignNote: "",
-			revisionInstruction: instruction || undefined,
-			lockedPhrases: lockedPhrases
-				.split(",")
-				.map((s) => s.trim())
-				.filter(Boolean),
-			lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [],
-		};
-		const signature = JSON.stringify({
-			...input,
-			editorRevision: clip.editorRevision,
-		});
-		const previous = generationRequests.current[requestName];
-		const key =
-			!force && previous?.signature === signature
-				? previous.key
-				: crypto.randomUUID();
-		generationRequests.current[requestName] = { key, signature };
-		try {
-			localStorage.setItem(
-				`${storageKey}:generations`,
-				JSON.stringify(generationRequests.current),
-			);
-		} catch {}
-		try {
-			const response = await publishingRequest<{ variants: Generated[] }>(
-				`/api/projects/${config.projectId}/assisted-copy/generations`,
-				{ ...input, idempotencyKey: key },
-			);
-			for (const v of response.variants)
-				generatedCopies.current[
-					`${clip.id}:${clip.editorRevision}:${v.platform}`
-				] = v;
-			try {
-				localStorage.setItem(
-					`${storageKey}:copy`,
-					JSON.stringify(generatedCopies.current),
-				);
-			} catch {}
-			setDrafts((current) => {
-				const next = { ...current };
-				for (const t of targets) {
-					const d = next[t.key];
-					const variant = response.variants.find(
-						(v) => v.platform === t.account.platform,
-					);
-					if (d && variant && d.revision === clip.editorRevision)
-						next[t.key] = applyGeneratedDescription(
-							d,
-							versions.get(t.key)!,
-							variant,
-						);
-				}
-				return next;
-			});
-			setCopyErrors((current) => {
-				const next = { ...current };
-				targets.forEach((t) => {
-					delete next[t.key];
-				});
-				return next;
-			});
-		} catch (e) {
-			setCopyErrors((current) => ({
-				...current,
-				...Object.fromEntries(
-					targets.map((t) => [
-						t.key,
-						e instanceof Error
-							? e.message
-							: "Description generation failed. Write one or retry.",
-					]),
-				),
-			}));
-		} finally {
-			generating.current.delete(requestName);
-			setGenerationTick((n) => n + 1);
-		}
+	function generate(clip: ClipSnapshot, targets: typeof pairs, force = false) {
+		return session.generate({ clipId: clip.id, accountIds: targets.map((target) => target.account.id), force, instruction, lockedPhrases: lockedPhrases.split(",").map((value) => value.trim()).filter(Boolean), lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [] }, (input) => publishingRequest(`/api/projects/${config.projectId}/assisted-copy/generations`, input));
 	}
-	const generateInBackground = useEffectEvent(
-		(clip: ClipSnapshot, targets: typeof pairs) => generate(clip, targets),
-	);
+	const generateInBackground = useEffectEvent(() => session.generateMissing({ instruction, lockedPhrases: lockedPhrases.split(",").map((value) => value.trim()).filter(Boolean), lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [] }, (input) => publishingRequest(`/api/projects/${config.projectId}/assisted-copy/generations`, input)));
 	useEffect(() => {
-		if (!restored || !open || !config.assistedCopyEnabled || pending) return;
-		for (const clip of clips) {
-			if (generating.current.size >= 2) break;
-			const missing = pairs.filter(
-				(p) =>
-					p.clip.id === clip.id &&
-					drafts[p.key] &&
-					!drafts[p.key]!.generated &&
-					!drafts[p.key]!.edited &&
-					!copyErrors[p.key],
-			);
-			if (missing.length) void generateInBackground(clip, missing);
-		}
-	}, [
-		restored,
-		open,
-		pairs,
-		clips,
-		config.assistedCopyEnabled,
-		drafts,
-		copyErrors,
-		pending,
-	]);
+		if (restored && open && config.assistedCopyEnabled && !pending && generating.length < 2 && generationNeeded) generateInBackground();
+	}, [restored, open, config.assistedCopyEnabled, pending, generating.length, generationNeeded]);
 	async function regenerate(scope: string) {
 		setReplaceScope(null);
 		for (const clip of scope !== "all" ? [active] : clips) {
@@ -925,49 +602,8 @@ function PublishingComposer({
 			setReplaceScope(scope);
 		else void regenerate(scope);
 	}
-	function issues(p: (typeof pairs)[number]) {
-		const d = drafts[p.key];
-		if (accepted.has(p.key)) return [];
-		if (!d) return ["Preparing draft…"];
-		const result: string[] = [];
-		if (d.reviewedRevision !== p.clip.editorRevision)
-			result.push("Review this clip's updated video before submitting.");
-		if (
-			!currentPublicationExport(
-				p.clip,
-				p.account.platform,
-				exports,
-				preferredExportId,
-			)
-		)
-			result.push("Prepare a compatible video.");
-		if (d.deliveryMode === "direct" && !d.caption.trim())
-			result.push("Write a description.");
-		if (
-			d.caption.trim().length >
-			SOCIAL_PROVIDER_CAPABILITIES[p.account.platform].textLimit
-		)
-			result.push("Description exceeds the character limit.");
-		if (optionErrors[p.account.id]) result.push(optionErrors[p.account.id]!);
-		if (p.account.platform === "tiktok") {
-			const o = options[p.account.id];
-			if (!o) result.push("Loading TikTok settings…");
-			else if (d.deliveryMode === "tiktok_inbox" && !o.inboxEnabled)
-				result.push("Reconnect TikTok to allow inbox uploads.");
-			else if (d.deliveryMode === "direct") {
-				if (!o.directEnabled)
-					result.push("Reconnect TikTok to allow direct publication.");
-				if (
-					!o.privacyOptions.includes(
-						String(d.settings.tiktokPrivacyLevel ?? ""),
-					)
-				)
-					result.push("Choose visibility.");
-				if (p.clip.durationSec > o.maximumDurationSec)
-					result.push("This video exceeds the account's duration limit.");
-			}
-		}
-		return result;
+	function issues(pair: (typeof pairs)[number]) {
+		return session.issues(pair.key, { exports, options, optionErrors, preferredExportId });
 	}
 	async function prepare() {
 		setRenderBusy(true);
@@ -993,135 +629,8 @@ function PublishingComposer({
 		}
 	}
 	async function submit() {
-		setBusy(true);
-		setError("");
-		try {
-			let payload = pending;
-			if (!payload) {
-				const outstanding = pairs.filter((p) => !accepted.has(p.key));
-				payload = bulkSocialScheduleSchema.parse({
-					...timing,
-					idempotencyKey: crypto.randomUUID(),
-					items: outstanding.map((p) => {
-						const d = drafts[p.key]!;
-						const media = currentPublicationExport(
-							p.clip,
-							p.account.platform,
-							exports,
-							preferredExportId,
-						)!;
-						return {
-							clipId: p.clip.id,
-							accountId: p.account.id,
-							platform: p.account.platform,
-							deliveryMode: d.deliveryMode,
-							expectedEditorRevision: p.clip.editorRevision,
-							exportId: media.export.id,
-							exportVariantId: media.variant.id,
-							aspectRatio: media.variant.aspectRatio,
-							resolution: media.variant.resolution,
-							copy: {
-								variantId: d.variantId,
-								caption: d.caption.trim(),
-								hashtags: [],
-								title:
-									d.deliveryMode === "direct" &&
-									p.account.platform !== "tiktok" &&
-									SOCIAL_PROVIDER_CAPABILITIES[p.account.platform].titleField
-										? d.title.trim() || null
-										: null,
-							},
-							providerSettings:
-								d.deliveryMode === "direct"
-									? {
-											...d.settings,
-											...(p.account.platform === "tiktok"
-												? {
-														disableComment:
-															options[p.account.id]?.commentDisabled ||
-															d.settings.disableComment === true,
-														disableDuet:
-															options[p.account.id]?.duetDisabled ||
-															d.settings.disableDuet === true,
-														disableStitch:
-															options[p.account.id]?.stitchDisabled ||
-															d.settings.disableStitch === true,
-													}
-												: {}),
-										}
-									: {},
-							thumbnail: d.deliveryMode === "direct" ? d.thumbnail : null,
-						};
-					}),
-					reviewOverrideReason: override.trim() || null,
-				});
-				localStorage.setItem(pendingKey, JSON.stringify(payload));
-				setPending(payload);
-			}
-			const outcome = await publishingRequest<BulkResult>(
-				`/api/projects/${config.projectId}/campaign-operations/schedule`,
-				payload,
-			);
-			if (!outcome.items || !outcome.counts)
-				throw new Error(
-					"The submission result was incomplete. Check the previous submission before trying again.",
-				);
-			const merged = {
-				...outcome,
-				items: [
-					...(result?.items.filter(
-						(i) =>
-							i.status === "succeeded" &&
-							!outcome.items.some(
-								(next) =>
-									next.clipId === i.clipId && next.accountId === i.accountId,
-							),
-					) ?? []),
-					...outcome.items,
-				],
-			};
-			localStorage.setItem(outcomeKey, JSON.stringify(merged));
-			setResult(merged);
-			if (outcome.status === "running") {
-				setError(
-					"Your submission is still being checked. Check again to retrieve its result.",
-				);
-				return;
-			}
-			localStorage.removeItem(pendingKey);
-			setPending(null);
-			if (outcome.items.every((i) => i.status === "succeeded")) {
-				localStorage.removeItem(outcomeKey);
-				await onSubmitted(merged);
-			} else {
-				setApprovalBlocked(
-					outcome.items.some((i) => i.errorCode === "review_approval_required"),
-				);
-				setError(
-					`${outcome.counts.succeeded} submitted. Review the items that need attention below.`,
-				);
-				await onSubmitted(merged);
-			}
-		} catch (e) {
-			if (
-				e instanceof PublishingRequestError &&
-				e.status >= 400 &&
-				e.status < 500 &&
-				e.status !== 408 &&
-				e.status !== 409 &&
-				e.status !== 429
-			) {
-				localStorage.removeItem(pendingKey);
-				setPending(null);
-			}
-			setError(
-				e instanceof Error
-					? e.message
-					: "Submission could not be confirmed. Check the previous submission.",
-			);
-		} finally {
-			setBusy(false);
-		}
+		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override }, (payload) => publishingRequest(`/api/projects/${config.projectId}/campaign-operations/schedule`, payload));
+		if (outcome) await onSubmitted(outcome);
 	}
 	const activeExport = exports.find(
 		(e) =>
@@ -1205,11 +714,7 @@ function PublishingComposer({
 															checked={accountIds.includes(account.id)}
 															disabled={!enabled}
 															onCheckedChange={(checked) =>
-																setAccountIds((current) =>
-																	checked
-																		? [...current, account.id]
-																		: current.filter((id) => id !== account.id),
-																)
+																session.selectAccounts(checked ? [...accountIds, account.id] : accountIds.filter((id) => id !== account.id))
 															}
 														>
 															<Flex gap="3" align="center" minW="0">
@@ -1424,14 +929,14 @@ function PublishingComposer({
 </Field.Root>
 <Flex gap="2" wrap="wrap" align="center">
 {[{label:"Tone & voice", text:"Use our Tone & Voice"},{label:"Hashtags",text:"Add relevant hashtags"},{label:"Call to action",text:"Include a clear CTA"}].map(({label,text}) => <Button key={text} aria-label={text} variant="ghost" size="xs" onClick={() => setInstruction(v => [v,text].filter(Boolean).join(". "))}>{label}</Button>)}
-<Button ms="auto" size="sm" variant="outline" disabled={generating.current.size > 0} onClick={() => requestRegeneration(clips.length > 1 ? "all" : "current")}><Sparkles size={14}/>Regenerate all</Button>
+<Button ms="auto" size="sm" variant="outline" disabled={generating.length > 0} onClick={() => requestRegeneration(clips.length > 1 ? "all" : "current")}><Sparkles size={14}/>Regenerate all</Button>
 </Flex>
 <Collapsible.Root>
 <Collapsible.Trigger asChild><Button variant="ghost" size="xs"><Settings2 size={14}/>AI options<ChevronDown size={13}/></Button></Collapsible.Trigger>
 <Collapsible.Content><Stack gap="4" pt="4" borderTopWidth="1px" borderColor="border" mt="3">
 <Field.Root><Field.Label>Keep these phrases</Field.Label><Input value={lockedPhrases} placeholder="Separate phrases with commas" onChange={e=>setLockedPhrases(e.target.value)}/></Field.Root>
 <Field.Root><Field.Label>Keep these hashtags</Field.Label><Input value={lockedHashtags} placeholder="#YourBrand" onChange={e=>setLockedHashtags(e.target.value)}/></Field.Root>
-{clips.length > 1 && <Button alignSelf="start" variant="outline" size="sm" disabled={generating.current.size > 0} onClick={() => requestRegeneration("current")}>Regenerate this clip</Button>}
+{clips.length > 1 && <Button alignSelf="start" variant="outline" size="sm" disabled={generating.length > 0} onClick={() => requestRegeneration("current")}>Regenerate this clip</Button>}
 </Stack></Collapsible.Content></Collapsible.Root>
 </Stack></Collapsible.Content></Collapsible.Root>
 ) : <Text fontSize="xs" color="fg.muted">Automatic descriptions require a Creator plan. You can write your own description.</Text>}
@@ -1546,7 +1051,7 @@ function PublishingComposer({
 																		? "Suggested description"
 																		: "Description"}
 																</Field.Label>
-																{generating.current.size > 0 &&
+																{generating.length > 0 &&
 																	!d.generated &&
 																	!d.edited && (
 																		<Flex gap="1" align="center">
@@ -1599,7 +1104,7 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 																aria-label="Regenerate"
 																variant="ghost"
 																size="xs"
-																disabled={generating.current.size > 0}
+																disabled={generating.length > 0}
 																onClick={() => {
 																	if (d.edited) setReplaceScope(key);
 																	else void generate(active, [{ clip: active, account, key }], true);

@@ -139,6 +139,7 @@ beforeAll(async () => {
 });
 async function render(
 	options: {
+		clips?: ClipSnapshot[];
 		accounts?: SocialAccountSnapshot[];
 		assistedCopyEnabled?: boolean;
 		revision?: number;
@@ -204,9 +205,9 @@ async function render(
 					workspaceId={id(7)}
 					workspaceTimezone="UTC"
 					clips={
-						options.revision
+						options.clips ?? (options.revision
 							? clips.map((c) => ({ ...c, editorRevision: options.revision! }))
-							: clips
+							: clips)
 					}
 					accounts={options.accounts ?? accounts.slice(0, 1)}
 					initialPosts={[]}
@@ -396,6 +397,37 @@ test("a lost submission response locks edits and retries the same identity", asy
 	expect(attempts).toHaveLength(2);
 	expect(attempts[0]!.body).toEqual(attempts[1]!.body);
 });
+test("restores an exact pending submission after all selected clips and accounts disappear", async () => {
+	await render();
+	await click("Exact clip");
+	admit = async () => { throw new TypeError("Response lost after acceptance"); };
+	await click("Publish now");
+	const first = requests.find((request) => request.url.endsWith("/schedule"))!;
+	await act(async () => root.unmount());
+	await render({ clips: [], accounts: [], assistedCopyEnabled: false });
+	await click("Exact clip");
+	expect(button("Check previous submission").disabled).toBe(false);
+	await click("Check previous submission");
+	const attempts = requests.filter((request) => request.url.endsWith("/schedule"));
+	expect(attempts).toHaveLength(2);
+	expect(attempts[1]!.body).toEqual(first.body);
+});
+test("an incomplete terminal reply keeps the complete pending identity available for replay", async () => {
+	await render();
+	await click("Bulk clips");
+	admit = async (body) => Response.json({
+		status: "completed",
+		items: [{ ...body.items[0], status: "succeeded", socialPostId: id(40), errorCode: null, retryable: false }],
+		counts: { succeeded: 1, failed: 0, ineligible: 0 },
+	});
+	await click("Publish now");
+	expect(button("Check previous submission").disabled).toBe(false);
+	await click("Check previous submission");
+	const attempts = requests.filter((request) => request.url.endsWith("/schedule"));
+	expect(attempts).toHaveLength(2);
+	expect(attempts[0]!.body.items).toHaveLength(2);
+	expect(attempts[1]!.body).toEqual(attempts[0]!.body);
+});
 test("multiple accounts require selection and do not generate unselected copy", async () => {
 	await render({ accounts });
 	await click("Exact clip");
@@ -448,6 +480,17 @@ test("a partial result survives refresh and corrected admission excludes success
 		"Review approval required",
 	);
 	expect(button("Publish now").disabled).toBe(true);
+	const label = [...browser.document.querySelectorAll("label")].find(
+		(element) => element.textContent?.trim() === "Review approval required",
+	)!;
+	await edit(browser.document.getElementById(label.htmlFor)!, "Approved for the architecture test");
+	await click("Publish now");
+	const attempts = requests.filter((request) => request.url.endsWith("/schedule"));
+	expect(attempts).toHaveLength(2);
+	expect(attempts[1]!.body.idempotencyKey).not.toBe(attempts[0]!.body.idempotencyKey);
+	expect(attempts[1]!.body.items.map((item: { clipId: string }) => item.clipId)).toEqual([
+		attempts[0]!.body.items[1].clipId,
+	]);
 });
 test("changed editor revision preserves wording and blocks stale media", async () => {
 	await render();
