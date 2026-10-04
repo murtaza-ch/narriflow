@@ -8,7 +8,6 @@ import {
   clusterFaceTracks,
   deriveSingleFaceSamplesFromMulti,
   remapMultiFaceSamplesForCutPlan,
-  splitTilesAreDistinct,
   type MultiFaceSample,
   type ShotKind,
   type SplitLayoutSegment,
@@ -409,31 +408,6 @@ describe("buildSplitLayoutPlan (split packet B — plan computation)", () => {
     // The capped plan still spans the whole clip with no gaps.
     expect(capped.segments[0]!.startSec).toBe(0);
     expect(capped.segments[capped.segments.length - 1]!.endSec).toBe(clipDurationSec);
-  });
-});
-
-describe("splitTilesAreDistinct (H1 — per-output tile-distinctness gate)", () => {
-  test("a 1920x1080 landscape source falls back for 1:1 (tile crop consumes full source width)", () => {
-    // Tile ratio for 1:1 is 1080 / (1080/2) = 2.0; src ratio 1920/1080 =
-    // 1.778 < 2.0, so cropW = srcWidth = 1920 -> x forced to 0 for both
-    // tiles regardless of cx -> identical crops.
-    expect(splitTilesAreDistinct("1:1", { width: 1920, height: 1080 })).toBe(false);
-  });
-
-  test("the same 1920x1080 source does NOT fall back for 9:16 (plenty of lateral room)", () => {
-    // Tile ratio for 9:16 is 1080 / 960 = 1.125; src ratio 1.778 >= 1.125,
-    // so cropW = round(1080 * 1.125) = 1215 < 1920 -> distinct x positions
-    // are possible.
-    expect(splitTilesAreDistinct("9:16", { width: 1920, height: 1080 })).toBe(true);
-  });
-
-  test("a portrait source falls back even for 9:16 (no lateral room left at all)", () => {
-    expect(splitTilesAreDistinct("9:16", { width: 1080, height: 1920 })).toBe(false);
-  });
-
-  test("false for an unsupported aspect ratio rather than throwing", () => {
-    // @ts-expect-error deliberately invalid for this test
-    expect(splitTilesAreDistinct("3:2", { width: 1920, height: 1080 })).toBe(false);
   });
 });
 

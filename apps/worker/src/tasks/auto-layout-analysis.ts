@@ -1,419 +1,116 @@
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { compositionAssetRef } from "@narriflow/composition-plan";
-import {
-  clipService,
-  downloadObjectToFile,
-  type ClipPendingAutoLayoutAnalysis,
-} from "@narriflow/services";
-import {
-  CLIP_AUTO_LAYOUT_ENGINE,
-  CLIP_AUTO_LAYOUT_VERSION,
-  clipAutoLayoutAnalysisSchema,
-  sourceToEdited,
-  type ClipAutoLayoutAnalysis,
-} from "@narriflow/validators";
-import { buildClipCutPlan, type ClipCutPlan } from "./cut-plan";
-import { buildAutoLayoutPlan, speechWordsFromUtterances } from "./layout-engine";
-import { remapMultiFaceSamplesForCutPlan, type MultiFaceSample } from "./two-up";
+import { getLayoutEvidenceLifecycle, LayoutEvidenceClaimLost, downloadObjectToFile, presignDownloadUrl, type LayoutEvidenceLifecycle, type ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
+import { CLIP_AUTO_LAYOUT_ENGINE, type ClipAutoLayoutAnalysis } from "@narriflow/validators";
+import { LayoutEvidence, type LayoutEvidenceDependencies } from "../layout-evidence";
+import { createLayoutEvidenceDetectors } from "../layout-evidence-runtime";
+import { parseWorkerRenderConfig, type RenderConfig } from "../render-config";
 import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
 
-const DEFAULT_BATCH_SIZE = 2;
-const COMMAND_TIMEOUT_MS = 120_000;
-const FAILURE_BACKOFF_MS = 5 * 60_000;
-
-function log(level: "info" | "warn" | "error", message: string, context?: Record<string, unknown>) {
-  console.warn(
-    JSON.stringify({
-      level,
-      message,
-      ts: new Date().toISOString(),
-      ...context,
-    }),
-  );
+function log(level: "info" | "warn" | "error", message: string, context?: Record<string, unknown>): void {
+  console.warn(JSON.stringify({ level, message, ...context }));
 }
 
-function batchSize(): number {
-  const value = Number(process.env.WORKER_AUTO_LAYOUT_BATCH_SIZE ?? DEFAULT_BATCH_SIZE);
-  return Number.isFinite(value) && value > 0 ? Math.min(10, Math.floor(value)) : DEFAULT_BATCH_SIZE;
-}
-
-function leaseMs(): number {
-  const value = Number(process.env.WORKER_AUTO_LAYOUT_LEASE_MS ?? 180_000);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 180_000;
-}
-
-function failureBackoffMs(): number {
-  const value = Number(
-    process.env.WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS ?? FAILURE_BACKOFF_MS,
-  );
-  return Number.isFinite(value) && value >= 0
-    ? Math.floor(value)
-    : FAILURE_BACKOFF_MS;
-}
-
-async function runOutput(
-  workerProcess: WorkerProcessModule,
-  signal: AbortSignal,
-  command: string,
-  args: string[],
-): Promise<string> {
-  const result = await workerProcess.execute({
-    command,
-    args,
-    signal,
-    deadlineMs: COMMAND_TIMEOUT_MS,
-    captureStdout: true,
-  });
-  return result.stdout.toString("utf8");
-}
-
-async function probeVideo(
-  workerProcess: WorkerProcessModule,
-  signal: AbortSignal,
-  path: string,
-): Promise<{
-  hasVideo: boolean;
-  width: number;
-  height: number;
-}> {
-  const inspection = await workerProcess.inspectMedia({
-    sourcePath: path,
-    signal,
-    deadlineMs: COMMAND_TIMEOUT_MS,
-  });
-  return {
-    hasVideo: inspection.hasVideo,
-    width: inspection.width || 1,
-    height: inspection.height || 1,
-  };
-}
-
-async function detectFaces(params: {
-  workerProcess: WorkerProcessModule;
-  signal: AbortSignal;
-  path: string;
-  startSec: number;
-  durationSec: number;
-}): Promise<MultiFaceSample[]> {
-  const scriptPath = fileURLToPath(
-    new URL("../../scripts/reframe_detect.py", import.meta.url),
-  );
-  const python = process.env.REFRAME_PYTHON ?? "python3";
-  const model =
-    process.env.REFRAME_MODEL_PATH ??
-    "/usr/local/share/narriflow/face_yunet.onnx";
-  const fps = process.env.REFRAME_SAMPLE_FPS ?? "4";
-  const output = await runOutput(
-    params.workerProcess,
-    params.signal,
-    python,
-    buildMultiFaceDetectorArgs({
-      scriptPath,
-      path: params.path,
-      startSec: params.startSec,
-      durationSec: params.durationSec,
-      fps,
-      modelPath: model,
-    }),
-  );
-  const parsed = JSON.parse(output) as {
-    error?: string;
-    samples?: MultiFaceSample[];
-  };
-  if (parsed.error) throw new Error(parsed.error);
-  if (!Array.isArray(parsed.samples)) throw new Error("malformed face detector output");
-  return parsed.samples;
-}
-
-/** Kept pure/exported so the Python process boundary cannot silently drift.
- *  reframe_detect.py's positional contract is video,start,duration,fps,model. */
-export function buildMultiFaceDetectorArgs(params: {
-  scriptPath: string;
-  path: string;
-  startSec: number;
-  durationSec: number;
-  fps: string;
-  modelPath: string;
-}): string[] {
-  return [
-    params.scriptPath,
-    params.path,
-    String(params.startSec),
-    String(params.durationSec),
-    params.fps,
-    params.modelPath,
-    "--multi",
-  ];
-}
-
-async function detectSceneCuts(params: {
-  workerProcess: WorkerProcessModule;
-  signal: AbortSignal;
-  path: string;
-  startSec: number;
-  durationSec: number;
-}): Promise<number[]> {
-  const threshold = process.env.REFRAME_SCENE_THRESHOLD ?? "0.3";
-  const output = await runOutput(params.workerProcess, params.signal, "ffmpeg", [
-    "-hide_banner",
-    "-nostats",
-    ...(params.startSec > 0 ? ["-ss", String(params.startSec)] : []),
-    "-t",
-    String(params.durationSec),
-    "-i",
-    params.path,
-    "-vf",
-    `select='gt(scene,${threshold})',metadata=print:file=-`,
-    "-an",
-    "-f",
-    "null",
-    "-",
-  ]);
-  return [...output.matchAll(/pts_time:([0-9]+(?:\.[0-9]+)?)/g)].map(
-    (match) => Number(match[1]),
-  );
-}
-
-function remapSceneCuts(
-  cuts: number[],
-  cutPlan: ClipCutPlan,
-  clipStartSec: number,
-): number[] {
-  if (cutPlan.isUncut) {
-    return [...new Set(cuts.map((time) => Math.round(time * 1000) / 1000))].sort(
-      (a, b) => a - b,
-    );
-  }
-  const output: number[] = [];
-  for (const cut of cuts) {
-    const sourceSec = clipStartSec + cut;
-    const kept = cutPlan.segments.some(
-      (segment) =>
-        sourceSec >= segment.sourceStartSec &&
-        sourceSec <= segment.sourceEndSec,
-    );
-    if (kept) output.push(sourceToEdited(cutPlan.map, sourceSec));
-  }
-  for (const segment of cutPlan.segments.slice(1)) {
-    output.push(segment.editedStartSec);
-  }
-  return [...new Set(output.map((time) => Math.round(time * 1000) / 1000))].sort(
-    (a, b) => a - b,
-  );
-}
-
+/** Background and export use original source dimensions with normalized proxy
+ * detector coordinates. A bounded source probe avoids storing proxy zoom policy. */
 export async function analyzeClipAutoLayout(params: {
   clip: ClipPendingAutoLayoutAnalysis;
   previewPath: string;
+  originalSourcePath: string;
   signal?: AbortSignal;
   workerProcess?: WorkerProcessModule;
+  config?: Readonly<RenderConfig>;
+  persist?: LayoutEvidenceDependencies["persist"];
 }): Promise<ClipAutoLayoutAnalysis> {
-  const { clip, previewPath } = params;
+  const { clip } = params;
   const signal = params.signal ?? new AbortController().signal;
   const workerProcess = params.workerProcess ?? productionWorkerProcessModule;
-  const probe = await probeVideo(workerProcess, signal, previewPath);
-  const rawDurationSec = clip.endSec - clip.startSec;
-  const cutPlan = buildClipCutPlan(clip.deletedRanges, {
-    startSec: clip.startSec,
-    endSec: clip.endSec,
+  const config = params.config ?? parseWorkerRenderConfig();
+  signal.throwIfAborted();
+  const original = await workerProcess.inspectMedia({ sourcePath: params.originalSourcePath, signal, deadlineMs: config.probeCommandTimeoutMs });
+  signal.throwIfAborted();
+  if (original.hasVideo && (original.width <= 0 || original.height <= 0)) throw new Error("original source dimensions unavailable");
+  const sourceIdentity = compositionAssetRef("source", clip.projectId);
+  const owner = new LayoutEvidence({
+    source: { identity: sourceIdentity, hasVideo: original.hasVideo, width: original.width || 1, height: original.height || 1 },
+    clip: { id: clip.id, startSec: clip.startSec, endSec: clip.endSec, deletedRanges: clip.deletedRanges, utterances: clip.transcriptSlice, editorRevision: clip.editorRevision, previewStorageKey: clip.previewStorageKey },
+    durable: {}, enabled: { automatic: config.layoutEngineEnabled, screen: false, split: false }, hasBroll: false, pipMotionThreshold: config.pipMotionThreshold, signal,
+    getSegment: async () => {
+      const offset = clip.startSec - clip.previewStartSec;
+      if (offset < -0.05) return null;
+      return { path: params.previewPath, startSec: Math.max(0, offset), durationSec: Math.max(0, clip.previewDurationSec - Math.max(0, offset)) };
+    },
+  }, {
+    detectors: createLayoutEvidenceDetectors({ workerProcess, config, signal }),
+    persist: params.persist ?? (async () => true), now: Date.now,
+    rethrowControl: () => signal.throwIfAborted(),
+    diagnose: (message, context) => log("warn", message, context),
   });
-  const editedDurationSec = cutPlan.isUncut
-    ? rawDurationSec
-    : cutPlan.editedDurationSec;
-  if (cutPlan.isEmpty || editedDurationSec <= 0) {
-    throw new Error("clip has no renderable duration");
-  }
-
-  let fullPlan = buildAutoLayoutPlan({
-    samples: [],
-    sceneCuts: [],
-    words: [],
-    durationSec: editedDurationSec,
-    allowTwoUp: true,
-  });
-  let noSplitPlan = buildAutoLayoutPlan({
-    samples: [],
-    sceneCuts: [],
-    words: [],
-    durationSec: editedDurationSec,
-    allowTwoUp: false,
-  });
-
-  if (probe.hasVideo) {
-    const previewOffsetSec = Math.max(0, clip.startSec - clip.previewStartSec);
-    const availableDurationSec = Math.max(
-      0,
-      clip.previewDurationSec - previewOffsetSec,
-    );
-    const detectionDurationSec = Math.min(rawDurationSec, availableDurationSec);
-    if (detectionDurationSec <= 0) {
-      throw new Error("preview proxy does not cover clip window");
-    }
-    const [samples, sceneCuts] = await Promise.all([
-      detectFaces({
-        workerProcess,
-        signal,
-        path: previewPath,
-        startSec: previewOffsetSec,
-        durationSec: detectionDurationSec,
-      }),
-      detectSceneCuts({
-        workerProcess,
-        signal,
-        path: previewPath,
-        startSec: previewOffsetSec,
-        durationSec: detectionDurationSec,
-      }).catch((error) => {
-        signal.throwIfAborted();
-        log("warn", "clip_auto_layout_scene_detection_failed", {
-          clipId: clip.id,
-          message: error instanceof Error ? error.message : "unknown",
-        });
-        return [];
-      }),
-    ]);
-    const remappedSamples = remapMultiFaceSamplesForCutPlan(
-      samples,
-      cutPlan,
-      clip.startSec,
-    );
-    const remappedCuts = remapSceneCuts(sceneCuts, cutPlan, clip.startSec);
-    const words = speechWordsFromUtterances(
-      clip.transcriptSlice,
-      cutPlan,
-      clip.startSec,
-      clip.endSec,
-    );
-    const options = {
-      frameOptions: {
-        maxZoom: probe.height >= 720 ? 1.4 : 1.25,
-      },
-      activeSpeakerCuts: false,
-    } as const;
-    fullPlan = buildAutoLayoutPlan({
-      samples: remappedSamples,
-      sceneCuts: remappedCuts,
-      words,
-      durationSec: editedDurationSec,
-      allowTwoUp: true,
-      options,
-    });
-    noSplitPlan = buildAutoLayoutPlan({
-      samples: remappedSamples,
-      sceneCuts: remappedCuts,
-      words,
-      durationSec: editedDurationSec,
-      allowTwoUp: false,
-      options,
-    });
-  }
-
-  return clipAutoLayoutAnalysisSchema.parse({
-    version: CLIP_AUTO_LAYOUT_VERSION,
-    engine: CLIP_AUTO_LAYOUT_ENGINE,
-    sourceIdentity: compositionAssetRef("source", clip.projectId),
-    analyzedAtISO: new Date().toISOString(),
-    clipStartSec: clip.startSec,
-    clipEndSec: clip.endSec,
-    deletedRanges: clip.deletedRanges,
-    editedDurationSec,
-    sourceWidth: probe.width,
-    sourceHeight: probe.height,
-    segments: fullPlan.segments,
-    noSplitSegments: noSplitPlan.segments,
-    shotCount: fullPlan.shotCount,
-    soloShotCount: fullPlan.soloShotCount,
-    multiShotCount: fullPlan.multiShotCount,
-    twoUpSegmentCount: fullPlan.twoUpSegmentCount,
-    speakerCount: fullPlan.speakerCount,
-    mappedSpeakerCount: fullPlan.mappedSpeakerCount,
-  });
+  await owner.fulfill([{ key: `automatic-speaker-layout:${sourceIdentity}`, kind: "automatic-speaker-layout", engineVersion: CLIP_AUTO_LAYOUT_ENGINE }]);
+  if (owner.resources.persistenceFailures > 0) throw new Error("automatic_layout_evidence_persist_failed");
+  const result = owner.availability.automaticLayout;
+  if (result.state !== "available") throw new Error(`automatic layout evidence ${result.state}`);
+  return result.value.analysis;
 }
 
-export async function processPendingAutoLayoutAnalyses(
-  options: { limit?: number; signal?: AbortSignal; workerProcess?: WorkerProcessModule } = {},
-): Promise<number> {
-  if (process.env.WORKER_AUTO_LAYOUT_ANALYSIS === "0") return 0;
-  const limit = options.limit ?? batchSize();
+type AutomaticLayoutLifecycle = Pick<LayoutEvidenceLifecycle, "claimAutomatic" | "runAutomaticClaim" | "completeAutomatic" | "deferAutomatic">;
+
+export async function processPendingAutoLayoutAnalyses(options: {
+  limit?: number;
+  signal?: AbortSignal;
+  workerProcess?: WorkerProcessModule;
+  config?: Readonly<RenderConfig>;
+  lifecycle?: AutomaticLayoutLifecycle;
+  storage?: { presignDownloadUrl: typeof presignDownloadUrl; downloadObjectToFile: typeof downloadObjectToFile };
+} = {}): Promise<number> {
+  const config = options.config ?? parseWorkerRenderConfig();
+  if (!config.autoLayoutAnalysisEnabled || !config.layoutEngineEnabled) return 0;
+  const limit = options.limit ?? config.autoLayoutBatchSize;
   const signal = options.signal ?? new AbortController().signal;
   const workerProcess = options.workerProcess ?? productionWorkerProcessModule;
+  const lifecycle = options.lifecycle ?? getLayoutEvidenceLifecycle();
+  const storage = options.storage ?? { presignDownloadUrl, downloadObjectToFile };
   let completed = 0;
-
-  // Claim immediately before each sequential analysis. Pre-claiming a whole
-  // batch would let later leases expire while the first clip is still being
-  // processed, inviting another replica to duplicate the expensive work.
+  // Sequential just-in-time claims keep later leases from expiring in a batch.
   for (let attempt = 0; attempt < limit; attempt += 1) {
-    const clip = await clipService.claimNextClipForAutoLayoutAnalysis(leaseMs());
+    signal.throwIfAborted();
+    const clip = await lifecycle.claimAutomatic(config.autoLayoutLeaseMs);
     if (!clip) break;
-    await workerProcess.withScratchDirectory("narriflow-auto-layout-", async (tempDir) => {
-      const previewPath = join(tempDir, "preview.mp4");
+    await lifecycle.runAutomaticClaim(clip, async ({ signal: claimSignal }) => workerProcess.withScratchDirectory("narriflow-auto-layout-", async (tempDir) => {
       try {
-        await downloadObjectToFile({
-          key: clip.previewStorageKey,
-          filePath: previewPath,
-        });
-        const analysis = await analyzeClipAutoLayout({
-          clip,
-          previewPath,
-          signal,
-          workerProcess,
-        });
-        const persisted = await clipService.completeClaimedClipAutoLayoutAnalysis(
-          clip.id,
-          analysis,
-          {
-            editorRevision: clip.editorRevision,
-            previewStorageKey: clip.previewStorageKey,
-            claimToken: clip.autoLayoutClaimToken,
+        claimSignal.throwIfAborted();
+        const originalSourcePath = await storage.presignDownloadUrl({ key: clip.sourceStorageKey });
+        claimSignal.throwIfAborted();
+        const previewPath = join(tempDir, "preview.mp4");
+        await storage.downloadObjectToFile({ key: clip.previewStorageKey, filePath: previewPath, signal: claimSignal });
+        let persisted = false;
+        const analysis = await analyzeClipAutoLayout({ clip, previewPath, originalSourcePath, signal: claimSignal, workerProcess, config,
+          persist: async (write) => {
+            if (write.kind !== "automatic") throw new Error("unexpected background layout evidence");
+            persisted = await lifecycle.completeAutomatic(clip.id, write.value, { editorRevision: clip.editorRevision, previewStorageKey: clip.previewStorageKey, claimToken: clip.autoLayoutClaimToken });
+            return persisted;
           },
-        );
+        });
         if (persisted) {
           completed += 1;
-          log("info", "clip_auto_layout_analysis_completed", {
-            clipId: clip.id,
-            projectId: clip.projectId,
-            segmentCount: analysis.segments.length,
-            twoUpSegmentCount: analysis.twoUpSegmentCount,
-            shotCount: analysis.shotCount,
-            mappedSpeakerCount: analysis.mappedSpeakerCount,
-          });
-        } else {
-          // Usually means an editor mutation invalidated this attempt or a
-          // foreground render published the same plan first. This token-scoped
-          // release is a no-op if either path already cleared/replaced it.
-          await clipService.deferClaimedClipAutoLayoutAnalysis(
-            clip.id,
-            clip.autoLayoutClaimToken,
-            new Date(),
-          );
-        }
+          log("info", "clip_auto_layout_analysis_completed", { clipId: clip.id, projectId: clip.projectId, segmentCount: analysis.segments.length, twoUpSegmentCount: analysis.twoUpSegmentCount });
+        } else await lifecycle.deferAutomatic(clip.id, clip.autoLayoutClaimToken, new Date());
       } catch (error) {
-        signal.throwIfAborted();
-        await clipService
-          .deferClaimedClipAutoLayoutAnalysis(
-            clip.id,
-            clip.autoLayoutClaimToken,
-            new Date(Date.now() + failureBackoffMs()),
-          )
-          .catch((deferError) => {
-            log("error", "clip_auto_layout_analysis_defer_failed", {
-              clipId: clip.id,
-              projectId: clip.projectId,
-              message:
-                deferError instanceof Error ? deferError.message : "unknown",
-            });
-          });
-        log("error", "clip_auto_layout_analysis_failed", {
-          clipId: clip.id,
-          projectId: clip.projectId,
-          message: error instanceof Error ? error.message : "unknown",
-          python: process.env.REFRAME_PYTHON ?? "python3",
-          modelPath:
-            process.env.REFRAME_MODEL_PATH ??
-            "/usr/local/share/narriflow/face_yunet.onnx",
+        // The service claim runner owns immediate release on cancellation or
+        // claim loss. Ordinary failures use the configured durable backoff.
+        claimSignal.throwIfAborted();
+        await lifecycle.deferAutomatic(clip.id, clip.autoLayoutClaimToken, new Date(Date.now() + config.autoLayoutFailureBackoffMs)).catch((deferError: unknown) => {
+          log("error", "clip_auto_layout_analysis_defer_failed", { clipId: clip.id, message: deferError instanceof Error ? deferError.message : "unknown" });
         });
+        claimSignal.throwIfAborted();
+        log("error", "clip_auto_layout_analysis_failed", { clipId: clip.id, projectId: clip.projectId, message: error instanceof Error ? error.message : "unknown" });
       }
+    }), { signal }).catch((error: unknown) => {
+      if (error instanceof LayoutEvidenceClaimLost) {
+        log("info", "clip_auto_layout_claim_lost", { clipId: clip.id, projectId: clip.projectId });
+        return;
+      }
+      throw error;
     });
   }
   return completed;

@@ -2,7 +2,7 @@
  * Speaker-aware auto-layout engine (Vizard-parity framing overhaul).
  *
  * Pure helpers only — no FFmpeg execution, no Prisma, no render wiring (that
- * lives in render-clips.ts, same division of labor as two-up.ts/reframe.ts).
+ * lives in layout-evidence-runtime.ts, alongside the other layout detectors).
  * Turns three per-clip signals into one segment-based layout plan the
  * shared Clip Composition Plan can render:
  *
@@ -27,7 +27,7 @@
  *   - multi-face shot (a wide/two-shot) -> stacked two-up of the two most
  *     prominent seats when the output can seat two distinct tiles, else a
  *     single crop centered to cover the seats.
- *   - no-face shot (b-roll, slides, title cards) -> centered crop, no zoom.
+ *   - no-face shot (b-roll, slides, title cards) -> full-source fit.
  *
  * Diarization refines, never decides alone. Voice-to-face association is
  * retained as a confidence-scored diagnostic and an opt-in editorial style;
@@ -38,9 +38,8 @@
  * suppressed by a minimum-turn floor so they can never flip the layout.
  *
  * A trustworthy single-camera talking head still returns a persisted,
- * face-centered segment. `segments: []` is reserved for no-face footage or
- * incomplete detection, allowing callers to use their safe center/reframe
- * fallback without pretending the detector saw what it did not.
+ * face-centered segment. A completed no-face shot returns an explicit full
+ * source fit segment. `segments: []` is reserved for incomplete detection.
  */
 import type {
   ClipAutoLayoutSegment,
@@ -185,41 +184,18 @@ export interface Shot {
   endSec: number;
 }
 
-export interface SegmentShotsOptions {
-  /** Scene cuts closer together than this merge into one shot — a flash
-   *  frame or detector double-fire must not produce a sub-beat shot. */
-  minShotSec?: number;
-}
-
-const DEFAULT_MIN_SHOT_SEC = 0.6;
-
 /** Splits `[0, durationSec]` into shots at the given scene-cut times
- *  (edited clip-relative), dropping cuts that would create a shot shorter
- *  than `minShotSec`. */
+ *  (edited clip-relative). Source cuts are editorial facts and never merge. */
 export function segmentShots(
   sceneCuts: number[],
   durationSec: number,
-  options: SegmentShotsOptions = {},
 ): Shot[] {
-  const minShotSec = options.minShotSec ?? DEFAULT_MIN_SHOT_SEC;
   if (durationSec <= 0) return [];
-  const sorted = [...sceneCuts]
+  const sorted = [...new Set(sceneCuts.map((timeSec) => timeSec.toFixed(3)))]
+    .map(Number)
     .filter((t) => t > 0 && t < durationSec)
     .sort((a, b) => a - b);
-  const boundaries: number[] = [0];
-  for (const cut of sorted) {
-    if (cut - boundaries[boundaries.length - 1]! >= minShotSec) {
-      boundaries.push(cut);
-    }
-  }
-  // The final shot must also respect the floor: fold a too-short tail into
-  // its predecessor.
-  if (
-    boundaries.length > 1 &&
-    durationSec - boundaries[boundaries.length - 1]! < minShotSec
-  ) {
-    boundaries.pop();
-  }
+  const boundaries = [0, ...sorted];
   return boundaries.map((start, i) => ({
     startSec: start,
     endSec: i + 1 < boundaries.length ? boundaries[i + 1]! : durationSec,
@@ -235,8 +211,8 @@ export function segmentShots(
  * `minCxJump` (a head can't teleport a quarter of the frame in one sample),
  * or the face count changing and staying changed for the next sample too
  * (the persistence check keeps a single-frame YuNet dropout from minting a
- * cut). Merged with scdet's cuts by the caller; duplicates are harmless
- * (`segmentShots` drops sub-`minShotSec` slivers).
+ * cut). Merged with scdet's cuts by the caller; duplicate boundaries are
+ * harmless and source cuts remain intact.
  */
 export function deriveFaceDiscontinuityCuts(
   samples: MultiFaceSample[],
@@ -260,7 +236,85 @@ export function deriveFaceDiscontinuityCuts(
       }
     }
   }
-  return cuts;
+  // Face discontinuities are only an auxiliary cut source. Debounce their
+  // own detector jitter without ever suppressing supplied scene cuts.
+  return cuts.filter(
+    (cut, index) => index === 0 || cut - cuts[index - 1]! >= 0.6,
+  );
+}
+
+export interface FilterAutomaticFaceSamplesOptions {
+  /** YuNet scores below this do not start a new automatic framing track. */
+  minStartScore?: number;
+  /** A weaker detection may continue a recently high-confidence track. */
+  minContinuationScore?: number;
+  /** A continuation must remain close to the last accepted face center. */
+  maxContinuationDistance?: number;
+  /** A track expires after this detector gap. */
+  maxContinuationGapSec?: number;
+  /** Known source cuts reset admission tracks. */
+  resetAtSecs?: readonly number[];
+}
+
+const FACE_ADMISSION_DEFAULTS: Omit<
+  Required<FilterAutomaticFaceSamplesOptions>,
+  "resetAtSecs"
+> = {
+  minStartScore: 0.85,
+  minContinuationScore: 0.6,
+  maxContinuationDistance: 0.12,
+  maxContinuationGapSec: 0.75,
+};
+
+/**
+ * Admits faces before any automatic framing decision. A strong face can open
+ * a track. A weaker face only survives when it continues that recent track.
+ * This rejects static false positives such as signs or posters without
+ * encoding anything about their location or appearance.
+ */
+export function filterAutomaticFaceSamples(
+  samples: readonly MultiFaceSample[],
+  options: FilterAutomaticFaceSamplesOptions = {},
+): MultiFaceSample[] {
+  const settings = { ...FACE_ADMISSION_DEFAULTS, ...options };
+  const tracks: Array<{ face: DetectedFace; t: number }> = [];
+  const resets = [...(options.resetAtSecs ?? [])].sort((a, b) => a - b);
+  let resetIndex = 0;
+  return samples.map((sample) => {
+    while (resetIndex < resets.length && sample.t >= resets[resetIndex]!) {
+      tracks.length = 0;
+      resetIndex += 1;
+    }
+    const activeTracks = tracks.filter(
+      (track) => sample.t - track.t <= settings.maxContinuationGapSec,
+    );
+    const faces = sample.faces.filter((face) => {
+      const continuation = activeTracks.some(
+        (track) =>
+          Math.hypot(face.cx - track.face.cx, face.cy - track.face.cy) <=
+          settings.maxContinuationDistance,
+      );
+      return (
+        face.score >= settings.minStartScore ||
+        (face.score >= settings.minContinuationScore && continuation)
+      );
+    });
+    for (const face of faces) {
+      const existing = tracks.find(
+        (track) =>
+          sample.t - track.t <= settings.maxContinuationGapSec &&
+          Math.hypot(face.cx - track.face.cx, face.cy - track.face.cy) <=
+            settings.maxContinuationDistance,
+      );
+      if (existing) {
+        existing.face = face;
+        existing.t = sample.t;
+      } else {
+        tracks.push({ face, t: sample.t });
+      }
+    }
+    return { t: sample.t, faces };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -496,8 +550,8 @@ const ASSIGN_DEFAULTS: Required<AssignSeatsOptions> = {
  * Only samples where EXACTLY ONE speaker is diarized active contribute —
  * crosstalk samples can't attribute activity to a seat. Assignments are
  * greedy by margin and one-to-one; a speaker whose margin or evidence is
- * too thin simply doesn't get a seat (callers fall back to the split
- * layout, which is never wrong about who's on screen).
+ * too thin simply doesn't get a seat; callers retain the shot's observed
+ * topology rather than guessing a speaker crop.
  */
 export function assignSeatsToSpeakers(
   seats: ShotSeat[],
@@ -603,6 +657,18 @@ export interface FramedCrop {
   zoom: number;
 }
 
+function cropCenterY(
+  faceCenterY: number,
+  baseCropHFrac: number,
+  zoom: number,
+  options: FrameFaceOptions,
+): number {
+  const headroomFrac = options.headroomFrac ?? FRAME_DEFAULTS.headroomFrac;
+  return Math.max(0, Math.min(1,
+    faceCenterY + (0.5 - headroomFrac) * baseCropHFrac / zoom,
+  ));
+}
+
 /**
  * Computes the crop framing for one seat: zoom toward a target on-screen
  * face size (never zooming out past the base crop, never past `maxZoom`),
@@ -620,7 +686,7 @@ export function frameFaceInCrop(
   baseCropHFrac: number,
   options: FrameFaceOptions = {},
 ): FramedCrop {
-  const { targetFaceFrac, maxZoom, headroomFrac } = {
+  const { targetFaceFrac, maxZoom } = {
     ...FRAME_DEFAULTS,
     ...options,
   };
@@ -633,9 +699,89 @@ export function frameFaceInCrop(
   // Desired crop-center Y: face center sits at `headroomFrac` of the crop,
   // so the center (0.5 point) is `0.5 - headroomFrac` of a crop-height
   // below the face center.
-  const cropHFrac = baseCropHFrac / zoom;
-  const cyNorm = seat.cy + (0.5 - headroomFrac) * cropHFrac;
+  const cyNorm = cropCenterY(seat.cy, baseCropHFrac, zoom, options);
   return { cxNorm: seat.cx, cyNorm, zoom };
+}
+
+/**
+ * Builds a bounded camera path for one observed seat. The shot's median face
+ * size decides zoom once. Individual samples may only move the crop center.
+ * Association starts at the shot seat but then follows the last accepted
+ * face, so a genuine camera pan is not dropped once it travels beyond the
+ * shot median. A size check and bounded per-sample travel still make a brief
+ * unrelated detection safer to ignore than to follow.
+ */
+function cropTrackForSeat(
+  shot: Shot,
+  samples: readonly MultiFaceSample[],
+  seat: ShotSeat,
+  baseCropHFrac: number,
+  zoom: number,
+  options: FrameFaceOptions = {},
+): Array<{ timeSec: number; cxNorm: number; cyNorm: number }> {
+  const candidates: Array<{ timeSec: number; cxNorm: number; cyNorm: number }> = [];
+  let previous: { face: DetectedFace; timeSec: number } | null = null;
+  for (const sample of samples) {
+    if (sample.t < shot.startSec || sample.t >= shot.endSec) continue;
+    const anchor: Pick<DetectedFace, "cx" | "cy" | "h"> = previous?.face ?? seat;
+    const maxDistance = previous
+      ? Math.min(0.32, 0.16 + (sample.t - previous.timeSec) * 0.5)
+      : 0.36;
+    const face: DetectedFace | undefined = [...sample.faces]
+      .filter((candidate) => {
+        const sizeRatio: number = candidate.h / Math.max(anchor.h, 1e-6);
+        return sizeRatio >= 0.55 && sizeRatio <= 1.8;
+      })
+      .sort(
+        (left, right) =>
+          Math.hypot(left.cx - anchor.cx, left.cy - anchor.cy) -
+          Math.hypot(right.cx - anchor.cx, right.cy - anchor.cy),
+      )[0];
+    if (!face || Math.hypot(face.cx - anchor.cx, face.cy - anchor.cy) > maxDistance) {
+      continue;
+    }
+    previous = { face, timeSec: sample.t };
+    candidates.push({
+      timeSec: sample.t,
+      cxNorm: face.cx,
+      cyNorm: cropCenterY(face.cy, baseCropHFrac, zoom, options),
+    });
+  }
+  if (candidates.length === 0) return [];
+
+  const smoothed: typeof candidates = [];
+  for (const candidate of candidates) {
+    const previous = smoothed[smoothed.length - 1];
+    if (!previous) {
+      smoothed.push({ ...candidate });
+      continue;
+    }
+    // Dead-zone avoids detector jitter. EMA gives deliberate movement when
+    // the subject really moves, without inventing any new camera cuts.
+    const dx = candidate.cxNorm - previous.cxNorm;
+    const dy = candidate.cyNorm - previous.cyNorm;
+    const distance = Math.hypot(dx, dy);
+    // Smooth detector noise, but respond rapidly to a deliberate pan. At
+    // this scale a fixed 0.35 EMA lags the crop outside a moving face.
+    const follow = distance > 0.03 ? 0.8 : 0.35;
+    smoothed.push({
+      timeSec: candidate.timeSec,
+      cxNorm: Math.abs(dx) < 0.014 ? previous.cxNorm : previous.cxNorm + dx * follow,
+      cyNorm: Math.abs(dy) < 0.014 ? previous.cyNorm : previous.cyNorm + dy * follow,
+    });
+  }
+  const bounded = smoothed.length <= 24
+    ? smoothed
+    : Array.from({ length: 24 }, (_, index) =>
+      smoothed[Math.round(index * (smoothed.length - 1) / 23)]!,
+    );
+  const first = bounded[0]!;
+  const last = bounded[bounded.length - 1]!;
+  return [
+    { ...first, timeSec: shot.startSec },
+    ...bounded.filter((keyframe) => keyframe.timeSec > shot.startSec && keyframe.timeSec < shot.endSec),
+    { ...last, timeSec: shot.endSec },
+  ].filter((keyframe, index, list) => index === 0 || keyframe.timeSec > list[index - 1]!.timeSec);
 }
 
 // ---------------------------------------------------------------------------
@@ -654,14 +800,13 @@ export interface BuildAutoLayoutPlanParams {
   /** Edited clip duration. */
   durationSec: number;
   /** Whether this output's aspect ratio can seat two laterally distinct
-   *  two-up tiles (`splitTilesAreDistinct`) — false demotes every would-be
+   *  two-up tiles. False demotes every would-be
    *  split to a single crop covering the seats. */
   allowTwoUp: boolean;
   options?: BuildAutoLayoutPlanOptions;
 }
 
 export interface BuildAutoLayoutPlanOptions {
-  shotOptions?: SegmentShotsOptions;
   analyzeOptions?: AnalyzeShotOptions;
   turnsOptions?: BuildSpeakerTurnsOptions;
   frameOptions?: FrameFaceOptions;
@@ -682,10 +827,6 @@ export interface BuildAutoLayoutPlanOptions {
   dominantShotMinSec?: number;
   /** Speech-share threshold for "one speaker dominates this shot". */
   dominantShareMin?: number;
-  /** Cap on total plan segments (each costs a filtergraph branch). */
-  maxSegments?: number;
-  /** Segments shorter than this merge into a neighbor. */
-  minSegmentSec?: number;
 }
 
 const PLAN_DEFAULTS: Required<
@@ -693,8 +834,6 @@ const PLAN_DEFAULTS: Required<
     BuildAutoLayoutPlanOptions,
     | "dominantShotMinSec"
     | "dominantShareMin"
-    | "maxSegments"
-    | "minSegmentSec"
     | "turnSoloMinSec"
     | "holdGapSec"
     | "activeSpeakerCuts"
@@ -705,20 +844,11 @@ const PLAN_DEFAULTS: Required<
   turnSoloMinSec: 1.6,
   holdGapSec: 1.5,
   activeSpeakerCuts: false,
-  maxSegments: 24,
-  // Aligned with `DEFAULT_MIN_SHOT_SEC` (adversarial review C2): shots
-  // already can't be shorter than that, so with equal floors the segment
-  // merge is a guard for degenerate cases only, never a re-editor of real
-  // fast camera cuts — any floor ABOVE the shot floor creates a band of
-  // legitimate shots that get pair-merged onto the wrong seat's framing.
-  // scdet jitter slivers are suppressed upstream by `segmentShots`.
-  minSegmentSec: 0.6,
 };
 
 export interface BuildAutoLayoutPlanResult {
-  /** Empty only when the footage produced no trustworthy face framing or
-   * detection ended too early. A one-shot talking head still returns one
-   * face-centered segment so preview and export share the exact same plan. */
+  /** Empty only when detection ended too early. A one-shot talking head and
+   * a completed no-face shot both return explicit renderable segments. */
   segments: ClipAutoLayoutSegment[];
   shotCount: number;
   soloShotCount: number;
@@ -747,201 +877,13 @@ function speechShareInWindow(
   return shares;
 }
 
-function sameSubjects(
-  left: readonly ClipAutoLayoutSubject[],
-  right: readonly ClipAutoLayoutSubject[],
-): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((subject, index) => {
-    const other = right[index];
-    return Boolean(
-      other &&
-        Math.abs(subject.cxNorm - other.cxNorm) < 0.015 &&
-        Math.abs(subject.cyNorm - other.cyNorm) < 0.015 &&
-        Math.abs(subject.zoom - other.zoom) < 0.015,
-    );
-  });
-}
-
-function sharedSubjects(
-  left: readonly ClipAutoLayoutSubject[],
-  right: readonly ClipAutoLayoutSubject[],
-): ClipAutoLayoutSubject[] {
-  return left.filter((subject, index) => {
-    const other = right[index];
-    return Boolean(
-      other &&
-        Math.abs(subject.cxNorm - other.cxNorm) < 0.015 &&
-        Math.abs(subject.cyNorm - other.cyNorm) < 0.015 &&
-        Math.abs(subject.zoom - other.zoom) < 0.015,
-    );
-  });
-}
-
-/** Merges adjacent segments whose layout and framing are effectively equal
- *  (crop centers within ~1.5% and same zoom) so consecutive same-camera
- *  shots don't cost redundant filtergraph branches. */
-function coalesceEqualSegments(
-  segments: ClipAutoLayoutSegment[],
-): ClipAutoLayoutSegment[] {
-  const near = (a: number | undefined, b: number | undefined) =>
-    Math.abs((a ?? 0.5) - (b ?? 0.5)) < 0.015;
-  const out: ClipAutoLayoutSegment[] = [];
-  for (const seg of segments) {
-    const last = out[out.length - 1];
-    if (
-      last &&
-      last.layout === "single" &&
-      seg.layout === "single" &&
-      near(last.cxNorm, seg.cxNorm) &&
-      near(last.cyNorm, seg.cyNorm) &&
-      near(last.zoom ?? 1, seg.zoom ?? 1) &&
-      sameSubjects(last.subjects, seg.subjects)
-    ) {
-      last.endSec = seg.endSec;
-    } else if (
-      last &&
-      last.layout === "two-up" &&
-      seg.layout === "two-up" &&
-      near(last.topCxNorm, seg.topCxNorm) &&
-      near(last.bottomCxNorm, seg.bottomCxNorm) &&
-      near(last.topCyNorm, seg.topCyNorm) &&
-      near(last.bottomCyNorm, seg.bottomCyNorm) &&
-      near(last.topZoom ?? 1, seg.topZoom ?? 1) &&
-      near(last.bottomZoom ?? 1, seg.bottomZoom ?? 1) &&
-      sameSubjects(last.subjects, seg.subjects)
-    ) {
-      last.endSec = seg.endSec;
-    } else {
-      out.push({ ...seg });
-    }
-  }
-  return out;
-}
-
 /**
- * Merges sub-`minSegmentSec` segments into a neighbor by LEAST framing
- * damage (adversarial review C2): each merge picks, over every under-floor
- * segment, the (segment, neighbor) pair with the lowest `mergeCost` (ties ->
- * shortest combined duration) and keeps the LONGER member's framing — the
- * exact pairwise policy `capSegments` uses, for the same reason. The
- * original fold-into-longer-neighbor rule cascade-absorbed runs of short
- * alternating-camera segments into one ever-growing wrongly-framed
- * mega-segment (reproduced on 0.7s alternating shots: half the clip cropped
- * onto the wrong seat).
- */
-function mergeShortSegments(
-  segments: ClipAutoLayoutSegment[],
-  minSegmentSec: number,
-): ClipAutoLayoutSegment[] {
-  let out = segments.map((s) => ({ ...s }));
-  const duration = (s: ClipAutoLayoutSegment) => s.endSec - s.startSec;
-  while (out.length > 1) {
-    let bestIndex = -1;
-    let bestScore = Infinity;
-    for (let i = 0; i < out.length; i++) {
-      if (duration(out[i]!) >= minSegmentSec) continue;
-      for (const j of [i - 1, i + 1]) {
-        if (j < 0 || j >= out.length) continue;
-        const cost = mergeCost(out[i]!, out[j]!);
-        const combined = duration(out[i]!) + duration(out[j]!);
-        const score = cost * 1000 + combined;
-        if (score < bestScore) {
-          bestScore = score;
-          bestIndex = Math.min(i, j);
-        }
-      }
-    }
-    if (bestIndex === -1) break;
-    const a = out[bestIndex]!;
-    const b = out[bestIndex + 1]!;
-    const keep = duration(a) >= duration(b) ? a : b;
-    out.splice(bestIndex, 2, {
-      ...keep,
-      startSec: a.startSec,
-      endSec: b.endSec,
-      subjects: sharedSubjects(a.subjects, b.subjects),
-    });
-    out = coalesceEqualSegments(out);
-  }
-  return out;
-}
-
-/** Visual cost of merging two adjacent segments into one framing — used by
- *  `capSegments` to always pick the LEAST damaging merge (merging two
- *  near-identical solo crops loses nothing; folding a split into a solo of
- *  the other seat loses a lot). Mixed layouts are heavily penalized. */
-function mergeCost(a: ClipAutoLayoutSegment, b: ClipAutoLayoutSegment): number {
-  if (a.layout !== b.layout) return 10;
-  if (a.layout === "single" && b.layout === "single") {
-    return (
-      Math.abs(a.cxNorm - b.cxNorm) +
-      Math.abs((a.cyNorm ?? 0.5) - (b.cyNorm ?? 0.5)) * 0.5 +
-      Math.abs((a.zoom ?? 1) - (b.zoom ?? 1)) * 0.3
-    );
-  }
-  if (a.layout === "two-up" && b.layout === "two-up") {
-    return (
-      Math.abs(a.topCxNorm - b.topCxNorm) +
-      Math.abs(a.bottomCxNorm - b.bottomCxNorm)
-    );
-  }
-  return 10;
-}
-
-/**
- * Caps the total segment count by repeatedly merging the adjacent PAIR with
- * the lowest framing distance (ties -> shorter combined duration), keeping
- * the longer member's framing. Pairwise local merges by least visual damage
- * — deliberately NOT "fold the shortest into its longer neighbor," which
- * cascade-absorbs alternating fast-cut footage into one ever-growing
- * wrongly-framed segment.
- */
-function capSegments(
-  segments: ClipAutoLayoutSegment[],
-  maxSegments: number,
-): ClipAutoLayoutSegment[] {
-  let out = segments.map((s) => ({ ...s }));
-  const duration = (s: ClipAutoLayoutSegment) => s.endSec - s.startSec;
-  while (out.length > maxSegments && out.length > 1) {
-    let bestIndex = 0;
-    let bestScore = Infinity;
-    for (let i = 0; i < out.length - 1; i++) {
-      const cost = mergeCost(out[i]!, out[i + 1]!);
-      const combined = duration(out[i]!) + duration(out[i + 1]!);
-      // Cost dominates; combined duration breaks ties toward merging the
-      // shortest material (least screen time affected).
-      const score = cost * 1000 + combined;
-      if (score < bestScore) {
-        bestScore = score;
-        bestIndex = i;
-      }
-    }
-    const a = out[bestIndex]!;
-    const b = out[bestIndex + 1]!;
-    const keep = duration(a) >= duration(b) ? a : b;
-    const merged: ClipAutoLayoutSegment = {
-      ...keep,
-      startSec: a.startSec,
-      endSec: b.endSec,
-      subjects: sharedSubjects(a.subjects, b.subjects),
-    };
-    out.splice(bestIndex, 2, merged);
-    out = coalesceEqualSegments(out);
-  }
-  return out;
-}
-
-/**
- * The full engine: shots -> per-shot analysis -> per-shot layout decision ->
- * merged/capped `SplitLayoutSegment[]` consumed by the shared planner.
+ * The full engine: shots -> per-shot analysis -> per-shot layout decision.
  *
- * Solo shots frame the face (`frameFaceInCrop`); "none" shots hold a plain
- * center crop; multi-face shots split into a two-up of the two largest
- * seats — unless diarization shows one sustained dominant speaker AND that
- * speaker's seat is identifiable from within-shot solo evidence, or the
- * output can't seat distinct tiles (`allowTwoUp: false`), both of which
- * demote to a single crop (dominant seat / seat midpoint respectively).
+ * Solo shots frame the face (`frameFaceInCrop`); "none" shots use source
+ * fit. Exactly two stable, co-observed subjects may use two-up. Crowded or
+ * uncertain multi-face shots use source fit; an unsplit two-person shot may
+ * use a dominant-seat crop only when that seat has earned it.
  */
 export function buildAutoLayoutPlan(
   params: BuildAutoLayoutPlanParams,
@@ -950,8 +892,6 @@ export function buildAutoLayoutPlan(
   const {
     dominantShotMinSec,
     dominantShareMin,
-    maxSegments,
-    minSegmentSec,
     turnSoloMinSec,
     holdGapSec,
     activeSpeakerCuts,
@@ -973,6 +913,9 @@ export function buildAutoLayoutPlan(
   if (params.durationSec <= 0 || params.samples.length === 0) {
     return empty([]);
   }
+  const samples = filterAutomaticFaceSamples(params.samples, {
+    resetAtSecs: params.sceneCuts,
+  });
 
   // Truncated detection (adversarial review M2): reframe_detect.py stops at
   // the first failed frame read, so a decode error mid-clip leaves the tail
@@ -989,25 +932,55 @@ export function buildAutoLayoutPlan(
   // framings into one "shot" and everything downstream misframes.
   const allCuts = [
     ...params.sceneCuts,
-    ...deriveFaceDiscontinuityCuts(params.samples),
+    ...deriveFaceDiscontinuityCuts(samples).filter(
+      (faceCut) =>
+        !params.sceneCuts.some((sceneCut) => Math.abs(sceneCut - faceCut) < 0.6),
+    ),
   ];
 
-  const shots = segmentShots(allCuts, params.durationSec, opts.shotOptions);
+  // A detector count discontinuity can split one real camera shot into
+  // auxiliary layout windows. If that source shot ever shows a crowd, none
+  // of those windows is eligible for an automatic person crop or two-up.
+  // Use the admitted samples and source cuts only: the auxiliary cuts above
+  // must not let a brief two-face portion hide the wider group context.
+  const sourceShots = segmentShots(params.sceneCuts, params.durationSec);
+  const crowdedSourceShots = sourceShots.filter((sourceShot) =>
+    samples.some(
+      (sample) =>
+        sample.t >= sourceShot.startSec &&
+        sample.t < sourceShot.endSec &&
+        sample.faces.length > 2,
+    ),
+  );
+  const shots = segmentShots(allCuts, params.durationSec);
   const analyses = shots.map((shot) =>
-    analyzeShot(shot, params.samples, opts.analyzeOptions),
+    analyzeShot(shot, samples, opts.analyzeOptions),
   );
 
   const anyFaces = analyses.some((a) => a.kind !== "none");
-  if (!anyFaces) return empty(analyses);
+  if (!anyFaces) {
+    // Detection covered the clip and found no faces. That is still useful
+    // evidence: preserve each source shot with a full-source fit rather than
+    // pretending an earlier crop or generic center fallback applies.
+    return {
+      ...empty(analyses),
+      segments: analyses.map(({ shot }) => ({
+        startSec: shot.startSec,
+        endSec: shot.endSec,
+        layout: "single" as const,
+        intent: "fit" as const,
+        cxNorm: 0.5,
+        cyNorm: 0.5,
+        zoom: 1,
+        subjects: [],
+      })),
+    };
+  }
 
   const turns = buildSpeakerTurns(params.words, opts.turnsOptions);
 
   const segments: ClipAutoLayoutSegment[] = [];
   let mappedSpeakerCount = 0;
-  // Indexes of leading "none" segments awaiting the FIRST real framing to
-  // backfill from (M2's hold-framing policy has no previous shot to hold
-  // at the top of the clip).
-  const pendingBackfill: number[] = [];
   let twoUpSegmentCount = 0;
 
   for (const [shotIndex, analysis] of analyses.entries()) {
@@ -1024,51 +997,40 @@ export function buildAutoLayoutPlan(
         };
       });
 
-    if (kind === "none") {
-      // Hold the previous shot's framing rather than snapping to a hard
-      // center crop (adversarial review M2): a profile view or small face
-      // that YuNet loses mid-conversation shouldn't whip the crop to
-      // center and back. First-shot "none" gets a placeholder center crop
-      // that the backfill pass below replaces with the NEXT shot's framing.
-      const prev = segments[segments.length - 1];
-      if (prev && prev.layout === "single") {
-        segments.push({
-          ...prev,
-          startSec: shot.startSec,
-          endSec: shot.endSec,
-          subjects: [],
-        });
-      } else {
-        pendingBackfill.push(segments.length);
-        segments.push({
-          startSec: shot.startSec,
-          endSec: shot.endSec,
-          layout: "single",
-          cxNorm: 0.5,
-          cyNorm: 0.5,
-          zoom: 1,
-          subjects: [],
-        });
-      }
+    const sourceShotIsCrowded = crowdedSourceShots.some(
+      (sourceShot) =>
+        shot.startSec >= sourceShot.startSec && shot.endSec <= sourceShot.endSec,
+    );
+    if (sourceShotIsCrowded) {
+      segments.push({
+        startSec: shot.startSec,
+        endSec: shot.endSec,
+        layout: "single",
+        intent: "fit",
+        cxNorm: 0.5,
+        cyNorm: 0.5,
+        zoom: 1,
+        subjects,
+      });
       continue;
     }
-    if (pendingBackfill.length > 0) {
-      // First real framing reached: retro-fill the leading no-face shots
-      // with it (a "single" framing directly; a two-up's top seat as the
-      // nearest sane stand-in) so the clip can't open on a hard center
-      // crop that visibly snaps once the face appears.
-      const seatForBackfill =
-        kind === "solo" ? seats[0]! : [...seats].sort((a, b) => b.h - a.h)[0]!;
-      const framed = frameFaceInCrop(seatForBackfill, 1, opts.frameOptions);
-      for (const idx of pendingBackfill) {
-        const seg = segments[idx]!;
-        if (seg.layout === "single") {
-          seg.cxNorm = framed.cxNorm;
-          seg.cyNorm = framed.cyNorm;
-          seg.zoom = framed.zoom;
-        }
-      }
-      pendingBackfill.length = 0;
+
+    if (kind === "none") {
+      // A real cut with no face is B-roll, graphics, or a slide. It must see
+      // the full source, never inherit a nearby person's crop. Within-shot
+      // detector gaps are covered by the track above, so this branch only
+      // handles a whole shot with no trustworthy face.
+      segments.push({
+        startSec: shot.startSec,
+        endSec: shot.endSec,
+        layout: "single",
+        intent: "fit",
+        cxNorm: 0.5,
+        cyNorm: 0.5,
+        zoom: 1,
+        subjects: [],
+      });
+      continue;
     }
 
     if (kind === "solo") {
@@ -1080,6 +1042,24 @@ export function buildAutoLayoutPlan(
         cxNorm: framed.cxNorm,
         cyNorm: framed.cyNorm,
         zoom: framed.zoom,
+        cropTrack: cropTrackForSeat(shot, samples, seats[0]!, 1, framed.zoom, opts.frameOptions),
+        subjects,
+      });
+      continue;
+    }
+
+    if (analysis.subjectSeats.length !== 2) {
+      // A crowd can collapse to two lateral detector clusters, but it is not
+      // a two-person conversation. Keep every visible person in source fit
+      // rather than making stacked copies of a partial wide shot.
+      segments.push({
+        startSec: shot.startSec,
+        endSec: shot.endSec,
+        layout: "single",
+        intent: "fit",
+        cxNorm: 0.5,
+        cyNorm: 0.5,
+        zoom: 1,
         subjects,
       });
       continue;
@@ -1100,7 +1080,7 @@ export function buildAutoLayoutPlan(
     const seatMap = assignSeatsToSpeakers(
       seats,
       shot,
-      params.samples,
+      samples,
       turns,
       opts.assignOptions,
     );
@@ -1233,8 +1213,7 @@ export function buildAutoLayoutPlan(
         // parity default remains purely compositional: only when one face is
         // markedly larger (ratio
         // > 1.35 — the shot is composed on that person) do we trust a
-        // single crop of it; equal-billing seats keep the split, which is
-        // never wrong about who's on screen.
+        // single crop of it; equal-billing two-person seats keep the split.
         const larger = seats[0]!;
         const secondLargest = seats[1]!;
         if (larger.h / Math.max(secondLargest.h, 1e-6) > 1.35) {
@@ -1252,12 +1231,25 @@ export function buildAutoLayoutPlan(
         cxNorm: framed.cxNorm,
         cyNorm: framed.cyNorm,
         zoom: framed.zoom,
+        cropTrack: cropTrackForSeat(shot, samples, dominantSeat, 1, framed.zoom, opts.frameOptions),
         subjects,
       });
       continue;
     }
 
-    if (params.allowTwoUp) {
+    // A stacked layout needs two actual camera seats. Small or intermittent
+    // faces in a photo, audience, or wide B-roll frame are not speakers and
+    // duplicating that source into two tiles looks worse than one honest crop.
+    const canUseTwoUp =
+      params.allowTwoUp &&
+      seats.length === 2 &&
+      analysis.subjectSeats.length === 2 &&
+      seatA.presence >= 0.55 &&
+      seatB.presence >= 0.55 &&
+      seatA.h >= 0.1 &&
+      seatB.h >= 0.1 &&
+      Math.abs(seatA.cx - seatB.cx) >= 0.28;
+    if (canUseTwoUp) {
       // Two-up tiles are near-square (W x H/2), so the base tile crop
       // typically keeps full source height — frame each seat within it.
       const framedA = frameFaceInCrop(seatA, 1, opts.frameOptions);
@@ -1272,32 +1264,33 @@ export function buildAutoLayoutPlan(
         bottomCyNorm: framedB.cyNorm,
         topZoom: framedA.zoom,
         bottomZoom: framedB.zoom,
+        topCropTrack: cropTrackForSeat(shot, samples, seatA, 1, framedA.zoom, opts.frameOptions),
+        bottomCropTrack: cropTrackForSeat(shot, samples, seatB, 1, framedB.zoom, opts.frameOptions),
         subjects,
       });
       twoUpSegmentCount += 1;
       continue;
     }
 
-    // A square/wide output cannot produce distinct stacked crops. Preserve
-    // the complete two-person composition around the seat midpoint instead
-    // of arbitrarily dropping the slightly smaller face.
+    // This output cannot show distinct tiles and no subject earned a
+    // dominant crop. Source fit keeps both observed people visible.
     segments.push({
       startSec: shot.startSec,
       endSec: shot.endSec,
       layout: "single",
-      cxNorm: (seatA.cx + seatB.cx) / 2,
-      cyNorm: (seatA.cy + seatB.cy) / 2,
+      intent: "fit",
+      cxNorm: 0.5,
+      cyNorm: 0.5,
       zoom: 1,
       subjects,
     });
   }
 
-  let finalSegments = coalesceEqualSegments(segments);
-  finalSegments = mergeShortSegments(finalSegments, minSegmentSec);
-  finalSegments = capSegments(finalSegments, maxSegments);
-
   return {
-    segments: finalSegments,
+    // Keep real source cuts. A camera change is more important than saving a
+    // filter branch, and tracks already avoid turning within-shot movement
+    // into a sequence of scenes.
+    segments,
     shotCount: analyses.length,
     soloShotCount: analyses.filter((a) => a.kind === "solo").length,
     multiShotCount: analyses.filter((a) => a.kind === "multi").length,

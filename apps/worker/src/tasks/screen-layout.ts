@@ -286,9 +286,9 @@ const PIP_FACE_CONFIRM_MIN_INSIDE_SHARE = 0.6;
 
 /**
  * H2 (adversarial review): confirms a candidate `pipRect` actually contains
- * a face before `decidePipUsage` (render-clips.ts) is allowed to prefer it
- * over the existing band fallback. Motion segmentation alone has a MEASURED
- * false positive on real talking-head footage — a hand gesture near the
+ * a face before LayoutEvidence can mark the rectangle usable for the
+ * composition planner instead of the face-band fallback. Motion segmentation
+ * alone has a MEASURED false positive on real talking-head footage — a hand gesture near the
  * frame edge reads as a corner-adjacent, compact, dense motion blob just
  * like a genuine facecam overlay does (see this module's top doc comment).
  * Requires BOTH: (a) faces were found in at least

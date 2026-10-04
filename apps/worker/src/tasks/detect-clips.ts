@@ -31,7 +31,7 @@ import { notifyWorkflowFailureAfterSettlement } from "../notifications";
 interface WorkflowRunJob {
   id: string;
   projectId: string;
-  contentPackId?: string | null;
+  contentPackId: string | null;
   project: {
     title: string;
     sourceStorageKey: string | null;
@@ -1166,10 +1166,22 @@ async function callOpenAI(
   };
 }
 
+interface ClipDetectionPersistence {
+  project: Pick<typeof projectService, "getTranscriptForWorker" | "getContentPackForRun">;
+  clips: Pick<typeof clipService, "persistDetectedClips" | "autoQueueDefaultRenders">;
+  lifecycle: Pick<ReturnType<typeof getWorkflowRunLifecycle>, "completeMomentDetection" | "failAttempt">;
+  notifyFailure: typeof notifyWorkflowFailureAfterSettlement;
+}
+
 export async function processClipDetectionRun(
   attempt: ClaimedWorkflowAttempt,
   context: WorkflowAttemptContext,
+  persistence?: ClipDetectionPersistence,
 ) {
+  const adapters = persistence ?? {
+    project: projectService, clips: clipService, lifecycle: getWorkflowRunLifecycle(),
+    notifyFailure: notifyWorkflowFailureAfterSettlement,
+  };
   const run: WorkflowRunJob = { ...attempt, id: attempt.workflowRunId };
   const { signal } = context;
   signal?.throwIfAborted();
@@ -1179,11 +1191,21 @@ export async function processClipDetectionRun(
   });
 
   try {
-    const apiKey = getRequiredOpenAIApiKey();
-    const model = process.env.OPENAI_CLIP_MODEL ?? "gpt-5.4-mini";
+    const contentPackRow = await adapters.project.getContentPackForRun({
+      projectId: run.projectId, contentPackId: run.contentPackId,
+    });
+    signal.throwIfAborted();
+    if (!contentPackRow) {
+      throw new WorkflowWorkerError("workflow_content_pack_invalid", "The Workflow Run has no valid committed Content Pack", "permanent");
+    }
+    let contentPack: ContentPack;
+    try { contentPack = parseStoredContentPack(contentPackRow); }
+    catch {
+      throw new WorkflowWorkerError("workflow_content_pack_invalid", "The bound Content Pack contains invalid settings", "permanent");
+    }
 
     // Load transcript from DB via service layer
-    const transcriptRow = await projectService.getTranscriptForWorker(
+    const transcriptRow = await adapters.project.getTranscriptForWorker(
       run.projectId,
     );
     signal?.throwIfAborted();
@@ -1215,22 +1237,15 @@ export async function processClipDetectionRun(
       );
     }
 
-    // Load the run's bound ContentPack — never "latest for project", so a
-    // draft written mid-run (user reopening Step 2) can't swap settings.
-    const contentPackRow = await projectService.getContentPackForRun(run);
-    const contentPack = contentPackRow
-      ? parseStoredContentPack(contentPackRow)
-      : null;
-
     const sourceDurationSec =
       (run.project.sourceDurationSeconds ?? fullDurationSec) || null;
-    const processingStartSec = contentPack?.processingStartSec ?? null;
-    const processingEndSec = contentPack?.processingEndSec ?? null;
+    const processingStartSec = contentPack.processingStartSec ?? null;
+    const processingEndSec = contentPack.processingEndSec ?? null;
     const windowStart = processingStartSec ?? 0;
     const windowEnd =
       processingEndSec ?? sourceDurationSec ?? fullDurationSec ?? 0;
 
-    if (contentPack?.mode === "caption_only") {
+    if (contentPack.mode === "caption_only") {
       log("info", "clip_detection_caption_only_short_circuit", {
         workflowRunId: run.id,
         projectId: run.projectId,
@@ -1259,7 +1274,7 @@ export async function processClipDetectionRun(
         payoffText: null,
         reasoning: "Caption-only mode: full-length captioned render",
         category: "story",
-        platformFit: contentPack.platformTargets ?? [],
+        platformFit: contentPack.platformTargets,
         hookStrengthScore: 1,
         emotionalIntensityScore: 1,
         storyCompletenessScore: 100,
@@ -1277,7 +1292,7 @@ export async function processClipDetectionRun(
       };
 
       signal?.throwIfAborted();
-      await clipService.persistDetectedClips(
+      await adapters.clips.persistDetectedClips(
         attempt,
         [captionClip],
         { provider: "openai", model: "caption-only", totalTokensUsed: 0 },
@@ -1285,7 +1300,7 @@ export async function processClipDetectionRun(
       );
 
       try {
-        await clipService.autoQueueDefaultRenders(
+        await adapters.clips.autoQueueDefaultRenders(
           attempt,
           "16:9",
         );
@@ -1303,7 +1318,7 @@ export async function processClipDetectionRun(
         );
       }
 
-      await getWorkflowRunLifecycle().completeMomentDetection(attempt);
+      await adapters.lifecycle.completeMomentDetection(attempt);
       return;
     }
 
@@ -1328,7 +1343,7 @@ export async function processClipDetectionRun(
       );
     }
 
-    const requestedClipCountTarget = contentPack?.clipCountTarget;
+    const requestedClipCountTarget = contentPack.clipCountTarget;
     const finalClipCountTarget = resolveClipCountTarget(
       requestedClipCountTarget,
       totalDurationSec,
@@ -1337,12 +1352,15 @@ export async function processClipDetectionRun(
       resolveCandidateCountTarget(finalClipCountTarget, totalDurationSec);
     const durationPolicy = resolveDurationPolicy(contentPack);
     const clipDurationSecTarget =
-      contentPack?.clipDurationSecTarget ?? durationPolicy.preferredMinDurationSec;
+      contentPack.clipDurationSecTarget;
     const platformTargets =
-      contentPack?.platformTargets ?? ["tiktok", "youtube_shorts", "instagram_reels"];
-    const toneConstraints = (contentPack?.toneConstraints ?? []) as string[];
-    const autoHook = contentPack?.autoHook ?? true;
-    const specificMoments = contentPack?.specificMoments ?? "";
+      contentPack.platformTargets;
+    const toneConstraints = contentPack.toneConstraints;
+    const autoHook = contentPack.autoHook;
+    const specificMoments = contentPack.specificMoments;
+
+    const apiKey = getRequiredOpenAIApiKey();
+    const model = process.env.OPENAI_CLIP_MODEL ?? "gpt-5.4-mini";
 
     // Chunk transcript if needed
     const chunks = chunkUtterances(utterances);
@@ -1535,7 +1553,7 @@ export async function processClipDetectionRun(
 
     // Persist clips
     signal?.throwIfAborted();
-    await clipService.persistDetectedClips(
+    await adapters.clips.persistDetectedClips(
       attempt,
       finalClips,
       {
@@ -1547,9 +1565,9 @@ export async function processClipDetectionRun(
     );
 
     try {
-      await clipService.autoQueueDefaultRenders(
+      await adapters.clips.autoQueueDefaultRenders(
         attempt,
-        contentPack?.defaultAspectRatio ?? "9:16",
+        contentPack.defaultAspectRatio,
       );
     } catch (error) {
       log("error", "auto_render_queue_failed", {
@@ -1566,7 +1584,7 @@ export async function processClipDetectionRun(
     }
 
     // Complete workflow run
-    await getWorkflowRunLifecycle().completeMomentDetection(attempt);
+    await adapters.lifecycle.completeMomentDetection(attempt);
 
     log("info", "clip_detection_run_completed", {
       workflowRunId: run.id,
@@ -1580,14 +1598,14 @@ export async function processClipDetectionRun(
     const code = failure.code;
     const message =
       error instanceof Error ? error.message : "Unknown worker error";
-    await getWorkflowRunLifecycle().failAttempt(attempt, failure);
+    await adapters.lifecycle.failAttempt(attempt, failure);
     log("error", "clip_detection_run_failed", {
       workflowRunId: run.id,
       projectId: run.projectId,
       code,
       message,
     });
-    await notifyWorkflowFailureAfterSettlement({
+    await adapters.notifyFailure({
       workflowRunId: run.id,
       projectId: run.projectId,
       errorCode: code,

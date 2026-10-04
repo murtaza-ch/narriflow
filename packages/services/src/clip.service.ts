@@ -5,8 +5,6 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { projectService } from "./project.service";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
-  CLIP_AUTO_LAYOUT_ENGINE,
-  CLIP_AUTO_LAYOUT_VERSION,
   CLIP_MAX_DURATION_SEC,
   CLIP_MIN_DURATION_SEC,
   CLIP_TITLE_MAX_LENGTH,
@@ -19,7 +17,6 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
-  clipAutoLayoutAnalysisSchema,
   clipRenderResolutionSchema,
   clipTitleSuggestionsLlmResponseSchema,
 	contentPackSchema,
@@ -58,9 +55,9 @@ import type {
   ClipSnapshot,
   ContentPack,
   EditorDocument,
-  SourceRange,
   StudioEdits,
   TranscriptUtterance,
+  WorkspaceCapability,
 } from "@narriflow/validators";
 import { getLastWorkflowSeq } from "./workflow.service";
 import {
@@ -85,6 +82,7 @@ import { analyticsService } from "./analytics.service";
 import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
+import type { ActorScope } from "./actor-scope";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -143,82 +141,6 @@ interface LlmMeta {
   provider: string;
   model: string;
   totalTokensUsed: number | null;
-}
-
-/** A clip still missing a preview proxy, with enough of its project's
- *  source info for the worker to cut one. Returned by
- *  {@link ClipService.getClipsNeedingPreview}.
- *
- *  `startSec`/`endSec` double as the EXPECTED window for
- *  {@link ClipService.completeClipPreview}'s claim: the worker echoes them
- *  back on completion, and the claim only succeeds if the clip's stored
- *  boundaries still match. Without this, an in-flight cut for an OLD window
- *  can land after a boundary edit/reset already nulled `previewStorageKey`
- *  for a NEW window — the stale attempt would otherwise win the
- *  `previewStorageKey IS NULL` race and persist a proxy for the wrong
- *  window. */
-export interface ClipPendingPreview {
-  id: string;
-  projectId: string;
-  startSec: number;
-  endSec: number;
-  sourceStorageKey: string;
-  sourceDurationSec: number | null;
-}
-
-/** A clip whose proxy exists but whose shared automatic speaker-layout plan
- * has not been analyzed yet (or was explicitly invalidated by a range edit). */
-export interface ClipPendingAutoLayoutAnalysis {
-  id: string;
-  projectId: string;
-  startSec: number;
-  endSec: number;
-  transcriptSlice: TranscriptUtterance[];
-  deletedRanges: SourceRange[];
-  editorRevision: number;
-  previewStorageKey: string;
-  previewStartSec: number;
-  previewDurationSec: number;
-  /** Per-attempt fencing token. Only the worker holding this token may
-   * publish or defer the claimed analysis. */
-  autoLayoutClaimToken: string;
-}
-
-const autoLayoutEvidenceNeedsRefreshWhere = {
-  OR: [
-    { autoLayoutAnalysis: { equals: Prisma.DbNull } },
-    {
-      autoLayoutAnalysis: {
-        path: ["version"],
-        not: CLIP_AUTO_LAYOUT_VERSION,
-      },
-    },
-    {
-      autoLayoutAnalysis: {
-        path: ["engine"],
-        not: CLIP_AUTO_LAYOUT_ENGINE,
-      },
-    },
-  ],
-} satisfies Prisma.ClipWhereInput;
-
-function autoLayoutClaimStateWhere(now: Date): Prisma.ClipWhereInput {
-  return {
-    OR: [
-      {
-        autoLayoutStatus: "pending",
-        OR: [
-          { autoLayoutLeaseExpiresAt: null },
-          { autoLayoutLeaseExpiresAt: { lte: now } },
-        ],
-      },
-      {
-        autoLayoutStatus: "processing",
-        autoLayoutLeaseExpiresAt: { lte: now },
-      },
-      { autoLayoutStatus: "completed" },
-    ],
-  };
 }
 
 export function resolveClipCaptionPresetForContentPack(
@@ -953,14 +875,16 @@ export type ClipDeletionOutcome =
 
 export interface ClipDeletionAdapter {
   getClipRow(input: {
-    userId: string;
+    actorUserId: string;
+    workspaceId: string;
     projectId: string;
     clipId: string;
   }): Promise<ClipDeletionRow | null>;
   deleteObject(key: string): Promise<unknown>;
   isMissingObjectError(error: unknown): boolean;
   deleteClipRow(input: {
-    userId: string;
+    actorUserId: string;
+    workspaceId: string;
     projectId: string;
     clipId: string;
   }): Promise<{ count: number }>;
@@ -1025,18 +949,25 @@ export interface ClipDuplicationStorageAdapter {
 export class ClipService {
   constructor(
     private readonly options: {
+      authorizeActor?: (scope: ActorScope, capability: WorkspaceCapability) => Promise<void>;
       clipDeletionAdapter?: ClipDeletionAdapter;
       clipDuplicationStorageAdapter?: ClipDuplicationStorageAdapter;
     } = {},
   ) {}
 
+  private async authorizeActor(scope: ActorScope, capability: WorkspaceCapability) {
+    if (this.options.authorizeActor) return this.options.authorizeActor(scope, capability);
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability);
+  }
+
   async getClipSnapshot(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
   ): Promise<ClipSnapshot> {
+    await this.authorizeActor(scope, "content.view");
     const clip = await requirePrisma().clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       include: {
         project: { select: { sourceDurationSeconds: true } },
         renders: true,
@@ -1124,13 +1055,14 @@ export class ClipService {
     );
   }
 
-  async listClips(userId: string, projectId: string): Promise<ClipSnapshot[]> {
+  async listClips(scope: ActorScope, projectId: string): Promise<ClipSnapshot[]> {
+    await this.authorizeActor(scope, "content.view");
     const prisma = requirePrisma();
 
     const clips = await prisma.clip.findMany({
       where: {
         projectId,
-        project: { userId },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       include: {
         project: { select: { sourceDurationSeconds: true } },
@@ -1149,15 +1081,16 @@ export class ClipService {
    * completed renders or move the clip to `edited`.
    */
   async updateClipTitle(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
     title: string,
   ): Promise<ClipSnapshot> {
+    await this.authorizeActor(scope, "content.edit");
     const prisma = requirePrisma();
 
     const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       select: { id: true },
     });
 
@@ -1188,14 +1121,15 @@ export class ClipService {
    * which is what makes this cheap enough to run per-clip on demand.
    */
   async suggestClipTitles(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
   ): Promise<string[]> {
+    await this.authorizeActor(scope, "content.edit");
     const prisma = requirePrisma();
 
     const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       select: {
         title: true,
         hookText: true,
@@ -1391,14 +1325,15 @@ export class ClipService {
    * state the UI already renders (the format pill falls back to "Render").
    */
   async duplicateClip(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
   ): Promise<ClipSnapshot> {
+    await this.authorizeActor(scope, "content.edit");
     const prisma = requirePrisma();
 
     const source = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       include: {
         project: { select: { sourceDurationSeconds: true } },
         renders: { where: { exportVariantId: null } },
@@ -1721,16 +1656,17 @@ export class ClipService {
    * reuse it here once available.
    */
   async createClipFromSelection(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     sourceClipId: string,
     input: { startSec: number; endSec: number },
   ): Promise<ClipSnapshot> {
+    await this.authorizeActor(scope, "content.edit");
     const prisma = requirePrisma();
 
     const [source, project] = await Promise.all([
       prisma.clip.findFirst({
-        where: { id: sourceClipId, projectId, project: { userId } },
+        where: { id: sourceClipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
         select: {
           index: true,
           workflowRunId: true,
@@ -1749,7 +1685,7 @@ export class ClipService {
         },
       }),
       prisma.project.findFirst({
-        where: { id: projectId, userId },
+        where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
         select: {
           sourceDurationSeconds: true,
           transcript: { select: { utterancesJson: true } },
@@ -1879,11 +1815,12 @@ export class ClipService {
    * that used to exist is still true, and shouldn't vanish from project totals.
    */
   async deleteClip(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
   ): Promise<void> {
-    const context = { userId, projectId, clipId };
+    await this.authorizeActor(scope, "content.edit");
+    const context = { ...scope, projectId, clipId };
     const adapter: ClipDeletionAdapter =
       this.options.clipDeletionAdapter ??
       (() => {
@@ -1894,7 +1831,7 @@ export class ClipService {
               where: {
                 id: input.clipId,
                 projectId: input.projectId,
-                project: { userId: input.userId },
+                project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() },
               },
               select: {
                 previewStorageKey: true,
@@ -1932,7 +1869,7 @@ export class ClipService {
                 where: {
                   id: input.clipId,
                   projectId: input.projectId,
-                  project: { userId: input.userId },
+                  project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() },
                 },
               });
             } catch {
@@ -1967,25 +1904,24 @@ export class ClipService {
   }
 
   async regenerateClips(
+    scope: ActorScope,
     projectId: string,
     idempotencyKey: string,
-    contentPack: ContentPack | undefined,
-    workspaceContext: { workspaceId: string; actorUserId: string },
+    contentPack: ContentPack,
   ) {
     const prisma = requirePrisma();
     await workspaceService.requireActor(
-      workspaceContext.actorUserId,
-      workspaceContext.workspaceId,
+      scope.actorUserId,
+      scope.workspaceId,
       "processing.consume",
     );
-    const parsedContentPack = contentPack
-      ? contentPackSchema.parse(contentPack)
-      : null;
+    const parsedContentPack = contentPackSchema.parse(contentPack);
 
     const project = await prisma.project.findFirst({
       where: {
         id: projectId,
-        workspaceId: workspaceContext.workspaceId,
+        workspaceId: scope.workspaceId,
+        ...accessibleProjectWhere(),
       },
       select: {
         id: true,
@@ -2006,37 +1942,15 @@ export class ClipService {
     // Enforce plan-tier quota + per-upload length cap on this path too (the
     // project-page "Detect / Regenerate Clips" buttons route through here).
     await projectService.assertProjectGenerationAllowed(
+      scope,
       projectId,
-      workspaceContext.workspaceId,
     );
 
     const admitted = await getWorkflowRunLifecycle().admit({
       projectId,
       idempotencyKey,
       stage: "moment_detection",
-      contentPack: parsedContentPack
-        ? {
-            outputTypes: parsedContentPack.outputTypes,
-            clipGenerationMode: parsedContentPack.clipGenerationMode,
-            clipCountTarget: parsedContentPack.clipCountTarget,
-            clipDurationSecTarget: parsedContentPack.clipDurationSecTarget,
-            minDurationSec: parsedContentPack.minDurationSec,
-            preferredMinDurationSec: parsedContentPack.preferredMinDurationSec,
-            preferredMaxDurationSec: parsedContentPack.preferredMaxDurationSec,
-            maxDurationSec: parsedContentPack.maxDurationSec,
-            platformTargets: parsedContentPack.platformTargets,
-            toneConstraints: parsedContentPack.toneConstraints,
-            captionPreset: parsedContentPack.captionPreset,
-            platformPlaybookVersion: parsedContentPack.platformPlaybookVersion,
-            mode: parsedContentPack.mode,
-            autoHook: parsedContentPack.autoHook,
-            specificMoments: parsedContentPack.specificMoments,
-            processingStartSec: parsedContentPack.processingStartSec,
-            processingEndSec: parsedContentPack.processingEndSec,
-            clipLengthPreset: parsedContentPack.clipLengthPreset,
-            defaultAspectRatio: parsedContentPack.defaultAspectRatio,
-          }
-        : undefined,
+      contentPack: parsedContentPack,
     });
 
     return {
@@ -2047,17 +1961,17 @@ export class ClipService {
   }
 
   async triggerClipRendering(
+    scope: ActorScope,
     projectId: string,
     idempotencyKey: string,
-    workspaceContext: { workspaceId: string; actorUserId: string },
     clipIds?: string[],
     aspectRatios?: ClipAspectRatio[],
     resolution: ClipRenderResolution = "1080p",
   ) {
     const prisma = requirePrisma();
     await workspaceService.requireActor(
-      workspaceContext.actorUserId,
-      workspaceContext.workspaceId,
+      scope.actorUserId,
+      scope.workspaceId,
       "processing.consume",
     );
     const requestedAspectRatios = normalizeAspectRatios(aspectRatios);
@@ -2069,13 +1983,14 @@ export class ClipService {
     // is actually allowed, not the raw request.
     const resolvedResolution = await resolveRequestedResolution(
       resolution,
-      workspaceContext.workspaceId,
+      scope.workspaceId,
     );
 
     const project = await prisma.project.findFirst({
       where: {
         id: projectId,
-        workspaceId: workspaceContext.workspaceId,
+        workspaceId: scope.workspaceId,
+        ...accessibleProjectWhere(),
       },
       select: { id: true },
     });
@@ -2099,7 +2014,7 @@ export class ClipService {
     const workspaceTier = resolvePricingTier(
       (
         await prisma.workspace.findUnique({
-          where: { id: workspaceContext.workspaceId },
+          where: { id: scope.workspaceId },
           select: { pricingTier: true },
         })
       )?.pricingTier,
@@ -2303,10 +2218,9 @@ export class ClipService {
           select: {
             sourceStorageKey: true,
             sourceDurationSeconds: true,
-            userId: true,
             workspaceId: true,
             brandSnapshot: true,
-            workspace: { select: { pricingTier: true } },
+            workspace: { select: { ownerUserId: true, pricingTier: true } },
           },
         });
         if (!project) return null;
@@ -2329,9 +2243,9 @@ export class ClipService {
         return {
           sourceStorageKey: project.sourceStorageKey,
           sourceDurationSeconds: project.sourceDurationSeconds,
-          userId: project.userId,
+          workspaceOwnerUserId: project.workspace.ownerUserId,
           workspaceId: project.workspaceId,
-          ownerTier: resolvePricingTier(project.workspace.pricingTier),
+          pricingTier: resolvePricingTier(project.workspace.pricingTier),
           brandSnapshot: {
             status: "available" as const,
             value: project.brandSnapshot,
@@ -2358,7 +2272,7 @@ export class ClipService {
   }
 
   async getClipDownloadUrl(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
     aspectRatio: ClipAspectRatio = "9:16",
@@ -2374,6 +2288,7 @@ export class ClipService {
      *  boundaries before seeking/trimming against the proxy. */
     previewStartSec?: number;
   }> {
+    await this.authorizeActor(scope, "content.download");
     const prisma = requirePrisma();
     const aspectRatioDb = clipAspectRatioToDb[aspectRatio];
 
@@ -2384,7 +2299,7 @@ export class ClipService {
         exportVariantId: null,
         clip: {
           projectId,
-          project: { userId, ...accessibleProjectWhere() },
+          project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
         },
       },
       include: {
@@ -2423,7 +2338,7 @@ export class ClipService {
     const clip =
       render?.clip ??
       (await prisma.clip.findFirst({
-        where: { id: clipId, projectId, project: { userId } },
+        where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       }));
 
     if (clip?.previewStorageKey) {
@@ -2458,7 +2373,7 @@ export class ClipService {
    * multiple database-latency waves before they can paint.
    */
   async getProjectClipPreviewUrls(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     aspectRatio: ClipAspectRatio = "9:16",
   ): Promise<{
@@ -2474,12 +2389,13 @@ export class ClipService {
       | null
     >;
   }> {
+    await this.authorizeActor(scope, "content.view");
     const prisma = requirePrisma();
     const aspectRatioDb = clipAspectRatioToDb[aspectRatio];
     const clips = await prisma.clip.findMany({
       where: {
         projectId,
-        project: { userId, ...accessibleProjectWhere() },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       orderBy: { index: "asc" },
       select: {
@@ -2560,7 +2476,7 @@ export class ClipService {
    * only this small validated metadata artifact after the editor paints.
    */
   async getClipPreviewSource(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
   ): Promise<{
@@ -2569,13 +2485,14 @@ export class ClipService {
     previewDurationSec: number | null;
     waveformPeaksUrl: string | null;
   }> {
+    await this.authorizeActor(scope, "content.view");
     const prisma = requirePrisma();
 
     const clip = await prisma.clip.findFirst({
       where: {
         id: clipId,
         projectId,
-        project: { userId, ...accessibleProjectWhere() },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       select: {
         previewStorageKey: true,
@@ -2620,13 +2537,14 @@ export class ClipService {
   /** Reads the small peaks sibling for the authenticated same-origin API.
    * Missing/silent/legacy/malformed artifacts are normal and return null. */
   async getClipPreviewPeaks(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
   ): Promise<ClipPreviewPeaks | null> {
+    await this.authorizeActor(scope, "content.view");
     const prisma = requirePrisma();
     const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       select: { previewStorageKey: true },
     });
     if (!clip?.previewStorageKey) return null;
@@ -2639,347 +2557,6 @@ export class ClipService {
     } catch {
       return null;
     }
-  }
-
-  /**
-   * Finds clips still missing a preview proxy, highest `viralityScore`
-   * first (users look at the top clips first) — scoped to projects whose
-   * source is still available and fully ingested. Backs the worker's
-   * decoupled `processPendingClipPreviews` poll (apps/worker/src/tasks/
-   * clip-preview.ts), which also backfills every pre-existing clip.
-   *
-   * Returns the *effective* (transcript-boundary-expanded) timing — the
-   * exact same `getEffectiveClipTiming` computation `toClipSnapshot` uses
-   * for what the studio/clip-card actually display — not the raw DB
-   * columns. A freshly-detected clip's raw `startSec`/`endSec` can differ
-   * from its displayed timing (boundary edits persist the effective values
-   * back, but detection doesn't); padding around the raw columns could
-   * leave the proxy not actually covering what's shown, silently reproducing
-   * the exact off-by-`previewStartSec` desync this feature exists to avoid.
-   */
-  async getClipsNeedingPreview(limit: number): Promise<ClipPendingPreview[]> {
-    const prisma = requirePrisma();
-    const take = Math.max(1, Math.min(25, limit));
-
-    const clips = await prisma.clip.findMany({
-      where: {
-        previewStorageKey: null,
-        project: {
-          ...accessibleProjectWhere(),
-          sourceStorageKey: { not: null },
-          ingestStatus: "ready",
-        },
-      },
-      orderBy: [{ viralityScore: "desc" }, { createdAt: "asc" }],
-      take,
-      select: {
-        id: true,
-        projectId: true,
-        startSec: true,
-        endSec: true,
-        transcriptSlice: true,
-        captionPreset: true,
-        studioEdits: true,
-        brollUrl: true,
-        deletedRanges: true,
-        editorDocumentVersion: true,
-        sceneBlocks: true,
-        censorSegments: true,
-        mediaMotions: true,
-        project: {
-          select: { sourceStorageKey: true, sourceDurationSeconds: true },
-        },
-      },
-    });
-
-    const pending: ClipPendingPreview[] = [];
-    for (const clip of clips) {
-      if (!clip.project.sourceStorageKey) continue;
-
-      // tailPadSec 0 — must stay in lockstep with toClipSnapshot (see its
-      // comment): slice-only timing treats stored bounds as final.
-      let document: EditorDocument;
-      try {
-        document = decodeClipEditorDocumentFromStorage(
-          clip,
-          clip.project.sourceDurationSeconds,
-        );
-      } catch (error) {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "clip_preview_document_skipped",
-            clipId: clip.id,
-            projectId: clip.projectId,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-        continue;
-      }
-      const effective = getEffectiveClipTiming({
-        utterances: document.transcriptSlice,
-        startSec: document.clipStartSec,
-        endSec: document.clipEndSec,
-        sourceDurationSec: clip.project.sourceDurationSeconds ?? null,
-        tailPadSec: 0,
-      });
-
-      pending.push({
-        id: clip.id,
-        projectId: clip.projectId,
-        startSec: effective.startSec,
-        endSec: effective.endSec,
-        sourceStorageKey: clip.project.sourceStorageKey,
-        sourceDurationSec: clip.project.sourceDurationSeconds ?? null,
-      });
-    }
-    return pending;
-  }
-
-  /**
-   * Persists a clip's generated preview-proxy metadata — but only if no
-   * proxy has been recorded yet AND the clip's boundary window still
-   * matches what this attempt cut its proxy for. `previewStorageKey IS
-   * NULL` is the atomic claim condition (mirroring the codebase's
-   * claim-via-conditional-update idiom used by Workflow Run claims),
-   * since the Clip model has no separate "generating" status column to
-   * transition: two workers racing to cut the same clip's proxy will both
-   * upload, but only one write wins here — the loser (persisted: false)
-   * must delete its own upload.
-   *
-   * The `startSec`/`endSec IS NULL`-adjacent window check closes a second,
-   * narrower race than that one: an editor save/reset can null
-   * `previewStorageKey` for a NEW window while an OLD-window cut is still
-   * in flight from BEFORE that change. `previewStorageKey IS NULL` alone
-   * would still be true after the reset, so the stale attempt would win the
-   * claim and persist a proxy for a window the clip no longer has. Matching
-   * the clip's CURRENT `startSec`/`endSec` against the caller-supplied
-   * `expectedClipStartSec`/`expectedClipEndSec` (the window this attempt
-   * was actually cutting for) makes that impossible — a boundary change
-   * always fails this attempt's claim, exactly like `editorRevision`
-   * mismatches fail the editor document's guarded writes.
-   */
-  async completeClipPreview(
-    clipId: string,
-    input: {
-      storageKey: string;
-      startSec: number;
-      durationSec: number;
-      /** The clip's own boundary window this attempt cut its proxy for
-       *  (`ClipPendingPreview.startSec/endSec` at dispatch time) — distinct
-       *  from `startSec` above, which is the PADDED preview window persisted
-       *  as `previewStartSec`. */
-      expectedClipStartSec: number;
-      expectedClipEndSec: number;
-    },
-  ): Promise<{ persisted: boolean; projectId: string | null }> {
-    const prisma = requirePrisma();
-    const PREVIEW_WINDOW_EPSILON_SEC = 0.001;
-
-    const clip = await prisma.clip.findUnique({
-      where: { id: clipId },
-      select: { projectId: true },
-    });
-    if (!clip) {
-      return { persisted: false, projectId: null };
-    }
-
-    const claim = await prisma.clip.updateMany({
-      where: {
-        id: clipId,
-        project: accessibleProjectWhere(),
-        previewStorageKey: null,
-        startSec: {
-          gte: input.expectedClipStartSec - PREVIEW_WINDOW_EPSILON_SEC,
-          lte: input.expectedClipStartSec + PREVIEW_WINDOW_EPSILON_SEC,
-        },
-        endSec: {
-          gte: input.expectedClipEndSec - PREVIEW_WINDOW_EPSILON_SEC,
-          lte: input.expectedClipEndSec + PREVIEW_WINDOW_EPSILON_SEC,
-        },
-      },
-      data: {
-        previewStorageKey: input.storageKey,
-        previewStartSec: input.startSec,
-        previewDurationSec: input.durationSec,
-      },
-    });
-
-    if (claim.count === 0) {
-      return { persisted: false, projectId: clip.projectId };
-    }
-
-    return { persisted: true, projectId: clip.projectId };
-  }
-
-  /**
-   * Atomically claims one clip for automatic layout analysis. A durable lease
-   * (rather than an in-process mutex) prevents duplicate proxy downloads and
-   * CPU detection when workers are horizontally scaled. Expired processing
-   * claims are recoverable after a crash; the UUID token fences a stale owner
-   * from completing or releasing a newer attempt.
-   */
-  async claimNextClipForAutoLayoutAnalysis(
-    leaseMs: number,
-  ): Promise<ClipPendingAutoLayoutAnalysis | null> {
-    const prisma = requirePrisma();
-    const now = new Date();
-    const boundedLeaseMs = Math.max(30_000, Math.min(15 * 60_000, leaseMs));
-    const leaseExpiresAt = new Date(now.getTime() + boundedLeaseMs);
-    const clips = await prisma.clip.findMany({
-      where: {
-        previewStorageKey: { not: null },
-        previewStartSec: { not: null },
-        previewDurationSec: { not: null },
-        project: accessibleProjectWhere(now),
-        AND: [
-          autoLayoutEvidenceNeedsRefreshWhere,
-          autoLayoutClaimStateWhere(now),
-        ],
-      },
-      orderBy: [{ viralityScore: "desc" }, { createdAt: "asc" }],
-      // Read a few candidates so a collision with another replica does not
-      // turn this tick into a false empty result.
-      take: 8,
-      select: {
-        id: true,
-        projectId: true,
-        startSec: true,
-        endSec: true,
-        transcriptSlice: true,
-        captionPreset: true,
-        studioEdits: true,
-        brollUrl: true,
-        deletedRanges: true,
-        editorDocumentVersion: true,
-        sceneBlocks: true,
-        censorSegments: true,
-        mediaMotions: true,
-        editorRevision: true,
-        previewStorageKey: true,
-        previewStartSec: true,
-        previewDurationSec: true,
-        project: { select: { sourceDurationSeconds: true } },
-      },
-    });
-
-    for (const clip of clips) {
-      if (
-        !clip.previewStorageKey ||
-        clip.previewStartSec === null ||
-        clip.previewDurationSec === null
-      ) {
-        continue;
-      }
-      let document: EditorDocument;
-      try {
-        document = decodeClipEditorDocumentFromStorage(
-          clip,
-          clip.project.sourceDurationSeconds,
-        );
-      } catch (error) {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "clip_auto_layout_document_skipped",
-            clipId: clip.id,
-            projectId: clip.projectId,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-        continue;
-      }
-      const claimToken = randomUUID();
-      const claim = await prisma.clip.updateMany({
-        where: {
-          id: clip.id,
-          project: accessibleProjectWhere(now),
-          AND: [
-            autoLayoutEvidenceNeedsRefreshWhere,
-            autoLayoutClaimStateWhere(now),
-          ],
-        },
-        data: {
-          autoLayoutAnalysis: Prisma.DbNull,
-          autoLayoutStatus: "processing",
-          autoLayoutClaimToken: claimToken,
-          autoLayoutLeaseExpiresAt: leaseExpiresAt,
-          autoLayoutAttemptCount: { increment: 1 },
-        },
-      });
-      if (claim.count === 0) continue;
-
-      return {
-        id: clip.id,
-        projectId: clip.projectId,
-        startSec: document.clipStartSec,
-        endSec: document.clipEndSec,
-        transcriptSlice: document.transcriptSlice,
-        deletedRanges: document.deletedRanges,
-        editorRevision: clip.editorRevision,
-        previewStorageKey: clip.previewStorageKey,
-        previewStartSec: clip.previewStartSec,
-        previewDurationSec: clip.previewDurationSec,
-        autoLayoutClaimToken: claimToken,
-      };
-    }
-    return null;
-  }
-
-  /** Complete a worker claim only if its fencing token and analyzed inputs
-   * are still current. */
-  async completeClaimedClipAutoLayoutAnalysis(
-    clipId: string,
-    analysis: ClipAutoLayoutAnalysis,
-    expected: {
-      editorRevision: number;
-      previewStorageKey: string;
-      claimToken: string;
-    },
-  ): Promise<boolean> {
-    const prisma = requirePrisma();
-    const parsed = clipAutoLayoutAnalysisSchema.parse(analysis);
-    const result = await prisma.clip.updateMany({
-      where: {
-        id: clipId,
-        editorRevision: expected.editorRevision,
-        previewStorageKey: expected.previewStorageKey,
-        autoLayoutAnalysis: { equals: Prisma.DbNull },
-        autoLayoutStatus: "processing",
-        autoLayoutClaimToken: expected.claimToken,
-      },
-      data: {
-        autoLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
-        autoLayoutStatus: "completed",
-        autoLayoutClaimToken: null,
-        autoLayoutLeaseExpiresAt: null,
-      },
-    });
-    return result.count === 1;
-  }
-
-  /** Persist retry backoff for a failed claim so another replica or process
-   * restart cannot immediately repeat the same expensive failure. */
-  async deferClaimedClipAutoLayoutAnalysis(
-    clipId: string,
-    claimToken: string,
-    retryAt: Date,
-  ): Promise<boolean> {
-    const prisma = requirePrisma();
-    const result = await prisma.clip.updateMany({
-      where: {
-        id: clipId,
-        autoLayoutAnalysis: { equals: Prisma.DbNull },
-        autoLayoutStatus: "processing",
-        autoLayoutClaimToken: claimToken,
-      },
-      data: {
-        autoLayoutStatus: "pending",
-        autoLayoutClaimToken: null,
-        autoLayoutLeaseExpiresAt: retryAt,
-      },
-    });
-    return result.count === 1;
   }
 
   /**
@@ -3039,13 +2616,14 @@ export class ClipService {
    * editor JSON can be large, while the poll needs exactly one derived
    * column. */
   async getClipAutoLayoutAnalysis(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
   ): Promise<ClipAutoLayoutAnalysis | null> {
+    await this.authorizeActor(scope, "content.view");
     const prisma = requirePrisma();
     const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       select: { autoLayoutAnalysis: true },
     });
     if (!clip) {
@@ -3054,60 +2632,32 @@ export class ClipService {
     return parseClipAutoLayoutAnalysis(clip.autoLayoutAnalysis);
   }
 
-  async getClipSplitLayoutAnalysis(
-    userId: string,
-    projectId: string,
-    clipId: string,
-  ): Promise<ClipSplitLayoutAnalysis | null> {
-    const prisma = requirePrisma();
-    const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
-      select: { splitLayoutAnalysis: true },
-    });
-    if (!clip) {
-      throw new ClipActionError("clip_not_found");
-    }
-    return parseClipSplitLayoutAnalysis(clip.splitLayoutAnalysis);
-  }
 
   async getClipSplitLayoutOutcome(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
   ): Promise<ClipSplitLayoutOutcome | null> {
+    await this.authorizeActor(scope, "content.view");
     const prisma = requirePrisma();
     const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       select: { splitLayoutAnalysis: true },
     });
     if (!clip) throw new ClipActionError("clip_not_found");
     return parseClipSplitLayoutOutcome(clip.splitLayoutAnalysis);
   }
 
-  async getClipLayoutAnalysis(
-    userId: string,
-    projectId: string,
-    clipId: string,
-  ): Promise<ClipLayoutAnalysis | null> {
-    const prisma = requirePrisma();
-    const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
-      select: { layoutAnalysis: true },
-    });
-    if (!clip) {
-      throw new ClipActionError("clip_not_found");
-    }
-    return parseClipLayoutAnalysis(clip.layoutAnalysis);
-  }
 
   async getClipLayoutAnalysisOutcome(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
   ): Promise<ClipLayoutAnalysisOutcome | null> {
+    await this.authorizeActor(scope, "content.view");
     const prisma = requirePrisma();
     const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       select: { layoutAnalysis: true },
     });
     if (!clip) throw new ClipActionError("clip_not_found");
@@ -3136,7 +2686,7 @@ export class ClipService {
     // worker's per-row resolution scale never kicks in for it.
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { userId: true, workspaceId: true },
+      select: { workspaceId: true },
     });
     const resolvedResolution = project
       ? await resolveRequestedResolution("1080p", project.workspaceId)

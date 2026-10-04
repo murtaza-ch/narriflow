@@ -72,6 +72,33 @@ const valid: ClipAutoLayoutAnalysis = {
 };
 
 describe("clipAutoLayoutAnalysisSchema", () => {
+  test("accepts 128 automatic shots while explicit Split remains bounded to 64", () => {
+    const segments = Array.from({ length: 128 }, (_, index) => ({
+      startSec: index, endSec: index + 1, layout: "single" as const,
+      cxNorm: 0.5, cyNorm: 0.5, zoom: 1, subjects: [],
+    }));
+    const automatic = { ...valid, clipEndSec: 138, deletedRanges: [], editedDurationSec: 128, segments, noSplitSegments: segments };
+    expect(clipAutoLayoutAnalysisSchema.safeParse(automatic).success).toBe(true);
+    expect(clipAutoLayoutAnalysisSchema.safeParse({ ...automatic, segments: [...segments, { ...segments[0]!, startSec: 128, endSec: 129 }] }).success).toBe(false);
+    const splitSegments = segments.map(({ subjects: _, ...segment }) => segment);
+    expect(clipSplitLayoutAnalysisSchema.safeParse({ ...automatic, version: 1, engine: "explicit-split-v1", segments: splitSegments, noSplitSegments: splitSegments }).success).toBe(false);
+    expect(clipSplitLayoutAnalysisSchema.safeParse({ ...automatic, version: 1, engine: "explicit-split-v1", clipEndSec: 74, editedDurationSec: 64, segments: splitSegments.slice(0, 64), noSplitSegments: splitSegments.slice(0, 64) }).success).toBe(true);
+  });
+
+  test("requires ordered, bounded crop tracks spanning their shot", () => {
+    const tracked = (cropTrack: Array<{ timeSec: number; cxNorm: number; cyNorm: number }>) => ({
+      ...valid, segments: [{ ...valid.segments[0]!, cropTrack }, valid.segments[1]!],
+    });
+    const point = { cxNorm: 0.5, cyNorm: 0.5 };
+    expect(clipAutoLayoutAnalysisSchema.safeParse(tracked([{ ...point, timeSec: 0 }, { ...point, timeSec: 4 }, { ...point, timeSec: 8 }])).success).toBe(true);
+    for (const times of [[1, 8], [0, 7], [0, 4, 4, 8], [0, 6, 4, 8], [0, 9, 8]]) {
+      expect(clipAutoLayoutAnalysisSchema.safeParse(tracked(times.map((timeSec) => ({ ...point, timeSec })))).success).toBe(false);
+    }
+    expect(clipAutoLayoutAnalysisSchema.safeParse(tracked([{ ...point, timeSec: 0 }, { ...point, timeSec: 8, cyNorm: 1.2 }])).success).toBe(false);
+    expect(clipAutoLayoutAnalysisSchema.safeParse(tracked(Array.from({ length: 49 }, (_, index) => ({ ...point, timeSec: index / 6 })))).success).toBe(false);
+    expect(() => parseClipAutoLayoutAnalysis({ ...valid, version: 2, engine: "shot-layout-v2" })).toThrow("unsupported_clip_composition_evidence_version");
+  });
+
   test("round-trips a contiguous full and no-split plan", () => {
     expect(clipAutoLayoutAnalysisSchema.parse(valid)).toEqual(valid);
   });
@@ -146,18 +173,14 @@ describe("clipAutoLayoutAnalysisSchema", () => {
       }).success,
     ).toBe(false);
     expect(() =>
-      parseClipAutoLayoutAnalysis({ ...valid, version: 3 }),
+      parseClipAutoLayoutAnalysis({ ...valid, version: 4 }),
     ).toThrow("unsupported_clip_composition_evidence_version");
     expect(() =>
-      parseClipAutoLayoutAnalysis({ ...valid, engine: "shot-layout-v3" }),
+      parseClipAutoLayoutAnalysis({ ...valid, engine: "shot-layout-v99" }),
     ).toThrow("unsupported_clip_composition_evidence_version");
-    expect(
-      parseClipAutoLayoutAnalysis({
-        ...valid,
-        version: 1,
-        engine: "shot-layout-v1",
-      }),
-    ).toBeNull();
+    expect(() =>
+      parseClipAutoLayoutAnalysis({ ...valid, version: 1, engine: "shot-layout-v1" }),
+    ).toThrow("unsupported_clip_composition_evidence_version");
     expect(() =>
       parseClipSplitLayoutAnalysis({
         ...valid,

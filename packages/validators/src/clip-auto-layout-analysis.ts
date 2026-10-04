@@ -20,8 +20,8 @@ import { deletedRangesSchema } from "./edit-ranges";
 const unitInterval = z.number().finite().min(0).max(1);
 const positiveZoom = z.number().finite().min(1).max(4);
 
-export const CLIP_AUTO_LAYOUT_VERSION = 2 as const;
-export const CLIP_AUTO_LAYOUT_ENGINE = "shot-layout-v2" as const;
+export const CLIP_AUTO_LAYOUT_VERSION = 3 as const;
+export const CLIP_AUTO_LAYOUT_ENGINE = "shot-layout-v3" as const;
 
 export const clipAutoLayoutSubjectSchema = z.object({
   id: z.string().min(1).max(100),
@@ -42,6 +42,16 @@ const clipAutoLayoutSubjectsSchema = z
     }
   });
 
+/** A crop center sampled on the edited clip timeline. Crop size belongs to
+ * the enclosing shot, so tracking can move the camera without breathing. */
+export const clipAutoLayoutCropKeyframeSchema = z.object({
+  timeSec: z.number().finite().min(0),
+  cxNorm: unitInterval,
+  cyNorm: unitInterval,
+});
+
+const cropTrackSchema = z.array(clipAutoLayoutCropKeyframeSchema).max(48);
+
 export const clipAutoLayoutSingleSegmentSchema = z.object({
   startSec: z.number().finite().min(0),
   endSec: z.number().finite().gt(0),
@@ -49,6 +59,9 @@ export const clipAutoLayoutSingleSegmentSchema = z.object({
   cxNorm: unitInterval,
   cyNorm: unitInterval.default(0.5),
   zoom: positiveZoom.default(1),
+  /** `fit` is a real no-face shot, never a detector dropout held from another shot. */
+  intent: z.enum(["crop", "fit"]).optional(),
+  cropTrack: cropTrackSchema.optional(),
   subjects: clipAutoLayoutSubjectsSchema,
 });
 
@@ -62,14 +75,20 @@ export const clipAutoLayoutTwoUpSegmentSchema = z.object({
   bottomCyNorm: unitInterval.default(0.5),
   topZoom: positiveZoom.default(1),
   bottomZoom: positiveZoom.default(1),
+  topCropTrack: cropTrackSchema.optional(),
+  bottomCropTrack: cropTrackSchema.optional(),
   subjects: clipAutoLayoutSubjectsSchema,
 });
 
 const clipSplitLayoutSingleSegmentSchema = clipAutoLayoutSingleSegmentSchema.omit({
   subjects: true,
+  intent: true,
+  cropTrack: true,
 });
 const clipSplitLayoutTwoUpSegmentSchema = clipAutoLayoutTwoUpSegmentSchema.omit({
   subjects: true,
+  topCropTrack: true,
+  bottomCropTrack: true,
 });
 
 export const clipAutoLayoutSegmentSchema = z.discriminatedUnion("layout", [
@@ -90,11 +109,15 @@ export type ClipSplitLayoutSegment = z.infer<
   typeof clipSplitLayoutSegmentSchema
 >;
 
-const autoSegmentListSchema = z.array(clipAutoLayoutSegmentSchema).max(64);
-const splitSegmentListSchema = z.array(clipSplitLayoutSegmentSchema).max(64);
+// Camera cuts are durable editorial boundaries. Keep enough room for a
+// fast-cut source instead of merging unrelated shots to satisfy a low cap.
+export const CLIP_AUTO_LAYOUT_MAX_SEGMENTS = 128;
+export const CLIP_SPLIT_LAYOUT_MAX_SEGMENTS = 64;
+const autoSegmentListSchema = z.array(clipAutoLayoutSegmentSchema).max(CLIP_AUTO_LAYOUT_MAX_SEGMENTS);
+const splitSegmentListSchema = z.array(clipSplitLayoutSegmentSchema).max(CLIP_SPLIT_LAYOUT_MAX_SEGMENTS);
 
 function speakerLayoutAnalysisSchema<
-  TVersion extends 1 | 2,
+  TVersion extends 1 | 3,
   TEngine extends typeof CLIP_AUTO_LAYOUT_ENGINE | "explicit-split-v1",
   TSegmentList extends
     | typeof autoSegmentListSchema
@@ -146,7 +169,7 @@ function speakerLayoutAnalysisSchema<
           typeof field,
           readonly { startSec: number; endSec: number }[]
         >
-      )[field];
+      )[field] as Array<z.infer<typeof clipAutoLayoutSegmentSchema>>;
       let cursor = 0;
       for (let index = 0; index < segments.length; index++) {
         const segment = segments[index]!;
@@ -156,6 +179,40 @@ function speakerLayoutAnalysisSchema<
             path: [field, index, "endSec"],
             message: "segment endSec must be greater than startSec",
           });
+        }
+        const tracks = segment.layout === "single"
+          ? [segment.cropTrack]
+          : [segment.topCropTrack, segment.bottomCropTrack];
+        for (const track of tracks) {
+          if (!track) continue;
+          if (
+            track.length > 0 &&
+            (Math.abs(track[0]!.timeSec - segment.startSec) > 0.001 ||
+              Math.abs(track[track.length - 1]!.timeSec - segment.endSec) >
+                0.001)
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              path: [field, index],
+              message: "crop tracks must begin and end at their segment boundary",
+            });
+          }
+          let previous = -Infinity;
+          for (const keyframe of track) {
+            if (
+              keyframe.timeSec < segment.startSec - 0.001 ||
+              keyframe.timeSec > segment.endSec + 0.001 ||
+              keyframe.timeSec <= previous
+            ) {
+              ctx.addIssue({
+                code: "custom",
+                path: [field, index],
+                message: "crop track keyframes must be ordered within their segment",
+              });
+              break;
+            }
+            previous = keyframe.timeSec;
+          }
         }
         if (Math.abs(segment.startSec - cursor) > 0.075) {
           ctx.addIssue({
@@ -231,15 +288,6 @@ export function parseClipAutoLayoutAnalysis(
   value: unknown,
 ): ClipAutoLayoutAnalysis | null {
   if (value === null || value === undefined) return null;
-  if (
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    value !== null &&
-    (value as Record<string, unknown>).version === 1 &&
-    (value as Record<string, unknown>).engine === "shot-layout-v1"
-  ) {
-    return null;
-  }
   assertSupportedClipCompositionEvidenceVersion(
     value,
     { version: CLIP_AUTO_LAYOUT_VERSION, engine: CLIP_AUTO_LAYOUT_ENGINE },

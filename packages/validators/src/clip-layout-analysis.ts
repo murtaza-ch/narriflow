@@ -35,8 +35,8 @@ const clipLayoutAnalysisBaseSchema = z.object({
    *  against it without needing a separate column. */
   analyzedAtISO: z.string(),
   /** Source-time window `pip_detect.py` actually sampled — same
-   *  `startSec`/`durationSec` coordinates `detectPipPath` passes it
-   *  (render-clips.ts), NOT clip-relative. This is the SNAPPED render
+   *  `startSec`/`durationSec` coordinates the worker's layout analysis supplies,
+   *  NOT clip-relative. This is the SNAPPED render
    *  window (`resolveRenderTimingForClip`'s output), not the raw
    *  `Clip.startSec`/`endSec` row — see `clipStartSec`/`clipEndSec` below
    *  for the raw pair the studio preview actually has available to compare

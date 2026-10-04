@@ -86,9 +86,8 @@ for video in "$@"; do
   raw_insufficient="$(extract_field "$raw_json" insufficientSamples)"
 
   proxy_path="$TMP/${name%.*}-proxy.mp4"
-  # Exactly extractFaceDetectionSegment's own ffmpeg invocation
-  # (render-clips.ts), minus the HTTP-source-specific reconnect input flags
-  # (irrelevant here — these are local files).
+  # Same low-resolution encode as compileLayoutEvidenceSegmentCommand in the
+  # composition FFmpeg adapter. Local inputs need no HTTP reconnect flags.
   ffmpeg -y -ss 0 -t "$dur" -i "$video" \
     -map 0:v:0 -vf scale=-2:360 \
     -c:v libx264 -preset ultrafast -crf 30 -an \

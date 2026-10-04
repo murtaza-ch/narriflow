@@ -1,34 +1,9 @@
 /**
- * Split-screen 2-up rendering (vizard-parity.md item "2. Split-screen
- * 2-up"). Pure helpers only — no FFmpeg execution, no Prisma, no render
- * pipeline wiring (that lives in render-clips.ts, split packet B). Mirrors
- * reframe.ts's style: detector output (Python, see reframe_detect.py's
- * `--multi` mode) in, ffmpeg filtergraph strings out, everything in between
- * unit-tested in isolation.
- *
- * Pipeline this module implements:
- *   0. `remapMultiFaceSamplesForCutPlan` — multi-face sibling of reframe.ts's
- *      `remapFaceSamplesForCutPlan`: detector samples (elapsed-uncut-source
- *      seconds) -> one flat, time-sorted list on the edited (post-cut-concat)
- *      timeline.
- *   1. `clusterFaceTracks` — turn raw per-sample multi-face detections into
- *      up to 2 stable lateral (cx) clusters ("the two interview seats").
- *   2. `classifyShotSamples` — per sample, is this a two-shot (both seats
- *      visible), a single close-up (one seat), or neither (b-roll/title) —
- *      smoothed over time and collapsed into contiguous segments.
- *   3. `assignSpeakersToClusters` — correlate AssemblyAI diarization
- *      (speakerLabel + turn timing) against which cluster shows up in
- *      SINGLE-shot samples during each speaker's turns, to label "cluster 0
- *      is Speaker 2" etc. NOT wired into the render path (see its own doc
- *      comment) — kept exported for future active-speaker work.
- *   4. `computeTileCrop` / `splitTilesAreDistinct` — shared geometry facts
- *      consumed by the composition planner.
- *   5. `buildSplitLayoutPlan` — the full per-clip evidence plan: shot segments ->
- *      per-segment crop spec (two-up centers, or a single static crop),
- *      capped to a sane segment count.
+ * Pure multi-face evidence processing: remap detector times after cuts,
+ * cluster lateral seats, classify shots, and build bounded Split observations.
+ * The composition planner owns output eligibility and source crop geometry.
  */
-import type { ClipAspectRatio } from "@narriflow/validators";
-import { clipAspectRatioOptions, sourceToEdited } from "@narriflow/validators";
+import { sourceToEdited } from "@narriflow/validators";
 import type { TranscriptUtterance } from "@narriflow/validators";
 import type { ClipCutPlan } from "./cut-plan";
 import type { FaceSample } from "./reframe";
@@ -114,11 +89,10 @@ export function remapMultiFaceSamplesForCutPlan(
 
 /**
  * M2 (adversarial review): derives single-face `FaceSample[]` (the shape
- * `reframe.ts`'s `smoothFacePath`/`buildReframeSendcmdScript` consume) FROM
+ * `reframe.ts`'s `smoothFacePath` consumes) FROM
  * an already-completed multi-face detection pass, instead of re-running the
  * YuNet python detector a second time over the same footage. Used when a
- * split-mode clip's real 2-up plan doesn't pan out (fell back per-clip via
- * `decideSplitFallback`, or per-output via `splitTilesAreDistinct`) but
+ * split evidence has no usable two-up scene but
  * multi-face detection DID already run and succeed — re-detecting from
  * scratch would mean a second segment extraction AND a second full YuNet
  * pass over footage already scanned once.
@@ -613,12 +587,8 @@ export function assignSpeakersToClusters(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Shared tile geometry
+// Layer frame observations
 // ---------------------------------------------------------------------------
-
-const aspectRatioDimensions = new Map(
-  clipAspectRatioOptions.map((option) => [option.value, { width: option.width, height: option.height }]),
-);
 
 export interface NormalizedLayerFrame {
   x: number;
@@ -628,60 +598,8 @@ export interface NormalizedLayerFrame {
   rotationDeg?: number;
 }
 
-/**
- * Tile-aspect crop rectangle for a `W x H/2` stacked tile (top/bottom split
- * tile, or — screen packet B — the screen-layout bottom speaker tile, which
- * is geometrically the SAME tile shape: half the target output's height,
- * full its width). Exported so `screen-layout.ts` can reuse this exact math
- * instead of re-deriving it (both callers want "the biggest tile-aspect
- * rectangle this source can offer, centered").
- */
-export function computeTileCrop(
-  srcWidth: number,
-  srcHeight: number,
-  tileRatio: number,
-): { cropW: number; cropH: number } {
-  const srcRatio = srcWidth / srcHeight;
-  if (srcRatio >= tileRatio) {
-    return { cropW: Math.round(srcHeight * tileRatio), cropH: srcHeight };
-  }
-  return { cropW: srcWidth, cropH: Math.round(srcWidth / tileRatio) };
-}
-
-/**
- * H1 (adversarial review, split packet B): whether a two-up split for this
- * OUTPUT aspect ratio can produce laterally distinct top/bottom crops at
- * all, given the source dimensions. `cropXForCenter` (reframe.ts) clamps its
- * `x` to `[0, srcWidth - cropWidth]` — when the tile crop's width equals (or
- * somehow exceeds) the source width, that range collapses to exactly `[0,
- * 0]`, so EVERY region's x is forced to 0 regardless of its `cx`: both tiles
- * crop the identical source region and render as visually duplicate tiles
- * (squashed identically, since the crop is also identical). This happens for
- * squarer/wider targets (1:1, 16:9) and/or portrait sources, where the tile
- * ratio (`W / (H/2)`, DOUBLE the output's own aspect since the tile is only
- * half height) demands a crop at least as wide as the source has.
- *
- * Callers (render-clips.ts) evaluate this PER OUTPUT aspect ratio, not once
- * per clip — a wide source can support 9:16 tiles (a full split render)
- * while its 1:1/16:9 outputs of the SAME clip fall back to single-speaker
- * framing instead (see the `tiles_not_distinct` fallback reason).
- */
-export function splitTilesAreDistinct(
-  aspectRatio: ClipAspectRatio,
-  probe: { width: number; height: number },
-): boolean {
-  const dims = aspectRatioDimensions.get(aspectRatio);
-  if (!dims) return false;
-  const tileWidth = dims.width;
-  const tileHeight = Math.round(dims.height / 2);
-  const tileRatio = tileWidth / tileHeight;
-  const { cropW } = computeTileCrop(probe.width, probe.height, tileRatio);
-  return cropW < probe.width;
-}
-
-
 // ---------------------------------------------------------------------------
-// 5. buildSplitLayoutPlan
+// 4. buildSplitLayoutPlan
 // ---------------------------------------------------------------------------
 
 /**
@@ -738,7 +656,7 @@ export interface BuildSplitLayoutPlanResult {
   /** Empty when there isn't enough multi-face evidence for a real 2-up
    *  (fewer than 2 clusters) or the clip has no in-range multi-face samples
    *  at all — callers must fall back to single-speaker framing in either
-   *  case (see render-clips.ts's `decideSplitFallback`). */
+   *  case. LayoutEvidence records this outcome for the composition planner. */
   segments: SplitLayoutSegment[];
   /** 0, 1, or 2 — see `ClusterFaceTracksResult.clusters`. */
   clusterCount: number;
@@ -886,8 +804,8 @@ function capSegmentCount(
  * segment count and clamped/snapped to the clip's edited duration.
  *
  * An empty `segments` result (see `BuildSplitLayoutPlanResult`'s doc comment)
- * means "no usable 2-up here" — callers (render-clips.ts) fall back to
- * single-speaker framing rather than ever rendering a 0-segment concat.
+ * means "no usable 2-up here". LayoutEvidence records the unavailable split
+ * plan so the composition planner can select single-speaker framing.
  */
 export function buildSplitLayoutPlan(
   samples: MultiFaceSample[],

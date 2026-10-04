@@ -19,6 +19,10 @@ export interface RenderConfig {
   readonly reframeModelPath: string;
   readonly reframeSampleFps: number;
   readonly reframeSceneThreshold: number;
+  readonly autoLayoutAnalysisEnabled: boolean;
+  readonly autoLayoutBatchSize: number;
+  readonly autoLayoutLeaseMs: number;
+  readonly autoLayoutFailureBackoffMs: number;
   readonly layoutEngineEnabled: boolean;
   readonly screenLayoutEnabled: boolean;
   readonly splitEnabled: boolean;
@@ -54,6 +58,15 @@ function positiveNumber(
     throw new Error(`${name} must be a finite positive number`);
   }
   return parsed;
+}
+
+function boundedInteger(environment: RenderEnvironment, name: string, fallback: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
+  const raw = environment[name]?.trim();
+  const value = raw === undefined || raw === "" ? fallback : Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return value;
 }
 
 function binaryFlag(
@@ -202,6 +215,10 @@ export function parseRenderConfig(
       4,
     ),
     reframeSceneThreshold,
+    autoLayoutAnalysisEnabled: featureEnabled(environment, "WORKER_AUTO_LAYOUT_ANALYSIS"),
+    autoLayoutBatchSize: boundedInteger(environment, "WORKER_AUTO_LAYOUT_BATCH_SIZE", 2, 1, 10),
+    autoLayoutLeaseMs: boundedInteger(environment, "WORKER_AUTO_LAYOUT_LEASE_MS", 180_000, 30_000, 900_000),
+    autoLayoutFailureBackoffMs: boundedInteger(environment, "WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS", 300_000, 0),
     layoutEngineEnabled: featureEnabled(environment, "WORKER_LAYOUT_ENGINE"),
     screenLayoutEnabled: featureEnabled(environment, "WORKER_SCREEN_LAYOUT"),
     splitEnabled: featureEnabled(environment, "WORKER_SPLIT"),

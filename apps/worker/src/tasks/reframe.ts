@@ -1,8 +1,6 @@
 /**
- * Pure auto-reframe path math (no FFmpeg / no model). Given per-frame face
- * centers from the detector, produce a smooth horizontal crop track that follows
- * the speaker without jitter. Unit-tested in isolation; the detector (Python)
- * and the FFmpeg crop application live in the render task.
+ * Pure face evidence smoothing and cut-time remapping. The composition planner
+ * turns these observations into source crops; this module does not render them.
  */
 import { sourceToEdited } from "@narriflow/validators";
 import type { ClipCutPlan } from "./cut-plan";
@@ -76,8 +74,7 @@ function clamp01(value: number): number {
  * deleted range, and remaps the retained samples' `t` from
  * elapsed-uncut-source seconds (what the detector emits — see
  * `reframe_detect.py`, always 0-based from wherever detection started) onto
- * the edited (post-concat) timeline the crop filter's `sendcmd` actually
- * runs against (multi-model review fix #3). Without this, samples captured
+ * the edited timeline used by layout evidence. Without this, samples captured
  * after a cut are timed against the pre-cut source, so the crop follows the
  * speaker's PRE-cut position at each post-cut instant — increasingly wrong
  * the more total footage has been cut before that point.
@@ -117,43 +114,4 @@ export function remapFaceSamplesForCutPlan(
     });
   }
   return groups;
-}
-
-/**
- * Converts a normalized face center into an integer crop X (top-left of the
- * crop window) clamped so the window stays fully inside the source frame.
- */
-export function cropXForCenter(
-  cxNorm: number,
-  srcWidth: number,
-  cropWidth: number,
-): number {
-  const centerPx = clamp01(cxNorm) * srcWidth;
-  const x = centerPx - cropWidth / 2;
-  return Math.round(Math.max(0, Math.min(srcWidth - cropWidth, x)));
-}
-
-/** FFmpeg instance name of the reframe crop filter, targeted by sendcmd. */
-export const REFRAME_CROP_NAME = "crop@reframe";
-
-/**
- * Builds an FFmpeg `sendcmd` script that drives the named `crop` filter's `x`
- * over time, following the smoothed face path. Consecutive duplicate X values
- * are collapsed so the script stays small. Times are clip-relative seconds.
- */
-export function buildReframeSendcmdScript(
-  samples: SmoothedSample[],
-  srcWidth: number,
-  cropWidth: number,
-  cropName: string = REFRAME_CROP_NAME,
-): string {
-  const lines: string[] = [];
-  let lastX: number | null = null;
-  for (const sample of samples) {
-    const x = cropXForCenter(sample.cx, srcWidth, cropWidth);
-    if (x === lastX) continue;
-    lines.push(`${Math.max(0, sample.t).toFixed(3)} ${cropName} x ${x};`);
-    lastX = x;
-  }
-  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }

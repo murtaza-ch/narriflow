@@ -1,7 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  buildReframeSendcmdScript,
-  cropXForCenter,
   remapFaceSamplesForCutPlan,
   smoothFacePath,
 } from "./reframe";
@@ -48,39 +46,6 @@ describe("smoothFacePath", () => {
     );
     // Jitter under the dead-zone never moves the target, so it stays at 0.5.
     for (const sample of out) expect(sample.cx).toBeCloseTo(0.5, 5);
-  });
-});
-
-describe("cropXForCenter", () => {
-  test("clamps the crop window inside the frame", () => {
-    // 1920 wide, 608-wide crop (9:16 of 1080 height).
-    expect(cropXForCenter(0, 1920, 608)).toBe(0);
-    expect(cropXForCenter(1, 1920, 608)).toBe(1920 - 608);
-    // Centered face -> centered crop.
-    expect(cropXForCenter(0.5, 1920, 608)).toBe(Math.round(960 - 304));
-  });
-});
-
-describe("buildReframeSendcmdScript", () => {
-  test("emits sendcmd lines for the named crop and collapses duplicate x", () => {
-    const script = buildReframeSendcmdScript(
-      [
-        { t: 0, cx: 0.5 },
-        { t: 0.25, cx: 0.5 }, // same crop x -> collapsed
-        { t: 0.5, cx: 0.1 }, // moves -> new line
-      ],
-      1920,
-      608,
-      "crop@reframe",
-    );
-    const lines = script.trim().split("\n");
-    expect(lines).toHaveLength(2);
-    expect(lines[0]!.startsWith("0.000 crop@reframe x ")).toBe(true);
-    expect(lines[1]!.startsWith("0.500 crop@reframe x ")).toBe(true);
-  });
-
-  test("returns empty string for no samples", () => {
-    expect(buildReframeSendcmdScript([], 1920, 608)).toBe("");
   });
 });
 
@@ -135,23 +100,6 @@ describe("remapFaceSamplesForCutPlan (fix #3: raw samples are elapsed-uncut-sour
       [{ t: 4, cx: 0.5 }],
       [{ t: 15, cx: 0.7 }],
     ]);
-  });
-
-  test("script-generation level: a sample after a cut produces a sendcmd line at the edited timestamp, not the raw one", () => {
-    const groups = remapFaceSamplesForCutPlan(
-      [
-        { t: 2, cx: 0.2 },
-        { t: 20, cx: 0.8 }, // raw 20 -> edited 15
-      ],
-      cutPlan,
-      clipStartSec,
-    );
-    const smoothed = groups.flatMap((group) => smoothFacePath(group));
-    const script = buildReframeSendcmdScript(smoothed, 1920, 608);
-    // The raw (wrong) elapsed-source timestamp never appears...
-    expect(script).not.toContain("20.000");
-    // ...the edited (correct) post-concat timestamp does.
-    expect(script).toContain("15.000");
   });
 
   test("smoothing resets at the kept-segment boundary instead of drifting across the cut", () => {

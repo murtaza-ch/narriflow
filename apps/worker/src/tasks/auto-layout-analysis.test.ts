@@ -3,11 +3,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
+import { LayoutEvidenceClaimLost, type ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
+import { parseRenderConfig } from "../render-config";
 import type { WorkerProcessModule } from "../worker-process";
 import {
   analyzeClipAutoLayout,
-  buildMultiFaceDetectorArgs,
+  processPendingAutoLayoutAnalyses,
 } from "./auto-layout-analysis";
 
 const tempDirs: string[] = [];
@@ -25,36 +26,17 @@ function candidate(overrides: Partial<ClipPendingAutoLayoutAnalysis> = {}): Clip
     transcriptSlice: [],
     deletedRanges: [],
     editorRevision: 0,
+    sourceStorageKey: "projects/project-1/source.mp4",
     previewStorageKey: "projects/project-1/previews/clip-1.mp4",
     previewStartSec: 10,
     previewDurationSec: 10,
+    leaseMs: 180000,
     autoLayoutClaimToken: "00000000-0000-4000-8000-000000000001",
     ...overrides,
   };
 }
 
 describe("analyzeClipAutoLayout", () => {
-  test("keeps the detector CLI's fps-before-model positional contract", () => {
-    expect(
-      buildMultiFaceDetectorArgs({
-        scriptPath: "/worker/reframe_detect.py",
-        path: "/tmp/preview.mp4",
-        startSec: 2.5,
-        durationSec: 12,
-        fps: "4",
-        modelPath: "/worker/face_yunet.onnx",
-      }),
-    ).toEqual([
-      "/worker/reframe_detect.py",
-      "/tmp/preview.mp4",
-      "2.5",
-      "12",
-      "4",
-      "/worker/face_yunet.onnx",
-      "--multi",
-    ]);
-  });
-
   test("persists a valid empty visual plan for audio-only media", async () => {
     const dir = await mkdtemp(join(tmpdir(), "narriflow-auto-layout-test-"));
     tempDirs.push(dir);
@@ -71,7 +53,7 @@ describe("analyzeClipAutoLayout", () => {
     ]);
     expect(generated.status).toBe(0);
 
-    const analysis = await analyzeClipAutoLayout({ clip: candidate(), previewPath: input });
+    const analysis = await analyzeClipAutoLayout({ clip: candidate(), originalSourcePath: input, previewPath: input });
     expect(analysis.sourceWidth).toBe(1);
     expect(analysis.sourceHeight).toBe(1);
     expect(analysis.segments).toEqual([]);
@@ -103,7 +85,7 @@ describe("analyzeClipAutoLayout", () => {
 
     const analysis = await analyzeClipAutoLayout({
       clip: candidate(),
-      previewPath: "/tmp/audio.m4a",
+      originalSourcePath: "/tmp/original.m4a", previewPath: "/tmp/audio.m4a",
       signal: controller.signal,
       workerProcess,
     });
@@ -141,11 +123,20 @@ describe("analyzeClipAutoLayout", () => {
     await expect(
       analyzeClipAutoLayout({
         clip: candidate(),
-        previewPath: "/tmp/video.mp4",
+        originalSourcePath: "/tmp/original.mp4", previewPath: "/tmp/video.mp4",
         signal: controller.signal,
         workerProcess,
       }),
     ).rejects.toBe(reason);
+  });
+
+  test("rejects a transient durable publication failure so the claim runner applies backoff", async () => {
+    const workerProcess: WorkerProcessModule = {
+      execute: async () => { throw new Error("audio needs no detector"); },
+      inspectMedia: async () => ({ durationSec: 10, width: 0, height: 0, hasVideo: false, hasAudio: true, hasVisualStream: false, fps: 30 }),
+      withScratchDirectory: async (_prefix, work) => work("unused"),
+    };
+    await expect(analyzeClipAutoLayout({ clip: candidate(), previewPath: "proxy.m4a", originalSourcePath: "original.m4a", workerProcess, persist: async () => { throw new Error("database unavailable"); } })).rejects.toThrow("automatic_layout_evidence_persist_failed");
   });
 
   test("uses edited duration and fingerprints deleted source ranges", async () => {
@@ -169,9 +160,64 @@ describe("analyzeClipAutoLayout", () => {
     const deletedRanges = [{ startSec: 13, endSec: 15 }];
     const analysis = await analyzeClipAutoLayout({
       clip: candidate({ deletedRanges }),
-      previewPath: input,
+      originalSourcePath: input, previewPath: input,
     });
     expect(analysis.deletedRanges).toEqual(deletedRanges);
     expect(analysis.editedDurationSec).toBe(8);
   });
+});
+
+test("background processor uses the claim signal and configured backoff after publication failure", async () => {
+  const claim = candidate();
+  const claimController = new AbortController();
+  const external = new AbortController();
+  const deferrals: Date[] = [];
+  type Options = NonNullable<Parameters<typeof processPendingAutoLayoutAnalyses>[0]>;
+  const lifecycle: NonNullable<Options["lifecycle"]> = {
+    claimAutomatic: async (leaseMs) => { expect(leaseMs).toBe(30000); return claim; },
+    runAutomaticClaim: async (received, work, options) => { expect(received).toBe(claim); expect(options?.signal).toBe(external.signal); return work({ signal: claimController.signal }); },
+    completeAutomatic: async () => { throw new Error("publication unavailable"); },
+    deferAutomatic: async (id, token, retryAt) => { expect(id).toBe(claim.id); expect(token).toBe(claim.autoLayoutClaimToken); deferrals.push(retryAt); return true; },
+  };
+  const workerProcess: WorkerProcessModule = {
+    inspectMedia: async (request) => { expect(request.sourcePath).toBe("original-source.m4a"); expect(request.signal).toBe(claimController.signal); return { durationSec: 10, width: 0, height: 0, hasVideo: false, hasAudio: true, hasVisualStream: false, fps: 30 }; },
+    execute: async () => { throw new Error("audio needs no detector"); },
+    withScratchDirectory: async (_prefix, work) => work("scratch"),
+  };
+  const before = Date.now();
+  expect(await processPendingAutoLayoutAnalyses({ limit: 1, signal: external.signal, lifecycle, workerProcess, config: parseRenderConfig({ WORKER_AUTO_LAYOUT_LEASE_MS: "30000", WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS: "10000" }), storage: {
+    presignDownloadUrl: async (request) => { expect(request.key).toBe(claim.sourceStorageKey); return "original-source.m4a"; },
+    downloadObjectToFile: async (request) => { expect(request.key).toBe(claim.previewStorageKey); expect(request.signal).toBe(claimController.signal); return { key: request.key, contentType: "audio/mp4" }; },
+  } })).toBe(0);
+  expect(deferrals).toHaveLength(1);
+  expect(deferrals[0]!.getTime()).toBeGreaterThanOrEqual(before + 10000);
+  expect(deferrals[0]!.getTime()).toBeLessThanOrEqual(Date.now() + 10000);
+});
+
+test("background ownership loss stops source work without ordinary failure deferral", async () => {
+  const claim = candidate();
+  const controller = new AbortController();
+  const lost = new LayoutEvidenceClaimLost(claim.id);
+  let inspected = false;
+  let persisted = false;
+  let deferred = false;
+  type Options = NonNullable<Parameters<typeof processPendingAutoLayoutAnalyses>[0]>;
+  const lifecycle: NonNullable<Options["lifecycle"]> = {
+    claimAutomatic: async () => claim,
+    runAutomaticClaim: async (_received, work) => work({ signal: controller.signal }),
+    completeAutomatic: async () => { persisted = true; return true; },
+    deferAutomatic: async () => { deferred = true; return true; },
+  };
+  const workerProcess: WorkerProcessModule = {
+    inspectMedia: async () => { inspected = true; throw new Error("claim is already lost"); },
+    execute: async () => { throw new Error("claim is already lost"); },
+    withScratchDirectory: async (_prefix, work) => work("scratch"),
+  };
+  expect(await processPendingAutoLayoutAnalyses({ limit: 1, lifecycle, workerProcess, config: parseRenderConfig({}), storage: {
+    presignDownloadUrl: async () => "original.mp4",
+    downloadObjectToFile: async (request) => { expect(request.signal).toBe(controller.signal); controller.abort(lost); throw lost; },
+  } })).toBe(0);
+  expect(inspected).toBe(false);
+  expect(persisted).toBe(false);
+  expect(deferred).toBe(false);
 });

@@ -8,6 +8,7 @@ import {
   buildSpeakerTurns,
   deriveFaceDiscontinuityCuts,
   frameFaceInCrop,
+  filterAutomaticFaceSamples,
   segmentShots,
   speechWordsFromUtterances,
   type SpeechWord,
@@ -145,23 +146,47 @@ describe("buildSpeakerTurns", () => {
 });
 
 describe("segmentShots", () => {
-  it("splits at scene cuts and merges sub-minimum shots", () => {
+  it("keeps adjacent source cuts", () => {
     const shots = segmentShots([5, 5.2, 12], 20);
-    // 5.2 is within minShotSec of 5 and is dropped.
     expect(shots.map((s) => [s.startSec, s.endSec])).toEqual([
       [0, 5],
-      [5, 12],
+      [5, 5.2],
+      [5.2, 12],
       [12, 20],
     ]);
   });
 
-  it("folds a too-short tail into the last shot", () => {
+  it("keeps a short tail after a source cut", () => {
     const shots = segmentShots([19.8], 20);
-    expect(shots).toEqual([{ startSec: 0, endSec: 20 }]);
+    expect(shots).toEqual([
+      { startSec: 0, endSec: 19.8 },
+      { startSec: 19.8, endSec: 20 },
+    ]);
   });
 
   it("returns one full shot with no cuts", () => {
     expect(segmentShots([], 30)).toEqual([{ startSec: 0, endSec: 30 }]);
+  });
+});
+
+describe("filterAutomaticFaceSamples", () => {
+  it("rejects a lower-confidence static false positive while retaining a real face", () => {
+    const samples: MultiFaceSample[] = [
+      { t: 0, faces: [face(0.46, 0.39, 0.36), { ...face(0.74, 0.7, 0.41), score: 0.76 }] },
+      { t: 0.25, faces: [face(0.45, 0.4, 0.35), { ...face(0.74, 0.7, 0.41), score: 0.82 }] },
+    ];
+    const admitted = filterAutomaticFaceSamples(samples);
+    expect(admitted.map((sample) => sample.faces.length)).toEqual([1, 1]);
+    expect(admitted.flatMap((sample) => sample.faces).every((candidate) => candidate.cx < 0.6)).toBe(true);
+  });
+
+  it("allows a weaker detection only as a continuation of a recent strong track", () => {
+    const admitted = filterAutomaticFaceSamples([
+      { t: 0, faces: [face(0.3)] },
+      { t: 0.25, faces: [{ ...face(0.32), score: 0.7 }] },
+      { t: 0.5, faces: [{ ...face(0.8), score: 0.7 }] },
+    ]);
+    expect(admitted.map((sample) => sample.faces.length)).toEqual([1, 1, 0]);
   });
 });
 
@@ -295,6 +320,15 @@ describe("deriveFaceDiscontinuityCuts", () => {
 });
 
 describe("frameFaceInCrop", () => {
+  it("scales headroom with the actual crop height and bounds source coordinates", () => {
+    const seat = { cx: 0.5, cy: 0.4, h: 0.1 };
+    for (const baseCropHFrac of [1, 0.75, 0.4]) {
+      const framed = frameFaceInCrop(seat, baseCropHFrac, { maxZoom: 1.1, headroomFrac: 0.35 });
+      expect(framed.cyNorm).toBeCloseTo(seat.cy + 0.15 * baseCropHFrac / framed.zoom, 8);
+    }
+    expect(frameFaceInCrop({ ...seat, cy: 0.98 }, 1).cyNorm).toBe(1);
+  });
+
   it("zooms a small face toward the target fraction, capped at maxZoom", () => {
     const framed = frameFaceInCrop({ cx: 0.3, cy: 0.4, h: 0.1 }, 1);
     expect(framed.zoom).toBeCloseTo(1.4, 5); // 0.26/0.1 = 2.6, capped
@@ -413,7 +447,7 @@ describe("buildAutoLayoutPlan", () => {
     expect(plan.segments[1]!.endSec).toBeCloseTo(16, 3);
   });
 
-  it("demotes two-up to a covering single crop when allowTwoUp is false", () => {
+  it("uses source fit for a two-subject shot when two-up is unavailable", () => {
     const plan = buildAutoLayoutPlan({
       samples: multicamSamples,
       sceneCuts: multicamCuts,
@@ -422,6 +456,11 @@ describe("buildAutoLayoutPlan", () => {
       allowTwoUp: false,
     });
     expect(plan.segments.every((s) => s.layout === "single")).toBe(true);
+    const twoSubjectShot = plan.segments.find((segment) => segment.subjects.length === 2);
+    expect(twoSubjectShot?.layout).toBe("single");
+    if (twoSubjectShot?.layout === "single") {
+      expect(twoSubjectShot.intent).toBe("fit");
+    }
   });
 
   it("returns a face-centered plan for a single-camera talking head", () => {
@@ -445,7 +484,134 @@ describe("buildAutoLayoutPlan", () => {
     expect(plan.soloShotCount).toBe(1);
   });
 
-  it("returns an empty plan when no faces exist at all", () => {
+  it("tracks a moving subject within one shot with constant zoom", () => {
+    const plan = buildAutoLayoutPlan({
+      samples: samplesOver(8, (timeSec) => [face(0.25 + timeSec * 0.05, 0.42, 0.24)]),
+      sceneCuts: [],
+      words: [],
+      durationSec: 8,
+      allowTwoUp: true,
+    });
+    const segment = plan.segments[0];
+    expect(segment?.layout).toBe("single");
+    if (segment?.layout === "single") {
+      expect(segment.cropTrack?.length).toBeGreaterThan(2);
+      expect(segment.cropTrack?.[0]?.cxNorm).toBeLessThan(
+        segment.cropTrack?.at(-1)?.cxNorm ?? 0,
+      );
+      expect(segment.cropTrack?.[0]?.timeSec).toBe(0);
+      expect(segment.cropTrack?.at(-1)?.timeSec).toBe(8);
+    }
+  });
+
+  it("gives a stationary track exactly the same headroom as its static crop", () => {
+    for (const cy of [0.35, 0.92]) {
+      const plan = buildAutoLayoutPlan({
+        samples: samplesOver(8, () => [face(0.5, cy, 0.2)]),
+        sceneCuts: [], words: [], durationSec: 8, allowTwoUp: true,
+        options: { frameOptions: { maxZoom: 1.1, headroomFrac: 0.3 } },
+      });
+      const segment = plan.segments[0];
+      expect(segment?.layout).toBe("single");
+      if (segment?.layout !== "single") throw new Error("expected single crop");
+      expect(segment.cropTrack?.length).toBeGreaterThan(1);
+      expect(segment.cropTrack?.every((point) => point.cyNorm === segment.cyNorm)).toBe(true);
+    }
+  });
+
+  it("preserves the last observed center when a long crop track is decimated", () => {
+    const plan = buildAutoLayoutPlan({
+      // 32 samples exceed the 24-keyframe bound. Only the final frame moves,
+      // so dropping it and duplicating an earlier point would freeze the end.
+      samples: samplesOver(8, (timeSec) => [
+        face(timeSec >= 7.75 ? 0.45 : 0.3, 0.42, 0.24),
+      ]),
+      sceneCuts: [],
+      words: [],
+      durationSec: 8,
+      allowTwoUp: true,
+    });
+    const segment = plan.segments[0];
+    expect(segment?.layout).toBe("single");
+    if (segment?.layout === "single") {
+      const track = segment.cropTrack ?? [];
+      expect(track.length).toBeLessThanOrEqual(25);
+      expect(track.at(-1)?.timeSec).toBe(8);
+      expect(track.at(-1)?.cxNorm).toBeGreaterThan(0.4);
+    }
+  });
+
+  it("continues following a fast camera pan after the subject leaves the shot median", () => {
+    const plan = buildAutoLayoutPlan({
+      // Each individual move is small enough to be a pan rather than a cut,
+      // while the full travel is far beyond the old fixed 0.22 seat radius.
+      samples: samplesOver(4, (timeSec) => [face(0.76 - timeSec * 0.15, 0.42, 0.3)]),
+      sceneCuts: [],
+      words: [],
+      durationSec: 4,
+      allowTwoUp: true,
+    });
+    const segment = plan.segments[0];
+    expect(segment?.layout).toBe("single");
+    if (segment?.layout === "single") {
+      const track = segment.cropTrack ?? [];
+      expect(track.length).toBeGreaterThan(2);
+      expect(track[0]!.cxNorm - track.at(-1)!.cxNorm).toBeGreaterThan(0.45);
+      // The adaptive response keeps the last face near its observed center
+      // rather than letting the slow EMA leave it outside the crop.
+      expect(track.at(-1)!.cxNorm).toBeLessThan(0.22);
+    }
+  });
+
+  it("uses full-source fit for a crowded shot even when clustering finds two lateral groups", () => {
+    const plan = buildAutoLayoutPlan({
+      // Four simultaneous faces form two broad detector clusters. This is a
+      // crowd, not the two distinct seats required for an automatic split.
+      samples: samplesOver(8, () => [
+        face(0.14, 0.4, 0.13),
+        face(0.25, 0.42, 0.13),
+        face(0.66, 0.4, 0.13),
+        face(0.77, 0.42, 0.13),
+      ]),
+      sceneCuts: [],
+      words: [],
+      durationSec: 8,
+      allowTwoUp: true,
+    });
+    const segment = plan.segments[0];
+    expect(segment?.layout).toBe("single");
+    if (segment?.layout === "single") {
+      expect(segment.intent).toBe("fit");
+      expect(segment.subjects).toHaveLength(4);
+    }
+    expect(plan.twoUpSegmentCount).toBe(0);
+  });
+
+  it("keeps every auxiliary window in source fit when its source shot grows from two faces to a crowd", () => {
+    const samples = samplesOver(4, (timeSec) =>
+      timeSec < 2
+        ? [face(0.25, 0.4, 0.13), face(0.75, 0.42, 0.13)]
+        // These three centers share one lateral cluster, so this auxiliary
+        // window classifies solo despite three simultaneous subjects.
+        : [face(0.35, 0.4, 0.13), face(0.44, 0.42, 0.13), face(0.53, 0.4, 0.13)],
+    );
+    expect(analyzeShot({ startSec: 2, endSec: 4 }, samples).kind).toBe("solo");
+    const plan = buildAutoLayoutPlan({
+      samples,
+      sceneCuts: [],
+      words: [],
+      durationSec: 4,
+      allowTwoUp: true,
+    });
+    // The persistent 2 -> 3 count change produces an auxiliary cut, but the
+    // source camera never cut. Its crowd context applies to both halves.
+    expect(plan.segments).toHaveLength(2);
+    expect(plan.segments.map((segment) => segment.intent)).toEqual(["fit", "fit"]);
+    expect(plan.segments.map((segment) => segment.subjects.length)).toEqual([2, 3]);
+    expect(plan.twoUpSegmentCount).toBe(0);
+  });
+
+  it("returns full-source fit scenes when no faces exist at all", () => {
     const plan = buildAutoLayoutPlan({
       samples: samplesOver(20, () => []),
       sceneCuts: [5, 10],
@@ -453,7 +619,8 @@ describe("buildAutoLayoutPlan", () => {
       durationSec: 20,
       allowTwoUp: true,
     });
-    expect(plan.segments).toEqual([]);
+    expect(plan.segments).toHaveLength(3);
+    expect(plan.segments.every((segment) => segment.layout === "single" && segment.intent === "fit")).toBe(true);
   });
 
   it("keeps a single dominant-speaker crop instead of a split when the shot composition favors one seat", () => {
@@ -581,9 +748,7 @@ describe("buildAutoLayoutPlan", () => {
     }
   });
 
-  it("coalesces consecutive same-camera shots into one segment", () => {
-    // Two shots of the same solo framing separated by a scene cut (e.g. a
-    // jump cut) — the plan should not spend two filtergraph branches.
+  it("keeps consecutive source cuts even when their framing matches", () => {
     const samples = samplesOver(20, () => [face(0.5, 0.42, 0.28)]);
     const plan = buildAutoLayoutPlan({
       samples,
@@ -592,15 +757,12 @@ describe("buildAutoLayoutPlan", () => {
       durationSec: 20,
       allowTwoUp: true,
     });
-    // Both shots frame identically -> coalesced -> single full-length
-    // static-ish segment -> empty plan (EMA fallback).
-    expect(plan.segments.length).toBeLessThanOrEqual(1);
+    expect(plan.segments).toHaveLength(2);
+    expect(plan.segments[0]!.endSec).toBeCloseTo(10, 3);
+    expect(plan.segments[1]!.startSec).toBeCloseTo(10, 3);
   });
 
-  it("C2 regression: fast alternating sub-floor shots don't cascade into one wrong mega-segment", () => {
-    // 20 shots of 0.7s (below the 0.8s floor) alternating seats. The old
-    // fold-into-longer-neighbor merge absorbed the whole run into a few
-    // ever-growing segments framed on one seat.
+  it("keeps rapid source cuts as separate shots", () => {
     const shotLen = 0.7;
     const total = 14;
     const samples = samplesOver(total, (t) =>
@@ -616,29 +778,10 @@ describe("buildAutoLayoutPlan", () => {
       durationSec: total,
       allowTwoUp: true,
     });
-    // 0.7s shots are ABOVE the (shot-floor-aligned) merge floor: they must
-    // all survive as their own correctly-framed segments — the old cascade
-    // collapsed runs of them onto one seat's framing.
+    expect(plan.segments).toHaveLength(20);
     for (const seg of plan.segments) {
-      expect(seg.endSec - seg.startSec).toBeLessThanOrEqual(shotLen + 0.11);
+      expect(seg.endSec - seg.startSec).toBeCloseTo(shotLen, 3);
     }
-    // Framing must alternate seat-correctly: each segment's cx matches the
-    // camera actually live during its window.
-    for (const seg of plan.segments) {
-      if (seg.layout !== "single") continue;
-      const mid = (seg.startSec + seg.endSec) / 2;
-      const expected = Math.floor(mid / shotLen) % 2 === 0 ? 0.25 : 0.75;
-      expect(Math.abs(seg.cxNorm - expected)).toBeLessThan(0.1);
-    }
-    // Per-seat coverage stays balanced (cascade collapse would skew this).
-    const bySeat = [0, 0];
-    for (const seg of plan.segments) {
-      if (seg.layout === "single") {
-        bySeat[seg.cxNorm < 0.5 ? 0 : 1] += seg.endSec - seg.startSec;
-      }
-    }
-    expect(bySeat[0]!).toBeGreaterThan(total * 0.3);
-    expect(bySeat[1]!).toBeGreaterThan(total * 0.3);
   });
 
   it("M2 regression: abandons the plan when detector samples end early", () => {
@@ -655,7 +798,7 @@ describe("buildAutoLayoutPlan", () => {
     expect(plan.segments).toEqual([]);
   });
 
-  it("M2 regression: a face-less middle shot holds the previous framing instead of snapping to center", () => {
+  it("uses full-source fit for a face-less shot instead of borrowing another shot crop", () => {
     const samples = samplesOver(24, (t) =>
       t < 8 ? [face(0.3, 0.4, 0.28)] : t < 16 ? [] : [face(0.72, 0.42, 0.28)],
     );
@@ -671,12 +814,13 @@ describe("buildAutoLayoutPlan", () => {
     ) ?? plan.segments[1];
     expect(middle).toBeDefined();
     if (middle && middle.layout === "single") {
-      expect(middle.cxNorm).toBeCloseTo(0.3, 1); // held, not 0.5
-      expect(middle.subjects).toEqual([]); // held crop, no invented face
+      expect(middle.intent).toBe("fit");
+      expect(middle.cxNorm).toBe(0.5);
+      expect(middle.subjects).toEqual([]);
     }
   });
 
-  it("caps runaway segment counts", () => {
+  it("keeps runaway source cuts instead of merging cameras onto the wrong seat", () => {
     // 60 alternating-camera shots of 1s each.
     const samples = samplesOver(60, (t) =>
       Math.floor(t) % 2 === 0
@@ -691,8 +835,7 @@ describe("buildAutoLayoutPlan", () => {
       durationSec: 60,
       allowTwoUp: true,
     });
-    expect(plan.segments.length).toBeLessThanOrEqual(24);
-    expect(plan.segments.length).toBeGreaterThan(1);
+    expect(plan.segments).toHaveLength(60);
     // Coverage stays contiguous from 0 to duration.
     expect(plan.segments[0]!.startSec).toBe(0);
     expect(plan.segments[plan.segments.length - 1]!.endSec).toBeCloseTo(60, 3);

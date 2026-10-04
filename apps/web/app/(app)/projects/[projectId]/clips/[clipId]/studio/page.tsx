@@ -39,16 +39,14 @@ export default async function StudioPage({
   );
 
   const [snapshot, clips, previewSource, rawBrandSnapshot, pricingTier] = await Promise.all([
-    projectService.getProjectSnapshot(appUser.actorUserId, projectId, appUser.workspaceId,
-      ),
-    clipService.listClips(appUser.workspaceOwnerUserId, projectId),
-    clipService.getClipPreviewSource(appUser.workspaceOwnerUserId, projectId, clipId,
-      ),
+    projectService.getProjectSnapshot(appUser, projectId),
+    clipService.listClips(appUser, projectId),
+    clipService.getClipPreviewSource(appUser, projectId, clipId),
     // The project's frozen brand snapshot (captured once at ingest) —
     // the source of truth for the logo ASSET. The studio only overrides
     // how it's *shown* per clip (studioEdits.logo); see brand-template-panel.tsx.
-    projectService.getProjectBrandSnapshot(projectId),
-    projectService.getWorkspacePricingTier(appUser.workspaceId),
+    projectService.getProjectBrandSnapshot(appUser, projectId),
+    Promise.resolve(appUser.pricingTier),
   ]);
 
   if (!snapshot.project) notFound();
@@ -204,7 +202,7 @@ export default async function StudioPage({
   async function fetchPreviewStatus() {
     "use server";
     return executeProjectAction(projectId, "content.edit", async (actor) =>
-      clipService.getClipPreviewSource(actor.workspaceOwnerUserId, projectId, clipId),
+      clipService.getClipPreviewSource(actor, projectId, clipId),
     );
   }
 
@@ -217,21 +215,21 @@ export default async function StudioPage({
   async function fetchAutoLayoutAnalysis() {
     "use server";
     return executeProjectAction(projectId, "content.edit", async (actor) =>
-      clipService.getClipAutoLayoutAnalysis(actor.workspaceOwnerUserId, projectId, clipId),
+      clipService.getClipAutoLayoutAnalysis(actor, projectId, clipId),
     );
   }
 
   async function fetchSplitLayoutAnalysis() {
     "use server";
     return executeProjectAction(projectId, "content.edit", async (actor) =>
-      clipService.getClipSplitLayoutOutcome(actor.workspaceOwnerUserId, projectId, clipId),
+      clipService.getClipSplitLayoutOutcome(actor, projectId, clipId),
     );
   }
 
   async function fetchScreenLayoutAnalysis() {
     "use server";
     return executeProjectAction(projectId, "content.edit", async (actor) =>
-      clipService.getClipLayoutAnalysisOutcome(actor.workspaceOwnerUserId, projectId, clipId),
+      clipService.getClipLayoutAnalysisOutcome(actor, projectId, clipId),
     );
   }
 
