@@ -1,0 +1,4 @@
+# Preserve upstream skill Markdown line breaks and example indentation.
+.agents/skills/**/*.md whitespace=-blank-at-eol,-space-before-tab
+# Archived patches retain whitespace from their context and source lines.
+docs/reviews/matt-pocock-skills-v1.3.0.diff whitespace=-blank-at-eol

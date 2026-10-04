@@ -91,7 +91,7 @@
           <div class="bg-stone-50 py-3"><div class="font-mono text-2xl">2</div><div class="lbl text-slate-500">TODOs repo-wide</div></div>
           <div class="bg-stone-50 py-3"><div class="font-mono text-2xl">5</div><div class="lbl text-slate-500">as any</div></div>
         </div>
-        <p class="mt-4 text-sm text-slate-600 max-w-2xl">Revalidated against commit <span class="font-mono text-xs">1c09f85</span> on 4 September 2026. The second pass checked every claim against current source, CONTEXT.md, ADRs, the deletion test, 229 focused tests, the full fast suite, and repository typecheck.</p>
+        <p class="mt-4 text-sm text-slate-600 max-w-2xl">Revalidated against commit <span class="font-mono text-xs">1c09f85</span> on 4 September 2026. The second pass checked every claim against current source, GLOSSARY.md, ADRs, the deletion test, 229 focused tests, the full fast suite, and repository typecheck.</p>
       </header>
 
       <section id="validation" class="border-2 border-slate-900 bg-white rounded-lg overflow-hidden">
@@ -651,7 +651,7 @@ flowchart LR
 
         <dl class="mt-6 space-y-3 text-sm">
           <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">Almost every screen ships an eyebrow, a title, and a description where the title alone carries the meaning, and the error copy leaks internal nouns like Editor Document and publishing adapter to end users.</dd></div>
-          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Delete the description on the pages the sidebar already names, reserve the eyebrow for dynamic context, and give the copy one voice rule in CONTEXT.md.</dd></div>
+          <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Delete the description on the pages the sidebar already names, reserve the eyebrow for dynamic context, and give the copy one voice rule in GLOSSARY.md.</dd></div>
           <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>one mechanical pass, ~30 files</li><li>the interface stops inviting slop</li><li>error copy stops naming internals</li><li>voice rule is checkable</li></ul></dd></div>
         </dl>
         <div class="mt-4 border-l-4 border-slate-400 bg-slate-100 px-4 py-3 text-sm">
@@ -738,7 +738,7 @@ flowchart LR
         </div>
 
         <dl class="mt-6 space-y-3 text-sm">
-          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">CONTEXT.md says a Brand Template is a style preset inside a Brand Profile, and lists Brand Template under Avoid for Brand Profile, but the app still ships both as top-level destinations that link in a circle.</dd></div>
+          <div><dt class="lbl text-slate-500">Problem</dt><dd class="mt-1">GLOSSARY.md says a Brand Template is a style preset inside a Brand Profile, and lists Brand Template under Avoid for Brand Profile, but the app still ships both as top-level destinations that link in a circle.</dd></div>
           <div><dt class="lbl text-slate-500">Solution</dt><dd class="mt-1">Give Brand Profile ownership of the editing destination while reusing the existing gallery and form modules. Handle the social re-export and dashboard alias as two independent deletions.</dd></div>
           <div><dt class="lbl text-slate-500">Wins</dt><dd class="mt-1"><ul class="grid sm:grid-cols-2 gap-x-6 gap-y-1 list-disc list-inside text-slate-700"><li>one destination per concept</li><li>1,166 lines of gallery and form move</li><li>skeletons render where written</li><li>UI matches the domain language</li></ul></dd></div>
         </dl>
@@ -774,7 +774,7 @@ flowchart LR
             <p>This is a confirmed user-visible parity defect. FFmpeg <span class="font-mono text-xs">drawtext</span> does no automatic line wrapping and the adapter emits one unwrapped <span class="font-mono text-xs">text=</span>, while the preview wraps within 82% and <span class="font-mono text-xs">sceneContentSchema</span> allows 500 characters. Long cards can silently overflow the export. Existing tests prove translation and liveness, not fitted visual parity.</p>
             <p>The change is bounded but not one field. The plan needs fitted lines, font size, line height, and maximum width, plus fixtures that both adapters translate. Plans are ephemeral, so no database migration is needed. A required interface change still deserves an explicit plan-version decision.</p>
             <p>It also restores the seam ADR-0004 already chose. The Clip Composition Plan owns geometry policy; Studio and FFmpeg translate it.</p>
-            <p class="text-slate-600 border-l-2 border-slate-300 pl-3">Design settled in a follow-up session. Two items originally filed here turned out not to be leaks and were dropped: fps is a render-time ffprobe fact, and <span class="font-mono text-xs">baseOnlyTarget</span> coalescing is a filter-graph optimisation with identical pixels. See the Clip Composition Plan entry in CONTEXT.md.</p>
+            <p class="text-slate-600 border-l-2 border-slate-300 pl-3">Design settled in a follow-up session. Two items originally filed here turned out not to be leaks and were dropped: fps is a render-time ffprobe fact, and <span class="font-mono text-xs">baseOnlyTarget</span> coalescing is a filter-graph optimisation with identical pixels. See the Clip Composition Plan entry in GLOSSARY.md.</p>
             <p class="border-l-2 border-emerald-500 bg-emerald-50 px-3 py-2 text-emerald-950">Completed in <span class="font-mono text-xs">8cfa26d</span>, <span class="font-mono text-xs">9626200</span>, and <span class="font-mono text-xs">ce87b87</span>. The final Standards and Spec reviews reported no findings.</p>
             <p class="pt-2"><a href="#c2" class="text-indigo-700 underline underline-offset-4">Go to completed candidate 2</a></p>
           </div>

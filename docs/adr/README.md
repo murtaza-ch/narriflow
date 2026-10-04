@@ -1,6 +1,6 @@
 # Architecture decisions
 
-[CONTEXT.md](../../CONTEXT.md) defines the domain vocabulary. These records explain architectural decisions and their trade-offs. A glossary entry does not need an ADR merely because it names a domain concept.
+[GLOSSARY.md](../../GLOSSARY.md) defines the domain vocabulary. These records explain architectural decisions and their trade-offs. A glossary entry does not need an ADR merely because it names a domain concept.
 
 Add an ADR when a decision is costly to reverse, would surprise a reader without its context, and chooses between meaningful alternatives. Otherwise, document the rule beside its owner or in [AGENTS.md](../../AGENTS.md). Update an existing decision when its constraints change.
 

@@ -4,7 +4,7 @@ Narriflow turns long videos into captioned short clips, with content repurposing
 
 Start with [local environment files](#local-environment-files), [database setup](#database-setup), and the [local pipeline](#local-pipeline). Use Bun 1.3.6, the version pinned in `package.json` and the worker image.
 
-Current architecture and vocabulary live in [CONTEXT.md](CONTEXT.md) and the [architecture decisions](docs/adr/README.md).
+Current architecture and vocabulary live in [GLOSSARY.md](GLOSSARY.md) and the [architecture decisions](docs/adr/README.md).
 
 ## Repository layout
 

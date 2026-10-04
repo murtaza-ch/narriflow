@@ -15,7 +15,7 @@ The product outcome is a shorter interval between clips becoming ready and an ap
 ## Notes
 
 - Vizard is a workflow reference. It is not a visual design target or an architectural template.
-- Use `CONTEXT.md`, the `domain-modeling` skill, and the repository's existing local planning format in every implementation task.
+- Use `GLOSSARY.md`, the `domain-modeling` skill, and the repository's existing local planning format in every implementation task.
 - Shared validators belong in `packages/validators`. Business rules belong in `packages/services`. Services must be re-exported from `packages/services/src/index.ts`.
 - Extend `hasFeature` for plan gates. Do not add direct pricing-tier comparisons at call sites.
 - The current Clip Composition Plan and Studio Editing Session plans are prerequisites. New timed edits must pass through those owners.

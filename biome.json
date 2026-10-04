@@ -14,6 +14,7 @@
       "!**/.turbo",
       "!packages/db/prisma/migrations",
       "!packages/db/generated",
+      "!.agents/skills",
       "!**/*.pen"
     ]
   },

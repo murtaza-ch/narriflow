@@ -232,7 +232,7 @@ flowchart LR
     <dt class="font-semibold text-slate-500">Files</dt>
     <dd class="font-mono text-xs leading-6">apps/worker/src/tasks/auto-layout-analysis.ts:93-331 · auto-layout-zoom.ts [U]<br/>apps/worker/src/tasks/render-clips.ts:1572-1870, 5714-6600<br/>packages/services/src/clip.service.ts:2660-2988</dd>
   </dl>
-  <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">"Layout Evidence" is not in CONTEXT.md. Add it if this goes ahead. Related [U] smell: the layout engine now emits <code>intent: "fit"</code> and chooses zoom, which is composition policy that belongs to the plan (ADR 0004: "evidence rather than composition truth").</div>
+  <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">"Layout Evidence" is not in GLOSSARY.md. Add it if this goes ahead. Related [U] smell: the layout engine now emits <code>intent: "fit"</code> and chooses zoom, which is composition policy that belongs to the plan (ADR 0004: "evidence rather than composition truth").</div>
 </article>
 
 <!-- ============ 03 PLAN OWNS CROP TIME ============ -->
@@ -440,7 +440,7 @@ flowchart LR
     <dt class="font-semibold text-slate-500">Files</dt>
     <dd class="font-mono text-xs leading-6">apps/web/app/(app)/projects/[projectId]/publishing-provider.tsx:213, 451-453, 537-652, 995-1125<br/>apps/web/lib/publication-intent-key.ts · publishing-draft.ts:12,26 · publishing.browser.fixture.tsx</dd>
   </dl>
-  <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">ADR 0007's 2026-09-09 addendum defines the protocol but names no owner. CONTEXT.md already has "Publishing Draft"; the session that owns it would be a new glossary term.</div>
+  <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">ADR 0007's 2026-09-09 addendum defines the protocol but names no owner. GLOSSARY.md already has "Publishing Draft"; the session that owns it would be a new glossary term.</div>
 </article>
 
 <!-- ============ 06 ACTOR SCOPE ============ -->
@@ -499,7 +499,7 @@ flowchart LR
     <dt class="font-semibold text-slate-500">Files</dt>
     <dd class="font-mono text-xs leading-6">packages/services/src/workspace.service.ts:324-334 · project.service.ts:1607, 2233, 2550, 3336<br/>social-publication-scheduling.ts:592 · clip.service.ts:1133 · upload-session.service.ts (15 refs)<br/>apps/web/app/(app)/projects/actions.ts:347,391,429 · packages/mcp-core/src/index.ts:280-281</dd>
   </dl>
-  <div class="mt-5 rounded border-l-4 border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">ADR 0009 says the cutover removed the "old Workspace-user shape", and CONTEXT.md says Actor Scope "never aliases identity". The request layer is clean, but storage and service interfaces still carry the owner. This finishes ADR 0009 rather than reopening it. It is broad, which is why it is rated Worth exploring.</div>
+  <div class="mt-5 rounded border-l-4 border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">ADR 0009 says the cutover removed the "old Workspace-user shape", and GLOSSARY.md says Actor Scope "never aliases identity". The request layer is clean, but storage and service interfaces still carry the owner. This finishes ADR 0009 rather than reopening it. It is broad, which is why it is rated Worth exploring.</div>
 </article>
 
 <!-- ============ 07 PROJECT SERVICE ============ -->
@@ -732,7 +732,7 @@ flowchart LR
       <tr><td class="p-3 font-mono text-xs">X4</td><td class="p-3"><code>WORKER_AUTO_LAYOUT_ANALYSIS*</code> and <code>REFRAME_*</code> read raw from <code>process.env</code> in one producer; absent from render config and the rollout runbook</td><td class="p-3 font-mono text-xs">auto-layout-analysis.ts:103-158, 336</td></tr>
       <tr><td class="p-3 font-mono text-xs">X5</td><td class="p-3">Production wiring in <code>social-publication-scheduling.ts</code>, not a <code>-runtime.ts</code> file; zod schemas defined in web</td><td class="p-3 font-mono text-xs">social-publication-scheduling.ts:768 · publishing-draft.ts:12,26</td></tr>
       <tr><td class="p-3 font-mono text-xs">X6</td><td class="p-3">Project progress: JS and SQL tie-breaks differ, and the detail-page stepper derives its own state. MCP <code>get_project</code> has no progress field.</td><td class="p-3 font-mono text-xs">project-progress.ts:44-47 vs 102 · lib/project-state.ts:323-529</td></tr>
-      <tr><td class="p-3 font-mono text-xs">X7</td><td class="p-3">Glossary: "Ingest Job" lacks the claim, handoff and retry vocabulary ADR 0005 points to. Ingest events store the Ingest Job ID in <code>workflowRunId</code>.</td><td class="p-3 font-mono text-xs">CONTEXT.md:96 · project.service.ts:3717-3726</td></tr>
+      <tr><td class="p-3 font-mono text-xs">X7</td><td class="p-3">Glossary: "Ingest Job" lacks the claim, handoff and retry vocabulary ADR 0005 points to. Ingest events store the Ingest Job ID in <code>workflowRunId</code>.</td><td class="p-3 font-mono text-xs">GLOSSARY.md:96 · project.service.ts:3717-3726</td></tr>
       <tr><td class="p-3 font-mono text-xs">X8 ✓ [U]</td><td class="p-3">Marketing <code>@narriflow/stage</code> hand-copies caption presets from validators. <code>tools/videos</code> draws the same storyboards in two renderers (Remotion and canvas); keep one.</td><td class="p-3 font-mono text-xs">packages/stage/src/palette.ts:40 · tools/videos/src, canvas/</td></tr>
     </tbody></table>
   </div>

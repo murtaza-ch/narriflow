@@ -17,7 +17,7 @@
 - [ ] Program analytics compute clips-ready to approved-and-scheduled without sensitive metadata.
 - [ ] Every rollout control has a tested rollback that stops new writes and keeps existing data readable.
 - [ ] Operations, Review Rounds, generated jobs, bundles, assets, and notifications have reconciliation runbooks and bounded cleanup.
-- [ ] `CONTEXT.md`, user-facing pricing copy, internal runbooks, and public API or MCP docs match shipped behavior.
+- [ ] `GLOSSARY.md`, user-facing pricing copy, internal runbooks, and public API or MCP docs match shipped behavior.
 
 ## Verification
 
