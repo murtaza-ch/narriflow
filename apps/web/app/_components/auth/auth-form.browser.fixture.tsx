@@ -24,6 +24,8 @@ function useNavigationUrl() {
 }
 const replace = mock((href: string) => navigate(href));
 const activate = mock(async () => {});
+const redirectWithAuth = mock(async (_href: string) => {});
+const clerkClient = { redirectWithAuth };
 let signin: any;
 let signup: any;
 let user: any;
@@ -31,6 +33,8 @@ let forceVerification = false;
 let session: any;
 let callbackProps: any;
 mock.module("@clerk/nextjs", () => ({
+  useClerk: () => clerkClient,
+  useAuth: () => ({ isLoaded: true }),
   useSignIn: () => ({ isLoaded: true, signIn: signin, setActive: activate }),
   useSignUp: () => ({ isLoaded: true, signUp: signup, setActive: activate }),
   useUser: () => ({ isLoaded: true, user }),
@@ -51,9 +55,10 @@ const { AuthForm } = await import("./auth-form");
 const { AuthModal } = await import("./auth-modal");
 const { default: CallbackPage } = await import("../../sso-callback/[[...sso-callback]]/page");
 const { PasskeySettings } = await import("../../(app)/settings/profile/passkey-settings");
+const { ClerkOAuthContinuation } = await import("../../auth/continue/clerk-oauth-continuation");
 
 beforeEach(() => {
-  replace.mockClear(); activate.mockClear(); forceVerification = false;
+  replace.mockClear(); activate.mockClear(); redirectWithAuth.mockReset(); redirectWithAuth.mockImplementation(async () => {}); forceVerification = false;
   navigationUrl = new URL("http://localhost:3000/"); callbackProps = null;
   session = { startVerification: mock(async () => ({ status: "needs_first_factor", supportedFirstFactors: [{ strategy: "password" }] })), attemptFirstFactorVerification: mock(async () => ({ status: "complete" })), verifyWithPasskey: mock(async () => ({ status: "complete" })) };
   signin = { status: null, firstFactorVerification: {}, secondFactorVerification: {}, supportedFirstFactors: [], supportedSecondFactors: [], prepareFirstFactor: mock(async () => signin), prepareSecondFactor: mock(async () => signin), create: mock(async () => ({ status: "complete", createdSessionId: "signed-in" })), authenticateWithRedirect: mock(async () => {}), authenticateWithPasskey: mock(async () => ({ status: "complete", createdSessionId: "passkey-session" })), attemptFirstFactor: mock(async () => ({ status: "complete", createdSessionId: "reset-session" })), attemptSecondFactor: mock(async () => ({ status: "complete", createdSessionId: "second-factor-session" })) };
@@ -95,6 +100,19 @@ async function click(text: string) {
 }
 
 describe("custom authentication forms", () => {
+  test("external OAuth continuation uses Clerk's auth handoff and retries a failed navigation", async () => {
+    redirectWithAuth.mockRejectedValueOnce(new Error("Navigation failed"));
+    container = browser.document.createElement("div") as unknown as HTMLDivElement;
+    browser.document.body.append(container);
+    root = createRoot(container);
+    const href = "https://example.clerk.accounts.dev/oauth/authorize-with-immediate-redirect?state=original";
+    await act(async () => { root!.render(<ChakraProvider value={system}><ClerkOAuthContinuation href={href} /></ChakraProvider>); });
+    expect(redirectWithAuth).toHaveBeenCalledWith(href);
+    expect(browser.document.body.textContent).toContain("authorization page couldn’t open");
+    await click("Try again");
+    expect(redirectWithAuth).toHaveBeenCalledTimes(2);
+    expect(browser.document.body.textContent).toContain("Opening the authorization page");
+  });
   test("email registration and verification activate only a verified session", async () => {
     await render("sign-up");
     await enter("auth-email", "new@example.test"); await enter("auth-password", "test-password"); await submit();

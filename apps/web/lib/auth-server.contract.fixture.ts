@@ -27,6 +27,7 @@ mock.module("@clerk/nextjs/server", () => ({ clerkMiddleware: (handler: unknown)
 mock.module("./authenticated-request-page", () => ({ admitSignedInPage }));
 mock.module("next/headers", () => ({ headers: async () => requestHeaders }));
 mock.module("next/navigation", () => ({ redirect: (url: string) => { throw new RequestOutcome(307, url); } }));
+mock.module("../app/auth/continue/clerk-oauth-continuation", () => ({ ClerkOAuthContinuation: (_props: { href: string }) => null }));
 const { default: proxy } = await import("../proxy");
 const { default: continuePage } = await import("../app/auth/continue/page");
 
@@ -91,6 +92,19 @@ describe("authentication proxy request contracts with installed Clerk protect", 
 });
 
 describe("identity continuation page", () => {
+  test("approved external Clerk destinations use the authenticated SDK handoff after provisioning", async () => {
+    const previousIssuer = process.env.CLERK_OAUTH_ISSUER;
+    process.env.CLERK_OAUTH_ISSUER = "https://example.clerk.accounts.dev";
+    try {
+      const destination = "https://example.clerk.accounts.dev/oauth/authorize-with-immediate-redirect?client_id=test&state=original";
+      const result = await continuePage({ searchParams: Promise.resolve({ redirect_url: destination }) });
+      expect(result.props.href).toBe(destination);
+      expect(admitSignedInPage).toHaveBeenCalledWith(destination);
+    } finally {
+      if (previousIssuer === undefined) delete process.env.CLERK_OAUTH_ISSUER;
+      else process.env.CLERK_OAUTH_ISSUER = previousIssuer;
+    }
+  });
   test.each([
     { host: "localhost:3000", protocol: null, origin: "http://localhost:3000" },
     { host: "narriflow-dev.vercel.app", protocol: "https", origin: "https://narriflow-dev.vercel.app" },
