@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WorkerProcessFailure, type WorkerProcessModule } from "../worker-process";
 import {
   classifyYtdlpProviderFailure,
   executeYtdlpCommand,
   normalizeDropboxDownloadUrl,
   readVerifiedUploadPayload,
+  processIngestJob,
 } from "./ingest";
 
 function processModuleWithExecute(
@@ -153,5 +157,45 @@ describe("normalizeDropboxDownloadUrl", () => {
 
   test("throws on an invalid URL", () => {
     expect(() => normalizeDropboxDownloadUrl("not-a-url")).toThrow();
+  });
+});
+
+
+describe("ingest media execution cancellation", () => {
+  test("the link import path forwards cancellation through its R2 upload and never settles failure", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "ingest-cancellation-"));
+    const file = join(scratch, "source.mp4");
+    await writeFile(file, "test source");
+    const shutdown = new AbortController();
+    const reason = new Error("worker shutdown");
+    let uploads = 0;
+    let settlements = 0;
+    const workerProcess = processModuleWithExecute(async (request) => ({
+      exitCode: 0,
+      stdout: Buffer.from(request.args.includes("--skip-download") ? JSON.stringify({ id: "test", title: "Test", duration: 30 }) : `${file}\n`),
+    }));
+    workerProcess.withScratchDirectory = async (_prefix, work) => work(scratch);
+    try {
+      await expect(processIngestJob({ id: "job", projectId: "project", jobType: "link_import", claimId: "claim", attemptCount: 1, payload: { url: "https://www.youtube.com/watch?v=test", provider: "youtube" } }, {
+        signal: shutdown.signal,
+        workerProcess,
+        lifecycle: {
+          progress: async () => {},
+          complete: async () => { settlements++; },
+          fail: async () => { settlements++; return { outcome: "requeue" }; },
+        },
+        putSource: async (input) => {
+          uploads++;
+          expect(input.signal).toBe(shutdown.signal);
+          shutdown.abort(reason);
+          input.signal!.throwIfAborted();
+          throw new Error("upload should be aborted");
+        },
+      })).rejects.toBe(reason);
+      expect(uploads).toBe(1);
+      expect(settlements).toBe(0);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
   });
 });

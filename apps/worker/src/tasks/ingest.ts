@@ -9,7 +9,9 @@ import {
   assertResponseContentLength,
   createByteLimitTransform,
   guardedFetch,
-  projectService,
+  getIngestJobLifecycle,
+  IngestJobClaimLost,
+  type IngestJobLifecycle,
   redactUrlForDisplay,
   RemoteFetchError,
   UnsafeUrlError,
@@ -27,7 +29,6 @@ import {
   MAX_UPLOAD_SIZE_BYTES,
   type LinkProviderId,
 } from "@narriflow/validators";
-import { notifyIngestFailureAfterSettlement } from "../notifications";
 import { ytdlpCommonArgs } from "../youtube-import";
 import {
   productionWorkerProcessModule,
@@ -65,10 +66,15 @@ function getYtdlpConcurrentFragments(): number {
 interface IngestJob {
   id: string;
   projectId: string;
-  jobType: "upload_finalize" | "youtube_import" | "rss_import" | "link_import";
+  jobType: "upload_finalize" | "rss_import" | "link_import";
   payload: unknown;
   attemptCount: number;
   claimId: string;
+}
+
+interface IngestRuntime {
+  lifecycle: Pick<IngestJobLifecycle, "progress" | "complete" | "fail">;
+  putSource: typeof putFileFromPath;
 }
 
 class IngestWorkerError extends Error {
@@ -272,10 +278,11 @@ async function runUploadFinalize(
   job: IngestJob,
   workerProcess: WorkerProcessModule,
   signal: AbortSignal,
+  runtime: IngestRuntime,
 ) {
   const verified = readVerifiedUploadPayload(job.payload);
 
-  await projectService.markIngestJobNormalizing(job.id, job.claimId);
+  await runtime.lifecycle.progress(job, "normalizing");
 
   // ffprobe reads the header over range requests, so a presigned URL avoids
   // downloading the whole file here while still using the stored object as the
@@ -289,7 +296,7 @@ async function runUploadFinalize(
   }
   const durationSeconds = requireDuration(probedDuration);
 
-  await projectService.completeIngestJob(job.id, job.claimId, {
+  await runtime.lifecycle.complete(job, {
     sourceStorageKey: verified.storageKey,
     sourceMimeType: verified.contentType,
     sourceSizeBytes: verified.sizeBytes,
@@ -379,13 +386,10 @@ async function runLinkImport(
   job: IngestJob,
   workerProcess: WorkerProcessModule,
   signal: AbortSignal,
+  runtime: IngestRuntime,
 ) {
   const payload = assertObject(job.payload);
-  // Legacy in-flight youtube_import jobs carry `youtubeUrl`; link_import jobs
-  // carry `url` + `provider`.
-  const rawUrl = String(
-    (job.jobType === "youtube_import" ? payload.youtubeUrl : payload.url) ?? "",
-  ).trim();
+  const rawUrl = String(payload.url ?? "").trim();
 
   if (!rawUrl) {
     throw new IngestWorkerError("link_missing_url", "A video link is required.");
@@ -402,9 +406,7 @@ async function runLinkImport(
   }
 
   const provider: LinkProviderId | null =
-    job.jobType === "youtube_import"
-      ? "youtube"
-      : detectLinkProvider(parsedUrl.toString());
+    detectLinkProvider(parsedUrl.toString());
 
   if (!provider) {
     throw new IngestWorkerError(
@@ -421,14 +423,14 @@ async function runLinkImport(
     );
   }
 
-  await projectService.markIngestJobDownloading(job.id, job.claimId);
+  await runtime.lifecycle.progress(job, "downloading");
 
   if (providerDef.strategy === "direct") {
-    await runDirectLinkDownload(job, rawUrl, provider, workerProcess, signal);
+    await runDirectLinkDownload(job, rawUrl, provider, workerProcess, signal, runtime);
     return;
   }
 
-  await runYtdlpLinkDownload(job, rawUrl, provider, workerProcess, signal);
+  await runYtdlpLinkDownload(job, rawUrl, provider, workerProcess, signal, runtime);
 }
 
 /** yt-dlp-backed providers: YouTube, Google Drive, StreamYard, Loom, Twitch,
@@ -439,6 +441,7 @@ async function runYtdlpLinkDownload(
   provider: LinkProviderId,
   workerProcess: WorkerProcessModule,
   signal: AbortSignal,
+  runtime: IngestRuntime,
 ) {
   return workerProcess.withScratchDirectory("narriflow-link-", async (tempDir) => {
     const commonArgs = ytdlpCommonArgs(provider);
@@ -514,7 +517,7 @@ async function runYtdlpLinkDownload(
       throw new IngestWorkerError("link_download_missing_file", "yt-dlp did not return a downloaded file path");
     }
 
-    await projectService.markIngestJobNormalizing(job.id, job.claimId);
+    await runtime.lifecycle.progress(job, "normalizing");
 
     const fileInfo = await stat(downloadedPath);
     if (fileInfo.size > MAX_UPLOAD_SIZE_BYTES) {
@@ -542,7 +545,8 @@ async function runYtdlpLinkDownload(
     const key = `projects/${job.projectId}/link/${Date.now()}-${baseName}${extension}`;
 
     const uploadStartedAtMs = Date.now();
-    await putFileFromPath({
+    await runtime.putSource({
+      signal,
       key,
       filePath: downloadedPath,
       contentType: "video/mp4",
@@ -566,7 +570,7 @@ async function runYtdlpLinkDownload(
       durationSeconds,
     });
 
-    await projectService.completeIngestJob(job.id, job.claimId, {
+    await runtime.lifecycle.complete(job, {
       sourceStorageKey: key,
       sourceInput: url,
       sourceMimeType: "video/mp4",
@@ -583,6 +587,7 @@ async function runDirectLinkDownload(
   provider: LinkProviderId,
   workerProcess: WorkerProcessModule,
   signal: AbortSignal,
+  runtime: IngestRuntime,
 ) {
   return workerProcess.withScratchDirectory("narriflow-link-", async (tempDir) => {
     const downloadUrl = provider === "dropbox" ? normalizeDropboxDownloadUrl(url) : url;
@@ -597,9 +602,9 @@ async function runDirectLinkDownload(
     const tempFile = join(tempDir, `source${ext}`);
     // downloadToFile retries transient failures internally (it needs the raw
     // pre-mapping error/status to classify retryability correctly).
-    const downloadMeta = await downloadToFile(downloadUrl, tempFile);
+    const downloadMeta = await downloadToFile(downloadUrl, tempFile, signal);
 
-    await projectService.markIngestJobNormalizing(job.id, job.claimId);
+    await runtime.lifecycle.progress(job, "normalizing");
 
     const fileInfo = await stat(tempFile);
     const durationSeconds = requireDuration(
@@ -615,7 +620,8 @@ async function runDirectLinkDownload(
     const baseName = sanitizeFileName(basename(urlPath, ext) || "source");
     const key = `projects/${job.projectId}/link/${Date.now()}-${baseName}${ext}`;
 
-    await putFileFromPath({
+    await runtime.putSource({
+      signal,
       key,
       filePath: tempFile,
       contentType: downloadMeta.contentType ?? "application/octet-stream",
@@ -625,7 +631,7 @@ async function runDirectLinkDownload(
       },
     });
 
-    await projectService.completeIngestJob(job.id, job.claimId, {
+    await runtime.lifecycle.complete(job, {
       sourceStorageKey: key,
       sourceInput: url,
       sourceMimeType: downloadMeta.contentType,
@@ -635,10 +641,11 @@ async function runDirectLinkDownload(
   });
 }
 
-async function downloadToFile(url: string, targetPath: string) {
+async function downloadToFile(url: string, targetPath: string, signal: AbortSignal) {
   const maxRetries = INGEST_RETRY_MAX_ATTEMPTS;
 
   for (let attempt = 0; ; attempt++) {
+    signal.throwIfAborted();
     const isLastAttempt = attempt >= maxRetries;
     let response: Response | undefined;
 
@@ -649,8 +656,10 @@ async function downloadToFile(url: string, targetPath: string) {
           "user-agent": "NarriflowBot/1.0 (+https://narriflow.app)",
         },
         timeoutMs: MEDIA_DOWNLOAD_TIMEOUT_MS,
+        signal,
       });
     } catch (error) {
+      signal.throwIfAborted();
       if (!isLastAttempt && isRetryableIngestError(error)) {
         await waitBeforeIngestRetry("direct_media_fetch", attempt, maxRetries, error);
         continue;
@@ -701,10 +710,12 @@ async function downloadToFile(url: string, targetPath: string) {
         ),
         createByteLimitTransform(MAX_UPLOAD_SIZE_BYTES),
         fileStream,
+        { signal },
       );
 
       return { contentType };
     } catch (error) {
+      signal.throwIfAborted();
       // A definitive classification (size limit, bad content-type, ...) is
       // never retried. Anything else gets one more transient-failure check
       // against the raw error before it's mapped to a friendly message.
@@ -780,6 +791,7 @@ async function runRssImport(
   job: IngestJob,
   workerProcess: WorkerProcessModule,
   signal: AbortSignal,
+  runtime: IngestRuntime,
 ) {
   const payload = assertObject(job.payload);
   const episode = assertObject(payload.episode);
@@ -791,7 +803,7 @@ async function runRssImport(
     throw new IngestWorkerError("rss_missing_enclosure", "episode enclosure URL is required");
   }
 
-  await projectService.markIngestJobDownloading(job.id, job.claimId);
+  await runtime.lifecycle.progress(job, "downloading");
 
   return workerProcess.withScratchDirectory("narriflow-rss-", async (tempDir) => {
     let enclosurePath: string;
@@ -802,9 +814,9 @@ async function runRssImport(
     }
     const enclosureExt = extname(enclosurePath) || ".mp3";
     const tempFile = join(tempDir, `source${enclosureExt}`);
-    const downloadMeta = await downloadToFile(enclosureUrl, tempFile);
+    const downloadMeta = await downloadToFile(enclosureUrl, tempFile, signal);
 
-    await projectService.markIngestJobNormalizing(job.id, job.claimId);
+    await runtime.lifecycle.progress(job, "normalizing");
 
     const fileInfo = await stat(tempFile);
     const durationSeconds = requireDuration(
@@ -812,7 +824,8 @@ async function runRssImport(
     );
     const key = `projects/${job.projectId}/rss/${Date.now()}-${sanitizeFileName(episodeTitle)}${enclosureExt}`;
 
-    await putFileFromPath({
+    await runtime.putSource({
+      signal,
       key,
       filePath: tempFile,
       contentType: downloadMeta.contentType ?? "audio/mpeg",
@@ -823,7 +836,7 @@ async function runRssImport(
       },
     });
 
-    await projectService.completeIngestJob(job.id, job.claimId, {
+    await runtime.lifecycle.complete(job, {
       sourceStorageKey: key,
       sourceInput: redactUrlForDisplay(rssUrl),
       sourceMimeType: downloadMeta.contentType,
@@ -838,23 +851,14 @@ export async function processIngestJob(
   options: {
     signal?: AbortSignal;
     workerProcess?: WorkerProcessModule;
+    lifecycle?: IngestRuntime["lifecycle"];
+    putSource?: IngestRuntime["putSource"];
   } = {},
 ) {
-  const externalSignal = options.signal ?? new AbortController().signal;
-  const ownershipController = new AbortController();
-  const signal = AbortSignal.any([externalSignal, ownershipController.signal]);
+  const signal = options.signal ?? new AbortController().signal;
+  signal.throwIfAborted();
   const workerProcess = options.workerProcess ?? productionWorkerProcessModule;
-  let heartbeatInFlight = false;
-  const heartbeat = setInterval(() => {
-    if (externalSignal.aborted || ownershipController.signal.aborted || heartbeatInFlight) return;
-    heartbeatInFlight = true;
-    void projectService.renewIngestJobClaim(job.id, job.claimId).catch((error) => {
-      ownershipController.abort(error);
-    }).finally(() => { heartbeatInFlight = false; });
-  }, 2 * 60 * 1000);
-  const stopHeartbeat = () => clearInterval(heartbeat);
-  externalSignal.addEventListener("abort", stopHeartbeat, { once: true });
-  ownershipController.signal.addEventListener("abort", stopHeartbeat, { once: true });
+  const runtime: IngestRuntime = { lifecycle: options.lifecycle ?? getIngestJobLifecycle(), putSource: options.putSource ?? putFileFromPath };
   const jobStartedAtMs = Date.now();
   log("info", "ingest_job_started", {
     jobId: job.id,
@@ -864,13 +868,11 @@ export async function processIngestJob(
 
   try {
     if (job.jobType === "upload_finalize") {
-      await runUploadFinalize(job, workerProcess, signal);
-    } else if (job.jobType === "link_import" || job.jobType === "youtube_import") {
-      // youtube_import is kept only to drain legacy in-flight jobs enqueued
-      // before the link_import migration; runLinkImport maps its payload.
-      await runLinkImport(job, workerProcess, signal);
+      await runUploadFinalize(job, workerProcess, signal, runtime);
+    } else if (job.jobType === "link_import") {
+      await runLinkImport(job, workerProcess, signal, runtime);
     } else if (job.jobType === "rss_import") {
-      await runRssImport(job, workerProcess, signal);
+      await runRssImport(job, workerProcess, signal, runtime);
     } else {
       throw new IngestWorkerError(
         "worker_unknown_job_type",
@@ -885,8 +887,8 @@ export async function processIngestJob(
       totalMs: Date.now() - jobStartedAtMs,
     });
   } catch (error) {
-    if (ownershipController.signal.aborted) throw ownershipController.signal.reason;
-    externalSignal.throwIfAborted();
+    signal.throwIfAborted();
+    if (error instanceof IngestJobClaimLost) throw error;
     const normalizedError =
       error instanceof InvalidObjectMetadataError
         ? new IngestWorkerError(
@@ -903,24 +905,14 @@ export async function processIngestJob(
         ? normalizedError.message
         : "Unknown worker error";
 
-    await projectService.failIngestJob(job.id, job.claimId, code, message);
+    const decision = await runtime.lifecycle.fail(job, code, message);
     log("error", "ingest_job_failed", {
       jobId: job.id,
       projectId: job.projectId,
       jobType: job.jobType,
       code,
       message,
+      outcome: decision.outcome,
     });
-    await notifyIngestFailureAfterSettlement({
-      jobId: job.id,
-      projectId: job.projectId,
-      attemptCount: job.attemptCount,
-      errorCode: code,
-      reason: message,
-    });
-  } finally {
-    clearInterval(heartbeat);
-    externalSignal.removeEventListener("abort", stopHeartbeat);
-    ownershipController.signal.removeEventListener("abort", stopHeartbeat);
   }
 }

@@ -25,6 +25,12 @@ describe("userErrorMessage", () => {
     expect(message).toContain("then retry detection");
   });
 
+  test("explains recovery from missing or invalid generation settings", () => {
+    expect(userErrorMessage("workflow_content_pack_invalid")).toBe(
+      "The saved generation settings are missing or invalid. Review the clip settings and start generation again.",
+    );
+  });
+
   test("distinguishes invalid clip lengths from retryable edit contention", () => {
     const invalid = userErrorMessage("editor_boundaries_invalid");
     const contention = userErrorMessage("retryable_contention");

@@ -198,6 +198,71 @@ describe("guardedFetch", () => {
     expect(seenHeaders[1]?.get("x-request-id")).toBe("safe");
   });
 
+  test("a pre-aborted request never resolves or fetches its URL", async () => {
+    const shutdown = new AbortController();
+    const reason = new Error("shutdown");
+    shutdown.abort(reason);
+    let calls = 0;
+    await expect(guardedFetch("https://feed.example/media", {
+      signal: shutdown.signal,
+      resolver: async () => { calls++; return publicResolver("feed.example"); },
+      fetchImpl: async () => { calls++; return new Response(); },
+    })).rejects.toBe(reason);
+    expect(calls).toBe(0);
+  });
+
+  test("external cancellation stops waiting for DNS without fetching", async () => {
+    const shutdown = new AbortController();
+    const reason = new Error("shutdown during DNS");
+    let fetches = 0;
+    let resolving!: () => void;
+    const started = new Promise<void>((resolve) => { resolving = resolve; });
+    const result = guardedFetch("https://feed.example/media", {
+      signal: shutdown.signal,
+      resolver: () => { resolving(); return new Promise(() => {}); },
+      fetchImpl: async () => { fetches++; return new Response(); },
+    }).catch((error) => error);
+    await started;
+    shutdown.abort(reason);
+    expect(await result).toBe(reason);
+    expect(fetches).toBe(0);
+  });
+
+  test("external cancellation preserves its reason during fetch", async () => {
+    const shutdown = new AbortController();
+    const reason = new Error("shutdown during fetch");
+    let fetching!: () => void;
+    const started = new Promise<void>((resolve) => { fetching = resolve; });
+    const result = guardedFetch("https://feed.example/media", {
+      signal: shutdown.signal,
+      resolver: publicResolver,
+      fetchImpl: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+        fetching();
+      }),
+    }).catch((error) => error);
+    await started;
+    shutdown.abort(reason);
+    expect(await result).toBe(reason);
+  });
+
+  test("external cancellation remains active during response streaming", async () => {
+    const shutdown = new AbortController();
+    const reason = new Error("shutdown during body");
+    const response = await guardedFetch("https://feed.example/media", {
+      signal: shutdown.signal,
+      resolver: publicResolver,
+      fetchImpl: async (_input, init) => new Response(new ReadableStream({
+        start(controller) {
+          init!.signal!.addEventListener("abort", () => controller.error(init!.signal!.reason), { once: true });
+        },
+      })),
+    });
+    const body = response.text().catch((error) => error);
+    shutdown.abort(reason);
+    expect(await body).toBe(reason);
+  });
+
   test("keeps the timeout active while the response body is consumed", async () => {
     const response = await guardedFetch("https://feed.example/slow", {
       fetchImpl: async (_input, init) => {

@@ -40,7 +40,10 @@ export const renderTerminalNotificationPayloadSchema = z
   })
   .strict()
   .superRefine((payload, context) => {
-    if (payload.succeeded + payload.failed + payload.superseded !== payload.requested) {
+    if (
+      payload.succeeded + payload.failed + payload.superseded !==
+      payload.requested
+    ) {
       context.addIssue({
         code: "custom",
         message: "Render notification counts must equal the requested count",
@@ -48,22 +51,44 @@ export const renderTerminalNotificationPayloadSchema = z
     }
   });
 
-export const workflowStageUpdatedEventSchema = z.object({
-  event: z.literal("workflow.stage.updated"),
-  projectId: z.string().uuid(),
-  workflowRunId: z.string().uuid(),
-  seq: z.number().int().positive(),
-  stage: workflowStageSchema,
-  status: workflowStatusSchema,
-  progress: z.number().min(0).max(100),
-  errorCode: z.string().nullable().default(null),
-  emittedAt: z.string().datetime(),
-  notification: renderTerminalNotificationPayloadSchema.optional(),
-});
+export const workflowStageUpdatedEventSchema = z
+  .object({
+    event: z.literal("workflow.stage.updated"),
+    projectId: z.string().uuid(),
+    workflowRunId: z.string().uuid().nullable().default(null),
+    ingestJobId: z.string().uuid().optional(),
+    seq: z.number().int().positive(),
+    stage: workflowStageSchema,
+    status: workflowStatusSchema,
+    progress: z.number().min(0).max(100),
+    errorCode: z.string().nullable().default(null),
+    emittedAt: z.string().datetime(),
+    notification: z
+      .union([
+        renderTerminalNotificationPayloadSchema,
+        z
+          .object({
+            kind: z.literal("ingest.failed"),
+            projectId: z.string().uuid(),
+            ingestJobId: z.string().uuid(),
+          })
+          .strict(),
+      ])
+      .optional(),
+  })
+  .refine(
+    (event) => Boolean(event.workflowRunId) !== Boolean(event.ingestJobId),
+    {
+      message:
+        "Workflow events require exactly one Workflow Run or Ingest Job identity",
+    },
+  );
 
 export type RenderTerminalNotificationPayload = z.infer<
   typeof renderTerminalNotificationPayloadSchema
 >;
-export type WorkflowStageUpdatedEvent = z.infer<typeof workflowStageUpdatedEventSchema>;
+export type WorkflowStageUpdatedEvent = z.infer<
+  typeof workflowStageUpdatedEventSchema
+>;
 export type WorkflowStage = z.infer<typeof workflowStageSchema>;
 export type WorkflowStatus = z.infer<typeof workflowStatusSchema>;

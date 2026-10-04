@@ -7,7 +7,8 @@ import {
 	assertUploadProviderLifecyclePrerequisite,
 	getWorkflowRunLifecycle,
 	getSocialPublicationRuntime,
-	projectService,
+	getIngestJobLifecycle,
+	IngestJobClaimLost,
 	reviewService,
 	projectRetentionService,
 	purgeExpiredProjectSources,
@@ -30,7 +31,7 @@ import { processPendingAutoLayoutAnalyses } from "./tasks/auto-layout-analysis";
 import { processDubbingRun } from "./tasks/dubbing";
 import { processIngestJob } from "./tasks/ingest";
 import { expireExportBundles, processExportBundleRun } from "./tasks/export-bundle";
-import { ClipRenderAttempt } from "./tasks/render-clips";
+import { createClipRenderAttempt } from "./tasks/clip-render-attempt-runtime";
 import { parseWorkerRenderConfig } from "./render-config";
 import { processDueSocialPosts } from "./tasks/social-publisher";
 import { parseWorkspaceBillingPollInterval } from "./workspace-billing-config";
@@ -64,9 +65,6 @@ const renderPollIntervalMs = Number(
 );
 const reapIntervalMs = Number(
 	process.env.WORKER_REAP_INTERVAL_MS ?? String(5 * 60 * 1000),
-);
-const reapStallTimeoutMs = Number(
-	process.env.WORKER_REAP_STALL_TIMEOUT_MS ?? String(30 * 60 * 1000),
 );
 const workflowLeaseReapIntervalMs = Number(
 	process.env.WORKFLOW_LEASE_REAP_INTERVAL_MS ?? "30000",
@@ -127,7 +125,7 @@ async function reapStalledRunsIfDue() {
 	lastReapAt = now;
 	try {
 		const reapedIngest =
-			await projectService.reapStuckIngestJobs(reapStallTimeoutMs);
+			await getIngestJobLifecycle().reapExpired();
 		if (reapedIngest > 0) {
 			console.log(
 				JSON.stringify({
@@ -339,9 +337,15 @@ function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
 
 const ingestLoop = createPollLoop("ingest", async () => {
 	if (workerShutdown.signal.aborted) return 0;
-	const ingestJob = await projectService.claimNextIngestJob({ youtubeAvailable: youtubeLinkIntakeAvailable });
+	const lifecycle = getIngestJobLifecycle();
+	const ingestJob = await lifecycle.claim({ youtubeAvailable: youtubeLinkIntakeAvailable });
 	if (!ingestJob) return 0;
-	await processIngestJob(ingestJob, { signal: workerShutdown.signal });
+	try {
+		await lifecycle.runClaim(ingestJob, ({ signal }) => processIngestJob(ingestJob, { signal }), { signal: workerShutdown.signal });
+	} catch (error) {
+		if (!(error instanceof IngestJobClaimLost)) throw error;
+	}
+	if (workerShutdown.signal.aborted) return 0;
 	return 1;
 });
 
@@ -352,7 +356,7 @@ const ingestLoop = createPollLoop("ingest", async () => {
 const maintenanceLoop = createPollLoop("maintenance", async () => {
 	if (workerShutdown.signal.aborted) return 0;
 	await reapStalledRunsIfDue();
-	await projectService.processPendingIngestGenerationHandoffs();
+	await getIngestJobLifecycle().processGenerationHandoffs();
 	return 0;
 });
 
@@ -463,13 +467,13 @@ const autopilotLoop = createPollLoop("autopilot", async () => {
 /** CPU-bound stage: clip rendering only. */
 const renderLoop = createPollLoop("render", async () => {
 	if (!renderConfig.clipRenderAttemptEnabled) return 0;
-	await projectService.ensurePendingClipRenderingRun();
 	const lifecycle = getWorkflowRunLifecycle();
+	await lifecycle.rescuePendingClipRenderingRun();
 	return processNextWorkflowAttempt({
 		stage: "clip_rendering",
 		process: async (attempt, context) => {
 			const run = { ...attempt, id: attempt.workflowRunId };
-			const clipRenderAttempt = new ClipRenderAttempt({
+			const clipRenderAttempt = createClipRenderAttempt({
 				run,
 				config: renderConfig,
 				lifecycle,
@@ -489,7 +493,7 @@ const previewLoop = createPollLoop("preview", async () => {
  * the shared plan consumed by both studio and render. Separate mutex keeps
  * it from blocking proxy generation or workflow claims. */
 const autoLayoutLoop = createPollLoop("auto_layout", async () => {
-	return processPendingAutoLayoutAnalyses({ signal: workerShutdown.signal });
+	return processPendingAutoLayoutAnalyses({ signal: workerShutdown.signal, config: renderConfig });
 });
 
 /** Durable terminal-email retries. The service performs an atomic

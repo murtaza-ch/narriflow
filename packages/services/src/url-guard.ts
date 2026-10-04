@@ -63,6 +63,7 @@ export interface GuardedFetchOptions {
   headers?: HeadersInit;
   maxRedirects?: number;
   resolver?: HostResolver;
+  signal?: AbortSignal;
   timeoutMs?: number;
 }
 
@@ -237,8 +238,9 @@ async function cancelBody(response: Response) {
   await response.body.cancel().catch(() => undefined);
 }
 
-async function withTimeout<T>(operation: Promise<T>, timeoutMs: number) {
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, signal?: AbortSignal) {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(
       () => reject(new RemoteFetchError("remote_fetch_timeout")),
@@ -247,8 +249,15 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number) {
   });
 
   try {
-    return await Promise.race([operation, timeout]);
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      if (!signal) return;
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    });
+    return await Promise.race([operation, timeout, cancellation]);
   } finally {
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
     if (timer) {
       clearTimeout(timer);
     }
@@ -320,6 +329,7 @@ export async function guardedFetch(
   raw: string | URL,
   options: GuardedFetchOptions = {},
 ): Promise<Response> {
+  options.signal?.throwIfAborted();
   const fetchImpl = options.fetchImpl ?? fetch;
   const resolver = options.resolver ?? defaultResolver;
   const timeoutMs = options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
@@ -334,19 +344,25 @@ export async function guardedFetch(
   let redirectCount = 0;
 
   while (true) {
+    options.signal?.throwIfAborted();
     current = await withTimeout(
       assertPublicHttpUrlResolved(current, resolver),
       timeoutMs,
+      options.signal,
     );
+    options.signal?.throwIfAborted();
 
     let response: Response;
     try {
       response = await fetchImpl(current, {
         headers,
         redirect: "manual",
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: options.signal
+          ? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
+      options.signal?.throwIfAborted();
       if (isTimeoutError(error)) {
         throw new RemoteFetchError("remote_fetch_timeout");
       }

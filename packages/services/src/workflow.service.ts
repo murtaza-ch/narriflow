@@ -1,5 +1,4 @@
 import Redis from "ioredis";
-import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import { workflowStageUpdatedEventSchema, type WorkflowStageUpdatedEvent } from "@narriflow/validators";
 import {
@@ -130,6 +129,7 @@ export async function getWorkflowEventsSince(projectId: string, sinceSeq = 0) {
     event: "workflow.stage.updated" as const,
     projectId: row.projectId,
     workflowRunId: row.workflowRunId,
+    ...(row.ingestJobId ? { ingestJobId: row.ingestJobId } : {}),
     seq: row.seq,
     stage: row.stage,
     status: row.status,
@@ -137,108 +137,4 @@ export async function getWorkflowEventsSince(projectId: string, sinceSeq = 0) {
     errorCode: row.errorCode,
     emittedAt: row.emittedAt.toISOString(),
   }));
-}
-
-export async function publishIngestWorkflowStageUpdated(
-  event: Omit<WorkflowStageUpdatedEvent, "seq" | "emittedAt">,
-) {
-  const prisma = getPrismaClient();
-  if (!prisma) return null;
-
-  const emittedAt = new Date();
-
-  // Ingest Jobs have a separate lifecycle but share the durable project event
-  // stream. Concurrent ingest writers serialize on Project's atomic sequence.
-  let nextSeq: number | null = null;
-  let eventId: string | null = null;
-  for (let attempt = 0; attempt < 5 && nextSeq === null; attempt++) {
-    try {
-      const persisted = await prisma.$transaction(async (tx) => {
-        const projects = await tx.$queryRaw<Array<{ workflowEventSeq: number }>>`
-          UPDATE "Project"
-          SET "workflowEventSeq" = GREATEST(
-            "workflowEventSeq",
-            COALESCE(
-              (
-                SELECT MAX("seq")
-                FROM "WorkflowEvent"
-                WHERE "projectId" = ${event.projectId}::uuid
-              ),
-              0
-            )
-          ) + 1
-          WHERE "id" = ${event.projectId}::uuid
-          RETURNING "workflowEventSeq"
-        `;
-        const seq = projects[0]?.workflowEventSeq;
-        if (!seq) throw new Error("Workflow event project unavailable");
-        const id = randomUUID();
-        const payload = workflowStageUpdatedEventSchema.parse({
-          ...event,
-          seq,
-          emittedAt: emittedAt.toISOString(),
-        });
-        await tx.workflowEvent.create({
-          data: {
-            id,
-            projectId: event.projectId,
-            workflowRunId: event.workflowRunId,
-            seq,
-            stage: event.stage,
-            status: event.status,
-            progress: event.progress,
-            errorCode: event.errorCode,
-            emittedAt,
-            dedupeKey: `ingest:${id}`,
-            payload,
-            redisRequired: isWorkflowRedisDeliveryEnabled(),
-            nextDeliveryAt: emittedAt,
-          },
-        });
-        return { seq, id };
-      });
-      nextSeq = persisted.seq;
-      eventId = persisted.id;
-    } catch (error) {
-      const isSeqCollision =
-        (error as { code?: string }).code === "P2002";
-      if (isSeqCollision && attempt < 4) {
-        continue;
-      }
-      console.warn(
-        JSON.stringify({
-          level: "warn",
-          message: "workflow_event_persist_failed",
-          projectId: event.projectId,
-          workflowRunId: event.workflowRunId,
-          stage: event.stage,
-          status: event.status,
-          attempts: attempt + 1,
-          errorCode: isSeqCollision ? "seq_conflict_exhausted" : "db_error",
-        }),
-      );
-      return null;
-    }
-  }
-  if (nextSeq === null) return null;
-
-  const parsed = workflowStageUpdatedEventSchema.parse({
-    ...event,
-    seq: nextSeq,
-    emittedAt: emittedAt.toISOString(),
-  });
-
-  try {
-    const published = await publishPersistedWorkflowEvent(parsed);
-    if (published && eventId) {
-      await prisma.workflowEvent.update({
-        where: { id: eventId },
-        data: { redisPublishedAt: new Date() },
-      });
-    }
-  } catch {
-    // The durable outbox row remains due; the worker dispatcher retries it.
-  }
-
-  return parsed;
 }

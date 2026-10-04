@@ -105,7 +105,7 @@ flowchart TD
   G --> H["Complete and verify Upload Session; create Project"]
   H --> I["IngestJob: upload_finalize"]
 
-  D --> J["IngestJob: youtube_import"]
+  D --> J["IngestJob: link_import"]
   J --> K["Worker downloads with yt-dlp"]
   E --> L["IngestJob: rss_import"]
   L --> M["Worker downloads enclosure"]
@@ -269,7 +269,7 @@ Useful runtime settings:
 - `OPENAI_CLIP_REASONING_EFFORT=medium`
 - `OPENAI_TTS_MODEL=gpt-4o-mini-tts` and `OPENAI_DUB_TRANSLATION_MODEL=gpt-5.4-mini` for voiceover dubbing.
 - `ASSEMBLYAI_KEYTERMS_PROMPT=comma,separated,terms` to opt into deployment-specific names or brands. Terms are trimmed, deduplicated, limited to six words each, and capped at the Universal-2-safe 200-term limit; Narriflow sends no built-in demo vocabulary.
-- `WORKER_REAP_INTERVAL_MS=300000` and `WORKER_REAP_STALL_TIMEOUT_MS=1800000` to fail workflow/ingest jobs abandoned by a crashed worker.
+- `WORKER_REAP_INTERVAL_MS=300000` to recover Ingest Jobs whose fenced claim lease expired. Graceful shutdown releases claims without consuming automatic retries.
 - `WORKFLOW_LEASE_REAP_INTERVAL_MS=30000` and `WORKFLOW_EVENT_DISPATCH_INTERVAL_MS=1000` for protocol-v2 Workflow Attempt recovery and durable event delivery.
 - `PEXELS_API_KEY=...` to enable stock B-roll search and automatic B-roll cutaways.
 - `SOCIAL_TOKEN_ENCRYPTION_KEY` and the social provider client IDs/secrets to refresh tokens and publish scheduled posts natively. Also configure `SOCIAL_PUBLICATION_CHECKPOINT_KEY` with at least 32 characters to protect durable provider checkpoints. See [Social Publication operations](docs/runbooks/social-publication.md).

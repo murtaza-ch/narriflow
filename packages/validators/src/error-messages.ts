@@ -95,6 +95,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"This workspace already has ten Autopilot rules. Remove an old rule before creating another.",
 	rss_missing_enclosure:
 		"That RSS episode doesn't have a downloadable audio file. Choose a different episode.",
+	upload_too_long:
+		"This video exceeds your plan's upload length limit. Upgrade your plan or upload a shorter video.",
 	quota_exceeded:
 		"You've used all your processing minutes for this month. Upgrade to keep going.",
 	transcription_failed:
@@ -157,10 +159,6 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"This project's approval policy is invalid. Reapply the Brand profile before publishing.",
 	social_post_cancel_failed:
 		"We couldn't cancel that post — it may have already started publishing. Check its current status above.",
-	youtube_unsupported_source:
-		"That link isn't a supported YouTube URL. Paste a youtube.com or youtu.be link.",
-	youtube_missing_url:
-		"No video link was provided. Paste a YouTube URL and try again.",
 	link_missing_url: "No video link was provided. Paste a link and try again.",
 	link_unsupported_source:
 		"We couldn't recognize that link. Supported: YouTube, Google Drive, StreamYard, Loom, Twitch, X, TikTok, LinkedIn, Facebook, Vimeo, Dropbox.",
@@ -191,6 +189,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"The original source for this project is no longer available. Re-upload the source to render again.",
 	workflow_source_missing:
 		"The original source for this project is no longer available. Re-upload the source to continue.",
+	workflow_content_pack_invalid:
+		"The saved generation settings are missing or invalid. Review the clip settings and start generation again.",
 	requires_pro_plan:
 		"Voiceover dubbing is a Pro feature. Upgrade to Pro to dub your clips.",
 	requires_creator_plan:

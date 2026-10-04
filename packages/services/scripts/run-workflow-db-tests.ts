@@ -101,8 +101,10 @@ try {
   const testCommand = [
     "bun",
     "test",
+    "packages/services/src/workflow-render-rescue.db.test.ts",
     "packages/services/src/workflow-run-lifecycle.db.test.ts",
     "packages/services/src/ingest-job-lifecycle.db.test.ts",
+    "packages/services/src/project-actor-scope.db.test.ts",
   ];
   if (process.env.WORKFLOW_TEST_NAME) {
     testCommand.push("--test-name-pattern", process.env.WORKFLOW_TEST_NAME);

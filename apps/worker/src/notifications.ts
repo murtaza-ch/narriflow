@@ -1,7 +1,5 @@
 import {
   decideAutoRetry,
-  INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-  INGEST_RETRIES_EXHAUSTED_CODE,
   notificationService,
   reviewNotificationService,
   WORKFLOW_MAX_ATTEMPTS,
@@ -170,7 +168,6 @@ export async function notifyWorkflowFailureAfterSettlement(input: {
   projectId: string;
   errorCode: string;
   reason: string;
-  autoRenderOnly?: boolean;
 }): Promise<void> {
   try {
     const context = await notificationService.getWorkflowRunContext(
@@ -183,13 +180,6 @@ export async function notifyWorkflowFailureAfterSettlement(input: {
         projectId: input.projectId,
         errorCode: input.errorCode,
       });
-      return;
-    }
-
-    if (
-      input.autoRenderOnly &&
-      !context.idempotencyKey.startsWith("auto-render-")
-    ) {
       return;
     }
 
@@ -220,29 +210,4 @@ export async function notifyWorkflowFailureAfterSettlement(input: {
       error: error instanceof Error ? error.message : String(error),
     });
   }
-}
-
-export async function notifyIngestFailureAfterSettlement(input: {
-  jobId: string;
-  projectId: string;
-  attemptCount: number;
-  errorCode: string;
-  reason: string;
-}): Promise<void> {
-  const decision = decideAutoRetry(
-    input.attemptCount,
-    input.errorCode,
-    INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-    INGEST_RETRIES_EXHAUSTED_CODE,
-  );
-  if (decision.outcome !== "permanent") {
-    return;
-  }
-
-  await notifyTerminalOutcome({
-    projectId: input.projectId,
-    sourceId: input.jobId,
-    outcome: "import_failed",
-    reason: input.reason,
-  });
 }

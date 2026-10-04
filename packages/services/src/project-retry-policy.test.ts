@@ -6,18 +6,8 @@ import {
   INGEST_AUTO_RETRY_MAX_ATTEMPTS,
   INGEST_RETRIES_EXHAUSTED_CODE,
   isAutoRetryableFailureCode,
-  MAX_INGEST_RETRY_ATTEMPTS,
   PERMANENT_FAILURE_CODES,
-} from "./project.service";
-
-// This suite covers the pure decision logic behind the automatic job-level
-// retry policy for Ingest Jobs in project.service.ts. Those methods
-// require a live Prisma client (this package's tests run without
-// DATABASE_URL, matching getPrismaClient()'s documented "no database"
-// fallback — see project-delete.test.ts / project-source-purge.test.ts), so
-// — consistent with that existing convention — the DB-independent decision
-// functions get direct, thorough unit coverage here, since they are exactly
-// what those methods call to decide what to do.
+} from "./processing-retry-policy";
 
 describe("isAutoRetryableFailureCode", () => {
   test("is false for every explicitly permanent code", () => {
@@ -155,49 +145,12 @@ describe("decideAutoRetry", () => {
       terminalErrorCode: "no_clips_detected",
     });
   });
-});
 
-describe("user-initiated retry still works after automatic retries are exhausted", () => {
-  // retryFailedIngest (the "Retry ingest" button's handler) has its own,
-  // entirely separate budget: it counts total IngestJob *rows* ever created
-  // for the project (prisma.ingestJob.count({ where: { projectId } })) and
-  // requires project.ingestStatus === "failed". It never reads
-  // IngestJob.attemptCount. The automatic policy in this file reuses the
-  // SAME row on every requeue (failIngestJob's requeue branch does
-  // `tx.ingestJob.update`, never `.create`) — so no amount of automatic
-  // retrying can ever add a row, and the row count retryFailedIngest checks
-  // never moves because of it.
-  test("the automatic-retry cap and the user-facing retry cap are independent constants", () => {
-    expect(INGEST_AUTO_RETRY_MAX_ATTEMPTS).not.toBe(MAX_INGEST_RETRY_ATTEMPTS);
-    expect(INGEST_AUTO_RETRY_MAX_ATTEMPTS).toBeLessThan(
-      MAX_INGEST_RETRY_ATTEMPTS,
-    );
-  });
-
-  test("exhausting the automatic cap always resolves to ingestStatus \"failed\" — exactly the precondition retryFailedIngest requires before it will act", () => {
-    const decision = decideAutoRetry(
-      INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-      "remote_media_download_failed",
-      INGEST_AUTO_RETRY_MAX_ATTEMPTS,
-      INGEST_RETRIES_EXHAUSTED_CODE,
-    );
-    expect(decision.outcome).toBe("permanent");
-    // failIngestJob's permanent branch sets Project.ingestStatus: "failed"
-    // whenever decision.outcome === "permanent" (see failIngestJob), which is
-    // precisely retryFailedIngest's `if (project.ingestStatus !== "failed")
-    // throw IngestNotFailedError()` guard being satisfied — so the user's
-    // manual retry is never left permanently blocked by automatic retries
-    // having run first.
-  });
-
-  test("no realistic attemptCount from the automatic policy alone can reach MAX_INGEST_RETRY_ATTEMPTS rows, since automatic retries never create a row", () => {
-    // The automatic cap bounds how many times ONE row is reclaimed; it says
-    // nothing about row count, because it never creates rows. Demonstrate
-    // the two are unrelated by construction: even reading the automatic cap
-    // "as if" it were a row count would stay under the user-facing limit.
-    expect(INGEST_AUTO_RETRY_MAX_ATTEMPTS).toBeLessThan(
-      MAX_INGEST_RETRY_ATTEMPTS,
-    );
+  test("invalid generation settings require a corrected submission", () => {
+    expect(decideAutoRetry(1, "workflow_content_pack_invalid", cap, exhaustedCode)).toEqual({
+      outcome: "permanent",
+      terminalErrorCode: "workflow_content_pack_invalid",
+    });
   });
 });
 
