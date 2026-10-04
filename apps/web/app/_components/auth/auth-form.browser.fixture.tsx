@@ -37,7 +37,7 @@ mock.module("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true }),
   useSignIn: () => ({ isLoaded: true, signIn: signin, setActive: activate }),
   useSignUp: () => ({ isLoaded: true, signUp: signup, setActive: activate }),
-  useUser: () => ({ isLoaded: true, user }),
+  useUser: () => ({ isLoaded: true, isSignedIn: Boolean(user), user }),
   useSession: () => ({ session }),
   AuthenticateWithRedirectCallback: (props: any) => { callbackProps = props; return null; },
   useReverification: (operation: (...args: any[]) => Promise<unknown>, options: any) => async (...args: any[]) => {
@@ -56,6 +56,7 @@ const { AuthModal } = await import("./auth-modal");
 const { default: CallbackPage } = await import("../../sso-callback/[[...sso-callback]]/page");
 const { PasskeySettings } = await import("../../(app)/settings/profile/passkey-settings");
 const { ClerkOAuthContinuation } = await import("../../auth/continue/clerk-oauth-continuation");
+const { HeaderAccountActions, StartLink } = await import("../../(marketing)/_components/account-actions");
 
 beforeEach(() => {
   replace.mockClear(); activate.mockClear(); redirectWithAuth.mockReset(); redirectWithAuth.mockImplementation(async () => {}); forceVerification = false;
@@ -391,5 +392,23 @@ describe("callback and homepage modal", () => {
     await act(async () => navigate("/?auth=sign-in&redirect_url=%2Fupload%3Fsource%3Dabc"));
     expect(browser.document.body.textContent).toContain("Welcome back");
     expect(browser.document.querySelector('a[href*="forgot-password"]')?.getAttribute("href")).toContain("redirect_url=%2Fupload%3Fsource%3Dabc");
+  });
+});
+
+describe("marketing account actions", () => {
+  const links = () => [...browser.document.querySelectorAll("a")].map((a) => `${a.textContent}|${a.getAttribute("href")}`);
+  const page = <><HeaderAccountActions /><StartLink>Start for free</StartLink></>;
+
+  test("signed-out visitors get sign-in and sign-up", async () => {
+    user = null;
+    await renderPage(page);
+    expect(links()).toEqual(["Sign in|/?auth=sign-in", "Get started|/?auth=sign-up", "Start for free|/?auth=sign-up"]);
+  });
+
+  test("signed-in visitors go to their workspace and keep the account menu", async () => {
+    user = { firstName: "Ada", lastName: "Lovelace", primaryEmailAddress: { emailAddress: "ada@example.test" }, hasImage: false, imageUrl: "" };
+    await renderPage(page);
+    expect(links()).toEqual(["Go to workspace|/home", "Go to your workspace|/home"]);
+    expect(browser.document.querySelector('[aria-label="Account menu"]')?.textContent).toBe("AL");
   });
 });

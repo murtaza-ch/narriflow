@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { Box, Flex, HStack, Text, Stack, SimpleGrid } from "@chakra-ui/react";
 import { Logo } from "@narriflow/ui/components/logo";
-import { Button } from "@narriflow/ui/components/button";
 import { MarketingMobileNav } from "./_components/marketing-mobile-nav";
+import { HeaderAccountActions } from "./_components/account-actions";
 
 const NAV_LINKS = [
   { label: "Features", href: "/#features" },
@@ -99,13 +99,7 @@ export default function MarketingLayout({ children }: { children: React.ReactNod
 
           <HStack gap="2">
             <HStack gap="2" display={{ base: "none", md: "flex" }}>
-              <Button variant="ghost" size="sm" asChild>
-                <Link href="/?auth=sign-in">Sign in</Link>
-              </Button>
-              {/* Outline here — the page hero owns the one solid button */}
-              <Button variant="outline" size="sm" px="4" asChild>
-                <Link href="/?auth=sign-up">Get started</Link>
-              </Button>
+              <HeaderAccountActions />
             </HStack>
             <MarketingMobileNav links={NAV_LINKS} />
           </HStack>

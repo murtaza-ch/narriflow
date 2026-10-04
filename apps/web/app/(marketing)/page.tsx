@@ -8,6 +8,7 @@ import { CaptionPlayground } from "./_components/caption-playground";
 import { ClosingStage } from "./_components/closing-stage";
 import { CursorGlow, Magnetic } from "./_components/hero-motion";
 import { PipelineWorld } from "./_components/pipeline-world";
+import { StartLink } from "./_components/account-actions";
 
 const HEADLINE = "Turn one long recording into viral clips, threads, and blog posts";
 
@@ -104,7 +105,7 @@ export default function MarketingHomePage() {
             <HStack gap="6" mt="9" animation="fade-up" animationFillMode="backwards" style={stagger(9)}>
               <Magnetic>
                 <Button size="lg" px="7" asChild>
-                  <Link href="/?auth=sign-up">Start for free</Link>
+                  <StartLink>Start for free</StartLink>
                 </Button>
               </Magnetic>
               <Link href="/pricing">
@@ -210,7 +211,7 @@ export default function MarketingHomePage() {
               <HStack gap="6" mt="8">
                 <Magnetic>
                   <Button size="lg" px="7" asChild>
-                    <Link href="/?auth=sign-up">Get started free</Link>
+                    <StartLink>Get started free</StartLink>
                   </Button>
                 </Magnetic>
                 <Link href="/pricing">

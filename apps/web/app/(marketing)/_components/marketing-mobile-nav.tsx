@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { Box, Drawer, Flex, Portal, Stack, Text } from "@chakra-ui/react";
 import { Menu as MenuIcon, X } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
-import { Button } from "@narriflow/ui/components/button";
+import { MobileAccountActions } from "./account-actions";
 
 interface MarketingMobileNavProps {
   links: Array<{ label: string; href: string }>;
@@ -98,14 +98,9 @@ export function MarketingMobileNav({ links }: MarketingMobileNavProps) {
                 ))}
               </Stack>
 
-              <Stack px="4" py="4" gap="2" borderTopWidth="1px" borderColor="border.subtle">
-                <Button asChild variant="outline" w="full">
-                  <Link href="/?auth=sign-in">Sign in</Link>
-                </Button>
-                <Button asChild w="full">
-                  <Link href="/?auth=sign-up">Get started</Link>
-                </Button>
-              </Stack>
+              <Box px="4" py="4" borderTopWidth="1px" borderColor="border.subtle">
+                <MobileAccountActions />
+              </Box>
             </Drawer.Content>
           </Drawer.Positioner>
         </Portal>
