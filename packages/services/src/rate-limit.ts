@@ -9,11 +9,13 @@ import {
 } from "./optional-redis";
 
 let client: Redis | null = null;
+let connection: Promise<void> | null = null;
 let retryAfter = 0;
 
 function resetClient(failedClient: Redis) {
   if (client === failedClient) {
     client = null;
+    connection = null;
     retryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
   }
   failedClient.disconnect();
@@ -42,10 +44,12 @@ function getClient(): Redis | null {
     nextClient.on("end", () => {
       if (client === nextClient) {
         client = null;
+        connection = null;
         retryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
       }
     });
     client = nextClient;
+    connection = nextClient.connect();
   }
   return client;
 }
@@ -67,6 +71,8 @@ export async function checkRateLimit(
   try {
     redis = getClient();
     if (!redis) return { allowed: true, remaining: limit, limit, availability: "unavailable" };
+    // Offline queuing is disabled: every caller must await the same cold-start handshake.
+    await connection;
     const bucket = `ratelimit:${key}:${Math.floor(Date.now() / 1000 / windowSeconds)}`;
     const count = await redis.incr(bucket);
     if (count === 1) await redis.expire(bucket, windowSeconds);

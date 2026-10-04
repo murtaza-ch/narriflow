@@ -1,6 +1,6 @@
 # Narriflow MCP production readiness
 
-**Status:** implementation verified; live launch acceptance deferred by the user
+**Status:** implementation verified; live Codex acceptance in progress
 
 Implement the approved stateless SDK v2 architecture and complete the safe clip workflow. Both transports must use fresh credential verification and identical workspace, scope, role, entitlement, ownership, and mutation admission. Business access is required. Reads are granted separately from processing, exports, autopilot, and publication writes.
 
