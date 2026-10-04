@@ -19,6 +19,7 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
   - `services` — shared service layer; the real business logic lives here.
   - `validators` — zod schemas + shared caption/emoji constants.
   - `composition-plan` — shared Studio preview and export composition policy.
+  - `stage` — procedural marketing stage (podcast set, script, storyboards, Canvas 2D painter) drawn live on the marketing homepage; caption styles come from `validators`.
   - `mcp-core` — shared MCP tools, authentication, and transport support.
   - `auth` — Clerk helpers.
   - `ui` — Chakra UI v3.
