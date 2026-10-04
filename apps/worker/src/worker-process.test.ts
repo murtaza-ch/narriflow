@@ -115,6 +115,31 @@ test("persistent startup failures discard sensitive stdout and preserve cancella
   await expect(pending).rejects.toBe(reason);
 });
 
+test("persistent startup failures report startup stderr but never stdout", async () => {
+  let failure: unknown;
+  try {
+    await createWorkerProcessModule({ killGraceMs: 20 }).start?.({
+      command: "sh", args: ["-c", "echo opaque-test-token; echo 'error: config file missing' >&2; exit 1"],
+      cwd: process.cwd(), env: { PATH: process.env.PATH }, signal: new AbortController().signal,
+      startupReadyMarker: "ready", startupDeadlineMs: 1000,
+    });
+  } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(WorkerProcessFailure);
+  const { diagnostic, exitCode } = failure as WorkerProcessFailure;
+  expect(diagnostic).toContain("error: config file missing");
+  expect(diagnostic).not.toContain("opaque-test-token");
+  expect(exitCode).toBe(1);
+});
+
+test("a ready persistent helper keeps draining stderr", async () => {
+  const helper = await createWorkerProcessModule({ killGraceMs: 20 }).start?.({
+    command: "sh", args: ["-c", "echo ready; head -c 300000 /dev/zero | tr '\\0' x >&2; exit 0"],
+    cwd: process.cwd(), env: { PATH: process.env.PATH }, signal: new AbortController().signal,
+    startupReadyMarker: "ready", startupDeadlineMs: 1000,
+  });
+  expect((await helper!.exited).exitCode).toBe(0);
+});
+
 test("worker process returns captured text as bytes", async () => {
   const result = await createWorkerProcessModule({ killGraceMs: 20 }).execute({
     command: process.execPath,

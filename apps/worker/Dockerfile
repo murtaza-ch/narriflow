@@ -64,5 +64,9 @@ RUN bun install --frozen-lockfile
 
 COPY . .
 
+# Fail the build, not YouTube intake at runtime, when the token provider cannot
+# start from the files this image ships. This runs the worker's own launch code.
+RUN bun apps/worker/scripts/check-youtube-token-server.ts
+
 EXPOSE 4001
 CMD ["bun", "run", "apps/worker/src/index.ts"]

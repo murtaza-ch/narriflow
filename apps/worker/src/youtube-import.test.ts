@@ -1,5 +1,48 @@
-import { expect, test } from "bun:test";
-import { getYoutubeProxyUrl, superviseYoutubeTokenServer, ytdlpCommonArgs } from "./youtube-import";
+import { expect, spyOn, test } from "bun:test";
+import { WorkerProcessFailure, type WorkerPersistentProcessRequest } from "./worker-process";
+import {
+  getYoutubeProxyUrl,
+  startYoutubeTokenServer,
+  superviseYoutubeTokenServer,
+  ytdlpCommonArgs,
+} from "./youtube-import";
+
+test("the token provider launch needs only files the provider image ships", async () => {
+  let request: WorkerPersistentProcessRequest | undefined;
+  await expect(startYoutubeTokenServer(process.cwd(), new AbortController().signal, {
+    async start(input) { request = input; throw new Error("stop after capture"); },
+  } as never)).rejects.toThrow("stop after capture");
+  // The image copies package.json, deno.lock, node_modules and src, not deno.json.
+  expect(request!.args.join(" ")).not.toContain("deno.json");
+  expect(request!.args).not.toContainEqual(expect.stringMatching(/^--config/));
+});
+
+test("unavailable YouTube intake logs why and backs off until a start succeeds", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const controller = new AbortController();
+  let starts = 0;
+  try {
+    await superviseYoutubeTokenServer(controller.signal, async () => {
+      starts++;
+      if (starts <= 2) {
+        throw new WorkerProcessFailure("worker_process_startup_failed", "retryable", "exited",
+          "\x1b[31merror\x1b[0m: Error reading config file\n\nCaused by:\n    No such file", 1);
+      }
+      if (starts === 3) return { exited: Promise.resolve({ exitCode: 0, signalCode: null }), stop() {} };
+      controller.abort();
+      throw new Error("shutdown");
+    }, () => {}, 1, 2);
+    const logs = warn.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(logs).toEqual([
+      expect.objectContaining({ retryMs: 1, reason: "worker_process_startup_failed", exitCode: 1,
+        detail: "error: Error reading config file | Caused by: | No such file" }),
+      expect.objectContaining({ retryMs: 2, reason: "worker_process_startup_failed" }),
+      expect.objectContaining({ retryMs: 1, reason: "youtube_helper_exited", exitCode: 0 }),
+    ]);
+  } finally {
+    warn.mockRestore();
+  }
+});
 
 test("YouTube intake recovers from startup failure and a later helper exit", async () => {
   const controller = new AbortController();

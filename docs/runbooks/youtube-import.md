@@ -57,6 +57,23 @@ the worker variable described below. Check for `youtube_token_server_ready` and
 `youtube_network_configured` before testing imports. The latter logs only
 `direct` or `proxy`, never credentials.
 
+The image build runs `apps/worker/scripts/check-youtube-token-server.ts`, which
+starts the provider through the worker's own launch code against the files the
+image ships. If the launch cannot work in that image, the Railway build fails and
+the previous deployment keeps serving. Run the same script natively after
+changing the launch arguments or the provider version.
+
+The provider image copies `package.json`, `deno.lock`, `node_modules` and `src`,
+but not `deno.json`. The launch must not name files the image omits. An explicit
+`--config=deno.json` once made every start fail instantly in production while it
+passed against a full Git checkout.
+
+When intake is unavailable, `youtube_link_intake_unavailable` reports `reason`,
+`exitCode` and a short `detail` taken from the provider's stderr before it
+became ready. That output precedes any request, so it contains no generated
+token; stdout and later stderr are never logged. Restarts back off from five
+seconds to five minutes and reset after a successful start.
+
 From the worker console:
 
 ```sh

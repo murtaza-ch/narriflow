@@ -543,7 +543,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       cwd: request.cwd,
       env: request.env,
       // Keep stdin open for helpers that exit when their owner disappears.
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
     const terminate = (signal: NodeJS.Signals): void => {
@@ -564,6 +564,9 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
     };
     request.signal.addEventListener("abort", abort, { once: true });
     let startupOutput = "";
+    // Startup errors precede any request the helper serves, so they cannot
+    // contain helper-generated tokens. Later stderr is drained and discarded.
+    let startupErrors = "";
     let startupReady = !request.startupReadyMarker;
     let resolveStartup!: () => void;
     let rejectStartup!: (error: Error) => void;
@@ -573,8 +576,13 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       startupOutput = (startupOutput + chunk.toString()).slice(-MAX_DIAGNOSTIC_CHARS);
       if (startupOutput.includes(request.startupReadyMarker!)) {
         startupReady = true;
+        startupErrors = "";
         resolveStartup();
       }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (startupReady) return;
+      startupErrors = (startupErrors + chunk.toString()).slice(-MAX_DIAGNOSTIC_CHARS);
     });
     const exited = new Promise<{ exitCode: number | null; signalCode: NodeJS.Signals | null }>((resolve) => {
       child.once("close", async (exitCode, signalCode) => {
@@ -590,7 +598,8 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         // readiness signal, never an error diagnostic or log payload.
         startupOutput = "";
         diagnose({ operation: "exit", status: exitCode === 0 ? "completed" : "failed" });
-        if (!startupReady) rejectStartup(new WorkerProcessFailure("worker_process_startup_failed", "retryable", "Worker helper exited before readiness", "", exitCode));
+        if (!startupReady) rejectStartup(new WorkerProcessFailure("worker_process_startup_failed", "retryable", "Worker helper exited before readiness", boundedDiagnostic(startupErrors), exitCode));
+        startupErrors = "";
         resolve({ exitCode, signalCode });
       });
       child.once("spawn", () => diagnose({ operation: "spawn", status: "completed" }));
@@ -604,7 +613,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         if (startupReady) return;
         diagnose({ operation: "timeout", status: "failed", failureCode: "worker_process_startup_timeout" });
         stop();
-        rejectStartup(new WorkerProcessFailure("worker_process_startup_timeout", "retryable", "Worker helper did not become ready", ""));
+        rejectStartup(new WorkerProcessFailure("worker_process_startup_timeout", "retryable", "Worker helper did not become ready", boundedDiagnostic(startupErrors)));
       }, deadlineMs);
       try { await startup; }
       catch (error) {

@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
   productionWorkerProcessModule,
+  WorkerProcessFailure,
   type WorkerPersistentProcess,
   type WorkerProcessModule,
 } from "./worker-process";
@@ -67,7 +68,8 @@ export async function startYoutubeTokenServer(
   const child = await workerProcess.start?.({ command: "deno", args: [
     "run", "--cached-only", "--frozen", "--allow-env", "--allow-net",
     `--allow-ffi=${modules}`, `--allow-read=${modules},${resolve(home, "src")}`,
-    `--config=${resolve(home, "deno.json")}`,
+    // The provider image ships package.json and deno.lock but no deno.json;
+    // Deno discovers both from cwd, exactly like the image's own entrypoint.
     fileURLToPath(new URL("./owned-helper.ts", import.meta.url)),
     resolve(home, "src/main.ts"), "--host", "127.0.0.1",
   ],
@@ -115,26 +117,49 @@ export async function startYoutubeTokenServer(
   }
 }
 
+type HelperFailure = Record<string, string | number | null>;
+const TERMINAL_COLOR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
+/** A loggable startup reason. Startup output precedes any generated token. */
+function helperFailure(error: unknown): HelperFailure {
+  const summary = (text: string) =>
+    text.replace(TERMINAL_COLOR, "").split("\n").map((line) => line.trim())
+      .filter(Boolean).slice(0, 3).join(" | ").slice(0, 400);
+  if (error instanceof WorkerProcessFailure) {
+    return { reason: error.code, exitCode: error.exitCode, detail: summary(error.diagnostic) };
+  }
+  return {
+    reason: "youtube_helper_start_failed",
+    detail: summary(error instanceof Error ? error.message : String(error)),
+  };
+}
+
 /** Restore intake after a failed startup or helper exit without restarting other loops. */
 export async function superviseYoutubeTokenServer(
   signal: AbortSignal,
   start: () => Promise<WorkerPersistentProcess>,
   setAvailable: (available: boolean) => void,
   retryMs = 5_000,
+  maxRetryMs = 5 * 60_000,
 ): Promise<void> {
+  let delayMs = retryMs;
   while (!signal.aborted) {
+    let failure: HelperFailure;
     try {
       const server = await start();
       setAvailable(!signal.aborted);
-      await server.exited;
-    } catch {
-      // Helper diagnostics can contain tokens; expose availability only.
+      delayMs = retryMs;
+      const { exitCode, signalCode } = await server.exited;
+      failure = { reason: "youtube_helper_exited", exitCode, signalCode };
+    } catch (error) {
+      failure = helperFailure(error);
     } finally {
       setAvailable(false);
     }
     if (signal.aborted) return;
-    console.warn(JSON.stringify({ level: "warn", message: "youtube_link_intake_unavailable", retryMs }));
-    try { await sleep(retryMs, undefined, { signal }); }
+    console.warn(JSON.stringify({ level: "warn", message: "youtube_link_intake_unavailable", retryMs: delayMs, ...failure }));
+    try { await sleep(delayMs, undefined, { signal }); }
     catch { return; }
+    delayMs = Math.min(delayMs * 2, maxRetryMs);
   }
 }
