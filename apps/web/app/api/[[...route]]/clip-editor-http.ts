@@ -46,7 +46,7 @@ async function updatedClip(
   clipId: string,
 ) {
   return dependencies.clip.getClipSnapshot(
-    actor.workspaceOwnerUserId,
+    actor,
     projectId,
     clipId,
   );
@@ -107,7 +107,7 @@ export function createClipEditorHttpRoutes(
     if (titleParsed.success) {
       return c.json(
         await dependencies.clip.updateClipTitle(
-          actor.workspaceOwnerUserId,
+          actor,
           projectId,
           clipId,
           titleParsed.data.title,
@@ -121,7 +121,6 @@ export function createClipEditorHttpRoutes(
       await dependencies.persistence.mutateDocument({
         actorUserId: actor.actorUserId,
         workspaceId: actor.workspaceId,
-        workspaceOwnerUserId: actor.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: { kind: "set_boundaries", ...boundariesParsed.data },
@@ -137,7 +136,6 @@ export function createClipEditorHttpRoutes(
       await dependencies.persistence.mutateDocument({
         actorUserId: actor.actorUserId,
         workspaceId: actor.workspaceId,
-        workspaceOwnerUserId: actor.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: {
@@ -156,7 +154,6 @@ export function createClipEditorHttpRoutes(
       await dependencies.persistence.mutateDocument({
         actorUserId: actor.actorUserId,
         workspaceId: actor.workspaceId,
-        workspaceOwnerUserId: actor.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: {
@@ -175,7 +172,6 @@ export function createClipEditorHttpRoutes(
       await dependencies.persistence.mutateDocument({
         actorUserId: actor.actorUserId,
         workspaceId: actor.workspaceId,
-        workspaceOwnerUserId: actor.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: { kind: "set_broll_url", brollUrl: brollParsed.data.brollUrl },
@@ -194,7 +190,6 @@ export function createClipEditorHttpRoutes(
       await dependencies.persistence.mutateDocument({
         actorUserId: actor.actorUserId,
         workspaceId: actor.workspaceId,
-        workspaceOwnerUserId: actor.workspaceOwnerUserId,
         projectId,
         clipId,
         intent: {
@@ -275,7 +270,6 @@ export function createClipEditorHttpRoutes(
     const mutation = await dependencies.persistence.mutateDocument({
       actorUserId: actor.actorUserId,
       workspaceId: actor.workspaceId,
-      workspaceOwnerUserId: actor.workspaceOwnerUserId,
       projectId,
       clipId,
       intent: {
@@ -321,7 +315,6 @@ export function createClipEditorHttpRoutes(
     const mutation = await dependencies.persistence.mutateDocument({
       actorUserId: actor.actorUserId,
       workspaceId: actor.workspaceId,
-      workspaceOwnerUserId: actor.workspaceOwnerUserId,
       projectId,
       clipId,
       intent: { kind: "reset", baseRevision: parsed.data.baseRevision },

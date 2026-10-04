@@ -53,7 +53,6 @@ function document(overrides: Partial<EditorDocument> = {}): EditorDocument {
 function stored(overrides: Partial<ClipEditorDocumentStoredState> = {}) {
   return {
     workspaceId: "workspace-1",
-    workspaceOwnerUserId: "user-1",
     projectId: "project-1",
     clipId: "clip-1",
     revision: 3,
@@ -78,15 +77,14 @@ function stored(overrides: Partial<ClipEditorDocumentStoredState> = {}) {
 
 function actorScope(state: ClipEditorDocumentStoredState) {
   return {
-    actorUserId: state.workspaceOwnerUserId,
+    actorUserId: "editor-1",
     workspaceId: state.workspaceId,
-    workspaceOwnerUserId: state.workspaceOwnerUserId,
   };
 }
 
 function setup(state = stored()) {
   const store = createInMemoryClipEditorDocumentStore([state]);
-  const persistence = createClipEditorDocumentPersistence({ store });
+  const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
   const scope = {
     ...actorScope(state),
     projectId: state.projectId,
@@ -96,6 +94,38 @@ function setup(state = stored()) {
 }
 
 describe("Clip Editor Document Persistence", () => {
+  test("an admitted non-owner editor reads and saves within the Workspace", async () => {
+    const state = stored();
+    const store = createInMemoryClipEditorDocumentStore([state]);
+    const admissions: unknown[] = [];
+    const persistence = createClipEditorDocumentPersistence({
+      store,
+      authorize: async (scope, capability) => { admissions.push({ scope, capability }); },
+    });
+    const scope = { actorUserId: "editor-member", workspaceId: state.workspaceId, projectId: state.projectId, clipId: state.clipId };
+    const current = await persistence.readDocument(scope);
+    await persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: current.revision, document: { ...current.document, brollUrl: "https://example.test/editor.mp4" } } });
+    expect(admissions).toEqual([{ scope, capability: "content.view" }, { scope: expect.objectContaining(scope), capability: "content.edit" }]);
+    expect((await store.read(scope))!.revision).toBe(state.revision + 1);
+  });
+
+  test("a denied actor cannot reach storage and an admitted actor cannot cross Workspaces", async () => {
+    const state = stored();
+    const store = createInMemoryClipEditorDocumentStore([state]);
+    let reads = 0;
+    const persistence = createClipEditorDocumentPersistence({
+      store: { ...store, read: async (scope) => { reads += 1; return store.read(scope); } },
+      authorize: async (scope) => { if (scope.actorUserId === "denied") throw new Error("workspace_access_denied"); },
+    });
+    const scope = { actorUserId: "denied", workspaceId: state.workspaceId, projectId: state.projectId, clipId: state.clipId };
+    await expect(persistence.readDocument(scope)).rejects.toThrow("workspace_access_denied");
+    expect(reads).toBe(0);
+    await expect(persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: state.revision, document: state.document } })).rejects.toThrow("workspace_access_denied");
+    expect(reads).toBe(0);
+    await expect(persistence.readDocument({ ...scope, actorUserId: "editor", workspaceId: "different-workspace" })).rejects.toMatchObject({ code: "clip_not_found" });
+    expect((await store.read({ ...scope, actorUserId: "editor" }))!.revision).toBe(state.revision);
+  });
+
   test("the storage codec round-trips canonical creation values and owns null defaults", () => {
     const encoded = encodeClipEditorDocumentForStorage(document(), 300);
     expect(
@@ -410,7 +440,7 @@ describe("Clip Editor Document Persistence", () => {
     });
     const changed = stored({ clipId: "clip-changed", document: changedDocument });
     const store = createInMemoryClipEditorDocumentStore([open, matching, changed]);
-    const persistence = createClipEditorDocumentPersistence({ store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
 
     const result = await persistence.mutateProjectSelection({
       ...actorScope(open),
@@ -472,7 +502,7 @@ describe("Clip Editor Document Persistence", () => {
     });
     const changed = stored({ clipId: "clip-changed" });
     const store = createInMemoryClipEditorDocumentStore([matching, changed]);
-    const persistence = createClipEditorDocumentPersistence({ store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
 
     await expect(
       persistence.mutateProjectSelection({
@@ -491,7 +521,7 @@ describe("Clip Editor Document Persistence", () => {
   test("project selection rejects a mismatched Workspace", async () => {
     const state = stored();
     const store = createInMemoryClipEditorDocumentStore([state]);
-    const persistence = createClipEditorDocumentPersistence({ store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
 
     await expect(
       persistence.mutateProjectSelection({
@@ -518,7 +548,7 @@ describe("Clip Editor Document Persistence", () => {
       studioEdits: { textLayers: "bad" },
     } as never;
     const store = createInMemoryClipEditorDocumentStore([valid, malformed]);
-    const persistence = createClipEditorDocumentPersistence({ store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
     const before = store.inspect(valid.clipId);
 
     await expect(
@@ -539,7 +569,7 @@ describe("Clip Editor Document Persistence", () => {
     const second = stored({ clipId: "clip-second" });
     const store = createInMemoryClipEditorDocumentStore([first, second]);
     store.forceContention(3);
-    const persistence = createClipEditorDocumentPersistence({ store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
 
     await expect(
       persistence.mutateProjectSelection({
@@ -765,9 +795,9 @@ describe("Clip Editor Document Persistence", () => {
   test("a no-op field intent rebases when a full save wins before acknowledgement", async () => {
     const seed = stored();
     const backing = createInMemoryClipEditorDocumentStore([seed]);
-    const competing = createClipEditorDocumentPersistence({ store: backing });
+    const competing = createClipEditorDocumentPersistence({ authorize: async () => {}, store: backing });
     let raced = false;
-    const persistence = createClipEditorDocumentPersistence({
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {},
       store: {
         read: (scope) => backing.read(scope),
         commit: (input) => backing.commit(input),
@@ -806,9 +836,9 @@ describe("Clip Editor Document Persistence", () => {
   test("Reset without an original conflicts when a first save wins before acknowledgement", async () => {
     const seed = stored();
     const backing = createInMemoryClipEditorDocumentStore([seed]);
-    const competing = createClipEditorDocumentPersistence({ store: backing });
+    const competing = createClipEditorDocumentPersistence({ authorize: async () => {}, store: backing });
     let raced = false;
-    const persistence = createClipEditorDocumentPersistence({
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {},
       store: {
         read: (scope) => backing.read(scope),
         commit: (input) => backing.commit(input),
@@ -907,7 +937,7 @@ describe("Clip Editor Document Persistence", () => {
   test("injected commit failure leaves the complete stored state untouched", async () => {
     const seed = stored();
     const backing = createInMemoryClipEditorDocumentStore([seed]);
-    const persistence = createClipEditorDocumentPersistence({
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {},
       store: {
         read: (scope) => backing.read(scope),
         confirmRevision: (scope, revision) => backing.confirmRevision(scope, revision),
@@ -936,7 +966,7 @@ describe("Clip Editor Document Persistence", () => {
     const seed = stored();
     const store = createInMemoryClipEditorDocumentStore([seed]);
     const events: Array<Parameters<ClipEditorDocumentDiagnostics["record"]>[0]> = [];
-    const persistence = createClipEditorDocumentPersistence({
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {},
       store,
       diagnostics: { record: (event) => events.push(event) },
       now: () => new Date("2026-08-29T00:00:00.000Z"),
@@ -954,7 +984,7 @@ describe("Clip Editor Document Persistence", () => {
 
     expect(events).toEqual([
       {
-        actorUserId: seed.workspaceOwnerUserId,
+        actorUserId: "editor-1",
         projectId: seed.projectId,
         clipId: seed.clipId,
         mutationKind: "set_broll_url",

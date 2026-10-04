@@ -20,8 +20,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
   const appUser = await admitWorkspacePage("content.view");
   let template;
   try {
-    template = await brandTemplateService.get(appUser.workspaceOwnerUserId, id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-    );
+    template = await brandTemplateService.get(appUser, id);
   } catch (error) {
     if (error instanceof BrandTemplateNotFoundError) {
       notFound();

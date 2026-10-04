@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { Box, Stack } from "@chakra-ui/react";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import {
+  type ActorScope,
   brandProfileService,
   brandTemplateService,
   projectService,
@@ -33,14 +34,12 @@ function toIngestStageStatus(value: string): IngestStageStatus {
  * rather than rendering a broken Step 2.
  */
 async function loadLinkResumeData(
-  userId: string,
+  scope: ActorScope,
   projectId: string,
-  workspaceId: string,
 ): Promise<LinkResumeData | null> {
   const snapshot = await projectService.getProjectSnapshot(
-    userId,
+    scope,
     projectId,
-    workspaceId,
   );
 
   if (!snapshot.project) {
@@ -56,7 +55,7 @@ async function loadLinkResumeData(
     redirect("/upload");
   }
 
-  const draftPack = await projectService.getLatestContentPack(projectId);
+  const draftPack = await projectService.getLatestContentPack(scope, projectId);
   if (!draftPack) {
     // queueLinkIngest always writes a draft pack atomically with the
     // project — reaching here means something upstream is broken. Nothing
@@ -103,17 +102,11 @@ export default async function UploadPage({
     params,
     usageSummary,
   ] = await Promise.all([
-    brandTemplateService.list(appUser.workspaceOwnerUserId, {
-      workspaceId: appUser.workspaceId,
-      actorUserId: appUser.actorUserId,
-    }),
+    brandTemplateService.list(appUser),
     brandProfileService.list(brandScope),
     brandProfileService.getDefaultId(brandScope),
     searchParams,
-    projectService.getUsageSummary(
-      appUser.workspaceOwnerUserId,
-      appUser.workspaceId,
-    ),
+    projectService.getUsageSummary(appUser),
   ]);
   const rawUrl = Array.isArray(params.url) ? params.url[0] : params.url;
   const rawProjectId = Array.isArray(params.project)
@@ -122,9 +115,8 @@ export default async function UploadPage({
 
   const resumeData = rawProjectId
     ? await loadLinkResumeData(
-        appUser.actorUserId,
+        appUser,
         rawProjectId,
-        appUser.workspaceId,
       )
     : null;
 

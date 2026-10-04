@@ -169,8 +169,7 @@ export default async function CalendarPage({
 		: undefined;
 	const [posts, workspace, filters] = await Promise.all([
 		workspaceLibraryService.listCalendarPosts(
-			appUser.actorUserId,
-			appUser.workspaceId,
+			appUser,
 			{
 				from: new Date(window.from.getTime() - 36 * 60 * 60 * 1000),
 				to: new Date(window.to.getTime() + 36 * 60 * 60 * 1000),
@@ -182,8 +181,7 @@ export default async function CalendarPage({
 		),
 		workspaceService.getWorkspace(appUser.actorUserId, appUser.workspaceId),
 		workspaceLibraryService.getCalendarFilters(
-			appUser.actorUserId,
-			appUser.workspaceId,
+			appUser,
 		),
 	]);
 	const timezone = workspace?.timezone ?? "UTC";

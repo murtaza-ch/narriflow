@@ -5,56 +5,15 @@ import {
   grantUploadPartsSchema,
   openUploadSessionSchema,
   readUploadSessionSchema,
-  type DiscardUploadSessionInput,
-  type FinalizeUploadSessionInput,
-  type GrantUploadPartsInput,
-  type OpenUploadSessionInput,
-  type ReadUploadSessionInput,
 } from "@narriflow/validators";
 import {
-  type DiscardUploadSessionOutcome,
-  type FinalizeUploadSessionOutcome,
-  type GrantUploadPartsOutcome,
-  type OpenUploadSessionOutcome,
-  type ReadUploadSessionOutcome,
+  type ActorScope,
+  type UploadSessionService,
 } from "@narriflow/services";
 
-interface UploadSessionHttpUser {
-  actorUserId: string;
-  workspaceId: string;
-}
-
-interface UploadSessionHttpService {
-  open(
-    actorUserId: string,
-    input: OpenUploadSessionInput,
-    workspaceId: string,
-  ): Promise<OpenUploadSessionOutcome>;
-  finalize(
-    actorUserId: string,
-    input: FinalizeUploadSessionInput,
-    workspaceId: string,
-  ): Promise<FinalizeUploadSessionOutcome>;
-  grant(
-    actorUserId: string,
-    input: GrantUploadPartsInput,
-    workspaceId: string,
-  ): Promise<GrantUploadPartsOutcome>;
-  status(
-    actorUserId: string,
-    input: ReadUploadSessionInput,
-    workspaceId: string,
-  ): Promise<ReadUploadSessionOutcome>;
-  discard(
-    actorUserId: string,
-    input: DiscardUploadSessionInput,
-    workspaceId: string,
-  ): Promise<DiscardUploadSessionOutcome>;
-}
-
 export interface UploadSessionHttpDependencies {
-  getActor(context: Context): Promise<UploadSessionHttpUser>;
-  service: UploadSessionHttpService;
+  getActor(context: Context): Promise<ActorScope>;
+  service: Pick<UploadSessionService, "open" | "finalize" | "grant" | "status" | "discard">;
 }
 
 export function createUploadSessionHttpRoutes(
@@ -75,9 +34,8 @@ export function createUploadSessionHttpRoutes(
     }
 
     const outcome = await dependencies.service.open(
-        appUser.actorUserId,
+        appUser,
         parsed.data,
-        appUser.workspaceId,
     );
     if (outcome.outcome === "reconciling") {
       c.header("Retry-After", String(outcome.retryAfterSeconds));
@@ -99,9 +57,8 @@ export function createUploadSessionHttpRoutes(
     }
 
     const outcome = await dependencies.service.finalize(
-        appUser.actorUserId,
+        appUser,
         parsed.data,
-        appUser.workspaceId,
     );
     if (outcome.outcome === "reconciling") {
       c.header("Retry-After", String(outcome.retryAfterSeconds));
@@ -124,9 +81,8 @@ export function createUploadSessionHttpRoutes(
 
     return c.json(
         await dependencies.service.grant(
-          appUser.actorUserId,
+          appUser,
           parsed.data,
-          appUser.workspaceId,
         ),
       200,
     );
@@ -143,9 +99,8 @@ export function createUploadSessionHttpRoutes(
       );
     }
     const outcome = await dependencies.service.status(
-        appUser.actorUserId,
+        appUser,
         parsed.data,
-        appUser.workspaceId,
     );
     if (outcome.outcome === "reconciling") {
       c.header("Retry-After", String(outcome.retryAfterSeconds));
@@ -165,9 +120,8 @@ export function createUploadSessionHttpRoutes(
       );
     }
     const outcome = await dependencies.service.discard(
-        appUser.actorUserId,
+        appUser,
         parsed.data,
-        appUser.workspaceId,
     );
     if (outcome.outcome === "compensating") {
       c.header("Retry-After", String(outcome.retryAfterSeconds));

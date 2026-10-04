@@ -556,7 +556,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
   });
 
   test("settles projection, retention, and audit atomically and replayably", async () => {
-    const { user, workspace } = await createWorkspace("projection");
+    const { workspace } = await createWorkspace("projection");
     await prisma.workspaceBillingAccount.update({
       where: { workspaceId: workspace.id },
       data: { providerCustomerId: "cus_projection" },
@@ -579,7 +579,6 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       data: {
         title: "Retention rescue",
         sourceMediaUrl: "https://example.test/source.mp4",
-        userId: user.id,
         workspaceId: workspace.id,
         retentionPolicyKey: "free_project_v1",
         expiresAt: deadline,
@@ -755,7 +754,6 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       data: {
         title: "Rollback retention",
         sourceMediaUrl: "https://example.test/rollback.mp4",
-        userId: first.user.id,
         workspaceId: first.workspace.id,
         retentionPolicyKey: "free_project_v1",
         expiresAt: deadline,

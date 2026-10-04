@@ -24,7 +24,7 @@ export default async function BrandKitPage() {
   const [profiles, defaultProfileId, templates] = await Promise.all([
     brandProfileService.list(scope),
     brandProfileService.getDefaultId(scope),
-    brandTemplateService.list(actor.workspaceOwnerUserId, { workspaceId: actor.workspaceId, actorUserId: actor.actorUserId }),
+    brandTemplateService.list(actor),
   ]);
   const canManage = workspaceAllowsCapability(
     { role: actor.role, status: actor.status },

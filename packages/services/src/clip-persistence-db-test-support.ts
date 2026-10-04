@@ -86,6 +86,7 @@ export async function createClipPersistenceFixture(prisma: PrismaClient) {
       name: "Clip persistence DB test",
       ownerUserId: user.id,
       personalOwnerUserId: user.id,
+      members: { create: { userId: user.id, role: "owner" } },
     },
   });
   const project = await prisma.project.create({
@@ -94,7 +95,7 @@ export async function createClipPersistenceFixture(prisma: PrismaClient) {
       sourceMediaUrl: "r2://test/source.mp4",
       sourceStorageKey: `projects/${suffix}/source.mp4`,
       sourceDurationSeconds: 300,
-      userId: user.id,
+      ingestStatus: "ready",
       workspaceId: workspace.id,
       createdByUserId: user.id,
     },

@@ -45,7 +45,7 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
     });
 
     const duplicate = await service.duplicateClip(
-      fixture.user.id,
+      { actorUserId: fixture.user.id, workspaceId: fixture.workspace.id },
       fixture.project.id,
       fixture.clip.id,
     );
@@ -96,7 +96,7 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
     });
 
     const duplicate = await service.duplicateClip(
-      fixture.user.id,
+      { actorUserId: fixture.user.id, workspaceId: fixture.workspace.id },
       fixture.project.id,
       fixture.clip.id,
     );
@@ -147,7 +147,7 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
     });
 
     const duplicate = await service.duplicateClip(
-      fixture.user.id,
+      { actorUserId: fixture.user.id, workspaceId: fixture.workspace.id },
       fixture.project.id,
       fixture.clip.id,
     );
@@ -200,7 +200,7 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
       try {
         await expect(
           service.duplicateClip(
-            fixture.user.id,
+            { actorUserId: fixture.user.id, workspaceId: fixture.workspace.id },
             fixture.project.id,
             fixture.clip.id,
           ),
@@ -283,12 +283,12 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
 
     const outcomes = await Promise.allSettled([
       service.duplicateClip(
-        fixture.user.id,
+        { actorUserId: fixture.user.id, workspaceId: fixture.workspace.id },
         fixture.project.id,
         fixture.clip.id,
       ),
       service.duplicateClip(
-        fixture.user.id,
+        { actorUserId: fixture.user.id, workspaceId: fixture.workspace.id },
         fixture.project.id,
         fixture.clip.id,
       ),

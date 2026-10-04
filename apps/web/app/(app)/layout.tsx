@@ -4,7 +4,7 @@ import { admitOptionalWorkspacePage } from "@/lib/authenticated-request-page";
 import { Box } from "@chakra-ui/react";
 import { resolvePricingTier } from "@narriflow/validators";
 import { AppChrome } from "./_components/app-chrome";
-import { getCachedDashboardStats } from "./_components/usage";
+import { getCachedUsageSummary } from "./_components/usage";
 import { workspaceService, workspacesV1EnabledForUser, workspaceAllowsCapability,
 } from "@narriflow/services";
 
@@ -22,7 +22,7 @@ export default async function AppLayout({ children,
   }
 
   const [stats, memberships] = await Promise.all([
-    getCachedDashboardStats(appUser.actorUserId, appUser.workspaceId),
+    getCachedUsageSummary(appUser.actorUserId, appUser.workspaceId),
     listUserWorkspaces(appUser.actorUserId),
   ]);
   const avatarUrls = await workspaceService.getAvatarUrls(

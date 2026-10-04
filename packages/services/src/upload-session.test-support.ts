@@ -294,7 +294,6 @@ export function createInMemoryUploadSessionHarness() {
       };
       projects.push({
         id: session.preallocatedProjectId,
-        userId: session.legacyOwnerUserId,
         workspaceId: session.workspaceId,
         createdByUserId: session.actorUserId,
         updatedByUserId: session.actorUserId,

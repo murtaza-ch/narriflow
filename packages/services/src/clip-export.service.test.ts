@@ -148,12 +148,12 @@ describe("clip export storage and sharing", () => {
 
   test("uses personal Brand ownership for Creator exports and workspace ownership for Business", () => {
     expect(sceneExportOwnerWhere({
-      projectUserId: "project-user",
+
       workspaceId: "personal-workspace",
       workspace: { personalOwnerUserId: "owner", pricingTier: "creator" },
     })).toEqual({ userId: "owner", workspaceId: null });
     expect(sceneExportOwnerWhere({
-      projectUserId: "project-user",
+
       workspaceId: "shared-workspace",
       workspace: { personalOwnerUserId: null, pricingTier: "business" },
     })).toEqual({ workspaceId: "shared-workspace" });

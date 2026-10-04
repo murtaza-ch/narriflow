@@ -16,8 +16,7 @@ export default async function ClipEditPage({
   const { projectId, clipId } = await params;
   const appUser = await admitProjectPage(projectId, "content.edit");
 
-  const clips = await clipService.listClips(appUser.workspaceOwnerUserId, projectId,
-  );
+  const clips = await clipService.listClips(appUser, projectId);
   const clip = clips.find((c) => c.id === clipId);
   if (!clip) notFound();
 

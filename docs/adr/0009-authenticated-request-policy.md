@@ -19,3 +19,19 @@ We rejected keeping per-adapter helpers because exact capability and Project rul
 ## Consequences
 
 Adding a browser-session surface requires an explicit inventory declaration and policy adapter. Common authentication, capability, Project, rate-limit, and recovery behavior is tested at the policy interface rather than repeated in each handler. Successful domain response shapes remain owned by their existing modules. Public health, Stripe and provider webhooks, OAuth callbacks that establish identity, Clerk delivery, MCP OAuth, scoped API keys, and public sharing retain independent trust and replay models. Narriflow's pre-production policy removes the old Workspace-user shape and generic Project middleware in the same cutover; there is no legacy fallback.
+
+## 2026-10-04: Actor Scope reaches services and storage
+
+Actor-facing services accept the actual `actorUserId` and `workspaceId` together and recheck current capability. Project ownership uses `workspaceId`; creator attribution is nullable and does not authorize access. Removing a creator preserves the Project and its history. Workspace owner references prevent deleting the owner before an explicit ownership transfer. Autopilot rules belong to the Workspace and retain nullable creator attribution; a new import requires a current creator with processing permission.
+
+Durably admitted ingestion continues under the Workspace's current processing entitlement and quota, without impersonating its creator or owner. An explicit retry reauthorizes its current actor. Personal brand assets, notification recipients, and provider credentials retain their own ownership facts; those facts never stand in for the actor in content authorization. Social Post acceptance records the actual actor and preserves that attribution on replay by another authorized member.
+
+The pre-production migration removes `Project.userId`, `UploadSession.legacyOwnerUserId`, and the owner-based Autopilot association in one cutover. Service and PostgreSQL tests cover non-owner editors, viewers, removed members, foreign Workspaces, inaccessible Projects, creator deletion, and owner transfer.
+
+## 2026-10-04: MCP admission and failure translation
+
+MCP retains its own credential and transport admission. One tool declaration table supplies the Workspace capability and API-key scope for every registered operation. Tool calls resolve current membership and active Business entitlement, then pass the actual Actor Scope into domain modules. A web-side exhaustive test compares these capabilities to the corresponding browser route or page inventory. Running an Autopilot rule requires `processing.consume` in both transports.
+
+Workspace discovery is the explicit exception. OAuth lists current memberships so the client can select a Workspace before checking Business eligibility. An API key lists only its bound Workspace and still requires current `content.view` membership. OAuth grants use Clerk identity scopes such as `openid` and `profile`; application scopes belong to Workspace API keys and do not apply to OAuth principals. The canonical key-scope catalog lives in validators. Publication read and recovery-write scopes are separate, explicit issuance choices, and existing keys retain their recorded scopes.
+
+The MCP failure adapter exhaustively translates all eight `ExpectedDomainFailure` kinds into a tool error with the stable domain code, safe message and semantic kind. It preserves bounded details and retry guidance. Unknown exceptions produce a generic error without exposing their message. Admission failures use the same typed contract; changing message wording cannot change classification.

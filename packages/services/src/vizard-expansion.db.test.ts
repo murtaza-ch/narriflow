@@ -32,7 +32,7 @@ import { createAssistedSocialCopy } from "./assisted-social-copy";
 import { AutopilotService } from "./autopilot.service";
 import { dubbingService } from "./dubbing.service";
 import { workspaceLibraryService } from "./workspace-library.service";
-import { socialService } from "./social.service";
+import { prismaPublicationSchedulingStore } from "./social-publication-scheduling-runtime";
 import { bulkSocialSchedulingService, prismaBulkScheduleStore } from "./bulk-social-scheduling-runtime";
 
 const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
@@ -97,7 +97,6 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				title: `Project ${label}`,
 				sourceMediaUrl: "https://media.example.test/source.mp4",
 				sourceStorageKey: `fixtures/${suffix}/source.mp4`,
-				userId: user.id,
 				workspaceId: workspace.id,
 				createdByUserId: user.id,
 				ingestStatus: "ready",
@@ -191,8 +190,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		};
 		const request = (key: string) =>
 			dubbingService.requestClipDub(
-				current.user.id,
-				current.workspace.id,
+				{ actorUserId: current.user.id, workspaceId: current.workspace.id },
 				current.project.id,
 				key,
 				input,
@@ -257,7 +255,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			const current = await fixture(`autopilot-${outcome}`);
 			const rule = await prisma.autopilotRule.create({
 				data: {
-					userId: current.user.id,
+					createdByUserId: current.user.id,
 					workspaceId: current.workspace.id,
 					name: "Claim fencing",
 					rssUrl: "https://feeds.example.test/private",
@@ -274,7 +272,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			const sender = new AutopilotService({
 				fetchFeed: async () => {
 					// A user pause revokes this owner even before its lease expires.
-					await sender.updateRule(current.user.id, rule.id, {
+					await sender.updateRule({ actorUserId: current.user.id, workspaceId: current.workspace.id }, rule.id, {
 						status: "paused",
 					});
 					if (outcome === "failure") throw new Error("feed unavailable");
@@ -294,7 +292,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					imported: 0,
 					claimLost: 1,
 				});
-				expect((await sender.listRules(current.user.id))[0]).toMatchObject({
+				expect((await sender.listRules({ actorUserId: current.user.id, workspaceId: current.workspace.id }))[0]).toMatchObject({
 					status: "paused",
 					consecutiveFailures: 0,
 					lastSuccessAt: null,
@@ -351,6 +349,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				).rejects.toMatchObject({ code: "campaign_operation_claim_lost" });
 				const operation = (
 					await campaignOperationService.listOperations({
+						actorUserId: current.user.id,
 						workspaceId: current.workspace.id,
 						projectId: current.project.id,
 					})
@@ -524,6 +523,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			).rejects.toMatchObject({ code: "campaign_operation_claim_lost" });
 			const operation = (
 				await campaignOperationService.listOperations({
+					actorUserId: current.user.id,
 					workspaceId: current.workspace.id,
 					projectId: current.project.id,
 				})
@@ -599,7 +599,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		const now = new Date();
 		const rule = await prisma.autopilotRule.create({
 			data: {
-				userId: current.user.id,
+				createdByUserId: current.user.id,
 				workspaceId: current.workspace.id,
 				name: "Immutable claim",
 				rssUrl: "https://feeds.example.test/show.xml",
@@ -647,10 +647,10 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 						where: { id: rule.id },
 					})
 				).claimToken;
-				await original.updateRule(current.user.id, rule.id, {
+				await original.updateRule({ actorUserId: current.user.id, workspaceId: current.workspace.id }, rule.id, {
 					status: "paused",
 				});
-				await original.updateRule(current.user.id, rule.id, {
+				await original.updateRule({ actorUserId: current.user.id, workspaceId: current.workspace.id }, rule.id, {
 					status: "active",
 				});
 				// Match eligibility to the frozen test clock after the user resumed it.
@@ -679,7 +679,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			expect(originalToken).toBeTruthy();
 			expect(replacementToken).toBeTruthy();
 			expect(replacementToken).not.toBe(originalToken);
-			expect((await original.listRules(current.user.id))[0]?.status).toBe(
+			expect((await original.listRules({ actorUserId: current.user.id, workspaceId: current.workspace.id }))[0]?.status).toBe(
 				"running",
 			);
 			release.resolve();
@@ -688,7 +688,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				imported: 0,
 				claimLost: 0,
 			});
-			expect((await original.listRules(current.user.id))[0]?.feedTitle).toBe(
+			expect((await original.listRules({ actorUserId: current.user.id, workspaceId: current.workspace.id }))[0]?.feedTitle).toBe(
 				"Current feed",
 			);
 		} finally {
@@ -704,7 +704,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			let now = new Date();
 			const rule = await prisma.autopilotRule.create({
 				data: {
-					userId: current.user.id,
+					createdByUserId: current.user.id,
 					workspaceId: current.workspace.id,
 					name: "Renewal",
 					rssUrl: "https://feeds.example.test/show.xml",
@@ -781,7 +781,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					expect(renewedUntil).toEqual(new Date(now.getTime() + 120_000));
 				}
 				expect(
-					(await sender.listRules(current.user.id))[0]?.importedEpisodeCount,
+					(await sender.listRules({ actorUserId: current.user.id, workspaceId: current.workspace.id }))[0]?.importedEpisodeCount,
 				).toBe(expired ? 0 : 1);
 			} finally {
 				prismaGlobal.narriflowPrismaClient = prisma;
@@ -794,7 +794,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		const current = await fixture("autopilot-edit-race");
 		const rule = await prisma.autopilotRule.create({
 			data: {
-				userId: current.user.id,
+				createdByUserId: current.user.id,
 				workspaceId: current.workspace.id,
 				name: "Before edit",
 				rssUrl: "https://feeds.example.test/show.xml",
@@ -831,7 +831,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				autopilotRule: {
 					async findFirst({ args, query }) {
 						const row = await query(args);
-						if (args.where?.userId === current.user.id) {
+						if (args.where?.workspaceId === current.workspace.id) {
 							processing = worker.processDueRules(1);
 							await entered.promise;
 						}
@@ -842,7 +842,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		});
 		prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
 		try {
-			const edited = await worker.updateRule(current.user.id, rule.id, {
+			const edited = await worker.updateRule({ actorUserId: current.user.id, workspaceId: current.workspace.id }, rule.id, {
 				name: "After edit",
 			});
 			expect(edited.status).toBe("active");
@@ -854,7 +854,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				checked: 1,
 				claimLost: 0,
 			});
-			expect((await worker.listRules(current.user.id))[0]?.name).toBe(
+			expect((await worker.listRules({ actorUserId: current.user.id, workspaceId: current.workspace.id }))[0]?.name).toBe(
 				"After edit",
 			);
 		} finally {
@@ -1035,7 +1035,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		});
 
 		const exports = await clipExportService.listCurrentProjectExports(
-			current.workspace.id,
+			{ actorUserId: current.user.id, workspaceId: current.workspace.id },
 			current.project.id,
 		);
 		expect(exports.map((item) => item.id)).toEqual([
@@ -1058,7 +1058,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			fingerprint: `page-${i}`, resolution: "1080p", watermark: false, status: "ready" as const,
 			createdAt: new Date(origin + i * 1000),
 		})) });
-		const first = await workspaceLibraryService.listExports(current.user.id, current.workspace.id);
+		const first = await workspaceLibraryService.listExports({ actorUserId: current.user.id, workspaceId: current.workspace.id });
 		expect(first.items).toHaveLength(100);
 		expect(first.items[0]!.id).toBe(current.clipExport.id);
 		expect(first.nextCursor).toBeTruthy();
@@ -1067,7 +1067,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		const exports = [...first.items];
 		let cursor = first.nextCursor;
 		while (cursor) {
-			const page = await workspaceLibraryService.listExports(current.user.id, current.workspace.id, { cursor });
+			const page = await workspaceLibraryService.listExports({ actorUserId: current.user.id, workspaceId: current.workspace.id }, { cursor });
 			expect(page.items.length).toBeLessThanOrEqual(100);
 			exports.push(...page.items);
 			cursor = page.nextCursor;
@@ -1082,16 +1082,16 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		const clipIds: string[] = [];
 		let clipCursor: string | null = null;
 		do {
-			const page = await workspaceLibraryService.getCalendarComposerOptions(current.user.id, current.workspace.id, { cursor: clipCursor ?? undefined });
+			const page = await workspaceLibraryService.getCalendarComposerOptions({ actorUserId: current.user.id, workspaceId: current.workspace.id }, { cursor: clipCursor ?? undefined });
 			expect(page.clips.length).toBeLessThanOrEqual(100);
 			if (!clipCursor) expect(page.clips[0]!.id).toBe(current.clip.id);
 			clipIds.push(...page.clips.map((clip) => clip.id));
 			clipCursor = page.nextCursor;
 		} while (clipCursor);
 		expect(new Set(clipIds).size).toBe(506);
-		const search = await workspaceLibraryService.getCalendarComposerOptions(current.user.id, current.workspace.id, { query: "Library clip 504" });
+		const search = await workspaceLibraryService.getCalendarComposerOptions({ actorUserId: current.user.id, workspaceId: current.workspace.id }, { query: "Library clip 504" });
 		expect(search.clips.map((clip) => clip.title)).toEqual(["Library clip 504"]);
-		const malformed = await workspaceLibraryService.listExports(current.user.id, current.workspace.id, { cursor: "invalid-cursor" });
+		const malformed = await workspaceLibraryService.listExports({ actorUserId: current.user.id, workspaceId: current.workspace.id }, { cursor: "invalid-cursor" });
 		expect(malformed.items[0]!.id).toBe(current.clipExport.id);
 	});
 
@@ -1115,10 +1115,14 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				}],
 			},
 		};
-		const schedule = socialService.schedulePost.bind(socialService);
+		const open = prismaPublicationSchedulingStore.open.bind(prismaPublicationSchedulingStore);
 		let admissions = 0;
-		const lostResponse = spyOn(socialService, "schedulePost").mockImplementation(async (...args) => {
-			const post = await schedule(...args);
+		let freezes = 0;
+		const lostResponse = spyOn(prismaPublicationSchedulingStore, "open").mockImplementation(async (request) => {
+			const post = await open({ ...request, create: async () => {
+				freezes += 1;
+				return request.create();
+			} });
 			admissions += 1;
 			if (admissions === 1) throw new Error("committed post response lost");
 			return post;
@@ -1130,17 +1134,28 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			expect(operation.status).toBe("running");
 			expect(operation.items[0]!.status).toBe("processing");
 			expect(await prisma.socialPost.count({ where: { projectId: current.project.id } })).toBe(1);
+			const accepted = await prisma.socialPost.findFirstOrThrow({ where: { projectId: current.project.id }, include: { frozenState: true } });
 			settlement.mockRestore();
 			await prisma.campaignOperationItem.updateMany({ where: { operationId: operation.id }, data: { leaseExpiresAt: new Date(0) } });
 			await prisma.socialAccount.update({ where: { id: account.id }, data: { status: "expired" } });
 			await prisma.workspace.update({ where: { id: current.workspace.id }, data: { timezone: "Asia/Karachi" } });
+			await prisma.socialPost.update({ where: { id: accepted.id }, data: { status: "posted", postedAt: new Date() } });
+			await prisma.project.update({ where: { id: current.project.id }, data: { expiresAt: new Date(0), purgeStartedAt: new Date() } });
 			const replay = await bulkSocialSchedulingService.schedule(input);
 			expect(replay).toMatchObject({ id: operation.id, status: "completed", replayed: true });
 			expect(replay.items[0]!.socialPostId).toBeTruthy();
-			expect(admissions).toBe(1);
+			expect(admissions).toBe(3);
+			expect(freezes).toBe(1);
 			expect(await prisma.socialPost.count({ where: { projectId: current.project.id } })).toBe(1);
-			await prisma.socialAccount.update({ where: { id: account.id }, data: { status: "active" } });
+			const retained = await prisma.socialPost.findUniqueOrThrow({ where: { id: accepted.id }, include: { frozenState: true } });
+			expect(retained.status).toBe("posted");
+			expect(retained.immutableRequestHash).toBe(accepted.immutableRequestHash);
+			expect(retained.frozenState).toEqual(accepted.frozenState);
 			await prisma.workspace.update({ where: { id: current.workspace.id }, data: { timezone: "UTC" } });
+			await expect(bulkSocialSchedulingService.schedule({ ...input, value: { ...input.value, idempotencyKey: randomUUID() } })).rejects.toMatchObject({ code: "campaign_schedule_clip_not_found" });
+			expect(await prisma.campaignOperation.count({ where: { projectId: current.project.id } })).toBe(1);
+			await prisma.socialAccount.update({ where: { id: account.id }, data: { status: "active" } });
+			await prisma.project.update({ where: { id: current.project.id }, data: { expiresAt: current.project.expiresAt, purgeStartedAt: current.project.purgeStartedAt } });
 			const deliberate = await bulkSocialSchedulingService.schedule({ ...input, value: { ...input.value, idempotencyKey: randomUUID() } });
 			expect(deliberate.status).toBe("completed");
 			expect(await prisma.socialPost.count({ where: { projectId: current.project.id } })).toBe(2);
@@ -1324,7 +1339,6 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		const persisted = await clipEditorDocumentPersistence.readDocument({
 			actorUserId: current.user.id,
 			workspaceId: current.workspace.id,
-			workspaceOwnerUserId: current.user.id,
 			projectId: current.project.id,
 			clipId: current.clip.id,
 		});
@@ -1449,6 +1463,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					select: { id: true },
 				}),
 		);
+		await prisma.workspace.update({ where: { id: current.workspace.id }, data: { status: "restricted" } });
+		await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: current.workspace.id, userId: current.user.id } }, data: { role: "editor" } });
 		await expect(
 			bundleService.createExportBundle(
 				{
@@ -1466,10 +1482,11 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					resolution: "1080p",
 				},
 			),
-		).rejects.toMatchObject({ code: "campaign_operation_forbidden" });
+		).rejects.toMatchObject({ code: "workspace_access_denied" });
 		await expect(
 			bundleService.getExportBundleDownload(
 				{
+					actorUserId: current.user.id,
 					workspaceId: current.workspace.id,
 					projectId: current.project.id,
 					role: "editor",
@@ -1478,10 +1495,13 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				randomUUID(),
 			),
 		).rejects.toMatchObject({
-			code: "campaign_operation_forbidden",
+			code: "workspace_access_denied",
 		});
+		await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: current.workspace.id, userId: current.user.id } }, data: { role: "owner" } });
+		await prisma.workspace.update({ where: { id: current.workspace.id }, data: { status: "active" } });
 		const preflight = await bundleService.previewExportBundle(
 			{
+				actorUserId: current.user.id,
 				workspaceId: current.workspace.id,
 				projectId: current.project.id,
 				pricingTier: "business",
@@ -1556,6 +1576,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		await expect(
 			bundleService.previewExportBundle(
 				{
+					actorUserId: current.user.id,
 					workspaceId: current.workspace.id,
 					projectId: current.project.id,
 					pricingTier: "business",
@@ -1821,15 +1842,13 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			expect(callback.facebookSelectionToken).toBe(state);
 			await expect(
 				socialOAuthService.getFacebookPageSelection(
-					current.user.id,
-					randomUUID(),
+					{ actorUserId: current.user.id, workspaceId: randomUUID() },
 					state,
 				),
-			).rejects.toMatchObject({ code: "social_facebook_selection_invalid" });
+			).rejects.toMatchObject({ code: "workspace_access_denied" });
 			expect(
 				await socialOAuthService.getFacebookPageSelection(
-					current.user.id,
-					current.workspace.id,
+					{ actorUserId: current.user.id, workspaceId: current.workspace.id },
 					state,
 				),
 			).toEqual([
@@ -1842,8 +1861,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			});
 			await expect(
 				socialOAuthService.getFacebookPageSelection(
-					current.user.id,
-					current.workspace.id,
+					{ actorUserId: current.user.id, workspaceId: current.workspace.id },
 					state,
 				),
 			).rejects.toMatchObject({ code: "social_facebook_selection_invalid" });
@@ -1852,8 +1870,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				data: { expiresAt: new Date(Date.now() + 15 * 60_000) },
 			});
 			const selected = await socialOAuthService.completeFacebookPageSelection(
-				current.user.id,
-				current.workspace.id,
+				{ actorUserId: current.user.id, workspaceId: current.workspace.id },
 				state,
 				"page-b",
 			);
@@ -1864,8 +1881,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			});
 			await expect(
 				socialOAuthService.completeFacebookPageSelection(
-					current.user.id,
-					current.workspace.id,
+					{ actorUserId: current.user.id, workspaceId: current.workspace.id },
 					state,
 					"page-a",
 				),
@@ -2779,7 +2795,6 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		const persisted = await clipEditorDocumentPersistence.readDocument({
 			actorUserId: current.user.id,
 			workspaceId: current.workspace.id,
-			workspaceOwnerUserId: current.user.id,
 			projectId: current.project.id,
 			clipId: current.clip.id,
 		});
@@ -2808,7 +2823,6 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		const afterEnd = await clipEditorDocumentPersistence.readDocument({
 			actorUserId: current.user.id,
 			workspaceId: current.workspace.id,
-			workspaceOwnerUserId: current.user.id,
 			projectId: current.project.id,
 			clipId: current.clip.id,
 		});
@@ -2835,12 +2849,12 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		const finalDocument = await clipEditorDocumentPersistence.readDocument({
 			actorUserId: current.user.id,
 			workspaceId: current.workspace.id,
-			workspaceOwnerUserId: current.user.id,
 			projectId: current.project.id,
 			clipId: current.clip.id,
 		});
 		expect(finalDocument.document.sceneBlocks).toHaveLength(2);
 		const createdExport = await clipExportService.create(
+			{ workspaceId: current.workspace.id, actorUserId: current.user.id },
 			current.project.id,
 			current.clip.id,
 			{
@@ -2849,7 +2863,6 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				resolution: "1080p",
 			},
 			randomUUID(),
-			{ workspaceId: current.workspace.id, actorUserId: current.user.id },
 		);
 		const render = await prisma.clipRender.findFirstOrThrow({
 			where: { exportVariant: { exportId: createdExport.export.id } },

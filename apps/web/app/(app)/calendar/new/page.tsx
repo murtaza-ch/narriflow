@@ -9,8 +9,7 @@ export default async function NewCalendarPostPage({ searchParams }: { searchPara
 	const actor = await admitWorkspacePage("publishing.manage");
 	const params = await searchParams;
 	const { clips, nextCursor } = await workspaceLibraryService.getCalendarComposerOptions(
-		actor.actorUserId,
-		actor.workspaceId,
+		actor,
 		{ query: params.q, cursor: params.cursor },
 	);
 	return (

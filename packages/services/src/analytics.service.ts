@@ -1,3 +1,6 @@
+import { workspaceService } from "./workspace.service";
+import { accessibleProjectWhere } from "./project-access";
+import type { ActorScope } from "./actor-scope";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -101,15 +104,16 @@ export class AnalyticsService {
     });
   }
 
-  async recordForOwnedProject(
-    userId: string,
+  async recordForProject(
+    scope: ActorScope,
     projectId: string,
     input: RecordAnalyticsEventInput,
   ): Promise<void> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     const parsed = recordAnalyticsEventSchema.parse(input);
     const prisma = requirePrisma();
     const project = await prisma.project.findFirst({
-      where: { id: projectId, userId },
+      where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       select: { id: true },
     });
     if (!project) {
@@ -142,12 +146,13 @@ export class AnalyticsService {
   }
 
   async getProjectAnalytics(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
   ): Promise<AnalyticsSnapshot> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     const prisma = requirePrisma();
     const project = await prisma.project.findFirst({
-      where: { id: projectId, userId },
+      where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       select: { id: true },
     });
     if (!project) {

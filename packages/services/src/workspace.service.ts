@@ -5,6 +5,8 @@ import { getPrismaClient } from "@narriflow/db/client";
 import {
   roleHasWorkspaceCapability,
   workspaceAllowsCapability,
+  WORKSPACE_API_KEY_SCOPES,
+  type WorkspaceApiKeyScope,
   type WorkspaceCapability,
 } from "@narriflow/validators";
 import { hasFeature } from "./plan-features";
@@ -21,7 +23,7 @@ import {
 export type { WorkspaceCapability } from "@narriflow/validators";
 
 export interface WorkspaceActorContext {
-  userId: string;
+  actorUserId: string;
   workspaceId: string;
   workspaceName: string;
   workspaceOwnerUserId: string;
@@ -39,15 +41,7 @@ export interface WorkspaceApiKeyPrincipal {
   scopes: string[];
 }
 
-export const WORKSPACE_API_KEY_SCOPES = [
-  "projects:read",
-  "exports:read",
-  "usage:read",
-  "autopilot:read",
-  "autopilot:write",
-] as const;
-
-export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
+export { WORKSPACE_API_KEY_SCOPES, type WorkspaceApiKeyScope } from "@narriflow/validators";
 
 export const workspaceOperationFailureCatalog = {
 	workspace_name_invalid: "invalid",
@@ -269,6 +263,7 @@ export class WorkspaceService {
       where: { workspaceId_userId: { workspaceId, userId } },
       select: {
         role: true,
+        user: { select: { deletedAt: true } },
         workspace: {
           select: {
             id: true,
@@ -281,7 +276,7 @@ export class WorkspaceService {
         },
       },
     });
-    if (!membership) {
+    if (!membership || membership.user.deletedAt) {
       throw new WorkspaceOperationError(
         "workspace_access_denied",
         "You do not have access to this Workspace",
@@ -289,7 +284,7 @@ export class WorkspaceService {
     }
 
     const context: WorkspaceActorContext = {
-      userId,
+      actorUserId: userId,
       workspaceId: membership.workspace.id,
       workspaceName: membership.workspace.name,
       workspaceOwnerUserId: membership.workspace.ownerUserId,
@@ -319,19 +314,6 @@ export class WorkspaceService {
       );
     }
     return workspace.id;
-  }
-
-  async resolveLegacyOwnership(userId: string, workspaceId?: string) {
-    const targetWorkspaceId = workspaceId ?? (await this.getPersonalWorkspaceId(userId));
-    const actor = await this.requireActor(userId, targetWorkspaceId);
-    return {
-      workspaceId: actor.workspaceId,
-      actorUserId: userId,
-      legacyOwnerUserId: actor.workspaceOwnerUserId,
-      role: actor.role,
-      status: actor.status,
-      pricingTier: actor.pricingTier,
-    };
   }
 
   async getWorkspace(userId: string, workspaceId: string) {

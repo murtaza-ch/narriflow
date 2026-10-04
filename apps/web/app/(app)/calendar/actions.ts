@@ -12,10 +12,7 @@ export async function cancelWorkspacePostAction(
 		projectId,
 		"publishing.manage",
 		async (appUser) => {
-			await socialService.cancelPost(projectId, postId, {
-				workspaceId: appUser.workspaceId,
-				actorUserId: appUser.actorUserId,
-			});
+			await socialService.cancelPost(appUser, projectId, postId);
 			revalidatePath("/calendar");
 		},
 	);

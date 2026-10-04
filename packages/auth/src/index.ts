@@ -453,6 +453,16 @@ export function workspacesV1EnabledForUser(userId: string) {
  */
 export async function ensurePersonalWorkspace(userId: string) {
   const prisma = getRequiredPrisma();
+  const existingOwner = await prisma.workspaceMember.findFirst({
+    where: {
+      userId,
+      role: "owner",
+      workspace: { personalOwnerUserId: userId },
+    },
+    select: { workspace: true },
+  });
+  if (existingOwner) return existingOwner.workspace;
+
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new Error("User not found");
 
@@ -577,18 +587,30 @@ export async function getWorkspaceContextForUser(
     return toWorkspaceActorContext(requestedMembership);
   }
 
-  const personalWorkspace = await ensurePersonalWorkspace(user.id);
-  const fallbackMembership = await prisma.workspaceMember.findUnique({
+  let fallbackMembership = await prisma.workspaceMember.findFirst({
     where: {
-      workspaceId_userId: { workspaceId: personalWorkspace.id, userId: user.id,
-      },
+      userId: user.id,
+      role: "owner",
+      workspace: { personalOwnerUserId: user.id },
     },
     include: includeWorkspace,
   });
+  if (!fallbackMembership) {
+    const personalWorkspace = await ensurePersonalWorkspace(user.id);
+    fallbackMembership = await prisma.workspaceMember.findUnique({
+      where: {
+        workspaceId_userId: {
+          workspaceId: personalWorkspace.id,
+          userId: user.id,
+        },
+      },
+      include: includeWorkspace,
+    });
+  }
 
   return fallbackMembership ? toWorkspaceActorContext(fallbackMembership,
         Boolean(
-          requestedWorkspaceId && requestedWorkspaceId !== personalWorkspace.id,
+          requestedWorkspaceId && requestedWorkspaceId !== fallbackMembership.workspace.id,
         ),
       ) : null;
 }

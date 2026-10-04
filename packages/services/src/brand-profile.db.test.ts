@@ -13,6 +13,7 @@ import {
   brandProfileService,
 } from "./brand-profile.service";
 import { BrandAccessError } from "./brand-ownership";
+import { brandTemplateService } from "./brand-template.service";
 import { brandFontService } from "./brand-font.service";
 import { projectService } from "./project.service";
 import { ProgramWriteDisabledError } from "./program-rollout";
@@ -83,6 +84,22 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     };
   }
 
+  test("default brand selection uses current Workspace management permission", async () => {
+    const f = await workspaceFixture("default-permission");
+    const template = await prisma.brandTemplate.create({ data: { name: "Workspace default", workspaceId: f.workspace.id, createdByUserId: f.user.id, captionPreset: DEFAULT_CAPTION_PRESET } });
+    const editor = await prisma.user.create({ data: { clerkId: `default-editor:${randomUUID()}` } });
+    const member = await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: editor.id, role: "editor" } });
+    const scope = { actorUserId: editor.id, workspaceId: f.workspace.id };
+    await expect(brandTemplateService.setDefault(scope, template.id)).rejects.toMatchObject({ code: "workspace_access_denied" });
+    expect((await prisma.workspace.findUnique({ where: { id: f.workspace.id } }))?.defaultBrandTemplateId).toBeNull();
+    await prisma.workspaceMember.update({ where: { id: member.id }, data: { role: "admin" } });
+    await brandTemplateService.setDefault(scope, template.id);
+    expect((await prisma.workspace.findUnique({ where: { id: f.workspace.id } }))?.defaultBrandTemplateId).toBe(template.id);
+    await prisma.workspace.update({ where: { id: f.workspace.id }, data: { status: "pending_payment", defaultBrandTemplateId: null } });
+    await brandTemplateService.setDefault(f.scope, template.id);
+    expect((await prisma.workspace.findUnique({ where: { id: f.workspace.id } }))?.defaultBrandTemplateId).toBe(template.id);
+  });
+
   test("enforces owner scope, built-in exclusion, and optimistic concurrency", async () => {
     const first = await workspaceFixture("scope-first");
     const second = await workspaceFixture("scope-second");
@@ -111,11 +128,11 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(updates.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(updates.filter((result) => result.status === "rejected").map((result) => (result as PromiseRejectedResult).reason)).toEqual([expect.any(BrandProfileConflictError)]);
 
-    const linkIngest = await projectService.queueLinkIngest(first.user.id, {
+    const linkIngest = await projectService.queueLinkIngest({ actorUserId: first.user.id, workspaceId: first.workspace.id }, {
       url: "https://www.youtube.com/watch?v=brand-profile-db-test",
       brandProfileId: profile.id,
       commitToken: randomUUID(),
-    }, first.workspace.id);
+    });
     const frozen = await prisma.project.findUniqueOrThrow({
       where: { id: linkIngest.project.id },
       select: { brandProfileId: true, brandProfileSnapshot: true },

@@ -137,9 +137,8 @@ describe("Upload Session HTTP routes", () => {
 
     expect(response.status).toBe(200);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.[0]).toBe(ACTOR_USER_ID);
+    expect(calls[0]?.[0]).toEqual({actorUserId: ACTOR_USER_ID, workspaceId: WORKSPACE_ID});
     expect(calls[0]?.[1]).toEqual(OPEN_PAYLOAD);
-    expect(calls[0]?.[2]).toBe(WORKSPACE_ID);
   });
 
   test("strictly validates finalization input", async () => {
@@ -183,9 +182,8 @@ describe("Upload Session HTTP routes", () => {
     expect(response.status).toBe(200);
     expect(calls).toEqual([
       [
-        ACTOR_USER_ID,
+        { actorUserId: ACTOR_USER_ID, workspaceId: WORKSPACE_ID },
         { sessionId: SESSION_ID, partNumbers: [17] },
-        WORKSPACE_ID,
       ],
     ]);
     const oversized = await app.request("/upload-sessions/grants", {
@@ -305,9 +303,9 @@ describe("Upload Session HTTP routes", () => {
     expect(discardResponse.status).toBe(202);
     expect(discardResponse.headers.get("retry-after")).toBe("5");
     expect(statusCalls).toEqual([
-      [ACTOR_USER_ID, statusPayload, WORKSPACE_ID]]);
+      [{ actorUserId: ACTOR_USER_ID, workspaceId: WORKSPACE_ID }, statusPayload]]);
     expect(discardCalls).toEqual([
-      [ACTOR_USER_ID, { sessionId: SESSION_ID }, WORKSPACE_ID],
+      [{ actorUserId: ACTOR_USER_ID, workspaceId: WORKSPACE_ID }, { sessionId: SESSION_ID }],
     ]);
 
     const forged = await app.request("/upload-sessions/discard", {

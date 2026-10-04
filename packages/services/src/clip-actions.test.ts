@@ -271,6 +271,26 @@ describe("runClipDeletion", () => {
 });
 
 describe("ClipService.deleteClip", () => {
+  test("authorizes the real actor before reading or deleting media", async () => {
+    let touched = false;
+    const scope = { actorUserId: "viewer-member", workspaceId: "workspace-1" };
+    const service = new ClipService({
+      authorizeActor: async (actor, capability) => {
+        expect(actor).toEqual(scope);
+        expect(capability).toBe("content.edit");
+        throw new Error("workspace_access_denied");
+      },
+      clipDeletionAdapter: {
+        getClipRow: async () => { touched = true; return null; },
+        deleteObject: async () => { touched = true; },
+        isMissingObjectError: () => false,
+        deleteClipRow: async () => { touched = true; return { count: 1 }; },
+      },
+    });
+    await expect(service.deleteClip(scope, "project-1", "clip-1")).rejects.toThrow("workspace_access_denied");
+    expect(touched).toBe(false);
+  });
+
   function makeAdapter(
     overrides: Partial<ClipDeletionAdapter> = {},
   ): ClipDeletionAdapter & {
@@ -286,7 +306,8 @@ describe("ClipService.deleteClip", () => {
       },
       getClipRow: async (context) => {
         expect(context).toEqual({
-          userId: "user-1",
+          actorUserId: "user-1",
+          workspaceId: "workspace-1",
           projectId: "project-1",
           clipId: "clip-1",
         });
@@ -339,8 +360,8 @@ describe("ClipService.deleteClip", () => {
     });
 
     await expectActionCode(
-      new ClipService({ clipDeletionAdapter: adapter }).deleteClip(
-        "user-1",
+      new ClipService({ authorizeActor: async () => {}, clipDeletionAdapter: adapter }).deleteClip(
+        { actorUserId: "user-1", workspaceId: "workspace-1" },
         "project-1",
         "clip-1",
       ),
@@ -370,15 +391,15 @@ describe("ClipService.deleteClip", () => {
       isMissingObjectError: (error) =>
         (error as { name?: string })?.name === "NoSuchKey",
     });
-    const service = new ClipService({ clipDeletionAdapter: adapter });
+    const service = new ClipService({ authorizeActor: async () => {}, clipDeletionAdapter: adapter });
 
     await expectActionCode(
-      service.deleteClip("user-1", "project-1", "clip-1"),
+      service.deleteClip({ actorUserId: "user-1", workspaceId: "workspace-1" }, "project-1", "clip-1"),
       "clip_storage_delete_incomplete",
     );
     firstAttempt = false;
     await expect(
-      service.deleteClip("user-1", "project-1", "clip-1"),
+      service.deleteClip({ actorUserId: "user-1", workspaceId: "workspace-1" }, "project-1", "clip-1"),
     ).resolves.toBeUndefined();
     expect(adapter.rowDeleteCalls).toBe(1);
   });
@@ -391,8 +412,8 @@ describe("ClipService.deleteClip", () => {
     });
 
     await expectActionCode(
-      new ClipService({ clipDeletionAdapter: adapter }).deleteClip(
-        "user-1",
+      new ClipService({ authorizeActor: async () => {}, clipDeletionAdapter: adapter }).deleteClip(
+        { actorUserId: "user-1", workspaceId: "workspace-1" },
         "project-1",
         "clip-1",
       ),
@@ -403,8 +424,8 @@ describe("ClipService.deleteClip", () => {
   test("ownership and active-publication rejection never touch storage", async () => {
     const missing = makeAdapter({ getClipRow: async () => null });
     await expectActionCode(
-      new ClipService({ clipDeletionAdapter: missing }).deleteClip(
-        "user-1",
+      new ClipService({ authorizeActor: async () => {}, clipDeletionAdapter: missing }).deleteClip(
+        { actorUserId: "user-1", workspaceId: "workspace-1" },
         "project-1",
         "clip-1",
       ),
@@ -419,8 +440,8 @@ describe("ClipService.deleteClip", () => {
       }),
     });
     await expectActionCode(
-      new ClipService({ clipDeletionAdapter: active }).deleteClip(
-        "user-1",
+      new ClipService({ authorizeActor: async () => {}, clipDeletionAdapter: active }).deleteClip(
+        { actorUserId: "user-1", workspaceId: "workspace-1" },
         "project-1",
         "clip-1",
       ),

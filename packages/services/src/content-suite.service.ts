@@ -1,3 +1,5 @@
+import { accessibleProjectWhere } from "./project-access";
+import type { ActorScope } from "./actor-scope";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   ALL_TEXT_OUTPUT_TYPES,
@@ -194,10 +196,11 @@ function toSnapshot(row: {
 }
 
 export class ContentSuiteService {
-  async list(userId: string, projectId: string): Promise<ContentAsset[]> {
+  async list(scope: ActorScope, projectId: string): Promise<ContentAsset[]> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     const prisma = requirePrisma();
     const project = await prisma.project.findFirst({
-      where: { id: projectId, userId },
+      where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       select: { id: true },
     });
     if (!project) throw new ContentSuiteError("not_found");
@@ -210,15 +213,14 @@ export class ContentSuiteService {
   }
 
   async generate(
-    userId: string,
-    workspaceId: string,
+    scope: ActorScope,
     projectId: string,
     types: TextOutputType[] = ALL_TEXT_OUTPUT_TYPES,
   ): Promise<ContentAsset[]> {
     const prisma = requirePrisma();
     const actor = await workspaceService.requireActor(
-      userId,
-      workspaceId,
+      scope.actorUserId,
+      scope.workspaceId,
       "processing.consume",
     );
 
@@ -229,7 +231,7 @@ export class ContentSuiteService {
     }
 
     const project = await prisma.project.findFirst({
-      where: { id: projectId, workspaceId },
+      where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       select: {
         id: true,
         title: true,

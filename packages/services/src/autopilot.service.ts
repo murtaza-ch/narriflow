@@ -1,3 +1,5 @@
+import { workspaceService } from "./workspace.service";
+import type { ActorScope } from "./actor-scope";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -25,6 +27,7 @@ export const AUTOPILOT_MAX_CONSECUTIVE_FAILURES = 8;
 const autopilotFailureCatalog = {
   autopilot_rule_limit_reached: "conflict",
   autopilot_rule_not_found: "missing",
+  autopilot_actor_unavailable: "forbidden",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type AutopilotFailureCode = keyof typeof autopilotFailureCatalog;
@@ -37,7 +40,9 @@ export class AutopilotError extends ExpectedDomainFailureError<AutopilotFailureC
       message:
         code === "autopilot_rule_not_found"
           ? "Autopilot rule not found"
-          : "This workspace has reached its Autopilot rule limit",
+          : code === "autopilot_actor_unavailable"
+            ? "Autopilot requires its authorized Workspace creator"
+            : "This workspace has reached its Autopilot rule limit",
     });
     this.name = "AutopilotError";
   }
@@ -123,7 +128,8 @@ function isPermanentFeedError(error: unknown) {
 
 function toSnapshot(row: {
   id: string;
-  userId: string;
+  workspaceId: string;
+  createdByUserId: string | null;
   name: string;
   rssUrl: string;
   titlePrefix: string | null;
@@ -146,7 +152,8 @@ function toSnapshot(row: {
 }): AutopilotRuleSnapshot {
   return {
     id: row.id,
-    userId: row.userId,
+    workspaceId: row.workspaceId,
+    createdByUserId: row.createdByUserId,
     name: row.name,
     rssUrl: redactUrlForDisplay(row.rssUrl),
     titlePrefix: row.titlePrefix,
@@ -187,12 +194,12 @@ export class AutopilotService {
   private now() { return this.dependencies.now?.() ?? new Date(); }
 
   async listRules(
-    userId: string,
-    workspaceId?: string,
+    scope: ActorScope,
   ): Promise<AutopilotRuleSnapshot[]> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     const prisma = requirePrisma();
     const rows = await prisma.autopilotRule.findMany({
-      where: workspaceId ? { workspaceId } : { userId },
+      where: { workspaceId: scope.workspaceId },
       include: { _count: { select: { episodes: true } } },
       orderBy: { createdAt: "desc" },
     });
@@ -200,15 +207,15 @@ export class AutopilotService {
   }
 
   async createRule(
-    userId: string,
+    scope: ActorScope,
     input: AutopilotRuleInput,
-    context?: { workspaceId: string; actorUserId: string },
   ): Promise<AutopilotRuleSnapshot> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const parsed = autopilotRuleInputSchema.parse(input);
     const [feed, ruleCount] = await Promise.all([
-      fetchRssFeed(parsed.rssUrl),
+      (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl),
       requirePrisma().autopilotRule.count({
-        where: context?.workspaceId ? { workspaceId: context.workspaceId } : { userId },
+        where: { workspaceId: scope.workspaceId },
       }),
     ]);
     if (ruleCount >= MAX_AUTOPILOT_RULES_PER_WORKSPACE) {
@@ -221,10 +228,9 @@ export class AutopilotService {
     const futureOnly = parsed.initialImportMode === "future_only";
     const row = await prisma.autopilotRule.create({
       data: {
-        userId,
-        workspaceId: context?.workspaceId ?? null,
-        createdByUserId: context?.actorUserId ?? userId,
-        updatedByUserId: context?.actorUserId ?? userId,
+        workspaceId: scope.workspaceId,
+        createdByUserId: scope.actorUserId,
+        updatedByUserId: scope.actorUserId,
         name: parsed.name,
         rssUrl: feed.finalUrl,
         feedTitle: feed.title,
@@ -253,22 +259,22 @@ export class AutopilotService {
   }
 
   async updateRule(
-    userId: string,
+    scope: ActorScope,
     ruleId: string,
     input: AutopilotRuleUpdate,
-    context?: { workspaceId: string; actorUserId: string },
   ): Promise<AutopilotRuleSnapshot> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const parsed = autopilotRuleUpdateSchema.parse(input);
     const prisma = requirePrisma();
     const existing = await prisma.autopilotRule.findFirst({
       where: {
         id: ruleId,
-        ...(context ? { workspaceId: context.workspaceId } : { userId }),
+        workspaceId: scope.workspaceId,
       },
     });
     if (!existing) throw new AutopilotError("autopilot_rule_not_found");
 
-    const feed = parsed.rssUrl ? await fetchRssFeed(parsed.rssUrl) : null;
+    const feed = parsed.rssUrl ? await (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl) : null;
     const mode = parsed.initialImportMode ?? existing.initialImportMode;
     const now = new Date();
     const resetFeed = Boolean(feed);
@@ -331,7 +337,7 @@ export class AutopilotService {
             nextRunAt:
               parsed.status === "active" ? now : nextRunFrom(24 * 60),
           }),
-          ...(context && { updatedByUserId: context.actorUserId }),
+          updatedByUserId: scope.actorUserId,
         },
         include: { _count: { select: { episodes: true } } },
       });
@@ -340,29 +346,29 @@ export class AutopilotService {
   }
 
   async deleteRule(
-    userId: string,
+    scope: ActorScope,
     ruleId: string,
-    context?: { workspaceId: string; actorUserId: string },
   ): Promise<void> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const prisma = requirePrisma();
     await prisma.autopilotRule.deleteMany({
       where: {
         id: ruleId,
-        ...(context ? { workspaceId: context.workspaceId } : { userId }),
+        workspaceId: scope.workspaceId,
       },
     });
   }
 
   async triggerRuleNow(
-    userId: string,
+    scope: ActorScope,
     ruleId: string,
-    context?: { workspaceId: string; actorUserId: string },
   ): Promise<AutopilotRuleSnapshot> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
     const existing = await prisma.autopilotRule.findFirst({
       where: {
         id: ruleId,
-        ...(context ? { workspaceId: context.workspaceId } : { userId }),
+        workspaceId: scope.workspaceId,
       },
       include: { _count: { select: { episodes: true } } },
     });
@@ -380,7 +386,7 @@ export class AutopilotService {
         leaseExpiresAt: null,
         lastError: null,
         consecutiveFailures: 0,
-        ...(context && { updatedByUserId: context.actorUserId }),
+        updatedByUserId: scope.actorUserId,
       },
       include: { _count: { select: { episodes: true } } },
     });
@@ -410,8 +416,9 @@ export class AutopilotService {
       where: {
         status: "active",
         nextRunAt: { lte: now },
-        user: { deletedAt: null },
-        OR: [{ workspaceId: null }, { workspace: { status: "active" } }],
+        createdBy: { deletedAt: null },
+        createdByUserId: { not: null },
+        workspace: { status: "active" },
       },
       orderBy: { nextRunAt: "asc" },
       take: Math.max(1, Math.min(10, limit)),
@@ -510,6 +517,9 @@ export class AutopilotService {
     const rule = await prisma.autopilotRule.findFirst({ where: this.claimWhere(claim) });
     if (!rule) throw new AutopilotClaimLost(claim.ruleId, "read");
 
+    if (!rule.createdByUserId) throw new AutopilotError("autopilot_actor_unavailable");
+    const scope: ActorScope = { actorUserId: rule.createdByUserId, workspaceId: rule.workspaceId };
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(rule.rssUrl, {
       etag: rule.initializedAt ? rule.etag : null,
       lastModified: rule.initializedAt ? rule.lastModified : null,
@@ -544,14 +554,13 @@ export class AutopilotService {
     for (const episode of selection.episodes) {
       await this.renewClaim(claim);
       const result = await projectService.importResolvedRssEpisodes(
-        rule.userId,
+        scope,
         {
           rssUrl: feed.finalUrl,
           episodes: [episode],
           titlePrefix: rule.titlePrefix ?? undefined,
           brandTemplateId: rule.brandTemplateId ?? null,
         },
-        rule.workspaceId ?? undefined,
         {
           generationContext: { contentPack, languageCode: rule.languageCode },
           autopilotRuleId: rule.id,

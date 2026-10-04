@@ -34,7 +34,8 @@ export const autopilotRuleUpdateSchema = autopilotRuleInputSchema
 
 export const autopilotRuleSnapshotSchema = z.object({
   id: z.string().uuid(),
-  userId: z.string().uuid(),
+  workspaceId: z.string().uuid(),
+  createdByUserId: z.string().uuid().nullable(),
   name: z.string(),
   rssUrl: z.string(),
   titlePrefix: z.string().nullable(),

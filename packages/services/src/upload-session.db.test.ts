@@ -89,6 +89,27 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     await pool?.end();
   });
 
+  test("durable handoff survives removal of the non-owner creator", async () => {
+    const owner = await prisma.user.create({ data: { clerkId: `upload-owner:${randomUUID()}` } });
+    const creator = await prisma.user.create({ data: { clerkId: `upload-creator:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Surviving upload", ownerUserId: owner.id, pricingTier: "business", members: { create: [{ userId: owner.id, role: "owner" }, { userId: creator.id, role: "editor" }] } } });
+    const now = new Date();
+    const session = await prisma.uploadSession.create({ data: {
+      workspaceId: workspace.id, actorUserId: creator.id, clientIdempotencyKey: randomUUID(),
+      immutableInputFingerprint: "removed-creator", preallocatedProjectId: randomUUID(), title: "Preserved intake",
+      fileName: "preserved.mp4", fileSizeBytes: 2048n, contentType: "video/mp4", browserFingerprint: "removed-creator",
+      generationSettings: { languageCode: "en", contentPack: CONTENT_PACK }, transferKind: "single", storageKey: `workspaces/${workspace.id}/preserved.mp4`,
+      status: "finalizing", expiresAt: new Date(now.getTime() + 60_000), hardExpiresAt: new Date(now.getTime() + 120_000),
+    } });
+    await prisma.user.delete({ where: { id: creator.id } });
+    const jobId = randomUUID();
+    const result = await prismaUploadSessionPersistence.handoff({ sessionId: session.id, queuedJobId: jobId, verifiedSizeBytes: 2048, verifiedContentType: "video/mp4", reconciliationAttemptId: null, updatedAt: now });
+    expect(result.status).toBe("queued_for_ingest");
+    expect(await prisma.project.findUnique({ where: { id: session.preallocatedProjectId } })).toMatchObject({ workspaceId: workspace.id, createdByUserId: null, ingestStatus: "queued" });
+    expect(await prisma.ingestJob.findUnique({ where: { id: jobId } })).toMatchObject({ projectId: session.preallocatedProjectId, status: "queued" });
+    expect(await prismaUploadSessionPersistence.handoff({ sessionId: session.id, queuedJobId: randomUUID(), verifiedSizeBytes: 2048, verifiedContentType: "video/mp4", reconciliationAttemptId: null, updatedAt: now })).toMatchObject({ queuedJobId: jobId });
+  });
+
   test("concurrent open and finalize produce one session and one atomic handoff", async () => {
     const suffix = randomUUID();
     const user = await prisma.user.create({
@@ -152,7 +173,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     const input = {
       actorUserId: user.id,
       workspaceId: workspace.id,
-      legacyOwnerUserId: user.id,
       clientIdempotencyKey: randomUUID(),
       title: "Exactly once",
       source: {
@@ -186,7 +206,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         id: recoverySessionId,
         workspaceId: workspace.id,
         actorUserId: user.id,
-        legacyOwnerUserId: user.id,
         clientIdempotencyKey: randomUUID(),
         immutableInputFingerprint: "expired-recovery",
         preallocatedProjectId: randomUUID(),
@@ -282,7 +301,7 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     await prisma.project.create({
       data: {
         id: rollbackOpen.projectId,
-        userId: user.id,
+
         workspaceId: workspace.id,
         title: "Conflicting transaction fixture",
         sourceMediaUrl: "r2://test/conflict",
@@ -422,7 +441,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         id: backoffSessionId,
         workspaceId: workspace.id,
         actorUserId: user.id,
-        legacyOwnerUserId: user.id,
         clientIdempotencyKey: randomUUID(),
         immutableInputFingerprint: "initiating-backoff",
         preallocatedProjectId: randomUUID(),
@@ -476,7 +494,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         id: leaseSessionId,
         workspaceId: workspace.id,
         actorUserId: user.id,
-        legacyOwnerUserId: user.id,
         clientIdempotencyKey: randomUUID(),
         immutableInputFingerprint: "reconciliation-lease",
         preallocatedProjectId: randomUUID(),
@@ -577,7 +594,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         id,
         workspaceId: workspace.id,
         actorUserId: user.id,
-        legacyOwnerUserId: user.id,
         clientIdempotencyKey: randomUUID(),
         immutableInputFingerprint: `batch-fairness-${index}`,
         preallocatedProjectId: randomUUID(),
@@ -731,7 +747,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     const immutableInput = {
       actorUserId: user.id,
       workspaceId: workspace.id,
-      legacyOwnerUserId: user.id,
       clientIdempotencyKey: randomUUID(),
       title: "Immutable",
       source: {

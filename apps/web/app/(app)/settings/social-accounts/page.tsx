@@ -18,10 +18,7 @@ export default async function SocialAccountsPage({
 }) {
 	const appUser = await admitWorkspacePage("content.view");
 	const [accounts, params] = await Promise.all([
-		socialOAuthService.listAccounts(
-			appUser.workspaceOwnerUserId,
-			appUser.workspaceId,
-		),
+		socialOAuthService.listAccounts(appUser),
 		searchParams,
 	]);
 

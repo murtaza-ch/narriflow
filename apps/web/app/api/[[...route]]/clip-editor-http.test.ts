@@ -171,7 +171,7 @@ describe("Clip Editor HTTP routes", () => {
 
     expect(response.status).toBe(200);
     expect(calls.titles).toEqual([
-      [OWNER_USER_ID, PROJECT_ID, CLIP_ID, "New title"],
+      [expect.objectContaining({ actorUserId: ACTOR_USER_ID, workspaceId: WORKSPACE_ID }), PROJECT_ID, CLIP_ID, "New title"],
     ]);
     expect(calls.mutations).toEqual([]);
   });
@@ -192,7 +192,6 @@ describe("Clip Editor HTTP routes", () => {
     expect(calls.mutations[0]).toMatchObject({
       actorUserId: ACTOR_USER_ID,
       workspaceId: WORKSPACE_ID,
-      workspaceOwnerUserId: OWNER_USER_ID,
       projectId: PROJECT_ID,
       clipId: CLIP_ID,
       intent,

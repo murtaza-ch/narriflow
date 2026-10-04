@@ -1,3 +1,5 @@
+import { workspaceService } from "./workspace.service";
+import type { ActorScope } from "./actor-scope";
 import {
 	createCipheriv,
 	createDecipheriv,
@@ -28,6 +30,8 @@ export class SocialOAuthError extends Error {
 		this.code = code;
 	}
 }
+
+type SocialCredentialScope = ActorScope & { credentialOwnerUserId: string };
 
 type OAuthToken = {
 	accessToken: string;
@@ -303,13 +307,13 @@ function toSnapshot(row: {
 
 export class SocialOAuthService {
 	async listAccounts(
-		userId: string,
-		workspaceId?: string,
+		scope: ActorScope,
 	): Promise<SocialAccountSnapshot[]> {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		const prisma = requirePrisma();
 		const rows = await prisma.socialAccount.findMany({
 			where: {
-				...(workspaceId ? { workspaceId } : { userId }),
+				workspaceId: scope.workspaceId,
 				status: { not: "revoked" },
 			},
 			orderBy: [{ platform: "asc" }, { createdAt: "desc" }],
@@ -318,13 +322,13 @@ export class SocialOAuthService {
 	}
 
 	async disconnectAccount(
-		userId: string,
+		scope: ActorScope,
 		accountId: string,
-		workspaceId?: string,
 	) {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "social.manage");
 		const prisma = requirePrisma();
 		await prisma.socialAccount.updateMany({
-			where: { id: accountId, ...(workspaceId ? { workspaceId } : { userId }) },
+			where: { id: accountId, workspaceId: scope.workspaceId },
 			data: {
 				status: "revoked",
 				refreshTokenEncrypted: null,
@@ -333,14 +337,12 @@ export class SocialOAuthService {
 		});
 	}
 
-	async createAuthorizationUrl(params: {
-		userId: string;
-		workspaceId?: string;
-		actorUserId?: string;
+	async createAuthorizationUrl(scope: ActorScope, params: {
 		platform: SocialPlatform;
 		origin: string;
 		redirectPath?: string | null;
 	}) {
+		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "social.manage");
 		const platform = socialPlatformSchema.parse(params.platform);
 		const prisma = requirePrisma();
 		const state = randomBase64Url(32);
@@ -352,9 +354,9 @@ export class SocialOAuthService {
 
 		await prisma.socialOAuthState.create({
 			data: {
-				userId: params.userId,
-				workspaceId: params.workspaceId ?? null,
-				createdByUserId: params.actorUserId ?? params.userId,
+				userId: actor.workspaceOwnerUserId,
+				workspaceId: scope.workspaceId,
+				createdByUserId: scope.actorUserId,
 				platform,
 				state,
 				codeVerifier: verifier,
@@ -392,7 +394,7 @@ export class SocialOAuthService {
 			where: { state: params.state },
 		});
 
-		if (!savedState || savedState.expiresAt.getTime() < Date.now()) {
+		if (!savedState || !savedState.workspaceId || !savedState.createdByUserId || savedState.expiresAt.getTime() < Date.now()) {
 			if (savedState) {
 				await prisma.socialOAuthState
 					.delete({ where: { id: savedState.id } })
@@ -404,14 +406,16 @@ export class SocialOAuthService {
 			);
 		}
 
+		const scope: SocialCredentialScope = { actorUserId: savedState.createdByUserId, workspaceId: savedState.workspaceId, credentialOwnerUserId: savedState.userId };
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "social.manage");
 		const redirectUri = callbackUrl(params.origin);
 		const platform = savedState.platform as SocialPlatform;
 		if (platform === "facebook_reels") {
 			const facebook = await this.connectFacebook(
-				savedState.userId,
+				scope,
 				params.code,
 				redirectUri,
-				savedState.workspaceId,
+
 			);
 			if (facebook.selection) {
 				await prisma.socialOAuthState.update({
@@ -436,39 +440,39 @@ export class SocialOAuthService {
 		const connected =
 			platform === "tiktok"
 				? await this.connectTikTok(
-						savedState.userId,
+						scope,
 						params.code,
 						redirectUri,
-						savedState.workspaceId,
+
 					)
 				: platform === "youtube_shorts"
 					? await this.connectYouTube(
-							savedState.userId,
+							scope,
 							params.code,
 							redirectUri,
 							savedState.codeVerifier,
-							savedState.workspaceId,
+
 						)
 					: platform === "instagram_reels"
 						? await this.connectInstagram(
-								savedState.userId,
+								scope,
 								params.code,
 								redirectUri,
-								savedState.workspaceId,
+
 							)
 						: platform === "linkedin"
 							? await this.connectLinkedIn(
-									savedState.userId,
+									scope,
 									params.code,
 									redirectUri,
-									savedState.workspaceId,
+
 								)
 							: await this.connectX(
-									savedState.userId,
+									scope,
 									params.code,
 									redirectUri,
 									savedState.codeVerifier,
-									savedState.workspaceId,
+
 								);
 
 		await prisma.socialOAuthState.delete({ where: { id: savedState.id } });
@@ -480,15 +484,15 @@ export class SocialOAuthService {
 	}
 
 	async getFacebookPageSelection(
-		userId: string,
-		workspaceId: string,
+		scope: ActorScope,
 		token: string,
 	) {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "social.manage");
 		const state = await requirePrisma().socialOAuthState.findFirst({
 			where: {
 				state: token,
-				userId,
-				workspaceId,
+				createdByUserId: scope.actorUserId,
+				workspaceId: scope.workspaceId,
 				platform: "facebook_reels",
 				expiresAt: { gt: new Date() },
 				codeVerifier: { not: null },
@@ -510,17 +514,17 @@ export class SocialOAuthService {
 	}
 
 	async completeFacebookPageSelection(
-		userId: string,
-		workspaceId: string,
+		scope: ActorScope,
 		token: string,
 		pageId: string,
 	) {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "social.manage");
 		const prisma = requirePrisma();
 		const state = await prisma.socialOAuthState.findFirst({
 			where: {
 				state: token,
-				userId,
-				workspaceId,
+				createdByUserId: scope.actorUserId,
+				workspaceId: scope.workspaceId,
 				platform: "facebook_reels",
 				expiresAt: { gt: new Date() },
 				codeVerifier: { not: null },
@@ -550,7 +554,7 @@ export class SocialOAuthService {
 					"Facebook Page selection is invalid or expired",
 				);
 			return this.upsertAccount(
-				userId,
+				{ ...scope, credentialOwnerUserId: state.userId },
 				"facebook_reels",
 				{
 					providerAccountId: page.id,
@@ -567,7 +571,6 @@ export class SocialOAuthService {
 						tasks: page.tasks,
 					},
 				},
-				workspaceId,
 				tx,
 			);
 		});
@@ -623,30 +626,21 @@ export class SocialOAuthService {
 	}
 
 	private async upsertAccount(
-		userId: string,
+		scope: SocialCredentialScope,
 		platform: SocialPlatform,
 		input: ConnectedAccountInput,
-		workspaceId?: string | null,
 		client?: Prisma.TransactionClient,
 	) {
 		const prisma = client ?? requirePrisma();
-		const existing = workspaceId
-			? await prisma.socialAccount.findUnique({
-					where: {
-						workspaceId_platform_providerAccountId: {
-							workspaceId,
-							platform,
-							providerAccountId: input.providerAccountId,
-						},
-					},
-				})
-			: await prisma.socialAccount.findFirst({
-					where: {
-						userId,
-						platform,
-						providerAccountId: input.providerAccountId,
-					},
-				});
+		const existing = await prisma.socialAccount.findUnique({
+			where: {
+				workspaceId_platform_providerAccountId: {
+					workspaceId: scope.workspaceId,
+					platform,
+					providerAccountId: input.providerAccountId,
+				},
+			},
+		});
 
 		const encryptedAccessToken = encryptToken(input.accessToken);
 		const encryptedRefreshToken =
@@ -675,9 +669,9 @@ export class SocialOAuthService {
 				})
 			: await prisma.socialAccount.create({
 					data: {
-						userId,
-						workspaceId: workspaceId ?? null,
-						createdByUserId: userId,
+						userId: scope.credentialOwnerUserId,
+						workspaceId: scope.workspaceId,
+						createdByUserId: scope.actorUserId,
 						platform,
 						providerAccountId: input.providerAccountId,
 						...data,
@@ -785,10 +779,9 @@ export class SocialOAuthService {
 	}
 
 	private async connectTikTok(
-		userId: string,
+		scope: SocialCredentialScope,
 		code: string,
 		redirectUri: string,
-		workspaceId?: string | null,
 	) {
 		const token = (await postForm(
 			"https://open.tiktokapis.com/v2/oauth/token/",
@@ -832,7 +825,7 @@ export class SocialOAuthService {
 
 		return [
 			await this.upsertAccount(
-				userId,
+				scope,
 				"tiktok",
 				{
 					providerAccountId,
@@ -853,17 +846,16 @@ export class SocialOAuthService {
 							null,
 					},
 				},
-				workspaceId,
+
 			),
 		];
 	}
 
 	private async connectYouTube(
-		userId: string,
+		scope: SocialCredentialScope,
 		code: string,
 		redirectUri: string,
 		verifier: string | null,
-		workspaceId?: string | null,
 	) {
 		const body = new URLSearchParams({
 			client_id: requireEnv("GOOGLE_CLIENT_ID"),
@@ -913,7 +905,7 @@ export class SocialOAuthService {
 
 		return [
 			await this.upsertAccount(
-				userId,
+				scope,
 				"youtube_shorts",
 				{
 					providerAccountId: channel.id,
@@ -929,16 +921,15 @@ export class SocialOAuthService {
 					expiresAt: expiresAtFromSeconds(token.expires_in),
 					metadata: { channelId: channel.id },
 				},
-				workspaceId,
+
 			),
 		];
 	}
 
 	private async connectInstagram(
-		userId: string,
+		scope: SocialCredentialScope,
 		code: string,
 		redirectUri: string,
-		workspaceId?: string | null,
 	) {
 		const shortToken = (await readSocialProviderJson(
 			await fetch(
@@ -1002,7 +993,7 @@ export class SocialOAuthService {
 			if (!ig?.id || !page.access_token) continue;
 			connected.push(
 				await this.upsertAccount(
-					userId,
+					scope,
 					"instagram_reels",
 					{
 						providerAccountId: ig.id,
@@ -1020,7 +1011,7 @@ export class SocialOAuthService {
 							igUserId: ig.id,
 						},
 					},
-					workspaceId,
+
 				),
 			);
 		}
@@ -1035,10 +1026,9 @@ export class SocialOAuthService {
 	}
 
 	private async connectFacebook(
-		userId: string,
+		scope: SocialCredentialScope,
 		code: string,
 		redirectUri: string,
-		workspaceId?: string | null,
 	): Promise<{
 		accounts: SocialAccountSnapshot[];
 		selection: FacebookSelectionPayload | null;
@@ -1127,7 +1117,7 @@ export class SocialOAuthService {
 		}
 		const page = eligiblePages[0]!;
 		const account = await this.upsertAccount(
-			userId,
+			scope,
 			"facebook_reels",
 			{
 				providerAccountId: page.id,
@@ -1144,16 +1134,15 @@ export class SocialOAuthService {
 					tasks: page.tasks,
 				},
 			},
-			workspaceId,
+
 		);
 		return { accounts: [account], selection: null };
 	}
 
 	private async connectLinkedIn(
-		userId: string,
+		scope: SocialCredentialScope,
 		code: string,
 		redirectUri: string,
-		workspaceId?: string | null,
 	) {
 		const token = (await postForm(
 			"https://www.linkedin.com/oauth/v2/accessToken",
@@ -1193,7 +1182,7 @@ export class SocialOAuthService {
 
 		return [
 			await this.upsertAccount(
-				userId,
+				scope,
 				"linkedin",
 				{
 					providerAccountId: profile.sub,
@@ -1214,17 +1203,16 @@ export class SocialOAuthService {
 					expiresAt: expiresAtFromSeconds(token.expires_in),
 					metadata: { ownerUrn: `urn:li:person:${profile.sub}` },
 				},
-				workspaceId,
+
 			),
 		];
 	}
 
 	private async connectX(
-		userId: string,
+		scope: SocialCredentialScope,
 		code: string,
 		redirectUri: string,
 		verifier: string | null,
-		workspaceId?: string | null,
 	) {
 		if (!verifier) {
 			throw new SocialOAuthError(
@@ -1285,7 +1273,7 @@ export class SocialOAuthService {
 
 		return [
 			await this.upsertAccount(
-				userId,
+				scope,
 				"x",
 				{
 					providerAccountId: user.id,
@@ -1301,7 +1289,7 @@ export class SocialOAuthService {
 					expiresAt: expiresAtFromSeconds(token.expires_in),
 					metadata: { userId: user.id, username: user.username ?? null },
 				},
-				workspaceId,
+
 			),
 		];
 	}

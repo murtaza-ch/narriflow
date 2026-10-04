@@ -1,3 +1,5 @@
+import type { ActorScope } from "./actor-scope";
+import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { randomUUID } from "node:crypto";
 import { Prisma, type UploadSession as PrismaUploadSession } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -40,7 +42,6 @@ import {
   presignMultipartPartUrls,
   presignSingleUploadUrl,
 } from "./r2-storage";
-import { isWorkflowRedisDeliveryEnabled } from "./workflow.service";
 import { workspaceService } from "./workspace.service";
 
 const MEBIBYTE = 1024 * 1024;
@@ -165,7 +166,6 @@ export interface UploadSessionRecord {
   id: string;
   workspaceId: string;
   actorUserId: string;
-  legacyOwnerUserId: string;
   clientIdempotencyKey: string;
   immutableInputFingerprint: string;
   preallocatedProjectId: string;
@@ -400,7 +400,6 @@ export interface UploadSessionAdmission {
   resolveBrand(input: {
     workspaceId: string;
     actorUserId: string;
-    legacyOwnerUserId: string;
     brandTemplateId: string | null;
     brandProfileId: string | null;
   }): Promise<{
@@ -482,7 +481,6 @@ export function uploadSessionDiagnosticRecord(
 export interface OpenUploadSessionInput {
   actorUserId: string;
   workspaceId: string;
-  legacyOwnerUserId: string;
   clientIdempotencyKey: string;
   title: string;
   source: {
@@ -853,7 +851,6 @@ export function createUploadSessionModule(
       return dependencies.admission.resolveBrand({
         workspaceId: input.workspaceId,
         actorUserId: input.actorUserId,
-        legacyOwnerUserId: input.legacyOwnerUserId,
         brandTemplateId: input.brandTemplateId,
         brandProfileId: input.brandProfileId,
       });
@@ -1693,7 +1690,6 @@ export function createUploadSessionModule(
         id: sessionId,
         workspaceId: input.workspaceId,
         actorUserId: input.actorUserId,
-        legacyOwnerUserId: input.legacyOwnerUserId,
         clientIdempotencyKey: input.clientIdempotencyKey,
         immutableInputFingerprint: fingerprint,
         preallocatedProjectId: projectId,
@@ -3122,7 +3118,6 @@ function fromPrismaUploadSession(row: PrismaUploadSession): UploadSessionRecord 
     id: row.id,
     workspaceId: row.workspaceId,
     actorUserId: row.actorUserId,
-    legacyOwnerUserId: row.legacyOwnerUserId,
     clientIdempotencyKey: row.clientIdempotencyKey,
     immutableInputFingerprint: row.immutableInputFingerprint,
     preallocatedProjectId: row.preallocatedProjectId,
@@ -3200,7 +3195,6 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           id: record.id,
           workspaceId: record.workspaceId,
           actorUserId: record.actorUserId,
-          legacyOwnerUserId: record.legacyOwnerUserId,
           clientIdempotencyKey: record.clientIdempotencyKey,
           immutableInputFingerprint: record.immutableInputFingerprint,
           preallocatedProjectId: record.preallocatedProjectId,
@@ -3511,13 +3505,18 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           }
           throw new Error("Upload Session is not ready for handoff");
         }
+        // Lock surviving attribution through creation; a removed creator does
+        // not prevent a durably admitted Upload Session from handing off.
+        const creators = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT id FROM "User" WHERE id = ${current.actorUserId}::uuid FOR KEY SHARE
+        `);
+        const creatorUserId = creators[0]?.id ?? null;
         await tx.project.create({
           data: {
             id: current.preallocatedProjectId,
-            userId: current.legacyOwnerUserId,
             workspaceId: current.workspaceId,
-            createdByUserId: current.actorUserId,
-            updatedByUserId: current.actorUserId,
+            createdByUserId: creatorUserId,
+            updatedByUserId: creatorUserId,
             title: current.title,
             sourceMediaUrl: `r2://${process.env.R2_BUCKET ?? "unknown-bucket"}/${current.storageKey}`,
             sourceType: "upload",
@@ -3533,7 +3532,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             brandProfileSnapshot: current.brandProfileSnapshot ?? Prisma.JsonNull,
             retentionPolicyKey: retention?.retentionPolicyKey ?? null,
             expiresAt: retention?.expiresAt ?? null,
-            workflowEventSeq: 1,
+            workflowEventSeq: 0,
             createdAt: current.createdAt,
           },
         });
@@ -3564,29 +3563,10 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         await tx.contentPack.create({
           data: {
             projectId: current.preallocatedProjectId,
-            outputTypes: contentPack.outputTypes,
-            clipGenerationMode: contentPack.clipGenerationMode,
-            clipCountTarget: contentPack.clipCountTarget,
-            clipDurationSecTarget: contentPack.clipDurationSecTarget,
-            minDurationSec: contentPack.minDurationSec,
-            preferredMinDurationSec: contentPack.preferredMinDurationSec,
-            preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
-            maxDurationSec: contentPack.maxDurationSec,
-            platformTargets: contentPack.platformTargets,
-            toneConstraints: contentPack.toneConstraints,
-            captionPreset: contentPack.captionPreset,
-            platformPlaybookVersion: contentPack.platformPlaybookVersion,
-            mode: contentPack.mode,
-            autoHook: contentPack.autoHook,
-            specificMoments: contentPack.specificMoments,
-            processingStartSec: contentPack.processingStartSec,
-            processingEndSec: contentPack.processingEndSec,
-            clipLengthPreset: contentPack.clipLengthPreset,
-            defaultAspectRatio: contentPack.defaultAspectRatio,
+            ...contentPack,
           },
         });
-        await tx.ingestJob.create({
-          data: {
+        await getIngestJobLifecycle().enqueue(tx, {
             id: queuedJobId,
             projectId: current.preallocatedProjectId,
             uploadSessionId: current.id,
@@ -3597,34 +3577,6 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
               verifiedContentType,
               uploadSessionId: current.id,
             },
-          },
-        });
-        const emittedAt = updatedAt;
-        await tx.workflowEvent.create({
-          data: {
-            projectId: current.preallocatedProjectId,
-            workflowRunId: queuedJobId,
-            seq: 1,
-            stage: "ingest_queued",
-            status: "queued",
-            progress: 5,
-            errorCode: null,
-            emittedAt,
-            dedupeKey: `upload-session:${current.id}:queued`,
-            payload: {
-              event: "workflow.stage.updated",
-              projectId: current.preallocatedProjectId,
-              workflowRunId: queuedJobId,
-              seq: 1,
-              stage: "ingest_queued",
-              status: "queued",
-              progress: 5,
-              errorCode: null,
-              emittedAt: emittedAt.toISOString(),
-            },
-            redisRequired: isWorkflowRedisDeliveryEnabled(),
-            nextDeliveryAt: emittedAt,
-          },
         });
         const handoff = await tx.uploadSession.updateMany({
           where: {
@@ -4231,20 +4183,9 @@ const productionUploadSessionModule = createUploadSessionModule({
   admission: {
     assertQuota: assertWorkspaceUploadQuota,
     async resolveBrand(input) {
+      const actor = await workspaceService.requireActor(input.actorUserId, input.workspaceId, "content.view");
       if (input.brandProfileId) {
-        const [actor, workspace] = await Promise.all([
-          workspaceService.requireActor(input.actorUserId, input.workspaceId, "content.view"),
-          requiredPrisma().workspace.findUnique({ where: { id: input.workspaceId }, select: { personalOwnerUserId: true } }),
-        ]);
-        const resolved = await brandProfileService.resolveForProject({
-          actorUserId: input.actorUserId,
-          workspaceId: input.workspaceId,
-          workspaceOwnerUserId: actor.workspaceOwnerUserId,
-          role: actor.role,
-          status: actor.status,
-          pricingTier: actor.pricingTier,
-          isPersonalWorkspace: workspace?.personalOwnerUserId !== null,
-        }, {
+        const resolved = await brandProfileService.resolveForProject(actor, {
           profileId: input.brandProfileId,
           templateId: input.brandTemplateId,
         });
@@ -4255,13 +4196,13 @@ const productionUploadSessionModule = createUploadSessionModule({
           profileSnapshot: resolved.profileSnapshot,
         };
       }
-      const legacy = await brandTemplateService.resolveSnapshotForUser(
-        input.legacyOwnerUserId,
+      const template = await brandTemplateService.resolveSnapshotForUser(
+        actor.workspaceOwnerUserId,
         input.brandTemplateId,
         { workspaceId: input.workspaceId, actorUserId: input.actorUserId },
       );
-      return legacy
-        ? { templateId: legacy.templateId, snapshot: legacy.snapshot, profileId: null, profileSnapshot: null }
+      return template
+        ? { templateId: template.templateId, snapshot: template.snapshot, profileId: null, profileSnapshot: null }
         : null;
     },
   },
@@ -4274,25 +4215,20 @@ const productionUploadSessionModule = createUploadSessionModule({
 
 export class UploadSessionService {
   async open(
-    actorUserId: string,
+    scope: ActorScope,
     input: ValidatedOpenUploadSessionInput,
-    workspaceId?: string,
   ) {
     const startedAt = performance.now();
     const parsed = openUploadSessionSchema.parse(input);
-    const ownership = await workspaceService.resolveLegacyOwnership(
-      actorUserId,
-      workspaceId,
-    );
+    const { actorUserId, workspaceId } = scope;
     await workspaceService.requireActor(
       actorUserId,
-      ownership.workspaceId,
+      workspaceId,
       "processing.consume",
     );
     const result = await productionUploadSessionModule.open({
       actorUserId,
-      workspaceId: ownership.workspaceId,
-      legacyOwnerUserId: ownership.legacyOwnerUserId,
+      workspaceId: workspaceId,
       clientIdempotencyKey: parsed.clientIdempotencyKey,
       title: parsed.title,
       source: parsed.source,
@@ -4305,7 +4241,7 @@ export class UploadSessionService {
         level: "info",
         message: "upload_session_opened",
         uploadSessionId: result.sessionId,
-        workspaceId: ownership.workspaceId,
+        workspaceId: workspaceId,
         state: result.outcome,
         transferKind:
           result.outcome === "uploading" ? result.transfer.kind : null,
@@ -4333,24 +4269,20 @@ export class UploadSessionService {
   }
 
   async finalize(
-    actorUserId: string,
+    scope: ActorScope,
     input: ValidatedFinalizeUploadSessionInput,
-    workspaceId?: string,
   ) {
     const startedAt = performance.now();
     const parsed = finalizeUploadSessionSchema.parse(input);
-    const ownership = await workspaceService.resolveLegacyOwnership(
-      actorUserId,
-      workspaceId,
-    );
+    const { actorUserId, workspaceId } = scope;
     await workspaceService.requireActor(
       actorUserId,
-      ownership.workspaceId,
+      workspaceId,
       "processing.consume",
     );
     const result = await productionUploadSessionModule.finalize({
       actorUserId,
-      workspaceId: ownership.workspaceId,
+      workspaceId: workspaceId,
       sessionId: parsed.sessionId,
       parts: parsed.parts,
     });
@@ -4359,7 +4291,7 @@ export class UploadSessionService {
         level: "info",
         message: "upload_session_finalized",
         uploadSessionId: result.sessionId,
-        workspaceId: ownership.workspaceId,
+        workspaceId: workspaceId,
         state: result.outcome,
         finalizeDurationMs: Math.round(performance.now() - startedAt),
         completionPartCount: parsed.parts.length,
@@ -4371,24 +4303,20 @@ export class UploadSessionService {
   }
 
   async grant(
-    actorUserId: string,
+    scope: ActorScope,
     input: ValidatedGrantUploadPartsInput,
-    workspaceId?: string,
   ) {
     const parsed = grantUploadPartsSchema.parse(input);
-    const ownership = await workspaceService.resolveLegacyOwnership(
-      actorUserId,
-      workspaceId,
-    );
+    const { actorUserId, workspaceId } = scope;
     await workspaceService.requireActor(
       actorUserId,
-      ownership.workspaceId,
+      workspaceId,
       "processing.consume",
     );
     const startedAt = performance.now();
     const result = await productionUploadSessionModule.grant({
       actorUserId,
-      workspaceId: ownership.workspaceId,
+      workspaceId: workspaceId,
       sessionId: parsed.sessionId,
       partNumbers: parsed.partNumbers,
     });
@@ -4397,7 +4325,7 @@ export class UploadSessionService {
         level: "info",
         message: "upload_session_grant_issued",
         uploadSessionId: result.sessionId,
-        workspaceId: ownership.workspaceId,
+        workspaceId: workspaceId,
         grantedPartCount: result.grants.length,
         providerOperationClass: "upload_part",
         plannedProviderCallCount: result.grants.length,
@@ -4408,23 +4336,19 @@ export class UploadSessionService {
   }
 
   async status(
-    actorUserId: string,
+    scope: ActorScope,
     input: ValidatedReadUploadSessionInput,
-    workspaceId?: string,
   ) {
     const parsed = readUploadSessionSchema.parse(input);
-    const ownership = await workspaceService.resolveLegacyOwnership(
-      actorUserId,
-      workspaceId,
-    );
+    const { actorUserId, workspaceId } = scope;
     await workspaceService.requireActor(
       actorUserId,
-      ownership.workspaceId,
+      workspaceId,
       "processing.consume",
     );
     const result = await productionUploadSessionModule.status({
       actorUserId,
-      workspaceId: ownership.workspaceId,
+      workspaceId: workspaceId,
       clientIdempotencyKey: parsed.clientIdempotencyKey,
       sessionId: parsed.sessionId,
       browserFingerprint: parsed.browserFingerprint,
@@ -4434,7 +4358,7 @@ export class UploadSessionService {
         level: "info",
         message: "upload_session_resumed",
         uploadSessionId: result.sessionId,
-        workspaceId: ownership.workspaceId,
+        workspaceId: workspaceId,
         state: result.outcome,
         terminalOutcome:
           result.outcome === "terminal"
@@ -4448,23 +4372,19 @@ export class UploadSessionService {
   }
 
   async discard(
-    actorUserId: string,
+    scope: ActorScope,
     input: ValidatedDiscardUploadSessionInput,
-    workspaceId?: string,
   ) {
     const parsed = discardUploadSessionSchema.parse(input);
-    const ownership = await workspaceService.resolveLegacyOwnership(
-      actorUserId,
-      workspaceId,
-    );
+    const { actorUserId, workspaceId } = scope;
     await workspaceService.requireActor(
       actorUserId,
-      ownership.workspaceId,
+      workspaceId,
       "processing.consume",
     );
     const result = await productionUploadSessionModule.discard({
       actorUserId,
-      workspaceId: ownership.workspaceId,
+      workspaceId: workspaceId,
       sessionId: parsed.sessionId,
     });
     console.warn(
@@ -4472,7 +4392,7 @@ export class UploadSessionService {
         level: "info",
         message: "upload_session_discarded",
         uploadSessionId: result.sessionId,
-        workspaceId: ownership.workspaceId,
+        workspaceId: workspaceId,
         state: result.outcome,
         terminalOutcome: result.outcome === "discarded" ? "aborted" : null,
       }),

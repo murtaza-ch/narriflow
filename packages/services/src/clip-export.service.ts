@@ -1,3 +1,4 @@
+import type { ActorScope } from "./actor-scope";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -306,7 +307,6 @@ type SceneExportOwner =
   | { userId: string; workspaceId: null };
 
 export function sceneExportOwnerWhere(input: {
-  projectUserId: string;
   workspaceId: string;
   workspace: { personalOwnerUserId: string | null; pricingTier: string };
 }): SceneExportOwner {
@@ -398,6 +398,7 @@ export function assertSceneExportReferenceRows(
 
 export class ClipExportService {
   async create(
+    scope: ActorScope,
     projectId: string,
     clipId: string,
     input: {
@@ -406,11 +407,10 @@ export class ClipExportService {
       resolution: ClipRenderResolution;
     },
     _idempotencyKey: string,
-    workspaceContext: { workspaceId: string; actorUserId: string },
   ): Promise<{ export: ClipExportSnapshot; reused: boolean }> {
     await workspaceService.requireActor(
-      workspaceContext.actorUserId,
-      workspaceContext.workspaceId,
+      scope.actorUserId,
+      scope.workspaceId,
       "processing.consume",
     );
     const prisma = requirePrisma();
@@ -418,12 +418,11 @@ export class ClipExportService {
       where: {
         id: clipId,
         projectId,
-        project: { workspaceId: workspaceContext.workspaceId },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       include: {
         project: {
           select: {
-            userId: true,
             workspaceId: true,
             sourceDurationSeconds: true,
             workspace: { select: { personalOwnerUserId: true, pricingTier: true } },
@@ -443,7 +442,6 @@ export class ClipExportService {
     await assertSceneExportAvailability(
       document,
       sceneExportOwnerWhere({
-        projectUserId: clip.project.userId,
         workspaceId: clip.project.workspaceId,
         workspace: clip.project.workspace,
       }),
@@ -472,8 +470,8 @@ export class ClipExportService {
       where: { clipId_fingerprint: { clipId, fingerprint } },
       create: {
         id: exportId,
-        workspaceId: workspaceContext.workspaceId,
-        createdByUserId: workspaceContext.actorUserId,
+        workspaceId: scope.workspaceId,
+        createdByUserId: scope.actorUserId,
         projectId,
         clipId,
         editorRevision: clip.editorRevision,
@@ -506,19 +504,19 @@ export class ClipExportService {
   }
 
   async getOwned(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
     exportId: string,
-    workspaceId?: string,
   ): Promise<ClipExportSnapshot | null> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.download");
     const prisma = requirePrisma();
     const row = await prisma.clipExport.findFirst({
       where: {
         id: exportId,
         projectId,
         clipId,
-        project: workspaceId ? { workspaceId } : { userId },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       include: exportInclude,
     });
@@ -526,14 +524,15 @@ export class ClipExportService {
   }
 
   async getWorkspaceOwned(
-    workspaceId: string,
+    scope: ActorScope,
     exportId: string,
   ): Promise<ClipExportSnapshot | null> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.download");
     const row = await requirePrisma().clipExport.findFirst({
       where: {
         id: exportId,
-        workspaceId,
-        project: accessibleProjectWhere(),
+        workspaceId: scope.workspaceId,
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       include: exportInclude,
     });
@@ -541,14 +540,15 @@ export class ClipExportService {
   }
 
   async listCurrentProjectExports(
-    workspaceId: string,
+    scope: ActorScope,
     projectId: string,
   ): Promise<ClipExportSnapshot[]> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     const rows = await requirePrisma().clipExport.findMany({
       where: {
-        workspaceId,
+        workspaceId: scope.workspaceId,
         projectId,
-        project: accessibleProjectWhere(),
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
         status: { in: ["partial_ready", "ready"] },
       },
       orderBy: { createdAt: "desc" },
@@ -566,24 +566,23 @@ export class ClipExportService {
   }
 
   async retryFailed(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
     exportId: string,
-    workspaceId?: string,
   ) {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
     const owned = await prisma.clipExport.findFirst({
       where: {
         id: exportId,
         projectId,
         clipId,
-        project: workspaceId ? { workspaceId } : { userId },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       include: {
         project: {
           select: {
-            userId: true,
             workspaceId: true,
             sourceDurationSeconds: true,
             workspace: { select: { personalOwnerUserId: true, pricingTier: true } },
@@ -595,7 +594,7 @@ export class ClipExportService {
     if (!owned) throw new ClipExportError("export_not_found", "Export not found");
     const failed = owned.variants.filter((variant) => variant.status === "failed");
     if (failed.length === 0) {
-      return this.getOwned(userId, projectId, clipId, exportId, workspaceId);
+      return this.getOwned(scope, projectId, clipId, exportId);
     }
     const frozenSnapshot = failed.find((variant) => variant.render)?.render?.clipSnapshot;
     if (!frozenSnapshot) {
@@ -612,7 +611,6 @@ export class ClipExportService {
     await assertSceneExportAvailability(
       frozenDocument,
       sceneExportOwnerWhere({
-        projectUserId: owned.project.userId,
         workspaceId: owned.project.workspaceId,
         workspace: owned.project.workspace,
       }),
@@ -645,17 +643,17 @@ export class ClipExportService {
       });
     });
 
-    return this.getOwned(userId, projectId, clipId, exportId, workspaceId);
+    return this.getOwned(scope, projectId, clipId, exportId);
   }
 
   async createShareLink(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
     exportId: string,
     expiresInDays: 1 | 7 | 30 | null,
-    workspaceId?: string,
   ): Promise<{ path: string; expiresAt: string | null }> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const prisma = requirePrisma();
     const owned = await prisma.clipExport.findFirst({
       where: {
@@ -663,7 +661,7 @@ export class ClipExportService {
         projectId,
         clipId,
         project: {
-          ...(workspaceId ? { workspaceId } : { userId }),
+          workspaceId: scope.workspaceId,
           ...accessibleProjectWhere(),
         },
         variants: { some: { status: "completed" } },
@@ -682,12 +680,12 @@ export class ClipExportService {
   }
 
   async revokeShareLinks(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     clipId: string,
     exportId: string,
-    workspaceId?: string,
   ) {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const prisma = requirePrisma();
     const owned = await prisma.clipExport.findFirst({
       where: {
@@ -695,7 +693,7 @@ export class ClipExportService {
         projectId,
         clipId,
         project: {
-          ...(workspaceId ? { workspaceId } : { userId }),
+          workspaceId: scope.workspaceId,
           ...accessibleProjectWhere(),
         },
       },

@@ -101,7 +101,7 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
     const createProject = (
       title: string,
       workspaceId: string,
-      userId: string,
+      createdByUserId: string,
       data = {},
     ) =>
       prisma.project.create({
@@ -109,7 +109,7 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
           title,
           sourceMediaUrl: `https://example.test/${title}`,
           workspaceId,
-          userId,
+          createdByUserId,
           ...data,
         },
       });

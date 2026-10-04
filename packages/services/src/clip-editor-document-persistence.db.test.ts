@@ -1,3 +1,4 @@
+import { workspaceService } from "./workspace.service";
 import { randomUUID } from "node:crypto";
 import {
   afterAll,
@@ -7,12 +8,15 @@ import {
   setDefaultTimeout,
   test,
 } from "bun:test";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import {
   DEFAULT_CAPTION_PRESET,
+  CLIP_AUTO_LAYOUT_ENGINE,
+  CLIP_AUTO_LAYOUT_VERSION,
   captionPresetSchema,
   editorDocumentSchema,
   studioEditsSchema,
+  type ClipAutoLayoutAnalysis,
 } from "@narriflow/validators";
 import {
   ClipEditorRevisionConflictError,
@@ -28,7 +32,7 @@ import {
   openClipPersistenceTestDatabase,
 } from "./clip-persistence-db-test-support";
 import { prismaMediaCleanupStore } from "./media-cleanup";
-import { clipService } from "./clip.service";
+import { LayoutEvidenceLifecycle } from "./layout-evidence";
 
 const dbDescribe = clipPersistenceDbTestEnabled ? describe : describe.skip;
 
@@ -65,45 +69,111 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     return {
       actorUserId: f.user.id,
       workspaceId: f.workspace.id,
-      workspaceOwnerUserId: f.user.id,
     };
   }
 
+  test("non-owner editors save by Workspace scope while viewers and foreign Workspaces cannot write", async () => {
+    const f = await fixture();
+    const editor = await prisma.user.create({ data: { clerkId: `editor-member:${randomUUID()}` } });
+    await prisma.workspaceMember.create({ data: { userId: editor.id, workspaceId: f.workspace.id, role: "editor" } });
+    const persistence = createClipEditorDocumentPersistence({
+      store: prismaClipEditorDocumentStore,
+      authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
+    });
+    const scope = { actorUserId: editor.id, workspaceId: f.workspace.id, projectId: f.project.id, clipId: f.clip.id };
+    const current = await persistence.readDocument(scope);
+    const saved = await persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: current.revision, document: { ...current.document, brollUrl: "https://example.test/editor.mp4" } } });
+    expect(saved.revision).toBe(current.revision + 1);
+    expect((await prisma.project.findUniqueOrThrow({ where: { id: f.project.id } })).createdByUserId).toBe(f.user.id);
+    await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: editor.id } }, data: { role: "viewer" } });
+    await expect(persistence.mutateDocument({ ...scope, intent: { kind: "set_broll_url", brollUrl: null } })).rejects.toMatchObject({ code: "workspace_access_denied" });
+    const other = await prisma.workspace.create({ data: { name: "Different editor Workspace", ownerUserId: editor.id, members: { create: { userId: editor.id, role: "owner" } } } });
+    await expect(persistence.readDocument({ ...scope, workspaceId: other.id })).rejects.toMatchObject({ code: "clip_not_found" });
+    expect((await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).editorRevision).toBe(saved.revision);
+  });
+
   test("obsolete automatic layout evidence is reclaimed without losing the claim fence", async () => {
     const f = await fixture();
+    const evidence = new LayoutEvidenceLifecycle({ prisma });
     await prisma.clip.update({
       where: { id: f.clip.id },
       data: {
         autoLayoutStatus: "completed",
         autoLayoutAnalysis: { version: 1, engine: "shot-layout-v1" },
-        viralityScore: 100,
+        viralityScore: 99,
       },
     });
 
-    const claim = await clipService.claimNextClipForAutoLayoutAnalysis(60_000);
+    const claim = await evidence.claimAutomatic(60_000);
     expect(claim?.id).toBe(f.clip.id);
     if (!claim) throw new Error("expected stale analysis to be reclaimed");
     const claimed = await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } });
     expect(claimed.autoLayoutStatus).toBe("processing");
     expect(claimed.autoLayoutAnalysis).toBeNull();
     expect(claimed.autoLayoutClaimToken).toBe(claim.autoLayoutClaimToken);
-    expect((await clipService.claimNextClipForAutoLayoutAnalysis(60_000))?.id).not.toBe(f.clip.id);
-    expect(await clipService.deferClaimedClipAutoLayoutAnalysis(
+    expect((await evidence.claimAutomatic(60_000))?.id).not.toBe(f.clip.id);
+    expect(await evidence.deferAutomatic(
       f.clip.id,
       randomUUID(),
       new Date(Date.now() + 60_000),
     )).toBe(false);
-    expect(await clipService.deferClaimedClipAutoLayoutAnalysis(
+    expect(await evidence.deferAutomatic(
       f.clip.id,
       claim.autoLayoutClaimToken,
       new Date(Date.now() + 60_000),
     )).toBe(true);
-    expect((await clipService.claimNextClipForAutoLayoutAnalysis(60_000))?.id).not.toBe(f.clip.id);
+    expect((await evidence.claimAutomatic(60_000))?.id).not.toBe(f.clip.id);
+  });
+
+  test("automatic evidence rejects expired and edited claim owners", async () => {
+    const f = await fixture();
+    let now = new Date();
+    const evidence = new LayoutEvidenceLifecycle({ prisma, now: () => now });
+    await prisma.clip.update({
+      where: { id: f.clip.id },
+      data: { autoLayoutAnalysis: Prisma.DbNull, viralityScore: 100 },
+    });
+    const claim = await evidence.claimAutomatic(60_000);
+    expect(claim?.id).toBe(f.clip.id);
+    if (!claim) throw new Error("expected evidence claim");
+    const duration = claim.endSec - claim.startSec;
+    const segment = { startSec: 0, endSec: duration, layout: "single" as const, cxNorm: 0.5, cyNorm: 0.5, zoom: 1, subjects: [] };
+    const analysis: ClipAutoLayoutAnalysis = {
+      version: CLIP_AUTO_LAYOUT_VERSION, engine: CLIP_AUTO_LAYOUT_ENGINE,
+      sourceIdentity: `source:${f.project.id}`, analyzedAtISO: now.toISOString(),
+      clipStartSec: claim.startSec, clipEndSec: claim.endSec,
+      deletedRanges: [], editedDurationSec: duration,
+      sourceWidth: 1920, sourceHeight: 1080,
+      segments: [segment], noSplitSegments: [segment],
+      shotCount: 0, soloShotCount: 0, multiShotCount: 0,
+      twoUpSegmentCount: 0, speakerCount: 0, mappedSpeakerCount: 0,
+    };
+    const expected = { editorRevision: claim.editorRevision, previewStorageKey: claim.previewStorageKey, claimToken: claim.autoLayoutClaimToken };
+    now = new Date(now.getTime() + 60_001);
+    expect(await evidence.completeAutomatic(claim.id, analysis, expected)).toBe(false);
+    expect(await evidence.deferAutomatic(claim.id, claim.autoLayoutClaimToken, new Date(now.getTime() + 60_000))).toBe(false);
+    const reclaimed = await evidence.claimAutomatic(60_000);
+    expect(reclaimed?.id).toBe(claim.id);
+    if (!reclaimed) throw new Error("expected reclaimed evidence");
+    expect(reclaimed.autoLayoutClaimToken).not.toBe(claim.autoLayoutClaimToken);
+    await prisma.clip.update({ where: { id: claim.id }, data: { editorRevision: { increment: 1 } } });
+    expect(await evidence.completeAutomatic(claim.id, analysis, { ...expected, claimToken: reclaimed.autoLayoutClaimToken })).toBe(false);
+    expect((await prisma.clip.findUniqueOrThrow({ where: { id: claim.id } })).autoLayoutAnalysis).toBeNull();
+  });
+
+  test("preview completion rejects a proxy cut before an editor revision", async () => {
+    const f = await fixture();
+    const evidence = new LayoutEvidenceLifecycle({ prisma });
+    await prisma.clip.update({ where: { id: f.clip.id }, data: { previewStorageKey: null, editorRevision: 1 } });
+    const input = { storageKey: "test/new-preview.mp4", startSec: 6, durationSec: 28, expectedClipStartSec: f.clip.startSec, expectedClipEndSec: f.clip.endSec, expectedEditorRevision: 0 };
+    expect((await evidence.completePreview(f.clip.id, input)).persisted).toBe(false);
+    expect((await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).previewStorageKey).toBeNull();
+    expect((await evidence.completePreview(f.clip.id, { ...input, expectedEditorRevision: 1 })).persisted).toBe(true);
   });
 
   test("document, revision, original, render retirement, and cleanup commit together", async () => {
     const f = await fixture();
-    const persistence = createClipEditorDocumentPersistence({
+    const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
       store: prismaClipEditorDocumentStore,
     });
     const sceneLayouts = [
@@ -154,14 +224,13 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
         },
       },
     });
-    const persistence = createClipEditorDocumentPersistence({
+    const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
       store: prismaClipEditorDocumentStore,
     });
 
     const result = await persistence.mutateDocument({
       actorUserId: member.id,
       workspaceId: f.workspace.id,
-      workspaceOwnerUserId: f.user.id,
       projectId: f.project.id,
       clipId: f.clip.id,
       intent: {
@@ -186,7 +255,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       fontName: "Impact",
       primaryColor: "#123456",
     };
-    const persistence = createClipEditorDocumentPersistence({
+    const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
       store: prismaClipEditorDocumentStore,
     });
 
@@ -249,14 +318,13 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
         },
       },
     });
-    const persistence = createClipEditorDocumentPersistence({
+    const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
       store: prismaClipEditorDocumentStore,
     });
 
     const result = await persistence.mutateProjectSelection({
       actorUserId: member.id,
       workspaceId: f.workspace.id,
-      workspaceOwnerUserId: f.user.id,
       projectId: f.project.id,
       intent: {
         kind: "set_caption_preset",
@@ -269,7 +337,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
 
   test("two different full replacements from one revision have one winner", async () => {
     const f = await fixture();
-    const persistence = createClipEditorDocumentPersistence({ store: prismaClipEditorDocumentStore });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); }, store: prismaClipEditorDocumentStore });
     const attempts = await Promise.allSettled([
       persistence.mutateDocument({
         ...fixtureActorScope(f),
@@ -302,7 +370,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
 
   test("boundary-changing Reset settles once, keeps the original immutable, and retries as a no-op", async () => {
     const f = await fixture();
-    const persistence = createClipEditorDocumentPersistence({ store: prismaClipEditorDocumentStore });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); }, store: prismaClipEditorDocumentStore });
     await persistence.mutateDocument({
       ...fixtureActorScope(f),
       projectId: f.project.id,
@@ -376,7 +444,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
 
   test("Reset racing another full replacement has one revision winner", async () => {
     const f = await fixture();
-    const persistence = createClipEditorDocumentPersistence({ store: prismaClipEditorDocumentStore });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); }, store: prismaClipEditorDocumentStore });
     await persistence.mutateDocument({
       ...fixtureActorScope(f),
       projectId: f.project.id,
@@ -436,8 +504,8 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
         return prismaClipEditorDocumentStore.commit(input);
       },
     };
-    const fieldPersistence = createClipEditorDocumentPersistence({ store: delayingStore });
-    const fullPersistence = createClipEditorDocumentPersistence({
+    const fieldPersistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); }, store: delayingStore });
+    const fullPersistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
       store: prismaClipEditorDocumentStore,
     });
     const fieldMutation = fieldPersistence.mutateDocument({
@@ -516,8 +584,8 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
         return prismaClipEditorDocumentStore.commitProjectSelection(input);
       },
     };
-    const bulkPersistence = createClipEditorDocumentPersistence({ store: delayingStore });
-    const singlePersistence = createClipEditorDocumentPersistence({
+    const bulkPersistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); }, store: delayingStore });
+    const singlePersistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
       store: prismaClipEditorDocumentStore,
     });
     const captionPreset = { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" };
@@ -575,7 +643,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       FOR EACH ROW EXECUTE FUNCTION "fail_editor_cleanup_insert"()
     `);
     try {
-      const persistence = createClipEditorDocumentPersistence({
+      const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
         store: prismaClipEditorDocumentStore,
       });
       await expect(
@@ -633,7 +701,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       FOR EACH ROW EXECUTE FUNCTION "fail_editor_bulk_cleanup_insert"()
     `);
     try {
-      const persistence = createClipEditorDocumentPersistence({
+      const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
         store: prismaClipEditorDocumentStore,
       });
       await expect(
@@ -673,7 +741,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
   });
 
   test("non-null malformed document columns never collapse to defaults", async () => {
-    const persistence = createClipEditorDocumentPersistence({
+    const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
       store: prismaClipEditorDocumentStore,
     });
     for (const column of ["captionPreset", "studioEdits", "deletedRanges"] as const) {

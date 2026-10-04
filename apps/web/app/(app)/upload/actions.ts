@@ -99,7 +99,7 @@ export async function commitLinkImportAction(input: {
   return executeWorkspaceAction("processing.consume", async (appUser) => {
   try {
     const title = input.title?.trim() || (await fetchYoutubeTitle(input.url));
-    const ingest = await projectService.queueLinkIngest(appUser.actorUserId, {
+    const ingest = await projectService.queueLinkIngest(appUser, {
       url: input.url,
       title: title || undefined,
       brandTemplateId: input.brandTemplateId,
@@ -109,8 +109,7 @@ export async function commitLinkImportAction(input: {
       mode: input.mode,
       processingStartSec: input.processingStartSec,
       processingEndSec: input.processingEndSec,
-    }, appUser.workspaceId,
-    );
+    });
     revalidatePath(`/projects/${ingest.project.id}`);
     return {
       ok: true,
@@ -157,12 +156,7 @@ export async function finalizeLinkConfigureAction(input: {
 }): Promise<FinalizeLinkConfigureResult> {
   return executeProjectActionWithInput(input.projectId, "content.edit", input, linkConfigureActionInputSchema, async (appUser, parsedInput) => {
   try {
-    const result = await projectService.finalizeGenerationSetup(
-      appUser.workspaceOwnerUserId,
-      parsedInput.projectId,
-      parsedInput.contentPack,
-      parsedInput.languageCode,
-    );
+    const result = await projectService.finalizeGenerationSetup(appUser, parsedInput.projectId, parsedInput.contentPack, parsedInput.languageCode);
     revalidatePath(`/projects/${parsedInput.projectId}`);
     return { ok: true, ...result };
   } catch (error) {
@@ -197,12 +191,7 @@ export async function saveGenerationDraftAction(input: {
   languageCode: string | null;
 }): Promise<SaveGenerationDraftResult> {
   return executeProjectActionWithInput(input.projectId, "content.edit", input, linkConfigureActionInputSchema, async (appUser, parsedInput) => {
-    await projectService.saveGenerationDraft(
-      appUser.workspaceOwnerUserId,
-      parsedInput.projectId,
-      parsedInput.contentPack,
-      parsedInput.languageCode,
-    );
+    await projectService.saveGenerationDraft(appUser, parsedInput.projectId, parsedInput.contentPack, parsedInput.languageCode);
     revalidatePath(`/projects/${parsedInput.projectId}`);
     return { ok: true };
   });
@@ -250,21 +239,16 @@ export async function generateFromRssAction(formData: FormData) {
 
   let ingest;
   try {
-    ingest = await projectService.importFromRss(
-      appUser.actorUserId,
-      {
+    ingest = await projectService.importFromRss(appUser, {
         rssUrl: parsedInput.rssUrl,
         titlePrefix: parsedInput.titlePrefix,
         episodeIds: parsedInput.episodeIds,
         commitToken: parsedInput.commitToken,
         brandTemplateId: parsedInput.brandTemplateId,
-      },
-      appUser.workspaceId,
-      {
+      }, {
         contentPack: parsedInput.contentPack,
         languageCode: parsedInput.languageCode,
-      },
-    );
+      });
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error
         ? String(error.code)

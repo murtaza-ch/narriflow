@@ -4,8 +4,7 @@ import { AutopilotPanel } from "./autopilot-panel";
 
 export default async function AutopilotPage() {
   const appUser = await admitWorkspacePage("content.view");
-  const rules = await autopilotService.listRules(appUser.workspaceOwnerUserId, appUser.workspaceId,
-  );
+  const rules = await autopilotService.listRules(appUser);
 
   return <AutopilotPanel initialRules={rules} />;
 }

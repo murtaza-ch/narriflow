@@ -75,12 +75,11 @@ export default async function ExportsPage({
     appUser.workspace.role !== "viewer";
   const [exportPage, projects] = await Promise.all([
     workspaceLibraryService.listExports(
-      appUser.actorUserId,
-      appUser.workspaceId,
+      appUser,
       { status, query: params.q, projectId: params.project, aspectRatio, from, to, cursor: params.cursor,
       },
     ),
-    workspaceLibraryService.listExportProjects(appUser.actorUserId, appUser.workspaceId,
+    workspaceLibraryService.listExportProjects(appUser,
     ),
   ]);
 

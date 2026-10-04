@@ -374,9 +374,8 @@ export class AudioAssetService {
    * to a 404, which then surfaced as an indistinguishable-from-transient
    * "download failed" error rather than the true "this asset is gone"
    * condition. Callers already treat a `null` return exactly like any other
-   * resolve-miss (log `clip_music_asset_resolve_failed`/
-   * `clip_sfx_asset_resolve_failed` in render-clips.ts and skip the track,
-   * never fail the whole clip) — same policy, now triggered by the honest
+   * resolve-miss (the Clip Render Attempt logs the unavailable optional track
+   * and omits it without failing the clip) — same policy, now triggered by the honest
    * condition instead of masking it as a download failure.
    */
   async resolveRenderSource(

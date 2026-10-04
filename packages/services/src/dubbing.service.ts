@@ -1,3 +1,5 @@
+import { accessibleProjectWhere } from "./project-access";
+import type { ActorScope } from "./actor-scope";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   clipAspectRatioDbSchema,
@@ -123,20 +125,20 @@ function toDubSnapshot(row: {
 
 export class DubbingService {
   async listProjectDubs(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
   ): Promise<ClipDubSnapshot[]> {
     const prisma = requirePrisma();
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     const rows = await prisma.clipDub.findMany({
-      where: { projectId, project: { userId } },
+      where: { projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       orderBy: [{ createdAt: "desc" }],
     });
     return rows.map(toDubSnapshot);
   }
 
   async requestClipDub(
-    userId: string,
-    workspaceId: string,
+    scope: ActorScope,
     projectId: string,
     idempotencyKey: string,
     input: RequestClipDubInput,
@@ -155,8 +157,8 @@ export class DubbingService {
 
     const prisma = requirePrisma();
     const actor = await workspaceService.requireActor(
-      userId,
-      workspaceId,
+      scope.actorUserId,
+      scope.workspaceId,
       "processing.consume",
     );
     if (!hasFeature(actor.pricingTier, "dubbing")) {
@@ -170,7 +172,7 @@ export class DubbingService {
       where: {
         id: parsed.clipId,
         projectId,
-        project: { workspaceId },
+        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       include: { renders: true },
     });
@@ -300,14 +302,15 @@ export class DubbingService {
   }
 
   async getDubDownloadUrl(
-    userId: string,
+    scope: ActorScope,
     projectId: string,
     dubId: string,
     asset: "video" | "audio" = "video",
   ): Promise<{ downloadUrl: string; expiresInSeconds: number; fileName: string }> {
     const prisma = requirePrisma();
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.download");
     const dub = await prisma.clipDub.findFirst({
-      where: { id: dubId, projectId, project: { userId } },
+      where: { id: dubId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       include: { clip: true },
     });
 

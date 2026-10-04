@@ -11,13 +11,7 @@ export default async function ClipExportPage({
   const { projectId, clipId, exportId } = await params;
   const appUser = await admitProjectPage(projectId, "content.download");
   const [exported, initialSeq] = await Promise.all([
-    clipExportService.getOwned(
-      appUser.workspaceOwnerUserId,
-      projectId,
-      clipId,
-      exportId,
-      appUser.workspaceId,
-    ),
+    clipExportService.getOwned(appUser, projectId, clipId, exportId),
     getLastWorkflowSeq(projectId),
   ]);
   if (!exported) notFound();

@@ -33,6 +33,8 @@ import {
   type MediaCleanupObligationInput,
 } from "./media-cleanup";
 import { accessibleProjectWhere } from "./project-access";
+import type { ActorScope } from "./actor-scope";
+import { workspaceService } from "./workspace.service";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -92,7 +94,6 @@ export class ClipEditorDocumentPersistenceError extends ExpectedDomainFailureErr
 
 export interface ClipEditorDocumentStoredState {
   workspaceId: string;
-  workspaceOwnerUserId: string;
   projectId: string;
   clipId: string;
   revision: number;
@@ -122,11 +123,7 @@ export interface ClipEditorDocumentStoredState {
   mutableRenders: Array<{ id: string; storageKey: string | null }>;
 }
 
-export interface ClipEditorDocumentActorScope {
-  actorUserId: string;
-  workspaceId: string;
-  workspaceOwnerUserId: string;
-}
+export type ClipEditorDocumentActorScope = ActorScope;
 
 export interface ClipEditorDocumentScope extends ClipEditorDocumentActorScope {
   projectId: string;
@@ -472,6 +469,7 @@ function safeRecord(
 }
 
 export function createClipEditorDocumentPersistence(input: {
+  authorize(scope: ActorScope, capability: "content.view" | "content.edit"): Promise<void>;
   store: ClipEditorDocumentStore;
   diagnostics?: ClipEditorDocumentDiagnostics;
   now?: () => Date;
@@ -492,6 +490,7 @@ export function createClipEditorDocumentPersistence(input: {
   async function mutateDocument(
     request: ClipEditorDocumentScope & { intent: ClipEditorDocumentMutationIntent },
   ): Promise<ClipEditorDocumentMutationResult> {
+    await input.authorize(request, "content.edit");
     const startedAt = now().getTime();
     const baseRevision =
       request.intent.kind === "replace" || request.intent.kind === "reset"
@@ -710,6 +709,7 @@ export function createClipEditorDocumentPersistence(input: {
 
   return {
     async readDocument(scope: ClipEditorDocumentScope) {
+      await input.authorize(scope, "content.view");
       const state = await readState(scope);
       return {
         revision: state.revision,
@@ -722,11 +722,11 @@ export function createClipEditorDocumentPersistence(input: {
     async mutateProjectSelection(request: {
       actorUserId: string;
       workspaceId: string;
-      workspaceOwnerUserId: string;
       projectId: string;
       excludeClipId?: string;
       intent: ClipEditorProjectSelectionIntent;
     }): Promise<{ updated: number }> {
+      await input.authorize(request, "content.edit");
       const startedAt = now().getTime();
       const mutationKind =
         request.intent.kind === "set_caption_preset"
@@ -746,7 +746,6 @@ export function createClipEditorDocumentPersistence(input: {
               scope: {
                 actorUserId: request.actorUserId,
                 workspaceId: request.workspaceId,
-                workspaceOwnerUserId: request.workspaceOwnerUserId,
                 projectId: request.projectId,
                 clipId: state.clipId,
               },
@@ -841,7 +840,6 @@ export function createInMemoryClipEditorDocumentStore(
       seed.projectId,
       {
         workspaceId: seed.workspaceId,
-        workspaceOwnerUserId: seed.workspaceOwnerUserId,
       },
     ]),
   );
@@ -851,8 +849,7 @@ export function createInMemoryClipEditorDocumentStore(
     const projectScope = projectScopes.get(scope.projectId);
     return Boolean(
       projectScope &&
-        projectScope.workspaceId === scope.workspaceId &&
-        projectScope.workspaceOwnerUserId === scope.workspaceOwnerUserId,
+        projectScope.workspaceId === scope.workspaceId,
     );
   };
 
@@ -862,7 +859,6 @@ export function createInMemoryClipEditorDocumentStore(
         (record) =>
           record.state.projectId === scope.projectId &&
           record.state.workspaceId === scope.workspaceId &&
-          record.state.workspaceOwnerUserId === scope.workspaceOwnerUserId &&
           record.state.clipId !== scope.excludeClipId,
       )
       .sort((left, right) => left.state.clipId.localeCompare(right.state.clipId));
@@ -901,8 +897,7 @@ export function createInMemoryClipEditorDocumentStore(
       if (
         !record ||
         record.state.projectId !== scope.projectId ||
-        record.state.workspaceId !== scope.workspaceId ||
-        record.state.workspaceOwnerUserId !== scope.workspaceOwnerUserId
+        record.state.workspaceId !== scope.workspaceId
       ) {
         return null;
       }
@@ -914,13 +909,14 @@ export function createInMemoryClipEditorDocumentStore(
         record &&
           record.state.projectId === scope.projectId &&
           record.state.workspaceId === scope.workspaceId &&
-          record.state.workspaceOwnerUserId === scope.workspaceOwnerUserId &&
           record.state.revision === expectedRevision,
       );
     },
     async commit(input) {
       const record = records.get(input.scope.clipId);
-      if (!record || record.state.revision !== input.expectedRevision) return null;
+      if (!record || record.state.projectId !== input.scope.projectId ||
+        record.state.workspaceId !== input.scope.workspaceId ||
+        record.state.revision !== input.expectedRevision) return null;
       if (forcedContention > 0) {
         forcedContention -= 1;
         return null;
@@ -1112,7 +1108,6 @@ export function decodeClipEditorDocumentFromStorage(
 function decodePrismaState(
   row: NonNullable<PrismaStoredClip> & {
     project: {
-      userId: string;
       workspaceId: string;
       sourceDurationSeconds: number | null;
       sourceStorageKey: string | null;
@@ -1142,7 +1137,6 @@ function decodePrismaState(
   }
   return {
     workspaceId: row.project.workspaceId,
-    workspaceOwnerUserId: row.project.userId,
     projectId: row.projectId,
     clipId: row.id,
     revision: row.editorRevision,
@@ -1176,7 +1170,6 @@ function decodePrismaState(
 const prismaClipInclude = {
   project: {
     select: {
-      userId: true,
       workspaceId: true,
       sourceDurationSeconds: true,
       sourceStorageKey: true,
@@ -1238,7 +1231,6 @@ class ProjectSelectionRevisionChanged extends Error {}
 function prismaProjectAccessWhere(scope: ClipEditorDocumentActorScope) {
   return {
     workspaceId: scope.workspaceId,
-    userId: scope.workspaceOwnerUserId,
     ...accessibleProjectWhere(),
   } satisfies Prisma.ProjectWhereInput;
 }
@@ -1303,8 +1295,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
     const project = await requirePrisma().project.findFirst({
       where: { id: scope.projectId, ...prismaProjectAccessWhere(scope) },
       select: {
-        userId: true,
-        workspaceId: true,
+          workspaceId: true,
         sourceDurationSeconds: true,
         sourceStorageKey: true,
         transcript: { select: { utterancesJson: true } },
@@ -1320,7 +1311,6 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
       decodePrismaState({
         ...row,
         project: {
-          userId: project.userId,
           workspaceId: project.workspaceId,
           sourceDurationSeconds: project.sourceDurationSeconds,
           sourceStorageKey: project.sourceStorageKey,
@@ -1417,6 +1407,7 @@ const structuredDiagnostics: ClipEditorDocumentDiagnostics = {
 };
 
 export const clipEditorDocumentPersistence = createClipEditorDocumentPersistence({
+  authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
   store: prismaClipEditorDocumentStore,
   diagnostics: structuredDiagnostics,
 });

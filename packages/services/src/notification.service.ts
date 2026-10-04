@@ -206,8 +206,8 @@ function getDefaultStore(): NotificationStore {
           title: true,
           notifyOnComplete: true,
           expiresAt: true,
-          user: {
-            select: { primaryEmail: true, emailVerifiedAt: true },
+          workspace: {
+            select: { owner: { select: { primaryEmail: true, emailVerifiedAt: true } } },
           },
           _count: { select: { clips: true } },
         },
@@ -218,8 +218,8 @@ function getDefaultStore(): NotificationStore {
             id: row.id,
             title: row.title,
             notifyOnComplete: row.notifyOnComplete,
-            primaryEmail: row.user.primaryEmail,
-            emailVerifiedAt: row.user.emailVerifiedAt,
+            primaryEmail: row.workspace.owner.primaryEmail,
+            emailVerifiedAt: row.workspace.owner.emailVerifiedAt,
             expiresAt: row.expiresAt,
             clipCount: row._count.clips,
           }
