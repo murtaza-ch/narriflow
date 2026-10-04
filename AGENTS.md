@@ -26,10 +26,10 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 
 ## Critical paths (where bugs hurt most)
 
-- Quota gate + Stripe billing webhook — `packages/services/src/billing.service.ts`.
+- Quota gate — `packages/services/src/project.service.ts`; Stripe billing webhook — `packages/services/src/billing.service.ts`.
 - Upload Session admission, verification, and ingest handoff — `packages/services/src/upload-session.service.ts`.
 - Workflow claiming/reaper — `packages/services/src/workflow-run-lifecycle.ts`.
-- Clip render pipeline — `apps/worker/src/tasks/clip-render-attempt.ts` + `apps/worker/src/tasks/render-clips.ts`.
+- Clip render pipeline — `apps/worker/src/tasks/clip-render-attempt.ts` + `apps/worker/src/composition-ffmpeg-adapter.ts`.
 - Social publishing — `packages/services/src/social.service.ts` + `apps/worker/src/tasks/social-publisher.ts`.
 
 ## Verification

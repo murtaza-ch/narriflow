@@ -35,6 +35,14 @@ The immutable, versioned result of resolving one Clip Editor Document, source fa
 The plan does not carry render-time media facts that only one adapter can observe, such as source frame rate or a logo image's intrinsic size. Where placement depends on such a fact, the plan states a symbolic anchor both adapters late-bind, and says so at the field. A symbolic anchor is not a leak.
 _Avoid_: FFmpeg filter graph, preview layout, auto-layout analysis
 
+**Layout Evidence**:
+Source-bound Automatic, Screen, or Split observations for one canonical Clip window and edited timeline. The worker owner validates durable evidence, lazily obtains one complete analysis segment, normalizes detector facts, constructs current envelopes, and publishes through revision and execution-owner fences. Preview analysis and export share original source dimensions and zoom limits; proxy dimensions never choose composition policy. Typed unavailable, failed, and disabled states remain planner inputs.
+_Avoid_: Layout plan, detector payload, renderer fallback
+
+**Layout Evidence Lifecycle**:
+The service module that owns preview publication and the durable Automatic analysis queue, including renewed claim leases, editor-revision and proxy fencing, completion, retry deferral, and immediate shutdown release. Claim loss aborts the analysis through its execution signal. Workflow Attempt publication uses its own execution fence.
+_Avoid_: Clip Service preview helper, analysis worker mutex
+
 **Scene Block**:
 A bounded visual insertion that occupies edited time in one Clip Editor Document and may contain video, an image, a color card, or a text card.
 _Avoid_: Timeline clip, composition scene, intro file
@@ -94,8 +102,16 @@ A stable reason that a Workflow Attempt could not produce its intended outcome, 
 _Avoid_: Exception string, error-code registry
 
 **Ingest Job**:
-A persistent execution record for bringing source media into a project before post-ingest processing begins.
+A persistent execution record for bringing source media into a project before post-ingest processing begins. Its lifecycle module owns claims, progress, settlement, automatic retries, manual retry admission and the generation handoff. Job, Project and Workflow Event changes commit together. Automatic retries reuse a job with bounded attempts and backoff; a manual retry creates one new job under a separate project budget.
 _Avoid_: Workflow run, upload task
+
+**Ingest Claim**:
+One exclusive, time-bounded and heartbeat-renewed right to execute an Ingest Job, identified by an immutable claim ID. Only the current unexpired Ingest Claim may report progress or settle its job. Claim loss is a control signal. Graceful worker shutdown releases a claim without consuming the automatic retry budget.
+_Avoid_: Workflow Attempt, worker ID, ingest status
+
+**Ingest Generation Handoff**:
+The durable obligation left by a completed Ingest Job to admit post-ingest generation using the committed Content Pack. Admission, transcript setup and handoff acknowledgment commit together. Draft setup waits; transient admission failures defer; permanent admission failures settle the Ingest Job and Project with an actionable reason and durable notification intent.
+_Avoid_: Generation callback, best-effort trigger, ready with no clips
 
 **Media Cleanup**:
 The durable execution module that owns exact-key removal of unreferenced private media after an approved producer commits its database state. It owns idempotent obligation admission, provisional copy-compensation holds, fenced claims, renewal, storage outcome classification, bounded retry, settlement, and identifier-safe diagnostics. Clip Editor Document Persistence, detected Clip replacement, and Clip duplication still own the decision and transaction that create or adopt cleanup intent.
@@ -110,6 +126,10 @@ _Avoid_: Stripe customer, billing event, subscription row
 **Social Post**:
 The workspace-owned product projection of one frozen publication intent, including its scheduled slot, current publication state, final link, and user-safe failure or attention outcome.
 _Avoid_: Publish job, provider upload, retry row
+
+**Publication Intent**:
+The confirmed account-specific content and delivery request for one Social Post. Retrying that request preserves the same Social Post; a corrected or additional submission is a new Publication Intent.
+_Avoid_: Publishing Draft, provider operation
 
 **Frozen Publication State**:
 The immutable editor revision, exact Clip Export and variant, social account, platform, caption, settings, capability version, and schedule that every attempt for one Social Post must use.
@@ -158,6 +178,10 @@ _Avoid_: Workflow Run, image task, generation credit
 **Publishing Draft**:
 An unfinished browser-local publishing composition scoped to one signed-in actor, Workspace, Project, Clip, and destination account. It preserves editable copy, settings, cover identity, and scheduling choices; it is separate from Studio’s Device Draft and from a durable submitted Social Post.
 _Avoid_: Device Draft, Social Post, provider inbox draft
+
+**Publishing Composition Session**:
+The actor's ongoing publishing work within one Workspace and Project, including Publishing Drafts, unresolved submissions, and accepted destinations. An unresolved submission retains its identity until its outcome is known.
+_Avoid_: Studio Editing Session, Social Publication Attempt
 
 **TikTok Inbox Delivery**:
 Delivery of a frozen clip video to a connected creator’s TikTok inbox, where the creator completes publication. Delivery settles the Social Publication Attempt as Sent to TikTok without a published event. Later verified evidence may report zero, one, or multiple public posts from that upload.

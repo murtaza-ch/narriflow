@@ -64,3 +64,31 @@ from the deployed database, which retained its seven existing projects.
 `bun run env:check`, lint, typecheck, and the fast test command passed. The
 checker and this runbook are local working-tree additions beyond the deployed
 commit.
+
+## Layout evidence worker configuration
+
+The worker validates layout settings at startup and shares them between background
+proxy analysis and export. Invalid values fail startup instead of silently choosing
+another value. Set these only in the intended worker environment.
+
+| Setting | Default | Accepted values |
+| --- | --- | --- |
+| `WORKER_AUTO_LAYOUT_ANALYSIS` | `1` | `0` disables background analysis; `1` enables it |
+| `WORKER_AUTO_LAYOUT_BATCH_SIZE` | `2` | Integer from 1 through 10; claims are sequential |
+| `WORKER_AUTO_LAYOUT_LEASE_MS` | `180000` | Integer milliseconds from 30000 through 900000 |
+| `WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS` | `300000` | Nonnegative safe integer milliseconds; `0` allows immediate retry |
+| `REFRAME_PYTHON` | `python3` | Interpreter with OpenCV and NumPy installed |
+| `REFRAME_MODEL_PATH` | `/usr/local/share/narriflow/face_yunet.onnx` | YuNet model path |
+| `REFRAME_SAMPLE_FPS` | `4` | Finite positive sample rate |
+| `REFRAME_SCENE_THRESHOLD` | `0.3` | Finite value greater than 0 and at most 1 |
+| `WORKER_LAYOUT_ENGINE`, `WORKER_SCREEN_LAYOUT`, `WORKER_SPLIT` | `1` | `0` disables that engine; `1` enables it |
+| `WORKER_PIP_MOTION_THRESHOLD` | `0.12` | Finite value greater than 0 and at most 1 |
+| `WORKER_PROBE_TIMEOUT_MS` | `120000` | Finite positive timeout for original source probing and detector commands |
+
+Preview analysis probes the original source through WorkerProcess before running
+normalized detections on the local proxy. The same original dimensions determine
+preview and export zoom limits. A proxy that does not cover the complete Clip
+window cannot publish Automatic evidence. Queue completion is fenced by the live
+renewed claim lease, editor revision, and proxy identity. Ownership loss aborts
+media work, and shutdown releases the current claim immediately. Transient
+publication failures use the configured durable backoff.

@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Architecture review — Narriflow</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose", flowchart: { curve: "basis", htmlLabels: true } });
+</script>
+<style>
+  :root { --accent:#2438E8; --leak:#dc2626; --ink:#0f172a; }
+  body { font-feature-settings: "ss01"; }
+  .serif { font-family: Georgia, "Times New Roman", serif; }
+  .lbl { font-size:10px; letter-spacing:.12em; text-transform:uppercase; }
+  .seam { stroke-dasharray:4 4; }
+  .hatch { background-image:repeating-linear-gradient(45deg,rgba(220,38,38,.14) 0 6px,transparent 6px 12px); }
+  .fade { opacity:.38; }
+  .deep { background:linear-gradient(135deg,#0f172a,#1e293b); color:#fff; }
+  .diagram { min-height:320px; }
+  .mermaid { display:flex; justify-content:center; font-size:13px; }
+  .mermaid svg { max-height:330px; }
+  .chip { display:inline-block; font:11px/1.4 ui-monospace,monospace; padding:2px 6px; border-radius:4px; margin:2px 2px 0 0; }
+  .chip-leak { background:#fee2e2; color:#991b1b; }
+  .chip-n { background:#f1f5f9; color:#334155; }
+  .chip-ok { background:#e0e7ff; color:#1e2a9e; }
+  .strike { text-decoration:line-through; text-decoration-color:#dc2626; }
+  table.ledger td, table.ledger th { vertical-align:top; }
+  html { scroll-behavior:smooth; }
+  dl > dt, dl > dd { min-width:0; overflow-wrap:anywhere; }
+  .diagram { min-width:0; overflow-wrap:anywhere; }
+</style>
+</head>
+<body class="bg-stone-50 text-slate-900 font-sans antialiased">
+<main class="max-w-5xl mx-auto px-4 md:px-6 py-12 space-y-14">
+
+<!-- ============ HEADER ============ -->
+<header class="space-y-6 border-b-2 border-slate-900 pb-8">
+  <div class="text-xs font-mono text-slate-500">Narriflow · branch dev · 3 October 2026 · basis <span class="text-slate-800">cafaddf</span> + uncommitted working tree</div>
+  <h1 class="serif text-4xl md:text-5xl leading-tight">Architecture review: gaps, issues, and inconsistencies</h1>
+  <p class="text-sm text-slate-600 max-w-3xl">Scope: hot spots since the 13 September review (all eight of its candidates are closed). These are <code>project.service.ts</code> (11 touches), the ingest and worker loops, publishing, and the uncommitted layout-engine and composition work. Three read-only explorers covered intake, composition and publishing. I then re-read every finding marked <span class="font-semibold text-indigo-700">✓</span> in source.</p>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-px bg-slate-300 border border-slate-300 text-sm">
+    <div class="bg-white p-4"><div class="text-2xl font-semibold">9</div><div class="text-slate-500">deepening candidates</div></div>
+    <div class="bg-white p-4"><div class="text-2xl font-semibold text-red-700">8</div><div class="text-slate-500">bugs confirmed in source</div></div>
+    <div class="bg-white p-4"><div class="text-2xl font-semibold">6</div><div class="text-slate-500">pre-production policy breaches</div></div>
+    <div class="bg-white p-4"><div class="text-2xl font-semibold">13</div><div class="text-slate-500">dead or orphaned surfaces</div></div>
+  </div>
+  <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-600 items-center">
+    <span class="flex items-center gap-2"><span class="inline-block w-5 h-4 border border-slate-400 bg-white"></span>module</span>
+    <span class="flex items-center gap-2"><svg width="30" height="8"><title>Module seam</title><line x1="0" y1="4" x2="30" y2="4" stroke="#475569" stroke-width="2" class="seam"/></svg>seam</span>
+    <span class="flex items-center gap-2"><svg width="30" height="8"><title>Policy leakage</title><line x1="0" y1="4" x2="24" y2="4" stroke="#dc2626" stroke-width="2"/><path d="M24 0 L30 4 L24 8z" fill="#dc2626"/></svg>leakage</span>
+    <span class="flex items-center gap-2"><span class="inline-block w-5 h-4 deep border-2 border-slate-900"></span>deep module</span>
+    <span class="flex items-center gap-2"><span class="inline-block w-5 h-4 hatch border border-red-300"></span>defect / duplicated policy</span>
+    <span class="flex items-center gap-2"><span class="text-indigo-700 font-semibold">✓</span> re-verified in source</span>
+    <span class="flex items-center gap-2"><span class="font-mono">[U]</span> uncommitted code</span>
+  </div>
+  <nav class="grid md:grid-cols-3 gap-x-6 gap-y-1 text-sm pt-2">
+    <a class="hover:underline" href="#c1">01 · Ingest Job lifecycle module</a>
+    <a class="hover:underline" href="#c2">02 · One Layout Evidence module</a>
+    <a class="hover:underline" href="#c3">03 · Plan owns crop time; delete shadow geometry</a>
+    <a class="hover:underline" href="#c4">04 · Social Post admission replays first</a>
+    <a class="hover:underline" href="#c5">05 · Publishing Composition Session</a>
+    <a class="hover:underline" href="#c6">06 · Actor Scope down to storage</a>
+    <a class="hover:underline" href="#c7">07 · Dissolve project.service.ts</a>
+    <a class="hover:underline" href="#c8">08 · Shrink renderClipGroup</a>
+    <a class="hover:underline" href="#c9">09 · MCP admission and failure adapter</a>
+    <a class="hover:underline font-semibold" href="#ledger">Ledger: gaps and inconsistencies</a>
+    <a class="hover:underline font-semibold" href="#top">Top recommendation</a>
+  </nav>
+</header>
+
+<aside id="fix-verification" class="rounded-xl border border-indigo-200 bg-white p-5 space-y-3">
+  <h2 class="serif text-2xl">Fix verification · 4 October 2026</h2>
+  <p class="text-sm text-slate-600">The fixes below use <code>cafaddf8a5189cec22d3a34145221c4e6d1654ec</code> as their baseline. Each fix is checked against source, reviewed for standards and report requirements, and verified before the next candidate proceeds. Findings and check marks in the original review below describe the baseline; this section records the current result.</p>
+  <ul class="list-disc pl-5 text-sm space-y-2">
+    <li><b>D1 and X1 completed.</b> Removed the unused Project-creation Server Action and its request-inventory declaration. Corrected the quota-gate pointer in AGENTS.md. All 17 request-inventory tests pass. Standards review: 0 findings. Spec review: 0 findings.</li>
+    <li><b>01 completed.</b> Ingest lifecycle owns claims, atomic settlement, retry, reaping and generation handoff. Corrected shutdown and concurrent same-pack admission findings in a second review loop. Standards: 0 findings. Spec: 0 findings. Typecheck and 81 focused tests pass; Upload Session PostgreSQL gate passes. All 64 Workflow and 16 Ingest PostgreSQL tests pass, including admission races. The new DB suite timeout was corrected to match the existing 180-second DB convention. Chrome retry verified; fixture removed.</li>
+    <li><b>02 completed.</b> One evidence owner serves background analysis and foreground exports, with canonical source geometry and validated configuration. Fixed lease renewal in a second review loop. Standards: 0 findings. Spec: 0 findings. Full fast suite and typecheck pass; 237 worker-focused tests and 3 claim-lifecycle tests pass. All 26 editor and media PostgreSQL tests pass. Local analysis rebuilt 16 segments and 3 two-up segments at 1920×960; Chrome Studio preview verified.</li>
+    <li><b>03 completed.</b> FFmpeg reads each planned source fragment without reconstructing overlay time; removed unused crop/tile/sendcmd geometry. Fixed delayed scene-motion offsets and Studio inserted-clock seek/end handoffs in a second review loop. Standards: 0 findings. Spec: 0 findings. 241 adapter/core/render tests, 24 playback tests and 107 session tests pass, including real FFmpeg frames and current 64-scene/four-target budgets. Full fast suite and typecheck pass; Chrome middle insert and natural end-card playback verified. Test scenes removed.</li>
+    <li><b>04 completed.</b> Admission replays before mutable checks through injected freeze readers; bulk uses the same interface and HTTP consumes admitted input. Removed unused routes and preserved provider receipt fields in cancellation responses. Standards: 0 findings. Spec: 0 findings. 91 focused tests, full fast suite and typecheck pass. All 23 Social Publication/history PostgreSQL tests pass across runs after correcting the history suite timeout; 3 request-policy and 2 bulk PostgreSQL cases pass. Chrome Posts panel verified. Local schema columns, constraints and indexes match fresh migrations after a failed pooled test setup.</li>
+    <li><b>05 completed.</b> Publishing Composition Session owns scoped drafts, exact pending replay, generation fences and merged outcomes through storage, ID and clock adapters. Removed the orphan intent-key module and moved schemas to validators. Fixed failed completed-outcome deletion in a second review loop. Standards: 0 remaining findings. Spec: 0 findings. All 53 session/protocol/schema tests and 20 browser fixtures pass; full fast suite, typecheck and lint pass. Chrome restored exact draft wording after closing and reloading; temporary local channel removed.</li>
+    <li><b>06 completed.</b> Real Actor Scope replaces owner-shaped service arguments and Project storage filters; required Workspace ownership and nullable creator facts preserve shared content. Fixed recovery authorization, brand-default capability and deleted upload-creator findings in a second review loop. Standards: 0 remaining findings. Spec: 0 findings. Full fast suite, typecheck and lint pass. All 26 Social Publication/history, 27 editor/media, 3 Upload Session, 3 request-policy, 9 billing and 11 brand PostgreSQL cases pass. Workflow 64, Ingest 17, Project Scope 8 and Vizard 38 cases pass across full and corrective runs after fixture-only corrections. Local migration applied; disposable schemas removed. Chrome Home, Posts and Studio verified.</li>
+    <li><b>07 completed.</b> Workspace Library owns Project listing; one strict ContentPack parser and one progress projection serve all callers. Workflow lifecycle owns atomic render rescue. Four live Project reads were retained after checking their current responsibilities. Fixed hidden recovery controls in a second review loop. Standards: 0 remaining findings. Spec: 0 remaining findings. Full fast suite, typecheck and lint pass; 15 Project/listing and 7 rescue PostgreSQL cases pass. Chrome Home, failed-status filtering and recovery controls verified; terminal test run removed.</li>
+    <li><b>08 completed.</b> ClipRenderAttempt.execute() owns rendering through injected Scene asset readers, current plan captions and one FFmpeg adapter; removed render-clips.ts and obsolete helpers. Corrected inserted-scene completion duration, remaining FFmpeg argument builders and shared diagnostic mutation. Standards: 0 remaining findings. Spec: 0 remaining findings. All 273 owned tests, worker typecheck and full fast suite pass, including real FFmpeg checks. Repository typecheck and lint pass. Chrome Studio playback verified.</li>
+    <li><b>09 completed.</b> One admission table drives all 11 MCP tools and eight typed failure kinds preserve safe domain codes, bounded details and retry guidance. Actual Actor Scope and current membership remain authoritative; OAuth identity scopes stay separate from Workspace API-key scopes. Corrected Autopilot run-now capability parity and made publication read/write scopes explicit, unchecked issuance choices. Standards: 0 findings. Spec: 0 findings. All 65 owned tests and 28 web parity/inventory tests pass; independent reviews verified 76 and 93 tests. Chrome scope choices and all 11 guide entries verified; no API keys created. Corrected the remaining P4 schema comments without changing schema shape.</li>
+    <li><b>Source applicability corrected; recovery completed.</b> B4, B12, X2 and X8 referred to deleted uncommitted work, rather than irrelevant features. The October 3 layout sources and September 28 marketing sources have been preserved outside the checkout and ported into the current architecture. Automatic v3 crop tracks use final composition time; Automatic allows 128 scenes, Split 64, and Stage captions use canonical validator presets. Final Standards and Spec reviews have 0 remaining findings. All 33 local clips have current v3 Automatic evidence with no analysis failures.</li>
+  </ul>
+  <p class="text-sm text-slate-600"><b>All 33 ledger entries addressed.</b> All nine original candidates and the recovery passed their final Standards and Spec reviews. The earlier absent/inapplicable classification was incomplete. Unknown API paths now return 404, redundant personal-Workspace auth provisioning is removed, and live stale renderer comments are corrected. The original report below remains historical evidence. <a class="underline" href="recovery-verification-20261004.md">Full recovery and verification record</a>.</p>
+  <p class="text-xs text-slate-500">Final verification: 13 repository typecheck tasks pass; uncached fast tests report 2,740 passed and 0 failed. Lint passes with the same six existing warnings and one info message; all 1,338 worker modules resolve. Recovery PostgreSQL checks pass for request policy (3 cases), editor/media persistence (27 cases), and all 99 Workflow/Ingest/Scope/Rescue cases across the full run and a targeted correction of one stale v2 test fixture. All 95 migrations, including four new migrations, are applied to <code>narriflow_local</code>. Chrome verifies the recovered homepage and fresh single/two-up Studio playback without media errors. Changes remain local and uncommitted; apply all four migrations to the intended deployed database before pushing to dev.</p>
+</aside>
+
+<section id="candidates" class="space-y-12">
+
+<!-- ============ 01 INGEST ============ -->
+<article id="c1" class="rounded-xl border border-slate-200 bg-white p-5 md:p-8 shadow-sm scroll-mt-6">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="font-mono text-slate-400">01</span>
+    <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Strong</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">local-substitutable · Postgres disposable schema</span>
+    <span class="px-2 py-0.5 rounded bg-red-50 text-red-700">3 confirmed bugs live here</span>
+  </div>
+  <h2 class="serif text-2xl md:text-3xl mt-2">Deepen the Ingest Job lifecycle into one module</h2>
+
+  <div class="grid md:grid-cols-2 gap-4 mt-6">
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-3">Before: policy spread over four modules</div>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <div class="border border-slate-300 bg-white p-2">
+          <div class="lbl text-slate-700">project.service.ts</div>
+          <span class="chip chip-n">claim</span><span class="chip chip-leak">lease 10 min ×3</span><span class="chip chip-n">reaper</span><span class="chip chip-leak">retry, non-atomic</span><span class="chip chip-leak">handoff, retries forever</span>
+        </div>
+        <div class="border border-slate-300 bg-white p-2">
+          <div class="lbl text-slate-700">tasks/ingest.ts</div>
+          <span class="chip chip-leak">heartbeat every 2 min</span><span class="chip chip-n">settle</span>
+        </div>
+        <div class="border border-slate-300 bg-white p-2">
+          <div class="lbl text-slate-700">notifications.ts</div>
+          <span class="chip chip-leak">re-decides terminal from attemptCount</span>
+        </div>
+        <div class="border border-slate-300 bg-white p-2">
+          <div class="lbl text-slate-700">worker index.ts</div>
+          <span class="chip chip-leak">claim → run, no abort re-check</span><span class="chip chip-n">claim loss = poll error</span>
+        </div>
+      </div>
+      <div class="mt-3 hatch border border-red-300 p-2 text-xs text-red-900">
+        settle ──<span class="font-mono">tx 1</span>──▶ event write ──<span class="font-mono">tx 2, failure swallowed</span>──▶ email
+        <div class="text-[11px] mt-1">A crash between the two transactions loses the event. Reaper-terminal failures never email.</div>
+      </div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram flex flex-col">
+      <div class="lbl text-slate-500 mb-3">After: one deep module, small interface</div>
+      <div class="deep border-4 border-slate-900 rounded-md flex-1 flex flex-col">
+        <div class="border-b-2 border-dashed border-indigo-300 p-3 text-xs font-mono">
+          claim · heartbeat(signal) · settle → decision · reap · retry · handoff
+        </div>
+        <div class="p-3 text-xs grid grid-cols-2 gap-2 text-slate-300">
+          <div class="fade-0 border border-slate-600 p-2">lease + heartbeat cadence</div>
+          <div class="border border-slate-600 p-2">retry / permanent classification</div>
+          <div class="border border-slate-600 p-2">event + notification intent, <b class="text-white">same tx</b> (existing outbox)</div>
+          <div class="border border-slate-600 p-2">handoff: permanent failures settle terminal</div>
+          <div class="border border-slate-600 p-2 col-span-2">claim loss and shutdown are control signals, matching Workflow Attempts</div>
+        </div>
+      </div>
+      <div class="flex gap-2 mt-3 text-xs">
+        <div class="flex-1 border border-dashed border-slate-400 p-2 bg-white">worker loop: passes job body only</div>
+        <div class="flex-1 border border-dashed border-slate-400 p-2 bg-white">Postgres adapter: disposable-schema tests</div>
+      </div>
+    </div>
+  </div>
+
+  <dl class="grid md:grid-cols-[110px_1fr] gap-x-6 gap-y-3 mt-6 text-sm">
+    <dt class="font-semibold text-slate-500">Problem</dt>
+    <dd>The September fencing work rebuilt Workflow-Run lifecycle machinery for Ingest Jobs in a weaker, non-transactional form, spread across four modules. The bugs sit in the gaps between them.</dd>
+    <dt class="font-semibold text-slate-500">Solution</dt>
+    <dd>One Ingest Job lifecycle module owns claim, lease, heartbeat, settlement (returning its decision), reaping, user retry and the generation handoff. It writes events through the existing Workflow Event outbox.</dd>
+    <dt class="font-semibold text-slate-500">Wins</dt>
+    <dd><ul class="list-disc pl-5 space-y-0.5">
+      <li>Locality: B1, B2 and B3 fixed in one place</li>
+      <li>Reaper gains its first test</li>
+      <li>Notifications consume the settled decision</li>
+      <li>Deletion test: 4 files shrink</li>
+    </ul></dd>
+    <dt class="font-semibold text-slate-500">Files</dt>
+    <dd class="font-mono text-xs leading-6">packages/services/src/project.service.ts:451-692, 2735-3163, 3621-3728<br/>apps/worker/src/tasks/ingest.ts:843-925 · apps/worker/src/notifications.ts:225-248<br/>apps/worker/src/index.ts:340-345 · packages/services/src/workflow.service.ts:142</dd>
+    <dt class="font-semibold text-slate-500">Tests</dt>
+    <dd>Today: 6 database tests. No tests for <code>reapStuckIngestJobs</code>, for the <code>failIngestJob</code> requeue/permanent outcome, or for <code>retryFailedIngest</code> against Postgres. After: one interface on a disposable schema, plus a fake-clock heartbeat test.</dd>
+  </dl>
+  <div class="mt-5 rounded border-l-4 border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">ADR 0001 rejects <em>merging</em> Ingest Jobs into the Workflow Run lifecycle; this keeps them separate and only deepens ingest. Amend ADR 0001's consequence line ("Ingest Jobs retain their separate Project Service lifecycle") to name the new owner and say how it shares the outbox.</div>
+</article>
+
+<!-- ============ 02 LAYOUT EVIDENCE ============ -->
+<article id="c2" class="rounded-xl border border-slate-200 bg-white p-5 md:p-8 shadow-sm scroll-mt-6">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="font-mono text-slate-400">02</span>
+    <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Strong</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">local-substitutable (Worker Process Module) + ports & adapters (clip store)</span>
+  </div>
+  <h2 class="serif text-2xl md:text-3xl mt-2">One Layout Evidence module, two callers</h2>
+
+  <div class="grid md:grid-cols-2 gap-4 mt-6">
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-1">Before: two producers race for one row</div>
+      <pre class="mermaid">
+flowchart LR
+  BG["Background analyzer<br/>auto-layout-analysis.ts"] --> F1["detect faces<br/>(raw process.env)"]
+  BG --> S1["scene cuts + remap"]
+  BG --> E1["envelope<br/>proxy dims"]
+  RC["renderClipGroup<br/>render-clips.ts"] --> F2["detect faces<br/>(RenderConfig)"]
+  RC --> S2["scene cuts + remap"]
+  RC --> E2["envelope<br/>source dims"]
+  E1 --> CL[("Clip evidence")]
+  E2 --> CL
+  CL -. race .-> Z["auto-layout-zoom.ts<br/>maxZoom 1.1 patch"]
+  classDef leak fill:#fef2f2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+  class F1,F2,S1,S2,E1,E2,Z leak
+      </pre>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-1">After: request in, typed availability out</div>
+      <pre class="mermaid">
+flowchart LR
+  BG["Background analyzer"] --> M
+  RA["Clip Render Attempt"] --> M
+  M["Layout Evidence<br/>evidence request → availability"]
+  M --> A["Automatic"]
+  M --> S["Screen"]
+  M --> P["Split"]
+  A --> CL[("Clip evidence")]
+  S --> CL
+  P --> CL
+  classDef deep fill:#0f172a,stroke:#0f172a,stroke-width:3px,color:#fff
+  classDef faded fill:#f8fafc,stroke:#94a3b8,color:#64748b
+  class M deep
+  class A,S,P faded
+      </pre>
+    </div>
+  </div>
+
+  <dl class="grid md:grid-cols-[110px_1fr] gap-x-6 gap-y-3 mt-6 text-sm">
+    <dt class="font-semibold text-slate-500">Problem</dt>
+    <dd>Face detection, scene-cut detection, cut remapping and envelope building each exist twice <span class="text-indigo-700">✓</span>. The two copies persist different source dimensions, and <code>auto-layout-zoom.ts</code> [U] exists only to patch over their race. Screen and Split repeat the same reuse → detect → build → persist steps inline in a ~2,480-line function.</dd>
+    <dt class="font-semibold text-slate-500">Solution</dt>
+    <dd>One module per engine takes the plan's evidence request and a lazy segment provider, and owns detector config, durable reuse and persistence. It also absorbs the preview and auto-layout claim lease from <code>clip.service.ts:2822-2988</code>.</dd>
+    <dt class="font-semibold text-slate-500">Wins</dt>
+    <dd><ul class="list-disc pl-5 space-y-0.5">
+      <li>Delete the duplicated detectors and the race patch</li>
+      <li>Makes ADR 0004's "analysis seam" real</li>
+      <li>Fake detectors replace whole-attempt tests</li>
+      <li>One env/config path for <code>REFRAME_*</code></li>
+    </ul></dd>
+    <dt class="font-semibold text-slate-500">Files</dt>
+    <dd class="font-mono text-xs leading-6">apps/worker/src/tasks/auto-layout-analysis.ts:93-331 · auto-layout-zoom.ts [U]<br/>apps/worker/src/tasks/render-clips.ts:1572-1870, 5714-6600<br/>packages/services/src/clip.service.ts:2660-2988</dd>
+  </dl>
+  <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">"Layout Evidence" is not in CONTEXT.md. Add it if this goes ahead. Related [U] smell: the layout engine now emits <code>intent: "fit"</code> and chooses zoom, which is composition policy that belongs to the plan (ADR 0004: "evidence rather than composition truth").</div>
+</article>
+
+<!-- ============ 03 PLAN OWNS CROP TIME ============ -->
+<article id="c3" class="rounded-xl border border-slate-200 bg-white p-5 md:p-8 shadow-sm scroll-mt-6">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="font-mono text-slate-400">03</span>
+    <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Strong</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">in-process</span>
+    <span class="px-2 py-0.5 rounded bg-red-50 text-red-700">user-visible preview ≠ export [U]</span>
+  </div>
+  <h2 class="serif text-2xl md:text-3xl mt-2">Plan owns crop-track time; delete the shadow geometry</h2>
+
+  <div class="grid md:grid-cols-2 gap-4 mt-6">
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-2">Before: 2 s intro block, three timelines</div>
+      <svg viewBox="0 0 400 270" class="w-full" font-family="ui-sans-serif,system-ui" font-size="10">
+        <title>Crop timing before inserted Scene Block remapping</title>
+        <rect x="70" y="14" width="64" height="16" fill="#fde68a" stroke="#d97706"/>
+        <text x="102" y="25" text-anchor="middle" fill="#78350f">intro 2 s</text>
+        <line x1="70" y1="36" x2="390" y2="36" stroke="#94a3b8"/>
+        <text x="70" y="48" fill="#64748b">0</text><text x="134" y="48" fill="#64748b">2</text><text x="198" y="48" fill="#64748b">4</text><text x="262" y="48" fill="#64748b">6</text><text x="326" y="48" fill="#64748b">8 s</text>
+        <text x="4" y="84" fill="#334155" font-weight="600">PLAN</text><text x="4" y="96" fill="#64748b">keyframes</text>
+        <line x1="70" y1="88" x2="390" y2="88" stroke="#cbd5e1"/>
+        <circle cx="86" cy="88" r="5" fill="#475569"/><circle cx="134" cy="88" r="5" fill="#475569"/><circle cx="182" cy="88" r="5" fill="#475569"/>
+        <text x="200" y="76" fill="#64748b">left in pre-insert time</text>
+        <text x="4" y="144" fill="#334155" font-weight="600">FFMPEG</text><text x="4" y="156" fill="#64748b">adapter</text>
+        <line x1="70" y1="148" x2="390" y2="148" stroke="#cbd5e1"/>
+        <circle cx="150" cy="148" r="5" fill="#64748b"/><circle cx="198" cy="148" r="5" fill="#64748b"/><circle cx="246" cy="148" r="5" fill="#64748b"/>
+        <text x="262" y="138" fill="#dc2626">re-derives timing</text><text x="262" y="164" fill="#dc2626">from sourceRange</text>
+        <text x="4" y="204" fill="#334155" font-weight="600">STUDIO</text><text x="4" y="216" fill="#64748b">preview</text>
+        <line x1="70" y1="208" x2="390" y2="208" stroke="#cbd5e1"/>
+        <circle cx="150" cy="208" r="5" fill="none" stroke="#94a3b8" stroke-dasharray="2 2"/><circle cx="198" cy="208" r="5" fill="none" stroke="#94a3b8" stroke-dasharray="2 2"/><circle cx="246" cy="208" r="5" fill="none" stroke="#94a3b8" stroke-dasharray="2 2"/>
+        <circle cx="86" cy="208" r="5" fill="#dc2626"/><circle cx="134" cy="208" r="5" fill="#dc2626"/><circle cx="182" cy="208" r="5" fill="#dc2626"/>
+        <line x1="182" y1="226" x2="246" y2="226" stroke="#dc2626"/><line x1="182" y1="222" x2="182" y2="230" stroke="#dc2626"/><line x1="246" y1="222" x2="246" y2="230" stroke="#dc2626"/>
+        <text x="214" y="242" text-anchor="middle" fill="#dc2626" font-weight="600">crop lags export by 2 s</text>
+        <text x="4" y="264" fill="#64748b" font-size="9">+ shadow copies: auto-layout-preview.ts · splitTilesAreDistinct · sendcmd</text>
+      </svg>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-2">After: planned once, read as planned</div>
+      <svg viewBox="0 0 400 270" class="w-full" font-family="ui-sans-serif,system-ui" font-size="10">
+        <title>Crop timing after the plan owns final keyframe time</title>
+        <rect x="70" y="14" width="64" height="16" fill="#fde68a" stroke="#d97706"/>
+        <text x="102" y="25" text-anchor="middle" fill="#78350f">intro 2 s</text>
+        <line x1="70" y1="36" x2="390" y2="36" stroke="#94a3b8"/>
+        <text x="70" y="48" fill="#64748b">0</text><text x="134" y="48" fill="#64748b">2</text><text x="198" y="48" fill="#64748b">4</text><text x="262" y="48" fill="#64748b">6</text><text x="326" y="48" fill="#64748b">8 s</text>
+        <rect x="2" y="66" width="390" height="40" rx="4" fill="#0f172a"/>
+        <text x="10" y="84" fill="#fff" font-weight="600">PLAN</text><text x="10" y="97" fill="#c7d2fe">slices tracks</text>
+        <line x1="70" y1="86" x2="384" y2="86" stroke="#334155"/>
+        <circle cx="150" cy="86" r="5" fill="#a5b4fc"/><circle cx="198" cy="86" r="5" fill="#a5b4fc"/><circle cx="246" cy="86" r="5" fill="#a5b4fc"/>
+        <text x="262" y="80" fill="#c7d2fe">final time, per scene slice</text>
+        <line x1="70" y1="118" x2="390" y2="118" stroke="#475569" class="seam"/>
+        <text x="4" y="144" fill="#334155" font-weight="600">FFMPEG</text>
+        <line x1="70" y1="148" x2="390" y2="148" stroke="#cbd5e1"/>
+        <circle cx="150" cy="148" r="5" fill="#2438E8"/><circle cx="198" cy="148" r="5" fill="#2438E8"/><circle cx="246" cy="148" r="5" fill="#2438E8"/>
+        <text x="262" y="152" fill="#334155">consumes as planned</text>
+        <text x="4" y="204" fill="#334155" font-weight="600">STUDIO</text>
+        <line x1="70" y1="208" x2="390" y2="208" stroke="#cbd5e1"/>
+        <circle cx="150" cy="208" r="5" fill="#2438E8"/><circle cx="198" cy="208" r="5" fill="#2438E8"/><circle cx="246" cy="208" r="5" fill="#2438E8"/>
+        <text x="262" y="212" fill="#334155">consumes as planned</text>
+        <text x="70" y="250" fill="#334155">one plan-level test: intro + tracked scene</text>
+        <text x="4" y="264" fill="#64748b" font-size="9" text-decoration="line-through">shadow copies: auto-layout-preview.ts · splitTilesAreDistinct · sendcmd</text>
+      </svg>
+    </div>
+  </div>
+
+  <dl class="grid md:grid-cols-[110px_1fr] gap-x-6 gap-y-3 mt-6 text-sm">
+    <dt class="font-semibold text-slate-500">Problem</dt>
+    <dd><code>addInsertedSceneBlocks</code> shifts scene times but copies <code>sourceCropTrack</code> as is <span class="text-indigo-700">✓</span>. FFmpeg puts the timing back by rebuilding scenes from <code>sourceRange</code> <span class="text-indigo-700">✓</span>. Studio reads the track at composite time <span class="text-indigo-700">✓</span>, so its crop lags export after any inserted Scene Block. Three geometry copies outside the plan duplicate two-up eligibility and crop math.</dd>
+    <dt class="font-semibold text-slate-500">Solution</dt>
+    <dd>The plan emits crop keyframes in final time and slices them with each scene. Both adapters read them without remapping. Delete <code>auto-layout-preview.ts</code>'s geometry, <code>two-up.ts</code> <code>splitTilesAreDistinct</code>/<code>computeTileCrop</code>, and the <code>reframe.ts</code> sendcmd builder.</dd>
+    <dt class="font-semibold text-slate-500">Wins</dt>
+    <dd><ul class="list-disc pl-5 space-y-0.5">
+      <li>Studio crop matches export</li>
+      <li>Adapter stops choosing timing</li>
+      <li>Locality: one geometry source</li>
+      <li>Delete tests that only cover dead copies</li>
+    </ul></dd>
+    <dt class="font-semibold text-slate-500">Files</dt>
+    <dd class="font-mono text-xs leading-6">packages/composition-plan/src/clip-composition-plan.ts:1983-1991, 276-296<br/>apps/worker/src/composition-ffmpeg-adapter.ts:1060-1112 [U]<br/>…/studio/_components/video-preview.tsx:1602-1606, 1653 · auto-layout-preview.ts:18-127<br/>apps/worker/src/tasks/two-up.ts:669 · apps/worker/src/tasks/reframe.ts:126-160</dd>
+  </dl>
+  <div class="mt-5 rounded border-l-4 border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">Enforces ADR 0004 rather than reopening it: "neither adapter may … remap overlay timing", and the ADR rejected "parallel preview and FFmpeg geometry helpers". Fix this before the layout work is committed. The new pixel test (<code>composition-ffmpeg-adapter.test.ts:1620-1725</code>) only covers clips with no inserted blocks.</div>
+</article>
+
+<!-- ============ 04 SOCIAL POST ADMISSION ============ -->
+<article id="c4" class="rounded-xl border border-slate-200 bg-white p-5 md:p-8 shadow-sm scroll-mt-6">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="font-mono text-slate-400">04</span>
+    <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Strong</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">ports & adapters · store, account/options reader, asset reader</span>
+  </div>
+  <h2 class="serif text-2xl md:text-3xl mt-2">Social Post admission replays first, freezes behind ports</h2>
+
+  <div class="grid md:grid-cols-2 gap-4 mt-6">
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-3">Before: cross-section of one single-post request</div>
+      <div class="space-y-1 text-xs">
+        <div class="border-l-4 border-slate-400 bg-white px-3 py-2">route.ts · <code>safeParse</code> in handler, ad-hoc 400</div>
+        <div class="border-l-4 border-red-500 hatch px-3 py-2 text-red-900"><b>SocialService.schedulePost</b>: provenance · thumbnail · fingerprint · second <code>requireActor</code><div class="text-[11px]">mutable checks run first</div></div>
+        <div class="border-l-4 border-slate-400 bg-white px-3 py-2">scheduling.schedule</div>
+        <div class="border-l-4 border-red-500 bg-red-50 px-3 py-2 text-red-900"><b>store.open: replay by key</b><div class="text-[11px]">too late: a retry after a lost response can fail on a committed post</div></div>
+        <div class="border-l-4 border-slate-400 bg-white px-3 py-2">freeze policy inside the <em>production factory</em>, tested only against the database</div>
+      </div>
+      <div class="mt-3 text-xs border border-dashed border-red-400 p-2 text-red-800">bulk path: <code>recover()</code> raw <code>findFirst</code> before admission, a workaround for the same ordering</div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram flex flex-col">
+      <div class="lbl text-slate-500 mb-3">After: one admission interface</div>
+      <div class="border-l-4 border-slate-400 bg-white px-3 py-2 text-xs">HTTP adapter · input declared in the request inventory</div>
+      <div class="deep border-4 border-slate-900 rounded-md mt-1 flex-1">
+        <div class="lbl px-3 pt-3 text-indigo-200">Social Post admission</div>
+        <ol class="text-xs p-3 space-y-2">
+          <li class="border border-slate-600 p-2"><b class="text-white">1 · replay</b> by (Workspace, key, request hash)</li>
+          <li class="border border-slate-600 p-2"><b class="text-white">2 · freeze</b> via ports: account · TikTok options · asset · copy provenance</li>
+          <li class="border border-slate-600 p-2"><b class="text-white">3 · commit</b> Frozen Publication State</li>
+        </ol>
+      </div>
+      <div class="flex gap-2 mt-2 text-xs">
+        <div class="flex-1 border border-dashed border-slate-400 bg-white p-2">Postgres store (production)</div>
+        <div class="flex-1 border border-dashed border-slate-400 bg-white p-2">in-memory store (tests)</div>
+      </div>
+      <div class="mt-2 text-[11px] text-slate-500"><span class="strike">schedulePost</span> · <span class="strike">recover()</span> · <span class="strike">POST /social-posts</span> · <span class="strike">POST …/metrics</span></div>
+    </div>
+  </div>
+
+  <dl class="grid md:grid-cols-[110px_1fr] gap-x-6 gap-y-3 mt-6 text-sm">
+    <dt class="font-semibold text-slate-500">Problem</dt>
+    <dd>Admission works but is spread over three modules in the wrong order <span class="text-indigo-700">✓</span>. Its freeze policy can't be tested without a database, because it lives in the production wiring. It also has a side-effecting write: it marks accounts expired during validation.</dd>
+    <dt class="font-semibold text-slate-500">Solution</dt>
+    <dd>Replay first, then run every mutable check inside freeze through narrow ports. Move the production wiring to <code>social-publication-scheduling-runtime.ts</code>. Bulk calls admission directly.</dd>
+    <dt class="font-semibold text-slate-500">Wins</dt>
+    <dd><ul class="list-disc pl-5 space-y-0.5">
+      <li>Retries become truly idempotent</li>
+      <li>Freeze policy testable in-memory</li>
+      <li>Delete a shallow wrapper and the workaround</li>
+      <li>Delete two uncalled routes</li>
+    </ul></dd>
+    <dt class="font-semibold text-slate-500">Files</dt>
+    <dd class="font-mono text-xs leading-6">packages/services/src/social.service.ts:301-441 · social-publication-scheduling.ts:556-566, 768-988<br/>bulk-social-scheduling.ts:556-566 · bulk-social-scheduling-runtime.ts:380-432<br/>apps/web/app/api/[[...route]]/route.ts:950-997, 1892-2027</dd>
+  </dl>
+  <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">Delivers ADR 0007's "freeze before eligible" and fits its 2026-09-09 addendum. Pair with extracting <code>social-publication-http.ts</code> the way <code>clip-editor-http.ts</code> was extracted: five handlers parse input themselves, bypassing the ADR 0009 input order.</div>
+</article>
+
+<!-- ============ 05 PUBLISHING COMPOSITION SESSION ============ -->
+<article id="c5" class="rounded-xl border border-slate-200 bg-white p-5 md:p-8 shadow-sm scroll-mt-6">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="font-mono text-slate-400">05</span>
+    <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Strong</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">local-substitutable · in-memory storage, id, clock</span>
+  </div>
+  <h2 class="serif text-2xl md:text-3xl mt-2">Move the Publishing Draft protocol out of React effects</h2>
+
+  <div class="grid md:grid-cols-2 gap-4 mt-6">
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-3">Before: interface ≈ implementation</div>
+      <div class="flex items-end gap-4 h-[230px]">
+        <div class="flex flex-col items-center gap-1 w-1/3">
+          <div class="w-full hatch border-2 border-red-400 flex flex-col justify-center text-[10px] text-red-900 p-1" style="height:190px">
+            restore effect :537-641<br/>persist effect :642-652<br/>submit() :995-1125<br/>storage key :213 vs :451<br/>forget-on-4xx rule<br/>outcome merge
+          </div>
+          <div class="lbl text-slate-500">interface</div>
+        </div>
+        <div class="flex flex-col items-center gap-1 w-1/3">
+          <div class="w-full border-2 border-slate-400 bg-white flex items-center justify-center text-[10px] text-slate-600 text-center" style="height:215px">publishing-provider.tsx<br/>2,125 lines</div>
+          <div class="lbl text-slate-500">implementation</div>
+        </div>
+        <div class="w-1/3 self-start border-2 border-dashed border-slate-400 bg-white p-2 text-[10px] text-slate-600">
+          <b>publication-intent-key.ts</b><br/>injected storage + id<br/><span class="text-red-700">0 production callers ✓</span>
+        </div>
+      </div>
+      <div class="text-xs text-slate-600 mt-2">Only test: one 622-line browser fixture run in a subprocess.</div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-3">After: mirrors the Studio Editing Session</div>
+      <div class="flex items-end gap-4 h-[230px]">
+        <div class="flex flex-col items-center gap-1 w-1/3">
+          <div class="w-full border-2 border-indigo-500 bg-indigo-50 flex items-center justify-center text-[10px] text-indigo-900 text-center p-1" style="height:48px">snapshot · intent · submit()</div>
+          <div class="lbl text-slate-500">interface</div>
+        </div>
+        <div class="flex flex-col items-center gap-1 w-2/3">
+          <div class="w-full deep border-4 border-slate-900 p-2 text-[10px] text-slate-300 space-y-1" style="height:215px">
+            <div class="lbl text-indigo-200">Publishing Composition Session</div>
+            <div class="border border-slate-600 p-1">draft persistence + restore</div>
+            <div class="border border-slate-600 p-1">pending submission identity, when to forget</div>
+            <div class="border border-slate-600 p-1">outcome merge, accepted items</div>
+            <div class="border-t-2 border-dashed border-indigo-300 pt-1">adapters: storage · id · clock</div>
+          </div>
+          <div class="lbl text-slate-500">implementation</div>
+        </div>
+      </div>
+      <div class="text-xs text-slate-600 mt-2">React becomes presentation. Unit tests cover response loss, partial outcome and the 4xx rule.</div>
+    </div>
+  </div>
+
+  <dl class="grid md:grid-cols-[110px_1fr] gap-x-6 gap-y-3 mt-6 text-sm">
+    <dt class="font-semibold text-slate-500">Problem</dt>
+    <dd>The submission-identity and draft protocol is sequenced inline across effects and <code>submit()</code> with direct <code>localStorage</code> calls. That is the shape ADR 0002 rejected for Studio. A seam for it was written, then orphaned <span class="text-indigo-700">✓</span>.</dd>
+    <dt class="font-semibold text-slate-500">Solution</dt>
+    <dd>A browser-side deep module owns draft, pending identity, outcome merge and restore behind storage, id and clock adapters. Delete <code>publication-intent-key.ts</code>.</dd>
+    <dt class="font-semibold text-slate-500">Wins</dt>
+    <dd><ul class="list-disc pl-5 space-y-0.5">
+      <li>Protocol tested without a browser</li>
+      <li>Locality: one owner for "forget identity"</li>
+      <li>Provider file shrinks to presentation</li>
+    </ul></dd>
+    <dt class="font-semibold text-slate-500">Files</dt>
+    <dd class="font-mono text-xs leading-6">apps/web/app/(app)/projects/[projectId]/publishing-provider.tsx:213, 451-453, 537-652, 995-1125<br/>apps/web/lib/publication-intent-key.ts · publishing-draft.ts:12,26 · publishing.browser.fixture.tsx</dd>
+  </dl>
+  <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">ADR 0007's 2026-09-09 addendum defines the protocol but names no owner. CONTEXT.md already has "Publishing Draft"; the session that owns it would be a new glossary term.</div>
+</article>
+
+<!-- ============ 06 ACTOR SCOPE ============ -->
+<article id="c6" class="rounded-xl border border-slate-200 bg-white p-5 md:p-8 shadow-sm scroll-mt-6">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="font-mono text-slate-400">06</span>
+    <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">Worth exploring</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">in-process + local schema reset</span>
+  </div>
+  <h2 class="serif text-2xl md:text-3xl mt-2">Carry Actor Scope down to storage and retire owner-as-user</h2>
+
+  <div class="grid md:grid-cols-2 gap-4 mt-6">
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-1">Before: the owner stands in for the actor below the adapter</div>
+      <pre class="mermaid">
+flowchart LR
+  P["Authenticated Request Policy<br/>Actor Scope"] -->|"userId = owner"| PM["Project module"]
+  P -->|"ownerUserId"| SA["Social Post admission"]
+  MCP["MCP get_project"] -->|"owner"| CR["Clip reads"]
+  PM --> D1[("Project.userId<br/>= Workspace owner")]
+  SA --> D2[("createdByUserId<br/>= Workspace owner")]
+  CR -->|"project.userId filter"| D1
+  PM -.->|"requireActor(owner)"| X["capability check<br/>tests the owner"]
+  classDef leak fill:#fef2f2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+  class D1,D2,X leak
+      </pre>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-1">After: one fact set, all the way down</div>
+      <pre class="mermaid">
+flowchart LR
+  P["Actor Scope<br/>actorUserId · workspaceId"] --> PM["Project module"]
+  P --> SA["Social Post admission"]
+  MCP["MCP get_project"] --> CR["Clip reads"]
+  PM --> D1[("Project<br/>workspaceId · createdBy = actor")]
+  SA --> D2[("Social Post<br/>createdBy = actor")]
+  CR -->|"scope by workspaceId"| D1
+  classDef deep fill:#0f172a,stroke:#0f172a,stroke-width:3px,color:#fff
+  class P deep
+      </pre>
+    </div>
+  </div>
+
+  <dl class="grid md:grid-cols-[110px_1fr] gap-x-6 gap-y-3 mt-6 text-sm">
+    <dt class="font-semibold text-slate-500">Problem</dt>
+    <dd><code>resolveLegacyOwnership</code> writes the Workspace owner into <code>Project.userId</code> <span class="text-indigo-700">✓</span>, and that column cascade-deletes with the User. Social Posts record the owner as creator <span class="text-indigo-700">✓</span>. Service-level <code>requireActor(owner, …)</code> checks always pass for the owner. Access is correct today only because adapters admit the real actor first.</dd>
+    <dt class="font-semibold text-slate-500">Solution</dt>
+    <dd>Service interfaces take Actor Scope and scope by <code>workspaceId</code>, as <code>getProjectAccess</code> already does. <code>Project.userId</code> becomes <code>createdByUserId</code> or is dropped; pre-production allows a reset.</dd>
+    <dt class="font-semibold text-slate-500">Wins</dt>
+    <dd><ul class="list-disc pl-5 space-y-0.5">
+      <li>Attribution names who acted</li>
+      <li>Service-level capability checks mean something again</li>
+      <li>No User delete cascading Workspace data</li>
+      <li>Non-owner-editor DB test becomes possible</li>
+    </ul></dd>
+    <dt class="font-semibold text-slate-500">Files</dt>
+    <dd class="font-mono text-xs leading-6">packages/services/src/workspace.service.ts:324-334 · project.service.ts:1607, 2233, 2550, 3336<br/>social-publication-scheduling.ts:592 · clip.service.ts:1133 · upload-session.service.ts (15 refs)<br/>apps/web/app/(app)/projects/actions.ts:347,391,429 · packages/mcp-core/src/index.ts:280-281</dd>
+  </dl>
+  <div class="mt-5 rounded border-l-4 border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">ADR 0009 says the cutover removed the "old Workspace-user shape", and CONTEXT.md says Actor Scope "never aliases identity". The request layer is clean, but storage and service interfaces still carry the owner. This finishes ADR 0009 rather than reopening it. It is broad, which is why it is rated Worth exploring.</div>
+</article>
+
+<!-- ============ 07 PROJECT SERVICE ============ -->
+<article id="c7" class="rounded-xl border border-slate-200 bg-white p-5 md:p-8 shadow-sm scroll-mt-6">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="font-mono text-slate-400">07</span>
+    <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Strong</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">local-substitutable</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">pairs with 01</span>
+  </div>
+  <h2 class="serif text-2xl md:text-3xl mt-2">Dissolve <code class="text-xl">project.service.ts</code>: delete the in-memory adapter, re-home each concept</h2>
+
+  <div class="grid md:grid-cols-2 gap-4 mt-6">
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-3">Before: 3,939 lines, eight concepts</div>
+      <div class="border-2 border-slate-400 bg-white text-[11px]">
+        <div class="px-2 border-b border-slate-200 bg-red-50 text-red-900" style="height:52px">Ingest Job lifecycle · ~750</div>
+        <div class="px-2 border-b border-slate-200" style="height:48px">generation setup + handoff · ContentPack mapping copied ×4</div>
+        <div class="px-2 border-b border-slate-200" style="height:30px">library listing + stats · ~360</div>
+        <div class="px-2 border-b border-slate-200 bg-amber-50" style="height:20px">quota gate (AGENTS.md says billing.service.ts ✓)</div>
+        <div class="px-2 border-b border-slate-200 hatch text-red-900" style="height:36px">in-memory <code>projects</code> Map · 21 branches · quota "allowed" with no DB</div>
+        <div class="px-2 border-b border-slate-200" style="height:18px">thin read wrappers ×4</div>
+        <div class="px-2 border-b border-slate-200" style="height:18px">clip-render rescue (wrong owner)</div>
+        <div class="px-2 text-slate-400" style="height:18px">dead: 4 functions</div>
+      </div>
+      <div class="text-xs text-slate-600 mt-3">The "in-memory" list and delete tests exercise JS filters. Production runs different SQL.</div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-3">After: each band goes to its owner</div>
+      <div class="space-y-1.5 text-[11px]">
+        <div class="flex items-center gap-2"><div class="deep px-2 py-1.5 border-2 border-slate-900 flex-1">Ingest Job lifecycle (01)</div></div>
+        <div class="flex items-center gap-2"><div class="border-2 border-slate-700 bg-white px-2 py-1.5 flex-1">Project module: generation setup + handoff, ContentPack mapping once</div></div>
+        <div class="flex items-center gap-2"><div class="border border-slate-400 bg-white px-2 py-1.5 flex-1">Workspace library module ← listing + stats</div></div>
+        <div class="flex items-center gap-2"><div class="border border-slate-400 bg-white px-2 py-1.5 flex-1">Quota gate: name its real owner (fix AGENTS.md or move it)</div></div>
+        <div class="flex items-center gap-2"><div class="border border-slate-400 bg-white px-2 py-1.5 flex-1">Workflow Run / clip rendering ← <code>ensurePendingClipRenderingRun</code></div></div>
+        <div class="flex items-center gap-2 text-slate-400"><div class="border border-dashed border-slate-300 px-2 py-1.5 flex-1"><span class="strike">in-memory adapter</span> · <span class="strike">4 thin reads</span> · <span class="strike">4 dead functions</span></div></div>
+      </div>
+      <div class="text-xs text-slate-600 mt-3">Listing and delete tests move to a DB gate, or test the already-injected <code>runProjectDeletion</code>.</div>
+    </div>
+  </div>
+
+  <dl class="grid md:grid-cols-[110px_1fr] gap-x-6 gap-y-3 mt-6 text-sm">
+    <dt class="font-semibold text-slate-500">Problem</dt>
+    <dd>21 <code>!prisma</code>/<code>!hasDatabase()</code> branches; every other services file has ≤3 <span class="text-indigo-700">✓</span>. It is a second implementation that only tests reach, and it gives them false confidence. <code>idempotencyRuns</code> is written even in database mode, so it grows without bound in the worker <span class="text-indigo-700">✓</span>.</dd>
+    <dt class="font-semibold text-slate-500">Solution</dt>
+    <dd>Delete the in-memory branches; it is a fallback, not a second adapter. Move each concept to its owner and copy the ContentPack mapping into one function in validators.</dd>
+    <dt class="font-semibold text-slate-500">Wins</dt>
+    <dd><ul class="list-disc pl-5 space-y-0.5">
+      <li>Tests hit the SQL production runs</li>
+      <li>One ContentPack mapping instead of 6 copies</li>
+      <li>Library logic gains locality</li>
+      <li>Fixes the AGENTS.md critical-path pointer</li>
+    </ul></dd>
+    <dt class="font-semibold text-slate-500">Files</dt>
+    <dd class="font-mono text-xs leading-6">packages/services/src/project.service.ts:180-236, 966-974, 1196-1558, 1854-1955, 2055-2111, 2697, 3165-3198<br/>packages/services/src/workspace-library.service.ts · project-list.test.ts:73-107 · project-delete.test.ts:297-344</dd>
+  </dl>
+</article>
+
+<!-- ============ 08 RENDER CLIP GROUP ============ -->
+<article id="c8" class="rounded-xl border border-slate-200 bg-white p-5 md:p-8 shadow-sm scroll-mt-6">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="font-mono text-slate-400">08</span>
+    <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">Worth exploring</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">ports & adapters · Prisma is an unlisted port</span>
+  </div>
+  <h2 class="serif text-2xl md:text-3xl mt-2">Shrink <code class="text-xl">renderClipGroup</code> behind <code class="text-xl">execute()</code></h2>
+
+  <div class="grid md:grid-cols-2 gap-4 mt-6">
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-3">Before: render-clips.ts, 7,767 lines to scale</div>
+      <div class="flex gap-3">
+        <div class="w-2/5 border-2 border-slate-400 text-[10px] leading-tight">
+          <div class="bg-slate-100 px-1 border-b border-white" style="height:38px">adapters · config · diagnostics</div>
+          <div class="px-1 border-b border-slate-200" style="height:12px">source media</div>
+          <div class="hatch px-1 border-b border-white text-red-900" style="height:27px">detectors · PiP / Split / Screen</div>
+          <div class="hatch px-1 border-b border-white text-red-900" style="height:16px">forked captions</div>
+          <div class="px-1 border-b border-slate-200 bg-indigo-50" style="height:16px">cut / audio filters</div>
+          <div class="px-1 border-b border-slate-200 bg-indigo-50" style="height:34px">FFmpeg arg builders</div>
+          <div class="px-1 border-b border-slate-200" style="height:9px"></div>
+          <div class="px-1 border-b border-slate-200 bg-slate-100" style="height:17px">ClipRenderAttempt</div>
+          <div class="px-1 bg-amber-50" style="height:88px">renderClipGroup ~2,480<br/><span class="text-red-700">direct getPrismaClient()</span></div>
+        </div>
+        <div class="w-3/5 text-xs text-slate-600 space-y-2">
+          <p><code>execute()</code> is the real entry point; every encode goes through the plan.</p>
+          <p>But <code>render-clips.test.ts</code> imports ~15 helpers and checks argv strings, which is what ADR 0003 said tests should avoid.</p>
+        </div>
+      </div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-3">After: each band moves to its real owner</div>
+      <div class="space-y-1.5 text-[11px]">
+        <div class="deep border-2 border-slate-900 px-2 py-2">ClipRenderAttempt.execute(): frozen inputs → evidence → plan → encode → settle</div>
+        <div class="border border-slate-400 bg-white px-2 py-1.5">composition-ffmpeg-adapter ← arg builders + cut/audio filters (pure plan → argv)</div>
+        <div class="border border-slate-400 bg-white px-2 py-1.5">Layout Evidence (02) ← detectors + PiP/Split/Screen decisions</div>
+        <div class="border border-slate-400 bg-white px-2 py-1.5">storage/persistence ports ← Scene Block asset + font lookup</div>
+        <div class="border border-dashed border-slate-300 px-2 py-1.5 text-slate-400"><span class="strike">legacy SRT/ASS generators</span> (B5) · <span class="strike">one-line helpers exported for tests</span></div>
+      </div>
+    </div>
+  </div>
+
+  <dl class="grid md:grid-cols-[110px_1fr] gap-x-6 gap-y-3 mt-6 text-sm">
+    <dt class="font-semibold text-slate-500">Problem</dt>
+    <dd>The external interface is right, but its implementation is one file holding nine concepts. Tests reach past the interface into helpers. A direct Prisma call bypasses the injected attempt adapters, so Scene Block asset resolution cannot be substituted in tests.</dd>
+    <dt class="font-semibold text-slate-500">Solution</dt>
+    <dd>Keep <code>execute()</code> as the only entry point. Move pure argv building into the FFmpeg adapter and evidence into 02, put asset lookup behind ports, and delete the forked caption generators.</dd>
+    <dt class="font-semibold text-slate-500">Wins</dt>
+    <dd><ul class="list-disc pl-5 space-y-0.5">
+      <li>Attempt-level tests replace argv-string tests</li>
+      <li>The FFmpeg adapter owns all FFmpeg</li>
+      <li>Scene Block lookup becomes substitutable</li>
+    </ul></dd>
+    <dt class="font-semibold text-slate-500">Files</dt>
+    <dd class="font-mono text-xs leading-6">apps/worker/src/tasks/render-clips.ts:2310-2757, 3219-4180, 4925-7402, 5565-5687<br/>apps/worker/src/composition-ffmpeg-adapter.ts · render-clips.test.ts</dd>
+  </dl>
+  <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">Moves the code toward ADR 0003, not away from it. Do it after 02, which removes the largest band.</div>
+</article>
+
+<!-- ============ 09 MCP ============ -->
+<article id="c9" class="rounded-xl border border-slate-200 bg-white p-5 md:p-8 shadow-sm scroll-mt-6">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
+    <span class="font-mono text-slate-400">09</span>
+    <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">Worth exploring</span>
+    <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">in-process</span>
+  </div>
+  <h2 class="serif text-2xl md:text-3xl mt-2">Give MCP one admission and failure adapter</h2>
+
+  <div class="grid md:grid-cols-2 gap-4 mt-6">
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-1">Before: failures classified by message text</div>
+      <pre class="mermaid">
+flowchart LR
+  T["11 MCP tools"] --> C["capability + scope<br/>hand-picked per tool"]
+  T --> E["catch error"]
+  E -->|"message.startsWith(…)"| K["MCP error code"]
+  E -->|"anything else"| G["narriflow_tool_failed"]
+  O["OAuth principal"] -.->|"scopes never checked"| T
+  classDef leak fill:#fef2f2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+  class E,G,O leak
+      </pre>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 diagram">
+      <div class="lbl text-slate-500 mb-1">After: a table and a kind map</div>
+      <pre class="mermaid">
+flowchart LR
+  T["MCP tools"] --> A["MCP admission<br/>tool → capability · scope table"]
+  A --> D["domain modules"]
+  D -->|"ExpectedDomainFailure kind"| M["kind → MCP error"]
+  classDef deep fill:#0f172a,stroke:#0f172a,stroke-width:3px,color:#fff
+  class A,M deep
+      </pre>
+    </div>
+  </div>
+
+  <dl class="grid md:grid-cols-[110px_1fr] gap-x-6 gap-y-3 mt-6 text-sm">
+    <dt class="font-semibold text-slate-500">Problem</dt>
+    <dd>MCP maps errors by string prefix, so rewording a message silently changes MCP error codes. Expected failures from most modules collapse to a generic code, and nothing checks that MCP capabilities match the browser inventory.</dd>
+    <dt class="font-semibold text-slate-500">Solution</dt>
+    <dd>One small MCP admission module: a tool → capability/scope table, a translation from <code>ExpectedDomainFailure</code> kind to MCP error, and Workspace-scoped facts rather than the owner ID. Keep MCP's own trust model.</dd>
+    <dt class="font-semibold text-slate-500">Wins</dt>
+    <dd><ul class="list-disc pl-5 space-y-0.5">
+      <li>Leverage: one map, every tool</li>
+      <li>Table-driven tests for every kind</li>
+      <li>MCP and browser capabilities provably match</li>
+    </ul></dd>
+    <dt class="font-semibold text-slate-500">Files</dt>
+    <dd class="font-mono text-xs leading-6">packages/mcp-core/src/index.ts:63-125, 271-283 · apps/web/app/mcp/route.ts:55-68 · apps/web/lib/mcp-auth.ts:173</dd>
+  </dl>
+  <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">Consistent with ADR 0009: MCP stays outside the browser policy, but <code>ExpectedDomainFailure</code> is transport-neutral by design. Not verified: what <code>requireActor</code> throws, and whether OAuth MCP principals should have scopes.</div>
+</article>
+</section>
+
+<!-- ============ LEDGER ============ -->
+<section id="ledger" class="space-y-6 scroll-mt-6">
+  <div>
+    <h2 class="serif text-3xl">Ledger: gaps, issues, and inconsistencies</h2>
+    <p class="text-sm text-slate-600 mt-1">Rows marked <span class="text-indigo-700 font-semibold">✓</span> I re-read in source. Unmarked rows come from an explorer's trace and were not independently re-verified. The <b>→</b> column names the candidate that absorbs the fix.</p>
+  </div>
+
+  <div class="rounded-xl border border-red-200 bg-white overflow-x-auto">
+    <div class="px-4 py-3 bg-red-50 border-b border-red-200 lbl text-red-800">Bugs</div>
+    <table class="ledger w-full text-sm">
+      <tbody class="divide-y divide-slate-100">
+        <tr><td class="p-3 font-mono text-xs text-red-700">B1 ✓</td><td class="p-3"><b>Generation handoff never settles a permanent failure.</b> Every exception re-queues the handoff 60 s later, indefinitely, with only a warning log. A free-tier 60-minute link import passes ingest (global 4 h cap), then fails the plan length cap on every retry. The list shows "Ready" with no clips.</td><td class="p-3 font-mono text-xs">project.service.ts:2924-2929 · project-progress.ts:69-91 · ingest.ts:462-467</td><td class="p-3 text-xs">01</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-red-700">B2 ✓</td><td class="p-3"><b><code>retryFailedIngest</code> isn't atomic.</b> The Project flips to <code>queued</code>, then the job is created outside a transaction. A failure between the two leaves the Project stuck as "Import queued", and retry is refused.</td><td class="p-3 font-mono text-xs">project.service.ts:3091-3108</td><td class="p-3 text-xs">01</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-red-700">B3 ✓</td><td class="p-3"><b>Ingest still starts work after a claim that resolves during shutdown.</b> c72d512 fixed this race only for Workflow Attempts.</td><td class="p-3 font-mono text-xs">apps/worker/src/index.ts:341-344 vs workflow-attempt-executor.ts:46-49</td><td class="p-3 text-xs">01</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-red-700">B4 ✓ [U]</td><td class="p-3"><b>Studio crop track lags export by the duration of any inserted Scene Block.</b></td><td class="p-3 font-mono text-xs">clip-composition-plan.ts:1983-1991 · video-preview.tsx:1602-1606</td><td class="p-3 text-xs">03</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-red-700">B5 ✓</td><td class="p-3"><b>Hidden captions are burned into audio-only renders.</b> The legacy SRT is generated with no visibility check and used whenever plan captions are empty. This forks the shared cue model, which AGENTS.md forbids.</td><td class="p-3 font-mono text-xs">render-clips.ts:5104-5117, 7134</td><td class="p-3 text-xs">08</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-red-700">B6 ✓</td><td class="p-3"><b>A Social Post retry can fail after the post committed.</b> Mutable checks run before the idempotency replay.</td><td class="p-3 font-mono text-xs">social.service.ts:315-390 → scheduling.ts:557</td><td class="p-3 text-xs">04</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-red-700">B7 ✓</td><td class="p-3"><b>Social Post records the Workspace owner as creator</b>, not the person who acted.</td><td class="p-3 font-mono text-xs">social-publication-scheduling.ts:592</td><td class="p-3 text-xs">06</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-red-700">B8 ✓</td><td class="p-3"><b>The <code>idempotencyRuns</code> Map grows forever in the worker:</b> it is written in database mode too.</td><td class="p-3 font-mono text-xs">project.service.ts:181, 2069, 2111</td><td class="p-3 text-xs">07</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-slate-500">B9</td><td class="p-3">Reaper-terminal ingest failures never send <code>import_failed</code>. The ingest event is published in a second transaction and its failure is swallowed.</td><td class="p-3 font-mono text-xs">project.service.ts:3662-3679 · workflow.service.ts:142</td><td class="p-3 text-xs">01</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-slate-500">B10</td><td class="p-3">Repeated deploys can permanently fail an import: each mid-ingest shutdown costs one of three auto-retries as <code>worker_stalled</code>.</td><td class="p-3 font-mono text-xs">project.service.ts:3621-3728</td><td class="p-3 text-xs">01</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-slate-500">B11</td><td class="p-3">Cancelling a post returns null provider status and visibility: the re-read include omits <code>publicationAttempts</code>, and the include is hand-copied three times.</td><td class="p-3 font-mono text-xs">social.service.ts:466-479</td><td class="p-3 text-xs">04</td></tr>
+        <tr><td class="p-3 font-mono text-xs text-slate-500">B12 [U]</td><td class="p-3">At the new 128-scene cap, plan size (512 KiB) and FFmpeg expression size (512 KiB) are untested with tracked two-up × 4 targets. <code>cropTrackForSeat</code> and <code>frameFaceInCrop</code> also disagree on headroom for non-landscape sources.</td><td class="p-3 font-mono text-xs">clip-composition-plan.ts:57 · layout-engine.ts:691 vs 736</td><td class="p-3 text-xs">03</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="rounded-xl border border-amber-200 bg-white overflow-x-auto">
+    <div class="px-4 py-3 bg-amber-50 border-b border-amber-200 lbl text-amber-800">Pre-production policy breaches (AGENTS.md: "remove the old path in the same change")</div>
+    <table class="ledger w-full text-sm"><tbody class="divide-y divide-slate-100">
+      <tr><td class="p-3 font-mono text-xs w-16">P1 ✓</td><td class="p-3"><code>youtube_import</code> job type kept "only to drain legacy in-flight jobs"</td><td class="p-3 font-mono text-xs">ingest.ts:868-871 · schema.prisma:65</td></tr>
+      <tr><td class="p-3 font-mono text-xs">P2 ✓</td><td class="p-3">"legacy pre-unification codes, kept for old data" in the permanent failure list</td><td class="p-3 font-mono text-xs">project.service.ts:554</td></tr>
+      <tr><td class="p-3 font-mono text-xs">P3 ✓</td><td class="p-3">In-memory <code>projects</code> fallback, including a quota gate that allows everything when there is no DB</td><td class="p-3 font-mono text-xs">project.service.ts:180-236, 1886, 1916</td></tr>
+      <tr><td class="p-3 font-mono text-xs">P4</td><td class="p-3">Fallback for "pre-split legacy runs" when reading a run's content pack</td><td class="p-3 font-mono text-xs">project.service.ts:3556-3577</td></tr>
+      <tr><td class="p-3 font-mono text-xs">P5</td><td class="p-3">Reaper branches for rows from before fencing, plus <code>WORKER_REAP_STALL_TIMEOUT_MS</code></td><td class="p-3 font-mono text-xs">project.service.ts:3631 · worker index.ts:68</td></tr>
+      <tr><td class="p-3 font-mono text-xs">P6 [U]</td><td class="p-3">Auto-layout analysis version 1/2 → <code>null</code> special-case parser</td><td class="p-3 font-mono text-xs">clip-auto-layout-analysis.ts:293-297</td></tr>
+    </tbody></table>
+  </div>
+
+  <div class="rounded-xl border border-slate-200 bg-white overflow-x-auto">
+    <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 lbl text-slate-700">Dead or orphaned surfaces</div>
+    <table class="ledger w-full text-sm"><tbody class="divide-y divide-slate-100">
+      <tr><td class="p-3 font-mono text-xs w-16">D1 ✓</td><td class="p-3"><code>createProjectFormAction</code>: no UI caller, but still declared. It creates a <code>ready</code> Project from any URL with no Upload Session, ingest or URL guard, contrary to ADR 0005. <b>Delete first.</b></td><td class="p-3 font-mono text-xs">projects/actions.ts:161 · authenticated-request-inventory.ts:940</td></tr>
+      <tr><td class="p-3 font-mono text-xs">D2 ✓</td><td class="p-3"><code>POST /projects/:id/social-posts</code> and <code>POST …/metrics</code>: no browser or MCP caller</td><td class="p-3 font-mono text-xs">route.ts:1906, 2012</td></tr>
+      <tr><td class="p-3 font-mono text-xs">D3 ✓</td><td class="p-3"><code>publication-intent-key.ts</code>: only its own test imports it</td><td class="p-3 font-mono text-xs">apps/web/lib/publication-intent-key.ts</td></tr>
+      <tr><td class="p-3 font-mono text-xs">D4 ✓</td><td class="p-3"><code>getClipSplitLayoutAnalysis</code>, <code>getClipLayoutAnalysis</code>: no callers</td><td class="p-3 font-mono text-xs">clip.service.ts:3057, 3087</td></tr>
+      <tr><td class="p-3 font-mono text-xs">D5 ✓</td><td class="p-3">sendcmd reframe builder (<code>cropXForCenter</code>, <code>buildReframeSendcmdScript</code>): fallback-renderer leftovers</td><td class="p-3 font-mono text-xs">reframe.ts:126, 144</td></tr>
+      <tr><td class="p-3 font-mono text-xs">D6</td><td class="p-3"><code>splitTilesAreDistinct</code>/<code>computeTileCrop</code>, and the <code>auto-layout-preview.ts</code> fallback (unreachable)</td><td class="p-3 font-mono text-xs">two-up.ts:669 · video-preview.tsx:1588</td></tr>
+      <tr><td class="p-3 font-mono text-xs">D7</td><td class="p-3"><code>prepareGenerationContext</code>, <code>updateProjectLanguage</code>, <code>listProjects</code>, <code>listProjectsWithStats</code>; the <code>autoRenderOnly</code> parameter</td><td class="p-3 font-mono text-xs">project.service.ts:1196, 1555, 1627, 3198 · notifications.ts:173</td></tr>
+    </tbody></table>
+  </div>
+
+  <div class="rounded-xl border border-slate-200 bg-white overflow-x-auto">
+    <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 lbl text-slate-700">Doc, glossary, and convention drift</div>
+    <table class="ledger w-full text-sm"><tbody class="divide-y divide-slate-100">
+      <tr><td class="p-3 font-mono text-xs w-16">X1 ✓</td><td class="p-3">AGENTS.md lists the quota gate as a critical path in <code>billing.service.ts</code>. That file has no quota code; the gate is in <code>project.service.ts</code>.</td><td class="p-3 font-mono text-xs">AGENTS.md:30 · project.service.ts:1854-1955</td></tr>
+      <tr><td class="p-3 font-mono text-xs">X2 ✓ [U]</td><td class="p-3">ADR 0004 says "64-scene evidence cap"; Automatic is now 128 (Split stays 64)</td><td class="p-3 font-mono text-xs">0004…md:15 · clip-auto-layout-analysis.ts:114</td></tr>
+      <tr><td class="p-3 font-mono text-xs">X3</td><td class="p-3">Stale comments: "two tiers / <code>WORKER_LAYOUT_ENGINE=0</code> reverts", and "WorkflowRun has no <code>nextAttemptAt</code>"</td><td class="p-3 font-mono text-xs">render-clips.ts:5518-5529 · project.service.ts:664-672</td></tr>
+      <tr><td class="p-3 font-mono text-xs">X4</td><td class="p-3"><code>WORKER_AUTO_LAYOUT_ANALYSIS*</code> and <code>REFRAME_*</code> read raw from <code>process.env</code> in one producer; absent from render config and the rollout runbook</td><td class="p-3 font-mono text-xs">auto-layout-analysis.ts:103-158, 336</td></tr>
+      <tr><td class="p-3 font-mono text-xs">X5</td><td class="p-3">Production wiring in <code>social-publication-scheduling.ts</code>, not a <code>-runtime.ts</code> file; zod schemas defined in web</td><td class="p-3 font-mono text-xs">social-publication-scheduling.ts:768 · publishing-draft.ts:12,26</td></tr>
+      <tr><td class="p-3 font-mono text-xs">X6</td><td class="p-3">Project progress: JS and SQL tie-breaks differ, and the detail-page stepper derives its own state. MCP <code>get_project</code> has no progress field.</td><td class="p-3 font-mono text-xs">project-progress.ts:44-47 vs 102 · lib/project-state.ts:323-529</td></tr>
+      <tr><td class="p-3 font-mono text-xs">X7</td><td class="p-3">Glossary: "Ingest Job" lacks the claim, handoff and retry vocabulary ADR 0005 points to. Ingest events store the Ingest Job ID in <code>workflowRunId</code>.</td><td class="p-3 font-mono text-xs">CONTEXT.md:96 · project.service.ts:3717-3726</td></tr>
+      <tr><td class="p-3 font-mono text-xs">X8 ✓ [U]</td><td class="p-3">Marketing <code>@narriflow/stage</code> hand-copies caption presets from validators. <code>tools/videos</code> draws the same storyboards in two renderers (Remotion and canvas); keep one.</td><td class="p-3 font-mono text-xs">packages/stage/src/palette.ts:40 · tools/videos/src, canvas/</td></tr>
+    </tbody></table>
+  </div>
+</section>
+
+<!-- ============ TOP RECOMMENDATION ============ -->
+<section id="top" class="deep rounded-xl p-6 md:p-10 scroll-mt-6">
+  <div class="lbl text-indigo-200">Top recommendation</div>
+  <h2 class="serif text-3xl md:text-4xl mt-2"><a href="#c1" class="underline decoration-indigo-400 underline-offset-4">01 · Deepen the Ingest Job lifecycle</a></h2>
+  <p class="mt-4 text-slate-200 max-w-3xl">It is the hottest path (11 of the last 30 commits), it guards the critical intake flow, and three confirmed bugs (B1–B3) plus two reported ones sit in the gaps between its four modules. It passes the deletion test clearly, its reaper has no tests at all, and the existing Workflow Event outbox gives it a ready model. Doing it also removes the largest band from candidate 07.</p>
+  <div class="mt-6 grid md:grid-cols-2 gap-4 text-sm">
+    <div class="border border-slate-600 rounded p-4"><div class="lbl text-amber-300">Before committing the layout work</div><p class="mt-1 text-slate-200">Fix <a href="#c3" class="underline">03</a>'s crop-track time base (B4). It is one plan-level change in uncommitted code, and preview diverges from export until then.</p></div>
+    <div class="border border-slate-600 rounded p-4"><div class="lbl text-amber-300">Five-minute deletions, any time</div><p class="mt-1 text-slate-200">D1 (<code>createProjectFormAction</code>), D2–D5, P1, and the AGENTS.md quota pointer (X1). None needs a design decision.</p></div>
+  </div>
+</section>
+
+<footer class="text-xs text-slate-500 pb-8">Original review: read-only; no source files edited. Prior reviews: docs/architecture/architecture-review-20260904-205336.html (completed), architecture-review-20260913-171743.html (completed). No tests, builds, or database gates were run for the original review. Current fix verification is recorded above.</footer>
+</main>
+</body>
+</html>
