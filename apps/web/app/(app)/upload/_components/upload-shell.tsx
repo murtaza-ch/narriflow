@@ -1,5 +1,7 @@
 "use client";
 
+import { authEntryHref } from "@/lib/auth-entry";
+
 import {
   useCallback,
   useEffect,
@@ -222,7 +224,7 @@ export function UploadShell({
     setMessage(message);
     if (recovery.kind === "sign_in") {
       router.push(
-        `/sign-in?redirect_url=${encodeURIComponent(recovery.returnDestination)}`,
+        authEntryHref("sign-in", recovery.returnDestination),
       );
     } else if (recovery.kind === "billing") {
       router.push("/settings/billing");

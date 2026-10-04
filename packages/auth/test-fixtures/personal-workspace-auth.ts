@@ -66,6 +66,7 @@ const membershipUpsert = mock(async (input: {
 const workspaceUpsert = mock(async (input: {
   where: { personalOwnerUserId: string };
   create: {
+    name: string;
     ownerUserId: string;
     personalOwnerUserId: string;
     billingAccount: { create: object };
@@ -79,7 +80,7 @@ const workspaceUpsert = mock(async (input: {
   expect(input.create.billingAccount).toEqual({ create: {} });
   expect(input.create.members.create).toEqual({ userId: user.id, role: "owner" });
   if (upsertFailure) throw upsertFailure;
-  currentWorkspace ??= { ...workspace };
+  currentWorkspace ??= { ...workspace, name: input.create.name };
   return { ...currentWorkspace };
 });
 const prisma = {
@@ -108,6 +109,7 @@ mock.module("server-only", () => ({}));
 mock.module("@narriflow/db/client", () => ({ getPrismaClient: () => prisma }));
 mock.module("@clerk/nextjs/server", () => ({
   auth: async () => ({ userId: user.clerkId }),
+  clerkClient: async () => { throw new Error("Complete users do not need Clerk identity lookup"); },
   currentUser: async () => { throw new Error("Complete users do not need Clerk refresh"); },
 }));
 mock.module("next/headers", () => ({
@@ -119,6 +121,9 @@ const { ensurePersonalWorkspace, getCurrentAppUser, getWorkspaceContextForUser }
   await import("@narriflow/auth");
 
 beforeEach(() => {
+  user.firstName = "Test";
+  user.lastName = "Actor";
+  user.imageUrl = "https://example.test/avatar.png";
   currentWorkspace = { ...workspace };
   personalRole = "owner";
   selectedWorkspaceId = undefined;
@@ -128,6 +133,23 @@ beforeEach(() => {
 });
 
 describe("personal workspace provisioning", () => {
+  test("missing optional names and avatar do not trigger Clerk profile refreshes", async () => {
+    user.firstName = null;
+    user.lastName = null;
+    user.imageUrl = null;
+    expect(await getCurrentAppUser()).toBe(user);
+    expect(await getCurrentAppUser()).toBe(user);
+  });
+  test("a nameless account receives My workspace without onboarding", async () => {
+    user.firstName = null;
+    user.lastName = null;
+    currentWorkspace = null;
+    personalRole = null;
+    const created = await ensurePersonalWorkspace(user.id);
+    expect(created.name).toBe("My workspace");
+    expect(personalRole).toBe("owner");
+  });
+
   test("reads an intact Workspace and Owner membership without rewriting them", async () => {
     expect(await ensurePersonalWorkspace(user.id)).toEqual(workspace);
     expect(calls).toEqual(["personal-membership-read"]);

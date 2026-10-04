@@ -71,13 +71,6 @@ export const businessWorkspaceCheckoutActionSchema = z.union([
     .strict(),
 ]);
 
-export const onboardingProfileActionSchema = z
-  .object({
-    firstName: z.string().trim().max(100),
-    lastName: z.string().trim().max(100),
-  })
-  .strict();
-
 const workspaceEntityIdSchema = z.string().min(1).max(128);
 
 export const workspaceInviteReferenceActionSchema = z

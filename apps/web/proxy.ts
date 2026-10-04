@@ -1,5 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
+import { authContinuationHref, authEntryHref, isAuthMode } from "./lib/auth-entry";
 
 const isProtectedRoute = createRouteMatcher([
   "/home(.*)",
@@ -11,7 +12,7 @@ const isProtectedRoute = createRouteMatcher([
   "/workspaces(.*)",
   "/settings(.*)",
   "/upload(.*)",
-  "/onboarding(.*)",
+  "/auth/continue",
   "/api/projects(.*)",
   "/api/upload-sessions(.*)",
   "/api/ingest(.*)",
@@ -28,7 +29,6 @@ const isProtectedRoute = createRouteMatcher([
   "/api/generated-media(.*)",
 ]);
 
-const isAuthRoute = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)", "/forgot-password(.*)"]);
 const isPublicInfrastructureRoute = createRouteMatcher([
   "/api/health",
   "/mcp(.*)",
@@ -45,17 +45,21 @@ export default clerkMiddleware(async (auth, req) => {
   const { userId } = await auth();
 
   if (isProtectedRoute(req)) {
-    await auth.protect();
+    if (req.nextUrl.pathname.startsWith("/api/")) {
+      // Clerk's page detection can classify API fetches as page requests in
+      // Next's server context. Keep the API response independent of that heuristic.
+      if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      await auth.protect();
+    } else {
+      const destination = req.nextUrl.pathname === "/auth/continue"
+        ? req.nextUrl.searchParams.get("redirect_url") ?? "/home"
+        : req.url;
+      await auth.protect({ unauthenticatedUrl: new URL(authEntryHref("sign-in", destination), req.url).href });
+    }
   }
 
-  if (isAuthRoute(req) && userId) {
-    const redirectUrl = req.nextUrl.searchParams.get("redirect_url");
-    if (redirectUrl) {
-      const continueUrl = new URL("/auth/continue", req.url);
-      continueUrl.searchParams.set("redirect_url", redirectUrl);
-      return NextResponse.redirect(continueUrl);
-    }
-    return NextResponse.redirect(new URL("/onboarding", req.url));
+  if (req.nextUrl.pathname === "/" && isAuthMode(req.nextUrl.searchParams.get("auth")) && userId) {
+    return NextResponse.redirect(new URL(authContinuationHref(req.nextUrl.searchParams.get("redirect_url")), req.url));
   }
 
   return NextResponse.next();

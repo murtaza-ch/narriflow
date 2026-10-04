@@ -1,10 +1,10 @@
 "use client";
 
-import { Flex, HStack, chakra } from "@chakra-ui/react";
+import { Stack, chakra } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 
-export type OAuthStrategy = "oauth_google" | "oauth_facebook" | "oauth_microsoft";
+export type OAuthStrategy = "oauth_google" | "oauth_apple" | "oauth_microsoft";
 
 /*
  * Third-party OAuth brand marks. Literal hex values are the providers'
@@ -35,13 +35,10 @@ function GoogleMark() {
   );
 }
 
-function FacebookMark() {
+function AppleMark() {
   return (
     <chakra.svg width="18px" height="18px" viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        fill="#1877F2"
-        d="M24 12a12 12 0 1 0-13.88 11.85v-8.38H7.08V12h3.04V9.36c0-3 1.79-4.67 4.53-4.67 1.31 0 2.68.24 2.68.24v2.95h-1.51c-1.49 0-1.95.92-1.95 1.87V12h3.32l-.53 3.47h-2.79v8.38A12 12 0 0 0 24 12Z"
-      />
+      <path fill="currentColor" d="M17.1 12.8c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.5-.1-2.9.9-3.6.9-.7 0-1.9-.9-3.1-.9-1.6 0-3.1.9-4 2.3-1.7 2.9-.4 7.2 1.2 9.6.8 1.1 1.6 2.4 2.8 2.3 1.1 0 1.6-.7 3.1-.7s1.9.7 3.2.7 2.1-1.1 2.8-2.3c.9-1.3 1.3-2.6 1.3-2.7-.1 0-2.3-.9-2.3-3.9ZM14.7 5.9c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1.1 2.9 1.1.1 2.2-.5 2.9-1.3Z" />
     </chakra.svg>
   );
 }
@@ -63,7 +60,7 @@ const PROVIDERS: Array<{
   mark: React.ReactNode;
 }> = [
   { strategy: "oauth_google", label: "Continue with Google", mark: <GoogleMark /> },
-  { strategy: "oauth_facebook", label: "Continue with Facebook", mark: <FacebookMark /> },
+  { strategy: "oauth_apple", label: "Continue with Apple", mark: <AppleMark /> },
   { strategy: "oauth_microsoft", label: "Continue with Microsoft", mark: <MicrosoftMark /> },
 ];
 
@@ -75,13 +72,13 @@ interface OAuthButtonRowProps {
 }
 
 /**
- * Row of three equal 44px OAuth icon buttons — the primary path into the
+ * Labeled provider buttons — the primary path into the
  * app, rendered above the email form on sign-in and sign-up. Quiet hairline
  * borders; the brand marks carry the identity.
  */
 export function OAuthButtonRow({ pending, disabled, onSelect }: OAuthButtonRowProps) {
   return (
-    <HStack gap="2.5" w="full">
+    <Stack gap="2" w="full">
       {PROVIDERS.map(({ strategy, label, mark }) => (
         <Button
           key={strategy}
@@ -91,16 +88,14 @@ export function OAuthButtonRow({ pending, disabled, onSelect }: OAuthButtonRowPr
           onClick={() => onSelect(strategy)}
           type="button"
           variant="outline"
-          flex="1"
           h="11"
           borderColor="border"
           _hover={{ bg: "bg.subtle", borderColor: "border.emphasized" }}
         >
-          <Flex align="center" justify="center">
-            {pending === strategy ? <Spinner size="xs" /> : mark}
-          </Flex>
+          {pending === strategy ? <Spinner size="xs" /> : mark}
+          {label}
         </Button>
       ))}
-    </HStack>
+    </Stack>
   );
 }

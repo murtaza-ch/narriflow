@@ -100,10 +100,10 @@ export function MarketingMobileNav({ links }: MarketingMobileNavProps) {
 
               <Stack px="4" py="4" gap="2" borderTopWidth="1px" borderColor="border.subtle">
                 <Button asChild variant="outline" w="full">
-                  <Link href="/sign-in">Sign in</Link>
+                  <Link href="/?auth=sign-in">Sign in</Link>
                 </Button>
                 <Button asChild w="full">
-                  <Link href="/sign-up">Get started</Link>
+                  <Link href="/?auth=sign-up">Get started</Link>
                 </Button>
               </Stack>
             </Drawer.Content>

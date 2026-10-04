@@ -120,10 +120,10 @@ function SystemNav() {
 
       <HStack gap="2">
         <Button variant="ghost" size="sm" asChild display={{ base: "none", md: "inline-flex" }}>
-          <Link href="/sign-in">Sign in</Link>
+          <Link href="/?auth=sign-in">Sign in</Link>
         </Button>
         <Button size="sm" asChild>
-          <Link href="/sign-up">Start free</Link>
+          <Link href="/?auth=sign-up">Start free</Link>
         </Button>
       </HStack>
     </Flex>
@@ -175,7 +175,7 @@ function Hero() {
 
         <HStack gap="3" justify="center" mt="8" data-hero-el style={{ opacity: 0 }}>
           <Button variant="outline" size="lg" px="7" asChild>
-            <Link href="/sign-up">Start free</Link>
+            <Link href="/?auth=sign-up">Start free</Link>
           </Button>
           <Button variant="ghost" size="lg" asChild>
             <Link href="#product">See the grid ↓</Link>
@@ -948,11 +948,11 @@ function PricingBento() {
             </Stack>
             {t.featured ? (
               <Button size="sm" w="full" asChild>
-                <Link href="/sign-up">Start with {t.name}</Link>
+                <Link href="/?auth=sign-up">Start with {t.name}</Link>
               </Button>
             ) : (
               <Button variant="outline" size="sm" w="full" asChild>
-                <Link href="/sign-up">{t.price === 0 ? "Start free" : `Choose ${t.name}`}</Link>
+                <Link href="/?auth=sign-up">{t.price === 0 ? "Start free" : `Choose ${t.name}`}</Link>
               </Button>
             )}
           </Stack>
@@ -990,7 +990,7 @@ function FinalCta() {
           Ship this week&apos;s posts today.
         </Text>
         <Button size="lg" px="8" asChild>
-          <Link href="/sign-up">Start free</Link>
+          <Link href="/?auth=sign-up">Start free</Link>
         </Button>
         <Text textStyle="data" fontSize="11px" letterSpacing="0.12em" color="fg.subtle">
           FREE PLAN · 60 MIN/MO · NO CARD

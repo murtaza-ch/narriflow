@@ -199,7 +199,7 @@ function TransportNav() {
         _hover={{ bg: "studio.surface" }}
         asChild
       >
-        <Link href="/sign-up">Open project →</Link>
+        <Link href="/?auth=sign-up">Open project →</Link>
       </Button>
 
       {/* scroll-progress rule along the bottom edge */}
@@ -290,7 +290,7 @@ function Hero() {
 
         <HStack mt="8" gap="3" flexWrap="wrap" data-hero-cta style={{ opacity: 0 }}>
           <Button size="lg" px="7" bg={ACCENT} color={INK} _hover={{ bg: ACCENT_HOVER }} asChild>
-            <Link href="/sign-up">Start cutting — free</Link>
+            <Link href="/?auth=sign-up">Start cutting — free</Link>
           </Button>
           <Button
             variant="ghost"
@@ -1004,7 +1004,7 @@ function ExportQueue() {
                 </Box>
                 {t.featured ? (
                   <Button size="sm" bg={ACCENT} color={INK} _hover={{ bg: ACCENT_HOVER }} asChild>
-                    <Link href="/sign-up">Queue {t.name}</Link>
+                    <Link href="/?auth=sign-up">Queue {t.name}</Link>
                   </Button>
                 ) : (
                   <Button
@@ -1015,7 +1015,7 @@ function ExportQueue() {
                     _hover={{ bg: "studio.raised" }}
                     asChild
                   >
-                    <Link href="/sign-up">{t.price === 0 ? "Start free" : `Choose ${t.name}`}</Link>
+                    <Link href="/?auth=sign-up">{t.price === 0 ? "Start free" : `Choose ${t.name}`}</Link>
                   </Button>
                 )}
               </HStack>
@@ -1053,7 +1053,7 @@ function ClosingCta() {
               Export your first clip tonight.
             </Text>
             <Button size="lg" px="8" bg={ACCENT} color={INK} _hover={{ bg: ACCENT_HOVER }} asChild>
-              <Link href="/sign-up">Start cutting — free</Link>
+              <Link href="/?auth=sign-up">Start cutting — free</Link>
             </Button>
           </Stack>
 

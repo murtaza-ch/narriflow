@@ -1,4 +1,5 @@
 import "server-only";
+import { authEntryHref } from "./auth-entry";
 
 import { notFound, redirect } from "next/navigation";
 import type { WorkspaceCapability } from "@narriflow/validators";
@@ -21,7 +22,7 @@ function recoveryDestination(
     const returnTo =
       authenticationReturnTo ??
       (projectId ? `/projects/${projectId}` : "/home");
-    redirect(`/sign-in?redirect_url=${encodeURIComponent(returnTo)}`);
+    redirect(authEntryHref("sign-in", returnTo));
   }
   if (failure.code === "project_not_found") notFound();
   if (failure.code === "active_workspace_mismatch") {

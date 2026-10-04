@@ -1,3 +1,5 @@
+import { authEntryHref } from "./auth-entry";
+
 export interface WorkflowStreamAuthorizationControl {
   error: string;
   requestId: string | null;
@@ -32,7 +34,7 @@ export function recoverFromWorkflowAuthorizationLoss(
         ? currentDestination
         : "/home";
     window.location.assign(
-      `/sign-in?redirect_url=${encodeURIComponent(safeDestination)}`,
+      authEntryHref("sign-in", safeDestination),
     );
     return;
   }

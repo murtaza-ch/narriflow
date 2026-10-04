@@ -107,7 +107,7 @@ function SignalNav() {
         <Logo size="md" />
       </Link>
       <Button size="sm" asChild>
-        <Link href="/sign-up">Start free</Link>
+        <Link href="/?auth=sign-up">Start free</Link>
       </Button>
     </Flex>
   );
@@ -295,7 +295,7 @@ function Hero() {
           you the winners — every clip scored for virality before you hit render.
         </Text>
         <HStack mt={{ base: "7", md: "9" }} gap="4" data-hero-cta style={{ opacity: 0 }}>
-          <Link href="/sign-up">
+          <Link href="/?auth=sign-up">
             <Flex
               bg={INK}
               color={PORCELAIN}
@@ -814,7 +814,7 @@ function PricingRows() {
         {TIERS.map((t) => {
           const featured = t.featured;
           return (
-            <Link key={t.name} href="/sign-up" style={{ display: "block" }}>
+            <Link key={t.name} href="/?auth=sign-up" style={{ display: "block" }}>
               <Box
                 data-reveal
                 role="group"
@@ -931,7 +931,7 @@ function ClosingCta() {
           </Box>
         </Box>
         <Stack data-reveal align="center" gap="4">
-          <Link href="/sign-up">
+          <Link href="/?auth=sign-up">
             <Flex
               bg={INK}
               color={PORCELAIN}

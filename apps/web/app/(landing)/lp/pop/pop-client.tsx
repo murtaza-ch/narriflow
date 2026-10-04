@@ -157,7 +157,7 @@ function PopNav() {
           </Link>
         ))}
       </HStack>
-      <PopButton href="/sign-up" variant="outline">
+      <PopButton href="/?auth=sign-up" variant="outline">
         Start free
       </PopButton>
     </Flex>
@@ -195,7 +195,7 @@ function Hero() {
             word-synced captions and publishes everywhere — from one upload.
           </Text>
           <Box>
-            <PopButton href="/sign-up" variant="ink">
+            <PopButton href="/?auth=sign-up" variant="ink">
               Start for free
             </PopButton>
           </Box>
@@ -538,7 +538,7 @@ function Banner() {
             minutes of compute and five of your time.
           </Text>
           <Box>
-            <PopButton href="/sign-up" variant="ink">
+            <PopButton href="/?auth=sign-up" variant="ink">
               Run your first upload free
             </PopButton>
           </Box>
@@ -742,7 +742,7 @@ function Pricing() {
                   </HStack>
                 ))}
               </Stack>
-              <PopButton href="/sign-up" variant={featured ? "ink" : "outline"}>
+              <PopButton href="/?auth=sign-up" variant={featured ? "ink" : "outline"}>
                 {t.price === 0 ? "Start free" : `Choose ${t.name}`}
               </PopButton>
             </Stack>
@@ -776,7 +776,7 @@ function PopFooter() {
               Free plan · 60 processing minutes a month · no card required
             </Text>
           </Stack>
-          <PopButton href="/sign-up" variant="lime">
+          <PopButton href="/?auth=sign-up" variant="lime">
             Start for free
           </PopButton>
         </Flex>

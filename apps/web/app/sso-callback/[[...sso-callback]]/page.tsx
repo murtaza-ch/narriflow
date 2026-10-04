@@ -1,86 +1,45 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { AuthenticateWithRedirectCallback } from "@clerk/nextjs";
-import { Box, Flex, Stack, Text, VStack } from "@chakra-ui/react";
-import { CircleAlert } from "lucide-react";
+import { Box, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
-import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { AuthShell, AuthHeader } from "../../components/auth-shell";
+import { authContinuationHref, authEntryHref } from "@/lib/auth-entry";
 
-/** If Clerk hasn't redirected us anywhere by now, surface an escape hatch. */
-const CALLBACK_TIMEOUT_MS = 10_000;
-
-export default function SSOCallbackPage() {
+function Callback() {
+  const params = useSearchParams();
+  const destination = params.get("redirect_url");
+  const completion = authContinuationHref(destination);
   const [timedOut, setTimedOut] = useState(false);
-
   useEffect(() => {
-    const timer = setTimeout(() => setTimedOut(true), CALLBACK_TIMEOUT_MS);
+    const timer = setTimeout(() => setTimedOut(true), 15_000);
     return () => clearTimeout(timer);
   }, []);
 
-  return (
-    <AuthShell>
-      {timedOut ? (
-        <Stack gap="7" animation="fade-up">
-          <AuthHeader
-            eyebrow="Connection stalled"
-            title="This is taking too long"
-            description="Sign-in failed. Try again or use another method."
-          />
-          <Flex justify="center">
-            <GhostFrame size="220px">
-              <Flex color="danger.fg" aria-hidden="true">
-                <CircleAlert size={20} />
-              </Flex>
-            </GhostFrame>
-          </Flex>
-          <Stack gap="3">
-            <Button width="full" onClick={() => window.location.reload()}>
-              Try again
-            </Button>
-            <Text textAlign="center" fontSize="13px" color="fg.muted">
-              or{" "}
-              <Link href="/sign-in">
-                <Box
-                  as="span"
-                  fontWeight="500"
-                  color="fg"
-                  textDecoration="underline"
-                  textUnderlineOffset="3px"
-                  textDecorationColor="border.emphasized"
-                  transition="text-decoration-color 120ms ease"
-                  _hover={{ textDecorationColor: "fg" }}
-                >
-                  go back to sign in
-                </Box>
-              </Link>
-            </Text>
-          </Stack>
-        </Stack>
-      ) : (
-        <VStack gap="3" py="8" aria-live="polite">
-          <Spinner size="md" />
-          <Text fontSize="14px" color="fg.muted">
-            Completing sign in…
-          </Text>
-          <Text textStyle="data" fontSize="11px" color="fg.subtle">
-            Contacting provider · Creating session
-          </Text>
-        </VStack>
-      )}
+  return <Stack minH="100dvh" align="center" justify="center" gap="4" p="6">
+    {timedOut ? <>
+      <Text as="h1" fontSize="xl" fontWeight="600">Sign-in is taking longer than expected</Text>
+      <Button onClick={() => window.location.reload()}>Try again</Button>
+      <Link href={authEntryHref("sign-in", destination)}>Choose another sign-in method</Link>
+    </> : <><Spinner /><Text role="status">Completing sign-in…</Text></>}
+    <AuthenticateWithRedirectCallback
+      continueSignUpUrl={authEntryHref("continue", destination)}
+      signInUrl={authEntryHref("sign-in", destination)}
+      signUpUrl={authEntryHref("sign-up", destination)}
+      firstFactorUrl={authEntryHref("sign-in", destination)}
+      secondFactorUrl={authEntryHref("sign-in", destination)}
+      resetPasswordUrl={authEntryHref("forgot-password", destination)}
+      verifyEmailAddressUrl={authEntryHref("continue", destination)}
+      signInForceRedirectUrl={completion}
+      signUpForceRedirectUrl={completion}
+    />
+    <Box id="clerk-captcha" />
+  </Stack>;
+}
 
-      {/* Keep the callback handler mounted in both states so a slow
-          exchange can still finish while the escape hatch is showing. */}
-      <AuthenticateWithRedirectCallback
-        continueSignUpUrl="/sign-up/continue"
-        signInFallbackRedirectUrl="/onboarding"
-        signInUrl="/sign-in"
-        signUpFallbackRedirectUrl="/onboarding"
-      />
-      <Box id="clerk-captcha" />
-    </AuthShell>
-  );
+export default function SSOCallbackPage() {
+  return <Suspense fallback={null}><Callback /></Suspense>;
 }

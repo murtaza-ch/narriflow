@@ -1088,7 +1088,6 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
 		"app/workspaces/new/actions.ts",
 		"createBusinessWorkspaceAction",
 	),
-	signedInAction("app/actions/onboarding.ts", "completeOnboardingAction"),
 	signedInAction(
 		"app/invite/[token]/actions.ts",
 		"acceptWorkspaceInviteAction",
@@ -1192,7 +1191,7 @@ export const browserSessionPages: readonly PageSurface[] = [
 	page("app/(app)/upload/page.tsx", "workspace", "processing.consume"),
 	signedInPage("app/workspaces/new/page.tsx"),
 	signedInPage("app/invite/[token]/page.tsx"),
-	signedInPage("app/onboarding/page.tsx"),
+	signedInPage("app/auth/continue/page.tsx"),
 ];
 
 export const browserSessionPageModules = browserSessionPages.map(
@@ -1218,10 +1217,6 @@ export const browserSessionLongLivedModules = [
 export const independentTrustModules = [
 	{ module: "app/api/webhooks/clerk/route.ts", trustModel: "clerk_signature" },
 	{ module: "app/mcp/route.ts", trustModel: "mcp_oauth_or_scoped_api_key" },
-	{
-		module: "app/auth/continue/route.ts",
-		trustModel: "oauth_identity_continuation",
-	},
 	{ module: "app/share/[token]/page.tsx", trustModel: "public_share_token" },
 	{
 		module: "app/api/review/[token]/[[...review]]/route.ts",

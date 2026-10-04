@@ -62,13 +62,13 @@ function AtelierNav() {
             Pricing
           </Text>
         </Link>
-        <Link href="/sign-in">
+        <Link href="/?auth=sign-in">
           <Text fontSize="13px" fontWeight="500" color="fg.muted" _hover={{ color: "fg" }} transition="color 160ms ease" display={{ base: "none", md: "block" }}>
             Sign in
           </Text>
         </Link>
         <Button variant="outline" size="sm" px="5" asChild>
-          <Link href="/sign-up">Start free</Link>
+          <Link href="/?auth=sign-up">Start free</Link>
         </Button>
       </HStack>
     </Flex>
@@ -105,7 +105,7 @@ function Hero() {
         </Text>
         <HStack data-lux gap="5" pt="2" style={{ opacity: 0 }}>
           <Button size="lg" px="8" asChild>
-            <Link href="/sign-up">Start for free</Link>
+            <Link href="/?auth=sign-up">Start for free</Link>
           </Button>
           <Link href="#work">
             <Text fontSize="15px" fontWeight="500" color="fg.muted" _hover={{ color: "fg" }} transition="color 160ms ease">
@@ -419,10 +419,10 @@ function Pricing() {
             </Stack>
             {t.featured ? (
               <Button size="sm" asChild>
-                <Link href="/sign-up">Choose {t.name}</Link>
+                <Link href="/?auth=sign-up">Choose {t.name}</Link>
               </Button>
             ) : (
-              <Link href="/sign-up">
+              <Link href="/?auth=sign-up">
                 <Text fontSize="14px" fontWeight="500" color="fg.muted" _hover={{ color: "fg" }} transition="color 160ms ease">
                   Choose {t.name} →
                 </Text>
@@ -455,7 +455,7 @@ function ClosingCta() {
           60 processing minutes a month. No card required.
         </Text>
         <Button size="lg" px="9" asChild>
-          <Link href="/sign-up">Get started</Link>
+          <Link href="/?auth=sign-up">Get started</Link>
         </Button>
       </Stack>
 

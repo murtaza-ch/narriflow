@@ -130,7 +130,7 @@ export function PricingTable() {
                 variant={recommended ? "solid" : "outline"}
                 size="sm"
               >
-                <Link href="/sign-up">{paid ? `Start with ${name}` : "Start free"}</Link>
+                <Link href="/?auth=sign-up">{paid ? `Start with ${name}` : "Start free"}</Link>
               </Button>
             </Stack>
           );

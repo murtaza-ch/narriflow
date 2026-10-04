@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import Script from "next/script";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
@@ -16,6 +17,7 @@ import { Provider } from "@narriflow/ui/provider";
 import { Toaster } from "@narriflow/ui/components/toaster";
 import { billingService } from "@narriflow/services";
 import { validateCoreEnv } from "../lib/env";
+import { AuthModal } from "./_components/auth/auth-modal";
 
 const metadataDescription =
   "Turn long videos into short, captioned, virality-scored clips — plus repurposing, dubbing, and social publishing.";
@@ -158,7 +160,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           })();`}
         </Script>
         <Provider>
-          <ClerkProvider>{children}</ClerkProvider>
+          <ClerkProvider signInUrl="/?auth=sign-in" signUpUrl="/?auth=sign-up" signInFallbackRedirectUrl="/auth/continue" signUpFallbackRedirectUrl="/auth/continue">
+            {children}
+            <Suspense fallback={null}><AuthModal /></Suspense>
+          </ClerkProvider>
           <Toaster />
         </Provider>
       </body>

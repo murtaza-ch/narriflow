@@ -182,7 +182,7 @@ function VoltNav() {
           </Link>
         ))}
       </HStack>
-      <VoltButton href="/sign-up" variant="outline">
+      <VoltButton href="/?auth=sign-up" variant="outline">
         Start free
       </VoltButton>
     </Flex>
@@ -227,7 +227,7 @@ function Hero() {
             cools.
           </Text>
           <HStack gap="4" flexWrap="wrap">
-            <VoltButton href="/sign-up" variant="ultra">
+            <VoltButton href="/?auth=sign-up" variant="ultra">
               Start for free
             </VoltButton>
             <VoltButton href="#score" variant="outline">
@@ -720,7 +720,7 @@ function Banner() {
             compute, five of your time.
           </Text>
           <Box>
-            <VoltButton href="/sign-up" variant="paper">
+            <VoltButton href="/?auth=sign-up" variant="paper">
               Run your first upload free
             </VoltButton>
           </Box>
@@ -963,7 +963,7 @@ function Pricing() {
                   </HStack>
                 ))}
               </Stack>
-              <VoltButton href="/sign-up" variant={featured ? "paper" : "outline"}>
+              <VoltButton href="/?auth=sign-up" variant={featured ? "paper" : "outline"}>
                 {t.price === 0 ? "Start free" : `Choose ${t.name}`}
               </VoltButton>
             </Stack>
@@ -1005,7 +1005,7 @@ function VoltFooter() {
               Free plan · 60 processing minutes a month · no card required
             </Text>
           </Stack>
-          <VoltButton href="/sign-up" variant="paper">
+          <VoltButton href="/?auth=sign-up" variant="paper">
             Start for free
           </VoltButton>
         </Flex>

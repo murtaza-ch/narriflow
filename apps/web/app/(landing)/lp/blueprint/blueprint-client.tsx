@@ -74,10 +74,10 @@ function BlueprintNav() {
       </HStack>
       <HStack gap="2">
         <Button variant="ghost" size="sm" asChild display={{ base: "none", md: "inline-flex" }}>
-          <Link href="/sign-in">Sign in</Link>
+          <Link href="/?auth=sign-in">Sign in</Link>
         </Button>
         <Button variant="outline" size="sm" asChild>
-          <Link href="/sign-up">Start free</Link>
+          <Link href="/?auth=sign-up">Start free</Link>
         </Button>
       </HStack>
     </Flex>
@@ -162,7 +162,7 @@ function Hero() {
           </Text>
           <HStack gap="3" data-hero-cta style={{ opacity: 0 }}>
             <Button size="lg" px="7" asChild>
-              <Link href="/sign-up">Start for free</Link>
+              <Link href="/?auth=sign-up">Start for free</Link>
             </Button>
             <Button variant="ghost" size="lg" asChild>
               <Link href="#pipeline">Watch it work ↓</Link>
@@ -824,11 +824,11 @@ function Pricing() {
               <Box pt="2">
                 {t.featured ? (
                   <Button size="sm" w="full" asChild>
-                    <Link href="/sign-up">Start with {t.name}</Link>
+                    <Link href="/?auth=sign-up">Start with {t.name}</Link>
                   </Button>
                 ) : (
                   <Button variant="outline" size="sm" w="full" asChild>
-                    <Link href="/sign-up">{t.price === 0 ? "Start free" : `Choose ${t.name}`}</Link>
+                    <Link href="/?auth=sign-up">{t.price === 0 ? "Start free" : `Choose ${t.name}`}</Link>
                   </Button>
                 )}
               </Box>
@@ -864,7 +864,7 @@ function ClosingCta() {
             Press record on your next hundred posts.
           </Text>
           <Button size="lg" px="8" asChild>
-            <Link href="/sign-up">Start for free</Link>
+            <Link href="/?auth=sign-up">Start for free</Link>
           </Button>
         </Stack>
 

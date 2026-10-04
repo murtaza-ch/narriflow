@@ -141,7 +141,7 @@ enum ClipAspectRatio {
 
 enum AuthProvider {
   google
-  facebook
+  apple
   microsoft
   email_password
 }
@@ -750,7 +750,6 @@ model User {
   firstName                       String?
   lastName                        String?
   imageUrl                        String?
-  onboardingCompletedAt           DateTime?
   lastSignInAt                    DateTime?
   defaultBrandTemplateId          String?                          @db.Uuid
   defaultBrandProfileId           String?                          @db.Uuid

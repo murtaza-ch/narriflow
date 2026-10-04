@@ -1,6 +1,7 @@
 import "server-only";
 
-import { auth, currentUser, type UserJSON } from "@clerk/nextjs/server";
+import { auth, clerkClient, currentUser, type UserJSON } from "@clerk/nextjs/server";
+import { isClerkAPIResponseError } from "@clerk/nextjs/errors";
 import { getPrismaClient } from "@narriflow/db/client";
 import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
@@ -197,8 +198,8 @@ function mapProvider(value: string | null | undefined): AuthProvider | null {
     return "google";
   }
 
-  if (normalized.includes("facebook")) {
-    return "facebook";
+  if (normalized.includes("apple")) {
+    return "apple";
   }
 
   if (normalized.includes("microsoft")) {
@@ -358,8 +359,9 @@ export async function syncClerkUserPayload(clerkUser: Partial<UserJSON> | Record
     // Two server components can try to provision the same first-login user at
     // once. Prisma may surface the losing upsert as P2002 on primaryEmail even
     // though the winning request has already created the same Clerk user.
-    // Recover only when that exact Clerk row now exists; a genuine email
-    // collision with a different identity must still fail closed.
+    // Recover the exact Clerk row, or release an email only after its previous
+    // identity's deletion is confirmed. Never transfer an existing workspace
+    // to another Clerk identity based on an email match.
     if (
       !error ||
       typeof error !== "object" ||
@@ -370,19 +372,27 @@ export async function syncClerkUserPayload(clerkUser: Partial<UserJSON> | Record
     }
 
     const concurrentUser = await prisma.user.findUnique({ where: { clerkId } });
-    if (!concurrentUser) throw error;
-
-    appUser = await prisma.user.update({
-      where: { id: concurrentUser.id },
-      data: userData,
-    });
-    console.warn(
-      JSON.stringify({
-        level: "warn",
-        message: "auth_user_sync_race_recovered",
-        clerkId,
-      }),
-    );
+    if (concurrentUser) {
+      appUser = await prisma.user.update({
+        where: { id: concurrentUser.id },
+        data: userData,
+      });
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "auth_user_sync_race_recovered",
+          clerkId,
+        }),
+      );
+    } else if (primaryEmail && await releaseDeletedEmailOwner(primaryEmail, clerkId)) {
+      appUser = await prisma.user.upsert({
+        where: { clerkId },
+        create: { clerkId, ...userData },
+        update: userData,
+      });
+    } else {
+      throw error;
+    }
   }
 
   const identities = extractIdentities(payload);
@@ -429,7 +439,7 @@ async function ensureFirstUseBrandTemplate(userId: string): Promise<void> {
 function personalWorkspaceName(user: Pick<User, "firstName" | "lastName">,
 ): string {
   const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
-  return fullName ? `${fullName}'s workspace` : "Personal workspace";
+  return fullName ? `${fullName}'s workspace` : "My workspace";
 }
 
 export function workspacesV1EnabledForUser(userId: string) {
@@ -670,28 +680,40 @@ export async function setActiveWorkspaceForActor(
 export async function markUserDeletedByClerkId(clerkId: string) {
   const prisma = getRequiredPrisma();
 
-  return prisma.user.updateMany({
-    where: { clerkId },
-    data: { deletedAt: new Date() },
-  });
+  const [, result] = await prisma.$transaction([
+    prisma.authIdentity.deleteMany({ where: { user: { clerkId } } }),
+    prisma.user.updateMany({
+      where: { clerkId },
+      data: { deletedAt: new Date(), primaryEmail: null, emailVerifiedAt: null },
+    }),
+  ]);
+  return result;
 }
 
-export async function completeUserOnboarding(userId: string) {
+async function releaseDeletedEmailOwner(primaryEmail: string, clerkId: string) {
   const prisma = getRequiredPrisma();
+  const previousUser = await prisma.user.findUnique({ where: { primaryEmail } });
+  if (!previousUser || previousUser.clerkId === clerkId) return true;
 
-  return prisma.user.update({
-    where: { id: userId },
-    data: { onboardingCompletedAt: new Date() },
-  });
+  if (!previousUser.deletedAt) {
+    // A deletion webhook may be delayed or absent. Fail closed on a live
+    // account or an unavailable Clerk API; only a confirmed 404 releases it.
+    const client = await clerkClient();
+    try {
+      await client.users.getUser(previousUser.clerkId);
+      return false;
+    } catch (error) {
+      if (!isClerkAPIResponseError(error) || error.status !== 404) throw error;
+    }
+  }
+  await markUserDeletedByClerkId(previousUser.clerkId);
+  return true;
 }
 
 function needsUserRefresh(user: AppUser): boolean {
   return (
     !user.primaryEmail ||
     !user.emailVerifiedAt ||
-    !user.firstName ||
-    !user.lastName ||
-    !user.imageUrl ||
     !user.lastSignInAt
   );
 }

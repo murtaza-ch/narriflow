@@ -3,6 +3,7 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { AccountAvatar } from "../../_components/account-menu";
 import { getDisplayName, getInitials } from "@/lib/account-display";
+import { PasskeySettings } from "./passkey-settings";
 
 export default async function ProfileSettingsPage() {
   const appUser = await admitWorkspacePage("content.view");
@@ -24,11 +25,7 @@ export default async function ProfileSettingsPage() {
           </Stack>
         </Flex>
       </Box>
-      <Box borderRadius="l2" bg="bg.panel" p="5">
-        <Text fontSize="13px" color="fg.muted">
-          Your authentication profile manages your name, email, password, and sign-in methods.
-        </Text>
-      </Box>
+      <PasskeySettings />
     </Stack>
   );
 }

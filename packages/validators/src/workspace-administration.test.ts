@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   businessWorkspaceCheckoutActionSchema,
-  onboardingProfileActionSchema,
   workspaceApiKeyActionSchema,
   workspaceInviteActionSchema,
   workspaceSettingsActionSchema,
@@ -91,19 +90,4 @@ describe("Workspace administration request boundaries", () => {
     ).toBe(false);
   });
 
-  test("keeps onboarding profile input bounded and strict", () => {
-    expect(
-      onboardingProfileActionSchema.safeParse({
-        firstName: "Ada",
-        lastName: "Lovelace",
-      }).success,
-    ).toBe(true);
-    expect(
-      onboardingProfileActionSchema.safeParse({
-        firstName: "Ada",
-        lastName: "Lovelace",
-        workspaceId: "forged",
-      }).success,
-    ).toBe(false);
-  });
 });

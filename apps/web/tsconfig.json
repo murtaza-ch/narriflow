@@ -23,6 +23,8 @@
     "node_modules",
     "**/*.test.ts",
     "**/*.test.tsx",
+    "**/*.db.fixture.ts",
+    "**/*.contract.fixture.ts",
     "**/*.browser.fixture.tsx",
     "**/*.focus.fixture.tsx",
     "scripts"

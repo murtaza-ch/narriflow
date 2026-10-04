@@ -14,11 +14,7 @@ export default async function AppLayout({ children,
   const appUser = await admitOptionalWorkspacePage("content.view");
 
   if (!appUser) {
-    redirect("/sign-in");
-  }
-
-  if (!appUser.onboardingCompletedAt) {
-    redirect("/onboarding");
+    redirect("/?auth=sign-in");
   }
 
   const [stats, memberships] = await Promise.all([

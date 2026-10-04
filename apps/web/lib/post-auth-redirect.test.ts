@@ -29,12 +29,12 @@ describe("resolvePostAuthRedirect", () => {
 
   test("rejects arbitrary external redirects", () => {
     expect(resolvePostAuthRedirect("https://evil.example/steal", appOrigin, clerkIssuer).href)
-      .toBe("http://localhost:3000/onboarding");
+      .toBe("http://localhost:3000/home");
   });
 
   test("rejects non-OAuth paths on the Clerk issuer", () => {
     expect(resolvePostAuthRedirect(`${clerkIssuer}/other`, appOrigin, clerkIssuer).href)
-      .toBe("http://localhost:3000/onboarding");
+      .toBe("http://localhost:3000/home");
   });
 
   test("rejects non-consent paths on the Clerk consent origin", () => {
@@ -43,6 +43,14 @@ describe("resolvePostAuthRedirect", () => {
       appOrigin,
       clerkIssuer,
       "https://accounts.example.com",
-    ).href).toBe("http://localhost:3000/onboarding");
+    ).href).toBe("http://localhost:3000/home");
   });
+  test.each([null, "/?auth=sign-in", "/?auth=sign-up&redirect_url=/home", "/auth/continue", "/auth/continue/", "/%61uth/continue", "/sso-callback", "/sign-in", "/sign-up/continue", "/onboarding", "javascript:alert(1)", "//evil.example/home", "https://user:password@localhost:3000/home"])("defaults to home for missing or unsafe destination %s", (destination) => {
+    expect(resolvePostAuthRedirect(destination, appOrigin, clerkIssuer).href).toBe(`${appOrigin}/home`);
+  });
+  test("preserves project query parameters and fragments", () => {
+    const destination = "/projects/123?clip=456#preview";
+    expect(resolvePostAuthRedirect(destination, appOrigin, clerkIssuer).href).toBe(`${appOrigin}${destination}`);
+  });
+
 });

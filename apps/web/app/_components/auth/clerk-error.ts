@@ -1,4 +1,11 @@
+import { isClerkRuntimeError } from "@clerk/nextjs/errors";
+
 export function getClerkErrorMessage(error: unknown, fallbackMessage: string): string {
+  if (isClerkRuntimeError(error)) {
+    if (error.code === "passkey_retrieval_cancelled") return "Passkey sign-in was cancelled. Try again or choose another method.";
+    if (error.code === "passkey_registration_cancelled") return "Passkey creation was cancelled. You can try again when you're ready.";
+    return fallbackMessage;
+  }
   if (!error || typeof error !== "object") {
     return fallbackMessage;
   }

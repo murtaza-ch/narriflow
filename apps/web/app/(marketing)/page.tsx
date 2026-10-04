@@ -104,7 +104,7 @@ export default function MarketingHomePage() {
             <HStack gap="6" mt="9" animation="fade-up" animationFillMode="backwards" style={stagger(9)}>
               <Magnetic>
                 <Button size="lg" px="7" asChild>
-                  <Link href="/sign-up">Start for free</Link>
+                  <Link href="/?auth=sign-up">Start for free</Link>
                 </Button>
               </Magnetic>
               <Link href="/pricing">
@@ -210,7 +210,7 @@ export default function MarketingHomePage() {
               <HStack gap="6" mt="8">
                 <Magnetic>
                   <Button size="lg" px="7" asChild>
-                    <Link href="/sign-up">Get started free</Link>
+                    <Link href="/?auth=sign-up">Get started free</Link>
                   </Button>
                 </Magnetic>
                 <Link href="/pricing">

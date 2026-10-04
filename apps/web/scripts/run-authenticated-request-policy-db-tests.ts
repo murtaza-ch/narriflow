@@ -89,6 +89,13 @@ try {
       AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_SCHEMA: schema,
     },
   );
+  await run(
+    ["bun", "test", "./apps/web/lib/workspace-entry.db.fixture.ts"],
+    {
+      AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_URL: testUrl.toString(),
+      AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_SCHEMA: schema,
+    },
+  );
 } finally {
   if (process.env.AUTHENTICATED_REQUEST_POLICY_TEST_KEEP_SCHEMA !== "1") {
     await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

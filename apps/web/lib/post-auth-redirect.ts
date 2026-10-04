@@ -4,12 +4,20 @@ export function resolvePostAuthRedirect(
   clerkOAuthIssuer: string | undefined,
   clerkOAuthConsentOrigin?: string,
 ) {
-  const fallback = new URL("/onboarding", appOrigin);
+  const fallback = new URL("/home", appOrigin);
   if (!redirectUrl) return fallback;
 
   try {
     const target = new URL(redirectUrl, appOrigin);
-    if (target.origin === new URL(appOrigin).origin) return target;
+    if (target.username || target.password) return fallback;
+    if (target.origin === new URL(appOrigin).origin) {
+      const path = decodeURIComponent(target.pathname).replace(/\/+$/, "") || "/";
+      if (
+        (path === "/" && target.searchParams.has("auth")) ||
+        /^\/(?:auth|sso-callback|sign-in|sign-up|forgot-password|onboarding)(?:\/|$)/.test(path)
+      ) return fallback;
+      return target;
+    }
 
     if (!clerkOAuthIssuer) return fallback;
     const issuer = new URL(clerkOAuthIssuer);
