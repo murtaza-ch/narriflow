@@ -1,6 +1,6 @@
 # MCP launch acceptance
 
-Evidence recorded on October 5, 2026. Implementation and automated verification are complete on dev. The user subsequently authorized live testing of their Codex desktop connection and selected an existing development project. Codex reads are verified; full launch acceptance remains open.
+Evidence recorded on October 5, 2026. Implementation and automated verification are complete on dev. The user subsequently authorized live testing of their Codex desktop connection and selected an existing development project. Codex reads, export delivery, retry safety, and upload-handoff creation are verified; full launch acceptance remains open.
 
 ## Automated coverage
 
@@ -19,7 +19,7 @@ Repository lint, typecheck, tests and build passed after integration; lint repor
 | Client | Observed version | Observed negotiation/capability evidence | Full OAuth workflow |
 | --- | --- | --- | --- |
 | Codex CLI | 0.160.0 | `codex features list` reports local `mcp_2026_07_28` disabled. Apps and Tasks are unverified. | Pending |
-| Codex desktop | 26.930.31730 (build 12947) | Connected OAuth server exposes 23 public tools as `narriflow-2`. Actual protocol revision and Apps/Tasks negotiation have not been captured. | Reads verified; remaining workflow pending |
+| Codex desktop | 26.930.31730 (build 12947) | Connected OAuth server exposes 23 public tools as `narriflow-2`. Actual protocol revision and Apps/Tasks negotiation have not been captured. | Reads, export delivery/retries, and upload-handoff creation verified; full workflow pending |
 | Claude Code | 2.1.289 | CLI offers HTTP transport and `claude mcp login`. Actual negotiated revision, Apps and Tasks are unverified. | Pending |
 | ChatGPT | Not recorded | No actual client connection or extension exchange recorded. | Pending |
 
@@ -31,7 +31,7 @@ After explicit administrator authorization, the configured development instance 
 
 Clients must send RFC 8707 resource equal to the exact canonical `/mcp` URL. Clerk derives the audience from that parameter; Narriflow verifies it on every request. Read scopes are `projects:read`, `exports:read`, `usage:read`, `autopilot:read`, and `publishing:read`; processing, export, Autopilot and publishing writes require explicit grants. Verify fresh issued-token audience and consent without saving token bytes. New DCR registrations and actual Claude/ChatGPT ceilings remain part of the deferred walkthrough.
 
-A generated continuation secret is configured in apps/web/.env.local without logging its value. Live inspection found it missing from Vercel's `narriflow-dev` project. The same secret was added as a sensitive Production environment variable (this development project deploys `dev` to its Production target). A fresh deployment and integration-page verification are required before claiming the hosted confirmation path works. Other stdio environments must use the same secret.
+A generated continuation secret is configured in apps/web/.env.local without logging its value. Live inspection found it missing from Vercel's `narriflow-dev` project. The same secret was added as a sensitive Production environment variable (this development project deploys `dev` to its Production target). After deployment, the integration page changed from "Confirmation setup needed" to "Discovery verified" and the upload tool generated a signed handoff. Exact-post confirmation still requires a connected destination and its own walkthrough. Other stdio environments must use the same secret.
 
 The newer [authentication verification](authentication.md) records that this development instance issues JWT access tokens and rejected immediate JWT revocation with HTTP 400. Online verification checks expiry and any verified revocation state, but does not make those JWTs immediately revocable. Immediate OAuth revocation is therefore an unresolved launch requirement: configure a revocable token contract or approve an explicit revocation design, then prove it with actual client credentials. API-key revocation remains checked against current database state on every request. The administrator changes in this effort preserved the existing token format.
 
@@ -73,7 +73,7 @@ Also perform an API-key upload-helper walkthrough with a user-selected local fil
 The user connected Narriflow in Codex desktop and selected project `0b076c05-52b5-4dfd-a1fc-764d3173124c` in workspace `cdda3632-7e10-4704-819b-3dfe7d84b850`. Actual connected tools, rather than a separate API-key client, returned these results:
 
 - Workspace discovery returned the explicit workspaceId, owner role, active Business access, and MCP eligibility.
-- Project status reported the 647-second video ready with ten clips. Clip reads returned revision, scores, timing, and ordinary Studio links. Transcript excerpts were absent by default.
+- Project status reported the 647-second video ready with ten clips. Clip reads returned revision, scores, timing, and ordinary Studio links. Transcript excerpts were absent by default; opting in returned a 343-character excerpt.
 - Two consecutive three-item pages returned distinct clips and a continuation cursor. Project discovery and usage also succeeded (11 of 1,800 minutes).
 - Requests using a workspace the caller does not belong to returned `workspace_access_denied` without project data.
 - Social account/publication and Autopilot discovery succeeded with empty lists. No destination was connected and no real publication was scheduled.
@@ -81,6 +81,14 @@ The user connected Narriflow in Codex desktop and selected project `0b076c05-52b
 
 The limiter failure reproduced against healthy shared Upstash: an explicit connection returned PONG while the limiter returned unavailable. With offline queuing disabled, the limiter issued INCR before its lazy connection was ready, then disconnected that client. The fix awaits one shared connection promise before issuing commands. A real-ioredis TCP regression first failed, then passed: four concurrent cold-start requests all observe available Redis and only two are admitted under a limit of two. The shared Redis probe also reports available after the fix. Outage admission policy is unchanged.
 
-Verification after this fix: repository lint, typecheck, tests, and build passed; MCP integration passed 146 tests / 697 assertions; limiter tests passed five tests. No schema or domain lifecycle changed. Deployment and a live export retry remain to be recorded.
+Verification after this fix: repository lint, typecheck, tests, and build passed; MCP integration passed 146 tests / 697 assertions; limiter tests passed five tests. No schema or domain lifecycle changed.
 
-The user asked to ignore the existing YouTube import problem; no new import or generation was attempted. Claude, ChatGPT, API-key media upload, actual extension visuals/negotiation, controlled role/plan/revocation checks, and exact-post confirmation remain unverified. Successful OAuth-authenticated reads prove this connected token passes server audience and read-scope admission; they do not establish all fresh-consent or revocation gates.
+Commit `0d36b72de969dc203f1c1d7dbf9eea79b2c4991e` was pushed to dev and Vercel deployment `dpl_7M1ygWq84kKEqua4FydwJGgW4kHs` reached READY with the canonical alias assigned. The subsequent actual Codex tool calls verified:
+
+- Retrying the original unchanged export request accepted export `5cba21d7-b9a1-4546-ba05-44bbeb82a1b2`, initially queued. The status tool observed it ready at 100%, with a completed 1080p 9:16 asset lasting 19.043 seconds. The worker completed it in about 22 seconds.
+- An unchanged replay returned the same export and variant identifiers and the original immutable acceptance outcome. A changed aspect ratio under that key returned `mcp_idempotency_conflict`.
+- A fresh request with expected revision 1 while the clip remained revision 0 returned `editor_revision_conflict` and currentRevision 0. This proves mismatched-revision admission; a genuinely stale prior revision remains covered by deterministic/database tests rather than this unchanged v0 live fixture.
+- The upload tool returned `awaiting_file`, the correct workspace, a ten-minute expiry, and a Narriflow handoff URL. No file bytes were supplied or ingest work started by this check.
+- Chrome opened the ordinary [export delivery page](https://narriflow-dev.vercel.app/projects/0b076c05-52b5-4dfd-a1fc-764d3173124c/clips/a0e2c2c3-a7a1-45ae-b569-33f1eb984b9b/exports/5cba21d7-b9a1-4546-ba05-44bbeb82a1b2), displaying Ready, version 0, 1080p, and a 4.4 MB download. Actual video playback reached its 19.043-second end, with a played range, readyState 4, and no media error. Screenshots were saved locally without tokens or temporary media URLs in this document.
+
+The user asked to ignore the existing YouTube import problem; no new import or generation was attempted. Claude, ChatGPT, API-key media upload, actual extension visuals/negotiation, controlled role/plan/revocation checks, and exact-post confirmation remain unverified. The ordinary Narriflow export page is visually verified; an embedded Codex App card has not been observed. Successful OAuth-authenticated reads and mutations prove this connected token passes server audience and the exercised read/processing/export scope admission; they do not establish all fresh-consent or revocation gates.
