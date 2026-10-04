@@ -1,8 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 
-import { buildNarriflowMcpServer, type NarriflowMcpPrincipal } from "./index";
+import { autopilotService, clipService, ExpectedDomainFailureError, projectService, workspaceService,
+  type WorkspaceActorContext, type ExpectedDomainFailureKind } from "@narriflow/services";
+
+import { buildNarriflowMcpServer, MCP_TOOL_ADMISSIONS, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./index";
 
 const clients: Client[] = [];
 
@@ -50,6 +53,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       "narriflow_publish_social_publication_again",
       "narriflow_recheck_social_publication",
     ]);
+    expect(tools.map((tool) => tool.name)).toEqual(Object.keys(MCP_TOOL_ADMISSIONS));
 
     const createRule = tools.find((tool) => tool.name === "narriflow_create_rss_autopilot_rule");
     const listProjects = tools.find((tool) => tool.name === "narriflow_list_projects");
@@ -165,7 +169,9 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       type: "text",
       text: JSON.stringify({
         error: "mcp_api_key_scope_required",
+        kind: "forbidden",
         message: "This API key requires the usage:read scope",
+        retryGuidance: "request_access",
       }),
     });
   });
@@ -192,7 +198,9 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       type: "text",
       text: JSON.stringify({
         error: "mcp_api_key_scope_required",
+        kind: "forbidden",
         message: "This API key requires the publishing:write scope",
+        retryGuidance: "request_access",
       }),
     });
   });
@@ -230,7 +238,9 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       type: "text",
       text: JSON.stringify({
         error: "mcp_api_key_scope_required",
+        kind: "forbidden",
         message: "This API key requires the publishing:write scope",
+        retryGuidance: "request_access",
       }),
     });
   });
@@ -260,7 +270,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
 				kind: "oauth",
 				userId: "00000000-0000-4000-8000-000000000001",
 				clientId: "test-oauth-client",
-				scopes: ["openid", "publishing:write"],
+				scopes: ["openid", "profile", "email", "offline_access"],
 			});
 			const result = await client.callTool({
 				name: "narriflow_confirm_social_publication",
@@ -293,8 +303,136 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       type: "text",
       text: JSON.stringify({
         error: "mcp_workspace_boundary_violation",
+        kind: "forbidden",
         message: "This API key is bound to a different workspace",
+        retryGuidance: "request_access",
       }),
     });
+  });
+  test("get_project returns the canonical snapshot progress without deriving another state", async () => {
+    const actorUserId = "00000000-0000-4000-8000-000000000001";
+    const workspaceId = "00000000-0000-4000-8000-000000000002";
+    const projectId = "00000000-0000-4000-8000-000000000003";
+    const progress = { status: "failed" as const, label: "Rendering failed", active: false };
+    const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue({
+      actorUserId, workspaceId, workspaceOwnerUserId: actorUserId,
+      role: "owner", status: "active", pricingTier: "business", isPersonalWorkspace: true,
+    });
+    const snapshotSpy = spyOn(projectService, "getProjectSnapshot").mockResolvedValue({
+      project: {
+        id: projectId, workspaceId, createdByUserId: actorUserId,
+        title: "Progress fixture", sourceMediaUrl: "https://example.test/source.mp4",
+        sourceType: "upload", sourceProvider: null, sourceInput: null,
+        sourceStorageKey: null, sourceMimeType: null, sourceSizeBytes: null,
+        sourceDurationSeconds: 30, languageCode: null, brandProfileId: null,
+        brandTemplateId: null, ingestStatus: "ready", ingestErrorCode: null,
+        ingestCompletedAt: null, notifyOnComplete: false, retentionPolicyKey: null,
+        expiresAt: null, persisted: true, createdAt: "2026-10-04T00:00:00Z",
+      },
+      progress, activeRun: null, lastSeq: 0, ingestAttemptCount: 0,
+    });
+    const transcriptSpy = spyOn(projectService, "getTranscriptSnapshot").mockResolvedValue(null);
+    const clipsSpy = spyOn(clipService, "listClips").mockResolvedValue([]);
+    try {
+      const client = await connect({ kind: "oauth", userId: actorUserId, clientId: "test-progress-client", scopes: ["openid"] });
+      const result = await client.callTool({ name: "narriflow_get_project", arguments: { workspaceId, projectId } });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ data: { progress, project: { progress } } });
+      expect(snapshotSpy).toHaveBeenCalledWith(expect.objectContaining({ actorUserId, workspaceId }), projectId);
+    } finally {
+      actorSpy.mockRestore(); snapshotSpy.mockRestore(); transcriptSpy.mockRestore(); clipsSpy.mockRestore();
+    }
+  });
+
+});
+
+const ACTOR_ID = "00000000-0000-4000-8000-000000000001";
+const WORKSPACE_ID = "00000000-0000-4000-8000-000000000002";
+const RESOURCE_ID = "00000000-0000-4000-8000-000000000003";
+const currentActor: WorkspaceActorContext = { actorUserId: ACTOR_ID, workspaceId: WORKSPACE_ID, workspaceName: "MCP Team",
+  workspaceOwnerUserId: "another-user", role: "editor", status: "active", pricingTier: "business", isPersonalWorkspace: false };
+const identityPrincipal: NarriflowMcpPrincipal = { kind: "oauth", userId: ACTOR_ID, clientId: "identity-only",
+  scopes: ["openid", "profile", "email", "offline_access"] };
+
+const toolArguments: Record<Exclude<NarriflowMcpToolName, "narriflow_list_workspaces">, Record<string, unknown>> = {
+  narriflow_confirm_social_publication: { workspaceId: WORKSPACE_ID, socialPostId: RESOURCE_ID, reason: "Provider checked", evidenceKind: "manual_unvalidated" },
+  narriflow_create_rss_autopilot_rule: { workspaceId: WORKSPACE_ID, name: "Podcast", rssUrl: "https://podcast.test/feed.xml" },
+  narriflow_get_project: { workspaceId: WORKSPACE_ID, projectId: RESOURCE_ID },
+  narriflow_get_social_publication: { workspaceId: WORKSPACE_ID, socialPostId: RESOURCE_ID },
+  narriflow_get_workspace_usage: { workspaceId: WORKSPACE_ID },
+  narriflow_list_autopilot_rules: { workspaceId: WORKSPACE_ID },
+  narriflow_list_projects: { workspaceId: WORKSPACE_ID },
+  narriflow_run_autopilot_rule_now: { workspaceId: WORKSPACE_ID, ruleId: RESOURCE_ID },
+  narriflow_publish_social_publication_again: { workspaceId: WORKSPACE_ID, socialPostId: RESOURCE_ID, reason: "Accept duplicate risk", duplicateRiskAcknowledged: true },
+  narriflow_recheck_social_publication: { workspaceId: WORKSPACE_ID, socialPostId: RESOURCE_ID, reason: "Inspect provider operation" },
+};
+
+describe("MCP registered tool admission and failures", () => {
+  test("all registered workspace handlers use the matching table row before domain reads", async () => {
+    const actorSpy = spyOn(workspaceService, "requireActor").mockRejectedValue(new ExpectedDomainFailureError({
+      code: "test_membership_denied", kind: "forbidden", message: "Current membership denied",
+    }));
+    const snapshotSpy = spyOn(projectService, "getProjectSnapshot").mockRejectedValue(new Error("domain read must not occur"));
+    const usageSpy = spyOn(projectService, "getUsageSummary").mockRejectedValue(new Error("domain read must not occur"));
+    const runSpy = spyOn(autopilotService, "triggerRuleNow").mockRejectedValue(new Error("domain mutation must not occur"));
+    try {
+      const client = await connect(identityPrincipal);
+      for (const tool of Object.keys(toolArguments) as Array<keyof typeof toolArguments>) {
+        const result = await client.callTool({ name: tool, arguments: toolArguments[tool] });
+        expect(result.structuredContent).toMatchObject({ data: { error: "test_membership_denied", kind: "forbidden" } });
+        expect(actorSpy).toHaveBeenLastCalledWith(ACTOR_ID, WORKSPACE_ID, MCP_TOOL_ADMISSIONS[tool].capability);
+      }
+      expect(actorSpy).toHaveBeenCalledTimes(10);
+      expect(snapshotSpy).not.toHaveBeenCalled(); expect(usageSpy).not.toHaveBeenCalled(); expect(runSpy).not.toHaveBeenCalled();
+    } finally { actorSpy.mockRestore(); snapshotSpy.mockRestore(); usageSpy.mockRestore(); runSpy.mockRestore(); }
+  });
+
+  test("all registered workspace handlers enforce their key scope and boundary before Workspace reads", async () => {
+    const actorSpy = spyOn(workspaceService, "requireActor").mockRejectedValue(new Error("Workspace lookup must not occur"));
+    try {
+      const missingScope = await connect({ kind: "api_key", userId: ACTOR_ID, clientId: "key-client", apiKeyId: RESOURCE_ID,
+        workspaceId: WORKSPACE_ID, scopes: [] });
+      for (const tool of Object.keys(toolArguments) as Array<keyof typeof toolArguments>) {
+        const result = await missingScope.callTool({ name: tool, arguments: toolArguments[tool] });
+        expect(result.structuredContent).toMatchObject({ data: { error: "mcp_api_key_scope_required", kind: "forbidden",
+          message: `This API key requires the ${MCP_TOOL_ADMISSIONS[tool].apiKeyScope} scope` } });
+      }
+      const scoped = await connect({ kind: "api_key", userId: ACTOR_ID, clientId: "key-client", apiKeyId: RESOURCE_ID,
+        workspaceId: WORKSPACE_ID, scopes: ["projects:read", "usage:read", "autopilot:read", "autopilot:write", "publishing:read", "publishing:write"] });
+      for (const tool of Object.keys(toolArguments) as Array<keyof typeof toolArguments>) {
+        const result = await scoped.callTool({ name: tool, arguments: { ...toolArguments[tool], workspaceId: RESOURCE_ID } });
+        expect(result.structuredContent).toMatchObject({ data: { error: "mcp_workspace_boundary_violation", kind: "forbidden" } });
+      }
+      expect(actorSpy).not.toHaveBeenCalled();
+    } finally { actorSpy.mockRestore(); }
+  });
+
+  test.each(["invalid", "unprocessable", "forbidden", "payment_required", "missing", "conflict", "rate_limited", "unavailable"] satisfies ExpectedDomainFailureKind[])(
+    "translates a %s domain failure through the MCP client", async (kind) => {
+      const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(currentActor);
+      const usageSpy = spyOn(projectService, "getUsageSummary").mockRejectedValue(new ExpectedDomainFailureError({
+        code: `domain_${kind}`, kind, message: "Safe explanation", details: { requestedWorkspace: WORKSPACE_ID }, retryAfterSeconds: 1.1,
+      }));
+      try {
+        const client = await connect(identityPrincipal);
+        const result = await client.callTool({ name: "narriflow_get_workspace_usage", arguments: { workspaceId: WORKSPACE_ID } });
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({ data: { error: `domain_${kind}`, kind, message: "Safe explanation",
+          details: { requestedWorkspace: WORKSPACE_ID }, retryAfterSeconds: 2 } });
+        expect(usageSpy).toHaveBeenCalledWith(currentActor);
+        expect(JSON.parse((result.content![0] as { text: string }).text)).toEqual((result.structuredContent as { data: unknown }).data);
+      } finally { actorSpy.mockRestore(); usageSpy.mockRestore(); }
+    },
+  );
+
+  test("hides unknown internal exceptions even when they resemble former admission messages", async () => {
+    const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(currentActor);
+    const usageSpy = spyOn(projectService, "getUsageSummary").mockRejectedValue(new Error("Narriflow MCP password=private"));
+    try {
+      const client = await connect(identityPrincipal);
+      const result = await client.callTool({ name: "narriflow_get_workspace_usage", arguments: { workspaceId: WORKSPACE_ID } });
+      expect(result.structuredContent).toEqual({ data: { error: "narriflow_tool_failed", message: "Narriflow tool failed without exposing internal details" } });
+      expect(JSON.stringify(result)).not.toContain("private");
+    } finally { actorSpy.mockRestore(); usageSpy.mockRestore(); }
   });
 });

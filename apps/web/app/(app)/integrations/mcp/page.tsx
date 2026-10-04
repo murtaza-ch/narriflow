@@ -35,6 +35,14 @@ const TOOLS = [
   },
   { name: "narriflow_run_autopilot_rule_now", behavior: "Write", description: "Mark an existing rule due for the worker.",
   },
+  { name: "narriflow_get_social_publication", behavior: "Read", description: "Inspect a social publication's status and recovery options.",
+  },
+  { name: "narriflow_recheck_social_publication", behavior: "Write", description: "Check the existing provider operation without submitting another post.",
+  },
+  { name: "narriflow_confirm_social_publication", behavior: "Write", description: "Confirm an existing publication using operator evidence.",
+  },
+  { name: "narriflow_publish_social_publication_again", behavior: "Write", description: "Create another publication attempt after explicit duplicate-risk acknowledgement.",
+  },
 ] as const;
 
 function SectionHeading({ eyebrow, title, description,
@@ -109,7 +117,7 @@ export default async function McpIntegrationPage() {
     <Stack gap={{ base: "8", md: "10" }} maxW="1120px" mx="auto">
       <PageHeader
         title="Connect Narriflow to AI assistants"
-        description="Connect your AI client to projects, usage, and RSS autopilot."
+        description="Connect your AI client to projects, usage, RSS autopilot and social publication recovery."
         actions={
           <Button asChild size="sm" variant="outline">
             <Link href="/integrations"><ArrowLeft size={14} />All integrations</Link>
@@ -175,7 +183,7 @@ export default async function McpIntegrationPage() {
             Start the connection from your AI client. Narriflow sends you to Clerk&apos;s hosted authorization and consent flow, then the client acts as your Narriflow user. It can only reach workspaces where you remain an active member, and every tool still enforces your workspace role.
           </InfoColumn>
           <InfoColumn icon={KeyRound} title="Workspace API key">
-            Use a scoped, workspace-bound key for unattended or non-OAuth clients. Keys can grant read scopes and optional autopilot writes, are shown once, and can be revoked independently of personal connections.{" "}
+            Use a scoped, workspace-bound key for unattended or non-OAuth clients. Keys have read scopes, with separate choices for autopilot writes, publication reads and publication recovery writes. Secrets are shown once and keys can be revoked independently of personal connections.{" "}
             {canManageApi ? (
               <Link href="/settings/api" style={{ textDecoration: "underline" }}>Manage workspace keys</Link>
             ) : (
@@ -248,7 +256,7 @@ export default async function McpIntegrationPage() {
         <SectionHeading
           eyebrow="04 / Available tools"
           title="Read by default; write only on clear intent"
-          description="Write tools can start imports or processing. Use them only when requested."
+          description="Write tools can start processing or change publication state. Use them only when requested."
         />
         <Stack gap="0" borderTopWidth="1.5px" borderColor="border.strong">
           {TOOLS.map((tool) => (
@@ -298,7 +306,7 @@ export default async function McpIntegrationPage() {
             Narriflow intentionally uses Clerk-hosted consent—there is no custom Narriflow consent page. Allow the browser window or redirect, sign in to Narriflow once, then retry from the client. If the client reports an issuer or redirect mismatch, copy the endpoint exactly and ask the workspace owner to verify the deployed OAuth configuration.
           </InfoColumn>
           <InfoColumn icon={CircleAlert} title="Connected, but tools are denied">
-            Run narriflow_list_workspaces first. Confirm the target workspace is active Business, use its returned workspace ID, and check that your membership role allows the operation. For keys, confirm the required read or autopilot scope is present.
+            Run narriflow_list_workspaces first. Confirm the target workspace is active Business, use its returned workspace ID, and check that your membership role allows the operation. For keys, confirm the required project, usage, autopilot or publishing scope is present.
           </InfoColumn>
           <InfoColumn icon={CheckCircle2} title="How to confirm a connection">
             Trust the client&apos;s MCP status and a successful tool call. Narriflow does not currently keep a dashboard list of OAuth client sessions, so this page reports endpoint readiness and workspace eligibility only.

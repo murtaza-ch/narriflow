@@ -2,12 +2,10 @@ import { McpServer } from "@modelcontextprotocol/server";
 import {
   autopilotService,
   clipService,
-  hasFeature,
   projectService,
   socialService,
-  SocialPublicationRecoveryError,
   workspaceService,
-  type WorkspaceCapability,
+  workspaceLibraryService,
 } from "@narriflow/services";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
@@ -15,28 +13,15 @@ import {
   contentPackSchema,
 } from "@narriflow/validators";
 import * as z from "zod/v4";
+import { McpToolAdmission, mcpToolFailure, type NarriflowMcpPrincipal } from "./mcp-tool-admission";
+
+export { MCP_TOOL_ADMISSIONS, type NarriflowMcpToolName, type NarriflowMcpPrincipal } from "./mcp-tool-admission";
 
 export const NARRIFLOW_MCP_SERVER_NAME = "narriflow";
 export const NARRIFLOW_MCP_SERVER_VERSION = "0.2.0";
 
 export const NARRIFLOW_MCP_INSTRUCTIONS =
   "Start with narriflow_list_workspaces and use the returned workspaceId for later calls. Narriflow data and billing are workspace-scoped. Read tools are safe; call write tools only when the user clearly asks. Rechecking a social publication inspects its existing provider operation and never submits a new post. Confirming publication requires evidence. Publishing again creates a new attempt and requires explicit duplicate-risk acknowledgement. MCP workspace access requires an active Business plan, and media processing still consumes the workspace's monthly minute quota.";
-
-export type NarriflowMcpPrincipal =
-  | {
-      kind: "oauth";
-      userId: string;
-      clientId: string;
-      scopes: string[];
-    }
-  | {
-      kind: "api_key";
-      userId: string;
-      clientId: string;
-      apiKeyId: string;
-      workspaceId: string;
-      scopes: string[];
-    };
 
 const workspaceInput = {
   workspaceId: z.string().uuid().optional().describe(
@@ -60,69 +45,15 @@ function success(data: unknown) {
   };
 }
 
-function failure(error: unknown) {
-  const apiKeyScope = error instanceof Error && error.message.startsWith("This API key requires");
-  const workspaceBoundary =
-    error instanceof Error && error.message === "This API key is bound to a different workspace";
-  const billingBoundary = error instanceof Error && error.message.startsWith("Narriflow MCP ");
-  const payload = error instanceof SocialPublicationRecoveryError
-    ? { error: error.code, message: error.message }
-    : apiKeyScope
-      ? { error: "mcp_api_key_scope_required", message: error.message }
-      : workspaceBoundary
-        ? { error: "mcp_workspace_boundary_violation", message: error.message }
-        : billingBoundary
-          ? { error: "mcp_workspace_access_unavailable", message: error.message }
-          : {
-              error: "narriflow_tool_failed",
-              message: "Narriflow tool failed without exposing internal details",
-            };
-  return {
-    isError: true as const,
-    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
-    structuredContent: { data: payload },
-  };
-}
-
 async function runTool(operation: () => Promise<unknown>) {
   try {
     return success(await operation());
   } catch (error) {
-    return failure(error);
+    return mcpToolFailure(error);
   }
 }
 
-function requireApiKeyScope(principal: NarriflowMcpPrincipal, requiredScope: string) {
-  if (principal.kind === "api_key" && !principal.scopes.includes(requiredScope)) {
-    throw new Error(`This API key requires the ${requiredScope} scope`);
-  }
-}
-
-async function requireWorkspace(
-  principal: NarriflowMcpPrincipal,
-  requestedWorkspaceId: string | undefined,
-  capability: WorkspaceCapability,
-  apiKeyScope: string,
-) {
-  requireApiKeyScope(principal, apiKeyScope);
-
-  if (
-    principal.kind === "api_key" &&
-    requestedWorkspaceId &&
-    requestedWorkspaceId !== principal.workspaceId
-  ) {
-    throw new Error("This API key is bound to a different workspace");
-  }
-
-  const workspaceId = principal.kind === "api_key"
-    ? principal.workspaceId
-    : requestedWorkspaceId ?? await workspaceService.getPersonalWorkspaceId(principal.userId);
-  const actor = await workspaceService.requireActor(principal.userId, workspaceId, capability);
-  if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) {
-    throw new Error("Narriflow MCP workspace access requires an active Business plan");
-  }
-  return actor;
-}
+const toolAdmission = new McpToolAdmission(workspaceService);
 
 function logMutation(tool: string, principal: NarriflowMcpPrincipal, workspaceId: string) {
   console.warn(JSON.stringify({
@@ -192,16 +123,14 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       },
     },
     async ({ socialPostId, reason, evidenceKind, providerReference, externalUrl, workspaceId }) => runTool(async () => {
-      const actor = await requireWorkspace(
+      const actor = await toolAdmission.requireWorkspace(
+        "narriflow_confirm_social_publication",
         principal,
         workspaceId,
-        "publishing.manage",
-        "publishing:write",
       );
       logMutation("narriflow_confirm_social_publication", principal, actor.workspaceId);
       return socialService.confirmPublication(
-        actor.workspaceId,
-        principal.userId,
+        actor,
         socialPostId,
         {
           reason,
@@ -236,14 +165,13 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       },
     },
     async (input) => runTool(async () => {
-      const actor = await requireWorkspace(
+      const actor = await toolAdmission.requireWorkspace(
+        "narriflow_create_rss_autopilot_rule",
         principal,
         input.workspaceId,
-        "content.edit",
-        "autopilot:write",
       );
       logMutation("narriflow_create_rss_autopilot_rule", principal, actor.workspaceId);
-      return autopilotService.createRule(actor.workspaceOwnerUserId, {
+      return autopilotService.createRule(actor, {
         name: input.name,
         rssUrl: input.rssUrl,
         titlePrefix: input.titlePrefix ?? null,
@@ -252,7 +180,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
         contentPack: buildDefaultContentPack({
           clipCountTarget: input.clipCountTarget,
         }),
-      }, { workspaceId: actor.workspaceId, actorUserId: principal.userId });
+      });
     }),
   );
 
@@ -269,18 +197,14 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       annotations: readOnlyAnnotations,
     },
     async ({ projectId, workspaceId }) => runTool(async () => {
-      const actor = await requireWorkspace(principal, workspaceId, "content.view", "projects:read");
-      const project = await projectService.getProjectSnapshot(
-        principal.userId,
-        projectId,
-        actor.workspaceId,
-      );
-      if (!project.project) return { project: null, transcript: null, clips: [] };
+      const actor = await toolAdmission.requireWorkspace("narriflow_get_project", principal, workspaceId);
+      const project = await projectService.getProjectSnapshot(actor, projectId);
+      if (!project.project) return { project: null, progress: null, transcript: null, clips: [] };
       const [transcript, clips] = await Promise.all([
-        projectService.getTranscriptSnapshot(actor.workspaceOwnerUserId, projectId),
-        clipService.listClips(actor.workspaceOwnerUserId, projectId),
+        projectService.getTranscriptSnapshot(actor, projectId),
+        clipService.listClips(actor, projectId),
       ]);
-      return { project, transcript, clips };
+      return { project, progress: project.progress, transcript, clips };
     }),
   );
 
@@ -298,13 +222,12 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       annotations: readOnlyAnnotations,
     },
     async ({ socialPostId, workspaceId }) => runTool(async () => {
-      const actor = await requireWorkspace(
+      const actor = await toolAdmission.requireWorkspace(
+        "narriflow_get_social_publication",
         principal,
         workspaceId,
-        "content.view",
-        "publishing:read",
       );
-      return socialService.inspectPublication(actor.workspaceId, socialPostId);
+      return socialService.inspectPublication(actor, socialPostId);
     }),
   );
 
@@ -318,8 +241,8 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       annotations: readOnlyAnnotations,
     },
     async ({ workspaceId }) => runTool(async () => {
-      const actor = await requireWorkspace(principal, workspaceId, "content.view", "usage:read");
-      return projectService.getUsageSummary(actor.workspaceOwnerUserId, actor.workspaceId);
+      const actor = await toolAdmission.requireWorkspace("narriflow_get_workspace_usage", principal, workspaceId);
+      return projectService.getUsageSummary(actor);
     }),
   );
 
@@ -333,8 +256,8 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       annotations: readOnlyAnnotations,
     },
     async ({ workspaceId }) => runTool(async () => {
-      const actor = await requireWorkspace(principal, workspaceId, "content.view", "autopilot:read");
-      return autopilotService.listRules(actor.workspaceOwnerUserId, actor.workspaceId);
+      const actor = await toolAdmission.requireWorkspace("narriflow_list_autopilot_rules", principal, workspaceId);
+      return autopilotService.listRules(actor);
     }),
   );
 
@@ -352,12 +275,8 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       annotations: readOnlyAnnotations,
     },
     async ({ workspaceId, limit, cursor }) => runTool(async () => {
-      const actor = await requireWorkspace(principal, workspaceId, "content.view", "projects:read");
-      return projectService.listProjectsWithStatsPage(principal.userId, {
-        limit,
-        cursor: cursor ?? null,
-        workspaceId: actor.workspaceId,
-      });
+      const actor = await toolAdmission.requireWorkspace("narriflow_list_projects", principal, workspaceId);
+      return workspaceLibraryService.listProjects(actor, {limit, cursor: cursor ?? null});
     }),
   );
 
@@ -369,32 +288,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       outputSchema: dataOutputSchema,
       annotations: readOnlyAnnotations,
     },
-    async () => runTool(async () => {
-      if (principal.kind === "api_key") {
-        const actor = await workspaceService.requireActor(
-          principal.userId,
-          principal.workspaceId,
-          "content.view",
-        );
-        const workspace = await workspaceService.getWorkspace(principal.userId, principal.workspaceId);
-        return workspace ? [{
-          ...workspace,
-          role: actor.role,
-          mcpEnabled: actor.status === "active" && hasFeature(actor.pricingTier, "integrations.mcp"),
-        }] : [];
-      }
-      const memberships = await workspaceService.listAccessibleWorkspaces(principal.userId);
-      return memberships.map(({ role, workspace }) => ({
-        id: workspace.id,
-        name: workspace.name,
-        role,
-        status: workspace.status,
-        pricingTier: workspace.pricingTier,
-        isPersonal: workspace.personalOwnerUserId === principal.userId,
-        mcpEnabled:
-          workspace.status === "active" && hasFeature(workspace.pricingTier, "integrations.mcp"),
-      }));
-    }),
+    async () => runTool(() => toolAdmission.listWorkspaces(principal)),
   );
 
   server.registerTool(
@@ -415,18 +309,13 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       },
     },
     async ({ ruleId, workspaceId }) => runTool(async () => {
-      const actor = await requireWorkspace(
+      const actor = await toolAdmission.requireWorkspace(
+        "narriflow_run_autopilot_rule_now",
         principal,
         workspaceId,
-        "content.edit",
-        "autopilot:write",
       );
       logMutation("narriflow_run_autopilot_rule_now", principal, actor.workspaceId);
-      return autopilotService.triggerRuleNow(
-        actor.workspaceOwnerUserId,
-        ruleId,
-        { workspaceId: actor.workspaceId, actorUserId: principal.userId },
-      );
+      return autopilotService.triggerRuleNow(actor, ruleId);
     }),
   );
 
@@ -451,16 +340,14 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       },
     },
     async ({ socialPostId, reason, duplicateRiskAcknowledged, workspaceId }) => runTool(async () => {
-      const actor = await requireWorkspace(
+      const actor = await toolAdmission.requireWorkspace(
+        "narriflow_publish_social_publication_again",
         principal,
         workspaceId,
-        "publishing.manage",
-        "publishing:write",
       );
       logMutation("narriflow_publish_social_publication_again", principal, actor.workspaceId);
       return socialService.republishPublication(
-        actor.workspaceId,
-        principal.userId,
+        actor,
         socialPostId,
         { reason, duplicateRiskAcknowledged },
       );
@@ -487,11 +374,10 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       },
     },
     async ({ socialPostId, reason, workspaceId }) => runTool(async () => {
-      const actor = await requireWorkspace(
+      const actor = await toolAdmission.requireWorkspace(
+        "narriflow_recheck_social_publication",
         principal,
         workspaceId,
-        "publishing.manage",
-        "publishing:write",
       );
       logMutation(
         "narriflow_recheck_social_publication",
@@ -499,8 +385,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
         actor.workspaceId,
       );
       return socialService.recheckPublication(
-        actor.workspaceId,
-        principal.userId,
+        actor,
         socialPostId,
         { reason },
       );

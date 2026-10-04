@@ -5,6 +5,8 @@ import {
   workspaceApiKeyActionSchema,
   workspaceInviteActionSchema,
   workspaceSettingsActionSchema,
+  WORKSPACE_API_KEY_SCOPES,
+  workspaceApiKeyScopeSchema,
 } from "./workspace-administration";
 
 describe("Workspace administration request boundaries", () => {
@@ -56,6 +58,16 @@ describe("Workspace administration request boundaries", () => {
         scopes: ["billing:write"],
       }).success,
     ).toBe(false);
+  });
+
+  test("accepts every canonical scope including explicit publishing grants", () => {
+    expect(workspaceApiKeyScopeSchema.options).toEqual([...WORKSPACE_API_KEY_SCOPES]);
+    expect(workspaceApiKeyActionSchema.parse({
+      name: "Publication recovery", scopes: [...WORKSPACE_API_KEY_SCOPES],
+    }).scopes).toEqual([...WORKSPACE_API_KEY_SCOPES]);
+    expect(workspaceApiKeyActionSchema.safeParse({
+      name: "Too many", scopes: [...WORKSPACE_API_KEY_SCOPES, "projects:read"],
+    }).success).toBe(false);
   });
 
   test("requires a name for creation but permits a preserved checkout retry", () => {

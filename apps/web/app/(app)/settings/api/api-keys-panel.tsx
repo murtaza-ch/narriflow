@@ -24,6 +24,8 @@ export function ApiKeysPanel({
   const [name, setName] = useState("");
   const [secret, setSecret] = useState<string | null>(null);
   const [allowAutopilotWrites, setAllowAutopilotWrites] = useState(false);
+  const [allowPublishingReads, setAllowPublishingReads] = useState(false);
+  const [allowPublishingWrites, setAllowPublishingWrites] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -39,6 +41,8 @@ export function ApiKeysPanel({
           "usage:read",
           "autopilot:read",
           ...(allowAutopilotWrites ? ["autopilot:write"] : []),
+          ...(allowPublishingReads ? ["publishing:read"] : []),
+          ...(allowPublishingWrites ? ["publishing:write"] : []),
         ],
       });
       if (!result.ok) {
@@ -79,6 +83,12 @@ export function ApiKeysPanel({
               <Flex gap="3" direction={{ base: "column", md: "row" }}><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Key name, e.g. Claude Desktop" maxLength={80} required /><Button type="submit" size="sm" disabled={pending}>{pending ? <Spinner size="xs" /> : <Plus size={14} />}Create key</Button></Flex>
               <Checkbox checked={allowAutopilotWrites} onCheckedChange={setAllowAutopilotWrites}>
                 Allow this key to create and run RSS autopilot rules
+              </Checkbox>
+              <Checkbox checked={allowPublishingReads} onCheckedChange={setAllowPublishingReads}>
+                Allow this key to read social publication status
+              </Checkbox>
+              <Checkbox checked={allowPublishingWrites} onCheckedChange={setAllowPublishingWrites}>
+                Allow this key to confirm, recheck and publish social posts again
               </Checkbox>
             </Stack>
           )}
