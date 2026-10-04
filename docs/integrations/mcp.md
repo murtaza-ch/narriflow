@@ -134,10 +134,15 @@ helper needs only its key and Narriflow URL, without service credentials.
 
 ## Extensions and verification
 
-Versioned `ui://narriflow/v1/` resources use the standard MCP Apps bridge for
+Versioned `ui://narriflow/v2/` resources use the standard MCP Apps bridge for
 upload, progress, clip review and exact-post confirmation. App-only actions
 use their public workflow's grants. Static templates can be public-cacheable;
 private results use zero TTL. CSP explicitly declares app/storage/media origins.
+Cards follow the host's light/dark theme. Clip review groups preview, scores and
+Studio navigation; upload shows file selection and committed generation settings.
+Signed handoff links and internal identifiers are not printed in the cards.
+After a resource-version update, refresh the client's Narriflow tool catalog
+before invoking a fresh card. Previously cached cards keep their original resource URI.
 
 Tasks require verified modern per-request extension capabilities. Durable
 handles support modern `tasks/get`, `tasks/update` and cooperative

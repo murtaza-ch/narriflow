@@ -16,7 +16,7 @@
       "!packages/db/generated",
       "!.agents/skills",
       "!**/*.pen",
-      "!packages/mcp-core/src/mcp-apps/v1/app-script.ts"
+      "!packages/mcp-core/src/mcp-apps/v2/app-script.ts"
     ]
   },
   "formatter": {

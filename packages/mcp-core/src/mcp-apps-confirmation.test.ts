@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createPublicationDecision, isPublicationDeclined } from "./mcp-apps/v1/publication-decision";
+import { createPublicationDecision, isPublicationDeclined } from "./mcp-apps/v2/publication-decision";
 
 describe("MCP App publication decision", () => {
   test("an in-flight decision and successful scheduling prevent another decision", async () => {

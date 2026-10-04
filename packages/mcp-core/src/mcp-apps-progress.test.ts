@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { narriflowProgressRequest } from "./mcp-apps/v1/progress";
+import { narriflowProgressRequest } from "./mcp-apps/v2/progress";
 
 describe("App operation progress", () => {
   test("refreshes an exact export rather than the project's generation", () => {

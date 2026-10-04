@@ -38,5 +38,6 @@ External release gates remain explicit: configure Clerk resource and scopes, app
 4. [Apps and upload delivery](issues/04-apps-upload.md)
 5. [Durable Tasks](issues/05-tasks.md)
 6. [Integration and acceptance](issues/06-acceptance.md)
+7. [Assistant card design](issues/07-app-card-design.md)
 
 Embedded Studio editing, new social providers, and brand/campaign/generated-media expansion are separate work.

@@ -21,14 +21,14 @@ describe("MCP Apps delivery", () => {
   test("serves card HTML to an Apps host using the SDK's stateless legacy transport", async () => {
     const client = await connect(true, "legacy");
     for (const view of ["upload", "progress", "clip-review", "publication-confirmation"]) {
-      const result = await client.readResource({ uri: `ui://narriflow/v1/${view}.html` });
+      const result = await client.readResource({ uri: `ui://narriflow/v2/${view}.html` });
       expect(result.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
       expect(result.contents[0] && "text" in result.contents[0] ? result.contents[0].text : "").toContain(`data-view="${view}"`);
     }
   });
   test("serves an immutable bridge template with explicit upload CSP and no private results", async () => {
     const client = await connect(true);
-    const result = await client.readResource({ uri: "ui://narriflow/v1/upload.html" });
+    const result = await client.readResource({ uri: "ui://narriflow/v2/upload.html" });
     const content = result.contents[0];
     expect(content?.mimeType).toBe("text/html;profile=mcp-app");
     expect(content && "text" in content ? content.text : "").toContain("Upload and generate clips");
@@ -43,7 +43,7 @@ describe("MCP Apps delivery", () => {
     process.env.R2_BUCKET = "narriflow-test";
     try {
       const client = await connect(true);
-      const result = await client.readResource({ uri: "ui://narriflow/v1/upload.html" });
+      const result = await client.readResource({ uri: "ui://narriflow/v2/upload.html" });
       const csp = (result.contents[0]?._meta?.ui as { csp: { connectDomains: string[]; resourceDomains: string[] } }).csp;
       const bucketOrigin = `https://narriflow-test.${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
       expect(csp.connectDomains).toContain(bucketOrigin);
@@ -57,7 +57,7 @@ describe("MCP Apps delivery", () => {
 
   test("static card templates remain readable for host prefetch and inspection", async () => {
     const client = await connect(false);
-    const result = await client.readResource({ uri: "ui://narriflow/v1/upload.html" });
+    const result = await client.readResource({ uri: "ui://narriflow/v2/upload.html" });
     expect(result.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
     expect(JSON.stringify(result)).not.toContain("private-grant");
   });
@@ -88,7 +88,7 @@ describe("MCP Apps delivery", () => {
       "narriflow_upload_discard", "narriflow_upload_finalize", "narriflow_upload_grants",
       "narriflow_upload_open", "narriflow_upload_status",
     ]);
-    expect(tools.tools.find((tool) => tool.name === "narriflow_upload_grants")?._meta?.ui).toEqual({ resourceUri: "ui://narriflow/v1/upload.html", visibility: ["app"] });
+    expect(tools.tools.find((tool) => tool.name === "narriflow_upload_grants")?._meta?.ui).toEqual({ resourceUri: "ui://narriflow/v2/upload.html", visibility: ["app"] });
     const result = await client.callTool({ name: "narriflow_upload_grants", arguments: { workspaceId: "b6558e07-d826-46a2-a919-4c9a4e7c4c62", sessionId: "27ea4880-e97e-49a4-b8e0-8af86e00a1d7", partNumbers: [1] } });
     expect(JSON.stringify(result.structuredContent)).not.toContain("private-grant");
     expect(JSON.stringify(result.content)).not.toContain("private-grant");

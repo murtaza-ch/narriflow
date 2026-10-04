@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { waitForUploadAcceptance, notifyUploadAcceptance } from "./mcp-apps/v1/upload-progress";
+import { waitForUploadAcceptance, notifyUploadAcceptance } from "./mcp-apps/v2/upload-progress";
 
 describe("App Upload Session progress", () => {
   test("polls reconciliation until the existing session is accepted", async () => {
