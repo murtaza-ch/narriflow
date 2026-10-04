@@ -8,7 +8,7 @@ import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
-import { SmoothScroll } from "../../_components/smooth-scroll";
+import { SmoothScroll } from "@/app/_components/smooth-scroll";
 import { VariantDial } from "../../_components/variant-dial";
 import { CAPTION_PRESETS, FEATURES, PIPELINE, TIERS } from "../../_components/landing-data";
 

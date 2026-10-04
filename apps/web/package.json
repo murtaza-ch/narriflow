@@ -26,6 +26,7 @@
     "@narriflow/email": "workspace:*",
     "@narriflow/mcp-core": "workspace:*",
     "@narriflow/services": "workspace:*",
+    "@narriflow/stage": "workspace:*",
     "@narriflow/ui": "workspace:*",
     "@narriflow/validators": "workspace:*",
     "@node-rs/argon2": "^2.2.0",

@@ -43,6 +43,7 @@
         "@narriflow/email": "workspace:*",
         "@narriflow/mcp-core": "workspace:*",
         "@narriflow/services": "workspace:*",
+        "@narriflow/stage": "workspace:*",
         "@narriflow/ui": "workspace:*",
         "@narriflow/validators": "workspace:*",
         "@node-rs/argon2": "^2.2.0",
@@ -174,6 +175,13 @@
         "@types/node": "26.2.0",
         "@types/pg": "8.15.5",
         "pg": "8.16.3",
+      },
+    },
+    "packages/stage": {
+      "name": "@narriflow/stage",
+      "version": "0.0.0",
+      "dependencies": {
+        "@narriflow/validators": "workspace:*",
       },
     },
     "packages/ui": {
@@ -611,6 +619,8 @@
     "@narriflow/mcp-server": ["@narriflow/mcp-server@workspace:apps/mcp"],
 
     "@narriflow/services": ["@narriflow/services@workspace:packages/services"],
+
+    "@narriflow/stage": ["@narriflow/stage@workspace:packages/stage"],
 
     "@narriflow/ui": ["@narriflow/ui@workspace:packages/ui"],
 
