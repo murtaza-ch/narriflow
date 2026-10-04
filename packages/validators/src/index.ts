@@ -25,6 +25,7 @@ export * from "./language";
 export * from "./link-providers";
 export * from "./logo-overlay";
 export * from "./logo-position";
+export * from "./mcp";
 export * from "./output-type";
 export * from "./pricing";
 export * from "./billing-copy";

@@ -403,6 +403,9 @@ export class WorkflowRunLifecycle {
       progress: number;
       errorCode: string | null;
       transition: string;
+      followUpWorkflowRunId?: string;
+      generationRenderIds?: string[];
+      generationRenderResults?: NonNullable<WorkflowStageUpdatedEvent["generationRenderResults"]>;
       analyticsRequired?: boolean;
       notification?: RenderTerminalNotificationPayload;
     },
@@ -432,6 +435,15 @@ export class WorkflowRunLifecycle {
     `;
     const project = projects[0];
     if (!project) throw new Error("Workflow event project unavailable");
+    // A render cache can be reset by Studio or deleted by a later generation.
+    // Preserve its first settled results in the same durable workflow event.
+    let generationRenderResults = input.generationRenderResults;
+    if (input.stage === "clip_rendering" && ["completed", "partial", "failed"].includes(input.status)) {
+      const renders = await tx.clipRender.findMany({ where: { workflowRunId: input.workflowRunId, exportVariantId: null },
+        select: { id: true, status: true, errorCode: true } });
+      generationRenderResults = renders.flatMap((render) => render.status === "completed" || render.status === "failed"
+        ? [{ renderId: render.id, status: render.status as "completed" | "failed", errorCode: render.errorCode }] : []);
+    }
     const payload = {
       event: "workflow.stage.updated" as const,
       projectId: input.projectId,
@@ -442,6 +454,9 @@ export class WorkflowRunLifecycle {
       progress: input.progress,
       errorCode: input.errorCode,
       emittedAt: emittedAt.toISOString(),
+      ...(input.followUpWorkflowRunId ? { followUpWorkflowRunId: input.followUpWorkflowRunId } : {}),
+      ...(input.generationRenderIds ? { generationRenderIds: input.generationRenderIds } : {}),
+      ...(generationRenderResults ? { generationRenderResults } : {}),
       ...(input.notification ? { notification: input.notification } : {}),
     } satisfies WorkflowStageUpdatedEvent;
 
@@ -704,89 +719,85 @@ export class WorkflowRunLifecycle {
 
   async admitTranscript(
     input: AdmitTranscriptWorkflowRunInput,
+    transactionClient?: TransactionClient,
   ): Promise<{ id: string; created: boolean }> {
-    try {
-      return await this.transaction(async (tx) => {
-        await this.lockAdmissionProject(tx, input.projectId);
-        const existing = await tx.workflowRun.findUnique({
-          where: {
-            projectId_idempotencyKey: {
-              projectId: input.projectId,
-              idempotencyKey: input.idempotencyKey,
-            },
-          },
-          select: { id: true },
-        });
-        if (existing) return { id: existing.id, created: false };
-        const active = await tx.workflowRun.findFirst({
-          where: {
+    const admit = async (tx: TransactionClient) => {
+      await this.lockAdmissionProject(tx, input.projectId);
+      const existing = await tx.workflowRun.findUnique({
+        where: {
+          projectId_idempotencyKey: {
             projectId: input.projectId,
-            stage: "stt",
-            status: { in: ["queued", "running", "waiting"] },
+            idempotencyKey: input.idempotencyKey,
           },
-          select: { id: true },
-        });
-        if (active) return { id: active.id, created: false };
-
-        let contentPackId = input.contentPackId ?? null;
-        if (input.contentPack) {
-          const contentPack = await tx.contentPack.create({
-            data: {
-              ...input.contentPack,
-              projectId: input.projectId,
-              toneConstraints: input.contentPack.toneConstraints,
-            },
-            select: { id: true },
-          });
-          contentPackId = contentPack.id;
-        } else if (contentPackId) {
-          await this.requireCommittedContentPack(
-            tx,
-            input.projectId,
-            contentPackId,
-          );
-        }
-        const admitted = await this.admitWithinTransaction(tx, {
-          projectId: input.projectId,
-          idempotencyKey: input.idempotencyKey,
-          stage: "stt",
-          contentPackId,
-        });
-        if (!admitted.created) return admitted;
-
-        if (input.languageCode !== undefined) {
-          await tx.project.update({
-            where: { id: input.projectId },
-            data: { languageCode: input.languageCode },
-          });
-        }
-        await tx.transcript.upsert({
-          where: { projectId: input.projectId },
-          create: {
-            projectId: input.projectId,
-            status: "queued",
-            provider: input.transcriptProvider,
-            providerModel: input.transcriptProviderModel,
-            providerJobId: null,
-            errorCode: null,
-          },
-          update: {
-            status: "queued",
-            provider: input.transcriptProvider,
-            providerModel: input.transcriptProviderModel,
-            providerJobId: null,
-            workflowAttemptId: null,
-            errorCode: null,
-            completedAt: null,
-          },
-        });
-        return admitted;
+        },
+        select: { id: true },
       });
+      if (existing) return { id: existing.id, created: false };
+      const active = await tx.workflowRun.findFirst({
+        where: {
+          projectId: input.projectId,
+          stage: "stt",
+          status: { in: ["queued", "running", "waiting"] },
+        },
+        select: { id: true },
+      });
+      if (active) return { id: active.id, created: false };
+
+      let contentPackId = input.contentPackId ?? null;
+      if (input.contentPack) {
+        const contentPack = await tx.contentPack.create({
+          data: {
+            ...input.contentPack,
+            projectId: input.projectId,
+            toneConstraints: input.contentPack.toneConstraints,
+          },
+          select: { id: true },
+        });
+        contentPackId = contentPack.id;
+      } else if (contentPackId) {
+        await this.requireCommittedContentPack(tx, input.projectId, contentPackId);
+      }
+      const admitted = await this.admitWithinTransaction(tx, {
+        projectId: input.projectId,
+        idempotencyKey: input.idempotencyKey,
+        stage: "stt",
+        contentPackId,
+      });
+      if (!admitted.created) return admitted;
+
+      if (input.languageCode !== undefined) {
+        await tx.project.update({
+          where: { id: input.projectId },
+          data: { languageCode: input.languageCode },
+        });
+      }
+      await tx.transcript.upsert({
+        where: { projectId: input.projectId },
+        create: {
+          projectId: input.projectId,
+          status: "queued",
+          provider: input.transcriptProvider,
+          providerModel: input.transcriptProviderModel,
+          providerJobId: null,
+          errorCode: null,
+        },
+        update: {
+          status: "queued",
+          provider: input.transcriptProvider,
+          providerModel: input.transcriptProviderModel,
+          providerJobId: null,
+          workflowAttemptId: null,
+          errorCode: null,
+          completedAt: null,
+        },
+      });
+      return admitted;
+    };
+    if (transactionClient) return admit(transactionClient);
+    try {
+      return await this.transaction(admit);
     } catch (error) {
-      return this.recoverAdmissionConflict(
-        { ...input, stage: "stt" },
-        error,
-      );
+      return this.recoverAdmissionConflict({ ...input, stage: "stt" }, error);
     }
   }
 
@@ -946,6 +957,72 @@ export class WorkflowRunLifecycle {
       });
       return cancelled.count;
     });
+  }
+
+  /** Cancel the unclaimed part of this exact generation. Shared render runs
+   * retain unrelated variants, and a running detection claim keeps authority. */
+  async cancelQueuedGenerationOperation(input: { workspaceId: string; projectId: string; workflowRunId: string }): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT run."id" FROM "WorkflowRun" AS run
+        INNER JOIN "Project" AS project ON project."id" = run."projectId"
+        WHERE run."id" = ${input.workflowRunId}::uuid AND run."projectId" = ${input.projectId}::uuid
+          AND project."workspaceId" = ${input.workspaceId}::uuid
+        FOR UPDATE OF run
+      `;
+      if (!locked.length) return false;
+      const origin = await tx.workflowRun.findFirst({ where: { id: input.workflowRunId, projectId: input.projectId,
+        project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() } } });
+      if (!origin || origin.stage !== "stt") return false;
+      if (origin.status === "queued") {
+        await this.lockAdmissionProject(tx, input.projectId);
+        return this.cancelQueuedRun(tx, origin);
+      }
+      if (origin.status !== "completed") return false;
+      const child = await tx.workflowRun.findFirst({ where: { projectId: input.projectId, stage: "moment_detection",
+        idempotencyKey: `${origin.idempotencyKey}__moment_detection`, contentPackId: origin.contentPackId } });
+      if (!child) return false;
+      // Admission fences detection before the Project lock. Keep that order.
+      await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${child.id}::uuid FOR UPDATE`;
+      const detection = await tx.workflowRun.findUniqueOrThrow({ where: { id: child.id } });
+      if (detection.status !== "queued" && detection.status !== "completed") return false;
+      await this.lockAdmissionProject(tx, input.projectId);
+      if (detection.status === "queued") return this.cancelQueuedRun(tx, detection);
+      const history = await tx.workflowEvent.findMany({ where: { projectId: input.projectId,
+        OR: [{ workflowRunId: detection.id }, { stage: "clip_rendering" }] }, orderBy: { seq: "desc" }, select: { payload: true } });
+      const parsed = history.flatMap((event) => {
+        const value = workflowStageUpdatedEventSchema.safeParse(event.payload);
+        return value.success && value.data.projectId === input.projectId ? [value.data] : [];
+      });
+      const handoff = parsed.find((event) => event.workflowRunId === detection.id && event.generationRenderIds);
+      if (!handoff?.generationRenderIds) return false;
+      const settledIds = new Set(parsed.flatMap((event) => (event.generationRenderResults ?? []).map((result) => result.renderId)));
+      const outstandingIds = handoff.generationRenderIds.filter((id) => !settledIds.has(id));
+      const pending = await tx.clipRender.findMany({ where: { id: { in: outstandingIds }, status: "pending", exportVariantId: null,
+        clip: { projectId: input.projectId, workflowRunId: detection.id } }, select: { id: true } });
+      const cancelled = await tx.clipRender.updateMany({ where: { id: { in: pending.map((render) => render.id) }, status: "pending", exportVariantId: null,
+        clip: { projectId: input.projectId, workflowRunId: detection.id } },
+        data: { status: "failed", errorCode: "MCP_CANCELLED", failureDisposition: "permanent", completedAt: new Date() } });
+      if (cancelled.count) await this.appendEvent(tx, { projectId: input.projectId, workflowRunId: detection.id,
+        attemptId: detection.attemptId ?? detection.id, stage: "moment_detection", status: "completed", progress: 100,
+        errorCode: "MCP_CANCELLED", transition: "mcp_render_cancelled",
+        generationRenderResults: (await tx.clipRender.findMany({ where: { id: { in: pending.map((render) => render.id) }, errorCode: "MCP_CANCELLED" }, select: { id: true } }))
+          .map((render) => ({ renderId: render.id, status: "failed", errorCode: "MCP_CANCELLED" })) });
+      return cancelled.count > 0;
+    });
+  }
+
+  private async cancelQueuedRun(tx: TransactionClient, run: {
+    id: string; projectId: string; stage: string; attemptId: string | null; progress: number;
+  }): Promise<boolean> {
+      const changed = await tx.workflowRun.updateMany({ where: { id: run.id, status: "queued" },
+        data: { status: "failed", errorCode: "MCP_CANCELLED", nextAttemptAt: null, nextPollAt: null } });
+      if (!changed.count) return false;
+      if (run.stage === "stt") await tx.transcript.updateMany({ where: { projectId: run.projectId, status: "queued" },
+        data: { status: "failed", errorCode: "MCP_CANCELLED" } });
+      await this.appendEvent(tx, { projectId: run.projectId, workflowRunId: run.id, attemptId: run.attemptId ?? run.id,
+        stage: run.stage as WorkflowStage, status: "failed", progress: run.progress, errorCode: "MCP_CANCELLED", transition: "mcp_cancelled" });
+      return true;
   }
 
   async heartbeat(attempt: WorkflowAttemptRef): Promise<void> {
@@ -1404,6 +1481,7 @@ export class WorkflowRunLifecycle {
         progress: run.progress,
         errorCode: null,
         transition: `child_completed:${clipRenderId}`,
+        ...(!render.exportVariantId ? { generationRenderResults: [{ renderId: clipRenderId, status: "completed" as const, errorCode: null }] } : {}),
       });
       return true;
     });
@@ -1439,6 +1517,13 @@ export class WorkflowRunLifecycle {
         status: "failed",
         errorCode,
       });
+      if (!render.exportVariantId && disposition === "permanent") {
+        const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId }, select: { progress: true } });
+        await this.appendEvent(tx, { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId,
+          attemptId: attempt.attemptId, stage: "clip_rendering", status: "running", progress: run.progress,
+          errorCode: null, transition: `child_failed:${clipRenderId}`,
+          generationRenderResults: [{ renderId: clipRenderId, status: "failed", errorCode }] });
+      }
       return true;
     });
   }
@@ -1616,8 +1701,6 @@ export class WorkflowRunLifecycle {
         },
         select: { id: true },
       });
-      if (existing) return { id: existing.id, created: false };
-
       const active = await tx.workflowRun.findFirst({
         where: {
           projectId: attempt.projectId,
@@ -1626,14 +1709,22 @@ export class WorkflowRunLifecycle {
         },
         select: { id: true },
       });
-      if (active) return { id: active.id, created: false };
-
-      return this.admitWithinTransaction(tx, {
+      const admitted = existing ? { id: existing.id, created: false } : active ? { id: active.id, created: false } : await this.admitWithinTransaction(tx, {
         projectId: attempt.projectId,
         idempotencyKey: input.idempotencyKey,
         stage: "clip_rendering",
         contentPackId: null,
       });
+      const detection = await tx.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId }, select: { progress: true } });
+      const generationRenders = await tx.clipRender.findMany({ where: { exportVariantId: null,
+        clip: { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId },
+        OR: input.renders.map((render) => ({ clipId: render.clipId, aspectRatio: render.aspectRatio as Prisma.ClipRenderWhereInput["aspectRatio"] })) },
+        orderBy: { id: "asc" }, select: { id: true } });
+      await this.appendEvent(tx, { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId,
+        attemptId: attempt.attemptId, stage: "moment_detection", status: "running", progress: detection.progress,
+        errorCode: null, transition: `render_handoff:${admitted.id}`, followUpWorkflowRunId: admitted.id,
+        generationRenderIds: generationRenders.map((render) => render.id) });
+      return admitted;
     });
   }
 

@@ -31,6 +31,8 @@ export const workspaceInviteActionSchema = z
 export const WORKSPACE_API_KEY_SCOPES = [
   "projects:read",
   "exports:read",
+  "processing:write",
+  "exports:write",
   "usage:read",
   "autopilot:read",
   "autopilot:write",
@@ -39,6 +41,14 @@ export const WORKSPACE_API_KEY_SCOPES = [
 ] as const;
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
+
+export const WORKSPACE_API_KEY_READ_SCOPES = [
+  "projects:read",
+  "exports:read",
+  "usage:read",
+  "autopilot:read",
+  "publishing:read",
+] as const satisfies readonly WorkspaceApiKeyScope[];
 
 export const workspaceApiKeyScopeSchema = z.enum(WORKSPACE_API_KEY_SCOPES);
 

@@ -14,6 +14,7 @@ import {
 	purgeExpiredProjectSources,
 	purgeOldWebhookDeliveryLogs,
 	purgeOldWorkflowEvents,
+	pruneExpiredMcpTasks,
 	generatedMediaService,
 	purgeExpiredGeneratedMediaPrompts,
 	reconcileOrphanGeneratedMediaReservations,
@@ -357,6 +358,7 @@ const maintenanceLoop = createPollLoop("maintenance", async () => {
 	if (workerShutdown.signal.aborted) return 0;
 	await reapStalledRunsIfDue();
 	await getIngestJobLifecycle().processGenerationHandoffs();
+	await pruneExpiredMcpTasks();
 	return 0;
 });
 

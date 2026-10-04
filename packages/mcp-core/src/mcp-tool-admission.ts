@@ -29,13 +29,31 @@ export const MCP_TOOL_ADMISSIONS = {
   narriflow_run_autopilot_rule_now: { admission: "workspace", capability: "processing.consume", apiKeyScope: "autopilot:write" },
   narriflow_publish_social_publication_again: { admission: "workspace", capability: "publishing.manage", apiKeyScope: "publishing:write" },
   narriflow_recheck_social_publication: { admission: "workspace", capability: "publishing.manage", apiKeyScope: "publishing:write" },
+  narriflow_submit_video: { admission: "workspace", capability: "processing.consume", apiKeyScope: "processing:write" },
+  narriflow_upload_video: { admission: "workspace", capability: "processing.consume", apiKeyScope: "processing:write" },
+  narriflow_generate_clips: { admission: "workspace", capability: "processing.consume", apiKeyScope: "processing:write" },
+  narriflow_list_clips: { admission: "workspace", capability: "content.view", apiKeyScope: "projects:read" },
+  narriflow_get_clip: { admission: "workspace", capability: "content.view", apiKeyScope: "projects:read" },
+  narriflow_create_clip_export: { admission: "workspace", capability: "processing.consume", apiKeyScope: "exports:write" },
+  narriflow_get_clip_export: { admission: "workspace", capability: "content.download", apiKeyScope: "exports:read" },
+  narriflow_list_social_accounts: { admission: "workspace", capability: "content.view", apiKeyScope: "publishing:read" },
+  narriflow_get_publishing_options: { admission: "workspace", capability: "content.view", apiKeyScope: "publishing:read" },
+  narriflow_prepare_social_post: { admission: "workspace", capability: "publishing.manage", apiKeyScope: "publishing:write" },
+  narriflow_schedule_social_post: { admission: "workspace", capability: "publishing.manage", apiKeyScope: "publishing:write" },
+  narriflow_list_social_publications: { admission: "workspace", capability: "content.view", apiKeyScope: "publishing:read" },
 } as const satisfies Record<string, McpToolAdmissionPolicy>;
 
 export type NarriflowMcpToolName = keyof typeof MCP_TOOL_ADMISSIONS;
+/** Embedded transfer actions use the same grants as their owning public tool. */
+export function mcpToolRequiredScope(name: string): WorkspaceApiKeyScope | null {
+  if (["narriflow_upload_open", "narriflow_upload_status", "narriflow_upload_grants", "narriflow_upload_finalize", "narriflow_upload_discard"].includes(name)) return "processing:write";
+  if (name === "narriflow_accept_social_post_intent") return "publishing:write";
+  return MCP_TOOL_ADMISSIONS[name as NarriflowMcpToolName]?.apiKeyScope ?? null;
+}
 type WorkspaceToolName = Exclude<NarriflowMcpToolName, "narriflow_list_workspaces">;
 
 const admissionFailureKinds = {
-  mcp_api_key_scope_required: "forbidden",
+  mcp_scope_required: "forbidden",
   mcp_workspace_boundary_violation: "forbidden",
   mcp_workspace_access_unavailable: "payment_required",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -55,10 +73,10 @@ export class McpToolAdmission {
 
   async requireWorkspace(tool: WorkspaceToolName, principal: NarriflowMcpPrincipal, requestedWorkspaceId?: string) {
     const policy = MCP_TOOL_ADMISSIONS[tool];
+    if (!principal.scopes.includes(policy.apiKeyScope)) {
+      throw new McpAdmissionFailure("mcp_scope_required", `This credential requires the ${policy.apiKeyScope} scope`);
+    }
     if (principal.kind === "api_key") {
-      if (!principal.scopes.includes(policy.apiKeyScope)) {
-        throw new McpAdmissionFailure("mcp_api_key_scope_required", `This API key requires the ${policy.apiKeyScope} scope`);
-      }
       if (requestedWorkspaceId && requestedWorkspaceId !== principal.workspaceId) {
         throw new McpAdmissionFailure("mcp_workspace_boundary_violation", "This API key is bound to a different workspace");
       }
@@ -79,12 +97,14 @@ export class McpToolAdmission {
       // key-bound content.view role/status check before reading Workspace facts.
       const actor = await this.workspace.requireActor(principal.userId, principal.workspaceId, "content.view");
       const workspace = await this.workspace.getWorkspace(principal.userId, principal.workspaceId);
-      return workspace ? [{ ...workspace, role: actor.role,
+      return workspace ? [{ workspaceId: workspace.id, name: workspace.name, role: actor.role,
+        status: workspace.status, pricingTier: workspace.pricingTier,
+        isPersonal: workspace.personalOwnerUserId === principal.userId,
         mcpEnabled: actor.status === "active" && hasFeature(actor.pricingTier, "integrations.mcp") }] : [];
     }
     const memberships = await this.workspace.listAccessibleWorkspaces(principal.userId);
     return memberships.map(({ role, workspace }) => ({
-      id: workspace.id, name: workspace.name, role, status: workspace.status, pricingTier: workspace.pricingTier,
+      workspaceId: workspace.id, name: workspace.name, role, status: workspace.status, pricingTier: workspace.pricingTier,
       isPersonal: workspace.personalOwnerUserId === principal.userId,
       mcpEnabled: workspace.status === "active" && hasFeature(workspace.pricingTier, "integrations.mcp"),
     }));

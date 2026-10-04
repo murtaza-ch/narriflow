@@ -123,9 +123,9 @@ describe("workspace administration failures", () => {
     ).toThrow(expect.objectContaining({ code: "workspace_api_scope_invalid" }));
   });
 
-  test("re-exports the canonical catalog and grants publishing only when selected", () => {
+  test("re-exports the canonical catalog, defaults to all reads, and grants writes only when selected", () => {
     expect(WORKSPACE_API_KEY_SCOPES).toBe(validatorApiKeyScopes);
-    expect(normalizeWorkspaceApiKeyInput("business", { name: "Read existing" }).scopes).toEqual(["projects:read"]);
+    expect(normalizeWorkspaceApiKeyInput("business", { name: "Read existing" }).scopes).toEqual(["projects:read", "exports:read", "usage:read", "autopilot:read", "publishing:read"]);
     expect(normalizeWorkspaceApiKeyInput("business", {
       name: "Read existing", scopes: ["projects:read", "usage:read"],
     }).scopes).toEqual(["projects:read", "usage:read"]);

@@ -1,4 +1,6 @@
 import type { ActorScope } from "./actor-scope";
+import { getMcpOperationExecutor } from "./mcp-operation-runtime";
+import { mcpOperationFingerprint, type McpMutationOptions } from "./mcp-operation";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { Prisma } from "@prisma/client";
 import type {
@@ -127,6 +129,7 @@ function toTranscriptSnapshot(row: PrismaTranscript): TranscriptSnapshot {
 
 export const projectFailureCatalog = {
 	idempotency_key_required: "invalid",
+	generation_settings_conflict: "conflict",
 	link_unsupported_source: "unprocessable",
 	project_access_denied: "forbidden",
 	project_deletion_incomplete: "unavailable",
@@ -1070,10 +1073,149 @@ export class ProjectService {
 		projectId: string,
 		input: GenerateProjectInput,
 		idempotencyKey: string,
-		options: { existingContentPackId?: string } = {},
+		options: {
+			existingContentPackId?: string;
+			mutation?: McpMutationOptions;
+		} = {},
 	) {
 		const parsed = generateProjectRequestSchema.parse(input);
 		await this.requireActor(scope, "processing.consume");
+		if (options.mutation) {
+			const mutation = options.mutation;
+			const accepted = await getMcpOperationExecutor().execute({
+				identity: {
+					workspaceId: scope.workspaceId,
+					callerId: mutation.callerId ?? scope.actorUserId,
+					toolName: "narriflow_generate_clips",
+					clientIdempotencyKey: mutation.clientIdempotencyKey,
+				},
+				input: {
+					projectId,
+					settings: parsed,
+					contentPackId: options.existingContentPackId ?? null,
+				},
+				authorize: async () => {
+					await this.requireActor(scope, "processing.consume");
+				},
+				beforeAccept: mutation.beforeAccept,
+				mutate: async (tx) => {
+					await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${projectId}, 0))::text`;
+					await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${projectId}::uuid FOR UPDATE`;
+					await this.assertProjectGenerationBudget(
+						projectId,
+						scope.workspaceId,
+					);
+					const project = await tx.project.findFirst({
+						where: {
+							id: projectId,
+							workspaceId: scope.workspaceId,
+							...accessibleProjectWhere(),
+						},
+						select: {
+							id: true,
+							ingestStatus: true,
+							transcript: { select: { status: true } },
+						},
+					});
+					if (!project) throw new ProjectNotFoundError();
+					if (project.ingestStatus !== "ready")
+						throw new ProjectServiceError(
+							"project_ingest_not_ready",
+							"Project ingest is not ready.",
+						);
+					if (parsed.forceRegenerate) {
+						const active = await tx.workflowRun.findFirst({
+							where: {
+								projectId,
+								stage: { in: ["stt", "moment_detection", "clip_rendering"] },
+								status: { in: ["queued", "running", "waiting"] },
+							},
+							select: { id: true },
+						});
+						const pendingRender = await tx.clipRender.findFirst({
+							where: {
+								clip: { projectId },
+								exportVariantId: null,
+								status: { in: ["pending", "rendering"] },
+							},
+							select: { id: true },
+						});
+						if (active || pendingRender) {
+							throw new ProjectServiceError(
+								"project_has_active_workflow",
+								"Generation or rendering is still in progress. Wait for it to finish before requesting a fresh generation.",
+							);
+						}
+					}
+					const reusable = !parsed.forceRegenerate
+						? await tx.workflowRun.findFirst({
+								where: {
+									projectId,
+									stage: "stt",
+									...(project.transcript?.status === "completed"
+										? {}
+										: { status: { in: ["queued", "running", "waiting"] } }),
+								},
+								orderBy: { updatedAt: "desc" },
+								select: { id: true, updatedAt: true },
+							})
+						: null;
+					const contentPackId = options.existingContentPackId ?? null;
+					const admitted =
+						reusable ??
+						(await getWorkflowRunLifecycle().admitTranscript(
+							{
+								projectId,
+								idempotencyKey,
+								contentPackId,
+								contentPack: contentPackId
+									? undefined
+									: parseStoredContentPack(parsed.contentPack),
+								languageCode: parsed.languageCode,
+								transcriptProvider: STT_PROVIDER,
+								transcriptProviderModel: STT_PROVIDER_MODEL,
+							},
+							tx,
+						));
+					const acceptedRun = await tx.workflowRun.findUniqueOrThrow({
+						where: { id: admitted.id },
+						select: {
+							contentPack: true,
+							project: { select: { languageCode: true } },
+						},
+					});
+					if (
+						!acceptedRun.contentPack ||
+						acceptedRun.contentPack.draft ||
+						mcpOperationFingerprint(
+							parseStoredContentPack(acceptedRun.contentPack),
+						) !== mcpOperationFingerprint(parsed.contentPack) ||
+						acceptedRun.project.languageCode !== parsed.languageCode
+					) {
+						throw new ProjectServiceError(
+							"generation_settings_conflict",
+							"Existing generation uses different settings. Request a fresh generation with forceRegenerate after current work completes.",
+						);
+					}
+					const events = await tx.workflowEvent.aggregate({
+						where: { projectId },
+						_max: { seq: true },
+					});
+					return {
+						resourceType: "workflow_run",
+						resourceId: admitted.id,
+						value: {
+							workflowRunId: admitted.id,
+							acceptedAt:
+								reusable?.updatedAt.toISOString() ?? new Date().toISOString(),
+							initialSeq: events._max.seq ?? 0,
+						},
+					};
+				},
+			});
+			return accepted.value;
+		}
+
 		await this.assertProjectGenerationBudget(projectId, scope.workspaceId);
 		if (!idempotencyKey)
 			throw new ProjectServiceError(
@@ -1131,14 +1273,24 @@ export class ProjectService {
 		};
 	}
 
-	async queueLinkIngest(scope: ActorScope, input: LinkIngestInput) {
+	async queueLinkIngest(
+		scope: ActorScope,
+		input: LinkIngestInput,
+		options: {
+			generationContext?: {
+				contentPack: ContentPack;
+				languageCode: string | null;
+			};
+			mutation?: McpMutationOptions;
+		} = {},
+	) {
 		const parsed = linkIngestSchema.parse(input);
 		const prisma = this.requirePrisma();
 		const actor = await this.requireActor(scope, "processing.consume");
 
 		// Idempotent replay: the same commit token returns the already-created
 		// project instead of importing twice (double-click, retried request).
-		if (parsed.commitToken) {
+		if (parsed.commitToken && !options.mutation) {
 			const existing = await prisma.project.findUnique({
 				where: { commitToken: parsed.commitToken },
 				include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
@@ -1154,148 +1306,194 @@ export class ProjectService {
 			}
 		}
 
-		await this.assertWorkspaceWithinQuota(actor.workspaceId);
+		let provider: NonNullable<ReturnType<typeof detectLinkProvider>>;
+		let sourceType: "youtube" | "link";
+		let brandActorScope: BrandActorScope | null;
+		let profileResolved: Awaited<
+			ReturnType<typeof brandProfileService.resolveForProject>
+		> | null;
+		let brandResolved: Awaited<
+			ReturnType<typeof brandTemplateService.resolveSnapshotForUser>
+		> | null;
+		let createdAt: Date;
+		let retention: Awaited<
+			ReturnType<typeof projectRetentionService.assignmentForWorkspace>
+		>;
+		let pack: ContentPack;
+		const prepare = async () => {
+			await this.assertWorkspaceWithinQuota(actor.workspaceId);
 
-		const provider = detectLinkProvider(parsed.url);
-		if (!provider) {
-			throw new LinkUnsupportedSourceError();
-		}
-		const sourceType = provider === "youtube" ? "youtube" : "link";
+			const detectedProvider = detectLinkProvider(parsed.url);
+			if (!detectedProvider) {
+				throw new LinkUnsupportedSourceError();
+			}
+			provider = detectedProvider;
+			sourceType = provider === "youtube" ? "youtube" : "link";
 
-		const brandActorScope: BrandActorScope | null = parsed.brandProfileId
-			? actor
-			: null;
-		const profileResolved = brandActorScope
-			? await brandProfileService.resolveForProject(brandActorScope, {
-					profileId: parsed.brandProfileId!,
-					templateId: parsed.brandTemplateId,
-				})
-			: null;
-		const brandResolved = profileResolved
-			? null
-			: await brandTemplateService.resolveSnapshotForUser(
-					actor.workspaceOwnerUserId,
-					parsed.brandTemplateId ?? null,
-					{
-						workspaceId: actor.workspaceId,
-						actorUserId: actor.actorUserId,
-					},
-				);
-		const createdAt = new Date();
-		const retention = await projectRetentionService.assignmentForWorkspace(
-			actor.workspaceId,
-			createdAt,
-		);
-
-		// Step-1 draft pack: seeds language/mode/trim so a Step-2 refresh can
-		// rehydrate. Never runnable — every claim path stops on draft rows.
-		const draftPack = contentPackSchema.parse({
-			outputTypes: ["short_clip"],
-			clipCountTarget: 10,
-			clipDurationSecTarget: 45,
-			toneConstraints: [],
-			platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION,
-			mode: parsed.mode ?? "clip",
-			processingStartSec: parsed.processingStartSec ?? null,
-			processingEndSec: parsed.processingEndSec ?? null,
-		});
-
-		let project: Project;
-		let jobId: string;
-		try {
-			const created = await prisma.$transaction(async (tx) => {
-				const createdProject = await tx.project.create({
-					data: {
-						workspaceId: actor.workspaceId,
-						createdByUserId: actor.actorUserId,
-						updatedByUserId: actor.actorUserId,
-						title: parsed.title ?? "Link Import",
-						sourceMediaUrl: parsed.url,
-						sourceType,
-						sourceProvider: provider,
-						sourceInput: parsed.url,
-						ingestStatus: "queued",
-						languageCode: parsed.languageCode ?? null,
-						commitToken: parsed.commitToken ?? null,
-						brandTemplateId:
-							profileResolved?.templateId ?? brandResolved?.templateId ?? null,
-						brandSnapshot: profileResolved?.templateSnapshot
-							? (profileResolved.templateSnapshot as unknown as Prisma.InputJsonValue)
-							: brandResolved
-								? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
-								: Prisma.JsonNull,
-						brandProfileId: profileResolved?.profileId ?? null,
-						brandProfileSnapshot: profileResolved?.profileSnapshot
-							? (profileResolved.profileSnapshot as unknown as Prisma.InputJsonValue)
-							: Prisma.JsonNull,
-						createdAt,
-						retentionPolicyKey: retention?.retentionPolicyKey ?? null,
-						expiresAt: retention?.expiresAt ?? null,
-					},
-				});
-				if (profileResolved && brandActorScope) {
-					await tx.programAnalyticsEvent.create({
-						data: {
+			brandActorScope = parsed.brandProfileId ? actor : null;
+			profileResolved = brandActorScope
+				? await brandProfileService.resolveForProject(brandActorScope, {
+						profileId: parsed.brandProfileId!,
+						templateId: parsed.brandTemplateId,
+					})
+				: null;
+			brandResolved = profileResolved
+				? null
+				: await brandTemplateService.resolveSnapshotForUser(
+						actor.workspaceOwnerUserId,
+						parsed.brandTemplateId ?? null,
+						{
 							workspaceId: actor.workspaceId,
 							actorUserId: actor.actorUserId,
-							projectId: createdProject.id,
-							type: "brand_profile_applied",
-							metadata: {
-								profileId: profileResolved.profileId,
-								...(profileResolved.templateId
-									? { templateId: profileResolved.templateId }
-									: {}),
-								assetKind: "profile",
-								planTier: resolvePricingTier(brandActorScope.pricingTier),
-								outcome: "succeeded",
-							},
 						},
+					);
+			createdAt = new Date();
+			retention = await projectRetentionService.assignmentForWorkspace(
+				actor.workspaceId,
+				createdAt,
+			);
+
+			// Browser intake can wait for setup; MCP commits runnable settings
+			// in the same transaction as its Project and Ingest Job.
+			pack = options.generationContext
+				? contentPackSchema.parse(options.generationContext.contentPack)
+				: contentPackSchema.parse({
+						outputTypes: ["short_clip"],
+						clipCountTarget: 10,
+						clipDurationSecTarget: 45,
+						toneConstraints: [],
+						platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION,
+						mode: parsed.mode ?? "clip",
+						processingStartSec: parsed.processingStartSec ?? null,
+						processingEndSec: parsed.processingEndSec ?? null,
 					});
-				}
+		};
 
-				const createdJob = await getIngestJobLifecycle().enqueue(tx, {
-					projectId: createdProject.id,
-					jobType: "link_import",
-					payload: {
-						url: parsed.url,
-						provider,
-						requestedTitle: parsed.title ?? null,
-					},
-				});
-
-				await tx.contentPack.create({
-					data: {
-						projectId: createdProject.id,
-						...parseStoredContentPack(draftPack),
-						draft: true,
-					},
-				});
-
-				return { project: createdProject, jobId: createdJob.id };
+		const create = async (tx: Prisma.TransactionClient) => {
+			const createdProject = await tx.project.create({
+				data: {
+					workspaceId: actor.workspaceId,
+					createdByUserId: actor.actorUserId,
+					updatedByUserId: actor.actorUserId,
+					title: parsed.title ?? "Link Import",
+					sourceMediaUrl: parsed.url,
+					sourceType,
+					sourceProvider: provider,
+					sourceInput: parsed.url,
+					ingestStatus: "queued",
+					languageCode: options.generationContext
+						? options.generationContext.languageCode
+						: (parsed.languageCode ?? null),
+					commitToken: options.mutation ? null : (parsed.commitToken ?? null),
+					brandTemplateId:
+						profileResolved?.templateId ?? brandResolved?.templateId ?? null,
+					brandSnapshot: profileResolved?.templateSnapshot
+						? (profileResolved.templateSnapshot as unknown as Prisma.InputJsonValue)
+						: brandResolved
+							? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
+							: Prisma.JsonNull,
+					brandProfileId: profileResolved?.profileId ?? null,
+					brandProfileSnapshot: profileResolved?.profileSnapshot
+						? (profileResolved.profileSnapshot as unknown as Prisma.InputJsonValue)
+						: Prisma.JsonNull,
+					createdAt,
+					retentionPolicyKey: retention?.retentionPolicyKey ?? null,
+					expiresAt: retention?.expiresAt ?? null,
+				},
 			});
-			project = created.project;
-			jobId = created.jobId;
+			if (profileResolved && brandActorScope) {
+				await tx.programAnalyticsEvent.create({
+					data: {
+						workspaceId: actor.workspaceId,
+						actorUserId: actor.actorUserId,
+						projectId: createdProject.id,
+						type: "brand_profile_applied",
+						metadata: {
+							profileId: profileResolved.profileId,
+							...(profileResolved.templateId
+								? { templateId: profileResolved.templateId }
+								: {}),
+							assetKind: "profile",
+							planTier: resolvePricingTier(brandActorScope.pricingTier),
+							outcome: "succeeded",
+						},
+					},
+				});
+			}
+
+			const createdJob = await getIngestJobLifecycle().enqueue(tx, {
+				projectId: createdProject.id,
+				jobType: "link_import",
+				payload: {
+					url: parsed.url,
+					provider,
+					requestedTitle: parsed.title ?? null,
+				},
+			});
+
+			await tx.contentPack.create({
+				data: {
+					projectId: createdProject.id,
+					...parseStoredContentPack(pack),
+					draft: !options.generationContext,
+				},
+			});
+
+			return { project: createdProject, jobId: createdJob.id };
+		};
+		if (options.mutation) {
+			const mutation = options.mutation;
+			const accepted = await getMcpOperationExecutor().execute({
+				identity: {
+					workspaceId: actor.workspaceId,
+					callerId: mutation.callerId ?? actor.actorUserId,
+					toolName: "narriflow_submit_video",
+					clientIdempotencyKey: mutation.clientIdempotencyKey,
+				},
+				input: {
+					source: parsed,
+					generationContext: options.generationContext ?? null,
+				},
+				authorize: async () => {
+					await this.requireActor(scope, "processing.consume");
+				},
+				beforeAccept: mutation.beforeAccept,
+				prepare,
+				mutate: async (tx) => {
+					const created = await create(tx);
+					return {
+						resourceType: "ingest_job",
+						resourceId: created.jobId,
+						value: {
+							project: toProjectSnapshot(created.project),
+							queuedJobId: created.jobId,
+						},
+					};
+				},
+			});
+			return accepted.value;
+		}
+		await prepare();
+		try {
+			const created = await prisma.$transaction(create);
+			return {
+				project: toProjectSnapshot(created.project),
+				queuedJobId: created.jobId,
+			};
 		} catch (error) {
-			// Concurrent commit with the same token: return the winner's project.
 			if (isUniqueConstraintError(error) && parsed.commitToken) {
 				const winner = await prisma.project.findUnique({
 					where: { commitToken: parsed.commitToken },
 					include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
 				});
-				if (winner && winner.workspaceId === actor.workspaceId) {
+				if (winner && winner.workspaceId === actor.workspaceId)
 					return {
 						project: toProjectSnapshot(winner),
 						queuedJobId: winner.ingestJobs[0]?.id ?? null,
 					};
-				}
 			}
 			throw error;
 		}
-
-		return {
-			project: toProjectSnapshot(project),
-			queuedJobId: jobId,
-		};
 	}
 
 	async previewRssFeed(scope: ActorScope, rssUrl: string) {

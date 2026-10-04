@@ -298,7 +298,7 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 	{
 		method: "GET",
 		path: "/projects/:id/social-accounts/:accountId/publishing-options",
-		capability: "publishing.manage",
+		capability: "content.view",
 		projectParam: "id",
 		rateLimit: actorRate("publishing-options", 30),
 		input: paramsInput("id", "accountId"),
@@ -885,6 +885,7 @@ const signedInAction = (
 ): ServerActionSurface => ({ module, exportName, admission: "signed_in" });
 
 export const browserSessionServerActions: readonly ServerActionSurface[] = [
+	signedInAction("app/(app)/integrations/mcp/confirm/actions.ts", "confirmMcpPublication"),
 	action(
 		"app/(app)/_actions/workspace.ts",
 		"switchWorkspaceAction",
@@ -1160,6 +1161,8 @@ export const browserSessionPages: readonly PageSurface[] = [
 	page("app/(app)/exports/page.tsx"),
 	page("app/(app)/home/page.tsx"),
 	page("app/(app)/integrations/mcp/page.tsx"),
+	signedInPage("app/(app)/integrations/mcp/confirm/page.tsx"),
+	signedInPage("app/(app)/integrations/mcp/upload/page.tsx"),
 	page("app/(app)/integrations/page.tsx"),
 	page("app/(app)/layout.tsx", "optional_workspace"),
 	page(

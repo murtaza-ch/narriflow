@@ -42,7 +42,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
     const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
     const schema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;
     if (!databaseUrl || !schema) throw new Error("Disposable Autopilot test schema is required");
-    pool = new Pool({ connectionString: databaseUrl, max: 4 });
+    pool = new Pool({ connectionString: databaseUrl, max: 4, options: `-csearch_path=${schema}` });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
     priorPrisma = prismaGlobal.narriflowPrismaClient;
     prismaGlobal.narriflowPrismaClient = prisma;

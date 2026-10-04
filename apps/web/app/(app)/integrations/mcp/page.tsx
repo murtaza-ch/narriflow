@@ -18,14 +18,27 @@ import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
+import { inspectMcpConfiguration } from "@/lib/mcp-configuration";
 import { CopyControl } from "../_components/copy-control";
 
 const TOOLS = [
+  { name: "narriflow_submit_video", behavior: "Write", description: "Import a supported video link with committed clip generation settings." },
+  { name: "narriflow_upload_video", behavior: "Write", description: "Choose a local video through an assistant picker or authenticated web handoff." },
+  { name: "narriflow_generate_clips", behavior: "Write", description: "Generate clips from an existing project using its workspace quota." },
+  { name: "narriflow_list_clips", behavior: "Read", description: "Browse clip scores, timing and review links with pagination." },
+  { name: "narriflow_get_clip", behavior: "Read", description: "Inspect a clip's reviewed revision and optional transcript excerpt." },
+  { name: "narriflow_create_clip_export", behavior: "Write", description: "Export an exact reviewed editor revision in selected output formats." },
+  { name: "narriflow_get_clip_export", behavior: "Read", description: "Check export progress and open Narriflow to download." },
+  { name: "narriflow_list_social_accounts", behavior: "Read", description: "List connected destinations without credentials." },
+  { name: "narriflow_get_publishing_options", behavior: "Read", description: "Inspect destination account publishing requirements." },
+  { name: "narriflow_prepare_social_post", behavior: "Write", description: "Review the exact clip revision, export, account, caption, settings and time." },
+  { name: "narriflow_schedule_social_post", behavior: "Write", description: "Schedule the exact confirmed publication after review approval is checked." },
+  { name: "narriflow_list_social_publications", behavior: "Read", description: "Browse publication status and scheduled delivery." },
   { name: "narriflow_list_workspaces", behavior: "Read", description: "List memberships and MCP eligibility.",
   },
   { name: "narriflow_list_projects", behavior: "Read", description: "Browse workspace projects and processing statistics.",
   },
-  { name: "narriflow_get_project", behavior: "Read", description: "Fetch a project, transcript summary, and detected clips.",
+  { name: "narriflow_get_project", behavior: "Read", description: "Fetch a compact project and processing progress summary.",
   },
   { name: "narriflow_get_workspace_usage", behavior: "Read", description: "Check plan limits and monthly processing-minute usage.",
   },
@@ -101,6 +114,7 @@ function InfoColumn({ icon: Icon, title, children,
 export default async function McpIntegrationPage() {
   const appUser = await admitWorkspacePage("content.view");
   const mcpUrl = `${process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000"}/mcp`;
+  const configuration = await inspectMcpConfiguration({ resourceUrl: process.env.NEXT_PUBLIC_APP_URL ? mcpUrl : undefined, issuerUrl: process.env.CLERK_OAUTH_ISSUER, hasVerificationSecret: Boolean(process.env.CLERK_SECRET_KEY), hasConfirmationSecret: Buffer.byteLength(process.env.MCP_CONTINUATION_SECRET ?? "") >= 32 });
   const isEligible =
     appUser.workspace.status === "active" && appUser.workspace.pricingTier === "business";
   const accessLabel = isEligible
@@ -117,7 +131,7 @@ export default async function McpIntegrationPage() {
     <Stack gap={{ base: "8", md: "10" }} maxW="1120px" mx="auto">
       <PageHeader
         title="Connect Narriflow to AI assistants"
-        description="Connect your AI client to projects, usage, RSS autopilot and social publication recovery."
+        description="Import a video, review generated clips, export a revision and confirm a social publication from your assistant."
         actions={
           <Button asChild size="sm" variant="outline">
             <Link href="/integrations"><ArrowLeft size={14} />All integrations</Link>
@@ -126,10 +140,11 @@ export default async function McpIntegrationPage() {
       />
 
       <StatBand columns={3}>
-        <StatBand.Item label="Remote endpoint" value="Ready" />
+        <StatBand.Item label="OAuth configuration" value={configuration.label} />
         <StatBand.Item label="Workspace access" value={accessLabel} />
         <StatBand.Item label="Live connection status" value="Client-side" />
       </StatBand>
+      <Text fontSize="13px" color="fg.muted" role="status">{configuration.description}</Text>
 
       {!isEligible ? (
         <Flex
@@ -183,7 +198,7 @@ export default async function McpIntegrationPage() {
             Start the connection from your AI client. Narriflow sends you to Clerk&apos;s hosted authorization and consent flow, then the client acts as your Narriflow user. It can only reach workspaces where you remain an active member, and every tool still enforces your workspace role.
           </InfoColumn>
           <InfoColumn icon={KeyRound} title="Workspace API key">
-            Use a scoped, workspace-bound key for unattended or non-OAuth clients. Keys have read scopes, with separate choices for autopilot writes, publication reads and publication recovery writes. Secrets are shown once and keys can be revoked independently of personal connections.{" "}
+            Use a scoped, workspace-bound key for unattended or non-OAuth clients. Grant processing, export, autopilot and publishing writes explicitly. Secrets are shown once and keys can be revoked independently of personal connections.{" "}
             {canManageApi ? (
               <Link href="/settings/api" style={{ textDecoration: "underline" }}>Manage workspace keys</Link>
             ) : (
@@ -191,6 +206,11 @@ export default async function McpIntegrationPage() {
             )}
           </InfoColumn>
         </Grid>
+        <Stack gap="3" p="5" bg="bg.panel" borderRadius="l2">
+          <Text as="h3" fontSize="14px" fontWeight="650">Upload from Codex or Claude Code</Text>
+          <Text fontSize="13px" color="fg.muted">Set NARRIFLOW_API_KEY and NARRIFLOW_URL in your environment, then run the local helper from this checkout. Keep the same key when retrying an interrupted upload. File bytes travel directly to storage.</Text>
+          <CopyControl label="Copy upload command" value={`bun run --cwd apps/mcp upload --file /path/to/video.mp4 --workspace ${appUser.workspaceId} --key <request-UUID>`} multiline />
+        </Stack>
       </Stack>
 
       <Stack as="section" gap="5" id="client-setup" scrollMarginTop="24">

@@ -1,6 +1,8 @@
 import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
 import { randomUUID } from "node:crypto";
+import { getMcpOperationExecutor } from "./mcp-operation-runtime";
+import type { McpMutationOptions } from "./mcp-operation";
 import { Prisma, type SocialPlatform } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -429,12 +431,15 @@ export const socialPublicationRecovery = {
       actorUserId: string;
       socialPostId: string;
       now?: Date;
+      mutation?: McpMutationOptions;
     } & RecheckSocialPublicationInput,
   ) {
     await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
-    const parsed = recheckSocialPublicationSchema.parse({ reason: input.reason });
+    const parsed = recheckSocialPublicationSchema.parse({
+      reason: input.reason,
+    });
     const now = input.now ?? new Date();
-    const result = await requirePrisma().$transaction(async (tx) => {
+    const mutate = async (tx: Prisma.TransactionClient) => {
       const { post, attempt } = await loadRecoveryTarget(tx, input);
       if (
         post.status !== "needs_attention" ||
@@ -476,13 +481,48 @@ export const socialPublicationRecovery = {
           reason: parsed.reason,
         },
       });
-      return { socialPostId: post.id, attemptId: attempt.id, status: "reconciling" as const };
-    });
-    structuredSocialPublicationMetrics.observe(
-      "social_publication_manual_decisions_total",
-      1,
-      { decision: "recheck_requested" },
-    );
+      return {
+        socialPostId: post.id,
+        attemptId: attempt.id,
+        status: "reconciling" as const,
+      };
+    };
+    const accepted = input.mutation
+      ? await getMcpOperationExecutor().execute({
+          identity: {
+            workspaceId: input.workspaceId,
+            callerId: input.mutation.callerId ?? input.actorUserId,
+            toolName: "narriflow_recheck_social_publication",
+            clientIdempotencyKey: input.mutation.clientIdempotencyKey,
+          },
+          input: {
+            socialPostId: input.socialPostId,
+            projectId: input.projectId ?? null,
+            ...parsed,
+          },
+          authorize: async () => {
+            await workspaceService.requireActor(
+              input.actorUserId,
+              input.workspaceId,
+              "publishing.manage",
+            );
+          },
+          beforeAccept: input.mutation.beforeAccept,
+          mutate: async (tx) => {
+            const value = await mutate(tx);
+            return {
+              resourceType: "social_post",
+              resourceId: value.socialPostId,
+              value,
+            };
+          },
+        })
+      : { value: await requirePrisma().$transaction(mutate), replayed: false };
+    const result = accepted.value;
+    if (!accepted.replayed)
+      structuredSocialPublicationMetrics.observe("social_publication_manual_decisions_total", 1, {
+        decision: "recheck_requested",
+      });
     return result;
   },
 
@@ -493,6 +533,7 @@ export const socialPublicationRecovery = {
       actorUserId: string;
       socialPostId: string;
       now?: Date;
+      mutation?: McpMutationOptions;
     } & ConfirmSocialPublicationInput,
   ) {
     await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
@@ -503,50 +544,56 @@ export const socialPublicationRecovery = {
       externalUrl: input.externalUrl,
     });
     const now = input.now ?? new Date();
-    const evidenceTarget = await requirePrisma().socialPost.findFirst({
-      where: {
-        id: input.socialPostId,
-        workspaceId: input.workspaceId,
-        project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() },
-        ...(input.projectId ? { projectId: input.projectId } : {}),
-      },
-      select: {
-        platform: true,
-        socialAccountId: true,
-        socialAccount: { select: { handle: true } },
-      },
-    });
-    if (!evidenceTarget) {
-      throw new SocialPublicationRecoveryError(
-        "social_publication_not_found",
-        "Social publication was not found",
-      );
-    }
-    const account = evidenceTarget.socialAccountId
-      ? await socialOAuthService
-          .getPublishAccount(evidenceTarget.socialAccountId)
-          .catch(() => null)
-      : null;
-    const evidence = await validateSocialPublicationEvidence({
-      platform: evidenceTarget.platform,
-      externalUrl: parsed.externalUrl,
-      providerReference: parsed.providerReference,
-      accountHandle: evidenceTarget.socialAccount?.handle,
-      accountProviderId: account?.providerAccountId,
-      accessToken: account?.accessToken,
-      scopes: account?.scopes,
-      validateOwnership: parsed.evidenceKind !== "manual_unvalidated",
-    });
-	if (
-		parsed.evidenceKind !== "manual_unvalidated" &&
-		!evidence.ownershipValidated
-	) {
-		throw new SocialPublicationRecoveryError(
-			"social_publication_reference_invalid",
-			"Narriflow could not validate this evidence against the selected account; use manual unvalidated evidence to record an explicit operator override",
-		);
-	}
-    const result = await requirePrisma().$transaction(async (tx) => {
+    const loadEvidenceTarget = () =>
+      requirePrisma().socialPost.findFirst({
+        where: {
+          id: input.socialPostId,
+          workspaceId: input.workspaceId,
+          project: {
+            workspaceId: input.workspaceId,
+            ...accessibleProjectWhere(),
+          },
+          ...(input.projectId ? { projectId: input.projectId } : {}),
+        },
+        select: {
+          platform: true,
+          socialAccountId: true,
+          socialAccount: { select: { handle: true } },
+        },
+      });
+    let evidenceTarget!: NonNullable<Awaited<ReturnType<typeof loadEvidenceTarget>>>;
+    let evidence: Awaited<ReturnType<typeof validateSocialPublicationEvidence>>;
+    const prepare = async () => {
+      const loaded = await loadEvidenceTarget();
+      if (!loaded)
+        throw new SocialPublicationRecoveryError(
+          "social_publication_not_found",
+          "Social publication was not found",
+        );
+      evidenceTarget = loaded;
+      const account = evidenceTarget.socialAccountId
+        ? await socialOAuthService
+            .getPublishAccount(evidenceTarget.socialAccountId)
+            .catch(() => null)
+        : null;
+      evidence = await validateSocialPublicationEvidence({
+        platform: evidenceTarget.platform,
+        externalUrl: parsed.externalUrl,
+        providerReference: parsed.providerReference,
+        accountHandle: evidenceTarget.socialAccount?.handle,
+        accountProviderId: account?.providerAccountId,
+        accessToken: account?.accessToken,
+        scopes: account?.scopes,
+        validateOwnership: parsed.evidenceKind !== "manual_unvalidated",
+      });
+      if (parsed.evidenceKind !== "manual_unvalidated" && !evidence.ownershipValidated) {
+        throw new SocialPublicationRecoveryError(
+          "social_publication_reference_invalid",
+          "Narriflow could not validate this evidence against the selected account; use manual unvalidated evidence to record an explicit operator override",
+        );
+      }
+    };
+    const mutate = async (tx: Prisma.TransactionClient) => {
       const { post, attempt } = await loadRecoveryTarget(tx, input);
       if (post.status !== "needs_attention" || attempt.phase !== "needs_attention") {
         throw new SocialPublicationRecoveryError(
@@ -648,23 +695,60 @@ export const socialPublicationRecovery = {
         socialPostId: post.id,
         attemptId: attempt.id,
         status: "posted" as const,
-        evidence: ownershipValidated
-          ? ("provider_validated" as const)
-          : ("manual" as const),
+        evidence: ownershipValidated ? ("provider_validated" as const) : ("manual" as const),
         ownershipValidated,
         externalUrl,
       };
-    });
-    structuredSocialPublicationMetrics.observe(
-      "social_publication_manual_decisions_total",
-      1,
-      { decision: "confirmed_published", ownershipValidated: result.ownershipValidated },
-    );
-    structuredSocialPublicationMetrics.observe(
-      "social_publication_receipts_total",
-      1,
-      { platform: evidenceTarget.platform, source: "manual" },
-    );
+    };
+    const accepted = input.mutation
+      ? await getMcpOperationExecutor().execute({
+          identity: {
+            workspaceId: input.workspaceId,
+            callerId: input.mutation.callerId ?? input.actorUserId,
+            toolName: "narriflow_confirm_social_publication",
+            clientIdempotencyKey: input.mutation.clientIdempotencyKey,
+          },
+          input: {
+            socialPostId: input.socialPostId,
+            projectId: input.projectId ?? null,
+            ...parsed,
+          },
+          authorize: async () => {
+            await workspaceService.requireActor(
+              input.actorUserId,
+              input.workspaceId,
+              "publishing.manage",
+            );
+          },
+          beforeAccept: input.mutation.beforeAccept,
+          prepare,
+          mutate: async (tx) => {
+            const value = await mutate(tx);
+            return {
+              resourceType: "social_post",
+              resourceId: value.socialPostId,
+              value,
+            };
+          },
+        })
+      : {
+          value: await (async () => {
+            await prepare();
+            return requirePrisma().$transaction(mutate);
+          })(),
+          replayed: false,
+        };
+    const result = accepted.value;
+    if (!accepted.replayed)
+      structuredSocialPublicationMetrics.observe("social_publication_manual_decisions_total", 1, {
+        decision: "confirmed_published",
+        ownershipValidated: result.ownershipValidated,
+      });
+    if (!accepted.replayed)
+      structuredSocialPublicationMetrics.observe("social_publication_receipts_total", 1, {
+        platform: evidenceTarget.platform,
+        source: "manual",
+      });
     return result;
   },
 
@@ -675,6 +759,7 @@ export const socialPublicationRecovery = {
       actorUserId: string;
       socialPostId: string;
       now?: Date;
+      mutation?: McpMutationOptions;
     } & RepublishSocialPublicationInput,
   ) {
     await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
@@ -683,7 +768,7 @@ export const socialPublicationRecovery = {
       duplicateRiskAcknowledged: input.duplicateRiskAcknowledged,
     });
     const now = input.now ?? new Date();
-    const result = await requirePrisma().$transaction(async (tx) => {
+    const mutate = async (tx: Prisma.TransactionClient) => {
       const { post, attempt, frozen } = await loadRecoveryTarget(tx, input);
       if (
         post.status !== "needs_attention" ||
@@ -734,9 +819,7 @@ export const socialPublicationRecovery = {
           phase: "retry_scheduled",
           nextActionAt: now,
           processingDeadline: new Date(now.getTime() + DEFAULT_PROCESSING_DEADLINE_MS),
-          reconciliationDeadline: new Date(
-            now.getTime() + DEFAULT_RECONCILIATION_DEADLINE_MS,
-          ),
+          reconciliationDeadline: new Date(now.getTime() + DEFAULT_RECONCILIATION_DEADLINE_MS),
         },
       });
       await tx.publicationManualDecision.create({
@@ -756,12 +839,44 @@ export const socialPublicationRecovery = {
         attemptId: nextAttemptId,
         status: "scheduled" as const,
       };
-    });
-    structuredSocialPublicationMetrics.observe(
-      "social_publication_manual_decisions_total",
-      1,
-      { decision: "publish_again" },
-    );
+    };
+    const accepted = input.mutation
+      ? await getMcpOperationExecutor().execute({
+          identity: {
+            workspaceId: input.workspaceId,
+            callerId: input.mutation.callerId ?? input.actorUserId,
+            toolName: "narriflow_publish_social_publication_again",
+            clientIdempotencyKey: input.mutation.clientIdempotencyKey,
+          },
+          input: {
+            socialPostId: input.socialPostId,
+            projectId: input.projectId ?? null,
+            ...parsed,
+          },
+          authorize: async () => {
+            await workspaceService.requireActor(
+              input.actorUserId,
+              input.workspaceId,
+              "publishing.manage",
+            );
+          },
+          beforeAccept: input.mutation.beforeAccept,
+          mutate: async (tx) => {
+            const value = await mutate(tx);
+            return {
+              resourceType: "social_post",
+              resourceId: value.socialPostId,
+              value,
+            };
+          },
+        })
+      : { value: await requirePrisma().$transaction(mutate), replayed: false };
+    const result = accepted.value;
+    if (!accepted.replayed)
+      structuredSocialPublicationMetrics.observe("social_publication_manual_decisions_total", 1, {
+        decision: "publish_again",
+      });
     return result;
   },
+
 };

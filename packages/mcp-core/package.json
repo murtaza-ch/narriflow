@@ -9,15 +9,35 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./auth": {
+      "types": "./src/mcp-auth.ts",
+      "default": "./src/mcp-auth.ts"
+    },
+    "./http": {
+      "types": "./src/mcp-http-exports.ts",
+      "default": "./src/mcp-http-exports.ts"
+    },
+    "./stdio": {
+      "types": "./src/mcp-stdio.ts",
+      "default": "./src/mcp-stdio.ts"
+    },
+    "./tasks": {
+      "types": "./src/mcp-tasks.ts",
+      "default": "./src/mcp-tasks.ts"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "build:apps": "bun scripts/build-apps.mjs",
+    "test:integration": "bun test src"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "@modelcontextprotocol/ext-tasks": "0.2.2",
     "@modelcontextprotocol/server": "2.0.0",
     "@narriflow/services": "workspace:*",
     "@narriflow/validators": "workspace:*",

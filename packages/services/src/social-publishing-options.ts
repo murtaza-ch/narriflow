@@ -42,11 +42,11 @@ async function tiktokRead(token: string, path: string, body: object = {}) {
 	return value.data;
 }
 export async function socialPublishingOptions(scope: ActorScope, accountId: string) {
-	await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
+	await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 	return readSocialPublishingOptionsForAccount(scope.workspaceId, accountId);
 }
 
-/** Reads provider settings after the caller has admitted a publishing actor. */
+/** Reads provider settings after the caller has admitted a workspace reader. */
 export async function readSocialPublishingOptionsForAccount(workspaceId: string, accountId: string) {
 	const row = await getPrismaClient()?.socialAccount.findFirst({
 		where: { id: accountId, workspaceId },

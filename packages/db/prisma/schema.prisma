@@ -2421,3 +2421,48 @@ model PublishedSocialVideo {
 
   @@unique([socialPostId, platformPostId])
 }
+
+// Atomic acceptance receipts for MCP mutations. Domain work remains owned by
+// the referenced Project, Workflow Run, Clip Export, rule, or Social Post.
+model McpOperation {
+  id                   String   @id @default(uuid()) @db.Uuid
+  workspaceId          String   @db.Uuid
+  callerId             String
+  toolName             String
+  clientIdempotencyKey  String
+  fingerprint          String
+  resourceType         String
+  resourceId           String
+  result               Json
+  createdAt            DateTime @default(now())
+
+  @@unique([workspaceId, callerId, toolName, clientIdempotencyKey])
+  @@index([resourceType, resourceId])
+  @@index([workspaceId, createdAt])
+}
+
+/// Request-owned handle for existing work. Expiry never changes domain work.
+model McpTask {
+  id                     String    @id @default(uuid()) @db.Uuid
+  ownerUserId            String    @db.Uuid
+  callerId               String
+  workspaceId            String    @db.Uuid
+  toolName               String
+  domainKind             String
+  domainId               String    @db.Uuid
+  projectId              String    @db.Uuid
+  clipId                 String?   @db.Uuid
+  originatingOperationId String
+  resultContract         Json
+  initialResult          Json
+  status                 String    @default("working")
+  terminalOutcome        Json?
+  cancellationRequestedAt DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  expiresAt              DateTime
+
+  @@unique([ownerUserId, callerId, toolName, domainKind, domainId])
+  @@index([expiresAt])
+  @@index([workspaceId, ownerUserId])
+}

@@ -6,6 +6,7 @@ import {
   roleHasWorkspaceCapability,
   workspaceAllowsCapability,
   WORKSPACE_API_KEY_SCOPES,
+  WORKSPACE_API_KEY_READ_SCOPES,
   type WorkspaceApiKeyScope,
   type WorkspaceCapability,
 } from "@narriflow/validators";
@@ -138,7 +139,7 @@ export function normalizeWorkspaceApiKeyInput(
   }
   const scopes = input.scopes?.length
     ? [...new Set(input.scopes)]
-    : ["projects:read"];
+    : [...WORKSPACE_API_KEY_READ_SCOPES];
   const invalidScopes = scopes.filter(
     (scope) => !WORKSPACE_API_KEY_SCOPES.includes(scope as WorkspaceApiKeyScope),
   );

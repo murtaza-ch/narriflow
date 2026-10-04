@@ -515,6 +515,24 @@ export class IngestJobLifecycle {
     }
     return reaped;
   }
+  async cancelQueuedOperation(input: { actorUserId: string; workspaceId: string; projectId: string; ingestJobId: string }): Promise<boolean> {
+    await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
+    return this.deps.prisma.$transaction(async (tx) => {
+      const job = await tx.ingestJob.findFirst({ where: { id: input.ingestJobId, projectId: input.projectId,
+        status: "queued", project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() } } });
+      if (!job) return false;
+      const now = await this.now(tx);
+      const changed = await tx.ingestJob.updateMany({ where: { id: job.id, status: "queued" },
+        data: { status: "cancelled", completedAt: now, lastError: "MCP_CANCELLED" } });
+      if (!changed.count) return false;
+      await tx.project.updateMany({ where: { id: input.projectId, ingestStatus: "queued" },
+        data: { ingestStatus: "failed", ingestErrorCode: "MCP_CANCELLED" } });
+      await this.event(tx, { id: job.id, projectId: job.projectId, transition: "mcp_cancelled",
+        stage: "ingest", status: "failed", progress: 0, errorCode: "MCP_CANCELLED" }, now);
+      return true;
+    });
+  }
+
   async retry(input: {
     projectId: string;
     workspaceId: string;

@@ -28,6 +28,9 @@ jobs:
       - name: Test
         run: bun run test
 
+      - name: MCP wire and workflow acceptance
+        run: bun run test:mcp:integration
+
       - name: Production dependency audit
         run: bun run audit:production
 
@@ -57,6 +60,8 @@ jobs:
             command: test:brand-profiles:db
           - domain: Vizard Expansion
             command: test:vizard-expansion:db
+          - domain: MCP acceptance and Tasks
+            command: test:mcp:db
     services:
       postgres:
         image: postgres:17

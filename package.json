@@ -11,6 +11,7 @@
     "prepare": "git config core.hooksPath .githooks || true",
     "dev": "turbo run dev --parallel --filter=!@narriflow/mcp-server",
     "dev:mcp": "bun --filter @narriflow/mcp-server dev",
+    "mcp:upload": "bun run --cwd apps/mcp upload",
     "env:check": "bun run scripts/env-check.ts",
     "build": "turbo run build",
     "lint": "biome check .",
@@ -26,7 +27,9 @@
     "test:vizard-expansion:db": "bun packages/services/scripts/run-vizard-expansion-db-tests.ts",
     "test:mcp:e2e": "bun --cwd apps/web ../../packages/mcp-core/scripts/e2e-clients.ts",
     "audit:production": "bun audit --production --audit-level=high",
-    "clean": "turbo run clean && rm -rf .turbo node_modules"
+    "clean": "turbo run clean && rm -rf .turbo node_modules",
+    "test:mcp:db": "bun packages/services/scripts/run-mcp-db-tests.ts",
+    "test:mcp:integration": "bun test packages/mcp-core/src apps/mcp/src apps/web/lib/mcp-admission-parity.test.ts apps/web/lib/mcp-configuration.test.ts apps/web/lib/mcp-upload-http.test.ts apps/web/lib/mcp-upload-handoff.test.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
@@ -37,6 +40,7 @@
     "stripe": "^22.5.0"
   },
   "overrides": {
+    "brace-expansion": "2.1.6",
     "deepmerge-ts": "8.0.2",
     "fast-uri": "3.1.6",
     "fast-xml-builder": "1.2.1",

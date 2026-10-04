@@ -1,3 +1,4 @@
+import type { McpMutationOptions } from "./mcp-operation";
 import type { ActorScope } from "./actor-scope";
 import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
@@ -211,12 +212,14 @@ export class SocialService {
 		socialPostId: string,
 		input: RecheckSocialPublicationInput,
 		projectId?: string,
+		mutation?: McpMutationOptions,
 	) {
 		return socialPublicationRecovery.recheck({
 			...scope,
 			socialPostId,
 			projectId,
 			...input,
+			mutation,
 		});
 	}
 
@@ -225,12 +228,14 @@ export class SocialService {
 		socialPostId: string,
 		input: ConfirmSocialPublicationInput,
 		projectId?: string,
+		mutation?: McpMutationOptions,
 	) {
 		return socialPublicationRecovery.confirmPublished({
 			...scope,
 			socialPostId,
 			projectId,
 			...input,
+			mutation,
 		});
 	}
 
@@ -239,12 +244,14 @@ export class SocialService {
 		socialPostId: string,
 		input: RepublishSocialPublicationInput,
 		projectId?: string,
+		mutation?: McpMutationOptions,
 	) {
 		return socialPublicationRecovery.publishAgain({
 			...scope,
 			socialPostId,
 			projectId,
 			...input,
+			mutation,
 		});
 	}
 

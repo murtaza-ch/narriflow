@@ -33,7 +33,7 @@ describe("checkRateLimit (fail-open safety)", () => {
 
   test("returns the configured limit shape", async () => {
     const result = await checkRateLimit("presign:user-3", 60, 60);
-    expect(result).toEqual({ allowed: true, remaining: 60, limit: 60 });
+    expect(result).toEqual({ allowed: true, remaining: 60, limit: 60, availability: "unavailable" });
   });
 
   test("fails open for a malformed Redis credential URL", async () => {
@@ -43,6 +43,7 @@ describe("checkRateLimit (fail-open safety)", () => {
         allowed: true,
         remaining: 20,
         limit: 20,
+        availability: "unavailable",
       });
     } finally {
       delete process.env.UPSTASH_REDIS_URL;

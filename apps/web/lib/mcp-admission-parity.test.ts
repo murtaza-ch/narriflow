@@ -20,6 +20,18 @@ const browserPeers = {
   narriflow_recheck_social_publication: { method: "POST", path: "/projects/:id/social-posts/:postId/recheck" },
   narriflow_confirm_social_publication: { method: "POST", path: "/projects/:id/social-posts/:postId/confirm" },
   narriflow_publish_social_publication_again: { method: "POST", path: "/projects/:id/social-posts/:postId/publish-again" },
+  narriflow_submit_video: { method: "POST", path: "/ingest/link" },
+  narriflow_upload_video: { method: "POST", path: "/upload-sessions/open" },
+  narriflow_generate_clips: { method: "POST", path: "/projects/:id/generate" },
+  narriflow_list_clips: { method: "GET", path: "/projects/:id/clips" },
+  narriflow_get_clip: { method: "GET", path: "/projects/:id/clips" },
+  narriflow_create_clip_export: { method: "POST", path: "/projects/:id/clips/:clipId/exports" },
+  narriflow_get_clip_export: { method: "GET", path: "/projects/:id/clips/:clipId/exports/:exportId" },
+  narriflow_list_social_accounts: { module: "app/(app)/projects/[projectId]/page.tsx" },
+  narriflow_get_publishing_options: { method: "GET", path: "/projects/:id/social-accounts/:accountId/publishing-options" },
+  narriflow_prepare_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule/preview" },
+  narriflow_schedule_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule" },
+  narriflow_list_social_publications: { method: "GET", path: "/projects/:id/social-posts" },
 } satisfies Record<WorkspaceToolName, BrowserPeer>;
 
 describe("MCP and browser capability parity", () => {

@@ -163,6 +163,39 @@ type ClipWithRenders = Clip & {
   project?: { sourceDurationSeconds: number | null } | null;
 };
 
+const clipReviewSelect = {
+  id: true, projectId: true, editorRevision: true, index: true, status: true,
+  startSec: true, endSec: true, title: true, hookText: true, reasoning: true,
+  category: true, platformFit: true, viralityScore: true, hookStrengthScore: true,
+  emotionalIntensityScore: true, storyCompletenessScore: true, pacingScore: true,
+  durationOptimalityScore: true, previewStorageKey: true, createdAt: true,
+} satisfies Prisma.ClipSelect;
+
+function clipReviewFacts(row: Prisma.ClipGetPayload<{ select: typeof clipReviewSelect }> & { transcriptSlice?: unknown }) {
+  const { previewStorageKey, createdAt, transcriptSlice, ...facts } = row;
+  const excerpt = Array.isArray(transcriptSlice) ? transcriptSlice.flatMap((item) => {
+    if (!item || typeof item !== "object" || !("text" in item) || typeof item.text !== "string") return [];
+    return [item.text];
+  }).join(" ").slice(0, 2_000) : "";
+  return { ...facts, platformFit: facts.platformFit as ClipPlatformTarget[],
+    durationSec: Math.round(Math.max(0, facts.endSec - facts.startSec) * 10) / 10,
+    hasPreview: Boolean(previewStorageKey), createdAt: createdAt.toISOString(),
+    ...(transcriptSlice !== undefined ? { transcriptExcerpt: excerpt } : {}) };
+}
+
+function clipReviewCursor(cursor: string | null | undefined, projectId: string) {
+  if (!cursor) return null;
+  try {
+    const value: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (Array.isArray(value) && value.length === 3 && value[0] === projectId &&
+      typeof value[1] === "number" && Number.isInteger(value[1]) && value[1] >= 0 && value[1] <= 100 &&
+      typeof value[2] === "string" && /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(value[2])) {
+      return { score: value[1], id: value[2] };
+    }
+  } catch { /* Invalid cursors are typed request errors. */ }
+  throw new ExpectedDomainFailureError({ code: "clip_review_cursor_invalid", kind: "invalid", message: "This clip cursor is invalid for the selected project" });
+}
+
 const DEFAULT_RENDER_ASPECT_RATIOS: ClipAspectRatio[] = ["9:16"];
 const aspectRatioOrder = new Map(
   clipAspectRatioOptions.map((option, index) => [option.value, index]),
@@ -939,6 +972,30 @@ export interface ClipDuplicationStorageAdapter {
 }
 
 export class ClipService {
+  /** Compact review facts avoid loading editor documents and transcript bodies. */
+  async listClipReviewFacts(scope: ActorScope, projectId: string, options: { limit?: number; cursor?: string | null; includeTranscriptExcerpt?: boolean } = {}) {
+    await this.authorizeActor(scope, "content.view");
+    const cursor = clipReviewCursor(options.cursor, projectId);
+    const limit = Math.max(1, Math.min(50, options.limit ?? 20));
+    const rows = await requirePrisma().clip.findMany({
+      where: { projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+        ...(cursor ? { OR: [{ viralityScore: { lt: cursor.score } }, { viralityScore: cursor.score, id: { gt: cursor.id } }] } : {}) },
+      select: { ...clipReviewSelect, ...(options.includeTranscriptExcerpt ? { transcriptSlice: true } : {}) },
+      orderBy: [{ viralityScore: "desc" }, { id: "asc" }], take: limit + 1,
+    });
+    const boundary = rows[limit - 1];
+    return { items: rows.slice(0, limit).map(clipReviewFacts), nextCursor: rows.length > limit && boundary ? Buffer.from(JSON.stringify([projectId, boundary.viralityScore, boundary.id])).toString("base64url") : null };
+  }
+
+  async getClipReviewFacts(scope: ActorScope, projectId: string, clipId: string, options: { includeTranscriptExcerpt?: boolean } = {}) {
+    await this.authorizeActor(scope, "content.view");
+    const row = await requirePrisma().clip.findFirst({
+      where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+      select: { ...clipReviewSelect, ...(options.includeTranscriptExcerpt ? { transcriptSlice: true } : {}) },
+    });
+    if (!row) throw new ClipActionError("clip_not_found");
+    return clipReviewFacts(row);
+  }
   constructor(
     private readonly options: {
       authorizeActor?: (scope: ActorScope, capability: WorkspaceCapability) => Promise<void>;

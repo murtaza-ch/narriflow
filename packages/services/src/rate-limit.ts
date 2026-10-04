@@ -51,13 +51,13 @@ function getClient(): Redis | null {
 }
 
 export interface RateLimitResult {
+  availability: "available" | "unavailable";
   allowed: boolean;
   remaining: number;
   limit: number;
 }
 
-/** Fixed-window per-key limiter. Fails OPEN (allowed=true) if Redis is
- *  unavailable — availability must not depend on the limiter. */
+/** Fixed-window per-key limiter. Callers choose their outage policy using availability. */
 export async function checkRateLimit(
   key: string,
   limit: number,
@@ -66,13 +66,13 @@ export async function checkRateLimit(
   let redis: Redis | null = null;
   try {
     redis = getClient();
-    if (!redis) return { allowed: true, remaining: limit, limit };
+    if (!redis) return { allowed: true, remaining: limit, limit, availability: "unavailable" };
     const bucket = `ratelimit:${key}:${Math.floor(Date.now() / 1000 / windowSeconds)}`;
     const count = await redis.incr(bucket);
     if (count === 1) await redis.expire(bucket, windowSeconds);
-    return { allowed: count <= limit, remaining: Math.max(0, limit - count), limit };
+    return { allowed: count <= limit, remaining: Math.max(0, limit - count), limit, availability: "available" };
   } catch {
     if (redis) resetClient(redis);
-    return { allowed: true, remaining: limit, limit };
+    return { allowed: true, remaining: limit, limit, availability: "unavailable" };
   }
 }

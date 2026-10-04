@@ -2,12 +2,13 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Flex, Input, Stack, Text } from "@chakra-ui/react";
+import { Box, Field, Flex, Input, Stack, Text } from "@chakra-ui/react";
 import { Copy, KeyRound, Plus, Trash2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { createApiKeyAction, revokeApiKeyAction } from "../actions";
+import { WORKSPACE_API_KEY_READ_SCOPES } from "@narriflow/validators";
 import {
   authenticatedActionResultMessage,
   isAuthenticatedActionFailure,
@@ -24,7 +25,8 @@ export function ApiKeysPanel({
   const [name, setName] = useState("");
   const [secret, setSecret] = useState<string | null>(null);
   const [allowAutopilotWrites, setAllowAutopilotWrites] = useState(false);
-  const [allowPublishingReads, setAllowPublishingReads] = useState(false);
+  const [allowProcessingWrites, setAllowProcessingWrites] = useState(false);
+  const [allowExportWrites, setAllowExportWrites] = useState(false);
   const [allowPublishingWrites, setAllowPublishingWrites] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -36,12 +38,10 @@ export function ApiKeysPanel({
       const result = await createApiKeyAction({
         name,
         scopes: [
-          "projects:read",
-          "exports:read",
-          "usage:read",
-          "autopilot:read",
+          ...WORKSPACE_API_KEY_READ_SCOPES,
+          ...(allowProcessingWrites ? ["processing:write"] : []),
+          ...(allowExportWrites ? ["exports:write"] : []),
           ...(allowAutopilotWrites ? ["autopilot:write"] : []),
-          ...(allowPublishingReads ? ["publishing:read"] : []),
           ...(allowPublishingWrites ? ["publishing:write"] : []),
         ],
       });
@@ -76,19 +76,22 @@ export function ApiKeysPanel({
         <Stack gap="3">
           <Flex align="center" gap="2"><KeyRound size={16} /><Text fontSize="14px" fontWeight="600">Create workspace API key</Text></Flex>
           <Text fontSize="13px" lineHeight="1.6" color="fg.muted">
-            Workspace keys connect automated API or MCP clients.
+            Workspace keys include project, export, usage, autopilot and publishing reads. Choose each write permission separately.
           </Text>
           {!isBusiness ? <Text fontSize="13px" color="fg.muted">API keys require an active Business workspace.</Text> : (
             <Stack gap="3">
-              <Flex gap="3" direction={{ base: "column", md: "row" }}><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Key name, e.g. Claude Desktop" maxLength={80} required /><Button type="submit" size="sm" disabled={pending}>{pending ? <Spinner size="xs" /> : <Plus size={14} />}Create key</Button></Flex>
+              <Flex gap="3" align="end" direction={{ base: "column", md: "row" }}><Field.Root required><Field.Label>Key name</Field.Label><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Claude Desktop" maxLength={80} required /></Field.Root><Button type="submit" size="sm" disabled={pending}>{pending ? <Spinner size="xs" /> : <Plus size={14} />}Create key</Button></Flex>
+              <Checkbox checked={allowProcessingWrites} onCheckedChange={setAllowProcessingWrites}>
+                Allow this key to import, upload and generate clips
+              </Checkbox>
+              <Checkbox checked={allowExportWrites} onCheckedChange={setAllowExportWrites}>
+                Allow this key to request clip exports
+              </Checkbox>
               <Checkbox checked={allowAutopilotWrites} onCheckedChange={setAllowAutopilotWrites}>
                 Allow this key to create and run RSS autopilot rules
               </Checkbox>
-              <Checkbox checked={allowPublishingReads} onCheckedChange={setAllowPublishingReads}>
-                Allow this key to read social publication status
-              </Checkbox>
               <Checkbox checked={allowPublishingWrites} onCheckedChange={setAllowPublishingWrites}>
-                Allow this key to confirm, recheck and publish social posts again
+                Allow this key to prepare, schedule and recover social publications
               </Checkbox>
             </Stack>
           )}
@@ -96,7 +99,7 @@ export function ApiKeysPanel({
           {secret ? (
             <Box layerStyle="well" p="4">
               <Text fontSize="13px" fontWeight="600" mb="2">Copy this secret now. It will not be shown again.</Text>
-              <Flex gap="2"><Input value={secret} readOnly fontFamily="mono" /><Button type="button" variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(secret)}><Copy size={14} />Copy</Button></Flex>
+              <Flex gap="2"><Input value={secret} readOnly fontFamily="mono" aria-label="New workspace API key secret" /><Button type="button" variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(secret)}><Copy size={14} />Copy</Button></Flex>
             </Box>
           ) : null}
         </Stack>

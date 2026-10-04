@@ -64,6 +64,7 @@ export type SchedulePublicationInput = {
 	assistedCopyVariantId?: string | null;
 	thumbnail?: ThumbnailSelection | null;
 	reviewOverrideReason?: string | null;
+	beforeAccept?: () => Promise<void>;
 };
 
 export type PublicationFreezeResult =
@@ -132,6 +133,10 @@ export interface PublicationSchedulingStore {
 		immutableRequestHash: string;
 		create(): Promise<PublicationIntent>;
 	}): Promise<PublicationIntent>;
+	readByKey(
+		workspaceId: string,
+		clientIdempotencyKey: string,
+	): Promise<PublicationIntent | null>;
 	read(workspaceId: string, postId: string): Promise<PublicationIntent | null>;
 	cancel(input: {
 		workspaceId: string;
@@ -362,20 +367,54 @@ export function createSocialPublicationScheduling(dependencies: {
 	createId(): string;
 	now(): Date;
 }) {
-	return {
-		async schedule(
-			input: SchedulePublicationInput,
-			options?: { actor: PublicationSchedulingActor },
-		): Promise<PublicationIntent> {
-			const actor = options?.actor ?? await dependencies.authorize({
+	async function requireActor(
+		input: SchedulePublicationInput,
+		options?: { actor: PublicationSchedulingActor },
+	) {
+		const actor = options?.actor ??
+			await dependencies.authorize({
 				actorUserId: input.actorUserId,
 				workspaceId: input.workspaceId,
 				permission: "publishing.manage",
 			});
-			if (actor.actorUserId !== input.actorUserId || actor.workspaceId !== input.workspaceId ||
-				!workspaceAllowsCapability(actor, "publishing.manage")) {
-				throw new ExpectedDomainFailureError({ code: "workspace_access_denied", kind: "forbidden", message: "You do not have permission to publish in this Workspace" });
+		if (
+			actor.actorUserId !== input.actorUserId ||
+			actor.workspaceId !== input.workspaceId ||
+			!workspaceAllowsCapability(actor, "publishing.manage")
+		) {
+			throw new ExpectedDomainFailureError({
+				code: "workspace_access_denied",
+				kind: "forbidden",
+				message: "You do not have permission to publish in this Workspace",
+			});
+		}
+		return actor;
+	}
+
+	return {
+		async replay(
+			input: SchedulePublicationInput,
+			options?: { actor: PublicationSchedulingActor },
+		): Promise<PublicationIntent | null> {
+			await requireActor(input, options);
+			const accepted = await dependencies.store.readByKey(
+				input.workspaceId,
+				input.clientIdempotencyKey,
+			);
+			if (
+				accepted &&
+				accepted.immutableRequestHash !== publicationIntentHash(input)
+			) {
+				throw new PublicationIntentConflictError();
 			}
+			return accepted;
+		},
+
+		async schedule(
+			input: SchedulePublicationInput,
+			options?: { actor: PublicationSchedulingActor },
+		): Promise<PublicationIntent> {
+			const actor = await requireActor(input, options);
 			const immutableRequestHash = publicationIntentHash(input);
 			return dependencies.store.open({
 				workspaceId: input.workspaceId,
@@ -388,6 +427,7 @@ export function createSocialPublicationScheduling(dependencies: {
 							"Choose a future publish time",
 						);
 					}
+					await input.beforeAccept?.();
 					const frozen = await freezePublication(input, actor, dependencies.freezePorts, dependencies.now());
 					const review = await dependencies.authorizeReview({
 						principal: {
@@ -528,6 +568,11 @@ export function createInMemoryPublicationSchedulingStore(): PublicationSchedulin
 			const found = [...intents.values()].find(
 				(intent) => intent.workspaceId === workspaceId && intent.id === postId,
 			);
+			return found ? cloneIntent(found) : null;
+		},
+
+		async readByKey(workspaceId, clientIdempotencyKey) {
+			const found = intents.get(`${workspaceId}:${clientIdempotencyKey}`);
 			return found ? cloneIntent(found) : null;
 		},
 

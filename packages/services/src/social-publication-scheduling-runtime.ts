@@ -100,6 +100,11 @@ async function readIntentByKey(
 }
 
 export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
+	async readByKey(workspaceId, clientIdempotencyKey) {
+		const row = await readIntentByKey(workspaceId, clientIdempotencyKey);
+		return row ? toPublicationIntent(row) : null;
+	},
+
 	async open(input) {
 		const existing = await readIntentByKey(
 			input.workspaceId,

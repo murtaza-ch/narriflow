@@ -1,185 +1,160 @@
 # Narriflow MCP integration
 
-Narriflow exposes one remote MCP endpoint at `https://<app-origin>/mcp` and a
-local stdio fallback in `apps/mcp`. The remote endpoint implements MCP
-`2026-07-28` with `@modelcontextprotocol/server` v2: there is no initialization
-handshake or protocol session for current clients, and a fresh server instance
-handles each HTTP request. The v2 handler also accepts stateless 2025-era
-Streamable HTTP clients during the compatibility window.
+Narriflow serves `/mcp` through the SDK v2 request-scoped HTTP factory. Modern
+`2026-07-28` exchanges have no initialization handshake or session. Older
+Streamable HTTP clients use SDK legacy handling with the same tool/admission
+implementation. Stdio in `apps/mcp` revalidates its API key on every request.
 
-## What is exposed
+## Access and workflow
 
-| Tool | Required workspace capability | API-key scope | Billing/cost behavior |
-| --- | --- | --- | --- |
-| `narriflow_list_workspaces` | Membership | None | Shows whether MCP is enabled per workspace |
-| `narriflow_list_projects` | `content.view` | `projects:read` | Active Business workspace |
-| `narriflow_get_project` | `content.view` | `projects:read` | Active Business workspace |
-| `narriflow_get_workspace_usage` | `content.view` | `usage:read` | Reports the existing monthly minute quota |
-| `narriflow_get_social_publication` | `content.view` | `publishing:read` | Returns recovery facts without provider checkpoint state |
-| `narriflow_recheck_social_publication` | `publishing.manage` | `publishing:write` | Reconciles the existing operation; never submits again |
-| `narriflow_confirm_social_publication` | `publishing.manage` | `publishing:write` | Records bounded operator evidence and settles without submission |
-| `narriflow_publish_social_publication_again` | `publishing.manage` | `publishing:write` | Requires explicit duplicate-risk acknowledgement and creates a linked attempt |
-| `narriflow_list_autopilot_rules` | `content.view` | `autopilot:read` | Active Business workspace |
-| `narriflow_create_rss_autopilot_rule` | `content.edit` | `autopilot:write` | Later imports use the normal processing quota gate |
-| `narriflow_run_autopilot_rule_now` | `content.edit` | `autopilot:write` | Marks the rule due; it does not bypass quota checks |
+Discover `workspaceId` with `narriflow_list_workspaces`. Workspace tools require
+current membership, role, active Business entitlement and resource ownership.
+API keys are restricted to their own workspace. OAuth tokens must have the
+canonical `/mcp` resource in their verified audience. Both credentials use:
 
-MCP and workspace API keys are Business-plan integration capabilities. OAuth
-identifies the Narriflow user, then every tool re-checks workspace membership,
-role, subscription state, and the specific capability. An API key is bound to
-one workspace and cannot select another workspace.
+| Scope | Tools |
+| --- | --- |
+| Discovery, no scope | `narriflow_list_workspaces` |
+| `projects:read` | `narriflow_list_projects`, `narriflow_get_project`, `narriflow_list_clips`, `narriflow_get_clip` |
+| `usage:read` | `narriflow_get_workspace_usage` |
+| `exports:read` | `narriflow_get_clip_export` |
+| `autopilot:read` | `narriflow_list_autopilot_rules` |
+| `publishing:read` | `narriflow_list_social_accounts`, `narriflow_get_publishing_options`, `narriflow_list_social_publications`, `narriflow_get_social_publication` |
+| `processing:write` | `narriflow_submit_video`, `narriflow_upload_video`, `narriflow_generate_clips` |
+| `exports:write` | `narriflow_create_clip_export` |
+| `autopilot:write` | `narriflow_create_rss_autopilot_rule`, `narriflow_run_autopilot_rule_now` |
+| `publishing:write` | `narriflow_prepare_social_post`, `narriflow_schedule_social_post`, `narriflow_recheck_social_publication`, `narriflow_confirm_social_publication`, `narriflow_publish_social_publication_again` |
 
-## Production configuration
+New API keys default to all five read grants; writes require explicit grants.
+Run-now requires `processing.consume`, marks the rule due, preserves worker
+leases and uses normal quota admission.
 
-Set these values in `apps/web/.env.local` locally and in the web deployment's
-secret/configuration store in production:
+Mutations require explicit workspace selection and a UUID
+`clientIdempotencyKey`. Retry unchanged input with the same key after a lost
+response. Changed immutable input returns a typed conflict. Domain records
+and replay receipts commit together. Link submission commits ingest and
+generation settings together, using canonical Content Pack defaults/quota.
+New forced generations cannot overlap active generation work.
+
+Follow project progress, list clips, review their editor revisions and create
+exports for selected aspect ratios/resolution. Clip lists default to 20,
+capped at 50. Excerpts are opt-in. Results contain compact product facts and
+ordinary review/download links. Temporary media URLs and upload grants appear
+only in client/App metadata.
+
+Prepare the exact export variant, revision, destination, caption, provider
+settings and time before scheduling. Preparation is not approval. Scheduling
+requires an accepted MRTR form, App button or authenticated web confirmation
+of that same intent, then rechecks review approval. Signed continuations bind
+caller/workspace/tool/intent for ten minutes. Accepted scheduling retries can
+replay after expiry; expired unaccepted intents require new preparation.
+Recovery tools inspect/reconcile existing operations; publish-again requires
+explicit duplicate-risk acknowledgement.
+
+## Configuration
+
+Use app-local environment files or deployment secret stores:
 
 ```dotenv
 NEXT_PUBLIC_APP_URL=https://app.example.com
 CLERK_OAUTH_ISSUER=https://clerk.app.example.com
+CLERK_SECRET_KEY=<Clerk backend secret>
+MCP_CONTINUATION_SECRET=<one shared secret with at least 32 bytes>
 
-# Optional Clerk Account Portal origin used for the hosted OAuth consent screen.
-CLERK_OAUTH_CONSENT_ORIGIN=https://accounts.example.com
-
-# Optional comma-separated additions. Values may be hostnames or origins.
+# Optional additions: hostnames for Hosts, full origins for Origins.
 MCP_ALLOWED_HOSTS=app.example.com
-MCP_ALLOWED_ORIGINS=
+MCP_ALLOWED_ORIGINS=https://trusted-client.example.com:8443
 ```
 
-`CLERK_OAUTH_ISSUER` is the Clerk Frontend API/authorization-server issuer,
-not `https://api.clerk.com`. Production origins must use HTTPS. Requests with
-an unrecognized `Host` or browser `Origin` are rejected before token
-verification.
+Continuation secrets must match across web/stdio instances that create or
+accept state. Keep them out of tracked files and upload-helper environments.
+Production URLs use HTTPS. Browser origins match scheme, host and port;
+CORS headers appear only for accepted origins. MCP JSON is bounded to 1 MiB;
+media bytes transfer directly to storage.
 
-Clerk's hosted Account Portal owns the consent UI as well as PKCE, grants,
-codes, tokens, refresh, and revocation. Narriflow continues to enforce
-workspace membership, role, subscription, and tool capabilities after Clerk
-authenticates the user.
+In Clerk, enable audience claims derived from RFC 8707 `resource`, require
+PKCE S256, retain hosted user consent, and create all nine application scopes.
+Set read defaults and configure each intended application's scope ceiling.
+Advertising scopes alone does not grant them. Clients must send the exact
+canonical resource matching `NEXT_PUBLIC_APP_URL` plus `/mcp`. Online
+verification on every request enforces audience, expiry and revocation.
+See [Clerk's OAuth contract](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth).
 
-`CLERK_OAUTH_CONSENT_ORIGIN` is the Clerk Account Portal origin.
-Development `*.clerk.accounts.dev` issuers derive their matching
-`*.accounts.dev` portal automatically; set it explicitly only when a production
-deployment uses a custom Account Portal domain.
+Discovery documents are `/.well-known/oauth-protected-resource/mcp`, its root
+alias, and the authorization-server mirror. The integration page verifies
+discovery, PKCE/scopes advertisement and continuation-secret presence; it
+does not establish actual consent or token resource binding.
 
-In Clerk Dashboard:
+The budget is 300 authenticated requests per credential/user per minute;
+actual denials return 429. During Redis outages, reads/status and accepted
+replay remain available; new mutations pause with retryable errors.
+Credential/scope failures have standard Bearer challenges. Clerk outages
+and throttling have retryable availability responses. Bounded diagnostics
+exclude tokens, transcripts, grants and raw provider errors.
 
-1. Open **Paths -> OAuth consent** and select Clerk's hosted Account Portal.
-2. Open **OAuth applications** and keep the consent screen enabled.
-3. Choose the access-token format that matches the rest of the deployment.
-   Narriflow currently verifies both JWT and opaque OAuth access tokens through
-   Clerk on every request for uniform revocation and expiry handling.
-4. Enable and advertise Client ID Metadata Documents (CIMD) when available.
-   MCP `2026-07-28` prefers CIMD over Dynamic Client Registration (DCR).
-5. Enable DCR only when a client still requires it. It is a public client
-   registration endpoint, so monitor registrations and remove abandoned or
-   suspicious clients.
-6. Configure default scopes for clients that omit `scope`. Use the minimum:
-   `openid profile email`; add `offline_access` only when refresh tokens are
-   required.
+## Clients and upload
 
-The deployment publishes these discovery documents automatically:
-
-- `/.well-known/oauth-protected-resource/mcp`
-- `/.well-known/oauth-protected-resource` (compatibility alias)
-- `/.well-known/oauth-authorization-server` (a compatibility mirror of Clerk)
-
-## Codex and ChatGPT desktop
-
-OAuth is the recommended setup:
-
-```toml
-[mcp_servers.narriflow]
-url = "https://app.example.com/mcp"
-auth = "oauth"
-default_tools_approval_mode = "writes"
-```
-
-Then run:
+For installed Codex versions supporting these flags:
 
 ```bash
-codex mcp login narriflow
+codex mcp add narriflow --url https://app.example.com/mcp --oauth-resource https://app.example.com/mcp
+codex mcp login narriflow --scopes projects:read,exports:read,usage:read,autopilot:read,publishing:read
 ```
-
-The ChatGPT desktop app, Codex CLI, and Codex IDE extension share the same MCP
-configuration on a Codex host. In the desktop or IDE UI, choose **Streamable
-HTTP**, enter the same URL, and authenticate when prompted.
-
-For a non-interactive Business workspace, create a scoped Narriflow API key and
-load it from the environment instead of putting the secret in `config.toml`:
-
-```toml
-[mcp_servers.narriflow]
-url = "https://app.example.com/mcp"
-bearer_token_env_var = "NARRIFLOW_API_KEY"
-default_tools_approval_mode = "writes"
-```
-
-Keys created in **Settings -> Developer access** receive read scopes by default. Enable the
-autopilot-write option only for clients that should be able to change rules.
-
-## Claude
-
-For Claude, Claude Desktop, Cowork, and mobile, add a **custom remote
-connector** with `https://app.example.com/mcp`. These clients connect from
-Anthropic's cloud, so the URL must be publicly reachable. Complete the Clerk
-OAuth consent flow for each Narriflow user.
 
 For Claude Code:
 
 ```bash
 claude mcp add --transport http narriflow https://app.example.com/mcp
+claude mcp login narriflow
 ```
 
-Open `/mcp` in Claude Code and complete authentication in the browser. For
-Team/Enterprise Claude accounts, an owner first registers the custom connector
-and each member then connects their own Narriflow identity.
+Configure ChatGPT's remote connector with the public HTTPS endpoint and
+complete its own OAuth consent. Record actual client versions/capabilities
+in the [acceptance runbook](../runbooks/mcp-launch-acceptance.md).
 
-## Local stdio fallback
-
-The stdio server authenticates with a workspace API key rather than a raw
-database user ID:
-
-```dotenv
-DATABASE_URL=postgresql://...
-NARRIFLOW_API_KEY=nf_...
-```
-
-Run it with `bun --cwd apps/mcp run start`. The key's workspace and scopes are
-enforced exactly as they are on the remote endpoint.
-
-## Operations and security
-
-- The HTTP handler is stateless and safe behind a round-robin load balancer.
-  Database, Redis, and SDK connection pools may be reused by an instance, but
-  no MCP session state is stored.
-- The server advertises public five-minute cache hints for its deterministic
-  tool catalog and discovery response. Workspace data is never publicly
-  cacheable.
-- Write tools carry MCP write annotations so capable clients can prompt for
-  approval. Narriflow logs their user, workspace, client, credential type, and
-  tool name without logging tokens.
-- The MCP endpoint has a distributed-when-Redis-is-available request limit of
-  300 requests per credential/user per minute. It fails open if optional Redis
-  is unavailable, matching the application's existing availability policy.
-- Rotate or revoke an API key from **Settings -> Developer access**. OAuth grants are
-  revoked from Clerk or by disconnecting the connector in the client.
-
-## Verification
-
-After deployment, verify discovery, authentication, and tools with the current
-MCP Inspector, then test both an OAuth client and an API-key client. Run:
+The upload tool opens a capable assistant picker or authenticated web handoff.
+They reuse Upload Sessions, multipart transfer/resume, exact-object verification
+and atomic ingest handoff. The local helper supports Codex/Claude Code:
 
 ```bash
-bun run typecheck
-bun run test
+# Load NARRIFLOW_API_KEY and NARRIFLOW_URL through your environment/secret store.
+bun run mcp:upload --file /absolute/path/video.mp4 --workspace <workspaceId> --key <UUID>
 ```
 
-For a real Codex OAuth check, add the remote server, complete the Narriflow
-consent screen, and invoke a read tool from a fresh Codex process:
+Its key needs `processing:write`. Reuse the same UUID and unchanged file to
+resume. The helper prints its operation key before networking and never sends
+the Narriflow credential to storage. `--settings` accepts a JSON file matching
+the MCP generation-settings contract. Attachment adapters remain disabled
+until their specific host file contract is tested.
 
-```bash
-codex mcp add narriflow --url https://app.example.com/mcp
-codex mcp login narriflow
-```
+Stdio runs with `bun --cwd apps/mcp run start`. Supply `NARRIFLOW_API_KEY` and
+the existing service database/storage/Redis environment. Signed web handoffs
+also require the canonical app URL and shared continuation secret. The upload
+helper needs only its key and Narriflow URL, without service credentials.
 
-Apply all pending Prisma migrations before deployment; this MCP change itself
-does not add a migration.
+## Extensions and verification
+
+Versioned `ui://narriflow/v1/` resources use the standard MCP Apps bridge for
+upload, progress, clip review and exact-post confirmation. App-only actions
+use their public workflow's grants. Static templates can be public-cacheable;
+private results use zero TTL. CSP explicitly declares app/storage/media origins.
+
+Tasks require verified modern per-request extension capabilities. Durable
+handles support modern `tasks/get`, `tasks/update` and cooperative
+`tasks/cancel`, with five-second suggested polling. Ownership, originating
+operation, result contract and terminal snapshot persist for seven days.
+Expiry does not cancel domain work; completed outcomes remain immutable.
+Generation Tasks follow transcription, detection and default render lineage.
+Unsupported clients receive ordinary operation IDs/status guidance.
+Task HTTP requests send `MCP-Name` equal to `params.taskId`.
+
+Apply the `McpOperation` and `McpTask` migrations before running/deploying
+their code. Verify both database URLs select the intended shared database.
+Run lint, typecheck, tests, dependency audit, build, `test:mcp:integration`,
+`test:mcp:db` and lifecycle database gates. DB fixtures use disposable schemas.
+The opt-in `test:mcp:e2e` checks an existing bearer credential read-only;
+it does not establish assistant OAuth consent.
+
+Launch requires actual OAuth workflows in Codex, Claude and ChatGPT plus a
+live API-key upload-helper walkthrough. Keep those gates pending until the
+[acceptance evidence](../runbooks/mcp-launch-acceptance.md) records them.

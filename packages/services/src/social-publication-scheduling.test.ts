@@ -111,6 +111,34 @@ const authorizeReview = async ({ exportIds }: { exportIds: string[] }) => ({
 });
 
 describe("Social Publication scheduling", () => {
+	test("reads an accepted intent before confirmation without admitting a new post", async () => {
+		const store = createInMemoryPublicationSchedulingStore();
+		let permitted = true;
+		let freezes = 0;
+		let now = new Date("2026-08-28T10:00:00.000Z");
+		const scheduling = createSocialPublicationScheduling({
+			store,
+			authorize: async () => {
+				if (!permitted) throw new Error("Membership removed");
+				return actor;
+			},
+			authorizeReview,
+			freezePorts: makePorts({ readExport: async () => { freezes++; return readyExport; } }),
+			createId: () => "accepted-post",
+			now: () => now,
+		});
+		expect(await scheduling.replay(baseInput)).toBeNull();
+		expect(await store.count()).toBe(0);
+		const first = await scheduling.schedule(baseInput);
+		now = new Date("2026-08-30T10:00:00.000Z");
+		expect(await scheduling.replay({ ...baseInput, beforeAccept: async () => { throw new Error("Expired confirmation"); } })).toEqual(first);
+		expect(freezes).toBe(1);
+		await expect(scheduling.replay({ ...baseInput, caption: "Unapproved caption" })).rejects.toBeInstanceOf(PublicationIntentConflictError);
+		permitted = false;
+		await expect(scheduling.replay(baseInput)).rejects.toThrow("Membership removed");
+		await expect(scheduling.replay(baseInput, { actor: { ...actor, role: "viewer" } })).rejects.toMatchObject({ code: "workspace_access_denied" });
+	});
+
   test("attributes the intent to its admitting actor and preserves that creator on another actor's replay", async () => {
     const store = createInMemoryPublicationSchedulingStore();
     let freezes = 0;
@@ -354,6 +382,18 @@ function policyHarness(ports: Partial<PublicationFreezePorts> = {}) {
 }
 
 describe("publication freeze policy through admission", () => {
+	test("new publication acceptance pauses during admission outages while durable replay succeeds", async () => {
+		const h = policyHarness();
+		let guardCalls = 0;
+		const unavailable = async () => { guardCalls += 1; throw new Error("Limiter unavailable"); };
+		await expect(h.module.schedule({ ...baseInput, beforeAccept: unavailable })).rejects.toThrow("Limiter unavailable");
+		expect(await h.store.count()).toBe(0);
+		const accepted = await h.module.schedule(baseInput);
+		expect(await h.module.schedule({ ...baseInput, beforeAccept: unavailable })).toEqual(accepted);
+		expect(guardCalls).toBe(1);
+		expect(h.authorizations()).toBe(3);
+	});
+
 	test("replays before all mutable facts disappear while checking current authority", async () => {
 		let unavailable = false;
 		const mutableRead = () => { if (unavailable) throw new Error("mutable facts unavailable"); };

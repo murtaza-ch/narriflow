@@ -15,7 +15,8 @@
       "!packages/db/prisma/migrations",
       "!packages/db/generated",
       "!.agents/skills",
-      "!**/*.pen"
+      "!**/*.pen",
+      "!packages/mcp-core/src/mcp-apps/v1/app-script.ts"
     ]
   },
   "formatter": {

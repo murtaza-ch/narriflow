@@ -62,6 +62,13 @@ export const workflowStageUpdatedEventSchema = z
     status: workflowStatusSchema,
     progress: z.number().min(0).max(100),
     errorCode: z.string().nullable().default(null),
+    followUpWorkflowRunId: z.string().uuid().optional(),
+    generationRenderIds: z.array(z.string().uuid()).max(2000).optional(),
+    generationRenderResults: z.array(z.strictObject({
+      renderId: z.string().uuid(),
+      status: z.enum(["completed", "failed"]),
+      errorCode: z.string().nullable(),
+    })).max(2000).optional(),
     emittedAt: z.string().datetime(),
     notification: z
       .union([

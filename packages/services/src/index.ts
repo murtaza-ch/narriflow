@@ -525,3 +525,8 @@ export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestRet
 export { LayoutEvidenceLifecycle, LayoutEvidenceClaimLost, type ClipPendingPreview, type ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
 export { getLayoutEvidenceLifecycle } from "./layout-evidence-runtime";
 export type { ActorScope } from "./actor-scope";
+
+export { createMcpOperationExecutor, mcpOperationFingerprint, McpOperationConflictError, type McpMutationOptions, type McpOperationIdentity } from "./mcp-operation";
+export { getMcpOperationExecutor, prismaMcpOperationPersistence } from "./mcp-operation-runtime";
+export { createMcpTaskRegistry, MCP_TASK_TTL_MS, MCP_TASK_POLL_INTERVAL_MS, type McpTaskRecord, type McpTaskOwner, type McpTaskResolution } from "./mcp-task";
+export { prismaMcpTaskPersistence, pruneExpiredMcpTasks, getMcpTaskPersistence, getMcpTaskDomainState, cancelMcpTaskDomainWork } from "./mcp-task-runtime";

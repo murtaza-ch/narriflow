@@ -11,7 +11,7 @@ import { MCP_TOOL_ADMISSIONS, McpToolAdmission, mcpToolFailure, type NarriflowMc
 const USER_ID = "00000000-0000-4000-8000-000000000001";
 const WORKSPACE_ID = "00000000-0000-4000-8000-000000000002";
 const oauth: NarriflowMcpPrincipal = { kind: "oauth", userId: USER_ID, clientId: "oauth-client",
-  scopes: ["openid", "profile", "email", "offline_access"] };
+  scopes: ["projects:read", "exports:read", "usage:read", "autopilot:read", "autopilot:write", "publishing:read", "publishing:write", "processing:write", "exports:write"] };
 const key: NarriflowMcpPrincipal = { kind: "api_key", userId: USER_ID, clientId: "key-client",
   apiKeyId: "key-id", workspaceId: WORKSPACE_ID, scopes: [] };
 
@@ -46,7 +46,7 @@ function fixture() {
 }
 
 describe("MCP tool admission", () => {
-  test("every workspace tool admits identity-only OAuth with its current capability and real actor", async () => {
+  test("every workspace tool admits explicitly scoped OAuth with its current capability and real actor", async () => {
     const current = fixture();
     for (const tool of Object.keys(MCP_TOOL_ADMISSIONS) as NarriflowMcpToolName[]) {
       if (tool === "narriflow_list_workspaces") continue;
@@ -61,7 +61,7 @@ describe("MCP tool admission", () => {
     const current = fixture();
     for (const tool of Object.keys(MCP_TOOL_ADMISSIONS) as NarriflowMcpToolName[]) {
       if (tool === "narriflow_list_workspaces") continue;
-      await expect(current.admission.requireWorkspace(tool, key)).rejects.toMatchObject({ code: "mcp_api_key_scope_required", kind: "forbidden" });
+      await expect(current.admission.requireWorkspace(tool, key)).rejects.toMatchObject({ code: "mcp_scope_required", kind: "forbidden" });
     }
     expect(current.calls).toEqual([]);
     expect(current.reads).toEqual([]);
@@ -117,7 +117,7 @@ describe("MCP tool admission", () => {
     current.actor.pricingTier = "free";
     current.actor.status = "pending_payment";
     const workspaces = await current.admission.listWorkspaces(oauth);
-    expect(workspaces).toMatchObject([{ id: WORKSPACE_ID, status: "pending_payment", mcpEnabled: false }]);
+    expect(workspaces).toMatchObject([{ workspaceId: WORKSPACE_ID, status: "pending_payment", mcpEnabled: false }]);
     expect(current.calls).toEqual([]);
     current.removeMembership();
     expect(await current.admission.listWorkspaces(oauth)).toEqual([]);
@@ -127,7 +127,7 @@ describe("MCP tool admission", () => {
   test("key discovery needs no application scope or Business but preserves the content.view role/status check", async () => {
     const current = fixture();
     current.actor.pricingTier = "free";
-    expect(await current.admission.listWorkspaces(key)).toMatchObject([{ id: WORKSPACE_ID, mcpEnabled: false }]);
+    expect(await current.admission.listWorkspaces(key)).toMatchObject([{ workspaceId: WORKSPACE_ID, mcpEnabled: false }]);
     expect(current.calls).toEqual([{ userId: USER_ID, workspaceId: WORKSPACE_ID, capability: "content.view" }]);
     current.actor.status = "restricted";
     await expect(current.admission.listWorkspaces(key)).rejects.toMatchObject({ code: "workspace_access_denied" });

@@ -1,4 +1,6 @@
 import { workspaceService } from "./workspace.service";
+import { getMcpOperationExecutor } from "./mcp-operation-runtime";
+import type { McpMutationOptions } from "./mcp-operation";
 import type { ActorScope } from "./actor-scope";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -209,53 +211,83 @@ export class AutopilotService {
   async createRule(
     scope: ActorScope,
     input: AutopilotRuleInput,
+    mutation?: McpMutationOptions,
   ): Promise<AutopilotRuleSnapshot> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const parsed = autopilotRuleInputSchema.parse(input);
-    const [feed, ruleCount] = await Promise.all([
-      (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl),
-      requirePrisma().autopilotRule.count({
-        where: { workspaceId: scope.workspaceId },
-      }),
-    ]);
-    if (ruleCount >= MAX_AUTOPILOT_RULES_PER_WORKSPACE) {
-      throw new AutopilotError("autopilot_rule_limit_reached");
-    }
+    let feed: Awaited<ReturnType<typeof fetchRssFeed>>;
+    const prepare = async () => {
+      feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl);
+    };
 
     const prisma = requirePrisma();
-    const now = new Date();
-    const head = feed.episodes[0] ?? null;
-    const futureOnly = parsed.initialImportMode === "future_only";
-    const row = await prisma.autopilotRule.create({
-      data: {
-        workspaceId: scope.workspaceId,
-        createdByUserId: scope.actorUserId,
-        updatedByUserId: scope.actorUserId,
-        name: parsed.name,
-        rssUrl: feed.finalUrl,
-        feedTitle: feed.title,
-        titlePrefix: parsed.titlePrefix ?? null,
-        brandTemplateId: parsed.brandTemplateId ?? null,
-        languageCode: parsed.languageCode ?? null,
-        contentPack: parsed.contentPack as unknown as Prisma.InputJsonValue,
-        intervalMinutes: parsed.intervalMinutes,
-        maxEpisodesPerRun: parsed.maxEpisodesPerRun,
-        initialImportMode: parsed.initialImportMode,
-        initialImportCount: parsed.initialImportCount,
-        initializedAt: futureOnly ? now : null,
-        lastSeenEpisodeId: futureOnly ? head?.id ?? null : null,
-        lastSeenPublishedAt:
-          futureOnly && head?.publishedAt ? new Date(head.publishedAt) : null,
-        etag: futureOnly ? feed.etag : null,
-        lastModified: futureOnly ? feed.lastModified : null,
-        status: "active",
-        nextRunAt: futureOnly
-          ? nextRunFrom(parsed.intervalMinutes, now.getTime())
-          : now,
-      },
-      include: { _count: { select: { episodes: true } } },
-    });
-    return toSnapshot(row);
+    const create = async (tx: Prisma.TransactionClient) => {
+      // Serialize the workspace rule budget with its write, including distinct keys.
+      await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id" = ${scope.workspaceId}::uuid FOR UPDATE`;
+      if (
+        (await tx.autopilotRule.count({
+          where: { workspaceId: scope.workspaceId },
+        })) >= MAX_AUTOPILOT_RULES_PER_WORKSPACE
+      )
+        throw new AutopilotError("autopilot_rule_limit_reached");
+      const now = new Date();
+      const head = feed.episodes[0] ?? null;
+      const futureOnly = parsed.initialImportMode === "future_only";
+      const row = await tx.autopilotRule.create({
+        data: {
+          workspaceId: scope.workspaceId,
+          createdByUserId: scope.actorUserId,
+          updatedByUserId: scope.actorUserId,
+          name: parsed.name,
+          rssUrl: feed.finalUrl,
+          feedTitle: feed.title,
+          titlePrefix: parsed.titlePrefix ?? null,
+          brandTemplateId: parsed.brandTemplateId ?? null,
+          languageCode: parsed.languageCode ?? null,
+          contentPack: parsed.contentPack as unknown as Prisma.InputJsonValue,
+          intervalMinutes: parsed.intervalMinutes,
+          maxEpisodesPerRun: parsed.maxEpisodesPerRun,
+          initialImportMode: parsed.initialImportMode,
+          initialImportCount: parsed.initialImportCount,
+          initializedAt: futureOnly ? now : null,
+          lastSeenEpisodeId: futureOnly ? (head?.id ?? null) : null,
+          lastSeenPublishedAt: futureOnly && head?.publishedAt ? new Date(head.publishedAt) : null,
+          etag: futureOnly ? feed.etag : null,
+          lastModified: futureOnly ? feed.lastModified : null,
+          status: "active",
+          nextRunAt: futureOnly ? nextRunFrom(parsed.intervalMinutes, now.getTime()) : now,
+        },
+        include: { _count: { select: { episodes: true } } },
+      });
+      return toSnapshot(row);
+    };
+    if (mutation) {
+      const accepted = await getMcpOperationExecutor().execute({
+        identity: {
+          workspaceId: scope.workspaceId,
+          callerId: mutation.callerId ?? scope.actorUserId,
+          toolName: "narriflow_create_rss_autopilot_rule",
+          clientIdempotencyKey: mutation.clientIdempotencyKey,
+        },
+        input: parsed,
+        authorize: async () => {
+          await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
+        },
+        beforeAccept: mutation.beforeAccept,
+        prepare,
+        mutate: async (tx) => {
+          const value = await create(tx);
+          return {
+            resourceType: "autopilot_rule",
+            resourceId: value.id,
+            value,
+          };
+        },
+      });
+      return accepted.value;
+    }
+    await prepare();
+    return prisma.$transaction(create);
   }
 
   async updateRule(
@@ -362,35 +394,73 @@ export class AutopilotService {
   async triggerRuleNow(
     scope: ActorScope,
     ruleId: string,
+    mutation?: McpMutationOptions,
   ): Promise<AutopilotRuleSnapshot> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
-    const existing = await prisma.autopilotRule.findFirst({
-      where: {
-        id: ruleId,
-        workspaceId: scope.workspaceId,
-      },
-      include: { _count: { select: { episodes: true } } },
-    });
-    if (!existing) throw new AutopilotError("autopilot_rule_not_found");
-    if (existing.status === "running" && existing.leaseExpiresAt && existing.leaseExpiresAt > new Date()) {
-      return toSnapshot(existing);
-    }
+    const trigger = async (tx: Prisma.TransactionClient) => {
+      // A worker claim must remain visible before deciding to reset the rule.
+      await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid FOR UPDATE`;
+      const existing = await tx.autopilotRule.findFirst({
+        where: {
+          id: ruleId,
+          workspaceId: scope.workspaceId,
+        },
+        include: { _count: { select: { episodes: true } } },
+      });
+      if (!existing) throw new AutopilotError("autopilot_rule_not_found");
+      if (
+        existing.status === "running" &&
+        existing.leaseExpiresAt &&
+        existing.leaseExpiresAt > new Date()
+      ) {
+        return toSnapshot(existing);
+      }
 
-    const row = await prisma.autopilotRule.update({
-      where: { id: ruleId },
-      data: {
-        status: "active",
-        nextRunAt: new Date(),
-        claimToken: null,
-        leaseExpiresAt: null,
-        lastError: null,
-        consecutiveFailures: 0,
-        updatedByUserId: scope.actorUserId,
-      },
-      include: { _count: { select: { episodes: true } } },
-    });
-    return toSnapshot(row);
+      const row = await tx.autopilotRule.update({
+        where: { id: ruleId },
+        data: {
+          status: "active",
+          nextRunAt: new Date(),
+          claimToken: null,
+          leaseExpiresAt: null,
+          lastError: null,
+          consecutiveFailures: 0,
+          updatedByUserId: scope.actorUserId,
+        },
+        include: { _count: { select: { episodes: true } } },
+      });
+      return toSnapshot(row);
+    };
+    if (mutation) {
+      const accepted = await getMcpOperationExecutor().execute({
+        identity: {
+          workspaceId: scope.workspaceId,
+          callerId: mutation.callerId ?? scope.actorUserId,
+          toolName: "narriflow_run_autopilot_rule_now",
+          clientIdempotencyKey: mutation.clientIdempotencyKey,
+        },
+        input: { ruleId },
+        authorize: async () => {
+          await workspaceService.requireActor(
+            scope.actorUserId,
+            scope.workspaceId,
+            "processing.consume",
+          );
+        },
+        beforeAccept: mutation.beforeAccept,
+        mutate: async (tx) => {
+          const value = await trigger(tx);
+          return {
+            resourceType: "autopilot_rule",
+            resourceId: value.id,
+            value,
+          };
+        },
+      });
+      return accepted.value;
+    }
+    return prisma.$transaction(trigger);
   }
 
   async reapStalledRules(now = new Date()): Promise<number> {

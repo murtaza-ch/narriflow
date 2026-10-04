@@ -1,4 +1,6 @@
 import type { ActorScope } from "./actor-scope";
+import { getMcpOperationExecutor } from "./mcp-operation-runtime";
+import type { McpMutationOptions } from "./mcp-operation";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -406,101 +408,159 @@ export class ClipExportService {
       aspectRatios: ClipAspectRatio[];
       resolution: ClipRenderResolution;
     },
-    _idempotencyKey: string,
+    idempotencyKey: string,
+    mutation?: McpMutationOptions,
   ): Promise<{ export: ClipExportSnapshot; reused: boolean }> {
-    await workspaceService.requireActor(
-      scope.actorUserId,
-      scope.workspaceId,
-      "processing.consume",
-    );
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
-    const clip = await prisma.clip.findFirst({
-      where: {
-        id: clipId,
-        projectId,
-        project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
-      },
-      include: {
-        project: {
-          select: {
-            workspaceId: true,
-            sourceDurationSeconds: true,
-            workspace: { select: { personalOwnerUserId: true, pricingTier: true } },
+    let clip: NonNullable<Awaited<ReturnType<typeof loadClip>>>;
+    let resolution: ClipRenderResolution;
+    let watermark: boolean;
+    let aspectRatios: ClipAspectRatio[];
+    let fingerprint: string;
+    const loadClip = () =>
+      prisma.clip.findFirst({
+        where: {
+          id: clipId,
+          projectId,
+          project: {
+            workspaceId: scope.workspaceId,
+            ...accessibleProjectWhere(),
           },
         },
-      },
-    });
-    if (!clip) throw new ClipExportError("clip_not_found", "Clip not found");
-    const tier = resolvePricingTier(clip.project.workspace.pricingTier);
-    if (clip.editorRevision !== input.expectedRevision) {
-      throw new ClipExportRevisionConflictError(clip.editorRevision);
-    }
-    const document = decodeClipEditorDocumentFromStorage(
-      clip,
-      clip.project.sourceDurationSeconds,
-    );
-    await assertSceneExportAvailability(
-      document,
-      sceneExportOwnerWhere({
-        workspaceId: clip.project.workspaceId,
-        workspace: clip.project.workspace,
-      }),
-    );
-
-    const resolution: ClipRenderResolution =
-      input.resolution === "1080p" && !hasFeature(tier, "export.1080p")
-        ? "720p"
-        : input.resolution;
-    const watermark = !hasFeature(tier, "export.noWatermark");
-    const aspectRatios = normalizeAspectRatios(input.aspectRatios);
-    const fingerprint = buildClipExportFingerprint({
-      editorRevision: clip.editorRevision,
-      aspectRatios,
-      resolution,
-      watermark,
-    });
-
-    const exportId = randomUUID();
-    const snapshot = frozenClipSnapshot(clip, clip.project.sourceDurationSeconds);
-    // One atomic upsert is both the idempotency boundary and the durable
-    // enqueue. ClipRender rows are the work queue; the render poller attaches
-    // a one-live-per-project WorkflowRun, avoiding several high-latency DB and
-    // Redis round trips on the user's click path.
-    const row = await prisma.clipExport.upsert({
-      where: { clipId_fingerprint: { clipId, fingerprint } },
-      create: {
-        id: exportId,
-        workspaceId: scope.workspaceId,
-        createdByUserId: scope.actorUserId,
-        projectId,
-        clipId,
-        editorRevision: clip.editorRevision,
-        fingerprint,
-        resolution,
-        watermark,
-        variants: {
-          create: aspectRatios.map((aspectRatio) => ({
-            id: randomUUID(),
-            aspectRatio: clipAspectRatioToDb[aspectRatio],
-            resolution,
-            watermark,
-            render: {
-              create: {
-                clipId,
-                aspectRatio: clipAspectRatioToDb[aspectRatio],
-                resolution,
-                editorRevision: clip.editorRevision,
-                clipSnapshot: snapshot,
+        include: {
+          project: {
+            select: {
+              workspaceId: true,
+              sourceDurationSeconds: true,
+              workspace: {
+                select: { personalOwnerUserId: true, pricingTier: true },
               },
             },
-          })),
+          },
         },
+      });
+    const prepare = async () => {
+      const loaded = await loadClip();
+      if (!loaded) throw new ClipExportError("clip_not_found", "Clip not found");
+      clip = loaded;
+      const tier = resolvePricingTier(clip.project.workspace.pricingTier);
+      if (clip.editorRevision !== input.expectedRevision) {
+        throw new ClipExportRevisionConflictError(clip.editorRevision);
+      }
+      const document = decodeClipEditorDocumentFromStorage(
+        clip,
+        clip.project.sourceDurationSeconds,
+      );
+      await assertSceneExportAvailability(
+        document,
+        sceneExportOwnerWhere({
+          workspaceId: clip.project.workspaceId,
+          workspace: clip.project.workspace,
+        }),
+      );
+
+      resolution =
+        input.resolution === "1080p" && !hasFeature(tier, "export.1080p")
+          ? "720p"
+          : input.resolution;
+      watermark = !hasFeature(tier, "export.noWatermark");
+      aspectRatios = normalizeAspectRatios(input.aspectRatios);
+      fingerprint = buildClipExportFingerprint({
+        editorRevision: clip.editorRevision,
+        aspectRatios,
+        resolution,
+        watermark,
+      });
+    };
+    const accepted = await getMcpOperationExecutor().execute({
+      identity: {
+        workspaceId: scope.workspaceId,
+        callerId: mutation?.callerId ?? scope.actorUserId,
+        toolName: "narriflow_create_clip_export",
+        clientIdempotencyKey: mutation?.clientIdempotencyKey ?? idempotencyKey,
       },
-      update: {},
-      include: exportInclude,
+      input: {
+        projectId,
+        clipId,
+        expectedRevision: input.expectedRevision,
+        aspectRatios: normalizeAspectRatios(input.aspectRatios),
+        resolution: input.resolution,
+      },
+      authorize: async () => {
+        await workspaceService.requireActor(
+          scope.actorUserId,
+          scope.workspaceId,
+          "processing.consume",
+        );
+      },
+      beforeAccept: mutation?.beforeAccept,
+      prepare,
+      mutate: async (tx) => {
+        // Fence the prepared document against an edit that races admission.
+        await tx.$queryRaw`SELECT "id" FROM "Clip" WHERE "id" = ${clipId}::uuid FOR UPDATE`;
+        const current = await tx.clip.findFirst({
+          where: {
+            id: clipId,
+            projectId,
+            project: {
+              workspaceId: scope.workspaceId,
+              ...accessibleProjectWhere(),
+            },
+          },
+          select: { editorRevision: true },
+        });
+        if (!current) throw new ClipExportError("clip_not_found", "Clip not found");
+        if (current.editorRevision !== input.expectedRevision)
+          throw new ClipExportRevisionConflictError(current.editorRevision);
+        const exportId = randomUUID();
+        const snapshot = frozenClipSnapshot(clip, clip.project.sourceDurationSeconds);
+        // The output fingerprint also reuses matching exports requested under
+        // distinct keys. ClipRender rows are the durable work queue; the poller attaches
+        // a one-live-per-project WorkflowRun, avoiding several high-latency DB and
+        // Redis round trips on the user's click path.
+        const row = await tx.clipExport.upsert({
+          where: { clipId_fingerprint: { clipId, fingerprint } },
+          create: {
+            id: exportId,
+            workspaceId: scope.workspaceId,
+            createdByUserId: scope.actorUserId,
+            projectId,
+            clipId,
+            editorRevision: clip.editorRevision,
+            fingerprint,
+            resolution,
+            watermark,
+            variants: {
+              create: aspectRatios.map((aspectRatio) => ({
+                id: randomUUID(),
+                aspectRatio: clipAspectRatioToDb[aspectRatio],
+                resolution,
+                watermark,
+                render: {
+                  create: {
+                    clipId,
+                    aspectRatio: clipAspectRatioToDb[aspectRatio],
+                    resolution,
+                    editorRevision: clip.editorRevision,
+                    clipSnapshot: snapshot,
+                  },
+                },
+              })),
+            },
+          },
+          update: {},
+          include: exportInclude,
+        });
+        const reused = row.id !== exportId;
+        return {
+          resourceType: "clip_export",
+          resourceId: row.id,
+          value: { export: await toExportSnapshot(row, false), reused },
+        };
+      },
     });
-    const reused = row.id !== exportId;
-    return { export: await toExportSnapshot(row, true), reused };
+    return accepted.value;
   }
 
   async getOwned(
@@ -723,6 +783,61 @@ export class ClipExportService {
     if (!link) return null;
     await prisma.clipShareLink.update({ where: { id: link.id }, data: { lastUsedAt: now } });
     return toExportSnapshot(link.export, true);
+  }
+
+  async cancelQueuedOperation(scope: ActorScope, exportId: string): Promise<boolean> {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
+    return requirePrisma().$transaction(async (tx) => {
+      const owned = await tx.clipExport.findFirst({
+        where: {
+          id: exportId,
+          workspaceId: scope.workspaceId,
+          project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+        },
+        select: { id: true },
+      });
+      if (!owned) throw new ClipExportError("export_not_found", "Export not found");
+
+      // Match the worker's child-before-aggregate lock order. A worker which has
+      // claimed a variant wins; shared runs and already rendering variants continue.
+      const pending = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT r."id" FROM "ClipRender" r
+        JOIN "ClipExportVariant" v ON v."id" = r."exportVariantId"
+        WHERE v."exportId" = ${exportId}::uuid
+          AND v."status" = 'pending' AND r."status" = 'pending'
+        ORDER BY r."id" FOR UPDATE OF r
+      `;
+      const completedAt = new Date();
+      await tx.clipRender.updateMany({
+        where: { id: { in: pending.map((render) => render.id) }, status: "pending" },
+        data: { status: "failed", errorCode: "MCP_CANCELLED", failureDisposition: "permanent", completedAt },
+      });
+      const cancelled = await tx.clipExportVariant.updateMany({
+        where: {
+          exportId,
+          status: "pending",
+          OR: [{ render: null }, { render: { status: "failed", errorCode: "MCP_CANCELLED" } }],
+        },
+        data: { status: "failed", errorCode: "MCP_CANCELLED", completedAt },
+      });
+      if (cancelled.count === 0) return false;
+
+      await tx.$queryRaw`SELECT "id" FROM "ClipExport" WHERE "id" = ${exportId}::uuid FOR UPDATE`;
+      const variants = await tx.clipExportVariant.findMany({
+        where: { exportId }, select: { status: true, errorCode: true },
+      });
+      const aggregate = deriveClipExportAggregate(variants.map((variant) => variant.status));
+      await tx.clipExport.update({
+        where: { id: exportId },
+        data: {
+          status: aggregate.status,
+          progress: aggregate.progress,
+          errorCode: aggregate.status === "failed" ? variants.find((variant) => variant.errorCode)?.errorCode ?? null : null,
+          completedAt: aggregate.terminal ? completedAt : null,
+        },
+      });
+      return true;
+    });
   }
 
   async syncAggregate(exportId: string) {
