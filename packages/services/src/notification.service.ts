@@ -110,6 +110,8 @@ export interface NotificationServiceDependencies {
   store?: NotificationStore;
   mailer?: NotificationMailer;
   now?: () => Date;
+  /** Operator opt-in. Delivery stays off until the sending domain is verified. */
+  emailsEnabled?: () => boolean;
   hasResendApiKey?: () => boolean;
   leaseMs?: number;
 }
@@ -406,6 +408,7 @@ export class NotificationService {
   private readonly store: NotificationStore;
   private readonly mailer: NotificationMailer;
   private readonly now: () => Date;
+  private readonly emailsEnabled: () => boolean;
   private readonly hasResendApiKey: () => boolean;
   private readonly leaseMs: number;
 
@@ -413,6 +416,9 @@ export class NotificationService {
     this.store = dependencies.store ?? getDefaultStore();
     this.mailer = dependencies.mailer ?? defaultMailer;
     this.now = dependencies.now ?? (() => new Date());
+    this.emailsEnabled =
+      dependencies.emailsEnabled ??
+      (() => process.env.NOTIFICATION_EMAILS_ENABLED?.trim() === "true");
     this.hasResendApiKey =
       dependencies.hasResendApiKey ??
       (() => Boolean(process.env.RESEND_API_KEY?.trim()));
@@ -647,6 +653,18 @@ export class NotificationService {
         sourceId: ledger.sourceId,
         outcome: ledger.outcome,
       });
+      const settled = await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
+      return { ledgerId: ledger.id, status: this.settlementStatus(ledger, "skipped", settled) };
+    }
+
+    if (!this.emailsEnabled()) {
+      console.warn(JSON.stringify({
+        level: "info",
+        message: "notification_email_disabled",
+        ledgerId: ledger.id,
+        projectId: ledger.projectId,
+        outcome: ledger.outcome,
+      }));
       const settled = await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
       return { ledgerId: ledger.id, status: this.settlementStatus(ledger, "skipped", settled) };
     }

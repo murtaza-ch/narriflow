@@ -156,11 +156,13 @@ function serviceWith(
     error?: string;
   }>,
   hasResendApiKey = true,
+  emailsEnabled = true,
 ) {
   return new NotificationService({
     store,
     mailer,
     now: () => new Date(NOW),
+    emailsEnabled: () => emailsEnabled,
     hasResendApiKey: () => hasResendApiKey,
   });
 }
@@ -382,6 +384,47 @@ describe("NotificationService", () => {
     expect(sends).toBe(0);
   });
 
+  test("skips delivery until notification emails are enabled", async () => {
+    const store = new MemoryNotificationStore();
+    let sends = 0;
+    const service = serviceWith(
+      store,
+      async () => {
+        sends += 1;
+        return { sent: true };
+      },
+      true,
+      false,
+    );
+
+    expect((await service.enqueueAndSend(input)).status).toBe("skipped");
+    expect(store.onlyLedger().status).toBe("skipped");
+    expect(sends).toBe(0);
+  });
+
+  test("leaves delivery off when NOTIFICATION_EMAILS_ENABLED is unset", async () => {
+    const previous = process.env.NOTIFICATION_EMAILS_ENABLED;
+    delete process.env.NOTIFICATION_EMAILS_ENABLED;
+    try {
+      const store = new MemoryNotificationStore();
+      let sends = 0;
+      const service = new NotificationService({
+        store,
+        now: () => new Date(NOW),
+        hasResendApiKey: () => true,
+        mailer: async () => {
+          sends += 1;
+          return { sent: true };
+        },
+      });
+      expect((await service.enqueueAndSend(input)).status).toBe("skipped");
+      expect(sends).toBe(0);
+    } finally {
+      if (previous === undefined) delete process.env.NOTIFICATION_EMAILS_ENABLED;
+      else process.env.NOTIFICATION_EMAILS_ENABLED = previous;
+    }
+  });
+
   test("marks a notification skipped when RESEND_API_KEY is unset", async () => {
     const store = new MemoryNotificationStore();
     let sends = 0;
@@ -493,7 +536,7 @@ for (const scenario of ["sent", "pending", "failed", "recipient", "unverified", 
 
 test("a late notification failure cannot reverse a replacement's successful settlement", async () => {
   const store = new MemoryNotificationStore();
-  const replacement = new NotificationService({ store, now: () => new Date(NOW.getTime() + 300_000), hasResendApiKey: () => true, mailer: async () => ({ sent: true, id: "current-message" }) });
+  const replacement = new NotificationService({ store, now: () => new Date(NOW.getTime() + 300_000), emailsEnabled: () => true, hasResendApiKey: () => true, mailer: async () => ({ sent: true, id: "current-message" }) });
   const original = serviceWith(store, async () => {
     await replacement.enqueueAndSend(input);
     return { sent: false, error: "late failure" };
