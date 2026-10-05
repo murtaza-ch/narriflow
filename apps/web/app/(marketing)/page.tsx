@@ -167,7 +167,7 @@ export default function MarketingHomePage() {
               Caption presets
             </Text>
             <Heading as="h2" textStyle="display" fontSize={{ base: "30px", md: "42px" }} color="fg">
-              Twelve caption styles. Try them.
+              24 caption styles. Try them.
             </Heading>
             <Text fontSize="15px" color="fg.muted" lineHeight="1.7" maxW="56ch">
               Hover a preset to preview it, then type your own line. Every word lands on time, exactly as it will

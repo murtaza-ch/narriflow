@@ -337,7 +337,7 @@ describe("StudioEditingSession document and history seam", () => {
     session.dispatch({ type: "history.undo" });
     expect(session.getSnapshot().document.captionPreset.fontSize).toBe(40);
     session.dispatch({ type: "history.undo" });
-    expect(session.getSnapshot().document.captionPreset.fontSize).toBe(36);
+    expect(session.getSnapshot().document.captionPreset.fontSize).toBe(DEFAULT_CAPTION_PRESET.fontSize);
   });
 
   test("coalesces continuous edits with the same gesture key", () => {
@@ -360,7 +360,7 @@ describe("StudioEditingSession document and history seam", () => {
     });
 
     session.dispatch({ type: "history.undo" });
-    expect(session.getSnapshot().document.captionPreset.fontSize).toBe(36);
+    expect(session.getSnapshot().document.captionPreset.fontSize).toBe(DEFAULT_CAPTION_PRESET.fontSize);
     expect(session.getSnapshot().history.canUndo).toBe(false);
   });
 
@@ -432,7 +432,7 @@ describe("StudioEditingSession document and history seam", () => {
     session.dispatch({ type: "history.undo" });
     expect(session.getSnapshot().segments).toEqual(initialSegments);
     session.dispatch({ type: "history.undo" });
-    expect(session.getSnapshot().document.captionPreset.fontSize).toBe(36);
+    expect(session.getSnapshot().document.captionPreset.fontSize).toBe(DEFAULT_CAPTION_PRESET.fontSize);
   });
 
   test("clears redo when a new mutation follows undo", () => {

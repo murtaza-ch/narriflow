@@ -32,7 +32,7 @@ const CHAPTERS = [
   },
   {
     title: "Captioned word by word.",
-    body: "Twelve caption styles, timed to every word. What you preview is exactly what renders.",
+    body: "24 caption styles, timed to every word. What you preview is exactly what renders.",
   },
   {
     title: "Scheduled and shipped.",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CAPTION_CHUNK_SIZE, CAPTION_PRESETS } from "@narriflow/validators";
+import { CAPTION_PRESETS, DEFAULT_CAPTION_WORDS_PER_CUE } from "@narriflow/validators";
 import { FEATURES, SCRIPT, buildScript, captionStyleFromPreset, cueAt, formatWord, PRESETS } from "./index";
 
 describe("recovered marketing stage", () => {
@@ -26,9 +26,10 @@ describe("recovered marketing stage", () => {
       expect(style.punctuation).toBe(named.preset.punctuation !== false);
     }
     expect(PRESETS.highlighter.font).toBe("Roboto");
-    expect(PRESETS.fire.font).toBe("Anton");
-    expect(PRESETS.neon).toEqual(captionStyleFromPreset(CAPTION_PRESETS.find(({ id }) => id === "neon-dreams")!));
-    expect(PRESETS.luxe).toEqual(captionStyleFromPreset(CAPTION_PRESETS.find(({ id }) => id === "luxe-gold")!));
+    expect(PRESETS.boldPop.font).toBe("Montserrat");
+    expect(PRESETS.boldPop.weight).toBe(900);
+    expect(PRESETS.neon).toEqual(captionStyleFromPreset(CAPTION_PRESETS.find(({ id }) => id === "neon")!));
+    expect(PRESETS.cinema).toEqual(captionStyleFromPreset(CAPTION_PRESETS.find(({ id }) => id === "cinema")!));
   });
 
   test("caption cues respect the shared chunk size and speaker boundaries", () => {
@@ -38,7 +39,7 @@ describe("recovered marketing stage", () => {
     ]);
     expect(script.cues.flatMap(({ words }) => words)).toEqual(script.words);
     for (const cue of script.cues) {
-      expect(cue.words.length).toBeLessThanOrEqual(CAPTION_CHUNK_SIZE);
+      expect(cue.words.length).toBeLessThanOrEqual(DEFAULT_CAPTION_WORDS_PER_CUE);
       expect(cue.words.every(({ speaker }) => speaker === cue.speaker)).toBe(true);
     }
     const secondSpeaker = script.cues.find(({ speaker }) => speaker === 1)!;

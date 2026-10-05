@@ -41,7 +41,7 @@ describe("getCurrentCaptionState — deleted-word filtering (worker fixture pari
 
   test("the deleted word never appears in visibleWords, at any playback position", () => {
     for (const editedTime of [sourceToEdited(map, 4.5), sourceToEdited(map, 20.5)]) {
-      const state = getCurrentCaptionState(editedTime, [utterance], 0, map);
+      const state = getCurrentCaptionState(editedTime, [utterance], 0, 3, map);
       expect(state).not.toBeNull();
       expect(state!.visibleWords.map((w) => w.word)).not.toContain("gone");
     }
@@ -51,7 +51,7 @@ describe("getCurrentCaptionState — deleted-word filtering (worker fixture pari
     // toEdited(20) = editedStart(10) + (20 - 15) = 15 (see the worker test's
     // own comment) — land just after that so "after" is the active word.
     const editedTime = sourceToEdited(map, 20.2);
-    const state = getCurrentCaptionState(editedTime, [utterance], 0, map);
+    const state = getCurrentCaptionState(editedTime, [utterance], 0, 3, map);
 
     expect(state).not.toBeNull();
     expect(state!.visibleWords.map((w) => w.word)).toEqual(["before", "after"]);
@@ -59,14 +59,14 @@ describe("getCurrentCaptionState — deleted-word filtering (worker fixture pari
   });
 
   test("without an editedTimeMap, behavior is unchanged (the deleted word still shows) — matching generateSrtFromSlice's own no-map fallback", () => {
-    const state = getCurrentCaptionState(20.2, [utterance], 0, undefined);
+    const state = getCurrentCaptionState(20.2, [utterance], 0, 3, undefined);
     expect(state).not.toBeNull();
     expect(state!.visibleWords.map((w) => w.word)).toEqual(["before", "gone", "after"]);
   });
 });
 
 describe("getCurrentCaptionState — chunk-boundary drift across a mid-utterance deletion", () => {
-  // 5 words, 1s apart, CAPTION_CHUNK_SIZE=3: "gone" (index 1) sits exactly on
+  // 5 words, 1s apart, wordsPerCue=3: "gone" (index 1) sits exactly on
   // a cut. Filtered survivors are [one, three, four, five] -> chunk 0 =
   // [one, three, four], chunk 1 = [five]. Unfiltered (the pre-fix bug), chunk
   // boundaries are computed over the raw 5-word list instead, so once "four"
@@ -86,7 +86,7 @@ describe("getCurrentCaptionState — chunk-boundary drift across a mid-utterance
   test("the chunk containing the active word is computed over the FILTERED word list", () => {
     // source 3.5 ("four" is active) -> edited sourceToEdited(map, 3.5).
     const editedTime = sourceToEdited(map, 3.5);
-    const state = getCurrentCaptionState(editedTime, [utterance], 0, map);
+    const state = getCurrentCaptionState(editedTime, [utterance], 0, 3, map);
 
     expect(state).not.toBeNull();
     expect(state!.visibleWords.map((w) => w.word)).toEqual(["one", "three", "four"]);
@@ -95,7 +95,7 @@ describe("getCurrentCaptionState — chunk-boundary drift across a mid-utterance
 
   test("the trailing chunk after the drift point is also correct", () => {
     const editedTime = sourceToEdited(map, 4.5); // "five" active
-    const state = getCurrentCaptionState(editedTime, [utterance], 0, map);
+    const state = getCurrentCaptionState(editedTime, [utterance], 0, 3, map);
 
     expect(state).not.toBeNull();
     expect(state!.visibleWords.map((w) => w.word)).toEqual(["five"]);

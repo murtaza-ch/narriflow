@@ -1,9 +1,9 @@
 /*
  * The podcast excerpt every video "plays": word timings, speakers, caption
- * cues (3 words, CAPTION_CHUNK_SIZE), speech envelopes and the reframe focus.
+ * cues (3 words, DEFAULT_CAPTION_WORDS_PER_CUE), speech envelopes and the reframe focus.
  * Times are seconds of script time; renderers map their clock onto it.
  */
-import { CAPTION_CHUNK_SIZE, formatCaptionWord } from "@narriflow/validators";
+import { DEFAULT_CAPTION_WORDS_PER_CUE, formatCaptionWord } from "@narriflow/validators";
 import { clamp, ease, lerp, ramp } from "./math";
 
 export type Line = { speaker: 0 | 1; text: string };
@@ -42,7 +42,7 @@ export function buildScript(lines: Line[], loop?: number): Script {
     };
     for (const w of words.filter((x) => x.line === li)) {
       chunk.push(w);
-      if (chunk.length === CAPTION_CHUNK_SIZE) flush();
+      if (chunk.length === DEFAULT_CAPTION_WORDS_PER_CUE) flush();
     }
     flush();
   });

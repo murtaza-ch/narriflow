@@ -745,7 +745,7 @@ function CaptionMonitor() {
             <SectionHeading eyebrow="CAPTION ENGINE" title="Captions locked to the waveform.">
               <Text fontSize="15px" color="studio.fgMuted" lineHeight="1.7" maxW="52ch">
                 One cue model drives the editor preview and the final burn-in — the preview is the
-                export, word for word. Twelve presets, nine animation styles, emoji captions.
+                export, word for word. 24 presets with animated effects, emoji captions.
               </Text>
             </SectionHeading>
 

@@ -1,0 +1,647 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Question: "What should the new caption presets look like?"
+  24 short-form caption styles rendered by a CSS engine that only uses effects the
+  worker's libass (ASS) burn-in can reproduce. Every visual layer below maps to an
+  ASS layer: base line (libass layout), per-word overlay events at measured word
+  centres, \p1 rounded drawings for pills/plates, shadow/extrude/outer-stroke layers,
+  \kf karaoke sweep, \ko letter reveal, \frx flip, discrete glitch events.
+  Open directly in a browser. Delete once the preset catalog is implemented.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Caption Presets Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Black&family=Bebas+Neue&family=Bricolage+Grotesque:opsz,wght@96,800&family=Courier+Prime:wght@700&family=Dela+Gothic+One&family=Geist:wght@400;500;600&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&family=Inter:wght@600;800&family=Lilita+One&family=Luckiest+Guy&family=Montserrat:wght@900&family=Open+Sans:wght@700&family=Oswald:wght@700&family=Poppins:wght@800&family=Righteous&family=Roboto:wght@700&family=Chakra+Petch:wght@700&family=Titan+One&family=Unbounded:wght@800&display=swap"
+  rel="stylesheet"
+/>
+<style>
+  :root {
+    --night: #08090c; --canvas: #0e1013; --surface: #15181e; --raised: #20252e;
+    --border: #262c36; --border-strong: #3e4756; --fg: #e9ebee; --fg-muted: #9aa3b0;
+    --fg-subtle: #6b7483; --accent: #5b6cff; --accent-fg: #9da8f8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--canvas); color: var(--fg); font-family: Geist, system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 24px; border-bottom: 1.5px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+  header .tag { font: 500 11px/1 Geist, sans-serif; color: var(--night); background: #ffb35c; padding: 4px 7px; border-radius: 4px; }
+  header .spacer { flex: 1; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .seg button { font: 500 12px Geist, sans-serif; color: var(--fg-muted); background: transparent; border: 0; padding: 7px 12px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--raised); color: var(--fg); }
+
+  main[hidden], .sheet[hidden] { display: none !important; }
+  main { display: flex; gap: 32px; padding: 28px 24px; justify-content: center; align-items: flex-start; flex-wrap: wrap; }
+
+  .player-col { display: flex; flex-direction: column; gap: 14px; width: 380px; }
+  .phone { position: relative; width: 380px; aspect-ratio: 9 / 16; border-radius: 22px; overflow: hidden; background: #000;
+    box-shadow: 0 0 0 1px var(--border), 0 30px 80px rgba(0,0,0,.5); }
+  .scene { position: absolute; inset: 0; }
+  .scene.dark {
+    background:
+      radial-gradient(ellipse 13% 7% at 50% 30.5%, #241812 0 70%, transparent 100%),
+      radial-gradient(ellipse 11% 8.5% at 50% 37%, #c48f74 0 72%, transparent 100%),
+      radial-gradient(ellipse 5% 5% at 50% 46%, #a2725c 0 70%, transparent 100%),
+      radial-gradient(ellipse 40% 24% at 50% 70%, #2f4058 0 78%, transparent 100%),
+      radial-gradient(ellipse 30% 10% at 50% 52%, #3a4d69 0 60%, transparent 100%),
+      radial-gradient(circle at 15% 19%, rgba(255,176,92,.8), transparent 8%),
+      radial-gradient(circle at 25% 11%, rgba(255,214,150,.5), transparent 5%),
+      radial-gradient(circle at 86% 24%, rgba(110,160,255,.4), transparent 13%),
+      radial-gradient(circle at 78% 58%, rgba(255,120,80,.2), transparent 20%),
+      linear-gradient(180deg, #2b2f3a 0%, #191c24 55%, #0d0f14 100%);
+    filter: blur(2px) saturate(1.05);
+  }
+  .scene.bright {
+    background:
+      radial-gradient(ellipse 13% 7% at 50% 30.5%, #4a3222 0 70%, transparent 100%),
+      radial-gradient(ellipse 11% 8.5% at 50% 37%, #ddb097 0 72%, transparent 100%),
+      radial-gradient(ellipse 5% 5% at 50% 46%, #c99b82 0 70%, transparent 100%),
+      radial-gradient(ellipse 40% 24% at 50% 70%, #ece6da 0 78%, transparent 100%),
+      radial-gradient(ellipse 30% 10% at 50% 52%, #f3eee4 0 60%, transparent 100%),
+      radial-gradient(circle at 82% 16%, rgba(255,255,255,.95), transparent 22%),
+      radial-gradient(circle at 16% 66%, rgba(160,205,150,.75), transparent 24%),
+      linear-gradient(180deg, #c9d9e3 0%, #e7edf0 50%, #c4bfb3 100%);
+    filter: blur(2px);
+  }
+  .safe { position: absolute; inset: 0; pointer-events: none; display: none; z-index: 5;
+    background:
+      linear-gradient(to bottom, rgba(255,0,80,.18) 0 9%, transparent 9% 80%, rgba(255,0,80,.18) 80% 100%),
+      linear-gradient(to left, rgba(255,0,80,.18) 0 14%, transparent 14%); }
+  .phone.show-safe .safe { display: block; }
+  .timecode { position: absolute; top: 12px; left: 12px; font: 500 11px "Geist Mono", monospace; color: #7fd4e4;
+    background: rgba(8,9,12,.6); padding: 3px 6px; border-radius: 4px; z-index: 6; }
+  .controls { display: flex; gap: 8px; }
+  .btn { font: 500 12px Geist, sans-serif; color: var(--fg); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; padding: 7px 12px; cursor: pointer; }
+  .btn:hover { border-color: var(--border-strong); }
+  .spec { font: 12px/1.55 "Geist Mono", monospace; color: var(--fg-muted); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px; white-space: pre-wrap; }
+  .spec b { color: var(--fg); font-weight: 500; }
+
+  .panel { width: 320px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    display: flex; flex-direction: column; max-height: calc(100vh - 110px); }
+  .panel-tabs { display: flex; gap: 2px; padding: 10px 12px 0; border-bottom: 1px solid var(--border); }
+  .panel-tabs span { font: 500 12px Geist, sans-serif; padding: 8px 10px; color: var(--fg-muted); border-bottom: 2px solid transparent; }
+  .panel-tabs span.on { color: var(--fg); border-color: var(--accent); }
+  .panel-scroll { overflow-y: auto; padding: 12px; }
+  .group-label { font: 600 10px Geist, sans-serif; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-subtle); margin: 4px 2px 8px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .card { all: unset; cursor: pointer; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .thumb { position: relative; aspect-ratio: 4 / 3; border-radius: 10px; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
+    transition: box-shadow 140ms ease; }
+  .thumb .scene { transform: scale(1.6); transform-origin: 50% 75%; }
+  .thumb::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.28)); }
+  .card:hover .thumb { box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .card[aria-pressed="true"] .thumb { box-shadow: 0 0 0 2px var(--accent), 0 0 0 5px rgba(91,108,255,.18); }
+  .card .meta { display: flex; align-items: center; justify-content: space-between; padding: 0 2px; gap: 6px; }
+  .card .name { font: 500 12px Geist, sans-serif; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card[aria-pressed="true"] .name { color: var(--fg); }
+  .card .motion { font: 500 10px Geist, sans-serif; color: var(--fg-subtle); }
+  .card .badge { font: 600 9px Geist, sans-serif; color: #0e1013; background: #ffb35c; border-radius: 3px; padding: 1px 4px; margin-left: 4px; }
+  .check { position: absolute; top: 6px; right: 6px; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); display: none; place-items: center; z-index: 3; }
+  .card[aria-pressed="true"] .check { display: grid; }
+  .apply { margin: 0 12px 12px; padding: 10px; text-align: center; font: 500 13px Geist, sans-serif; background: var(--raised); border: 1px solid var(--border); border-radius: 7px; }
+
+  .sheet { display: grid; grid-template-columns: repeat(4, 300px); gap: 18px 16px; padding: 24px; justify-content: center; }
+  .sheet .cell { display: flex; flex-direction: column; gap: 6px; }
+  .sheet .phone { width: 300px; border-radius: 14px; }
+  .sheet .label { font: 500 12px Geist, sans-serif; color: var(--fg-muted); display: flex; justify-content: space-between; }
+  .sheet .label b { color: var(--fg); font-weight: 500; }
+  .sheet h2 { grid-column: 1 / -1; font: 600 11px Geist, sans-serif; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-subtle); margin: 10px 0 0; }
+
+  /* ── Caption engine (CSS mirror of the ASS renderer) ── */
+  .cap-layer { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+  .cap-anchor { position: absolute; left: 50%; transform: translate(-50%, -50%); display: flex; justify-content: center; }
+  .cap-fit { transform-origin: 50% 50%; white-space: pre; }
+  .cap-line { position: relative; display: inline-block; white-space: pre; line-height: 1.15; }
+  .cap-plate { position: absolute; z-index: 0; }
+  .w { position: relative; display: inline-block; transform-origin: 50% 50%; }
+  .w > * { pointer-events: none; }
+  .w .pill { position: absolute; z-index: 0; opacity: 0; transform-origin: 50% 50%; }
+  .w .lay { position: absolute; left: 0; top: 0; z-index: 1; paint-order: stroke fill; }
+  .w .t { position: relative; z-index: 2; display: inline-block; paint-order: stroke fill; }
+  .w .kf { position: absolute; left: 0; top: 0; z-index: 3; paint-order: stroke fill; clip-path: inset(0 100% 0 0); }
+  .w .g { position: absolute; left: 0; top: 0; z-index: 1; opacity: 0; }
+  .w .ch { display: inline-block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Caption presets</h1>
+  <span class="tag">PROTOTYPE</span>
+  <span class="spacer"></span>
+  <div class="seg" id="sceneSeg">
+    <button type="button" data-scene="dark" aria-pressed="true">Dark studio</button>
+    <button type="button" data-scene="bright" aria-pressed="false">Bright daylight</button>
+  </div>
+  <div class="seg" id="viewSeg">
+    <button type="button" data-view="panel" aria-pressed="true">Studio panel</button>
+    <button type="button" data-view="sheet" aria-pressed="false">All styles</button>
+  </div>
+  <div class="seg" id="safeSeg">
+    <button type="button" data-safe="off" aria-pressed="true">No overlay</button>
+    <button type="button" data-safe="on" aria-pressed="false">Platform UI zones</button>
+  </div>
+</header>
+
+<section class="sheet" id="sheet" hidden></section>
+<main id="panelView">
+  <div class="player-col">
+    <div class="phone" id="phone">
+      <div class="scene dark"></div>
+      <div class="cap-layer" id="phoneCaps"></div>
+      <div class="safe"></div>
+      <div class="timecode" id="tc">00:00.00</div>
+    </div>
+    <div class="controls">
+      <button type="button" class="btn" id="playBtn">Pause</button>
+      <button type="button" class="btn" id="restartBtn">Restart</button>
+      <button type="button" class="btn" id="slowBtn">0.5× speed</button>
+    </div>
+    <div class="spec" id="spec"></div>
+  </div>
+  <aside class="panel">
+    <div class="panel-tabs"><span class="on">Presets</span><span>Customize</span></div>
+    <div class="panel-scroll" id="panelScroll"></div>
+    <div class="apply">Apply to all clips</div>
+  </aside>
+</main>
+
+<script>
+/* ── Font catalog (each entry = one static face vendored for libass) ── */
+const FONTS = {
+  "Montserrat": { weight: 900 }, "Poppins": { weight: 800 }, "Inter": { weight: 800, regular: 600 },
+  "Instrument Serif": { weight: 400, italic: true }, "Luckiest Guy": { weight: 400 }, "Dela Gothic One": { weight: 400 },
+  "Unbounded": { weight: 800 }, "Anton": { weight: 400 }, "Titan One": { weight: 400 }, "Bebas Neue": { weight: 400 },
+  "Oswald": { weight: 700 }, "Open Sans": { weight: 700 }, "Roboto": { weight: 700 }, "Lilita One": { weight: 400 },
+  "Righteous": { weight: 400 }, "Chakra Petch": { weight: 700 }, "Bricolage Grotesque": { weight: 800 },
+  "Courier Prime": { weight: 700 }, "Archivo Black": { weight: 400 },
+};
+
+/* ── Motion vocabulary. reveal: "cue" = whole cue visible; "word" = words appear as spoken. ── */
+const MOTIONS = {
+  none:       { label: "Static",     reveal: "cue",  ass: "colour change only" },
+  pop:        { label: "Pop",        reveal: "cue",  ass: "overlay \\t(0,90,\\fscx114\\fscy114)\\t(90,220,\\fscx100\\fscy100)" },
+  focus:      { label: "Focus",      reveal: "cue",  ass: "upcoming \\alpha&H8C&, spoken opaque" },
+  karaoke:    { label: "Sweep",      reveal: "cue",  ass: "\\kf<word duration> sweep; sung words stay lit" },
+  neon:       { label: "Flicker",    reveal: "cue",  ass: "cue \\alpha flicker steps 0–450ms; glow layer on every word" },
+  rise:       { label: "Rise",       reveal: "word", ass: "overlay \\move(x,y+0.32em,x,y,0,200) + \\alpha in" },
+  blur:       { label: "Blur",       reveal: "word", ass: "overlay \\blur→0 + \\alpha in, 280ms" },
+  punch:      { label: "Punch",      reveal: "word", ass: "overlay \\fscx145→100 (accel 0.5) + \\alpha in" },
+  bounce:     { label: "Bounce",     reveal: "word", ass: "overlay \\fsc 40→118→96→100; cue \\frz tilt" },
+  jelly:      { label: "Jelly",      reveal: "word", ass: "overlay \\fscx140\\fscy55 → 82/122 → 110/92 → 100/100; cue tilt" },
+  flip:       { label: "Flip",       reveal: "word", ass: "overlay \\frx-95→\\frx0, 260ms" },
+  glitch:     { label: "Glitch",     reveal: "word", ass: "3 discrete 60ms jitter events, then a held cyan/red split under the active word" },
+  fade:       { label: "Fade",       reveal: "word", ass: "overlay \\alpha FF→00, 140ms" },
+  typewriter: { label: "Typewriter", reveal: "word", ass: "\\ko per letter (\\2a&HFF&) across the word" },
+};
+
+/* ── Preset catalog. fontSize / stroke widths are canvas px on a 1080-wide frame. ── */
+const base = { letterSpacing: 0, outlineColor: "#000000", outlineWidth: 0, shadow: "none", shadowColor: "#000000", wordsPerCue: 3, positionY: 70 };
+const P = (o) => ({ ...base, ...o });
+const PRESETS = [
+  // Bold
+  P({ id: "bold-pop", name: "Bold Pop", group: "Bold", fontName: "Montserrat", textTransform: "uppercase", letterSpacing: -0.01, fontSize: 84,
+      primaryColor: "#FFFFFF", highlightColor: "#FFE11A", outlineWidth: 7, shadow: "soft", animation: "pop" }),
+  P({ id: "blast", name: "Blast", group: "Bold", fontName: "Luckiest Guy", textTransform: "uppercase", letterSpacing: 0.02, fontSize: 88,
+      primaryColor: "#FFFFFF", highlightColor: "#48FF6E", outlineWidth: 8, shadow: "hard", animation: "bounce" }),
+  P({ id: "punch", name: "Punch", group: "Bold", fontName: "Anton", textTransform: "uppercase", letterSpacing: 0.01, fontSize: 132,
+      primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 7, shadow: "soft", animation: "punch", wordsPerCue: 1, positionY: 64 }),
+  P({ id: "spotlight", name: "Spotlight", group: "Bold", fontName: "Poppins", textTransform: "none", letterSpacing: -0.01, fontSize: 76,
+      primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", shadow: "soft", highlightBoxColor: "#6C4DFF", animation: "pop" }),
+  P({ id: "street", name: "Street", group: "Bold", classic: true, fontName: "Oswald", textTransform: "uppercase", letterSpacing: 0.04, fontSize: 88,
+      primaryColor: "#AAFF00", highlightColor: "#FFFFFF", outlineWidth: 8, shadow: "soft", animation: "bounce" }),
+  P({ id: "electric", name: "Electric", group: "Bold", classic: true, fontName: "Anton", textTransform: "uppercase", letterSpacing: 0.04, fontSize: 88,
+      primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 7, shadow: "soft", highlightBoxColor: "#3B82F6", animation: "pop" }),
+  // Clean
+  P({ id: "rise", name: "Rise", group: "Clean", fontName: "Inter", textTransform: "none", letterSpacing: -0.02, fontSize: 78,
+      primaryColor: "#FFFFFF", highlightColor: "#C6FF3D", shadow: "soft", animation: "rise" }),
+  P({ id: "focus", name: "Focus", group: "Clean", fontName: "Inter", bold: false, textTransform: "none", letterSpacing: -0.015, fontSize: 68,
+      primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", shadow: "soft", animation: "focus", wordsPerCue: 4, positionY: 72 }),
+  P({ id: "glass", name: "Glass", group: "Clean", fontName: "Inter", textTransform: "none", letterSpacing: -0.015, fontSize: 64,
+      primaryColor: "#FFFFFF", highlightColor: "#7CE0FF", backgroundColor: "#0B0D12", backgroundOpacity: 0.62, animation: "pop", wordsPerCue: 4, positionY: 74 }),
+  P({ id: "sticker", name: "Sticker", group: "Clean", fontName: "Poppins", textTransform: "none", letterSpacing: -0.01, fontSize: 68,
+      primaryColor: "#111111", highlightColor: "#FF2E63", backgroundColor: "#FFFFFF", backgroundOpacity: 1, animation: "pop", positionY: 72 }),
+  P({ id: "frosted-glass", name: "Frosted Glass", group: "Clean", classic: true, fontName: "Open Sans", textTransform: "none", letterSpacing: 0.01, fontSize: 64,
+      primaryColor: "#FFFFFF", highlightColor: "#4ADE80", backgroundColor: "#0F172A", backgroundOpacity: 0.78, animation: "pop", positionY: 74 }),
+  P({ id: "highlighter", name: "Highlighter", group: "Clean", classic: true, fontName: "Roboto", textTransform: "capitalize", letterSpacing: 0.01, fontSize: 74,
+      primaryColor: "#F2F2F2", highlightColor: "#FFFFFF", outlineColor: "#1A1A2E", outlineWidth: 4, shadow: "soft",
+      highlightBoxColor: "#FF3CAC", animation: "pop" }),
+  // Expressive
+  P({ id: "bubblegum", name: "Bubblegum", group: "Expressive", fontName: "Titan One", textTransform: "lowercase", letterSpacing: 0.01, fontSize: 90,
+      primaryColor: "#FFFFFF", highlightColor: "#FFE45C", outlineColor: "#FF4F9A", outlineWidth: 8, shadow: "hard", shadowColor: "#7A1F4A",
+      animation: "bounce", wordsPerCue: 2 }),
+  P({ id: "jelly", name: "Jelly", group: "Expressive", isNew: true, fontName: "Lilita One", textTransform: "uppercase", letterSpacing: 0.02, fontSize: 96,
+      primaryColor: "#FFFFFF", highlightColor: "#A3FF12", outlineColor: "#7C3AED", outlineWidth: 9, shadow: "hard", shadowColor: "#2E1065",
+      animation: "jelly", wordsPerCue: 2 }),
+  P({ id: "candy", name: "Candy", group: "Expressive", isNew: true, fontName: "Titan One", textTransform: "uppercase", letterSpacing: 0.02, fontSize: 82,
+      primaryColor: "#FF5FA2", highlightColor: "#FFD23F", outlineColor: "#FFFFFF", outlineWidth: 7, outerOutlineColor: "#3B1C5A", outerOutlineWidth: 5,
+      shadow: "soft", animation: "pop" }),
+  P({ id: "retro", name: "Retro", group: "Expressive", fontName: "Dela Gothic One", textTransform: "uppercase", letterSpacing: 0.01, fontSize: 70,
+      primaryColor: "#FFF3D6", highlightColor: "#59F0D2", outlineColor: "#1A1A1A", outlineWidth: 4, shadow: "hard", shadowColor: "#FF5C39", animation: "pop" }),
+  P({ id: "afterglow", name: "Afterglow", group: "Expressive", fontName: "Unbounded", textTransform: "lowercase", letterSpacing: -0.02, fontSize: 70,
+      primaryColor: "#FFFFFF", highlightColor: "#FFD6F5", shadow: "soft", glowColor: "#FF4FD8", glowIntensity: 14, animation: "fade" }),
+  P({ id: "cinema", name: "Cinema", group: "Expressive", fontName: "Instrument Serif", textTransform: "lowercase", fontSize: 106,
+      primaryColor: "#F6EFE4", highlightColor: "#F2C46D", shadow: "soft", animation: "blur" }),
+  // Effects
+  P({ id: "karaoke", name: "Karaoke", group: "Effects", classic: true, fontName: "Bebas Neue", textTransform: "uppercase", letterSpacing: 0.04, fontSize: 96,
+      primaryColor: "#FFFFFF", highlightColor: "#00FF88", outlineWidth: 6, shadow: "soft", animation: "karaoke" }),
+  P({ id: "neon", name: "Neon", group: "Effects", isNew: true, fontName: "Righteous", textTransform: "uppercase", letterSpacing: 0.04, fontSize: 80,
+      primaryColor: "#FFE9FB", highlightColor: "#E9FDFF", glowColor: "#FF2BD6", glowIntensity: 16, highlightGlowColor: "#22E4FF", animation: "neon" }),
+  P({ id: "glitch", name: "Glitch", group: "Effects", isNew: true, fontName: "Chakra Petch", textTransform: "uppercase", letterSpacing: 0.02, fontSize: 80,
+      primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", shadow: "soft", animation: "glitch" }),
+  P({ id: "flip", name: "Flip", group: "Effects", isNew: true, fontName: "Bricolage Grotesque", textTransform: "none", letterSpacing: -0.02, fontSize: 84,
+      primaryColor: "#FFFFFF", highlightColor: "#FF8A3D", shadow: "soft", animation: "flip" }),
+  P({ id: "typewriter", name: "Typewriter", group: "Effects", isNew: true, fontName: "Courier Prime", textTransform: "none", letterSpacing: -0.02, fontSize: 70,
+      primaryColor: "#F5F1E8", highlightColor: "#FFFFFF", shadow: "soft", animation: "typewriter", wordsPerCue: 4, positionY: 72 }),
+  P({ id: "block", name: "Block", group: "Effects", isNew: true, fontName: "Archivo Black", textTransform: "uppercase", letterSpacing: -0.01, fontSize: 82,
+      primaryColor: "#FFD84D", highlightColor: "#FFFFFF", outlineColor: "#14161C", outlineWidth: 4, shadow: "extrude", shadowColor: "#14161C", animation: "pop" }),
+];
+
+/* ── Transcript with word timings (sentence = utterance; cues chunk inside it) ── */
+const SCRIPT = [
+  "The biggest mistake people make is waiting until they feel ready.",
+  "Nobody feels ready.",
+  "You start, you learn fast, and momentum does the rest.",
+];
+const TIMELINE = (() => {
+  const utterances = [];
+  let t = 0.4;
+  for (const sentence of SCRIPT) {
+    utterances.push(sentence.split(" ").map((w) => {
+      const dur = 0.16 + 0.04 * w.replace(/[^a-z]/gi, "").length;
+      const word = { text: w, start: t, end: t + dur };
+      t += dur + (/,$/.test(w) ? 0.18 : 0.03);
+      return word;
+    }));
+    t += 0.35;
+  }
+  return { utterances, duration: t + 0.4 };
+})();
+function chunk(utterances, n) {
+  const cues = [];
+  for (const words of utterances) for (let i = 0; i < words.length; i += n) {
+    const g = words.slice(i, i + n);
+    cues.push({ words: g, start: g[0].start, end: g[g.length - 1].end });
+  }
+  return cues;
+}
+function lookup(cueList, time) {
+  const idx = cueList.findIndex((c, i) => time >= c.start && time < (cueList[i + 1]?.start ?? Infinity) && time < c.end + 0.6);
+  if (idx === -1) return { cue: null, idx: -1, active: -1 };
+  const cue = cueList[idx];
+  return { cue, idx, active: cue.words.findIndex((w, i) => time >= w.start && time < (cue.words[i + 1]?.start ?? Infinity)) };
+}
+
+/* ── Renderer ── */
+const hexA = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };
+const caseOf = (t, m) => m === "uppercase" ? t.toUpperCase() : m === "lowercase" ? t.toLowerCase() : m === "capitalize" ? t.replace(/\b\p{L}/gu, (c) => c.toUpperCase()) : t;
+const stripPunct = (w) => w.replace(/^[^\p{L}\p{N}']+|[^\p{L}\p{N}']+$/gu, "");
+const TILTS = [-2.5, 2, -1.5, 2.5];
+
+class CaptionRenderer {
+  constructor(layer, preset, { scale, frameWidth }) {
+    Object.assign(this, { layer, preset, scale, frameWidth, cueKey: null, active: -1, words: [] });
+    layer.innerHTML = "";
+    this.anchor = document.createElement("div");
+    this.anchor.className = "cap-anchor";
+    this.anchor.style.top = `${preset.positionY}%`;
+    layer.appendChild(this.anchor);
+  }
+  get px() { return this.preset.fontSize * this.scale; }
+  get motion() { return MOTIONS[this.preset.animation]; }
+
+  font(el) {
+    const p = this.preset, f = FONTS[p.fontName];
+    el.style.fontFamily = `"${p.fontName}", sans-serif`;
+    el.style.fontWeight = p.bold === false && f.regular ? f.regular : f.weight;
+    el.style.fontStyle = f.italic ? "italic" : "normal";
+    el.style.fontSize = `${this.px}px`;
+    el.style.letterSpacing = `${p.letterSpacing}em`;
+  }
+  shadowFilter() {
+    const p = this.preset, px = this.px;
+    if (p.shadow === "soft") return `drop-shadow(0 ${px * 0.035}px ${px * 0.13}px ${hexA(p.shadowColor, 0.92)})`;
+    if (p.shadow === "hard") return `drop-shadow(${px * 0.07}px ${px * 0.08}px 0 ${p.shadowColor})`;
+    if (p.shadow === "extrude") {
+      const step = px * 0.016;
+      return Array.from({ length: 6 }, () => `drop-shadow(${step}px ${step}px 0 ${p.shadowColor})`).join(" ");
+    }
+    return "none";
+  }
+  textLayer(cls, text, { fill, stroke, strokeColor }) {
+    const el = document.createElement("span");
+    el.className = cls;
+    el.textContent = text;
+    el.style.color = fill;
+    if (stroke > 0) el.style.webkitTextStroke = `${stroke * 2}px ${strokeColor}`;
+    return el;
+  }
+
+  showCue(cue, cueIndex) {
+    const p = this.preset, px = this.px, s = this.scale;
+    this.anchor.innerHTML = "";
+    this.active = -1;
+    this.words = [];
+    if (!cue) return;
+    const fit = document.createElement("div");
+    fit.className = "cap-fit";
+    const line = document.createElement("div");
+    line.className = "cap-line";
+    this.font(line);
+    if (p.highlightBoxColor) line.style.wordSpacing = "0.14em";
+    if (p.backgroundColor) {
+      const plate = document.createElement("div");
+      plate.className = "cap-plate";
+      plate.style.inset = `${-px * 0.2}px ${-px * 0.4}px`;
+      plate.style.borderRadius = `${px * 0.34}px`;
+      plate.style.background = hexA(p.backgroundColor, p.backgroundOpacity ?? 1);
+      line.appendChild(plate);
+    }
+    const stroke = p.outlineWidth * s;
+    const outer = (p.outerOutlineWidth ?? 0) * s;
+    this.words = cue.words.map((word, i) => {
+      if (i > 0) line.appendChild(document.createTextNode(" "));
+      const text = caseOf(stripPunct(word.text), p.textTransform);
+      const w = document.createElement("span");
+      w.className = "w";
+      w.word = word;
+      if (p.highlightBoxColor) {
+        w.pill = document.createElement("span");
+        w.pill.className = "pill";
+        w.pill.style.inset = `${px * 0.01}px ${-px * 0.13}px ${-px * 0.01}px`;
+        w.pill.style.borderRadius = `${px * 0.22}px`;
+        w.pill.style.background = hexA(p.highlightBoxColor, p.highlightBoxOpacity ?? 1);
+        w.appendChild(w.pill);
+      }
+      // Outer (die-cut) stroke layer sits under the main text.
+      let shadowHost = null;
+      if (outer > 0) {
+        w.outer = this.textLayer("lay", text, { fill: p.outerOutlineColor, stroke: stroke + outer, strokeColor: p.outerOutlineColor });
+        w.appendChild(w.outer);
+        shadowHost = w.outer;
+      }
+      if (p.animation === "glitch") {
+        w.g1 = this.textLayer("g", text, { fill: "#00F0FF" });
+        w.g2 = this.textLayer("g", text, { fill: "#FF2A6D" });
+        w.append(w.g1, w.g2);
+      }
+      w.t = this.textLayer("t", "", { fill: p.primaryColor, stroke, strokeColor: p.outlineColor });
+      if (p.animation === "typewriter") {
+        w.chars = [...text].map((c) => { const ch = document.createElement("span"); ch.className = "ch"; ch.textContent = c; w.t.appendChild(ch); return ch; });
+      } else {
+        w.t.textContent = text;
+      }
+      w.appendChild(w.t);
+      (shadowHost ?? w.t).style.filter = this.shadowFilter();
+      if (p.animation === "karaoke") {
+        w.kf = this.textLayer("kf", text, { fill: p.highlightColor, stroke, strokeColor: p.outlineColor });
+        w.appendChild(w.kf);
+      }
+      line.appendChild(w);
+      return w;
+    });
+    fit.appendChild(line);
+    this.anchor.appendChild(fit);
+    this.applyStates(-1, false);
+
+    const max = this.frameWidth * 0.88;
+    const natural = line.getBoundingClientRect().width;
+    const fitScale = natural > max ? max / natural : 1;
+    const tilt = p.animation === "bounce" || p.animation === "jelly" ? TILTS[cueIndex % 4] : 0;
+    fit.style.transform = `rotate(${tilt}deg) scale(${fitScale})`;
+    if (this.motion.reveal === "cue" && p.animation !== "neon") {
+      line.animate([{ transform: "scale(.9)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], { duration: 120, easing: "ease-out" });
+    }
+    if (p.animation === "neon") {
+      line.animate([
+        { opacity: 0, offset: 0 }, { opacity: 1, offset: 0.12 }, { opacity: 0.15, offset: 0.2 }, { opacity: 1, offset: 0.34 },
+        { opacity: 0.45, offset: 0.5 }, { opacity: 1, offset: 0.62 }, { opacity: 1, offset: 1 }], { duration: 460, easing: "steps(1, end)" });
+    }
+  }
+
+  glow(w, color, intensity) {
+    const g = intensity * this.scale;
+    w.t.style.textShadow = `0 0 ${g}px ${color}, 0 0 ${g * 2.2}px ${color}`;
+  }
+
+  applyStates(activeIndex, animate) {
+    const p = this.preset, reveal = this.motion.reveal;
+    this.words.forEach((w, i) => {
+      const isActive = i === activeIndex, upcoming = i > activeIndex, past = i < activeIndex;
+      const sung = p.animation === "karaoke" && past;
+      w.t.style.color = isActive || sung ? p.highlightColor : p.primaryColor;
+      w.t.style.textShadow = "none";
+      if (p.animation === "neon") this.glow(w, isActive ? p.highlightGlowColor : p.glowColor, p.glowIntensity);
+      else if (p.glowColor && isActive) this.glow(w, p.glowColor, p.glowIntensity);
+      w.style.opacity = reveal === "word" && upcoming ? "0" : p.animation === "focus" && upcoming ? "0.45" : "1";
+      if (!isActive) {
+        for (const el of [w, w.pill, w.kf, w.g1, w.g2, w.t]) el?.getAnimations().forEach((a) => { a.cancel(); });
+        w.chars?.forEach((c) => { c.getAnimations().forEach((a) => { a.cancel(); }); });
+        if (w.pill) w.pill.style.opacity = "0";
+        if (w.kf) w.kf.style.clipPath = "inset(0 100% 0 0)";
+      }
+    });
+    const w = this.words[activeIndex];
+    if (!w) return;
+    if (w.pill) {
+      w.pill.style.opacity = "1";
+      if (animate) w.pill.animate([{ transform: "scale(.82)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], { duration: 130, easing: "cubic-bezier(.2,.8,.3,1)", fill: "both" });
+    }
+    if (!animate) return;
+    const em = this.px, f = { fill: "forwards" };
+    const dur = Math.max(0.12, (w.word.end - w.word.start)) * 1000 / (window.speed ?? 1);
+    switch (p.animation) {
+      case "pop":
+        w.animate([{ transform: "scale(1)" }, { transform: "scale(1.14)", offset: 0.41 }, { transform: "scale(1)" }], { ...f, duration: 220, easing: "ease-out" }); break;
+      case "rise":
+        w.animate([{ transform: `translateY(${em * 0.32}px)`, opacity: 0 }, { opacity: 1, offset: 0.7 }, { transform: "translateY(0)", opacity: 1 }], { ...f, duration: 200 }); break;
+      case "blur":
+        w.animate([{ filter: `blur(${em * 0.12}px)`, opacity: 0 }, { filter: "blur(0px)", opacity: 1 }], { ...f, duration: 280, easing: "ease-out" }); break;
+      case "punch":
+        w.animate([{ transform: "scale(1.45)", opacity: 0 }, { opacity: 1, offset: 0.35 }, { transform: "scale(1)", opacity: 1 }], { ...f, duration: 170, easing: "cubic-bezier(.2,.8,.3,1)" }); break;
+      case "bounce":
+        w.animate([{ transform: "scale(.4)", opacity: 0 }, { transform: "scale(1.18)", opacity: 1, offset: 0.55 }, { transform: "scale(.96)", offset: 0.8 }, { transform: "scale(1)" }], { ...f, duration: 300, easing: "ease-out" }); break;
+      case "jelly":
+        w.animate([{ transform: "scale(1.4,.55)", opacity: 0 }, { transform: "scale(.82,1.22)", opacity: 1, offset: 0.3 }, { transform: "scale(1.1,.92)", offset: 0.55 },
+          { transform: "scale(.97,1.03)", offset: 0.78 }, { transform: "scale(1,1)" }], { ...f, duration: 380, easing: "ease-out" }); break;
+      case "flip":
+        w.animate([{ transform: `perspective(${em * 6}px) rotateX(-95deg)`, opacity: 0 }, { opacity: 1, offset: 0.25 }, { transform: `perspective(${em * 6}px) rotateX(0deg)`, opacity: 1 }],
+          { ...f, duration: 260, easing: "cubic-bezier(.2,.9,.3,1.2)" }); break;
+      case "fade":
+        w.animate([{ opacity: 0 }, { opacity: 1 }], { ...f, duration: 140 }); break;
+      case "karaoke":
+        w.kf.animate([{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)" }], { ...f, duration: dur, easing: "linear" }); break;
+      case "typewriter": {
+        const step = Math.min(55, dur / w.chars.length);
+        w.chars.forEach((c, i) => { c.animate([{ opacity: 0 }, { opacity: 0, offset: 0.999 }, { opacity: 1 }], { duration: step * i + 1, fill: "forwards" }); });
+        break;
+      }
+      case "glitch": {
+        const d = em * 0.06;
+        const frames = (pts) => pts.map(([x, y], i) => ({ transform: `translate(${x * d}px, ${y * d}px)`, opacity: i === pts.length - 1 ? 0.75 : 0.9, offset: i / (pts.length - 1) }));
+        const o = { duration: 240, easing: "steps(1, end)", fill: "forwards" };
+        w.g1.animate(frames([[-1, 0.2], [0.7, -0.4], [-0.5, 0.1], [-0.8, 0]]), o);
+        w.g2.animate(frames([[1, -0.2], [-0.6, 0.4], [0.4, -0.1], [0.8, 0]]), o);
+        w.t.animate([{ transform: `translate(${d * 0.5}px,0) skewX(-8deg)`, offset: 0 }, { transform: `translate(${-d * 0.4}px,0) skewX(5deg)`, offset: 0.33 },
+          { transform: "translate(0,0) skewX(0)", offset: 0.66 }, { transform: "translate(0,0)", offset: 1 }], o);
+        break;
+      }
+    }
+  }
+
+  render(cue, activeIndex, cueKey) {
+    if (cueKey !== this.cueKey) { this.cueKey = cueKey; this.showCue(cue, cueKey); }
+    if (cue && activeIndex !== this.active) { this.active = activeIndex; this.applyStates(activeIndex, true); }
+  }
+}
+
+/* ── Player ── */
+const phone = document.getElementById("phone");
+let selected = PRESETS.find((p) => p.id === "bubblegum");
+let renderer, cues, playing = true, t = 0, last = performance.now();
+window.speed = 1;
+let currentScene = "dark";
+
+function mountPlayer() {
+  const rect = phone.getBoundingClientRect();
+  renderer = new CaptionRenderer(document.getElementById("phoneCaps"), selected, { scale: rect.width / 1080, frameWidth: rect.width });
+  cues = chunk(TIMELINE.utterances, selected.wordsPerCue);
+  const p = selected, m = MOTIONS[p.animation], f = FONTS[p.fontName];
+  const rows = [
+    ["preset", `${p.name} (${p.id})${p.classic ? " · kept from the old set" : ""}`],
+    ["font", `${p.fontName}${f.italic ? " italic" : ""} ${p.bold === false && f.regular ? f.regular : f.weight}, ${p.textTransform}, ${p.fontSize}px`],
+    ["colours", `text ${p.primaryColor} · active ${p.highlightColor}`],
+    ["stroke", p.outlineWidth ? `${p.outlineWidth}px ${p.outlineColor}${p.outerOutlineWidth ? ` + outer ${p.outerOutlineWidth}px ${p.outerOutlineColor}` : ""}` : "none"],
+    ["shadow", p.shadow === "none" ? "none" : `${p.shadow} ${p.shadowColor}`],
+    ["decor", [p.highlightBoxColor && `pill ${p.highlightBoxColor}`, p.backgroundColor && `plate ${p.backgroundColor}@${p.backgroundOpacity}`, p.glowColor && `glow ${p.glowColor}`].filter(Boolean).join(" · ") || "none"],
+    ["motion", `${m.label} — reveal per ${m.reveal}`],
+    ["cue", `${p.wordsPerCue} word${p.wordsPerCue > 1 ? "s" : ""}, centre at ${p.positionY}%`],
+    ["export", m.ass],
+  ];
+  document.getElementById("spec").innerHTML = rows.map(([k, v]) => `<b>${k.padEnd(8)}</b>${v}`).join("\n");
+}
+
+const SAMPLE = [{ text: "make", start: 0, end: 0.42 }, { text: "it", start: 0.42, end: 0.7 }, { text: "pop", start: 0.7, end: 1.5 }];
+const CARD_LOOP = 2.1;
+const cards = [], sheetCells = [];
+const groups = [...new Set(PRESETS.map((p) => p.group))];
+
+function cardHtml(preset) {
+  const badge = preset.isNew ? `<span class="badge">NEW</span>` : "";
+  return `<div class="thumb"><div class="scene ${currentScene}"></div><div class="cap-layer"></div>
+    <span class="check"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5.2 4.1 7.3 8 3" stroke="#0e1013" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+    <div class="meta"><span class="name">${preset.name}${badge}</span><span class="motion">${MOTIONS[preset.animation].label}</span></div>`;
+}
+
+function buildPanel() {
+  const scroll = document.getElementById("panelScroll");
+  scroll.innerHTML = "";
+  cards.length = 0;
+  for (const group of groups) {
+    scroll.insertAdjacentHTML("beforeend", `<div class="group-label">${group}</div>`);
+    const grid = document.createElement("div");
+    grid.className = "grid";
+    scroll.appendChild(grid);
+    for (const preset of PRESETS.filter((p) => p.group === group)) {
+      const card = document.createElement("button");
+      card.className = "card";
+      card.setAttribute("aria-pressed", String(preset === selected));
+      card.innerHTML = cardHtml(preset);
+      card.addEventListener("click", () => select(preset));
+      grid.appendChild(card);
+      cards.push({ preset, card, offset: Math.random() * CARD_LOOP });
+    }
+  }
+  requestAnimationFrame(() => {
+    for (const c of cards) {
+      const thumb = c.card.querySelector(".thumb");
+      const rect = thumb.getBoundingClientRect();
+      c.renderer = new CaptionRenderer(thumb.querySelector(".cap-layer"), { ...c.preset, positionY: 56 }, { scale: (rect.width * 1.55) / 1080, frameWidth: rect.width });
+      c.cues = chunk([SAMPLE], c.preset.wordsPerCue);
+    }
+  });
+}
+
+function buildSheet() {
+  const sheet = document.getElementById("sheet");
+  sheet.innerHTML = "";
+  sheetCells.length = 0;
+  for (const group of groups) {
+    sheet.insertAdjacentHTML("beforeend", `<h2>${group}</h2>`);
+    for (const preset of PRESETS.filter((p) => p.group === group)) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      cell.innerHTML = `<div class="phone"><div class="scene ${currentScene}"></div><div class="cap-layer"></div><div class="safe"></div></div>
+        <div class="label"><b>${preset.name}${preset.isNew ? ' <span style="color:#ffb35c">· new</span>' : preset.classic ? ' <span style="color:#9da8f8">· classic</span>' : ""}</b><span>${MOTIONS[preset.animation].label}</span></div>`;
+      sheet.appendChild(cell);
+      sheetCells.push({ preset, cell });
+    }
+  }
+  requestAnimationFrame(() => {
+    for (const c of sheetCells) {
+      const ph = c.cell.querySelector(".phone");
+      c.renderer = new CaptionRenderer(ph.querySelector(".cap-layer"), c.preset, { scale: ph.getBoundingClientRect().width / 1080, frameWidth: ph.getBoundingClientRect().width });
+      c.cues = chunk(TIMELINE.utterances, c.preset.wordsPerCue);
+    }
+  });
+}
+
+function tick(now) {
+  const dt = (now - last) / 1000;
+  last = now;
+  if (playing) t = (t + dt * window.speed) % TIMELINE.duration;
+  if (renderer && cues && !document.getElementById("panelView").hidden) { const r = lookup(cues, t); renderer.render(r.cue, r.active, r.idx); }
+  document.getElementById("tc").textContent = `00:${t.toFixed(2).padStart(5, "0")}`;
+  for (const c of cards) if (c.renderer) { const r = lookup(c.cues, (now / 1000 + c.offset) % CARD_LOOP); c.renderer.render(r.cue, r.active, r.idx); }
+  for (const c of sheetCells) if (c.renderer) { const r = lookup(c.cues, t); c.renderer.render(r.cue, r.active, r.idx); }
+  requestAnimationFrame(tick);
+}
+
+function select(preset) {
+  selected = preset;
+  for (const c of cards) c.card.setAttribute("aria-pressed", String(c.preset === preset));
+  mountPlayer();
+}
+function setView(view) {
+  for (const x of document.getElementById("viewSeg").children) x.setAttribute("aria-pressed", String(x.dataset.view === view));
+  document.getElementById("sheet").hidden = view !== "sheet";
+  document.getElementById("panelView").hidden = view === "sheet";
+  cards.length = 0; sheetCells.length = 0;
+  if (view === "sheet") buildSheet(); else { buildPanel(); mountPlayer(); }
+  const url = new URL(location.href); url.searchParams.set("view", view); history.replaceState(null, "", url);
+}
+
+document.getElementById("sceneSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  currentScene = b.dataset.scene;
+  for (const x of e.currentTarget.children) x.setAttribute("aria-pressed", String(x === b));
+  document.querySelectorAll(".scene").forEach((s) => { s.className = `scene ${currentScene}`; });
+});
+document.getElementById("safeSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  for (const x of e.currentTarget.children) x.setAttribute("aria-pressed", String(x === b));
+  document.querySelectorAll(".phone").forEach((ph) => { ph.classList.toggle("show-safe", b.dataset.safe === "on"); });
+});
+document.getElementById("viewSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) setView(b.dataset.view); });
+document.getElementById("playBtn").addEventListener("click", (e) => { playing = !playing; e.target.textContent = playing ? "Pause" : "Play"; });
+document.getElementById("restartBtn").addEventListener("click", () => { t = 0; if (renderer) renderer.cueKey = null; });
+document.getElementById("slowBtn").addEventListener("click", (e) => { window.speed = window.speed === 1 ? 0.5 : 1; e.target.textContent = window.speed === 1 ? "0.5× speed" : "1× speed"; });
+window.addEventListener("keydown", (e) => {
+  const i = PRESETS.indexOf(selected);
+  if (e.key === "ArrowRight") select(PRESETS[(i + 1) % PRESETS.length]);
+  if (e.key === "ArrowLeft") select(PRESETS[(i - 1 + PRESETS.length) % PRESETS.length]);
+  if (e.key === " ") { e.preventDefault(); document.getElementById("playBtn").click(); }
+});
+
+document.fonts.ready.then(() => {
+  setView(new URLSearchParams(location.search).get("view") === "sheet" ? "sheet" : "panel");
+  requestAnimationFrame((now) => { last = now; tick(now); });
+});
+</script>
+</body>
+</html>

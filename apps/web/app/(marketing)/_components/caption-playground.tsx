@@ -6,10 +6,11 @@ import { buildScript, captionStyleFromPreset, caption, footage, P } from "@narri
 import { CAPTION_PRESETS } from "@narriflow/validators";
 import { Input } from "@narriflow/ui/components/input";
 import { MediaWell } from "@narriflow/ui/components/media-well";
+import { captionFontStyle } from "../../(app)/projects/[projectId]/clips/[clipId]/studio/_components/caption-style-engine";
 import { useStageCanvas } from "./stage/use-stage-canvas";
 
 /*
- * Caption playground: all twelve real presets from @narriflow/validators,
+ * Caption playground: every real preset from @narriflow/validators,
  * drawn live over the procedural footage with the stage caption renderer.
  * Hover or focus previews a preset, click selects it, and the line is yours
  * to type. Preset colours are product output values (the sanctioned literal
@@ -18,17 +19,6 @@ import { useStageCanvas } from "./stage/use-stage-canvas";
 
 const Canvas = chakra("canvas");
 const DEFAULT_LINE = "Captions that stop the scroll.";
-
-// Font families as app/layout.tsx exposes them; Impact exports as Anton.
-const FONT_VARS: Record<string, string> = {
-  "Bebas Neue": "var(--font-caption-bebas-neue)",
-  Anton: "var(--font-caption-anton)",
-  Impact: "var(--font-caption-anton)",
-  Montserrat: "var(--font-caption-montserrat)",
-  Oswald: "var(--font-caption-oswald)",
-  Roboto: "var(--font-caption-roboto)",
-  "Open Sans": "var(--font-caption-open-sans)",
-};
 
 const STYLES = CAPTION_PRESETS.map((named) => ({ id: named.id, style: captionStyleFromPreset(named), preset: named.preset }));
 
@@ -119,8 +109,7 @@ export function CaptionPlayground() {
                     borderRadius="3px"
                     textTransform={style.transform}
                     style={{
-                      fontFamily: FONT_VARS[preset.fontName] ?? "inherit",
-                      fontWeight: style.weight,
+                      ...captionFontStyle(preset.fontName),
                       letterSpacing: `${style.letterSpacing}em`,
                       color: style.highlight,
                       background: style.box ?? style.background,

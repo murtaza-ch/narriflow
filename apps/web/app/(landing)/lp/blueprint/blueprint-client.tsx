@@ -558,7 +558,7 @@ function CaptionPlayground() {
               </Text>
               <Text fontSize="15px" color="whiteAlpha.700" lineHeight="1.7" maxW="52ch">
                 One cue model drives both the editor preview and the final burn-in, so what
-                you see is exactly what renders. Twelve presets, nine animation styles,
+                you see is exactly what renders. 24 presets with animated effects,
                 emoji captions — try one:
               </Text>
             </Stack>

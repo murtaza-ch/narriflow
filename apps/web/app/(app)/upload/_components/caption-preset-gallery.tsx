@@ -1,61 +1,15 @@
 "use client";
 
-import { resolveCaptionFontFamily } from "../../projects/[projectId]/clips/[clipId]/studio/_components/caption-style-engine";
 import { useRef } from "react";
-import Image from "next/image";
 import { Box, chakra, Flex, Stack, Text } from "@chakra-ui/react";
 import { Check, ChevronLeft, ChevronRight, Palette } from "lucide-react";
 import {
-  CAPTION_CHUNK_SIZE,
   CAPTION_POSITION_Y_DEFAULTS,
   captionPresetOptions,
-  type CaptionPreset,
   type CaptionPresetId,
+  type NamedCaptionPreset,
 } from "@narriflow/validators";
-
-// Static caption samples use the same preset data and cue anchors as export.
-const SAMPLE_PHRASE = ["make", "it", "pop"];
-const PREVIEW_IMAGE_NAMES: Partial<Record<CaptionPresetId, string>> = {
-  karaoke: "caption-preview",
-  fire: "fire-studio",
-};
-
-function wordStyle(
-  preset: CaptionPreset,
-  active: boolean,
-): React.CSSProperties {
-  const shadows: string[] = [];
-  if (preset.outlineWidth > 0) {
-    shadows.push(
-      `0 0 2px ${preset.outlineColor}`,
-      `0 1px 2px ${preset.outlineColor}`,
-    );
-  }
-  if (preset.glowColor && (preset.glowIntensity ?? 0) > 0) {
-    shadows.push(
-      `0 0 ${Math.max(3, (preset.glowIntensity ?? 0) / 2)}px ${preset.glowColor}`,
-    );
-  }
-
-  const style: React.CSSProperties = {
-    color:
-      active && !preset.highlightBoxColor
-        ? preset.highlightColor
-        : preset.primaryColor,
-    textShadow: shadows.length > 0 ? shadows.join(", ") : undefined,
-  };
-
-  if (active && preset.highlightBoxColor) {
-    style.backgroundColor = preset.highlightBoxColor;
-    style.opacity = preset.highlightBoxOpacity ?? 1;
-    style.borderRadius = "2px";
-    style.padding = "0 3px";
-  }
-
-  return style;
-}
-
-const cue = SAMPLE_PHRASE.slice(0, CAPTION_CHUNK_SIZE);
+import { CaptionPresetPreview } from "../../_shared/caption-preset-preview";
 
 export function CaptionPresetGallery({
   value,
@@ -140,7 +94,7 @@ export function CaptionPresetGallery({
       >
         {captionPresetOptions.map((option) => {
           const selected = value === option.id;
-          const preset = option.preset as CaptionPreset | null;
+          const namedPreset = option.preset ? (option as NamedCaptionPreset) : null;
           return (
             <chakra.button
               key={option.id}
@@ -171,48 +125,14 @@ export function CaptionPresetGallery({
                 transition="border-color 150ms ease"
                 _hover={{ borderColor: "accent.solid" }}
               >
-                {preset ? (
-                  <>
-                    <Image
-                      src={`/images/upload/${PREVIEW_IMAGE_NAMES[option.id] ?? option.id}.webp`}
-                      alt=""
-                      fill
-                      sizes="128px"
-                      style={{ objectFit: "cover" }}
-                    />
-                    <Box
-                      position="absolute"
-                      inset="0"
-                      bg="linear-gradient(180deg, rgba(0,0,0,.08) 35%, rgba(0,0,0,.30) 100%)"
-                    />
-                    <Flex
-                      position="absolute"
-                      left="0"
-                      right="0"
-                      top={`${preset.positionY ?? CAPTION_POSITION_Y_DEFAULTS[preset.position]}%`}
-                      transform="translateY(-50%)"
-                      justify="center"
-                      align="baseline"
-                      gap="2px"
-                      flexWrap="wrap"
-                      px="1.5"
-                    >
-                      {cue.map((word, wordIdx) => (
-                        <Text
-                          key={`${option.id}-${wordIdx}`}
-                          fontSize={`${Math.max(10, Math.round(preset.fontSize / 3))}px`}
-                          lineHeight="1.3"
-                          fontFamily={resolveCaptionFontFamily(preset.fontName)}
-                          fontWeight={preset.bold ? "700" : "500"}
-                          textTransform={preset.textTransform}
-                          letterSpacing={`${preset.letterSpacing}em`}
-                          style={wordStyle(preset, wordIdx === 0)}
-                        >
-                          {word}
-                        </Text>
-                      ))}
-                    </Flex>
-                  </>
+                {namedPreset ? (
+                  <CaptionPresetPreview
+                    namedPreset={namedPreset}
+                    aspectRatio="9 / 16"
+                    captionTopPct={namedPreset.preset.positionY ?? CAPTION_POSITION_Y_DEFAULTS[namedPreset.preset.position]}
+                    boost={1.3}
+                    imageSizes="128px"
+                  />
                 ) : (
                   <Stack
                     position="absolute"

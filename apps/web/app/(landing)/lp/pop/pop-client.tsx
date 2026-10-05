@@ -633,7 +633,7 @@ function Presets() {
   const featured = CAPTION_PRESETS.slice(0, 6);
   return (
     <Box id="presets" maxW="1280px" mx="auto" px={{ base: "5", md: "12" }} pt={{ base: "20", md: "32" }}>
-      <PopHeading pill="The presets" blurb="Twelve caption styles, word-synced to the waveform. The preview is the export — meet the starting six." />
+      <PopHeading pill="The presets" blurb="24 caption styles, word-synced to the waveform. The preview is the export — meet the starting six." />
       <Grid mt={{ base: "8", md: "12" }} templateColumns={{ base: "1fr", sm: "repeat(2, 1fr)", lg: "repeat(3, 1fr)" }} gap={{ base: "6", md: "8" }}>
         {featured.map((p) => (
           <Box

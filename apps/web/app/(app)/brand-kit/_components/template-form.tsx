@@ -8,21 +8,29 @@ import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Select } from "@narriflow/ui/components/select";
 import { Slider } from "@narriflow/ui/components/slider";
-import { Switch } from "@narriflow/ui/components/switch";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { ColorSwatchField } from "@narriflow/ui/components/color-swatch-field";
 import { PhoneFrame } from "@narriflow/ui/components/phone-frame";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
+  CAPTION_FONT_NAMES,
+  CAPTION_MOTIONS,
+  CAPTION_POSITION_Y_DEFAULTS,
+  CAPTION_PRESETS,
+  applyCaptionPresetLook,
   brandTemplateInputSchema,
   captionPresetSchema,
+  matchCaptionPreset,
   type BrandTemplateInput,
   type BrandTemplateSummary,
   type CaptionAnimation,
+  type CaptionFontName,
   type CaptionPreset,
+  type CaptionShadow,
   type LogoPosition,
 } from "@narriflow/validators";
+import { CaptionCue } from "../../projects/[projectId]/clips/[clipId]/studio/_components/caption-style-engine";
 import {
   createBrandTemplateAction,
   updateBrandTemplateAction,
@@ -38,27 +46,19 @@ const POSITION_GRID: LogoPosition[][] = [
   ["bot-left", "bot-center", "bot-right"],
 ];
 
-const ANIMATION_OPTIONS: CaptionAnimation[] = [
-  "none",
-  "word-by-word",
-  "karaoke",
-  "bounce",
-  "blur-in",
-  "grow",
-  "breathe",
-  "soft-landing",
-  "glitch",
-  "seamless-bounce",
+const ANIMATION_OPTIONS = Object.entries(CAPTION_MOTIONS).map(([value, spec]) => ({
+  label: spec.label,
+  value: value as CaptionAnimation,
+}));
+
+const SHADOW_OPTIONS: { label: string; value: CaptionShadow }[] = [
+  { label: "None", value: "none" },
+  { label: "Soft", value: "soft" },
+  { label: "Hard", value: "hard" },
+  { label: "3D", value: "extrude" },
 ];
 
-const FONT_OPTIONS = [
-  "Bebas Neue",
-  "Montserrat",
-  "Roboto",
-  "Open Sans",
-  "Oswald",
-  "Impact",
-];
+const CUSTOM_STYLE = "custom";
 
 // Quick-pick swatches for brand colors — user color VALUES stay literal.
 const BRAND_SWATCHES = [
@@ -468,21 +468,30 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
 
         <FormSection title="Captions">
           <Stack gap="5">
+            <Select
+              label="Start from a style"
+              items={[
+                ...CAPTION_PRESETS.map((named) => ({ label: `${named.name} · ${named.group}`, value: named.id })),
+                { label: "Custom", value: CUSTOM_STYLE },
+              ]}
+              value={matchCaptionPreset(preset)?.id ?? CUSTOM_STYLE}
+              onValueChange={(value) => {
+                const named = CAPTION_PRESETS.find((candidate) => candidate.id === value);
+                if (named) update("captionPreset", applyCaptionPresetLook(preset, named));
+              }}
+            />
             <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="5">
               <Select
                 label="Font"
-                items={FONT_OPTIONS.map((font) => ({ label: font, value: font }))}
+                items={CAPTION_FONT_NAMES.map((font) => ({ label: font, value: font }))}
                 value={preset.fontName}
                 onValueChange={(value) => {
-                  if (value) updateCaption("fontName", value);
+                  if (value) updateCaption("fontName", value as CaptionFontName);
                 }}
               />
               <Select
                 label="Animation"
-                items={ANIMATION_OPTIONS.map((animation) => ({
-                  label: animation,
-                  value: animation,
-                }))}
+                items={ANIMATION_OPTIONS}
                 value={preset.animation}
                 onValueChange={(value) => {
                   if (value) updateCaption("animation", value as CaptionAnimation);
@@ -522,7 +531,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
                 label="Font size"
                 showValueText
                 min={16}
-                max={80}
+                max={200}
                 value={preset.fontSize}
                 onValueChange={(value) =>
                   updateCaption(
@@ -535,7 +544,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
                 label="Outline"
                 showValueText
                 min={0}
-                max={4}
+                max={16}
                 value={preset.outlineWidth}
                 onValueChange={(value) =>
                   updateCaption(
@@ -546,22 +555,15 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
               />
             </Grid>
 
-            <Flex gap="6" align="center">
-              <Switch
-                checked={preset.bold}
-                onCheckedChange={(checked) => updateCaption("bold", checked)}
-              >
-                Bold
-              </Switch>
-              <Switch
-                checked={preset.shadow === 1}
-                onCheckedChange={(checked) =>
-                  updateCaption("shadow", checked ? 1 : 0)
-                }
-              >
-                Shadow
-              </Switch>
-            </Flex>
+            <FieldGroup label="Shadow">
+              <SegmentedControl
+                size="sm"
+                aria-label="Caption shadow"
+                items={SHADOW_OPTIONS}
+                value={preset.shadow}
+                onValueChange={(value) => updateCaption("shadow", value as CaptionShadow)}
+              />
+            </FieldGroup>
           </Stack>
         </FormSection>
 
@@ -642,8 +644,9 @@ function TemplatePreview({
 }) {
   const { captionPreset, primaryColor, secondaryColor } = input;
   const placement = LOGO_PLACEMENT[input.logoPosition];
-  // Scale the burn-in font size down to phone-frame proportions.
-  const previewFontSize = Math.max(10, Math.round(captionPreset.fontSize * 0.45));
+  // The phone frame shows the 9:16 export at this width, in px.
+  const [frameWidth, setFrameWidth] = useState(0);
+  const captionTop = captionPreset.positionY ?? CAPTION_POSITION_Y_DEFAULTS[captionPreset.position];
 
   return (
     <Stack gap="3" align={{ base: "center", lg: "flex-start" }}>
@@ -657,47 +660,30 @@ function TemplatePreview({
           }}
         />
 
-        {/* Caption cue at its configured position */}
-        <Flex
+        {/* Caption cue at its configured position — the real caption engine */}
+        <Box
+          ref={(element: HTMLDivElement | null) => {
+            if (element && element.offsetWidth !== frameWidth) setFrameWidth(element.offsetWidth);
+          }}
           position="absolute"
           inset="0"
-          px="4"
-          py="10"
-          align={
-            captionPreset.position === "top"
-              ? "flex-start"
-              : captionPreset.position === "center"
-                ? "center"
-                : "flex-end"
-          }
-          justify="center"
         >
-          <Text
-            fontSize={`${previewFontSize}px`}
-            fontWeight={captionPreset.bold ? 800 : 500}
-            textAlign="center"
-            lineHeight="1.15"
-            style={{
-              // User caption styling — values intentionally literal.
-              fontFamily: captionPreset.fontName,
-              color: captionPreset.primaryColor,
-              letterSpacing: `${captionPreset.letterSpacing ?? 0}em`,
-              textTransform: captionPreset.textTransform ?? "none",
-              textShadow:
-                captionPreset.shadow === 1
-                  ? "0 3px 10px rgba(14, 16, 19, 0.65)"
-                  : "none",
-              WebkitTextStroke:
-                captionPreset.outlineWidth > 0
-                  ? `${Math.min(1.5, captionPreset.outlineWidth * 0.5)}px ${captionPreset.outlineColor}`
-                  : undefined,
-            }}
-          >
-            This is{" "}
-            <span style={{ color: captionPreset.highlightColor }}>your</span>{" "}
-            brand
-          </Text>
-        </Flex>
+          {frameWidth > 0 && (
+            <Flex position="absolute" left="0" right="0" top={`${captionTop}%`} transform="translateY(-50%)" justify="center">
+              <CaptionCue
+                preset={captionPreset}
+                words={["This", "is", "your", "brand"].slice(0, Math.max(3, captionPreset.wordsPerCue)).map((word, index) => ({
+                  word,
+                  isActive: index === Math.min(2, captionPreset.wordsPerCue - 1),
+                }))}
+                scale={frameWidth / 1080}
+                frameWidth={frameWidth}
+                cueKey="template-preview"
+                reducedMotion
+              />
+            </Flex>
+          )}
+        </Box>
 
         {/* Logo composited at its chosen position / opacity / scale */}
         {input.logoStorageKey ? (
@@ -752,7 +738,7 @@ function TemplatePreview({
           {input.name}
         </Text>
         <Text textStyle="data" fontSize="11px" color="fg.muted">
-          {captionPreset.animation} · {captionPreset.position} · {captionPreset.fontName}
+          {CAPTION_MOTIONS[captionPreset.animation].label} · {captionPreset.position} · {captionPreset.fontName}
           {input.logoStorageKey ? " · with logo" : ""}
         </Text>
       </Stack>

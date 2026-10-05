@@ -828,7 +828,7 @@ function CaptionLab() {
 
   return (
     <Box maxW="1280px" mx="auto" px={{ base: "5", md: "12" }} pt={{ base: "20", md: "32" }}>
-      <VoltHeading pill="Caption lab" blurb="Twelve presets, nine animation styles, word-synced to the waveform. Pick one — the preview is the export." />
+      <VoltHeading pill="Caption lab" blurb="24 presets with animated effects, word-synced to the waveform. Pick one — the preview is the export." />
       <Grid
         mt={{ base: "8", md: "12" }}
         templateColumns={{ base: "1fr", lg: "1fr 360px" }}

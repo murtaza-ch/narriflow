@@ -10,7 +10,8 @@ import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
-import type { BrandTemplateSummary } from "@narriflow/validators";
+import type { BrandTemplateSummary, CaptionPreset } from "@narriflow/validators";
+import { CaptionCue } from "../../projects/[projectId]/clips/[clipId]/studio/_components/caption-style-engine";
 import {
   deleteBrandTemplateAction,
   duplicateBrandTemplateAction,
@@ -229,39 +230,7 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
         borderWidth={isDefault ? "2px" : "1px"}
         transition="border-color 120ms ease"
       >
-        <Flex
-          position="absolute"
-          inset="0"
-          px="3"
-          py="6"
-          align="center"
-          justify="center"
-        >
-          <Text
-            fontSize="18px"
-            fontWeight={preset.bold ? 800 : 500}
-            textAlign="center"
-            lineHeight="1.15"
-            style={{
-              // User caption styling — values intentionally literal.
-              fontFamily: preset.fontName,
-              color: preset.primaryColor,
-              letterSpacing: `${preset.letterSpacing ?? 0}em`,
-              textTransform: preset.textTransform ?? "none",
-              textShadow:
-                preset.shadow === 1
-                  ? "0 2px 8px rgba(14, 16, 19, 0.65)"
-                  : "none",
-              WebkitTextStroke:
-                preset.outlineWidth > 0
-                  ? `${Math.min(1, preset.outlineWidth * 0.4)}px ${preset.outlineColor}`
-                  : undefined,
-            }}
-          >
-            This is{" "}
-            <span style={{ color: preset.highlightColor }}>your</span> brand
-          </Text>
-        </Flex>
+        <CaptionSpecimen preset={preset} />
       </MediaWell>
 
       <Flex align="center" justify="space-between" gap="1" minW="0">
@@ -387,5 +356,32 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
       </Flex>
       {dialog}
     </Stack>
+  );
+}
+
+/** A static frame of the style's caption, drawn by the real caption engine. */
+function CaptionSpecimen({ preset }: { preset: CaptionPreset }) {
+  const [width, setWidth] = useState(0);
+  return (
+    <Flex
+      ref={(element: HTMLDivElement | null) => {
+        if (element && element.offsetWidth !== width) setWidth(element.offsetWidth);
+      }}
+      position="absolute"
+      inset="0"
+      align="center"
+      justify="center"
+    >
+      {width > 0 && (
+        <CaptionCue
+          preset={preset}
+          words={["This", "is", "your"].map((word, index) => ({ word, isActive: index === 2 }))}
+          scale={(width * 1.6) / 1080}
+          frameWidth={width}
+          cueKey="specimen"
+          reducedMotion
+        />
+      )}
+    </Flex>
   );
 }

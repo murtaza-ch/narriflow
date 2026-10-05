@@ -165,6 +165,7 @@ export function InteractiveCaptionOverlay({
     visibleWords: layer.words.map((word, index) => ({
       word: word.text,
       emoji: word.emoji,
+      durationMs: Math.max(50, Math.round((word.endSec - word.startSec) * 1000)),
       isActive:
         currentTime >= word.startSec &&
         (currentTime < word.endSec ||
@@ -201,10 +202,8 @@ export function InteractiveCaptionOverlay({
     return () => observer.disconnect();
   }, [videoContainerRef]);
 
-  const displayFontSize =
-    containerWidth > 0
-      ? captionPreset.fontSize * (containerWidth / renderWidth)
-      : captionPreset.fontSize * 0.35; // fallback scale
+  // Display px per canvas px — the cue renders at true export scale.
+  const displayScale = containerWidth > 0 ? containerWidth / renderWidth : 0.35;
 
   // Position: derive from preset or enum
   const posX = layer.anchor.xPct;
@@ -276,7 +275,7 @@ export function InteractiveCaptionOverlay({
   const handleResize = useCallback(
     (scale: number) => {
       const newSize = Math.round(
-        Math.max(8, Math.min(120, initialFontSizeRef.current * scale)),
+        Math.max(16, Math.min(200, initialFontSizeRef.current * scale)),
       );
       // coalesceKey collapses every tick of one resize gesture into a single
       // undo step (vizard-parity.md Phase A step 3).
@@ -382,10 +381,10 @@ export function InteractiveCaptionOverlay({
           <CaptionCue
             preset={captionPreset}
             words={caption.visibleWords}
-            fontSize={displayFontSize}
-            scale={1}
-            mode="live"
-            cueKey={caption.utteranceIndex}
+            scale={displayScale}
+            frameWidth={containerWidth > 0 ? containerWidth : undefined}
+            cueKey={layer.id}
+            cueIndex={layer.cueIndex}
             showEmojis={captionPreset.emojis === true}
             reducedMotion={reducedMotion}
           />

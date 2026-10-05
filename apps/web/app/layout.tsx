@@ -3,21 +3,14 @@ import { Suspense } from "react";
 import Script from "next/script";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
-import {
-  Archivo,
-  Montserrat,
-  Bebas_Neue,
-  Roboto,
-  Oswald,
-  Open_Sans,
-  Anton,
-} from "next/font/google";
+import { Archivo } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Provider } from "@narriflow/ui/provider";
 import { Toaster } from "@narriflow/ui/components/toaster";
 import { billingService } from "@narriflow/services";
 import { validateCoreEnv } from "../lib/env";
 import { AuthModal } from "./_components/auth/auth-modal";
+import { captionFontVariables } from "./caption-fonts";
 
 const metadataDescription =
   "Turn long videos into short, captioned, virality-scored clips — plus repurposing, dubbing, and social publishing.";
@@ -41,74 +34,6 @@ const display = Archivo({
   variable: "--font-display",
   axes: ["wdth"],
 });
-
-// Caption presets (packages/validators/src/caption-preset.ts) name Google
-// Fonts that the worker bundles for burn-in (apps/worker/Dockerfile) but the
-// browser never had a reason to load — so every preset used to preview in a
-// fallback system font. Loading them here (as CSS variables, resolved by
-// studio/_components/caption-style-engine.tsx) makes preview match export.
-// Only the weights the presets actually use are pulled in to keep this lean;
-// Bebas Neue and Anton are single-weight display faces (400 only).
-//
-// `preload: false` on every caption face is deliberate. The variables are
-// declared on <html> so the studio can resolve them, but the faces are only
-// ever *used* inside the studio — and next/font preloads a root-layout font on
-// every route, which would ship ~10 unused woff2 preloads on the marketing and
-// landing pages. Without preload the face still self-hosts and `display:"swap"`
-// swaps it in on first use in the studio.
-const captionMontserrat = Montserrat({
-  subsets: ["latin"],
-  weight: ["400", "700"],
-  variable: "--font-caption-montserrat",
-  display: "swap",
-  preload: false,
-});
-const captionBebasNeue = Bebas_Neue({
-  subsets: ["latin"],
-  weight: ["400"],
-  variable: "--font-caption-bebas-neue",
-  display: "swap",
-  preload: false,
-});
-const captionRoboto = Roboto({
-  subsets: ["latin"],
-  weight: ["400", "700"],
-  variable: "--font-caption-roboto",
-  display: "swap",
-  preload: false,
-});
-const captionOswald = Oswald({
-  subsets: ["latin"],
-  weight: ["400", "700"],
-  variable: "--font-caption-oswald",
-  display: "swap",
-  preload: false,
-});
-const captionOpenSans = Open_Sans({
-  subsets: ["latin"],
-  weight: ["400", "700"],
-  variable: "--font-caption-open-sans",
-  display: "swap",
-  preload: false,
-});
-// "Impact" is proprietary, so the worker substitutes Anton for burn-in
-// through its composition adapter. Use the same family for Studio preview.
-const captionAnton = Anton({
-  subsets: ["latin"],
-  weight: ["400"],
-  variable: "--font-caption-anton",
-  display: "swap",
-  preload: false,
-});
-
-const captionFontVariables = [
-  captionMontserrat.variable,
-  captionBebasNeue.variable,
-  captionRoboto.variable,
-  captionOswald.variable,
-  captionOpenSans.variable,
-  captionAnton.variable,
-].join(" ");
 
 export const metadata: Metadata = {
   metadataBase: getMetadataBase(),

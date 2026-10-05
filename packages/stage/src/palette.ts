@@ -1,4 +1,4 @@
-import { CAPTION_PRESETS, type NamedCaptionPreset } from "@narriflow/validators";
+import { CAPTION_PRESETS, captionFontFace, type NamedCaptionPreset } from "@narriflow/validators";
 
 /* Blueline studio palette (mirrors packages/ui/src/theme.ts studio.* + accent). */
 export const P = {
@@ -47,12 +47,10 @@ const withAlpha = (hex: string, alpha: number) => {
 
 /** Map current product presets onto the marketing canvas drawing kit. */
 export function captionStyleFromPreset({ name, preset: p }: NamedCaptionPreset): CaptionStyle & { center: boolean } {
-  const font = p.fontName === "Impact" ? "Anton" : p.fontName;
-  const singleWeight = font === "Bebas Neue" || font === "Anton";
   return {
     name,
-    font,
-    weight: singleWeight ? 400 : p.bold ? 700 : 400,
+    font: p.fontName,
+    weight: captionFontFace(p.fontName).weight,
     primary: p.primaryColor,
     highlight: p.highlightColor,
     outline: p.outlineColor,
@@ -76,12 +74,12 @@ function styleFor(id: NamedCaptionPreset["id"]) {
 // Storyboard aliases select their styles from the canonical product catalog.
 export const PRESETS = {
   karaoke: styleFor("karaoke"),
-  fire: styleFor("fire"),
+  boldPop: styleFor("bold-pop"),
   highlighter: styleFor("highlighter"),
-  neon: styleFor("neon-dreams"),
-  sunset: styleFor("sunset"),
+  neon: styleFor("neon"),
+  bubblegum: styleFor("bubblegum"),
   electric: styleFor("electric"),
-  luxe: styleFor("luxe-gold"),
+  cinema: styleFor("cinema"),
   street: styleFor("street"),
 } satisfies Record<string, CaptionStyle>;
 

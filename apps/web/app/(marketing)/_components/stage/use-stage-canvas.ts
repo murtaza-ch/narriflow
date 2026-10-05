@@ -1,7 +1,8 @@
 "use client";
 
 import { type RefObject, useEffect, useRef } from "react";
-import { configureFonts } from "@narriflow/stage";
+import { configureFonts, PRESETS } from "@narriflow/stage";
+import { CAPTION_FONT_FACES } from "@narriflow/validators";
 
 let fontsReady: Promise<void> | null = null;
 
@@ -16,27 +17,21 @@ export function ensureStageFonts() {
   const family = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
   const display = family("--font-display", "sans-serif");
   const mono = family("--font-geist-mono", "monospace");
-  const captions = {
-    "Bebas Neue": family("--font-caption-bebas-neue", "sans-serif"),
-    Anton: family("--font-caption-anton", "sans-serif"),
-    Montserrat: family("--font-caption-montserrat", "sans-serif"),
-    Oswald: family("--font-caption-oswald", "sans-serif"),
-    Roboto: family("--font-caption-roboto", "sans-serif"),
-    "Open Sans": family("--font-caption-open-sans", "sans-serif"),
-  };
+  const captions = Object.fromEntries(
+    CAPTION_FONT_FACES.map((face) => [
+      face.name,
+      family(`--font-caption-${face.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, "sans-serif"),
+    ]),
+  );
   configureFonts({ display, mono, captions });
+  // Load only the faces the storyboards draw with.
+  const captionFaces = [...new Set(Object.values(PRESETS).map((style) => `${style.weight} 20px ${captions[style.font]}`))];
   const faces = [
     `500 20px ${display}`,
     `700 20px ${display}`,
     `500 20px ${mono}`,
     `600 20px ${mono}`,
-    `400 20px ${captions["Bebas Neue"]}`,
-    `400 20px ${captions.Anton}`,
-    `700 20px ${captions.Montserrat}`,
-    `400 20px ${captions.Montserrat}`,
-    `700 20px ${captions.Oswald}`,
-    `700 20px ${captions.Roboto}`,
-    `700 20px ${captions["Open Sans"]}`,
+    ...captionFaces,
   ];
   fontsReady = Promise.all(faces.map((face) => document.fonts.load(face))).then(
     () => undefined,

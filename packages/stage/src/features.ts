@@ -96,9 +96,9 @@ export function momentsState(t: number) {
 
 /* ————— 02 Captions: three frames, nine presets, one word clock ————— */
 export const CAPTION_SETS: PresetId[][] = [
-  ["karaoke", "highlighter", "fire"],
-  ["neon", "electric", "sunset"],
-  ["street", "luxe", "karaoke"],
+  ["karaoke", "highlighter", "boldPop"],
+  ["neon", "electric", "bubblegum"],
+  ["street", "cinema", "karaoke"],
 ];
 export function captionsState(t: number) {
   const phaseLen = LOOP / CAPTION_SETS.length;

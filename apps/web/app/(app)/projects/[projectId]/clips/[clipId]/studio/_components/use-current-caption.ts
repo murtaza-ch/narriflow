@@ -1,21 +1,24 @@
 "use client";
 
 import { useMemo } from "react";
-import { CAPTION_CHUNK_SIZE, editedToSource, sourceRangeToEdited } from "@narriflow/validators";
+import { editedToSource, sourceRangeToEdited } from "@narriflow/validators";
 import type { EditedTimeMap, TranscriptUtterance } from "@narriflow/validators";
 
 export interface CaptionWord {
   word: string;
   isActive: boolean;
+  /** How long the word stays active (source seconds → ms). */
+  durationMs?: number;
 }
 
 export interface CaptionState {
   visibleWords: CaptionWord[];
   utteranceIndex: number;
+  /** Cue number within the utterance (chunk index). */
+  cueIndex: number;
   activeWordIndex: number;
 }
 
-const CHUNK_SIZE = CAPTION_CHUNK_SIZE;
 const END_CLAMP_EPSILON_SEC = 0.001;
 
 /**
@@ -48,6 +51,7 @@ export function getCurrentCaptionState(
   currentTime: number,
   utterances: TranscriptUtterance[],
   clipStartSec: number,
+  wordsPerCue: number,
   editedTimeMap?: EditedTimeMap,
 ): CaptionState | null {
   if (utterances.length === 0) return null;
@@ -94,17 +98,28 @@ export function getCurrentCaptionState(
       }
     }
 
-    const chunkStart = Math.floor(activeWordIdx / CHUNK_SIZE) * CHUNK_SIZE;
-    const chunkEnd = Math.min(words.length, chunkStart + CHUNK_SIZE);
+    const chunkStart = Math.floor(activeWordIdx / wordsPerCue) * wordsPerCue;
+    const chunkEnd = Math.min(words.length, chunkStart + wordsPerCue);
 
     const visibleWords: CaptionWord[] = words
       .slice(chunkStart, chunkEnd)
-      .map((w, i) => ({
-        word: w.word,
-        isActive: chunkStart + i === activeWordIdx,
-      }));
+      .map((w, i) => {
+        const index = chunkStart + i;
+        const next = words[index + 1];
+        const endSec = index + 1 < chunkEnd && next ? next.startSec : w.endSec;
+        return {
+          word: w.word,
+          isActive: index === activeWordIdx,
+          durationMs: Math.max(50, Math.round((endSec - w.startSec) * 1000)),
+        };
+      });
 
-    return { visibleWords, utteranceIndex: utteranceIdx, activeWordIndex: activeWordIdx };
+    return {
+      visibleWords,
+      utteranceIndex: utteranceIdx,
+      cueIndex: chunkStart / wordsPerCue,
+      activeWordIndex: activeWordIdx,
+    };
   }
 
   const textWords = utterance.text.split(/\s+/).filter(Boolean);
@@ -120,8 +135,8 @@ export function getCurrentCaptionState(
     Math.floor(progress * textWords.length),
   );
 
-  const chunkStart = Math.floor(estimatedActiveIdx / CHUNK_SIZE) * CHUNK_SIZE;
-  const chunkEnd = Math.min(textWords.length, chunkStart + CHUNK_SIZE);
+  const chunkStart = Math.floor(estimatedActiveIdx / wordsPerCue) * wordsPerCue;
+  const chunkEnd = Math.min(textWords.length, chunkStart + wordsPerCue);
 
   const visibleWords: CaptionWord[] = textWords
     .slice(chunkStart, chunkEnd)
@@ -130,17 +145,23 @@ export function getCurrentCaptionState(
       isActive: chunkStart + i === estimatedActiveIdx,
     }));
 
-  return { visibleWords, utteranceIndex: utteranceIdx, activeWordIndex: estimatedActiveIdx };
+  return {
+    visibleWords,
+    utteranceIndex: utteranceIdx,
+    cueIndex: chunkStart / wordsPerCue,
+    activeWordIndex: estimatedActiveIdx,
+  };
 }
 
 export function useCurrentCaption(
   currentTime: number,
   utterances: TranscriptUtterance[],
   clipStartSec: number,
+  wordsPerCue: number,
   editedTimeMap?: EditedTimeMap,
 ): CaptionState | null {
   return useMemo(
-    () => getCurrentCaptionState(currentTime, utterances, clipStartSec, editedTimeMap),
-    [currentTime, utterances, clipStartSec, editedTimeMap],
+    () => getCurrentCaptionState(currentTime, utterances, clipStartSec, wordsPerCue, editedTimeMap),
+    [currentTime, utterances, clipStartSec, wordsPerCue, editedTimeMap],
   );
 }

@@ -50,7 +50,7 @@ export const SIBLINGS: Array<{
   platform: string;
   when: string;
 }> = [
-  { side: -1, score: 87, preset: "fire", focus: 1, stOffset: 2.7, platform: "TikTok", when: "Tue 09:00" },
+  { side: -1, score: 87, preset: "boldPop", focus: 1, stOffset: 2.7, platform: "TikTok", when: "Tue 09:00" },
   { side: 1, score: 74, preset: "highlighter", focus: 0, stOffset: 5.0, platform: "Reels", when: "Wed 18:00" },
 ];
 export const CENTER_SHIP = { platform: "YouTube Shorts", when: "Tue 12:30" };

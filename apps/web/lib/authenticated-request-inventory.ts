@@ -1166,11 +1166,6 @@ export const browserSessionPages: readonly PageSurface[] = [
 	page("app/(app)/integrations/page.tsx"),
 	page("app/(app)/layout.tsx", "optional_workspace"),
 	page(
-		"app/(app)/projects/[projectId]/clips/[clipId]/edit/page.tsx",
-		"project",
-		"content.edit",
-	),
-	page(
 		"app/(app)/projects/[projectId]/clips/[clipId]/exports/[exportId]/page.tsx",
 		"project",
 		"content.download",
