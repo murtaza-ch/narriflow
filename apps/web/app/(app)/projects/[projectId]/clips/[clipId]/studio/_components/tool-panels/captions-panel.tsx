@@ -355,7 +355,7 @@ function PresetsGrid() {
       {CAPTION_PRESET_GROUPS.map((group) => (
         <Box key={group}>
           <SectionLabel>{group}</SectionLabel>
-          <Grid templateColumns="1fr 1fr" gap="10px">
+          <Grid templateColumns="repeat(2, minmax(0, 1fr))" gap="10px">
             {CAPTION_PRESETS.filter((p) => p.group === group).map((p) => (
               <PresetCard
                 key={p.id}

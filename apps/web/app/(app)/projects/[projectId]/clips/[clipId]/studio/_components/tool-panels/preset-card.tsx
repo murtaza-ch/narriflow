@@ -18,7 +18,18 @@ export function PresetCard({
   onClick: () => void;
 }) {
   return (
-    <Box as="button" onClick={onClick} cursor="pointer" w="100%" aria-pressed={isSelected} textAlign="left">
+    <Box
+      as="button"
+      onClick={onClick}
+      cursor="pointer"
+      w="100%"
+      minW={0}
+      aria-label={`${namedPreset.name} caption preset`}
+      aria-pressed={isSelected}
+      textAlign="left"
+      borderRadius="l3"
+      _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent", outlineOffset: "5px" }}
+    >
       <Box
         position="relative"
         borderRadius="l3"
@@ -55,21 +66,21 @@ export function PresetCard({
           </Flex>
         )}
       </Box>
-      <Flex mt="6px" px="2px" align="center" justify="space-between" gap="6px">
-        <Flex align="center" gap="5px" minW={0}>
-          <Text fontSize="12px" color={isSelected ? "studio.fg" : "studio.fgMuted"} fontWeight="500" truncate>
-            {namedPreset.name}
+      <Box mt="6px" px="2px">
+        <Text fontSize="12px" color={isSelected ? "studio.fg" : "studio.fgMuted"} fontWeight="500">
+          {namedPreset.name}
+        </Text>
+        <Flex align="center" justify="space-between" gap="5px" mt="2px">
+          <Text fontSize="10px" color="studio.fgSubtle">
+            {CAPTION_MOTIONS[namedPreset.preset.animation].label}
           </Text>
           {NEW_PRESET_IDS.has(namedPreset.id) && (
-            <Text as="span" fontSize="9px" fontWeight="600" letterSpacing="0.04em" color="studio.accentFg" textTransform="uppercase">
+            <Text as="span" fontSize="9px" fontWeight="600" letterSpacing="0.04em" color="studio.accentFg" textTransform="uppercase" flexShrink={0}>
               New
             </Text>
           )}
         </Flex>
-        <Text fontSize="10px" color="studio.fgSubtle" flexShrink={0}>
-          {CAPTION_MOTIONS[namedPreset.preset.animation].label}
-        </Text>
-      </Flex>
+      </Box>
     </Box>
   );
 }
