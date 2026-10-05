@@ -17,7 +17,7 @@
  * intentionally stay literal — never theme tokens.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { motion, type Transition } from "framer-motion";
 import {
   CAPTION_CUE_TILTS_DEG,
@@ -244,7 +244,6 @@ export function CaptionCue({
   showEmojis = false,
   reducedMotion = false,
 }: CaptionCueProps) {
-  const lineRef = useRef<HTMLDivElement>(null);
   const [naturalWidth, setNaturalWidth] = useState(0);
   const face = captionFontFace(preset.fontName);
   const spec: CaptionMotionSpec = CAPTION_MOTIONS[preset.animation];
@@ -257,8 +256,9 @@ export function CaptionCue({
     applyCaptionTextTransform(formatCaptionWord(item.word, { punctuation: keepPunctuation }), preset.textTransform),
   );
 
-  useLayoutEffect(() => {
-    const line = lineRef.current;
+  // The keyed cue entrance replaces this node on every cue change. Observe
+  // the new line so longer captions keep fitting after playback or seeking.
+  const measureLine = useCallback((line: HTMLDivElement | null) => {
     if (!line) return;
     const measure = () => setNaturalWidth(line.offsetWidth);
     measure();
@@ -351,7 +351,7 @@ export function CaptionCue({
     >
       <div style={{ transform: `rotate(${tilt}deg) scale(${fit})`, transformOrigin: "50% 50%" }}>
         <div
-          ref={lineRef}
+          ref={measureLine}
           style={{
             position: "relative",
             display: "inline-block",
