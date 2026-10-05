@@ -108,27 +108,39 @@ AI services and other link providers keep their existing network configuration.
 An empty value explicitly uses a direct connection, ignoring machine-wide proxy
 environment variables for YouTube. Malformed configuration prevents worker startup.
 
-Use a static outbound IP or a sticky session that lasts through the entire import.
-The optional `{session}` placeholder in the username generates a fresh session
-ID once per import. Metadata, media transfer and transient retries reuse it.
+Use a residential proxy with sticky sessions. Server and datacenter proxy IPs
+meet the same YouTube block as the worker. Put the `{session}` placeholder in the
+username. The worker resolves it to a fresh session ID once per import, so
+metadata, media transfer and transient retries share one exit IP. When YouTube
+blocks a command (bot check or HTTP 403), the worker retries that command on a
+fresh session, using at most three sessions per import. Each yt-dlp run extracts
+its own media URLs, so a new session for the download alone is safe. A direct
+connection or a proxy without `{session}` fails on the first block.
 The bgutil plugin forwards the resolved proxy to token generation automatically;
 requests to the loopback token server itself bypass the proxy. There is no direct
 fallback if a configured proxy is unavailable.
 
-For Decodo residential proxies, the documented endpoint and a three-hour session
-look like this. Replace the placeholder credentials privately, and preserve the
-literal `{session}` marker:
+Imports use roughly 270 to 300 MB per hour of source video (measured on Railway,
+October 2026). At $1 per GB, that is about $0.30 per imported hour. Blocked
+attempts fail before the media transfer and use little bandwidth.
+
+For DataImpulse residential proxies ($1/GB pay-as-you-go, non-expiring traffic),
+a sticky session lasts about 30 minutes. That covers typical imports, since the
+media transfer takes minutes. Replace the placeholder credentials privately and
+keep the literal `{session}` marker. The worker URL-encodes the `;` separator:
+
+```dotenv
+YTDLP_PROXY_URL=http://LOGIN__cr.us;sessid.{session}:PASSWORD@gw.dataimpulse.com:823
+```
+
+For Decodo, the documented endpoint with a three-hour session is:
 
 ```dotenv
 YTDLP_PROXY_URL=http://user-USERNAME-session-{session}-sessionduration-180:PASSWORD@gate.decodo.com:7000
 ```
 
-Three hours covers the worker's metadata and download retry deadlines. A
-residential peer can still disconnect before the session expires. Choose a plan
-that permits Google/YouTube and video transfer. Decodo's trial needs payment
-verification, allows 100 MB, and starts billing after three days unless canceled.
-The original test video alone is approximately 78.5 MB, so use a short video
-first and monitor the provider's bandwidth balance.
+Choose a plan that permits Google/YouTube and video transfer. Test with a short
+video first and watch the provider's bandwidth balance.
 
 For the console commands above, add `--proxy "$YTDLP_PROXY_URL"` only when the
 variable already contains a resolved session ID. To expand `{session}` exactly
@@ -146,7 +158,8 @@ References: [yt-dlp network options](https://github.com/yt-dlp/yt-dlp#network-op
 Deno and PO tokens do not guarantee access from every hosting IP. If this setup
 still returns the bot check, record the failure and test controlled egress or a
 managed media provider. Keep extraction and media transfer on the same outbound
-session. Do not keep retrying a blocked job or add account cookies by default.
+session. Beyond the bounded session rotation above, do not keep retrying a
+blocked job or add account cookies by default.
 
 References: [EJS](https://github.com/yt-dlp/yt-dlp/wiki/EJS),
 [PO tokens](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide),

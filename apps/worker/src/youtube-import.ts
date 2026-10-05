@@ -31,6 +31,12 @@ export function getYoutubeProxyUrl(value = process.env.YTDLP_PROXY_URL): string 
   }
 }
 
+/** A `{session}` username placeholder gives each resolution a fresh exit IP. */
+export function youtubeProxyRotates(proxyUrl = process.env.YTDLP_PROXY_URL): boolean {
+  const proxy = getYoutubeProxyUrl(proxyUrl);
+  return proxy !== "" && /%7Bsession%7D/i.test(new URL(proxy).username);
+}
+
 /** Both extraction and media transfer must use the same client configuration. */
 export function ytdlpCommonArgs(provider: string, proxyUrl = process.env.YTDLP_PROXY_URL): string[] {
   const args = ["--ignore-config", "--no-playlist"];

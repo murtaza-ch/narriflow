@@ -29,7 +29,7 @@ import {
   MAX_UPLOAD_SIZE_BYTES,
   type LinkProviderId,
 } from "@narriflow/validators";
-import { ytdlpCommonArgs } from "../youtube-import";
+import { youtubeProxyRotates, ytdlpCommonArgs } from "../youtube-import";
 import {
   productionWorkerProcessModule,
   WorkerProcessFailure,
@@ -274,6 +274,41 @@ async function withTransientRetry<T>(
   }
 }
 
+// A rotating residential pool can hand out an exit IP that YouTube already
+// flagged, so a block there is retried on a fresh session. A direct
+// connection or a fixed proxy would only meet the same block again.
+const YOUTUBE_PROXY_SESSIONS_PER_IMPORT = 3;
+
+/** yt-dlp arguments for one import, rotating the proxy session after a block. */
+function ytdlpSessions(job: IngestJob, provider: LinkProviderId) {
+  let args = ytdlpCommonArgs(provider);
+  let remaining = provider === "youtube" && youtubeProxyRotates()
+    ? YOUTUBE_PROXY_SESSIONS_PER_IMPORT - 1
+    : 0;
+  return {
+    args: () => args,
+    async run<T>(fn: () => Promise<T>): Promise<T> {
+      for (;;) {
+        try {
+          return await fn();
+        } catch (error) {
+          if (
+            remaining <= 0
+            || !(error instanceof IngestWorkerError && error.code === "source_provider_access_denied")
+          ) throw error;
+          remaining--;
+          args = ytdlpCommonArgs(provider);
+          log("info", "youtube_proxy_session_rotated", {
+            jobId: job.id,
+            projectId: job.projectId,
+            remaining,
+          });
+        }
+      }
+    },
+  };
+}
+
 async function runUploadFinalize(
   job: IngestJob,
   workerProcess: WorkerProcessModule,
@@ -444,18 +479,18 @@ async function runYtdlpLinkDownload(
   runtime: IngestRuntime,
 ) {
   return workerProcess.withScratchDirectory("narriflow-link-", async (tempDir) => {
-    const commonArgs = ytdlpCommonArgs(provider);
+    const ytdlp = ytdlpSessions(job, provider);
     const probeStartedAtMs = Date.now();
-    const metadataOutput = await withTransientRetry("yt_dlp_metadata_probe", () =>
+    const metadataOutput = await ytdlp.run(() => withTransientRetry("yt_dlp_metadata_probe", () =>
       executeYtdlpCommand(
         workerProcess,
         signal,
         // Full info JSON includes captions and format URLs and can exceed
         // the process output limit. Project only the fields ingestion needs.
-        [...commonArgs, "--skip-download", "--print", "%(.{id,title,duration})j", url],
+        [...ytdlp.args(), "--skip-download", "--print", "%(.{id,title,duration})j", url],
         { timeoutMs: METADATA_PROBE_TIMEOUT_MS },
       ),
-    );
+    ));
     const metadata = JSON.parse(metadataOutput.stdout) as {
       title?: string;
       id?: string;
@@ -478,12 +513,14 @@ async function runYtdlpLinkDownload(
     // first file landed, so 101 is an acceptable exit code alongside 0.
     // yt-dlp resumes/overwrites the same deterministic output path cleanly on
     // retry, so re-running the whole command on a transient failure is safe.
-    const downloadOutput = await withTransientRetry("yt_dlp_download", () =>
+    // Each yt-dlp run extracts its own media URLs, which are bound to the IP
+    // that requested them, so a fresh session for the download alone is safe.
+    const downloadOutput = await ytdlp.run(() => withTransientRetry("yt_dlp_download", () =>
       executeYtdlpCommand(
         workerProcess,
         signal,
         [
-          ...commonArgs,
+          ...ytdlp.args(),
           "--max-downloads",
           "1",
           "--max-filesize",
@@ -505,7 +542,7 @@ async function runYtdlpLinkDownload(
           acceptableExitCodes: [0, 101],
         },
       ),
-    );
+    ));
 
     const lines = downloadOutput.stdout
       .split("\n")

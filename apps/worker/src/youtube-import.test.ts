@@ -4,6 +4,7 @@ import {
   getYoutubeProxyUrl,
   startYoutubeTokenServer,
   superviseYoutubeTokenServer,
+  youtubeProxyRotates,
   ytdlpCommonArgs,
 } from "./youtube-import";
 
@@ -102,6 +103,13 @@ test("sticky proxy sessions are fresh per import and resolved before arguments a
   expect(resolved).not.toBe(second[second.indexOf("--proxy") + 1]);
   expect(resolved).not.toContain("{session}");
   expect(getYoutubeProxyUrl(proxy)).toBe(proxy);
+});
+
+test("only a session placeholder in the username makes the proxy rotate", () => {
+  expect(youtubeProxyRotates("http://user-session-{session}:pass@proxy.example:7000")).toBe(true);
+  expect(youtubeProxyRotates("http://login__cr.us;sessid.{session}:pass@gw.dataimpulse.com:823")).toBe(true);
+  expect(youtubeProxyRotates("http://user:pass@proxy.example:8080")).toBe(false);
+  expect(youtubeProxyRotates("")).toBe(false);
 });
 
 test.each(["http", "https", "socks4", "socks4a", "socks5", "socks5h"])("supports %s proxies", (scheme) => {

@@ -161,6 +161,73 @@ describe("normalizeDropboxDownloadUrl", () => {
 });
 
 
+describe("YouTube proxy session rotation", () => {
+  async function importYoutube(proxy: string, blocked: (call: number) => boolean) {
+    const scratch = await mkdtemp(join(tmpdir(), "ingest-rotation-"));
+    const file = join(scratch, "source.mp4");
+    await writeFile(file, "test source");
+    const previous = process.env.YTDLP_PROXY_URL;
+    process.env.YTDLP_PROXY_URL = proxy;
+    const proxies: string[] = [];
+    const settled: string[] = [];
+    const workerProcess = processModuleWithExecute(async (request) => {
+      proxies.push(request.args[request.args.indexOf("--proxy") + 1] ?? "");
+      if (blocked(proxies.length)) {
+        throw new WorkerProcessFailure(
+          "worker_command_failed", "retryable", "yt-dlp failed",
+          "ERROR: [youtube] test: Sign in to confirm you’re not a bot.", 1,
+        );
+      }
+      return {
+        exitCode: 0,
+        stdout: Buffer.from(request.args.includes("--skip-download") ? JSON.stringify({ id: "test", title: "Test", duration: 30 }) : `${file}\n`),
+      };
+    });
+    workerProcess.withScratchDirectory = async (_prefix, work) => work(scratch);
+    try {
+      await processIngestJob({ id: "job", projectId: "project", jobType: "link_import", claimId: "claim", attemptCount: 1, payload: { url: "https://www.youtube.com/watch?v=test", provider: "youtube" } }, {
+        workerProcess,
+        lifecycle: {
+          progress: async () => {},
+          complete: async () => { settled.push("complete"); },
+          fail: async (_job, code) => { settled.push(code); return { outcome: "fail" }; },
+        },
+        putSource: async () => {},
+      });
+      return { proxies, settled };
+    } finally {
+      if (previous === undefined) delete process.env.YTDLP_PROXY_URL;
+      else process.env.YTDLP_PROXY_URL = previous;
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+
+  const rotating = "http://user-session-{session}:pass@proxy.example:7000";
+
+  test("a block on a rotating proxy retries the blocked command on a fresh session", async () => {
+    // Probe succeeds, the first download is blocked, the second succeeds.
+    const { proxies, settled } = await importYoutube(rotating, (call) => call === 2);
+    expect(settled).toEqual(["complete"]);
+    expect(proxies).toHaveLength(3);
+    expect(proxies[1]).toBe(proxies[0]);
+    expect(proxies[2]).not.toBe(proxies[1]);
+  });
+
+  test("an import stops after three proxy sessions", async () => {
+    const { proxies, settled } = await importYoutube(rotating, () => true);
+    expect(settled).toEqual(["source_provider_access_denied"]);
+    expect(new Set(proxies).size).toBe(3);
+  });
+
+  test("direct and fixed-proxy imports fail on the first block", async () => {
+    for (const proxy of ["", "http://user:pass@proxy.example:8080"]) {
+      const { proxies, settled } = await importYoutube(proxy, () => true);
+      expect(settled).toEqual(["source_provider_access_denied"]);
+      expect(proxies).toHaveLength(1);
+    }
+  });
+});
+
 describe("ingest media execution cancellation", () => {
   test("the link import path forwards cancellation through its R2 upload and never settles failure", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "ingest-cancellation-"));
