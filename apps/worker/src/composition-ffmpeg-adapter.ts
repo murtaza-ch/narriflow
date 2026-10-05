@@ -1,3 +1,4 @@
+import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
 import { WorkflowFailure } from "@narriflow/services";
 import {
 	clipAspectRatioOptions,
@@ -10,6 +11,7 @@ import {
 	type WorkerMediaInspection,
 } from "./worker-process";
 import { buildDuckingVolumeExpression } from "./tasks/ducking";
+import { serializeCaptionAss } from "./caption-ass";
 import type { ClipCutPlan } from "./tasks/cut-plan";
 import {
 	CLIP_COMPOSITION_PLAN_VERSION,
@@ -663,7 +665,7 @@ export function compileCompositionPlanVisualLayers(input: {
 					throw new Error("clip_composition_caption_asset_missing");
 				}
 				const filter = input.subtitlePath.endsWith(".ass")
-					? `ass='${escapeSubtitlePath(input.subtitlePath)}'`
+					? `ass='${escapeSubtitlePath(input.subtitlePath)}':fontsdir='${escapeSubtitlePath(CAPTION_FONTS_DIRECTORY)}'`
 					: `subtitles='${escapeSubtitlePath(input.subtitlePath)}'`;
 				return { parts: [`${source}${filter}${output}`] };
 			});
@@ -1901,156 +1903,13 @@ function httpSourceInputArgs(input: string): string[] {
 	];
 }
 
-function formatAssTimestamp(seconds: number): string {
-	const totalCs = Math.max(0, Math.round(seconds * 100));
-	const h = Math.floor(totalCs / 360_000);
-	const m = Math.floor((totalCs % 360_000) / 6000);
-	const s = Math.floor((totalCs % 6000) / 100);
-	const cs = totalCs % 100;
-	return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
-}
-
-function hexToAssColor(hex: string, alphaHex = "00"): string {
-	const r = hex.slice(1, 3);
-	const g = hex.slice(3, 5);
-	const b = hex.slice(5, 7);
-	return `&H${alphaHex}${b}${g}${r}`;
-}
-
-/** ASS alpha is inverse of opacity: 0 alpha = fully opaque, FF = transparent. */
-function assAlphaHex(opacity: number): string {
-	const clamped = Math.max(0, Math.min(1, opacity));
-	const alpha = Math.round((1 - clamped) * 255);
-	return alpha.toString(16).toUpperCase().padStart(2, "0");
-}
-
-// Map preset font names to fonts actually bundled in the worker image. Impact
-// is proprietary, so we substitute Anton (a metric-ish open display face).
-const FONT_ALIASES: Record<string, string> = {
-	Impact: "Anton",
-};
-
-function resolveFontName(name?: string | null): string {
-	if (!name) return "Bebas Neue";
-	const aliased = FONT_ALIASES[name] ?? name;
-	// Strip characters that would break the ASS style / force_style filter
-	// (commas, quotes, backslashes). Font names are letters/digits/space/hyphen.
-	const safe = aliased.replace(/[^A-Za-z0-9 -]/g, "").trim();
-	return safe.length > 0 ? safe : "Bebas Neue";
-}
-
-function serializeCaptionLayers(input: {
-	layers: readonly CompositionCaptionVisualLayer[];
-	canvas: { width: number; height: number };
-}): string {
-	const layer = input.layers[0];
-	if (!layer) return "";
-	const captionPreset = layer.preset;
-	const fontName = resolveFontName(captionPreset.fontName);
-	const fontSize =
-		captionPreset.fontSize ?? Math.round(input.canvas.width * (72 / 1080));
-	const primaryColor = hexToAssColor(captionPreset.primaryColor ?? "#FFFFFF");
-	const highlightColor = hexToAssColor(
-		captionPreset.highlightColor ?? "#00FF88",
-	);
-	const outlineColor = hexToAssColor(captionPreset.outlineColor ?? "#000000");
-	const bold = captionPreset.bold !== false ? -1 : 0;
-	const outlineWidth = captionPreset.outlineWidth ?? 2;
-	const shadow = captionPreset.shadow ?? 1;
-	const spacing = Math.round((captionPreset.letterSpacing ?? 0) * fontSize);
-	let borderStyle = 1;
-	let backColour = "&H00000000";
-	if (captionPreset.backgroundColor) {
-		borderStyle = 3;
-		backColour = hexToAssColor(
-			captionPreset.backgroundColor,
-			assAlphaHex(captionPreset.backgroundOpacity ?? 0.6),
-		);
-	}
-	let glowOverride = "";
-	if (captionPreset.glowColor) {
-		const intensity = captionPreset.glowIntensity ?? 8;
-		glowOverride =
-			`\\4c${hexToAssColor(captionPreset.glowColor)}&` +
-			`\\shad${Math.max(1, Math.round(intensity / 4))}` +
-			`\\blur${Math.max(1, Math.round(intensity / 2))}`;
-	}
-	const hasHighlightBox = Boolean(captionPreset.highlightBoxColor);
-	const boxColor = hasHighlightBox
-		? hexToAssColor(captionPreset.highlightBoxColor!)
-		: "";
-	const boxAlpha = assAlphaHex(captionPreset.highlightBoxOpacity ?? 1);
-	const boxBord = Math.max(outlineWidth, Math.round(fontSize * 0.16));
-	const animation = captionPreset.animation ?? "word-by-word";
-	const header = [
-		"[Script Info]",
-		"ScriptType: v4.00+",
-		`PlayResX: ${input.canvas.width}`,
-		`PlayResY: ${input.canvas.height}`,
-		"WrapStyle: 2",
-		"ScaledBorderAndShadow: yes",
-		"",
-		"[V4+ Styles]",
-		"Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-		`Style: Default,${fontName},${fontSize},${primaryColor},${primaryColor},${outlineColor},${backColour},${bold},0,0,0,100,100,${spacing},0,${borderStyle},${outlineWidth},${shadow},5,0,0,0,1`,
-		"",
-		"[Events]",
-		"Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-	].join("\n");
-	const renderWord = (word: string, active: boolean): string => {
-		if (!active) return word;
-		if (hasHighlightBox) {
-			return (
-				`{\\1c${highlightColor}&\\bord${boxBord}\\3c${boxColor}&\\3a&H${boxAlpha}&}` +
-				`${word}` +
-				`{\\1c${primaryColor}&\\bord${outlineWidth}\\3c${outlineColor}&\\3a&H00&}`
-			);
-		}
-		return `{\\1c${highlightColor}&}${word}{\\1c${primaryColor}&}`;
-	};
-	const entrance = (): string => {
-		let value = "\\fad(60,0)";
-		if (
-			animation === "grow" ||
-			animation === "bounce" ||
-			animation === "seamless-bounce" ||
-			animation === "soft-landing"
-		) {
-			value += "\\fscx82\\fscy82\\t(0,160,\\fscx100\\fscy100)";
-		} else if (animation === "blur-in" && !captionPreset.glowColor) {
-			value += "\\blur6\\t(0,200,\\blur0)";
-		}
-		return value;
-	};
-	const events: string[] = [];
-	for (const cue of input.layers) {
-		const posXPx = Math.round((cue.anchor.xPct / 100) * input.canvas.width);
-		const posYPx = Math.round((cue.anchor.yPct / 100) * input.canvas.height);
-		cue.words.forEach((activeWord, activeIndex) => {
-			const text = cue.words
-				.map((word, index) => {
-					const rendered = renderWord(word.text, index === activeIndex);
-					return word.emoji ? `${rendered} ${word.emoji}` : rendered;
-				})
-				.join(" ");
-			const override =
-				`\\an5\\pos(${posXPx},${posYPx})${glowOverride}` +
-				(activeIndex === 0 ? entrance() : "");
-			events.push(
-				`Dialogue: 0,${formatAssTimestamp(activeWord.startSec)},${formatAssTimestamp(activeWord.endSec)},Default,,0,0,0,,{${override}}${text}`,
-			);
-		});
-	}
-	return header + "\n" + events.join("\n") + "\n";
-}
-
 export function compileCompositionPlanCaptions(
 	plan: ClipCompositionPlan,
 	targetId: string,
 ): string {
 	const target = plan.targets.find((candidate) => candidate.id === targetId);
 	if (!target) throw new Error("clip_composition_target_missing");
-	return serializeCaptionLayers({
+	return serializeCaptionAss({
 		layers: target.visualLayers.filter(
 			(layer): layer is CompositionCaptionVisualLayer =>
 				layer.kind === "caption",

@@ -545,10 +545,6 @@ function preset(id: string): CaptionPreset {
 	return found.preset;
 }
 
-function countDialogues(ass: string): number {
-	return ass.split("\n").filter((line) => line.startsWith("Dialogue:")).length;
-}
-
 test("planned ASS serialization preserves the planner's punctuation filtering and cue boundaries", () => {
 	const document = editorDocumentSchema.parse({
 		version: 1,
@@ -594,10 +590,16 @@ test("planned ASS serialization preserves the planner's punctuation filtering an
 		["ONE", "TWO", "THREE"],
 		["FOUR"],
 	]);
-	expect(countDialogues(ass)).toBe(4);
+	expect([...new Set(ass.split("\n")
+		.filter((line) => line.startsWith("Dialogue:"))
+		.map((line) => line.split(",").slice(1, 3).join(",")))])
+		.toEqual([
+			"0:00:00.00,0:00:00.50",
+			"0:00:00.50,0:00:00.80",
+			"0:00:00.80,0:00:01.10",
+			"0:00:01.10,0:00:01.40",
+		]);
 	expect(ass).not.toContain("...");
-	expect(ass).toContain("Dialogue: 0,0:00:00.00,0:00:00.50");
-	expect(ass).toContain("Dialogue: 0,0:00:01.10,0:00:01.40");
 });
 
 describe("buildSingleVideoArgs with a canvas background active", () => {
@@ -2492,7 +2494,7 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
 			// dialogue/music mix — this is the actual fix.
 			expect(graph).toContain("[acat]asplit=2[wavesrc][dlgsrc]");
 			expect(graph).toContain(
-				"[wavesrc]showwaves=s=1080x806:mode=cline:colors=0x00FF88:rate=25[wave]",
+				"[wavesrc]showwaves=s=1080x806:mode=cline:colors=0xFFE11A:rate=25[wave]",
 			);
 			// The music mix's dialogue branch reads the SPLIT pad, not [acat]
 			// directly and not raw [0:a] — this is what stops deleted audio from

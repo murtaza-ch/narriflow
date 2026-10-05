@@ -822,7 +822,7 @@ describe("history", () => {
     expect(history.past).toHaveLength(1);
 
     history = undoEditor(history);
-    expect(history.present.captionPreset.fontSize).toBe(36);
+    expect(history.present.captionPreset.fontSize).toBe(DEFAULT_CAPTION_PRESET.fontSize);
   });
 
   test("a different key after a gesture starts a new step", () => {

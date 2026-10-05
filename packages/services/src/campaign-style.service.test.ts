@@ -15,7 +15,7 @@ const document = editorDocumentSchema.parse({
   clipEndSec: 20,
   captionPreset: {
     ...DEFAULT_CAPTION_PRESET,
-    fontName: "Arial",
+    fontName: "Inter",
     fontSize: 58,
     positionX: 42,
     positionY: 74,
@@ -38,7 +38,7 @@ const style = brandTemplateSnapshotSchema.parse({
   templateId: "20000000-0000-4000-8000-000000000002",
   captionPreset: {
     ...DEFAULT_CAPTION_PRESET,
-    fontName: "Archivo",
+    fontName: "Archivo Black",
     fontSize: 36,
     position: "top",
     positionX: 50,
@@ -60,7 +60,7 @@ describe("selection-scoped campaign style", () => {
     const next = applyCampaignStyleChange(document, style, false);
 
     expect(next.captionPreset).toMatchObject({
-      fontName: "Archivo",
+      fontName: "Archivo Black",
       primaryColor: "#F8FAFC",
       highlightColor: "#5B6CFF",
       fontSize: 58,

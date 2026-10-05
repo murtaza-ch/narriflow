@@ -867,9 +867,12 @@ for (const topology of ["single-video", "audiogram"] as const) {
 		expect(captions).toContain("Before");
 		expect(captions).toContain("after");
 		expect(captions).toContain("0:00:03.20,0:00:03.60");
-		expect(
-			captions.split("\n").filter((line) => line.startsWith("Dialogue:")),
-		).toHaveLength(2);
+		// Each timed word now has separate paint layers. Assert the edited
+		// timeline independently of the number of shadow and text events.
+		expect([...new Set(captions.split("\n")
+			.filter((line) => line.startsWith("Dialogue:"))
+			.map((line) => line.split(",").slice(1, 3).join(",")))])
+			.toEqual(["0:00:00.20,0:00:03.20", "0:00:03.20,0:00:03.60"]);
 	});
 }
 

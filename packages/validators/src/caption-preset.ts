@@ -1,42 +1,41 @@
 import { z } from "zod";
+import { CAPTION_FONT_NAMES } from "./caption-font";
+import { CAPTION_ANIMATION_NAMES } from "./caption-style";
 
 export const BRAND_DEFAULT_CAPTION_PRESET_ID = "brand_default";
 
 /**
- * Number of words shown together as one caption cue. Shared by the studio
- * preview (`getCurrentCaptionState`) and the worker burn-in renderer so the
- * exported video matches the on-screen preview exactly. Do not fork this value.
+ * Words per caption cue when a preset does not choose (`wordsPerCue`). The
+ * Clip Composition Plan and the studio preview both chunk an utterance's
+ * visible words by the preset's `wordsPerCue`, so preview and burn-in cues
+ * always match.
  */
-export const CAPTION_CHUNK_SIZE = 3;
+export const DEFAULT_CAPTION_WORDS_PER_CUE = 3;
 
 /**
- * Default vertical anchor (percent of frame height, center of the caption
- * block) for each `position` enum value. Mirrored in the studio overlay
- * (`POSITION_Y_PRESETS`) so preview and export agree.
+ * Default vertical anchor (percent of frame height, centre of the caption
+ * line) for each `position` value. Kept clear of the platform UI that covers
+ * the top ~15% and bottom ~20% of a Reel, Short or TikTok. Shared by the
+ * composition plan and the studio overlay so preview and export agree.
  */
 export const CAPTION_POSITION_Y_DEFAULTS: Record<
   "top" | "center" | "bottom",
   number
 > = {
-  top: 10,
+  top: 20,
   center: 50,
-  bottom: 88,
+  bottom: 72,
 };
 
-export const captionAnimationSchema = z.enum([
-  "none",
-  "word-by-word",
-  "karaoke",
-  "bounce",
-  "blur-in",
-  "grow",
-  "breathe",
-  "soft-landing",
-  "glitch",
-  "seamless-bounce",
-]);
+export const captionAnimationSchema = z.enum(CAPTION_ANIMATION_NAMES);
 
 export type CaptionAnimation = z.infer<typeof captionAnimationSchema>;
+
+export const captionFontNameSchema = z.enum(CAPTION_FONT_NAMES);
+
+export const captionShadowSchema = z.enum(["none", "soft", "hard", "extrude"]);
+
+export type CaptionShadow = z.infer<typeof captionShadowSchema>;
 
 /**
  * Curated keyword → emoji map for "emoji captions" (a 2026 table-stakes style).
@@ -110,8 +109,72 @@ export function formatCaptionWord(
     .replace(TRAILING_CAPTION_PUNCT_RE, "");
 }
 
+/**
+ * Shared pure helper — the ONE place caption cue text gets its case, used by
+ * Clip Composition Plan caption cues and the studio preview so preview text
+ * can never fork from burn-in text.
+ */
+export function applyCaptionTextTransform(
+  text: string,
+  transform: CaptionPreset["textTransform"],
+): string {
+  switch (transform) {
+    case "uppercase":
+      return text.toUpperCase();
+    case "lowercase":
+      return text.toLowerCase();
+    case "capitalize":
+      return text.replace(/(^|[\s\-])(\p{L})/gu, (_match, lead: string, letter: string) => lead + letter.toUpperCase());
+    default:
+      return text;
+  }
+}
+
+const hexColor = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
+
+/**
+ * A caption style. Sizes and stroke widths are canvas pixels (the export
+ * frame, e.g. 1080 wide for 9:16); the studio scales them to the preview.
+ * The schema defaults ARE the Bold Pop preset, so a clip without a stored
+ * style renders as Bold Pop. The look of every field is specified in
+ * caption-style.ts and rendered identically by the preview and the burn-in.
+ */
 export const captionPresetSchema = z.object({
-  fontName: z.string().max(100).default("Bebas Neue"),
+  fontName: captionFontNameSchema.default("Montserrat"),
+  /** Font size (the em) in canvas px. */
+  fontSize: z.number().min(16).max(200).default(84),
+  textTransform: z
+    .enum(["uppercase", "lowercase", "capitalize", "none"])
+    .default("uppercase"),
+  /** Letter spacing in em. */
+  letterSpacing: z.number().min(-0.1).max(0.5).default(-0.01),
+  primaryColor: hexColor.default("#FFFFFF"),
+  /** Colour of the active (currently spoken) word. */
+  highlightColor: hexColor.default("#FFE11A"),
+  outlineColor: hexColor.default("#000000"),
+  /** Stroke around the glyphs, canvas px. */
+  outlineWidth: z.number().int().min(0).max(16).default(7),
+  /** Second stroke outside the first, canvas px (die-cut sticker look). */
+  outerOutlineColor: hexColor.optional(),
+  outerOutlineWidth: z.number().int().min(0).max(16).optional(),
+  shadow: captionShadowSchema.default("soft"),
+  shadowColor: hexColor.default("#000000"),
+  /** Glow behind every visible word. */
+  glowColor: hexColor.optional(),
+  /** Glow behind the active word; wins over `glowColor` for that word. */
+  highlightGlowColor: hexColor.optional(),
+  glowIntensity: z.number().min(0).max(20).optional(),
+  /** Rounded pill behind the active word. */
+  highlightBoxColor: hexColor.optional(),
+  highlightBoxOpacity: z.number().min(0).max(1).optional(),
+  /** Rounded plate behind the whole cue. */
+  backgroundColor: hexColor.optional(),
+  backgroundOpacity: z.number().min(0).max(1).optional(),
+  animation: captionAnimationSchema.default("pop"),
+  wordsPerCue: z.number().int().min(1).max(5).default(DEFAULT_CAPTION_WORDS_PER_CUE),
+  position: z.enum(["bottom", "top", "center"]).default("bottom"),
+  positionX: z.number().min(0).max(100).optional(),
+  positionY: z.number().min(0).max(100).optional(),
   emojis: z.boolean().optional(),
   /** Subtitle display on/off (vizard-parity Phase C). Absent/true = shown;
    *  false hides subtitle burn-in AND the studio's on-video caption overlay
@@ -119,316 +182,168 @@ export const captionPresetSchema = z.object({
   visible: z.boolean().optional(),
   /** Punctuation on/off (vizard-parity Phase C). Absent/true = keep
    *  punctuation as transcribed; false routes cue text through
-   *  `formatCaptionWord` in both the worker builders and the preview. */
+   *  `formatCaptionWord` in both the composition plan and the preview. */
   punctuation: z.boolean().optional(),
-  primaryColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#FFFFFF"),
-  outlineColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#000000"),
-  outlineWidth: z.number().int().min(0).max(4).default(2),
-  shadow: z.number().int().min(0).max(1).default(1),
-  bold: z.boolean().default(true),
-  position: z.enum(["bottom", "top", "center"]).default("bottom"),
-  highlightColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#00FF88"),
-  animation: captionAnimationSchema.default("word-by-word"),
-  fontSize: z.number().min(8).max(120).default(36),
-  positionX: z.number().min(0).max(100).optional(),
-  positionY: z.number().min(0).max(100).optional(),
-
-  backgroundColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  backgroundOpacity: z.number().min(0).max(1).optional(),
-  highlightBoxColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  highlightBoxOpacity: z.number().min(0).max(1).optional(),
-  glowColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  glowIntensity: z.number().min(0).max(20).optional(),
-  // Defaults match the studio preview's fallbacks so the burned export looks
-  // identical to the preview even when a preset omits these fields.
-  textTransform: z
-    .enum(["uppercase", "lowercase", "capitalize", "none"])
-    .default("uppercase"),
-  letterSpacing: z.number().min(-0.1).max(0.5).default(0.04),
 });
 
 export type CaptionPreset = z.infer<typeof captionPresetSchema>;
+export type CaptionPresetInput = z.input<typeof captionPresetSchema>;
 
-/** Field-aware equality for canonical caption presets. */
+/** Field-aware equality for canonical caption presets (every field is a primitive). */
 export function captionPresetsEqual(
   left: CaptionPreset,
   right: CaptionPreset,
 ): boolean {
-  return (
-    left === right ||
-    (left.fontName === right.fontName &&
-      left.emojis === right.emojis &&
-      left.visible === right.visible &&
-      left.punctuation === right.punctuation &&
-      left.primaryColor === right.primaryColor &&
-      left.outlineColor === right.outlineColor &&
-      left.outlineWidth === right.outlineWidth &&
-      left.shadow === right.shadow &&
-      left.bold === right.bold &&
-      left.position === right.position &&
-      left.highlightColor === right.highlightColor &&
-      left.animation === right.animation &&
-      left.fontSize === right.fontSize &&
-      left.positionX === right.positionX &&
-      left.positionY === right.positionY &&
-      left.backgroundColor === right.backgroundColor &&
-      left.backgroundOpacity === right.backgroundOpacity &&
-      left.highlightBoxColor === right.highlightBoxColor &&
-      left.highlightBoxOpacity === right.highlightBoxOpacity &&
-      left.glowColor === right.glowColor &&
-      left.glowIntensity === right.glowIntensity &&
-      left.textTransform === right.textTransform &&
-      left.letterSpacing === right.letterSpacing)
-  );
+  if (left === right) return true;
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]) as Set<keyof CaptionPreset>;
+  for (const key of keys) {
+    if (left[key] !== right[key]) return false;
+  }
+  return true;
 }
 
 /**
- * The canonical caption preset built entirely from the schema defaults.
- * Derived via `captionPresetSchema.parse({})` so it can never drift from the
- * schema; fields without defaults (emojis, positionX/Y, background/glow
- * options) are intentionally absent.
+ * The canonical caption preset built entirely from the schema defaults
+ * (Bold Pop). Derived via `captionPresetSchema.parse({})` so it can never
+ * drift from the schema.
  */
 export const DEFAULT_CAPTION_PRESET: CaptionPreset = captionPresetSchema.parse({});
+
+export type CaptionPresetGroup = "Bold" | "Clean" | "Expressive" | "Effects";
+
+export const CAPTION_PRESET_GROUPS = ["Bold", "Clean", "Expressive", "Effects"] as const satisfies readonly CaptionPresetGroup[];
 
 export interface NamedCaptionPreset {
   id: string;
   name: string;
+  group: CaptionPresetGroup;
   preset: CaptionPreset;
 }
 
+function namedPreset<const Id extends string>(
+  id: Id,
+  name: string,
+  group: CaptionPresetGroup,
+  preset: CaptionPresetInput,
+) {
+  return { id, name, group, preset: captionPresetSchema.parse(preset) };
+}
+
 export const CAPTION_PRESETS = [
-  {
-    id: "minimal",
-    name: "Minimal",
-    preset: {
-      fontName: "Montserrat",
-      primaryColor: "#C8C8C8",
-      outlineColor: "#000000",
-      outlineWidth: 0,
-      shadow: 0,
-      bold: false,
-      position: "bottom",
-      highlightColor: "#FFFFFF",
-      animation: "word-by-word",
-      fontSize: 32,
-      textTransform: "none",
-      letterSpacing: 0.01,
-    },
-  },
-  {
-    id: "karaoke",
-    name: "Karaoke",
-    preset: {
-      fontName: "Bebas Neue",
-      primaryColor: "#FFFFFF",
-      outlineColor: "#000000",
-      outlineWidth: 3,
-      shadow: 1,
-      bold: true,
-      position: "bottom",
-      highlightColor: "#00FF88",
-      animation: "karaoke",
-      fontSize: 42,
-      textTransform: "uppercase",
-      letterSpacing: 0.04,
-    },
-  },
-  {
-    id: "highlighter",
-    name: "Highlighter",
-    preset: {
-      fontName: "Roboto",
-      primaryColor: "#E8E8E8",
-      outlineColor: "#1A1A2E",
-      outlineWidth: 2,
-      shadow: 1,
-      bold: true,
-      position: "bottom",
-      highlightColor: "#FFFFFF",
-      animation: "word-by-word",
-      fontSize: 36,
-      textTransform: "capitalize",
-      letterSpacing: 0.02,
-      highlightBoxColor: "#FF3CAC",
-      highlightBoxOpacity: 0.95,
-    },
-  },
-  {
-    id: "neon-dreams",
-    name: "Neon Dreams",
-    preset: {
-      fontName: "Bebas Neue",
-      primaryColor: "#00F5FF",
-      outlineColor: "#002B33",
-      outlineWidth: 1,
-      shadow: 0,
-      bold: true,
-      position: "center",
-      highlightColor: "#FF00FF",
-      animation: "blur-in",
-      fontSize: 44,
-      textTransform: "uppercase",
-      letterSpacing: 0.08,
-      glowColor: "#00F5FF",
-      glowIntensity: 16,
-    },
-  },
-  {
-    id: "fire",
-    name: "Fire",
-    preset: {
-      fontName: "Impact",
-      primaryColor: "#FFE100",
-      outlineColor: "#000000",
-      outlineWidth: 3,
-      shadow: 1,
-      bold: true,
-      position: "bottom",
-      highlightColor: "#FF1744",
-      animation: "bounce",
-      fontSize: 46,
-      textTransform: "uppercase",
-      letterSpacing: 0.04,
-      glowColor: "#FF6D00",
-      glowIntensity: 8,
-    },
-  },
-  {
-    id: "pastel-cloud",
-    name: "Pastel Cloud",
-    preset: {
-      fontName: "Montserrat",
-      primaryColor: "#FFB8D1",
-      outlineColor: "#4A2040",
-      outlineWidth: 1,
-      shadow: 0,
-      bold: false,
-      position: "bottom",
-      highlightColor: "#C490FF",
-      animation: "soft-landing",
-      fontSize: 34,
-      textTransform: "lowercase",
-      letterSpacing: 0.03,
-      glowColor: "#FFB8D1",
-      glowIntensity: 6,
-    },
-  },
-  {
-    id: "street",
-    name: "Street",
-    preset: {
-      fontName: "Oswald",
-      primaryColor: "#AAFF00",
-      outlineColor: "#000000",
-      outlineWidth: 4,
-      shadow: 1,
-      bold: true,
-      position: "bottom",
-      highlightColor: "#FFFFFF",
-      animation: "seamless-bounce",
-      fontSize: 40,
-      textTransform: "uppercase",
-      letterSpacing: 0.06,
-    },
-  },
-  {
-    id: "frosted-glass",
-    name: "Frosted Glass",
-    preset: {
-      fontName: "Open Sans",
-      primaryColor: "#FFFFFF",
-      outlineColor: "#000000",
-      outlineWidth: 0,
-      shadow: 0,
-      bold: true,
-      position: "bottom",
-      highlightColor: "#4ADE80",
-      animation: "word-by-word",
-      fontSize: 32,
-      textTransform: "none",
-      letterSpacing: 0.02,
-      backgroundColor: "#0F172A",
-      backgroundOpacity: 0.78,
-    },
-  },
-  {
-    id: "sunset",
-    name: "Sunset",
-    preset: {
-      fontName: "Bebas Neue",
-      primaryColor: "#FF6B6B",
-      outlineColor: "#2D1B14",
-      outlineWidth: 2,
-      shadow: 1,
-      bold: true,
-      position: "bottom",
-      highlightColor: "#FFD93D",
-      animation: "grow",
-      fontSize: 42,
-      textTransform: "uppercase",
-      letterSpacing: 0.05,
-    },
-  },
-  {
-    id: "matrix",
-    name: "Matrix",
-    preset: {
-      fontName: "Roboto",
-      primaryColor: "#00FF41",
-      outlineColor: "#003300",
-      outlineWidth: 1,
-      shadow: 0,
-      bold: true,
-      position: "center",
-      highlightColor: "#7FFF00",
-      animation: "glitch",
-      fontSize: 36,
-      textTransform: "uppercase",
-      letterSpacing: 0.1,
-      glowColor: "#00FF41",
-      glowIntensity: 10,
-    },
-  },
-  {
-    id: "luxe-gold",
-    name: "Luxe Gold",
-    preset: {
-      fontName: "Montserrat",
-      primaryColor: "#D4AF37",
-      outlineColor: "#1A1400",
-      outlineWidth: 1,
-      shadow: 1,
-      bold: true,
-      position: "bottom",
-      highlightColor: "#FFF1CC",
-      animation: "breathe",
-      fontSize: 36,
-      textTransform: "uppercase",
-      letterSpacing: 0.12,
-      glowColor: "#D4AF37",
-      glowIntensity: 5,
-    },
-  },
-  {
-    id: "electric",
-    name: "Electric",
-    preset: {
-      fontName: "Impact",
-      primaryColor: "#FFFFFF",
-      outlineColor: "#000000",
-      outlineWidth: 4,
-      shadow: 1,
-      bold: true,
-      position: "bottom",
-      highlightColor: "#FFFFFF",
-      animation: "word-by-word",
-      fontSize: 44,
-      textTransform: "uppercase",
-      letterSpacing: 0.04,
-      highlightBoxColor: "#3B82F6",
-      highlightBoxOpacity: 1,
-    },
-  },
+  // Bold
+  namedPreset("bold-pop", "Bold Pop", "Bold", {
+    fontName: "Montserrat", fontSize: 84, textTransform: "uppercase", letterSpacing: -0.01,
+    primaryColor: "#FFFFFF", highlightColor: "#FFE11A", outlineWidth: 7, shadow: "soft", animation: "pop",
+  }),
+  namedPreset("blast", "Blast", "Bold", {
+    fontName: "Luckiest Guy", fontSize: 88, textTransform: "uppercase", letterSpacing: 0.02,
+    primaryColor: "#FFFFFF", highlightColor: "#48FF6E", outlineWidth: 8, shadow: "hard", animation: "bounce",
+  }),
+  namedPreset("punch", "Punch", "Bold", {
+    fontName: "Anton", fontSize: 132, textTransform: "uppercase", letterSpacing: 0.01,
+    primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 7, shadow: "soft", animation: "punch", wordsPerCue: 1,
+  }),
+  namedPreset("spotlight", "Spotlight", "Bold", {
+    fontName: "Poppins", fontSize: 76, textTransform: "none", letterSpacing: -0.01,
+    primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 0, shadow: "soft",
+    highlightBoxColor: "#6C4DFF", highlightBoxOpacity: 1, animation: "pop",
+  }),
+  namedPreset("street", "Street", "Bold", {
+    fontName: "Oswald", fontSize: 88, textTransform: "uppercase", letterSpacing: 0.04,
+    primaryColor: "#AAFF00", highlightColor: "#FFFFFF", outlineWidth: 8, shadow: "soft", animation: "bounce",
+  }),
+  namedPreset("electric", "Electric", "Bold", {
+    fontName: "Anton", fontSize: 88, textTransform: "uppercase", letterSpacing: 0.04,
+    primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 7, shadow: "soft",
+    highlightBoxColor: "#3B82F6", highlightBoxOpacity: 1, animation: "pop",
+  }),
+  // Clean
+  namedPreset("rise", "Rise", "Clean", {
+    fontName: "Inter", fontSize: 78, textTransform: "none", letterSpacing: -0.02,
+    primaryColor: "#FFFFFF", highlightColor: "#C6FF3D", outlineWidth: 0, shadow: "soft", animation: "rise",
+  }),
+  namedPreset("focus", "Focus", "Clean", {
+    fontName: "Inter SemiBold", fontSize: 68, textTransform: "none", letterSpacing: -0.015,
+    primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 0, shadow: "soft", animation: "focus", wordsPerCue: 4,
+  }),
+  namedPreset("glass", "Glass", "Clean", {
+    fontName: "Inter", fontSize: 64, textTransform: "none", letterSpacing: -0.015,
+    primaryColor: "#FFFFFF", highlightColor: "#7CE0FF", outlineWidth: 0, shadow: "none",
+    backgroundColor: "#0B0D12", backgroundOpacity: 0.62, animation: "pop", wordsPerCue: 4,
+  }),
+  namedPreset("sticker", "Sticker", "Clean", {
+    fontName: "Poppins", fontSize: 68, textTransform: "none", letterSpacing: -0.01,
+    primaryColor: "#111111", highlightColor: "#FF2E63", outlineWidth: 0, shadow: "none",
+    backgroundColor: "#FFFFFF", backgroundOpacity: 1, animation: "pop",
+  }),
+  namedPreset("frosted-glass", "Frosted Glass", "Clean", {
+    fontName: "Open Sans", fontSize: 64, textTransform: "none", letterSpacing: 0.01,
+    primaryColor: "#FFFFFF", highlightColor: "#4ADE80", outlineWidth: 0, shadow: "none",
+    backgroundColor: "#0F172A", backgroundOpacity: 0.78, animation: "pop",
+  }),
+  namedPreset("highlighter", "Highlighter", "Clean", {
+    fontName: "Roboto", fontSize: 74, textTransform: "capitalize", letterSpacing: 0.01,
+    primaryColor: "#F2F2F2", highlightColor: "#FFFFFF", outlineColor: "#1A1A2E", outlineWidth: 4, shadow: "soft",
+    highlightBoxColor: "#FF3CAC", highlightBoxOpacity: 1, animation: "pop",
+  }),
+  // Expressive
+  namedPreset("bubblegum", "Bubblegum", "Expressive", {
+    fontName: "Titan One", fontSize: 90, textTransform: "lowercase", letterSpacing: 0.01,
+    primaryColor: "#FFFFFF", highlightColor: "#FFE45C", outlineColor: "#FF4F9A", outlineWidth: 8,
+    shadow: "hard", shadowColor: "#7A1F4A", animation: "bounce", wordsPerCue: 2,
+  }),
+  namedPreset("jelly", "Jelly", "Expressive", {
+    fontName: "Lilita One", fontSize: 96, textTransform: "uppercase", letterSpacing: 0.02,
+    primaryColor: "#FFFFFF", highlightColor: "#A3FF12", outlineColor: "#7C3AED", outlineWidth: 9,
+    shadow: "hard", shadowColor: "#2E1065", animation: "jelly", wordsPerCue: 2,
+  }),
+  namedPreset("candy", "Candy", "Expressive", {
+    fontName: "Titan One", fontSize: 82, textTransform: "uppercase", letterSpacing: 0.02,
+    primaryColor: "#FF5FA2", highlightColor: "#FFD23F", outlineColor: "#FFFFFF", outlineWidth: 7,
+    outerOutlineColor: "#3B1C5A", outerOutlineWidth: 5, shadow: "soft", animation: "pop",
+  }),
+  namedPreset("retro", "Retro", "Expressive", {
+    fontName: "Dela Gothic One", fontSize: 70, textTransform: "uppercase", letterSpacing: 0.01,
+    primaryColor: "#FFF3D6", highlightColor: "#59F0D2", outlineColor: "#1A1A1A", outlineWidth: 4,
+    shadow: "hard", shadowColor: "#FF5C39", animation: "pop",
+  }),
+  namedPreset("afterglow", "Afterglow", "Expressive", {
+    fontName: "Unbounded", fontSize: 70, textTransform: "lowercase", letterSpacing: -0.02,
+    primaryColor: "#FFFFFF", highlightColor: "#FFD6F5", outlineWidth: 0, shadow: "soft",
+    highlightGlowColor: "#FF4FD8", glowIntensity: 14, animation: "fade",
+  }),
+  namedPreset("cinema", "Cinema", "Expressive", {
+    fontName: "Instrument Serif", fontSize: 106, textTransform: "lowercase", letterSpacing: 0,
+    primaryColor: "#F6EFE4", highlightColor: "#F2C46D", outlineWidth: 0, shadow: "soft", animation: "blur",
+  }),
+  // Effects
+  namedPreset("karaoke", "Karaoke", "Effects", {
+    fontName: "Bebas Neue", fontSize: 96, textTransform: "uppercase", letterSpacing: 0.04,
+    primaryColor: "#FFFFFF", highlightColor: "#00FF88", outlineWidth: 6, shadow: "soft", animation: "karaoke",
+  }),
+  namedPreset("neon", "Neon", "Effects", {
+    fontName: "Righteous", fontSize: 80, textTransform: "uppercase", letterSpacing: 0.04,
+    primaryColor: "#FFE9FB", highlightColor: "#E9FDFF", outlineWidth: 0, shadow: "none",
+    glowColor: "#FF2BD6", highlightGlowColor: "#22E4FF", glowIntensity: 16, animation: "neon",
+  }),
+  namedPreset("glitch", "Glitch", "Effects", {
+    fontName: "Chakra Petch", fontSize: 80, textTransform: "uppercase", letterSpacing: 0.02,
+    primaryColor: "#FFFFFF", highlightColor: "#FFFFFF", outlineWidth: 0, shadow: "soft", animation: "glitch",
+  }),
+  namedPreset("flip", "Flip", "Effects", {
+    fontName: "Bricolage Grotesque", fontSize: 84, textTransform: "none", letterSpacing: -0.02,
+    primaryColor: "#FFFFFF", highlightColor: "#FF8A3D", outlineWidth: 0, shadow: "soft", animation: "flip",
+  }),
+  namedPreset("typewriter", "Typewriter", "Effects", {
+    fontName: "Courier Prime", fontSize: 70, textTransform: "none", letterSpacing: -0.02,
+    primaryColor: "#F5F1E8", highlightColor: "#FFFFFF", outlineWidth: 0, shadow: "soft",
+    animation: "typewriter", wordsPerCue: 4,
+  }),
+  namedPreset("block", "Block", "Effects", {
+    fontName: "Archivo Black", fontSize: 82, textTransform: "uppercase", letterSpacing: -0.01,
+    primaryColor: "#FFD84D", highlightColor: "#FFFFFF", outlineColor: "#14161C", outlineWidth: 4,
+    shadow: "extrude", shadowColor: "#14161C", animation: "pop",
+  }),
 ] as const satisfies readonly NamedCaptionPreset[];
 
 export const captionPresetIds = [
@@ -450,4 +365,38 @@ export function isBrandDefaultCaptionPresetId(id: string) {
 
 export function getCaptionPresetById(id: string): NamedCaptionPreset | undefined {
   return CAPTION_PRESETS.find((preset) => preset.id === id);
+}
+
+/** Fields that describe where a caption sits or whether it shows, not how it looks. */
+const CAPTION_PLACEMENT_FIELDS = new Set<keyof CaptionPreset>([
+  "position",
+  "positionX",
+  "positionY",
+  "emojis",
+  "visible",
+  "punctuation",
+]);
+
+/** The catalog preset whose look `preset` still has unchanged, if any. */
+export function matchCaptionPreset(preset: CaptionPreset): NamedCaptionPreset | undefined {
+  return CAPTION_PRESETS.find((named) => {
+    const keys = new Set([...Object.keys(named.preset), ...Object.keys(preset)]) as Set<keyof CaptionPreset>;
+    for (const key of keys) {
+      if (CAPTION_PLACEMENT_FIELDS.has(key)) continue;
+      if (named.preset[key] !== preset[key]) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Applies a catalog preset's look to `current`, keeping the user's placement
+ * and display toggles.
+ */
+export function applyCaptionPresetLook(current: CaptionPreset, named: NamedCaptionPreset): CaptionPreset {
+  const placement: Partial<CaptionPreset> = {};
+  for (const key of CAPTION_PLACEMENT_FIELDS) {
+    if (current[key] !== undefined) Object.assign(placement, { [key]: current[key] });
+  }
+  return { ...named.preset, ...placement };
 }

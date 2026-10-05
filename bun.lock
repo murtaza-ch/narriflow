@@ -78,6 +78,7 @@
       "name": "@narriflow/worker",
       "version": "0.0.0",
       "dependencies": {
+        "@narriflow/caption-fonts": "workspace:*",
         "@narriflow/composition-plan": "workspace:*",
         "@narriflow/db": "workspace:*",
         "@narriflow/email": "workspace:*",
@@ -101,6 +102,18 @@
         "next": "16.3.6",
       },
       "devDependencies": {
+        "@types/node": "26.2.0",
+      },
+    },
+    "packages/caption-fonts": {
+      "name": "@narriflow/caption-fonts",
+      "version": "0.0.0",
+      "dependencies": {
+        "@narriflow/validators": "workspace:*",
+        "fontkit": "2.0.4",
+      },
+      "devDependencies": {
+        "@types/fontkit": "2.0.8",
         "@types/node": "26.2.0",
       },
     },
@@ -612,6 +625,8 @@
     "@modelcontextprotocol/server": ["@modelcontextprotocol/server@2.0.0", "", { "dependencies": { "@modelcontextprotocol/core": "2.0.0", "zod": "^4.2.0" } }, "sha512-YhHWdHfpFMQfd0prsEnxKeS3Qz3ytIGmsS0sth4KDjnacIT7hxk6hXHkJ9KysxlkvTM+WZAtQbbcUhdoP4Hvtw=="],
 
     "@narriflow/auth": ["@narriflow/auth@workspace:packages/auth"],
+
+    "@narriflow/caption-fonts": ["@narriflow/caption-fonts@workspace:packages/caption-fonts"],
 
     "@narriflow/composition-plan": ["@narriflow/composition-plan@workspace:packages/composition-plan"],
 

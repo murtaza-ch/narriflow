@@ -7,7 +7,7 @@ import { resolveClipCaptionPresetForContentPack } from "./clip.service";
 
 describe("resolveClipCaptionPresetForContentPack", () => {
   const templatePreset = captionPresetSchema.parse({
-    fontName: "Template Font",
+    fontName: "Inter",
     highlightColor: "#123456",
   });
 

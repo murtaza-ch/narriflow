@@ -1,5 +1,5 @@
 import {
-  CAPTION_CHUNK_SIZE,
+  applyCaptionTextTransform,
   CAPTION_POSITION_Y_DEFAULTS,
   CLIP_AUTO_LAYOUT_MAX_SEGMENTS,
   CLIP_AUTO_LAYOUT_VERSION,
@@ -2313,22 +2313,6 @@ function retimeVisualLayersForInsertedScenes(
   });
 }
 
-function applyCaptionTextTransform(
-  text: string,
-  transform: CaptionPreset["textTransform"],
-): string {
-  switch (transform) {
-    case "uppercase":
-      return text.toUpperCase();
-    case "lowercase":
-      return text.toLowerCase();
-    case "capitalize":
-      return text.replace(/\b\w/g, (character) => character.toUpperCase());
-    default:
-      return text;
-  }
-}
-
 function captionLayersForTarget(input: {
   document: EditorDocument;
   target: CompositionTarget;
@@ -2379,11 +2363,11 @@ function captionLayersForTarget(input: {
       for (
         let wordIndex = 0;
         wordIndex < visibleWords.length;
-        wordIndex += CAPTION_CHUNK_SIZE
+        wordIndex += preset.wordsPerCue
       ) {
         const group = visibleWords.slice(
           wordIndex,
-          wordIndex + CAPTION_CHUNK_SIZE,
+          wordIndex + preset.wordsPerCue,
         );
         if (group.length === 0) continue;
         const cueIndex = layers.length;
@@ -2393,7 +2377,7 @@ function captionLayersForTarget(input: {
           group[group.length - 1]!.range.endSec,
         );
         layers.push({
-          id: `layer:caption:${utterance.index}:${Math.floor(wordIndex / CAPTION_CHUNK_SIZE)}:${target.id}`,
+          id: `layer:caption:${utterance.index}:${Math.floor(wordIndex / preset.wordsPerCue)}:${target.id}`,
           kind: "caption",
           activeRange: { startSec, endSec },
           anchor,

@@ -14,6 +14,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@narriflow/caption-fonts": "workspace:*",
     "@narriflow/composition-plan": "workspace:*",
     "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",

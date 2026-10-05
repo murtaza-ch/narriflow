@@ -362,7 +362,7 @@ describe("Clip Editor Document Persistence", () => {
 
   test("B-roll intent uses shared media safety and preserves unrelated document fields", async () => {
     const current = document({
-      captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+      captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Anton" },
     });
     const { persistence, scope, store } = setup(stored({ document: current }));
 
@@ -493,7 +493,7 @@ describe("Clip Editor Document Persistence", () => {
   test("project caption selection skips matching targets and changes each other clip once", async () => {
     const captionPreset = {
       ...DEFAULT_CAPTION_PRESET,
-      fontName: "Impact",
+      fontName: "Anton",
       primaryColor: "#ABCDEF",
     };
     const matching = stored({
@@ -530,7 +530,7 @@ describe("Clip Editor Document Persistence", () => {
         projectId: state.projectId,
         intent: {
           kind: "set_caption_preset",
-          captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+          captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Anton" },
         },
       }),
     ).rejects.toMatchObject({ code: "project_not_found" });
@@ -557,7 +557,7 @@ describe("Clip Editor Document Persistence", () => {
         projectId: valid.projectId,
         intent: {
           kind: "set_caption_preset",
-          captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+          captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Anton" },
         },
       }),
     ).rejects.toMatchObject({ code: "corrupt_stored_document" });
@@ -577,7 +577,7 @@ describe("Clip Editor Document Persistence", () => {
         projectId: first.projectId,
         intent: {
           kind: "set_caption_preset",
-          captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+          captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Anton" },
         },
       }),
     ).rejects.toMatchObject({ code: "retryable_contention" });
@@ -694,7 +694,7 @@ describe("Clip Editor Document Persistence", () => {
       name: "caption",
       intent: {
         kind: "set_caption_preset" as const,
-        captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+        captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Anton" },
       },
     },
     {

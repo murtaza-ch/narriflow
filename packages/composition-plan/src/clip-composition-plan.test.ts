@@ -222,6 +222,51 @@ describe("Clip Composition Plan", () => {
     });
   });
 
+  test("chunks caption cues by the preset's words per cue", () => {
+    const words = ["one", "two", "three", "four", "five"].map((word, index) => ({
+      word,
+      startSec: 1 + index * 0.5,
+      endSec: 1.4 + index * 0.5,
+      confidence: 0.99,
+    }));
+    const cueWords = (wordsPerCue: number) => {
+      const document = editorDocumentSchema.parse({
+        version: 1,
+        clipStartSec: 0,
+        clipEndSec: 5,
+        captionPreset: captionPresetSchema.parse({ wordsPerCue }),
+        transcriptSlice: [{
+          index: 0,
+          speaker: 0,
+          speakerLabel: "Speaker 1",
+          startSec: 1,
+          endSec: 3.4,
+          text: words.map((entry) => entry.word).join(" "),
+          confidence: 0.99,
+          words,
+        }],
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+        brollUrl: null,
+        deletedRanges: [],
+      });
+      const result = planClipComposition({
+        document,
+        source: { identity: "source:cues", kind: "video", width: 1920, height: 1080, hasAudio: true },
+        evidence: { automaticLayout: { state: "missing" } },
+        assets: { backgroundImage: { state: "missing" } },
+        capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+        targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+      });
+      if (result.status === "invalid") throw new Error(result.error.code);
+      return result.plan.targets[0]!.visualLayers
+        .filter((layer) => layer.kind === "caption")
+        .map((layer) => (layer.kind === "caption" ? layer.words.map((word) => word.text) : []));
+    };
+    expect(cueWords(1)).toEqual([["ONE"], ["TWO"], ["THREE"], ["FOUR"], ["FIVE"]]);
+    expect(cueWords(2)).toEqual([["ONE", "TWO"], ["THREE", "FOUR"], ["FIVE"]]);
+    expect(cueWords(3)).toEqual([["ONE", "TWO", "THREE"], ["FOUR", "FIVE"]]);
+  });
+
   test("plans caption masks and the shared edited-time censor audio schedule", () => {
     const censoredWord = {
       word: "Fuck!",
@@ -3291,7 +3336,7 @@ describe("Clip Composition Plan", () => {
     });
     expect(available.plan.targets[0]?.visualLayers[1]).toMatchObject({
       kind: "caption",
-      anchor: { xPct: 42, yPct: 88 },
+      anchor: { xPct: 42, yPct: 72 },
       words: [
         { text: "ONE", startSec: 0.5, endSec: 1 },
         { text: "TWO", startSec: 1, endSec: 3 },
