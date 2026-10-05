@@ -1,5 +1,6 @@
 import { workspaceService } from "./workspace.service";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   afterAll,
   beforeAll,
@@ -14,6 +15,7 @@ import {
   CLIP_AUTO_LAYOUT_ENGINE,
   CLIP_AUTO_LAYOUT_VERSION,
   captionPresetSchema,
+  getCaptionPresetById,
   editorDocumentSchema,
   studioEditsSchema,
   type ClipAutoLayoutAnalysis,
@@ -71,6 +73,54 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       workspaceId: f.workspace.id,
     };
   }
+
+  test("caption snapshot migration repairs old styles and preserves current snapshots", async () => {
+    const client = await testDatabase.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Temporary tables shadow the durable tables so this exercises the
+      // actual migration without rewriting other tests' immutable fixtures.
+      await client.query(`
+        CREATE TEMP TABLE "BrandTemplate" ("builtInKey" text, "captionPreset" jsonb) ON COMMIT DROP;
+        CREATE TEMP TABLE "Project" ("brandSnapshot" jsonb, "brandProfileSnapshot" jsonb) ON COMMIT DROP;
+        CREATE TEMP TABLE "UploadSession" ("brandSnapshot" jsonb, "brandProfileSnapshot" jsonb) ON COMMIT DROP;
+        CREATE TEMP TABLE "Clip" ("editorOriginal" jsonb) ON COMMIT DROP;
+        CREATE TEMP TABLE "ClipRender" ("clipSnapshot" jsonb) ON COMMIT DROP;
+      `);
+      const karaoke = getCaptionPresetById("karaoke")!.preset;
+      await client.query('INSERT INTO "BrandTemplate" VALUES ($1, $2), ($3, $4)', [
+        "karaoke", JSON.stringify(karaoke), "bold-pop", JSON.stringify(DEFAULT_CAPTION_PRESET),
+      ]);
+      const oldCaption = { ...karaoke, bold: true, shadow: 1, fontSize: 42 };
+      const old = { captionPreset: oldCaption, logoStorageKey: "keep/logo.png", clipStartSec: 5 };
+      const profile = { profileRevision: 7, style: old };
+      const current = { ...old, captionPreset: { ...karaoke, positionX: 32, primaryColor: "#123456" } };
+      for (const table of ["Project", "UploadSession"]) {
+        await client.query(`INSERT INTO "${table}" VALUES ($1, $2), ($3, NULL), (NULL, NULL)`, [
+          JSON.stringify(old), JSON.stringify(profile), JSON.stringify(current),
+        ]);
+      }
+      await client.query('INSERT INTO "Clip" VALUES ($1)', [JSON.stringify({ ...old, captionPreset: { ...oldCaption, animation: "pop" } })]);
+      await client.query('INSERT INTO "ClipRender" VALUES ($1)', [JSON.stringify(old)]);
+      const sql = readFileSync(new URL("../../db/prisma/migrations/20261005130000_caption_snapshot_contracts/migration.sql", import.meta.url), "utf8");
+      await client.query(sql);
+      for (const table of ["Project", "UploadSession"]) {
+        const rows = (await client.query(`SELECT * FROM "${table}"`)).rows;
+        expect(rows).toContainEqual({ brandSnapshot: { ...old, captionPreset: karaoke }, brandProfileSnapshot: { ...profile, style: { ...old, captionPreset: karaoke } } });
+        expect(rows).toContainEqual({ brandSnapshot: current, brandProfileSnapshot: null });
+        expect(rows).toContainEqual({ brandSnapshot: null, brandProfileSnapshot: null });
+      }
+      expect((await client.query('SELECT "editorOriginal" FROM "Clip"')).rows[0].editorOriginal)
+        .toEqual({ ...old, captionPreset: DEFAULT_CAPTION_PRESET });
+      expect((await client.query('SELECT "clipSnapshot" FROM "ClipRender"')).rows[0].clipSnapshot)
+        .toEqual({ ...old, captionPreset: karaoke });
+      const repeat = await client.query(sql);
+      expect(repeat.filter((result) => result.command === "UPDATE").every((result) => result.rowCount === 0)).toBe(true);
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  });
 
   test("non-owner editors save by Workspace scope while viewers and foreign Workspaces cannot write", async () => {
     const f = await fixture();
@@ -235,7 +285,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     const second = await addClip(f, 1, secondDocument);
     const captionPreset = {
       ...DEFAULT_CAPTION_PRESET,
-      fontName: "Impact",
+      fontName: "Anton",
       primaryColor: "#123456",
     };
     const persistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
@@ -311,7 +361,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       projectId: f.project.id,
       intent: {
         kind: "set_caption_preset",
-        captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+        captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Anton" },
       },
     });
 
@@ -571,7 +621,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     const singlePersistence = createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
       store: prismaClipEditorDocumentStore,
     });
-    const captionPreset = { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" };
+    const captionPreset = { ...DEFAULT_CAPTION_PRESET, fontName: "Anton" };
     const bulk = bulkPersistence.mutateProjectSelection({
       ...fixtureActorScope(f),
       projectId: f.project.id,
@@ -693,7 +743,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
           projectId: f.project.id,
           intent: {
             kind: "set_caption_preset",
-            captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+            captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Anton" },
           },
         }),
       ).rejects.toThrow();
