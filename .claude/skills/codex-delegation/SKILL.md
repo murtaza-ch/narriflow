@@ -1,6 +1,6 @@
 ---
 name: codex-delegation
-description: Delegate implementation, review, or verification work to OpenAI Codex (gpt-5.6-sol) from Claude Code. Use whenever handing a task to Codex — /codex:rescue, /codex:review, adversarial critique, UI verification, or the raw codex CLI fallback — to build the handoff prompt correctly and manage the job lifecycle.
+description: Delegate implementation, review, or verification work to OpenAI Codex (gpt-6.1-sol, xhigh) from Claude Code. Use whenever handing a task to Codex — /codex:rescue, /codex:review, adversarial critique, UI verification, or the raw codex CLI fallback — to build the handoff prompt correctly and manage the job lifecycle.
 ---
 
 # Codex Delegation
@@ -14,12 +14,14 @@ Codex is a peer engineer with zero context from this conversation. The handoff p
 - `/codex:adversarial-review <risk focus>` — skeptical design/tradeoff pressure test; append focus text to steer.
 - `/codex:rescue <task>` — implementation, debugging, or multi-file refactoring delegation.
 - `/codex:status` / `/codex:result` / `/codex:cancel` — manage `--background` jobs.
-- Default `--effort high` on every Codex delegation; leave `--model` unset unless explicitly requested.
+- Default `--model gpt-6.1-sol --effort xhigh` on every Codex delegation.
 
-Raw CLI fallback when the plugin is unavailable (same high-effort default):
+Raw CLI fallback when the plugin is unavailable (same model and effort):
 
-- Review: `codex exec -s read-only -c model_reasoning_effort=high "<self-contained prompt>"`
-- Implementation: `codex exec -c model_reasoning_effort=high "<self-contained prompt>"`
+- Review: `codex exec -s read-only -m gpt-6.1-sol -c model_reasoning_effort=xhigh "<self-contained prompt>"`
+- Implementation: `codex exec -m gpt-6.1-sol -c model_reasoning_effort=xhigh "<self-contained prompt>"`
+
+In T3 Code, delegate through `delegate_task` with provider `codex`, model `gpt-6.1-sol`, reasoning effort `xhigh`.
 
 ## Lifecycle rules
 
