@@ -113,6 +113,14 @@ _Avoid_: Workflow Attempt, worker ID, ingest status
 The durable obligation left by a completed Ingest Job to admit post-ingest generation using the committed Content Pack. Admission, transcript setup and handoff acknowledgment commit together. Draft setup waits; transient admission failures defer; permanent admission failures settle the Ingest Job and Project with an actionable reason and durable notification intent.
 _Avoid_: Generation callback, best-effort trigger, ready with no clips
 
+**Processing Usage Reservation**:
+One Workspace-owned claim on a UTC month's processing minutes for one intake, keyed by its Project ID. It is reserved at admission, resized as duration facts arrive, settled from the probed duration before speech-to-text, and released if processing never starts. Settled usage is final for its month and survives Project deletion, retention purge, and member removal; only an audited operator refund changes it.
+_Avoid_: Quota row, usage counter, minutes balance
+
+**Processing Capacity**:
+The number of a Workspace's videos in flight, derived under the Workspace usage lock from unsettled reservations plus Projects with an active Workflow Run or accepted export renders. Only intake admission is refused when it reaches the tier limit.
+_Avoid_: Concurrency counter
+
 **Media Cleanup**:
 The durable execution module that owns exact-key removal of unreferenced private media after an approved producer commits its database state. It owns idempotent obligation admission, provisional copy-compensation holds, fenced claims, renewal, storage outcome classification, bounded retry, settlement, and identifier-safe diagnostics. Clip Editor Document Persistence, detected Clip replacement, and Clip duplication still own the decision and transaction that create or adopt cleanup intent.
 _Avoid_: Editor Media Cleanup, best-effort delete, cleanup callback

@@ -24,7 +24,7 @@ describe("isAutoRetryableFailureCode", () => {
     expect(isAutoRetryableFailureCode("assemblyai_api_key_missing")).toBe(false); // auth failure
     expect(isAutoRetryableFailureCode("openai_api_key_missing")).toBe(false); // auth failure
     expect(isAutoRetryableFailureCode("openai_quota_exhausted")).toBe(false); // provider billing
-    expect(isAutoRetryableFailureCode("quota_exceeded")).toBe(false); // quota exceeded
+    expect(isAutoRetryableFailureCode("processing_quota_exhausted")).toBe(false);
     expect(isAutoRetryableFailureCode("link_download_missing_file")).toBe(false); // file not found
     expect(isAutoRetryableFailureCode("source_storage_key_missing")).toBe(false); // file not found
     expect(isAutoRetryableFailureCode("remote_url_unsafe")).toBe(false); // SSRF rejection

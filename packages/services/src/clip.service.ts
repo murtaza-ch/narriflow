@@ -1988,9 +1988,9 @@ export class ClipService {
 			);
     }
 
-    // Enforce plan-tier quota + per-upload length cap on this path too (the
-    // project-page "Detect / Regenerate Clips" buttons route through here).
-    await projectService.assertProjectGenerationAllowed(
+    // Regeneration costs no further minutes; it only requires the Project's
+    // first speech-to-text admission to have settled its usage.
+    await projectService.assertProjectProcessingSettled(
       scope,
       projectId,
     );

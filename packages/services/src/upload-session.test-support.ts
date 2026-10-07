@@ -72,13 +72,17 @@ export function createInMemoryUploadSessionHarness() {
         ) ?? null
       );
     },
-    async reserve(record) {
+    async reserve(record, usage) {
       const existing = sessions.find(
         (session) =>
           session.workspaceId === record.workspaceId &&
           session.clientIdempotencyKey === record.clientIdempotencyKey,
       );
       if (existing) return { created: false, session: existing };
+      if (usage) {
+        quotaChecks += 1;
+        if (quotaFailure) throw quotaFailure;
+      }
       sessions.push(record);
       return { created: true, session: record };
     },
@@ -698,10 +702,6 @@ export function createInMemoryUploadSessionHarness() {
       persistence,
       storage,
       admission: {
-        async assertQuota() {
-          quotaChecks += 1;
-          if (quotaFailure) throw quotaFailure;
-        },
         async resolveBrand() {
           brandResolutions += 1;
           return null;

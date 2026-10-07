@@ -30,6 +30,7 @@ export interface LinkResumeData {
 export interface UploadUsageSummary {
   tier: string;
   usedMinutes: number;
+  remainingMinutes: number;
   limitMinutes: number;
   maxUploadSeconds: number;
 }

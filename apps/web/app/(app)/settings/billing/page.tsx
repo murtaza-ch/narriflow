@@ -3,7 +3,6 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { billingService, projectService } from "@narriflow/services";
-import { MONTHLY_PROCESSING_MINUTE_LIMITS } from "@narriflow/validators";
 import { BillingPlans } from "./billing-plans";
 
 function reveal(index: number) {
@@ -20,18 +19,21 @@ export default async function BillingPage({
   searchParams: Promise<{ checkout?: string; session_id?: string }>;
 }) {
   const appUser = await admitWorkspacePage("content.view");
-  const [billingView, usedMinutes, params] = await Promise.all([
+  const [billingView, usage, params] = await Promise.all([
     billingService.readBillingState(appUser.workspaceId),
-    projectService.getUsageSummary(appUser).then((usage) => usage.usedMinutes),
+    projectService.getUsageSummary(appUser),
     searchParams,
   ]);
   const tier = billingView.plan;
-  const limitMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
+  const { usedMinutes, limitMinutes } = usage;
+  // Minutes reserved for videos still importing are spoken for.
   const pct = Math.min(
     100,
-    Math.round((usedMinutes / Math.max(1, limitMinutes)) * 100),
+    Math.round(
+      ((usedMinutes + usage.reservedMinutes) / Math.max(1, limitMinutes)) * 100,
+    ),
   );
-  const remaining = Math.max(0, limitMinutes - usedMinutes);
+  const remaining = usage.remainingMinutes;
 
   return (
     <Stack gap="8">

@@ -18,10 +18,12 @@ import {
 	projectService,
 } from "./project.service";
 import { workspaceService } from "./workspace.service";
+import { getProcessingUsage } from "./processing-usage-runtime";
 import { workspaceLibraryService } from "./workspace-library.service";
 import {
 	contentPackSchema,
 	parseStoredContentPack,
+	processingPeriodStart,
 } from "@narriflow/validators";
 
 const databaseUrl = process.env.WORKFLOW_TEST_DATABASE_URL;
@@ -46,7 +48,10 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			throw new Error("Project Actor Scope tests require a disposable schema");
 		}
 		pool = new Pool({ connectionString: databaseUrl, max: 4 });
-		prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
+		prisma = new PrismaClient({
+			adapter: new PrismaPg(pool, { schema }),
+			transactionOptions: { maxWait: 30_000, timeout: 30_000 },
+		});
 		priorPrisma = prismaGlobal.narriflowPrismaClient;
 		prismaGlobal.narriflowPrismaClient = prisma;
 	});
@@ -100,11 +105,32 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		});
 		return { owner, editor, viewer, workspace, scope };
 	}
+	/** An ingested, measured intake holding its Processing Usage Reservation. */
 	async function project(scope: ActorScope, title = "Shared project") {
-		return projectService.createProject(scope, {
-			title,
-			sourceMediaUrl: "https://example.test/source.mp4",
+		const created = await prisma.project.create({
+			data: {
+				workspaceId: scope.workspaceId,
+				createdByUserId: scope.actorUserId,
+				updatedByUserId: scope.actorUserId,
+				title,
+				sourceMediaUrl: "r2://test/source.mp4",
+				sourceType: "upload",
+				sourceDurationSeconds: 60,
+				ingestStatus: "ready",
+				ingestCompletedAt: new Date(),
+			},
 		});
+		await prisma.processingUsageReservation.create({
+			data: {
+				projectId: created.id,
+				workspaceId: scope.workspaceId,
+				actorUserId: scope.actorUserId,
+				intakeKind: "upload",
+				periodStart: processingPeriodStart(new Date()),
+				reservedSeconds: 60,
+			},
+		});
+		return created;
 	}
 
 	test("a non-owner editor creates, reads and changes shared content as themselves", async () => {
@@ -147,7 +173,10 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			languageCode: null,
 			notifyOnComplete: false,
 		});
-		await projectService.assertProjectGenerationAllowed(
+		await prisma.$transaction((tx) =>
+			getProcessingUsage().settle(tx, created.id),
+		);
+		await projectService.assertProjectProcessingSettled(
 			scope(editor.id),
 			created.id,
 		);
@@ -156,9 +185,12 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 	test("viewer, removed and deleted principals cannot mutate or consume processing", async () => {
 		const { editor, viewer, workspace, scope } = await fixture();
 		const created = await project(scope(editor.id));
-		await expect(project(scope(viewer.id))).rejects.toMatchObject({
-			code: "workspace_access_denied",
-		});
+		await expect(
+			projectService.queueLinkIngest(scope(viewer.id), {
+				url: "https://www.dropbox.com/s/viewer/video.mp4",
+				commitToken: randomUUID(),
+			}),
+		).rejects.toMatchObject({ code: "workspace_access_denied" });
 		await expect(
 			projectService.setProjectNotifyPreference(
 				scope(viewer.id),
@@ -167,7 +199,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			),
 		).rejects.toMatchObject({ code: "workspace_access_denied" });
 		await expect(
-			projectService.assertProjectGenerationAllowed(
+			projectService.assertProjectProcessingSettled(
 				scope(viewer.id),
 				created.id,
 			),
@@ -257,7 +289,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			projectService.deleteProject(foreignScope, created.id),
 		).rejects.toBeInstanceOf(ProjectAccessDeniedError);
 		await expect(
-			projectService.assertProjectGenerationAllowed(foreignScope, created.id),
+			projectService.assertProjectProcessingSettled(foreignScope, created.id),
 		).rejects.toBeInstanceOf(ProjectNotFoundError);
 		await expect(
 			projectService.setProjectNotifyPreference(
@@ -379,10 +411,13 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			(await projectService.getTranscriptSnapshot(scope(owner.id), created.id))
 				?.text,
 		).toBe("Retained transcript");
-		await projectService.assertProjectGenerationAllowedForWorker(
-			created.id,
-			scope(owner.id).workspaceId,
-		);
+		expect(
+			(
+				await prisma.$transaction((tx) =>
+					getProcessingUsage().settle(tx, created.id),
+				)
+			).outcome,
+		).toBe("settled");
 	});
 
 	test("owner deletion is explicit and an ownership transfer preserves existing content", async () => {
@@ -440,12 +475,12 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			where: { id: workspace.id },
 			data: { status: "restricted" },
 		});
-		await expect(
-			projectService.assertProjectGenerationAllowedForWorker(
-				created.id,
-				workspace.id,
-			),
-		).rejects.toBeInstanceOf(ProjectAccessDeniedError);
+		const restricted = await prisma.$transaction((tx) =>
+			getProcessingUsage().settle(tx, created.id),
+		);
+		expect(
+			restricted.outcome === "refused" && restricted.failure.code,
+		).toBe("project_access_denied");
 	});
 
 	test("a personal owner cannot be deleted while the personal Workspace still exists", async () => {

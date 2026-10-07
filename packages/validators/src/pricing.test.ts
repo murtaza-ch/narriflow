@@ -6,7 +6,7 @@ import {
   paidPricingTierSchema,
   processingMinutesFromSeconds,
   PRICING_TABLE,
-  isProcessingQuotaExceeded,
+  processingPeriodStart,
   resolvePricingTier,
 } from ".";
 
@@ -43,28 +43,13 @@ describe("pricing tiers", () => {
     expect(processingMinutesFromSeconds(61)).toBe(2);
   });
 
-  test("quota checks include requested minutes and block new work at the limit", () => {
-    expect(
-      isProcessingQuotaExceeded({
-        usedMinutes: 55,
-        requestedSeconds: 5 * 60,
-        limitMinutes: 60,
-      }),
-    ).toBe(false);
-    expect(
-      isProcessingQuotaExceeded({
-        usedMinutes: 55,
-        requestedSeconds: 6 * 60,
-        limitMinutes: 60,
-      }),
-    ).toBe(true);
-    expect(
-      isProcessingQuotaExceeded({
-        usedMinutes: 60,
-        limitMinutes: 60,
-        blockAtLimitWithoutRequest: true,
-      }),
-    ).toBe(true);
+  test("the processing period is the UTC calendar month of admission", () => {
+    expect(processingPeriodStart(new Date("2026-01-31T23:59:59.999Z")).toISOString()).toBe(
+      "2026-01-01T00:00:00.000Z",
+    );
+    expect(processingPeriodStart(new Date("2026-02-01T00:00:00.000Z")).toISOString()).toBe(
+      "2026-02-01T00:00:00.000Z",
+    );
   });
 });
 

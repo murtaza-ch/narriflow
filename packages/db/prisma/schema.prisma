@@ -343,6 +343,19 @@ enum GeneratedMediaUsageStatus {
   released
 }
 
+enum ProcessingIntakeKind {
+  upload
+  link
+  rss
+}
+
+enum ProcessingUsageState {
+  reserved
+  settled
+  released
+  refunded
+}
+
 enum GeneratedMediaPromptOrigin {
   transcript_selection
   broll_cue
@@ -777,6 +790,7 @@ model User {
   createdAssistedCopyGenerations  AssistedCopyGeneration[]         @relation("AssistedCopyGenerationsCreatedBy")
   createdThumbnailFrameOperations ThumbnailFrameOperation[]        @relation("ThumbnailFrameOperationsCreatedBy")
   generatedMediaUsage             GeneratedMediaUsageReservation[]
+  processingUsage                 ProcessingUsageReservation[]
   brandFonts                      BrandFont[]                      @relation("UserBrandFonts")
   confirmedBrandFonts             BrandFont[]                      @relation("BrandFontLicenseConfirmedBy")
   audioAssets                     AudioAsset[]
@@ -820,6 +834,7 @@ model Workspace {
   assistedCopyGenerations    AssistedCopyGeneration[]
   thumbnailFrameOperations   ThumbnailFrameOperation[]
   generatedMediaUsage        GeneratedMediaUsageReservation[]
+  processingUsage            ProcessingUsageReservation[]
   brandFonts                 BrandFont[]
   audioAssets                AudioAsset[]
   audioAssetFavorites        AudioAssetFavorite[]
@@ -2008,6 +2023,36 @@ model GeneratedMediaUsageReservation {
 
   @@index([workspaceId, status, createdAt])
   @@index([actorUserId, createdAt])
+}
+
+/// One Workspace-owned claim on a UTC month's processing minutes for one
+/// intake, keyed by its Project ID. The Project ID deliberately has no foreign
+/// key: deleting or purging a Project must never cascade into settled usage.
+model ProcessingUsageReservation {
+  id               String               @id @default(uuid()) @db.Uuid
+  projectId        String               @unique @db.Uuid
+  workspaceId      String               @db.Uuid
+  actorUserId      String?              @db.Uuid
+  intakeKind       ProcessingIntakeKind
+  /// UTC month start of admission. Settlement never moves usage between months.
+  periodStart      DateTime
+  reservedSeconds  Int
+  settledSeconds   Int?
+  state            ProcessingUsageState @default(reserved)
+  /// Bounded release or refund reason.
+  reason           String?
+  refundedByUserId String?              @db.Uuid
+  settledAt        DateTime?
+  releasedAt       DateTime?
+  refundedAt       DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor     User?     @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, periodStart, state])
+  @@index([state, updatedAt])
 }
 
 model SceneTemplate {

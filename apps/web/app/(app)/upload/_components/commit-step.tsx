@@ -23,7 +23,6 @@ import { Input } from "@narriflow/ui/components/input";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
-  isProcessingQuotaExceeded,
   processingMinutesFromSeconds,
   type BrandTemplateSummary,
   type GenerationMode,
@@ -71,7 +70,7 @@ function ErrorNotice({ message }: { message: string }) {
 
 interface UsageSummary {
   tier: string;
-  usedMinutes: number;
+  remainingMinutes: number;
   limitMinutes: number;
   maxUploadSeconds: number;
 }
@@ -181,21 +180,13 @@ export function CommitStep({
   const estimatedMinutes = hasKnownDuration
     ? processingMinutesFromSeconds(durationSec)
     : null;
-  const minutesLeft = Math.max(
-    0,
-    usageSummary.limitMinutes - usageSummary.usedMinutes,
-  );
+  const minutesLeft = usageSummary.remainingMinutes;
 
   const overUploadCap =
     hasKnownDuration && (durationSec as number) > usageSummary.maxUploadSeconds;
+  // Guidance only; Processing Usage decides at admission and settlement.
   const wouldExceedMonthly =
-    hasKnownDuration &&
-    isProcessingQuotaExceeded({
-      usedMinutes: usageSummary.usedMinutes,
-      requestedSeconds: durationSec,
-      limitMinutes: usageSummary.limitMinutes,
-      blockAtLimitWithoutRequest: true,
-    });
+    hasKnownDuration && estimatedMinutes !== null && estimatedMinutes > minutesLeft;
   const planLimitMessage = overUploadCap
     ? // The per-upload cap is enforced against the full source duration
       // (sourceDurationSeconds), not the trimmed processing window — trimming
@@ -204,7 +195,7 @@ export function CommitStep({
         usageSummary.maxUploadSeconds / 60,
       )}-min per-upload limit on your plan. Upgrade for longer uploads.`
     : wouldExceedMonthly
-      ? `This would put you over your monthly processing limit (${usageSummary.usedMinutes} of ${usageSummary.limitMinutes} min used).`
+      ? `This would put you over your monthly processing limit (${minutesLeft} of ${usageSummary.limitMinutes} min left).`
       : null;
 
   async function handleCommit() {

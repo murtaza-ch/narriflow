@@ -19,6 +19,7 @@
     "test": "bun -e 'console.log(\"Fast tests exclude disposable-schema PostgreSQL invariants; run the test:*:db commands separately.\")' && bun test scripts/env-check.test.ts && turbo run test",
     "test:workflow:db": "bun packages/services/scripts/run-workflow-db-tests.ts",
     "test:upload-session:db": "bun packages/services/scripts/run-upload-session-db-tests.ts",
+    "test:processing-usage:db": "bun packages/services/scripts/run-processing-usage-db-tests.ts",
     "test:workspace-billing:db": "bun packages/services/scripts/run-workspace-billing-db-tests.ts",
     "test:social-publication:db": "bun packages/services/scripts/run-social-publication-db-tests.ts",
     "test:clip-editor-persistence:db": "bun packages/services/scripts/run-clip-editor-persistence-db-tests.ts",

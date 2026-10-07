@@ -65,7 +65,15 @@ function harness() {
     leaseMs: 10_000,
     heartbeatMs: 2_000,
     requireRetryActor: async () => {},
-    assertGenerationAllowed: async () => {},
+    usage: {
+      reserve: async () => {
+        throw new Error("unexpected reservation");
+      },
+      settle: async () => {
+        throw new Error("unexpected settlement");
+      },
+      release: async () => false,
+    },
     scheduler: {
       schedule: (tick: () => void) => {
         callback = tick;

@@ -508,6 +508,16 @@ export class WorkflowRunLifecycle {
     tx: TransactionClient,
     input: Omit<AdmitWorkflowRunInput, "contentPack">,
   ): Promise<{ id: string; created: boolean }> {
+    if (input.stage === "stt") {
+      // Processing Usage settles inside every speech-to-text admission
+      // transaction before this point. No stt run exists without it.
+      const usage = await tx.processingUsageReservation.findUnique({
+        where: { projectId: input.projectId },
+        select: { state: true },
+      });
+      if (usage?.state !== "settled" && usage?.state !== "refunded")
+        throw new Error("processing_usage_not_settled");
+    }
     const workflowRunId = randomUUID();
     const inserted = await tx.$queryRaw<Array<{ id: string }>>`
       INSERT INTO "WorkflowRun" (
@@ -693,8 +703,9 @@ export class WorkflowRunLifecycle {
   async admitWithHandoff<T>(
     input: AdmitWorkflowRunInput,
     handoff: (tx: TransactionClient, run: { id: string; created: boolean }) => Promise<T>,
+    transactionClient?: TransactionClient,
   ): Promise<{ id: string; created: boolean; handoff: T }> {
-    return this.transaction(async (tx) => {
+    const admit = async (tx: TransactionClient) => {
       await this.lockAdmissionProject(tx, input.projectId);
       const existing = await tx.workflowRun.findUnique({
         where: { projectId_idempotencyKey: { projectId: input.projectId, idempotencyKey: input.idempotencyKey } },
@@ -714,7 +725,8 @@ export class WorkflowRunLifecycle {
       }
       const value = await handoff(tx, admitted);
       return { ...admitted, handoff: value };
-    });
+    };
+    return transactionClient ? admit(transactionClient) : this.transaction(admit);
   }
 
   async admitTranscript(

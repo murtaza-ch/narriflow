@@ -108,6 +108,18 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         createdByUserId: user.id,
       },
     });
+    // Speech-to-text admission requires settled Processing Usage.
+    await prisma.processingUsageReservation.create({
+      data: {
+        projectId: project.id,
+        workspaceId: workspace.id,
+        intakeKind: "upload",
+        periodStart: new Date(Date.UTC(2026, 0, 1)),
+        reservedSeconds: 60,
+        settledSeconds: 60,
+        state: "settled",
+      },
+    });
     const run = await prisma.workflowRun.create({
       data: {
         projectId: project.id,

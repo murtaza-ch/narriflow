@@ -21,6 +21,8 @@ import {
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { autoTriggerIdempotencyKey } from "./generation-sequencing";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { ProcessingUsage } from "./processing-usage";
+import { PROCESSING_CAPACITY_DEFAULTS } from "@narriflow/validators";
 
 const url = process.env.WORKFLOW_TEST_DATABASE_URL;
 const schema = process.env.WORKFLOW_TEST_DATABASE_SCHEMA;
@@ -52,15 +54,51 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     await prisma.$disconnect();
     await pool.end();
   });
+  function usage(
+    hooks: { beforeSettle?: () => Promise<void> } = {},
+  ): IngestJobLifecycleDependencies["usage"] {
+    const real = new ProcessingUsage({
+      prisma,
+      capacityLimits: PROCESSING_CAPACITY_DEFAULTS,
+      log: () => {},
+    });
+    return {
+      reserve: (tx, input) => real.reserve(tx, input),
+      release: (tx, input) => real.release(tx, input),
+      settle: async (tx, projectId) => {
+        await hooks.beforeSettle?.();
+        return real.settle(tx, projectId);
+      },
+    };
+  }
   function lifecycle(overrides: Partial<IngestJobLifecycleDependencies> = {}) {
     return new IngestJobLifecycle({
       prisma,
       workflow: new WorkflowRunLifecycle({ prisma }),
       now: () => new Date(clock),
       requireRetryActor: async () => {},
-      assertGenerationAllowed: async () => {},
+      usage: usage(),
       sourceBucket: "ingest-test",
       ...overrides,
+    });
+  }
+  async function reservation(
+    projectId: string,
+    workspaceId: string,
+    state: "reserved" | "settled" = "reserved",
+    seconds = 60,
+  ) {
+    const now = new Date();
+    return prisma.processingUsageReservation.create({
+      data: {
+        projectId,
+        workspaceId,
+        intakeKind: "link",
+        periodStart: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+        reservedSeconds: seconds,
+        settledSeconds: state === "settled" ? seconds : null,
+        state,
+      },
     });
   }
   async function fixture(
@@ -90,6 +128,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         workspaceId: workspace.id,
         createdByUserId: user.id,
         ingestStatus: status,
+        sourceDurationSeconds: status === "ready" ? 60 : null,
       },
     });
     const job = await prisma.ingestJob.create({
@@ -429,28 +468,27 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     await prisma.project.update({ where: { id: project.id }, data: { createdByUserId: creator.id } });
     await committedPack(project.id);
     await prisma.user.delete({ where: { id: creator.id } });
-    const admittedScopes: unknown[][] = [];
-    const module = lifecycle({
-      assertGenerationAllowed: async (...args) => { admittedScopes.push(args); },
-    });
+    await reservation(project.id, workspace.id);
+    const module = lifecycle();
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(1);
-    expect(admittedScopes).toEqual([[project.id, workspace.id]]);
+    expect(
+      (await prisma.processingUsageReservation.findUniqueOrThrow({ where: { projectId: project.id } })).state,
+    ).toBe("settled");
     expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).createdByUserId).toBeNull();
     expect(await prisma.workflowRun.count({ where: { projectId: project.id, stage: "stt" } })).toBe(1);
   });
-  test("permanent handoff rejection atomically fails Project/job and leaves actionable notification", async () => {
-    const { project, job } = await fixture("ready");
+  test("settlement refusal atomically fails Project/job, releases usage, and leaves actionable notification", async () => {
+    const { project, job, workspace } = await fixture("ready");
     await committedPack(project.id);
-    const module = lifecycle({
-      assertGenerationAllowed: async () => {
-        throw new ExpectedDomainFailureError({
-          code: "upload_too_long",
-          kind: "payment_required",
-          message: "Source exceeds this plan's upload length",
-        });
-      },
-    });
+    await reservation(project.id, workspace.id);
+    // The probed source exceeds the Free per-video cap.
+    await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 31 * 60 } });
+    const module = lifecycle();
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
+    expect(
+      (await prisma.processingUsageReservation.findUniqueOrThrow({ where: { projectId: project.id } })).state,
+    ).toBe("released");
+    expect(await prisma.workflowRun.count({ where: { projectId: project.id } })).toBe(0);
     const row = await prisma.ingestJob.findUniqueOrThrow({
       where: { id: job.id },
     });
@@ -469,13 +507,16 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
   });
   test("handoff retry is durable, fair to due retries and exactly-once at admission", async () => {
-    const { project, job } = await fixture("ready");
+    const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
+    await reservation(project.id, workspace.id);
     let calls = 0;
     const module = lifecycle({
-      assertGenerationAllowed: async () => {
-        if (++calls === 1) throw new Error("temporary admission outage");
-      },
+      usage: usage({
+        beforeSettle: async () => {
+          if (++calls === 1) throw new Error("temporary admission outage");
+        },
+      }),
     });
     await module.processGenerationHandoffs(1, job.id);
     expect(
@@ -523,8 +564,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
   });
   test("a manually admitted same-pack run acknowledges handoff after its stage advances", async () => {
-    const { project, job } = await fixture("ready");
+    const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
+    await reservation(project.id, workspace.id, "settled");
     const workflow = new WorkflowRunLifecycle({ prisma });
     const manual = await workflow.admitTranscript({
       projectId: project.id,
@@ -538,9 +580,11 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       data: { status: "completed" },
     });
     const module = lifecycle({
-      assertGenerationAllowed: async () => {
-        throw new Error("existing admission should skip quota");
-      },
+      usage: usage({
+        beforeSettle: async () => {
+          throw new Error("existing admission should skip settlement");
+        },
+      }),
     });
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(1);
     expect(
@@ -557,25 +601,28 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         .ingestStatus,
     ).toBe("ready");
   });
-  test("a same-pack admission during quota assertion wins over the stale permanent error", async () => {
-    const { project, job } = await fixture("ready");
+  test("a same-pack admission during settlement wins over a stale permanent error", async () => {
+    const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
+    await reservation(project.id, workspace.id, "settled");
     const workflow = new WorkflowRunLifecycle({ prisma });
     const module = lifecycle({
-      assertGenerationAllowed: async () => {
-        await workflow.admitTranscript({
-          projectId: project.id,
-          idempotencyKey: `manual:${randomUUID()}`,
-          contentPackId: pack.id,
-          transcriptProvider: "assemblyai",
-          transcriptProviderModel: "test",
-        });
-        throw new ExpectedDomainFailureError({
-          code: "quota_exceeded",
-          kind: "payment_required",
-          message: "quota changed after admission",
-        });
-      },
+      usage: usage({
+        beforeSettle: async () => {
+          await workflow.admitTranscript({
+            projectId: project.id,
+            idempotencyKey: `manual:${randomUUID()}`,
+            contentPackId: pack.id,
+            transcriptProvider: "assemblyai",
+            transcriptProviderModel: "test",
+          });
+          throw new ExpectedDomainFailureError({
+            code: "project_access_denied",
+            kind: "forbidden",
+            message: "access changed after admission",
+          });
+        },
+      }),
     });
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(1);
     expect(
@@ -593,23 +640,26 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     ).toBe(0);
   });
   test("a manual stage completing during admission rolls back the extra automatic run", async () => {
-    const { project, job } = await fixture("ready");
+    const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
+    await reservation(project.id, workspace.id, "settled");
     const workflow = new WorkflowRunLifecycle({ prisma });
     const module = lifecycle({
-      assertGenerationAllowed: async () => {
-        const run = await workflow.admitTranscript({
-          projectId: project.id,
-          idempotencyKey: `manual:${randomUUID()}`,
-          contentPackId: pack.id,
-          transcriptProvider: "assemblyai",
-          transcriptProviderModel: "test",
-        });
-        await prisma.workflowRun.update({
-          where: { id: run.id },
-          data: { status: "completed" },
-        });
-      },
+      usage: usage({
+        beforeSettle: async () => {
+          const run = await workflow.admitTranscript({
+            projectId: project.id,
+            idempotencyKey: `manual:${randomUUID()}`,
+            contentPackId: pack.id,
+            transcriptProvider: "assemblyai",
+            transcriptProviderModel: "test",
+          });
+          await prisma.workflowRun.update({
+            where: { id: run.id },
+            data: { status: "completed" },
+          });
+        },
+      }),
     });
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(1);
     expect(
@@ -625,18 +675,24 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         .generationHandoffAt,
     ).not.toBeNull();
   });
-  test("lost handoff guard rolls back its newly admitted run and outbox", async () => {
-    const { project, job } = await fixture("ready");
+  test("lost handoff guard rolls back its newly admitted run, outbox, and settlement", async () => {
+    const { project, job, workspace } = await fixture("ready");
     await committedPack(project.id);
+    await reservation(project.id, workspace.id);
     const module = lifecycle({
-      assertGenerationAllowed: async () => {
-        await prisma.ingestJob.update({
-          where: { id: job.id },
-          data: { generationHandoffAt: new Date(clock) },
-        });
-      },
+      usage: usage({
+        beforeSettle: async () => {
+          await prisma.ingestJob.update({
+            where: { id: job.id },
+            data: { generationHandoffAt: new Date(clock) },
+          });
+        },
+      }),
     });
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
+    expect(
+      (await prisma.processingUsageReservation.findUniqueOrThrow({ where: { projectId: project.id } })).state,
+    ).toBe("reserved");
     expect(
       await prisma.workflowRun.count({ where: { projectId: project.id } }),
     ).toBe(0);

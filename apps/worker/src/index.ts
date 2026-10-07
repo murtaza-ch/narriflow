@@ -18,6 +18,7 @@ import {
 	generatedMediaService,
 	purgeExpiredGeneratedMediaPrompts,
 	reconcileOrphanGeneratedMediaReservations,
+	getProcessingUsage,
 	thumbnailFramePreparationService,
 	uploadSessionService,
 	WorkflowAttemptLost,
@@ -183,6 +184,9 @@ async function reapStalledRunsIfDue() {
 		}
 		await purgeExpiredGeneratedMediaPrompts();
 		await reconcileOrphanGeneratedMediaReservations();
+		// Releases processing reservations stranded by crashes; each release is
+		// logged with its reason by the Processing Usage module.
+		await getProcessingUsage().reconcileStranded({ limit: 100 });
 		const expiredBundles = await expireExportBundles(
 			new Date(),
 			Number(process.env.EXPORT_BUNDLE_EXPIRY_BATCH_SIZE ?? 100),

@@ -4,20 +4,28 @@ import type { MediaCleanupObligation } from "@prisma/client";
 import { tryDerivePeaksStorageKey } from "./clip-preview-storage";
 import { classifyR2StorageError, deleteObject } from "./r2-storage";
 
-export type MediaCleanupOrigin =
-  | "clip_editor_document_persistence"
-  | "detected_clip_replacement"
-  | "clip_duplicate_compensation"
-  | "generated_media_publication"
-  | "thumbnail_frame_preparation";
+// Stored obligations are parsed against these lists, so every producer's
+// origin and class must appear here before it admits work.
+export const MEDIA_CLEANUP_ORIGINS = [
+  "clip_editor_document_persistence",
+  "detected_clip_replacement",
+  "clip_duplicate_compensation",
+  "generated_media_publication",
+  "thumbnail_frame_preparation",
+  "upload_source_pinning",
+] as const;
+export type MediaCleanupOrigin = (typeof MEDIA_CLEANUP_ORIGINS)[number];
 
-export type MediaCleanupClass =
-  | "mutable_render"
-  | "preview_proxy"
-  | "preview_peaks"
-  | "dub_media"
-  | "generated_asset"
-  | "thumbnail_asset";
+export const MEDIA_CLEANUP_CLASSES = [
+  "mutable_render",
+  "preview_proxy",
+  "preview_peaks",
+  "dub_media",
+  "generated_asset",
+  "thumbnail_asset",
+  "upload_source",
+] as const;
+export type MediaCleanupClass = (typeof MEDIA_CLEANUP_CLASSES)[number];
 
 export interface MediaCleanupObligationInput {
   origin: MediaCleanupOrigin;
@@ -25,6 +33,8 @@ export interface MediaCleanupObligationInput {
   projectId?: string | null;
   clipId?: string | null;
   objectKey: string;
+  /** Earliest deletion time, for keys an outstanding grant could still write. */
+  notBefore?: Date;
 }
 
 export interface MediaCleanupAdmissionStore {
@@ -35,6 +45,7 @@ export interface MediaCleanupAdmissionStore {
       projectId: string | null;
       clipId: string | null;
       objectKey: string;
+      nextAttemptAt?: Date;
       claimId?: string;
       claimExpiresAt?: Date;
     }>;
@@ -192,6 +203,7 @@ export async function admitMediaCleanupObligations(
       projectId: obligation.projectId ?? null,
       clipId: obligation.clipId ?? null,
       objectKey: obligation.objectKey,
+      ...(obligation.notBefore ? { nextAttemptAt: obligation.notBefore } : {}),
       ...(options.heldClaim ?? {}),
     })),
     skipDuplicates: true,
@@ -942,28 +954,15 @@ function requirePrisma() {
 }
 
 function cleanupClass(value: string): MediaCleanupClass {
-  if (
-    value === "mutable_render" ||
-    value === "preview_proxy" ||
-    value === "preview_peaks" ||
-    value === "dub_media" ||
-    value === "generated_asset"
-  ) {
-    return value;
-  }
-  throw new Error("Unknown media cleanup class");
+  const known = MEDIA_CLEANUP_CLASSES.find((candidate) => candidate === value);
+  if (!known) throw new Error("Unknown media cleanup class");
+  return known;
 }
 
 function cleanupOrigin(value: string): MediaCleanupOrigin {
-  if (
-    value === "clip_editor_document_persistence" ||
-    value === "detected_clip_replacement" ||
-    value === "clip_duplicate_compensation" ||
-    value === "generated_media_publication"
-  ) {
-    return value;
-  }
-  throw new Error("Unknown media cleanup origin");
+  const known = MEDIA_CLEANUP_ORIGINS.find((candidate) => candidate === value);
+  if (!known) throw new Error("Unknown media cleanup origin");
+  return known;
 }
 
 function ownedClaimWhere(input: { id: string; claimId: string; now: Date }) {

@@ -10,8 +10,7 @@ import {
 } from "@/lib/authenticated-request-action";
 import {
   projectService,
-  QuotaExceededError,
-  UploadTooLongError,
+  ProcessingUsageError,
   LinkUnsupportedSourceError,
 } from "@narriflow/services";
 import {
@@ -51,7 +50,7 @@ const rssActionInputSchema = rssImportSchema.extend({
  * production, and the Commit CTA needs the specific, user-visible copy.
  */
 function commitErrorCode(error: unknown): string {
-  if (error instanceof QuotaExceededError) return "quota_exceeded";
+  if (error instanceof ProcessingUsageError) return error.code;
   if (error instanceof LinkUnsupportedSourceError) {
     return "link_unsupported_source";
   }
@@ -134,8 +133,7 @@ export async function commitLinkImportAction(input: {
  * already ready at click time — the hard post-ingest gate).
  */
 function finalizeErrorCode(error: unknown): string {
-  if (error instanceof QuotaExceededError) return "quota_exceeded";
-  if (error instanceof UploadTooLongError) return "ingest_max_duration_exceeded";
+  if (error instanceof ProcessingUsageError) return error.code;
   throw error;
 }
 

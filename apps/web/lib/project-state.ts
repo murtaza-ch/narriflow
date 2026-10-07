@@ -182,11 +182,13 @@ export function rememberBoundedIdentity(
 export type IngestRecoveryAction = "retry" | "new_upload";
 
 /** Provider access denials are deterministic for the same link and worker
- * runtime. Repeating the same import is false recovery; start from a file. */
+ * runtime, and a changed upload can't be re-verified. Repeating the same
+ * import is false recovery; start from a file. */
 export function ingestRecoveryAction(
   errorCode: string | null | undefined,
 ): IngestRecoveryAction {
-  return errorCode === "source_provider_access_denied"
+  return errorCode === "source_provider_access_denied" ||
+    errorCode === "upload_source_changed"
     ? "new_upload"
     : "retry";
 }

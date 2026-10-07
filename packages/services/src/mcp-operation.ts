@@ -80,9 +80,15 @@ export function createMcpOperationExecutor<Tx>(
 			authorize: () => Promise<void>;
 			beforeAccept?: () => Promise<void>;
 			prepare?: () => Promise<void>;
+			/** A mutation may commit a durable refusal, such as a released usage
+			 * reservation, without a receipt. Its error reaches the caller after
+			 * commit, and a replay re-evaluates against the committed state. */
 			mutate: (
 				tx: Tx,
-			) => Promise<{ resourceType: string; resourceId: string; value: T }>;
+			) => Promise<
+				| { resourceType: string; resourceId: string; value: T }
+				| { refusal: ExpectedDomainFailureError }
+			>;
 		}): Promise<{ operationId: string; replayed: boolean; value: T }> {
 			if (
 				!input.identity.clientIdempotencyKey ||
@@ -111,7 +117,7 @@ export function createMcpOperationExecutor<Tx>(
 			// the transaction because another process can accept while preparing.
 			try {
 				await input.prepare?.();
-				return await persistence.transaction(async (tx) => {
+				const outcome = await persistence.transaction(async (tx) => {
 					await persistence.lock(tx, input.identity);
 					const accepted = await persistence.readInTransaction(
 						tx,
@@ -120,6 +126,7 @@ export function createMcpOperationExecutor<Tx>(
 					if (accepted) return replay(accepted);
 					await input.beforeAccept?.();
 					const result = await input.mutate(tx);
+					if ("refusal" in result) return result;
 					const id = randomUUID();
 					// Store a JSON snapshot, never a mutable object owned by the caller.
 					const value = JSON.parse(canonicalJson(result.value)) as T;
@@ -133,6 +140,8 @@ export function createMcpOperationExecutor<Tx>(
 					});
 					return { operationId: id, replayed: false, value };
 				});
+				if ("refusal" in outcome) throw outcome.refusal;
+				return outcome;
 			} catch (error) {
 				// Resolve a concurrent acceptance or a lost commit response before
 				// reporting mutable admission failures. Preserve the original error

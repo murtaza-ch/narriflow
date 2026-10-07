@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ProcessingUsageError } from "@narriflow/services";
 import { WorkerProcessFailure, type WorkerProcessModule } from "../worker-process";
 import {
   classifyYtdlpProviderFailure,
@@ -16,12 +17,22 @@ function processModuleWithExecute(
 ): WorkerProcessModule {
   return {
     execute,
-    inspectMedia: async () => {
-      throw new Error("unexpected media inspection");
-    },
+    inspectMedia: async () => ({ durationSec: 30 }) as Awaited<ReturnType<WorkerProcessModule["inspectMedia"]>>,
     withScratchDirectory: async (_prefix, work) => work("/tmp/unused"),
   };
 }
+
+const unlimitedUsage = {
+  resize: async (input: { projectId: string; seconds: number }) => ({
+    projectId: input.projectId,
+    workspaceId: "workspace",
+    intakeKind: "link" as const,
+    state: "reserved" as const,
+    periodStart: new Date(),
+    reservedSeconds: input.seconds,
+    settledSeconds: null,
+  }),
+};
 
 describe("readVerifiedUploadPayload", () => {
   test("uses the Upload Session's verified object facts", () => {
@@ -30,11 +41,15 @@ describe("readVerifiedUploadPayload", () => {
         storageKey: "workspaces/ws/upload-sessions/session/source.mp4",
         verifiedSizeBytes: 42,
         verifiedContentType: "video/mp4",
+        verifiedEtag: '"etag"',
+        uploadSessionId: "session",
       }),
     ).toEqual({
       storageKey: "workspaces/ws/upload-sessions/session/source.mp4",
       sizeBytes: 42,
       contentType: "video/mp4",
+      etag: '"etag"',
+      uploadSessionId: "session",
     });
   });
 
@@ -189,9 +204,11 @@ describe("YouTube proxy session rotation", () => {
         workerProcess,
         lifecycle: {
           progress: async () => {},
+          pinSource: async () => {},
           complete: async () => { settled.push("complete"); },
-          fail: async (_job, code) => { settled.push(code); return { outcome: "fail" }; },
+          fail: async (_job, code) => { settled.push(code); return { outcome: "permanent", terminalErrorCode: code }; },
         },
+        usage: unlimitedUsage,
         putSource: async () => {},
       });
       return { proxies, settled };
@@ -248,9 +265,11 @@ describe("ingest media execution cancellation", () => {
         workerProcess,
         lifecycle: {
           progress: async () => {},
+          pinSource: async () => {},
           complete: async () => { settlements++; },
           fail: async () => { settlements++; return { outcome: "requeue" }; },
         },
+        usage: unlimitedUsage,
         putSource: async (input) => {
           uploads++;
           expect(input.signal).toBe(shutdown.signal);
@@ -264,5 +283,123 @@ describe("ingest media execution cancellation", () => {
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
+  });
+});
+
+describe("upload source pinning and usage facts", () => {
+  const uploadJob = {
+    id: "job",
+    projectId: "project",
+    jobType: "upload_finalize" as const,
+    claimId: "claim",
+    attemptCount: 1,
+    payload: {
+      storageKey: "workspaces/ws/upload-sessions/session/source.mp4",
+      verifiedSizeBytes: 42,
+      verifiedContentType: "video/mp4",
+      verifiedEtag: '"verified"',
+      uploadSessionId: "session",
+    },
+  };
+
+  test("a replaced upload fails its ETag-conditioned pin permanently, before probing", async () => {
+    const settled: string[] = [];
+    let probes = 0;
+    const workerProcess = processModuleWithExecute(async () => {
+      throw new Error("no subprocess expected");
+    });
+    workerProcess.inspectMedia = async () => {
+      probes++;
+      return { durationSec: 9_000 } as Awaited<ReturnType<WorkerProcessModule["inspectMedia"]>>;
+    };
+    await processIngestJob(uploadJob, {
+      workerProcess,
+      lifecycle: {
+        progress: async () => {},
+        pinSource: async () => { settled.push("pinned"); },
+        complete: async () => { settled.push("complete"); },
+        fail: async (_job, code) => { settled.push(code); return { outcome: "permanent", terminalErrorCode: code }; },
+      },
+      usage: unlimitedUsage,
+      putSource: async () => {},
+      sourceStorage: {
+        exists: async () => false,
+        copyIfMatch: async (input) => {
+          expect(input.etag).toBe('"verified"');
+          expect(input.destinationKey).toBe("projects/project/upload/session.mp4");
+          return "changed";
+        },
+      },
+    });
+    expect(settled).toEqual(["upload_source_changed"]);
+    expect(probes).toBe(0);
+  });
+
+  test("a verified upload is pinned once, probed from the pinned key, and resized", async () => {
+    const settled: string[] = [];
+    const resized: number[] = [];
+    let copies = 0;
+    await processIngestJob(uploadJob, {
+      workerProcess: processModuleWithExecute(async () => {
+        throw new Error("no subprocess expected");
+      }),
+      lifecycle: {
+        progress: async () => {},
+        pinSource: async (_job, input) => {
+          settled.push(`pinned:${input.sourceStorageKey}:${input.releasedStorageKey}`);
+        },
+        complete: async (_job, source) => { settled.push(`complete:${source.sourceStorageKey}`); },
+        fail: async (_job, code) => { settled.push(code); return { outcome: "permanent", terminalErrorCode: code }; },
+      },
+      usage: {
+        resize: async (input) => {
+          resized.push(input.seconds);
+          return unlimitedUsage.resize(input);
+        },
+      },
+      putSource: async () => {},
+      sourceStorage: {
+        // A retry after a committed copy finds the pinned key and reuses it.
+        exists: async () => copies > 0,
+        copyIfMatch: async () => { copies++; return "copied"; },
+      },
+    });
+    expect(copies).toBe(1);
+    expect(resized).toEqual([30]);
+    expect(settled).toEqual([
+      "pinned:projects/project/upload/session.mp4:workspaces/ws/upload-sessions/session/source.mp4",
+      "complete:projects/project/upload/session.mp4",
+    ]);
+  });
+
+  test("a link whose metadata exceeds the allowance is refused before download with its typed code", async () => {
+    const settled: string[] = [];
+    const commands: string[][] = [];
+    const workerProcess = processModuleWithExecute(async (request) => {
+      commands.push(request.args);
+      return { exitCode: 0, stdout: Buffer.from(JSON.stringify({ id: "test", title: "Test", duration: 7_200 })) };
+    });
+    await processIngestJob({ id: "job", projectId: "project", jobType: "link_import", claimId: "claim", attemptCount: 1, payload: { url: "https://www.youtube.com/watch?v=test", provider: "youtube" } }, {
+      workerProcess,
+      lifecycle: {
+        progress: async () => {},
+        pinSource: async () => {},
+        complete: async () => { settled.push("complete"); },
+        fail: async (_job, code) => { settled.push(code); return { outcome: "permanent", terminalErrorCode: code }; },
+      },
+      usage: {
+        resize: async () => {
+          throw new ProcessingUsageError({
+            code: "processing_quota_exhausted",
+            message: "No minutes left",
+            details: { tier: "free", limitMinutes: 60, remainingMinutes: 5, requestedMinutes: 120 },
+          });
+        },
+      },
+      putSource: async () => {},
+    });
+    expect(settled).toEqual(["processing_quota_exhausted"]);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toContain("--skip-download");
   });
 });

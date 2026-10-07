@@ -12,6 +12,7 @@ import {
 	type R2ObjectSummary,
 } from "./r2-storage";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { getProcessingUsage } from "./processing-usage-runtime";
 
 export const RETENTION_POLICIES = {
 	free_project_v1: { durationMs: 72 * 60 * 60 * 1000 },
@@ -691,6 +692,13 @@ export class ProjectRetentionService {
 		});
 
 		await prisma.$transaction(async (tx) => {
+			// An expired intake that never settled returns its reservation;
+			// settled usage survives the purge unchanged. Releasing before the
+			// Project row lock keeps the usage-row-then-Project lock order.
+			await getProcessingUsage().release(tx, {
+				projectId: project.id,
+				reason: "project_retention_purged",
+			});
 			const deleted = await tx.project.deleteMany({
 				where: { id: project.id, purgeStartedAt: { not: null } },
 			});

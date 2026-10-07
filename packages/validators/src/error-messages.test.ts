@@ -10,10 +10,10 @@ describe("userErrorMessage", () => {
   });
 
   test("returns friendly copy for a known code", () => {
-    expect(userErrorMessage("quota_exceeded")).toBe(
-      USER_ERROR_MESSAGES.quota_exceeded,
+    expect(userErrorMessage("processing_quota_exhausted")).toBe(
+      USER_ERROR_MESSAGES.processing_quota_exhausted,
     );
-    expect(userErrorMessage("quota_exceeded")).toContain(
+    expect(userErrorMessage("processing_quota_exhausted")).toContain(
       "processing minutes",
     );
   });
@@ -116,7 +116,7 @@ describe("userErrorMessage", () => {
   });
 
   test("distinguishes explicitly supported codes from generic fallback copy", () => {
-    expect(hasUserErrorMessage("quota_exceeded")).toBe(true);
+    expect(hasUserErrorMessage("processing_quota_exhausted")).toBe(true);
     expect(hasUserErrorMessage("P2024")).toBe(false);
   });
 

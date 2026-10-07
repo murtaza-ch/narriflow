@@ -2,6 +2,15 @@ import type { ActorScope } from "./actor-scope";
 import { getMcpOperationExecutor } from "./mcp-operation-runtime";
 import { mcpOperationFingerprint, type McpMutationOptions } from "./mcp-operation";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
+import { getProcessingUsage } from "./processing-usage-runtime";
+import {
+	isProcessingUsageFailureCode,
+	PROCESSING_USAGE_TRANSACTION,
+	ProcessingUsageError,
+	processingUsageFailureCatalog,
+	type ProcessingUsageSummary,
+} from "./processing-usage";
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type {
 	IngestStatus as PrismaIngestStatus,
@@ -12,14 +21,9 @@ import type {
 import { getPrismaClient } from "@narriflow/db/client";
 import {
 	ASSEMBLYAI_SPEECH_MODEL_CHAIN,
-	createProjectSchema,
 	detectLinkProvider,
 	generateProjectRequestSchema,
-	isProcessingQuotaExceeded,
 	linkIngestSchema,
-	MAX_UPLOAD_LENGTH_SECONDS,
-	MONTHLY_PROCESSING_MINUTE_LIMITS,
-	processingMinutesFromSeconds,
 	resolvePricingTier,
 	rssImportSchema,
 	rssPreviewSchema,
@@ -31,11 +35,10 @@ import {
 	deriveProjectListProgress,
 	PLATFORM_PLAYBOOK_VERSION,
 	type ContentPack,
-	type CreateProjectInput,
 	type GenerateProjectInput,
 	type LinkIngestInput,
-	type PricingTier,
 	type RssImportInput,
+	userErrorMessage,
 	type TranscriptExportFormat,
 	type TranscriptSnapshot,
 } from "@narriflow/validators";
@@ -66,8 +69,6 @@ import {
 	type WorkspaceCapability,
 } from "./workspace.service";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
-
-const MAX_CONCURRENT_RSS_INGESTS_PER_WORKSPACE = 5;
 
 type ProjectAccessResult = "owned" | "forbidden" | "missing";
 
@@ -137,16 +138,13 @@ export const projectFailureCatalog = {
 	project_has_active_workflow: "conflict",
 	project_ingest_not_ready: "conflict",
 	project_not_found: "missing",
-	quota_exceeded: "payment_required",
+	project_processing_not_settled: "conflict",
 	rss_commit_token_requires_single_episode: "invalid",
-	rss_concurrent_ingest_limit_reached: "conflict",
 	rss_episode_count_invalid: "invalid",
 	rss_episode_not_found: "missing",
 	rss_ingest_job_missing: "unavailable",
 	transcript_not_found: "missing",
 	transcript_not_ready: "conflict",
-	upload_too_long: "payment_required",
-	workspace_not_found: "missing",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type ProjectFailureCode = keyof typeof projectFailureCatalog;
@@ -155,60 +153,6 @@ export class ProjectServiceError extends ExpectedDomainFailureError<ProjectFailu
 	constructor(code: ProjectFailureCode, message: string) {
 		super({ code, kind: projectFailureCatalog[code], message });
 		this.name = "ProjectServiceError";
-	}
-}
-
-export class QuotaExceededError extends ExpectedDomainFailureError<
-	"quota_exceeded",
-	{
-		tier: string;
-		limitMinutes: number;
-		usedMinutes: number;
-		requestedMinutes: number;
-	}
-> {
-	constructor(
-		message: string,
-		details: {
-			tier: string;
-			limitMinutes: number;
-			usedMinutes: number;
-			requestedMinutes: number;
-		},
-	) {
-		super({
-			code: "quota_exceeded",
-			kind: projectFailureCatalog.quota_exceeded,
-			message,
-			details,
-		});
-		this.name = "QuotaExceededError";
-	}
-}
-
-export class UploadTooLongError extends ExpectedDomainFailureError<
-	"upload_too_long",
-	{
-		tier: string;
-		maxSeconds: number;
-		seconds: number;
-	}
-> {
-	constructor(
-		message: string,
-		details: {
-			tier: string;
-			maxSeconds: number;
-			seconds: number;
-		},
-	) {
-		super({
-			code: "upload_too_long",
-			kind: projectFailureCatalog.upload_too_long,
-			message,
-			details,
-		});
-		this.name = "UploadTooLongError";
 	}
 }
 
@@ -637,14 +581,30 @@ export class ProjectService {
 			deleteObject,
 			isMissingObjectError,
 			deleteProjectRow: async () => {
-				const result = await prisma.project.deleteMany({
-					where: {
-						id: projectId,
-						workspaceId: scope.workspaceId,
-						...accessibleProjectWhere(),
-					},
-				});
-				return { count: result.count };
+				const notDeleted = new Error("project_not_deleted");
+				try {
+					return await prisma.$transaction(async (tx) => {
+						// Deleting an intake before settlement returns its reservation.
+						// Settled usage has no Project foreign key and is unchanged.
+						// Release precedes the Project row lock, as settlement orders them.
+						await getProcessingUsage().release(tx, {
+							projectId,
+							reason: "project_deleted",
+						});
+						const result = await tx.project.deleteMany({
+							where: {
+								id: projectId,
+								workspaceId: scope.workspaceId,
+								...accessibleProjectWhere(),
+							},
+						});
+						if (result.count === 0) throw notDeleted;
+						return { count: result.count };
+					});
+				} catch (error) {
+					if (error === notDeleted) return { count: 0 };
+					throw error;
+				}
 			},
 		});
 
@@ -671,37 +631,6 @@ export class ProjectService {
 			case "already_deleted":
 				return;
 		}
-	}
-
-	async createProject(scope: ActorScope, input: CreateProjectInput) {
-		const parsed = createProjectSchema.parse(input);
-		const createdAt = new Date();
-		const actor = await this.requireActor(scope);
-		const retention = await projectRetentionService.assignmentForWorkspace(
-			actor.workspaceId,
-			createdAt,
-		);
-
-		const prisma = this.requirePrisma();
-		const project = await prisma.project.create({
-			data: {
-				workspaceId: actor.workspaceId,
-				createdByUserId: actor.actorUserId,
-				updatedByUserId: actor.actorUserId,
-				title: parsed.title,
-				sourceMediaUrl: parsed.sourceMediaUrl,
-				sourceType: "upload",
-				sourceInput: parsed.sourceMediaUrl,
-				ingestStatus: "ready",
-				ingestCompletedAt: new Date(),
-				languageCode: parsed.languageCode ?? null,
-				createdAt,
-				retentionPolicyKey: retention?.retentionPolicyKey ?? null,
-				expiresAt: retention?.expiresAt ?? null,
-			},
-		});
-
-		return toProjectSnapshot(project);
 	}
 
 	async getProjectSnapshot(scope: ActorScope, projectId: string) {
@@ -940,132 +869,73 @@ export class ProjectService {
 		};
 	}
 
-	private async getWorkspaceMonthlyUsageMinutes(
-		workspaceId: string,
-	): Promise<number> {
-		const prisma = this.requirePrisma();
-		const startOfMonth = new Date();
-		startOfMonth.setUTCDate(1);
-		startOfMonth.setUTCHours(0, 0, 0, 0);
-		const agg = await prisma.project.aggregate({
-			where: { workspaceId, createdAt: { gte: startOfMonth } },
-			_sum: { sourceDurationSeconds: true },
-		});
-		return processingMinutesFromSeconds(agg._sum.sourceDurationSeconds ?? 0);
-	}
-
-	private async getWorkspacePricingTier(
-		workspaceId: string,
-	): Promise<PricingTier> {
-		const workspace = await this.requirePrisma().workspace.findUnique({
-			where: { id: workspaceId },
-			select: { pricingTier: true },
-		});
-		if (!workspace) {
-			throw new ProjectServiceError(
-				"workspace_not_found",
-				"Workspace not found.",
-			);
-		}
-		return resolvePricingTier(workspace.pricingTier);
-	}
-
-	private async assertWorkspaceWithinQuota(
-		workspaceId: string,
-		requestedSeconds = 0,
-	): Promise<void> {
-		const [tier, used] = await Promise.all([
-			this.getWorkspacePricingTier(workspaceId),
-			this.getWorkspaceMonthlyUsageMinutes(workspaceId),
-		]);
-		const limit = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
-		const requestedMinutes = processingMinutesFromSeconds(requestedSeconds);
-		if (
-			isProcessingQuotaExceeded({
-				usedMinutes: used,
-				requestedSeconds,
-				limitMinutes: limit,
-				blockAtLimitWithoutRequest: true,
-			})
-		) {
-			throw new QuotaExceededError(
-				`Monthly processing limit reached on the ${tier} plan (${limit} min/mo; ${used} min used). Upgrade the workspace to keep generating.`,
-				{ tier, limitMinutes: limit, usedMinutes: used, requestedMinutes },
-			);
-		}
-	}
-
 	/**
-	 * Gate a project's generation on BOTH the monthly minute quota and the
-	 * per-upload length cap for the user's plan tier.
+	 * Regeneration consumes no further minutes, but it requires the Project's
+	 * processing to have been settled by its first speech-to-text admission.
 	 */
-	async assertProjectGenerationAllowed(
+	async assertProjectProcessingSettled(
 		scope: ActorScope,
 		projectId: string,
 	): Promise<void> {
 		await this.requireActor(scope, "processing.consume");
-		await this.assertProjectGenerationBudget(projectId, scope.workspaceId);
+		const usage = await this.requirePrisma().processingUsageReservation.findUnique(
+			{ where: { projectId }, select: { workspaceId: true, state: true } },
+		);
+		if (usage?.workspaceId !== scope.workspaceId)
+			throw new ProjectNotFoundError();
+		if (usage.state !== "settled" && usage.state !== "refunded")
+			throw new ProjectServiceError(
+				"project_processing_not_settled",
+				"This project has not been transcribed yet.",
+			);
 	}
 
-	/** Continues a durably admitted job without using creator attribution as authority. */
-	async assertProjectGenerationAllowedForWorker(
-		projectId: string,
+	/**
+	 * Settles the Project's processing minutes inside a speech-to-text admission
+	 * transaction, before the Project generation lock. A refusal is recorded on
+	 * the Ingest Job and Project in the same transaction and returned so the
+	 * caller can commit it before reporting the typed failure.
+	 */
+	private async settleForGeneration(
+		tx: Prisma.TransactionClient,
 		workspaceId: string,
-	): Promise<void> {
-		const workspace = await this.requirePrisma().workspace.findUnique({
-			where: { id: workspaceId },
-			select: { status: true },
+		projectId: string,
+	): Promise<ExpectedDomainFailureError | null> {
+		const project = await tx.project.findFirst({
+			where: { id: projectId, workspaceId, ...accessibleProjectWhere() },
+			select: { id: true },
 		});
-		if (!workspace || workspace.status !== "active")
-			throw new ProjectAccessDeniedError();
-		await this.assertProjectGenerationBudget(projectId, workspaceId);
-	}
-
-	private async assertProjectGenerationBudget(
-		projectId: string,
-		workspaceId: string,
-	): Promise<void> {
-		const prisma = this.requirePrisma();
-		const [tier, used, project] = await Promise.all([
-			this.getWorkspacePricingTier(workspaceId),
-			this.getWorkspaceMonthlyUsageMinutes(workspaceId),
-			prisma.project.findFirst({
-				where: {
-					id: projectId,
-					workspaceId,
-					...accessibleProjectWhere(),
-				},
-				select: { sourceDurationSeconds: true },
-			}),
-		]);
-
 		if (!project) throw new ProjectNotFoundError();
-
-		const minuteLimit = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
-		if (used > minuteLimit) {
-			throw new QuotaExceededError(
-				`Monthly processing limit reached on the ${tier} plan (${minuteLimit} min/mo; ${used} min used). Upgrade your plan to keep generating.`,
-				{
-					tier,
-					limitMinutes: minuteLimit,
-					usedMinutes: used,
-					requestedMinutes: processingMinutesFromSeconds(
-						project?.sourceDurationSeconds ?? 0,
-					),
-				},
+		const settlement = await getProcessingUsage().settle(tx, projectId);
+		if (settlement.outcome === "not_ready") {
+			// A replay after a committed refusal reports the same typed failure.
+			const failed = await tx.project.findUniqueOrThrow({
+				where: { id: projectId },
+				select: { ingestStatus: true, ingestErrorCode: true },
+			});
+			if (
+				failed.ingestStatus === "failed" &&
+				isProcessingUsageFailureCode(failed.ingestErrorCode)
+			)
+				throw new ExpectedDomainFailureError({
+					code: failed.ingestErrorCode,
+					kind: processingUsageFailureCatalog[failed.ingestErrorCode],
+					message:
+						userErrorMessage(failed.ingestErrorCode) ??
+						"This project can't be processed on the current plan.",
+				});
+			throw new ProjectServiceError(
+				"project_ingest_not_ready",
+				"Project ingest is not ready.",
 			);
 		}
-
-		const seconds = project?.sourceDurationSeconds ?? 0;
-		const maxSeconds = MAX_UPLOAD_LENGTH_SECONDS[tier];
-		if (seconds > maxSeconds) {
-			throw new UploadTooLongError(
-				`This source is ${Math.round(seconds / 60)} min, over the ${Math.round(
-					maxSeconds / 60,
-				)}-min per-upload limit for the ${tier} plan. Upgrade for longer uploads.`,
-				{ tier, maxSeconds, seconds },
-			);
-		}
+		if (settlement.outcome === "settled") return null;
+		await getIngestJobLifecycle().refuseGeneration(
+			tx,
+			projectId,
+			settlement.failure,
+		);
+		return settlement.failure;
 	}
 
 	async triggerGeneration(
@@ -1082,7 +952,11 @@ export class ProjectService {
 		await this.requireActor(scope, "processing.consume");
 		if (options.mutation) {
 			const mutation = options.mutation;
-			const accepted = await getMcpOperationExecutor().execute({
+			const accepted = await getMcpOperationExecutor().execute<{
+				workflowRunId: string;
+				acceptedAt: string;
+				initialSeq: number;
+			}>({
 				identity: {
 					workspaceId: scope.workspaceId,
 					callerId: mutation.callerId ?? scope.actorUserId,
@@ -1099,12 +973,14 @@ export class ProjectService {
 				},
 				beforeAccept: mutation.beforeAccept,
 				mutate: async (tx) => {
+					const refusal = await this.settleForGeneration(
+						tx,
+						scope.workspaceId,
+						projectId,
+					);
+					if (refusal) return { refusal };
 					await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${projectId}, 0))::text`;
 					await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${projectId}::uuid FOR UPDATE`;
-					await this.assertProjectGenerationBudget(
-						projectId,
-						scope.workspaceId,
-					);
 					const project = await tx.project.findFirst({
 						where: {
 							id: projectId,
@@ -1216,59 +1092,66 @@ export class ProjectService {
 			return accepted.value;
 		}
 
-		await this.assertProjectGenerationBudget(projectId, scope.workspaceId);
 		if (!idempotencyKey)
 			throw new ProjectServiceError(
 				"idempotency_key_required",
 				"An idempotency key is required.",
 			);
 		const prisma = this.requirePrisma();
-		const project = await prisma.project.findFirst({
-			where: {
-				id: projectId,
-				workspaceId: scope.workspaceId,
-				...accessibleProjectWhere(),
-			},
-			select: {
-				id: true,
-				ingestStatus: true,
-				transcript: { select: { status: true } },
-			},
-		});
-		if (!project) throw new ProjectNotFoundError();
-		if (project.ingestStatus !== "ready")
-			throw new ProjectServiceError(
-				"project_ingest_not_ready",
-				"Project ingest is not ready.",
+		const outcome = await prisma.$transaction(async (tx) => {
+			const refusal = await this.settleForGeneration(
+				tx,
+				scope.workspaceId,
+				projectId,
 			);
-		if (!parsed.forceRegenerate) {
-			const reusable =
-				await getWorkflowRunLifecycle().findReusableGenerationRun(
-					projectId,
-					project.transcript?.status === "completed",
+			if (refusal) return { refusal };
+			const project = await tx.project.findFirstOrThrow({
+				where: { id: projectId },
+				select: {
+					ingestStatus: true,
+					transcript: { select: { status: true } },
+				},
+			});
+			if (project.ingestStatus !== "ready")
+				throw new ProjectServiceError(
+					"project_ingest_not_ready",
+					"Project ingest is not ready.",
 				);
-			if (reusable)
-				return {
-					workflowRunId: reusable.id,
-					acceptedAt: reusable.updatedAt.toISOString(),
-					initialSeq: await getLastWorkflowSeq(projectId),
-				};
-		}
-		const contentPackId = options.existingContentPackId ?? null;
-		const admitted = await getWorkflowRunLifecycle().admitTranscript({
-			projectId,
-			idempotencyKey,
-			contentPackId,
-			contentPack: contentPackId
-				? undefined
-				: parseStoredContentPack(parsed.contentPack),
-			languageCode: parsed.languageCode,
-			transcriptProvider: STT_PROVIDER,
-			transcriptProviderModel: STT_PROVIDER_MODEL,
-		});
+			if (!parsed.forceRegenerate) {
+				const reusable = await tx.workflowRun.findFirst({
+					where: {
+						projectId,
+						...(project.transcript?.status === "completed"
+							? {}
+							: { status: { in: ["queued", "running", "waiting"] } }),
+					},
+					orderBy: { updatedAt: "desc" },
+					select: { id: true, updatedAt: true },
+				});
+				if (reusable)
+					return { workflowRunId: reusable.id, acceptedAt: reusable.updatedAt };
+			}
+			const contentPackId = options.existingContentPackId ?? null;
+			const admitted = await getWorkflowRunLifecycle().admitTranscript(
+				{
+					projectId,
+					idempotencyKey,
+					contentPackId,
+					contentPack: contentPackId
+						? undefined
+						: parseStoredContentPack(parsed.contentPack),
+					languageCode: parsed.languageCode,
+					transcriptProvider: STT_PROVIDER,
+					transcriptProviderModel: STT_PROVIDER_MODEL,
+				},
+				tx,
+			);
+			return { workflowRunId: admitted.id, acceptedAt: new Date() };
+		}, PROCESSING_USAGE_TRANSACTION);
+		if ("refusal" in outcome) throw outcome.refusal;
 		return {
-			workflowRunId: admitted.id,
-			acceptedAt: new Date().toISOString(),
+			workflowRunId: outcome.workflowRunId,
+			acceptedAt: outcome.acceptedAt.toISOString(),
 			initialSeq: await getLastWorkflowSeq(projectId),
 		};
 	}
@@ -1321,8 +1204,6 @@ export class ProjectService {
 		>;
 		let pack: ContentPack;
 		const prepare = async () => {
-			await this.assertWorkspaceWithinQuota(actor.workspaceId);
-
 			const detectedProvider = detectLinkProvider(parsed.url);
 			if (!detectedProvider) {
 				throw new LinkUnsupportedSourceError();
@@ -1370,8 +1251,18 @@ export class ProjectService {
 		};
 
 		const create = async (tx: Prisma.TransactionClient) => {
+			// Admission reserves minutes and capacity under the Workspace usage
+			// lock before anything else in the acceptance transaction.
+			const projectId = randomUUID();
+			await getProcessingUsage().reserve(tx, {
+				workspaceId: actor.workspaceId,
+				projectId,
+				actorUserId: actor.actorUserId,
+				intakeKind: "link",
+			});
 			const createdProject = await tx.project.create({
 				data: {
+					id: projectId,
 					workspaceId: actor.workspaceId,
 					createdByUserId: actor.actorUserId,
 					updatedByUserId: actor.actorUserId,
@@ -1475,7 +1366,10 @@ export class ProjectService {
 		}
 		await prepare();
 		try {
-			const created = await prisma.$transaction(create);
+			const created = await prisma.$transaction(
+				create,
+				PROCESSING_USAGE_TRANSACTION,
+			);
 			return {
 				project: toProjectSnapshot(created.project),
 				queuedJobId: created.jobId,
@@ -1627,26 +1521,6 @@ export class ProjectService {
 			}
 		}
 
-		const activeRssIngests = await prisma.ingestJob.count({
-			where: {
-				jobType: "rss_import",
-				status: { in: ["queued", "running"] },
-				project: { workspaceId: actor.workspaceId },
-			},
-		});
-		if (activeRssIngests >= MAX_CONCURRENT_RSS_INGESTS_PER_WORKSPACE) {
-			throw new ProjectServiceError(
-				"rss_concurrent_ingest_limit_reached",
-				"Too many RSS episodes are already being ingested.",
-			);
-		}
-
-		const requestedSeconds = input.episodes.reduce(
-			(total, episode) => total + (episode.durationSeconds ?? 0),
-			0,
-		);
-		await this.assertWorkspaceWithinQuota(actor.workspaceId, requestedSeconds);
-
 		const brandResolved = await brandTemplateService.resolveSnapshotForUser(
 			actor.workspaceOwnerUserId,
 			input.brandTemplateId ?? null,
@@ -1660,6 +1534,14 @@ export class ProjectService {
 			project: ProjectSnapshot;
 			queuedJobId: string;
 		}> = [];
+		// Each episode is admitted in its own transaction. Episodes that don't
+		// fit the remaining minutes or capacity are reported, not admitted;
+		// Autopilot retries them on its next poll.
+		const notAdmitted: Array<{
+			episodeId: string;
+			code: ProcessingUsageError["code"];
+		}> = [];
+		let firstRefusal: ProcessingUsageError | null = null;
 
 		for (const episode of input.episodes) {
 			const createdAt = new Date();
@@ -1671,6 +1553,14 @@ export class ProjectService {
 			let jobId: string;
 			try {
 				const created = await prisma.$transaction(async (tx) => {
+					const projectId = randomUUID();
+					await getProcessingUsage().reserve(tx, {
+						workspaceId: actor.workspaceId,
+						projectId,
+						actorUserId: actor.actorUserId,
+						intakeKind: "rss",
+						declaredSeconds: episode.durationSeconds ?? null,
+					});
 					if (options.autopilotRuleId) {
 						// This unique insert is the admission fence. Project, ingest job,
 						// generation context, and dedup row commit or roll back together.
@@ -1684,6 +1574,7 @@ export class ProjectService {
 
 					const createdProject = await tx.project.create({
 						data: {
+							id: projectId,
 							workspaceId: actor.workspaceId,
 							createdByUserId: actor.actorUserId,
 							updatedByUserId: actor.actorUserId,
@@ -1738,10 +1629,15 @@ export class ProjectService {
 					}
 
 					return { project: createdProject, jobId: createdJob.id };
-				});
+				}, PROCESSING_USAGE_TRANSACTION);
 				project = created.project;
 				jobId = created.jobId;
 			} catch (error) {
+				if (error instanceof ProcessingUsageError) {
+					notAdmitted.push({ episodeId: episode.id, code: error.code });
+					firstRefusal ??= error;
+					continue;
+				}
 				if (isUniqueConstraintError(error)) {
 					if (options.autopilotRuleId) {
 						const winner = await prisma.autopilotEpisode.findUnique({
@@ -1787,9 +1683,11 @@ export class ProjectService {
 			});
 		}
 
+		if (createdProjects.length === 0 && firstRefusal) throw firstRefusal;
 		return {
 			count: createdProjects.length,
 			projects: createdProjects,
+			notAdmitted,
 		};
 	}
 
@@ -2064,23 +1962,10 @@ export class ProjectService {
 		}
 	}
 
-	/** Read-only usage summary for the import pre-flight UI. */
-	async getUsageSummary(scope: ActorScope): Promise<{
-		tier: PricingTier;
-		usedMinutes: number;
-		limitMinutes: number;
-		maxUploadSeconds: number;
-	}> {
-		const actor = await this.requireActor(scope, "content.view");
-		const workspaceId = scope.workspaceId;
-		const tier = resolvePricingTier(actor.pricingTier);
-		const usedMinutes = await this.getWorkspaceMonthlyUsageMinutes(workspaceId);
-		return {
-			tier,
-			usedMinutes,
-			limitMinutes: MONTHLY_PROCESSING_MINUTE_LIMITS[tier],
-			maxUploadSeconds: MAX_UPLOAD_LENGTH_SECONDS[tier],
-		};
+	/** The Workspace's processing usage projection for every surface. */
+	async getUsageSummary(scope: ActorScope): Promise<ProcessingUsageSummary> {
+		await this.requireActor(scope, "content.view");
+		return getProcessingUsage().summarize(scope.workspaceId);
 	}
 }
 

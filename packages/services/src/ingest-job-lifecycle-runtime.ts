@@ -2,7 +2,7 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { isWorkflowRedisDeliveryEnabled } from "./workflow.service";
-import { projectService } from "./project.service";
+import { getProcessingUsage } from "./processing-usage-runtime";
 import { workspaceService } from "./workspace.service";
 let lifecycle: IngestJobLifecycle | undefined;
 export function getIngestJobLifecycle(): IngestJobLifecycle {
@@ -16,8 +16,11 @@ export function getIngestJobLifecycle(): IngestJobLifecycle {
       sourceBucket: process.env.R2_BUCKET ?? "unknown-bucket",
       requireRetryActor: (actor, workspace) =>
         workspaceService.requireActor(actor, workspace, "processing.consume"),
-      assertGenerationAllowed: (project, workspace) =>
-        projectService.assertProjectGenerationAllowedForWorker(project, workspace),
+      usage: {
+        reserve: (tx, input) => getProcessingUsage().reserve(tx, input),
+        settle: (tx, projectId) => getProcessingUsage().settle(tx, projectId),
+        release: (tx, input) => getProcessingUsage().release(tx, input),
+      },
     });
   }
   return lifecycle;

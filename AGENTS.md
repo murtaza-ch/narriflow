@@ -27,7 +27,7 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 
 ## Critical paths (where bugs hurt most)
 
-- Quota gate — `packages/services/src/project.service.ts`; Stripe billing webhook — `packages/services/src/billing.service.ts`.
+- Processing minutes and capacity — `packages/services/src/processing-usage.ts`; Stripe billing webhook — `packages/services/src/billing.service.ts`.
 - Upload Session admission, verification, and ingest handoff — `packages/services/src/upload-session.service.ts`.
 - Workflow claiming/reaper — `packages/services/src/workflow-run-lifecycle.ts`.
 - Clip render pipeline — `apps/worker/src/tasks/clip-render-attempt.ts` + `apps/worker/src/composition-ffmpeg-adapter.ts`.
@@ -38,7 +38,7 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 - `bun run lint` (repository-wide Biome check)
 - `bun run typecheck`
 - `bun run test` (fast deterministic suites, including active web tests; PostgreSQL suites report as skipped).
-- Disposable-schema PostgreSQL gates: `bun run test:workflow:db`, `bun run test:upload-session:db`, `bun run test:workspace-billing:db`, `bun run test:social-publication:db`, `bun run test:clip-editor-persistence:db`, `bun run test:authenticated-request-policy:db`, `bun run test:brand-profiles:db`, and `bun run test:vizard-expansion:db`.
+- Disposable-schema PostgreSQL gates: `bun run test:workflow:db`, `bun run test:upload-session:db`, `bun run test:processing-usage:db`, `bun run test:workspace-billing:db`, `bun run test:social-publication:db`, `bun run test:clip-editor-persistence:db`, `bun run test:authenticated-request-policy:db`, `bun run test:brand-profiles:db`, and `bun run test:vizard-expansion:db`.
 
 ## Conventions
 

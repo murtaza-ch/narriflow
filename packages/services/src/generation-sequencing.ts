@@ -1,8 +1,3 @@
-import {
-  MONTHLY_PROCESSING_MINUTE_LIMITS,
-  type PricingTier,
-} from "@narriflow/validators";
-
 /**
  * Link-first generation sequencing (docs/plans/link-to-clips-uiux.md, Phase 0).
  *
@@ -62,26 +57,17 @@ export function isUniqueConstraintError(error: unknown): boolean {
 }
 
 /**
- * Derived (never persisted) processing-panel state for a project whose
- * automatic run claim was blocked by quota mid-flight: ingest finished, a
- * committed pack exists, no run was created, and the user is at/over their
- * monthly limit. Self-clears on upgrade, month rollover, or a successful
- * re-claim — there is no sticky flag to reset.
+ * Processing-panel state for a Project whose speech-to-text admission was
+ * refused by Processing Usage: the typed refusal persisted on the Project is
+ * the only input, so web, MCP, and REST render the same recovery copy.
  */
 export function isQuotaBlockedMidFlight(input: {
-  ingestReady: boolean;
-  hasCommittedPack: boolean;
-  hasAnyRun: boolean;
-  tier: PricingTier;
-  usedMinutes: number;
+  ingestErrorCode: string | null | undefined;
 }): boolean {
-  if (!input.ingestReady || !input.hasCommittedPack || input.hasAnyRun) {
-    return false;
-  }
-  // Strictly greater-than: mirrors the authoritative post-ingest gate in
-  // assertProjectGenerationAllowed, so this derived banner can never claim
-  // "limit reached" for a project the gate would actually allow.
-  return input.usedMinutes > MONTHLY_PROCESSING_MINUTE_LIMITS[input.tier];
+  return (
+    input.ingestErrorCode === "processing_quota_exhausted" ||
+    input.ingestErrorCode === "upload_too_long"
+  );
 }
 
 export type FinalizeSetupResult = {

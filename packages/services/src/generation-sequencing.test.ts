@@ -160,41 +160,14 @@ describe("concurrent run-claim simulation (both callers converge on one run)", (
   });
 });
 
-describe("isQuotaBlockedMidFlight (derived, never persisted)", () => {
-  const base = {
-    ingestReady: true,
-    hasCommittedPack: true,
-    hasAnyRun: false,
-    tier: "free" as const,
-    usedMinutes: 61,
-  };
-
-  test("ingest ready + committed pack + no run + over limit → blocked state shows", () => {
-    expect(isQuotaBlockedMidFlight(base)).toBe(true);
+describe("isQuotaBlockedMidFlight (typed refusal, never usage arithmetic)", () => {
+  test("shows for persisted Processing Usage refusals", () => {
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "processing_quota_exhausted" })).toBe(true);
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "upload_too_long" })).toBe(true);
   });
 
-  test("exactly at the limit is NOT blocked — mirrors the authoritative gate's strict >", () => {
-    expect(isQuotaBlockedMidFlight({ ...base, usedMinutes: 60 })).toBe(false);
-  });
-
-  test("clears when usage drops below the limit (upgrade / month rollover)", () => {
-    expect(isQuotaBlockedMidFlight({ ...base, usedMinutes: 12 })).toBe(false);
-  });
-
-  test("clears once a run exists (successful re-claim)", () => {
-    expect(isQuotaBlockedMidFlight({ ...base, hasAnyRun: true })).toBe(false);
-  });
-
-  test("not shown while ingest is still running or setup is unfinished", () => {
-    expect(isQuotaBlockedMidFlight({ ...base, ingestReady: false })).toBe(false);
-    expect(
-      isQuotaBlockedMidFlight({ ...base, hasCommittedPack: false }),
-    ).toBe(false);
-  });
-
-  test("higher tiers use their own limits", () => {
-    expect(
-      isQuotaBlockedMidFlight({ ...base, tier: "pro", usedMinutes: 60 }),
-    ).toBe(false);
+  test("ignores other failures and healthy projects", () => {
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "media_duration_unavailable" })).toBe(false);
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: null })).toBe(false);
   });
 });

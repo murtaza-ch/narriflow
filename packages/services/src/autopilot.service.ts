@@ -16,6 +16,7 @@ import {
 } from "@narriflow/validators";
 import { fetchRssFeed, redactUrlForDisplay, RssFeedError } from "./rss";
 import { RemoteFetchError, UnsafeUrlError } from "./url-guard";
+import { ProcessingUsageError } from "./processing-usage";
 import { projectService } from "./project.service";
 import {
   ExpectedDomainFailureError,
@@ -621,31 +622,43 @@ export class AutopilotService {
     const contentPack = parseStoredContentPack(rule.contentPack);
 
     let imported = 0;
+    // Episodes refused for minutes or capacity stay ahead of the cursor so the
+    // next poll retries them.
+    let deferred = false;
     for (const episode of selection.episodes) {
       await this.renewClaim(claim);
-      const result = await projectService.importResolvedRssEpisodes(
-        scope,
-        {
-          rssUrl: feed.finalUrl,
-          episodes: [episode],
-          titlePrefix: rule.titlePrefix ?? undefined,
-          brandTemplateId: rule.brandTemplateId ?? null,
-        },
-        {
-          generationContext: { contentPack, languageCode: rule.languageCode },
-          autopilotRuleId: rule.id,
-        },
-      );
-      imported += result.count;
+      try {
+        const result = await projectService.importResolvedRssEpisodes(
+          scope,
+          {
+            rssUrl: feed.finalUrl,
+            episodes: [episode],
+            titlePrefix: rule.titlePrefix ?? undefined,
+            brandTemplateId: rule.brandTemplateId ?? null,
+          },
+          {
+            generationContext: { contentPack, languageCode: rule.languageCode },
+            autopilotRuleId: rule.id,
+          },
+        );
+        imported += result.count;
+      } catch (error) {
+        if (!(error instanceof ProcessingUsageError)) throw error;
+        // Over the per-video limit can't succeed on a later poll; move on.
+        if (error.code === "upload_too_long") continue;
+        deferred = true;
+        break;
+      }
     }
 
     const head = feed.episodes[0] ?? null;
-    const initialize = !rule.initializedAt || selection.shouldAdvanceCursor;
+    const initialize =
+      !deferred && (!rule.initializedAt || selection.shouldAdvanceCursor);
     await this.updateClaim(claim, "success", {
       status: "active",
       claimToken: null,
       leaseExpiresAt: null,
-      initializedAt: rule.initializedAt ?? now,
+      initializedAt: rule.initializedAt ?? (deferred ? null : now),
       ...(initialize && {
         lastSeenEpisodeId: head?.id ?? rule.lastSeenEpisodeId,
         lastSeenPublishedAt: head?.publishedAt

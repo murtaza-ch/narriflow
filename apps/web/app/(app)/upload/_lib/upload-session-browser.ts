@@ -47,6 +47,8 @@ export interface UploadSessionBrowserStartInput {
   brandTemplateId: string | null;
   brandProfileId?: string | null;
   generationContext: unknown;
+  /** Local media metadata, reserved before transfer and never trusted to settle. */
+  declaredDurationSeconds?: number | null;
 }
 
 export interface UploadSessionBrowserAdapterDependencies {
@@ -79,6 +81,7 @@ interface RunUploadSessionTransferInput {
   brandTemplateId: string | null;
   brandProfileId?: string | null;
   generationContext: unknown;
+  declaredDurationSeconds?: number | null;
   storage: UploadResumeStorage | null;
   fetcher?: typeof fetch;
   createClientKey?: () => string;
@@ -305,8 +308,12 @@ class UploadSessionBrowserFailure extends Error {
 }
 
 const UPLOAD_FAILURE_MESSAGES: Record<string, string> = {
-  quota_exceeded:
-    "Your workspace has reached its processing limit. Review usage before retrying.",
+  processing_quota_exhausted:
+    "This video needs more processing minutes than your workspace has left this month. Review usage before retrying.",
+  upload_too_long:
+    "This video is longer than your plan's per-video limit. Upgrade or choose a shorter file.",
+  workspace_processing_capacity_reached:
+    "Your workspace is processing as many videos as your plan allows. Try again when one finishes.",
   upload_session_idempotency_conflict:
     "This saved upload belongs to different frozen settings. Discard it or re-select the original file.",
   upload_session_not_found:
@@ -569,6 +576,9 @@ async function runUploadSessionTransfer(
             brandTemplateId: input.brandTemplateId,
             brandProfileId: input.brandProfileId ?? null,
             generationContext: input.generationContext,
+            ...(input.declaredDurationSeconds
+              ? { declaredDurationSeconds: input.declaredDurationSeconds }
+              : {}),
           },
     ),
     signal: input.signal,

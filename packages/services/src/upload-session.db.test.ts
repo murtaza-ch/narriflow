@@ -123,6 +123,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         name: "Upload Session DB test",
         ownerUserId: user.id,
         personalOwnerUserId: user.id,
+        // Many sessions share this workspace; each unknown-duration open
+        // reserves the per-video cap.
+        pricingTier: "business",
       },
     });
     const object = { sizeBytes: 2_048, contentType: "video/mp4" };
@@ -162,7 +165,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       persistence: prismaUploadSessionPersistence,
       storage,
       admission: {
-        async assertQuota() {},
         async resolveBrand() {
           return null;
         },
@@ -735,7 +737,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       persistence: prismaUploadSessionPersistence,
       storage: multipartStorage,
       admission: {
-        async assertQuota() {},
         async resolveBrand() {
           return null;
         },

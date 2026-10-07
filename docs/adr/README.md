@@ -17,3 +17,4 @@ Add an ADR when a decision is costly to reverse, would surprise a reader without
 - [0009: Authenticated Request Policy owns browser-session admission](0009-authenticated-request-policy.md)
 - [0010: Media Cleanup owns deferred exact-key deletion](0010-media-cleanup.md)
 - [0011: Worker Process Module owns subprocess and scratch lifetimes](0011-worker-process-module.md)
+- [0012: Processing Usage owns minute admission and settlement](0012-processing-usage.md)

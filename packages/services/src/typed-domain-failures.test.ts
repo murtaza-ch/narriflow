@@ -9,10 +9,10 @@ import {
 import { ContentSuiteError } from "./content-suite.service";
 import { DubbingFailureError } from "./dubbing.service";
 import { GeneratedMediaJobError } from "./generated-media";
+import { ProcessingUsageError } from "./processing-usage";
 import {
 	ProjectNotFoundError,
 	ProjectServiceError,
-	QuotaExceededError,
 } from "./project.service";
 import { ReviewServiceError } from "./review.service";
 import { SocialServiceError } from "./social.service";
@@ -65,16 +65,28 @@ describe("typed domain failure catalogs", () => {
 		expect(persistenceFailure.details).toEqual({ retryable: true });
 		expect("retryable" in persistenceFailure).toBe(false);
     expect(
-      new QuotaExceededError("Monthly processing limit reached", {
-        tier: "creator",
-        limitMinutes: 600,
-        usedMinutes: 599,
-        requestedMinutes: 2,
+      new ProcessingUsageError({
+        code: "processing_quota_exhausted",
+        message: "Monthly processing limit reached",
+        details: {
+          tier: "creator",
+          limitMinutes: 600,
+          remainingMinutes: 1,
+          requestedMinutes: 2,
+        },
       }),
     ).toMatchObject({
-      code: "quota_exceeded",
+      code: "processing_quota_exhausted",
       kind: "payment_required",
       details: { requestedMinutes: 2 },
     });
+    expect(
+      new ProcessingUsageError({
+        code: "workspace_processing_capacity_reached",
+        message: "Capacity reached",
+        details: { tier: "free", inFlight: 2, inFlightLimit: 2 },
+        retryAfterSeconds: 60,
+      }),
+    ).toMatchObject({ kind: "rate_limited", retryAfterSeconds: 60 });
   });
 });

@@ -16,8 +16,20 @@ import {
   isAutoRetryableFailureCode,
 } from "./processing-retry-policy";
 import type { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import {
+  PROCESSING_USAGE_TRANSACTION,
+  type ProcessingUsage,
+} from "./processing-usage";
+import { admitMediaCleanupObligations } from "./media-cleanup";
 
 export const MAX_INGEST_RETRY_ATTEMPTS = 5;
+function intakeKindFor(jobType: IngestJob["jobType"]) {
+  return jobType === "upload_finalize"
+    ? ("upload" as const)
+    : jobType === "rss_import"
+      ? ("rss" as const)
+      : ("link" as const);
+}
 export class IngestJobClaimLost extends Error {
   readonly code = "ingest_job_claim_lost";
   constructor(public readonly jobId: string) {
@@ -69,10 +81,7 @@ type Tx = Prisma.TransactionClient;
 export interface IngestJobLifecycleDependencies {
   prisma: PrismaClient;
   workflow: Pick<WorkflowRunLifecycle, "admitWithHandoff">;
-  assertGenerationAllowed(
-    projectId: string,
-    workspaceId: string,
-  ): Promise<void>;
+  usage: Pick<ProcessingUsage, "reserve" | "settle" | "release">;
   requireRetryActor(actorUserId: string, workspaceId: string): Promise<unknown>;
   redisRequired?: boolean;
   sourceBucket?: string;
@@ -375,6 +384,40 @@ export class IngestJobLifecycle {
       );
     });
   }
+  /** Records an ingest-owned pinned copy of a verified upload as the Project
+   * source and schedules the grantable upload key for Media Cleanup after any
+   * still-valid upload grant has expired. */
+  async pinSource(
+    claim: IngestClaimRef,
+    input: {
+      sourceStorageKey: string;
+      releasedStorageKey: string;
+      releaseNotBefore: Date;
+    },
+  ): Promise<void> {
+    await this.deps.prisma.$transaction(async (tx) => {
+      const now = await this.now(tx);
+      const owned = await tx.ingestJob.updateMany({
+        where: this.owned(claim, now),
+        data: { claimExpiresAt: new Date(now.getTime() + this.leaseMs) },
+      });
+      if (!owned.count) throw new IngestJobClaimLost(claim.id);
+      await tx.project.update({
+        where: { id: claim.projectId },
+        data: { sourceStorageKey: input.sourceStorageKey },
+      });
+      if (input.releasedStorageKey !== input.sourceStorageKey)
+        await admitMediaCleanupObligations(tx.mediaCleanupObligation, [
+          {
+            origin: "upload_source_pinning",
+            cleanupClass: "upload_source",
+            projectId: claim.projectId,
+            objectKey: input.releasedStorageKey,
+            notBefore: input.releaseNotBefore,
+          },
+        ]);
+    });
+  }
   private async settleFailure(
     tx: Tx,
     job: Pick<IngestJob, "id" | "projectId" | "attemptCount">,
@@ -404,6 +447,11 @@ export class IngestJobLifecycle {
       },
     });
     if (!updated.count) return null;
+    if (terminal)
+      await this.deps.usage.release(tx, {
+        projectId: job.projectId,
+        reason: decision.terminalErrorCode,
+      });
     await tx.project.update({
       where: { id: job.projectId },
       data: {
@@ -525,6 +573,7 @@ export class IngestJobLifecycle {
       const changed = await tx.ingestJob.updateMany({ where: { id: job.id, status: "queued" },
         data: { status: "cancelled", completedAt: now, lastError: "MCP_CANCELLED" } });
       if (!changed.count) return false;
+      await this.deps.usage.release(tx, { projectId: input.projectId, reason: "MCP_CANCELLED" });
       await tx.project.updateMany({ where: { id: input.projectId, ingestStatus: "queued" },
         data: { ingestStatus: "failed", ingestErrorCode: "MCP_CANCELLED" } });
       await this.event(tx, { id: job.id, projectId: job.projectId, transition: "mcp_cancelled",
@@ -544,6 +593,33 @@ export class IngestJobLifecycle {
   }> {
     await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
     return this.deps.prisma.$transaction(async (tx) => {
+      const intake = await tx.project.findFirst({
+        where: {
+          id: input.projectId,
+          workspaceId: input.workspaceId,
+          ...accessibleProjectWhere(),
+        },
+        select: {
+          ingestStatus: true,
+          sourceDurationSeconds: true,
+          ingestJobs: {
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: 1,
+            select: { jobType: true },
+          },
+        },
+      });
+      // Re-admission takes the Workspace usage lock before any Project lock.
+      // A released reservation returns to the current period under fresh
+      // allowance, per-video, and capacity checks.
+      if (intake?.ingestStatus === "failed" && intake.ingestJobs[0])
+        await this.deps.usage.reserve(tx, {
+          workspaceId: input.workspaceId,
+          projectId: input.projectId,
+          actorUserId: input.actorUserId,
+          intakeKind: intakeKindFor(intake.ingestJobs[0].jobType),
+          declaredSeconds: intake.sourceDurationSeconds,
+        });
       // Serializes the status guard, manual budget, fresh job and event.
       await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${input.projectId}::uuid FOR UPDATE`;
       const project = await tx.project.findFirst({
@@ -589,7 +665,7 @@ export class IngestJobLifecycle {
         attemptsUsed: count + 1,
         maxAttempts: MAX_INGEST_RETRY_ATTEMPTS,
       };
-    });
+    }, PROCESSING_USAGE_TRANSACTION);
   }
   async processGenerationHandoffs(limit = 25, jobId?: string): Promise<number> {
     const now = await this.deps.prisma.$transaction((tx) => this.now(tx));
@@ -628,14 +704,24 @@ export class IngestJobLifecycle {
           if (acknowledged) settled++;
           continue;
         }
-        await this.deps.assertGenerationAllowed(
-          project.id,
-          project.workspaceId,
-        );
         const language = sourceLanguageCodeSchema.safeParse(
           project.languageCode,
         );
-        const result = await this.deps.workflow.admitWithHandoff(
+        const result = await this.deps.prisma.$transaction(async (tx) => {
+          // Settlement precedes speech-to-text admission in this transaction.
+          const settlement = await this.deps.usage.settle(tx, project.id);
+          if (settlement.outcome === "not_ready")
+            throw new Error("ingest_handoff_source_unmeasured");
+          if (settlement.outcome === "refused") {
+            await this.failHandoff(
+              tx,
+              job,
+              settlement.failure.code,
+              settlement.failure.message,
+            );
+            return { handoff: false };
+          }
+          return this.deps.workflow.admitWithHandoff(
           {
             projectId: project.id,
             idempotencyKey: key,
@@ -680,7 +766,9 @@ export class IngestJobLifecycle {
               });
             return true;
           },
-        );
+          tx,
+          );
+        }, PROCESSING_USAGE_TRANSACTION);
         if (result.handoff) settled++;
       } catch (error) {
         if (error instanceof IngestJobClaimLost) continue;
@@ -724,39 +812,7 @@ export class IngestJobLifecycle {
                 );
                 if (existing !== null) return existing;
               }
-              const clock = await this.now(tx);
-              const failed = await tx.ingestJob.updateMany({
-                where: {
-                  id: job.id,
-                  status: "completed",
-                  generationHandoffAt: null,
-                  project: { ingestStatus: "ready" },
-                },
-                data: {
-                  status: "failed",
-                  generationHandoffAt: clock,
-                  generationHandoffRetryAt: null,
-                  lastError: `${code}: ${error.message}`,
-                },
-              });
-              if (!failed.count) return;
-              await tx.project.update({
-                where: { id: job.projectId },
-                data: { ingestStatus: "failed", ingestErrorCode: code },
-              });
-              await this.event(
-                tx,
-                {
-                  ...job,
-                  transition: "handoff:failed",
-                  stage: "ingest",
-                  status: "failed",
-                  progress: 100,
-                  errorCode: code,
-                  notify: true,
-                },
-                clock,
-              );
+              await this.failHandoff(tx, job, code, error.message);
               return false;
             },
           );
@@ -776,6 +832,70 @@ export class IngestJobLifecycle {
       }
     }
     return settled;
+  }
+  /** Settles a permanently refused generation handoff: the Ingest Job and
+   * Project fail with an actionable code, the unsettled reservation releases,
+   * and a notification intent is recorded, all in the caller's transaction. */
+  private async failHandoff(
+    tx: Tx,
+    job: { id: string; projectId: string },
+    code: string,
+    message: string,
+  ): Promise<boolean> {
+    const clock = await this.now(tx);
+    const failed = await tx.ingestJob.updateMany({
+      where: {
+        id: job.id,
+        status: "completed",
+        generationHandoffAt: null,
+        project: { ingestStatus: "ready" },
+      },
+      data: {
+        status: "failed",
+        generationHandoffAt: clock,
+        generationHandoffRetryAt: null,
+        lastError: `${code}: ${message}`,
+      },
+    });
+    if (!failed.count) return false;
+    await this.deps.usage.release(tx, { projectId: job.projectId, reason: code });
+    await tx.project.update({
+      where: { id: job.projectId },
+      data: { ingestStatus: "failed", ingestErrorCode: code },
+    });
+    await this.event(
+      tx,
+      {
+        ...job,
+        transition: "handoff:failed",
+        stage: "ingest",
+        status: "failed",
+        progress: 100,
+        errorCode: code,
+        notify: true,
+      },
+      clock,
+    );
+    return true;
+  }
+  /** Records a settlement refusal from a request-path generation start (browser
+   * setup, MCP) exactly as the Ingest Generation Handoff records its own. */
+  async refuseGeneration(
+    tx: Tx,
+    projectId: string,
+    failure: ExpectedDomainFailureError,
+  ): Promise<void> {
+    const job = await tx.ingestJob.findFirst({
+      where: { projectId, status: "completed", generationHandoffAt: null },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { id: true, projectId: true },
+    });
+    if (job && (await this.failHandoff(tx, job, failure.code, failure.message)))
+      return;
+    await tx.project.updateMany({
+      where: { id: projectId, ingestStatus: "ready" },
+      data: { ingestStatus: "failed", ingestErrorCode: failure.code },
+    });
   }
   private async lockGeneration(tx: Tx, projectId: string): Promise<void> {
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${projectId}, 0)) IS NULL AS "locked"`;

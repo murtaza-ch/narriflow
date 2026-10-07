@@ -1,18 +1,21 @@
 import type { ActorScope } from "./actor-scope";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
+import { getProcessingUsage } from "./processing-usage-runtime";
+import {
+  isProcessingUsageFailureCode,
+  PROCESSING_USAGE_TRANSACTION,
+} from "./processing-usage";
 import { randomUUID } from "node:crypto";
 import { Prisma, type UploadSession as PrismaUploadSession } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   contentPackSchema,
   discardUploadSessionSchema,
-  isProcessingQuotaExceeded,
-  MONTHLY_PROCESSING_MINUTE_LIMITS,
   finalizeUploadSessionSchema,
+  MAX_UPLOAD_SIZE_BYTES,
   grantUploadPartsSchema,
   openUploadSessionSchema,
   readUploadSessionSchema,
-  processingMinutesFromSeconds,
   resolvePricingTier,
   uploadCompletionIntentSchema,
   uploadMimeTypes,
@@ -83,7 +86,7 @@ export function defaultUploadSessionConfig(
   overrides: Partial<UploadSessionConfig> = {},
 ): UploadSessionConfig {
   const config = {
-    maximumSourceBytes: 5 * GIBIBYTE,
+    maximumSourceBytes: MAX_UPLOAD_SIZE_BYTES,
     smallFileThresholdBytes: 100 * MEBIBYTE,
     multipartPartSizeBytes: 16 * MEBIBYTE,
     multipartConcurrency: 4,
@@ -208,7 +211,12 @@ export interface UploadSessionPersistence {
     workspaceId: string;
     clientIdempotencyKey: string;
   }): Promise<UploadSessionRecord | null>;
-  reserve(record: UploadSessionRecord): Promise<{
+  /** Creates the durable session. With `usage`, the same transaction admits
+   * the intake's Processing Usage Reservation and may throw its typed refusal. */
+  reserve(
+    record: UploadSessionRecord,
+    usage?: { declaredSeconds: number | null },
+  ): Promise<{
     created: boolean;
     session: UploadSessionRecord;
   }>;
@@ -268,6 +276,7 @@ export interface UploadSessionPersistence {
     queuedJobId: string;
     verifiedSizeBytes: number;
     verifiedContentType: string;
+    verifiedEtag: string | null;
     reconciliationAttemptId?: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
@@ -375,10 +384,12 @@ export interface UploadSessionStorage {
   headExactObject(storageKey: string, signal?: AbortSignal): Promise<{
     sizeBytes: number;
     contentType: string | null;
+    etag?: string | null;
   }>;
   headExactObjectIfExists(storageKey: string, signal?: AbortSignal): Promise<{
     sizeBytes: number;
     contentType: string | null;
+    etag?: string | null;
   } | null>;
   listExactKeyMultipartUploads(
     storageKey: string,
@@ -396,7 +407,6 @@ export interface UploadSessionStorage {
 }
 
 export interface UploadSessionAdmission {
-  assertQuota(workspaceId: string): Promise<void>;
   resolveBrand(input: {
     workspaceId: string;
     actorUserId: string;
@@ -492,6 +502,8 @@ export interface OpenUploadSessionInput {
   brandTemplateId: string | null;
   brandProfileId: string | null;
   generation: unknown;
+  /** Browser media metadata; reserved at admission, never trusted to settle. */
+  declaredDurationSeconds?: number | null;
 }
 
 export interface ReadUploadSessionInput {
@@ -598,7 +610,6 @@ export type FinalizeUploadSessionOutcome =
     };
 
 const uploadSessionFailureCatalog = {
-	quota_exceeded: "payment_required",
   upload_session_idempotency_conflict: "conflict",
   upload_session_not_found: "missing",
   upload_session_invalid_state: "conflict",
@@ -698,6 +709,7 @@ function immutableInputFingerprint(input: OpenUploadSessionInput) {
     brandTemplateId: input.brandTemplateId,
     brandProfileId: input.brandProfileId,
     generation: input.generation,
+    declaredDurationSeconds: input.declaredDurationSeconds ?? undefined,
   });
 }
 
@@ -705,7 +717,9 @@ function terminalFreshUploadAllowed(session: UploadSessionRecord) {
   if (session.status === "aborted" || session.status === "expired") return true;
   if (session.status !== "failed") return false;
   switch (session.failureCode) {
-    case "quota_exceeded":
+    case "processing_quota_exhausted":
+    case "upload_too_long":
+    case "workspace_processing_capacity_reached":
     case "upload_admission_failed":
     case "unsupported_media_type":
     case "provider_creation_failed":
@@ -847,7 +861,6 @@ export function createUploadSessionModule(
     const existing = admissionPreflights.get(key);
     if (existing) return existing;
     const preflight = (async () => {
-      await dependencies.admission.assertQuota(input.workspaceId);
       return dependencies.admission.resolveBrand({
         workspaceId: input.workspaceId,
         actorUserId: input.actorUserId,
@@ -1024,7 +1037,7 @@ export function createUploadSessionModule(
 
   const handoffInline = async (
     session: UploadSessionRecord,
-    object: { sizeBytes: number; contentType: string | null },
+    object: { sizeBytes: number; contentType: string | null; etag?: string | null },
   ) => {
     try {
       return await handoffVerifiedObject(
@@ -1107,7 +1120,7 @@ export function createUploadSessionModule(
 
   async function handoffVerifiedObject(
     session: UploadSessionRecord,
-    object: { sizeBytes: number; contentType: string | null },
+    object: { sizeBytes: number; contentType: string | null; etag?: string | null },
     reconciliationAttemptId?: string,
     runProviderOperation?: <Result>(
       operation: (signal?: AbortSignal) => Promise<Result>,
@@ -1165,6 +1178,7 @@ export function createUploadSessionModule(
       queuedJobId: dependencies.createId(),
       verifiedSizeBytes: object.sizeBytes,
       verifiedContentType,
+      verifiedEtag: object.etag ?? null,
       reconciliationAttemptId,
       updatedAt: dependencies.now(),
     });
@@ -1412,7 +1426,6 @@ export function createUploadSessionModule(
     const admissionAttemptId = admissionAttemptIdFor(prepared);
     if (!prepared.admissionPreparedAt) {
       try {
-        await dependencies.admission.assertQuota(prepared.workspaceId);
         prepared = await dependencies.persistence.prepareAdmission({
           sessionId: prepared.id,
           admissionAttemptId,
@@ -1432,10 +1445,7 @@ export function createUploadSessionModule(
           sessionId: prepared.id,
           admissionAttemptId,
           status: "failed",
-          failureCode:
-            error instanceof UploadSessionQuotaRefusedError
-              ? "quota_exceeded"
-              : "upload_admission_failed",
+          failureCode: "upload_admission_failed",
           updatedAt: dependencies.now(),
         });
         throw error;
@@ -1744,10 +1754,7 @@ export function createUploadSessionModule(
         throw new Error("Unsupported upload content type");
       }
 
-      let brand: ResolvedBrand;
-      try {
-        brand = await preflightInitialAdmission(input);
-      } catch (error) {
+      const recordRefusal = async (failureCode: string) => {
         const refused = await dependencies.persistence.reserve(
           reservationRecord(null),
         );
@@ -1756,19 +1763,36 @@ export function createUploadSessionModule(
             sessionId: refused.session.id,
             admissionAttemptId: admissionAttemptIdFor(refused.session),
             status: "failed",
-            failureCode:
-              error instanceof UploadSessionQuotaRefusedError
-                ? "quota_exceeded"
-                : "upload_admission_failed",
+            failureCode,
             updatedAt: dependencies.now(),
           });
         }
+      };
+      let brand: ResolvedBrand;
+      try {
+        brand = await preflightInitialAdmission(input);
+      } catch (error) {
+        await recordRefusal("upload_admission_failed");
         throw error;
       }
 
-      const reservation = await dependencies.persistence.reserve(
-        reservationRecord(brand),
-      );
+      let reservation: Awaited<
+        ReturnType<UploadSessionPersistence["reserve"]>
+      >;
+      try {
+        // The session row and its Processing Usage Reservation commit together.
+        reservation = await dependencies.persistence.reserve(
+          reservationRecord(brand),
+          { declaredSeconds: input.declaredDurationSeconds ?? null },
+        );
+      } catch (error) {
+        if (
+          error instanceof ExpectedDomainFailureError &&
+          isProcessingUsageFailureCode(error.code)
+        )
+          await recordRefusal(error.code);
+        throw error;
+      }
       if (!reservation.created) {
         diagnose(reservation.session.id, "reservation", "succeeded", {
           state: reservation.session.status,
@@ -2972,7 +2996,7 @@ function configuredInteger(
 export function uploadSessionConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): UploadSessionConfig {
-  const maximumSourceBytes = 5 * GIBIBYTE;
+  const maximumSourceBytes = MAX_UPLOAD_SIZE_BYTES;
   return defaultUploadSessionConfig({
     maximumSourceBytes,
     smallFileThresholdBytes: configuredInteger(
@@ -3074,30 +3098,6 @@ export function uploadSessionConfigFromEnv(
   });
 }
 
-export class UploadSessionQuotaRefusedError extends ExpectedDomainFailureError<"quota_exceeded", {
-  tier: string;
-  limitMinutes: number;
-  usedMinutes: number;
-  requestedMinutes: number;
-}> {
-  constructor(
-    details: {
-      tier: string;
-      limitMinutes: number;
-      usedMinutes: number;
-      requestedMinutes: number;
-    },
-  ) {
-    super({
-      code: "quota_exceeded",
-      kind: uploadSessionFailureCatalog.quota_exceeded,
-      message: `Monthly processing limit reached on the ${details.tier} plan (${details.limitMinutes} min/mo; ${details.usedMinutes} min used). Upgrade the workspace to keep generating.`,
-      details,
-    });
-    this.name = "UploadSessionQuotaRefusedError";
-  }
-}
-
 function requiredPrisma() {
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("Database client unavailable");
@@ -3188,9 +3188,18 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     });
     return row ? fromPrismaUploadSession(row) : null;
   },
-  async reserve(record) {
+  async reserve(record, usage) {
     try {
-      const row = await requiredPrisma().uploadSession.create({
+      const row = await requiredPrisma().$transaction(async (tx) => {
+        if (usage)
+          await getProcessingUsage().reserve(tx, {
+            workspaceId: record.workspaceId,
+            projectId: record.preallocatedProjectId,
+            actorUserId: record.actorUserId,
+            intakeKind: "upload",
+            declaredSeconds: usage.declaredSeconds,
+          });
+        return tx.uploadSession.create({
         data: {
           id: record.id,
           workspaceId: record.workspaceId,
@@ -3225,7 +3234,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           hardExpiresAt: record.hardExpiresAt,
           createdAt: record.createdAt,
         },
-      });
+        });
+      }, PROCESSING_USAGE_TRANSACTION);
       return { created: true, session: fromPrismaUploadSession(row) };
     } catch (error) {
       if (
@@ -3459,6 +3469,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     queuedJobId,
     verifiedSizeBytes,
     verifiedContentType,
+    verifiedEtag,
     reconciliationAttemptId,
     updatedAt,
   }) {
@@ -3575,6 +3586,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
               storageKey: current.storageKey,
               verifiedSizeBytes,
               verifiedContentType,
+              verifiedEtag,
               uploadSessionId: current.id,
             },
         });
@@ -3627,7 +3639,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     cleanupRetryAt,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async (tx) => {
+    const updated = await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         ...(admissionAttemptId
@@ -3646,7 +3659,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
@@ -3654,7 +3667,13 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       if (admissionAttemptId) throw new UploadSessionAdmissionClaimLostError();
       throw new UploadSessionReconciliationClaimLostError();
     }
+    if (status === "failed")
+      await getProcessingUsage().release(tx, {
+        projectId: row.preallocatedProjectId,
+        reason: failureCode,
+      });
     return fromPrismaUploadSession(row);
+    });
   },
   async recordCleanupRetry({
     sessionId,
@@ -3908,7 +3927,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     failureCode,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async (tx) => {
+    const updated = await tx.uploadSession.updateMany({
       where: { id: sessionId, status: "compensating", reconciliationAttemptId },
       data: {
         status,
@@ -3920,14 +3940,20 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated.count !== 1) {
       throw new UploadSessionReconciliationClaimLostError();
     }
+    // An Upload Session that ends without a handoff returns its reservation.
+    await getProcessingUsage().release(tx, {
+      projectId: row.preallocatedProjectId,
+      reason: failureCode,
+    });
     return fromPrismaUploadSession(row);
+    });
   },
   async deferReconciliation({
     sessionId,
@@ -4077,6 +4103,7 @@ const r2UploadSessionStorage: UploadSessionStorage = {
       return {
         sizeBytes: object.sizeBytes,
         contentType: object.contentType,
+        etag: object.etag,
       };
     } catch (error) {
       if (error instanceof UploadSessionStorageProbeError) throw error;
@@ -4138,50 +4165,11 @@ const r2UploadSessionStorage: UploadSessionStorage = {
   },
 };
 
-async function assertWorkspaceUploadQuota(workspaceId: string) {
-  const prisma = requiredPrisma();
-  const startOfMonth = new Date();
-  startOfMonth.setUTCDate(1);
-  startOfMonth.setUTCHours(0, 0, 0, 0);
-  const [workspace, usage] = await Promise.all([
-    prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      select: { pricingTier: true },
-    }),
-    prisma.project.aggregate({
-      where: { workspaceId, createdAt: { gte: startOfMonth } },
-      _sum: { sourceDurationSeconds: true },
-    }),
-  ]);
-  if (!workspace) throw new Error("Workspace not found");
-  const tier = resolvePricingTier(workspace.pricingTier);
-  const usedMinutes = processingMinutesFromSeconds(
-    usage._sum.sourceDurationSeconds ?? 0,
-  );
-  const limitMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
-  if (
-    isProcessingQuotaExceeded({
-      usedMinutes,
-      requestedSeconds: 0,
-      limitMinutes,
-      blockAtLimitWithoutRequest: true,
-    })
-  ) {
-    throw new UploadSessionQuotaRefusedError({
-      tier,
-      limitMinutes,
-      usedMinutes,
-      requestedMinutes: 0,
-    });
-  }
-}
-
 const productionUploadSessionModule = createUploadSessionModule({
   config: uploadSessionConfigFromEnv(),
   persistence: prismaUploadSessionPersistence,
   storage: r2UploadSessionStorage,
   admission: {
-    assertQuota: assertWorkspaceUploadQuota,
     async resolveBrand(input) {
       const actor = await workspaceService.requireActor(input.actorUserId, input.workspaceId, "content.view");
       if (input.brandProfileId) {
@@ -4235,6 +4223,7 @@ export class UploadSessionService {
       brandTemplateId: parsed.brandTemplateId ?? null,
       brandProfileId: parsed.brandProfileId ?? null,
       generation: parsed.generationContext,
+      declaredDurationSeconds: parsed.declaredDurationSeconds ?? null,
     });
     console.warn(
       JSON.stringify({

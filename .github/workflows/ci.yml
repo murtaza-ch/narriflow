@@ -48,6 +48,8 @@ jobs:
             command: test:workflow:db
           - domain: Upload Session
             command: test:upload-session:db
+          - domain: Processing Usage
+            command: test:processing-usage:db
           - domain: Workspace Billing
             command: test:workspace-billing:db
           - domain: Social Publication Attempt

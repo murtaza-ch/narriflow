@@ -83,7 +83,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
     return { data: { project: snapshot.project ? mcpProject(snapshot.project, appOrigin) : null, progress: snapshot.progress ? { ...snapshot.progress, stage: snapshot.activeRun?.stage ?? null, percent: snapshot.activeRun?.progress ?? null } : null } };
   }));
   const usageOutput = schemas.mcpWorkspaceUsageResultSchema;
-  server.registerTool("narriflow_get_workspace_usage", { ...config("Get workspace usage", "Read the current plan, processing budget and upload limit", usageOutput), inputSchema: schemas.mcpWorkspaceOnlySchema }, (input) => execute("narriflow_get_workspace_usage", usageOutput, async (current) => ({ data: await projectService.getUsageSummary(await workspace("narriflow_get_workspace_usage", current, input.workspaceId)) })));
+  server.registerTool("narriflow_get_workspace_usage", { ...config("Get workspace usage", "Read the plan, minutes used, reserved, and remaining this UTC month, videos processing against the capacity limit, and the per-video limit", usageOutput), inputSchema: schemas.mcpWorkspaceOnlySchema }, (input) => execute("narriflow_get_workspace_usage", usageOutput, async (current) => ({ data: await projectService.getUsageSummary(await workspace("narriflow_get_workspace_usage", current, input.workspaceId)) })));
   const clipsOutput = schemas.mcpClipsResultSchema;
   server.registerTool("narriflow_list_clips", { ...config("List clips", "Page clips ranked by virality; transcript excerpts are opt-in", clipsOutput), inputSchema: schemas.mcpListClipsSchema }, (input) => execute("narriflow_list_clips", clipsOutput, async (current) => {
     const actor = await workspace("narriflow_list_clips", current, input.workspaceId);

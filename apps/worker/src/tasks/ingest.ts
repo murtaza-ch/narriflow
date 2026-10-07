@@ -8,16 +8,22 @@ import {
   assertPublicHttpUrl,
   assertResponseContentLength,
   createByteLimitTransform,
+  ExpectedDomainFailureError,
   guardedFetch,
   getIngestJobLifecycle,
+  getProcessingUsage,
   IngestJobClaimLost,
   type IngestJobLifecycle,
+  type ProcessingUsage,
   redactUrlForDisplay,
   RemoteFetchError,
   UnsafeUrlError,
   WorkflowFailure,
 } from "@narriflow/services";
 import {
+  classifyR2StorageError,
+  copyObject,
+  headObject,
   InvalidObjectMetadataError,
   presignDownloadUrl,
   putFileFromPath,
@@ -73,9 +79,50 @@ interface IngestJob {
 }
 
 interface IngestRuntime {
-  lifecycle: Pick<IngestJobLifecycle, "progress" | "complete" | "fail">;
+  lifecycle: Pick<IngestJobLifecycle, "progress" | "complete" | "fail" | "pinSource">;
+  usage: Pick<ProcessingUsage, "resize">;
   putSource: typeof putFileFromPath;
+  sourceStorage: SourceStorage;
 }
+
+interface SourceStorage {
+  exists(key: string, signal: AbortSignal): Promise<boolean>;
+  /** Server-side copy conditioned on the source's ETag. */
+  copyIfMatch(input: {
+    sourceKey: string;
+    destinationKey: string;
+    etag: string;
+    signal: AbortSignal;
+  }): Promise<"copied" | "changed">;
+}
+
+const r2SourceStorage: SourceStorage = {
+  async exists(key, signal) {
+    try {
+      await headObject(key, { signal });
+      return true;
+    } catch (error) {
+      if (classifyR2StorageError(error) === "storage_object_missing") return false;
+      throw error;
+    }
+  },
+  async copyIfMatch({ sourceKey, destinationKey, etag, signal }) {
+    try {
+      await copyObject({ sourceKey, destinationKey, sourceIfMatch: etag, signal });
+      return "copied";
+    } catch (error) {
+      const outcome = classifyR2StorageError(error);
+      if (outcome === "storage_precondition_failed" || outcome === "storage_object_missing")
+        return "changed";
+      throw error;
+    }
+  },
+};
+
+// Upload grants live at most one hour (UPLOAD_GRANT_TTL_SECONDS). The
+// grantable key is deleted only after any grant for it has expired, so a late
+// PUT can't recreate an object nothing references.
+const GRANTABLE_UPLOAD_RELEASE_DELAY_MS = 70 * 60 * 1000;
 
 class IngestWorkerError extends Error {
   code: string;
@@ -319,20 +366,46 @@ async function runUploadFinalize(
 
   await runtime.lifecycle.progress(job, "normalizing");
 
+  // A still-valid upload grant can overwrite the grantable key. Pin the exact
+  // verified object to an ingest-owned key before measuring it; every later
+  // read (probe, speech-to-text, rendering) uses the pinned key.
+  const pinnedKey = `projects/${job.projectId}/upload/${verified.uploadSessionId}${extname(verified.storageKey)}`;
+  if (!(await runtime.sourceStorage.exists(pinnedKey, signal))) {
+    const copied = await runtime.sourceStorage.copyIfMatch({
+      sourceKey: verified.storageKey,
+      destinationKey: pinnedKey,
+      etag: verified.etag,
+      signal,
+    });
+    if (copied === "changed") {
+      throw new IngestWorkerError(
+        "upload_source_changed",
+        "The uploaded file changed after it was verified.",
+      );
+    }
+  }
+  await runtime.lifecycle.pinSource(job, {
+    sourceStorageKey: pinnedKey,
+    releasedStorageKey: verified.storageKey,
+    releaseNotBefore: new Date(Date.now() + GRANTABLE_UPLOAD_RELEASE_DELAY_MS),
+  });
+
   // ffprobe reads the header over range requests, so a presigned URL avoids
   // downloading the whole file here while still using the stored object as the
   // authoritative source.
   let probedDuration: number | null = null;
   try {
-    const url = await presignDownloadUrl({ key: verified.storageKey });
+    const url = await presignDownloadUrl({ key: pinnedKey });
     probedDuration = await probeDurationSeconds(workerProcess, signal, url);
   } catch {
+    signal.throwIfAborted();
     probedDuration = null;
   }
   const durationSeconds = requireDuration(probedDuration);
+  await runtime.usage.resize({ projectId: job.projectId, seconds: durationSeconds });
 
   await runtime.lifecycle.complete(job, {
-    sourceStorageKey: verified.storageKey,
+    sourceStorageKey: pinnedKey,
     sourceMimeType: verified.contentType,
     sourceSizeBytes: verified.sizeBytes,
     sourceDurationSeconds: durationSeconds,
@@ -343,11 +416,15 @@ export function readVerifiedUploadPayload(payload: unknown): {
   storageKey: string;
   sizeBytes: number;
   contentType: string;
+  etag: string;
+  uploadSessionId: string;
 } {
   const value = assertObject(payload);
   const storageKey = String(value.storageKey ?? "").trim();
   const sizeBytes = Number(value.verifiedSizeBytes);
   const contentType = String(value.verifiedContentType ?? "").trim();
+  const etag = String(value.verifiedEtag ?? "").trim();
+  const uploadSessionId = String(value.uploadSessionId ?? "").trim();
 
   if (!storageKey) {
     throw new IngestWorkerError(
@@ -367,8 +444,14 @@ export function readVerifiedUploadPayload(payload: unknown): {
       "verifiedContentType is required",
     );
   }
+  if (!etag || !/^[a-zA-Z0-9-]+$/.test(uploadSessionId)) {
+    throw new IngestWorkerError(
+      "worker_invalid_payload",
+      "verifiedEtag and uploadSessionId are required",
+    );
+  }
 
-  return { storageKey, sizeBytes, contentType };
+  return { storageKey, sizeBytes, contentType, etag, uploadSessionId };
 }
 
 async function probeDurationSeconds(
@@ -504,6 +587,10 @@ async function runYtdlpLinkDownload(
         "This video is longer than your plan allows.",
       );
     }
+    // Provider metadata only resizes the reservation; it never settles. A
+    // video that can't fit is refused here, before any download.
+    if (metadataDuration)
+      await runtime.usage.resize({ projectId: job.projectId, seconds: metadataDuration });
 
     const probeMs = Date.now() - probeStartedAtMs;
     const downloadStartedAtMs = Date.now();
@@ -565,7 +652,7 @@ async function runYtdlpLinkDownload(
     }
 
     const durationSeconds = requireDuration(
-      metadataDuration ?? (await probeDurationSeconds(workerProcess, signal, downloadedPath)),
+      await probeDurationSeconds(workerProcess, signal, downloadedPath),
     );
     if (durationSeconds > MAX_MEDIA_DURATION_SECONDS) {
       throw new IngestWorkerError(
@@ -573,6 +660,7 @@ async function runYtdlpLinkDownload(
         "This video is longer than your plan allows.",
       );
     }
+    await runtime.usage.resize({ projectId: job.projectId, seconds: durationSeconds });
 
     const downloadMs = Date.now() - downloadStartedAtMs;
 
@@ -653,6 +741,7 @@ async function runDirectLinkDownload(
         "This video is longer than your plan allows.",
       );
     }
+    await runtime.usage.resize({ projectId: job.projectId, seconds: durationSeconds });
 
     const baseName = sanitizeFileName(basename(urlPath, ext) || "source");
     const key = `projects/${job.projectId}/link/${Date.now()}-${baseName}${ext}`;
@@ -859,6 +948,7 @@ async function runRssImport(
     const durationSeconds = requireDuration(
       await probeDurationSeconds(workerProcess, signal, tempFile),
     );
+    await runtime.usage.resize({ projectId: job.projectId, seconds: durationSeconds });
     const key = `projects/${job.projectId}/rss/${Date.now()}-${sanitizeFileName(episodeTitle)}${enclosureExt}`;
 
     await runtime.putSource({
@@ -889,13 +979,20 @@ export async function processIngestJob(
     signal?: AbortSignal;
     workerProcess?: WorkerProcessModule;
     lifecycle?: IngestRuntime["lifecycle"];
+    usage?: IngestRuntime["usage"];
     putSource?: IngestRuntime["putSource"];
+    sourceStorage?: IngestRuntime["sourceStorage"];
   } = {},
 ) {
   const signal = options.signal ?? new AbortController().signal;
   signal.throwIfAborted();
   const workerProcess = options.workerProcess ?? productionWorkerProcessModule;
-  const runtime: IngestRuntime = { lifecycle: options.lifecycle ?? getIngestJobLifecycle(), putSource: options.putSource ?? putFileFromPath };
+  const runtime: IngestRuntime = {
+    lifecycle: options.lifecycle ?? getIngestJobLifecycle(),
+    usage: options.usage ?? getProcessingUsage(),
+    putSource: options.putSource ?? putFileFromPath,
+    sourceStorage: options.sourceStorage ?? r2SourceStorage,
+  };
   const jobStartedAtMs = Date.now();
   log("info", "ingest_job_started", {
     jobId: job.id,
@@ -933,8 +1030,12 @@ export async function processIngestJob(
             "Internal object metadata was invalid",
           )
         : error;
+    // Processing Usage refusals keep their typed codes, which the retry
+    // policy classifies as permanent so automatic retries never spin on them.
     const code =
-      normalizedError instanceof IngestWorkerError || normalizedError instanceof WorkflowFailure
+      normalizedError instanceof IngestWorkerError ||
+      normalizedError instanceof WorkflowFailure ||
+      normalizedError instanceof ExpectedDomainFailureError
         ? normalizedError.code
         : "worker_unhandled_error";
     const message =

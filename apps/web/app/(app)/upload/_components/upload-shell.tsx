@@ -562,6 +562,7 @@ export function UploadShell({
       brandTemplateId,
       brandProfileId,
       generationContext: buildUploadGenerationContext(getFormValues(ratio)),
+      declaredDurationSeconds: durationSec,
     });
   }
 

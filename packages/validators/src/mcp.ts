@@ -101,7 +101,16 @@ export const mcpListWorkspacesSchema = z.strictObject({});
 export const mcpWorkspacesResultSchema = z.strictObject({ workspaces: z.array(mcpWorkspaceSchema) });
 export const mcpProjectsResultSchema = z.strictObject({ items: z.array(mcpProjectSchema.extend({ progress: mcpProgressSchema, clipCount: z.number().int().nonnegative() })), nextCursor: z.string().nullable(), totalCount: z.number().int().nonnegative() });
 export const mcpProjectResultSchema = z.strictObject({ project: mcpProjectSchema.nullable(), progress: mcpProgressSchema.nullable() });
-export const mcpWorkspaceUsageResultSchema = z.strictObject({ tier: z.string().max(30), usedMinutes: z.number().nonnegative(), limitMinutes: z.number().nonnegative(), maxUploadSeconds: z.number().nonnegative() });
+export const mcpWorkspaceUsageResultSchema = z.strictObject({
+  tier: z.string().max(30),
+  usedMinutes: z.number().int().nonnegative().describe("Settled processing minutes this UTC month"),
+  reservedMinutes: z.number().int().nonnegative().describe("Minutes reserved for videos still importing"),
+  limitMinutes: z.number().int().nonnegative(),
+  remainingMinutes: z.number().int().nonnegative(),
+  inFlight: z.number().int().nonnegative().describe("Videos currently processing"),
+  inFlightLimit: z.number().int().positive().describe("Videos the plan may process at once"),
+  maxUploadSeconds: z.number().int().nonnegative().describe("Per-video duration limit"),
+});
 export const mcpClipsResultSchema = z.strictObject({ items: z.array(mcpClipSchema).max(50), nextCursor: z.string().nullable() });
 export const mcpClipResultSchema = z.strictObject({ clip: mcpClipSchema });
 export const mcpClipExportResultSchema = z.strictObject({ export: mcpExportSchema, reused: z.boolean().optional() });

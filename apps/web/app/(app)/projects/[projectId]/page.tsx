@@ -132,12 +132,6 @@ function SourceThumb({
 	);
 }
 
-/**
- * Inline reason a plan gate is blocking generation, shown beside the action it
- * disables. Without this the server action's QuotaExceededError /
- * UploadTooLongError could only be expressed as a redirect, which read as the
- * button doing nothing.
- */
 // PlanLimitNotice moved to app/(app)/_components/plan-limit-notice.tsx so the
 // upload pre-flight can reuse it.
 
@@ -280,18 +274,16 @@ export default async function ProjectDetailPage({
 			// Non-fatal — the dialog degrades to transcript-only.
 		}
 	}
-	// Same two gates projectService.assertProjectGenerationAllowed enforces, read
-	// here so the blocked state is visible before the click instead of only as a
-	// thrown QuotaExceededError/UploadTooLongError afterwards.
+	// The per-video cap is deterministic, so show it before the click. Minutes
+	// are decided by Processing Usage settlement; a refusal is persisted on the
+	// Project and rendered from its typed code. Regeneration is free.
 	const sourceSeconds = snapshot.project.sourceDurationSeconds ?? 0;
 	const planLimitMessage =
 		sourceSeconds > usage.maxUploadSeconds
 			? `This source is ${processingMinutesFromSeconds(sourceSeconds)} min, over the ${Math.round(
 					usage.maxUploadSeconds / 60,
-				)}-min per-upload limit on the ${pricingTier} plan.`
-			: usage.usedMinutes > usage.limitMinutes
-				? `Monthly processing limit reached on the ${pricingTier} plan (${usage.limitMinutes} min/mo; ${usage.usedMinutes} min used).`
-				: null;
+				)}-min per-video limit on the ${pricingTier} plan.`
+			: null;
 	const transcriptReady = transcript?.status === "completed";
 	const transcriptInFlight =
 		transcript?.status === "queued" || transcript?.status === "processing";
@@ -346,14 +338,12 @@ export default async function ProjectDetailPage({
 			activeRun.status === "waiting");
 	const runFailed = activeRun !== null && activeRun.status === "failed";
 	const quotaBlockedMidFlight = isQuotaBlockedMidFlight({
-		ingestReady: isIngestReady,
-		hasCommittedPack,
-		hasAnyRun: activeRun !== null,
-		tier: usage.tier,
-		usedMinutes: usage.usedMinutes,
+		ingestErrorCode: snapshot.project.ingestErrorCode,
 	});
 	const quotaBlockedMessage = quotaBlockedMidFlight
-		? `Monthly limit reached during processing (${usage.limitMinutes} min/mo; ${usage.usedMinutes} min used) on the ${usage.tier} plan.`
+		? `${usage.remainingMinutes} of ${usage.limitMinutes} processing minutes remain this month on the ${usage.tier} plan, with a ${Math.round(
+				usage.maxUploadSeconds / 60,
+			)}-min per-video limit. Retry after upgrading or when next month's minutes start.`
 		: null;
 
 	const { transcribe: transcribeStage, detect: detectStage, render: renderStage } = pipelineStates.processingStages;
@@ -856,15 +846,12 @@ export default async function ProjectDetailPage({
 														Detect clip-worthy moments and score them for
 														virality.
 													</Text>
-													<PlanLimitNotice message={planLimitMessage} />
 												</Box>
 												<ActionSubmitButton
 													pendingLabel="Starting…"
 													size="sm"
 													flexShrink={0}
-													disabled={
-														detectionInFlight || planLimitMessage !== null
-													}
+													disabled={detectionInFlight}
 												>
 													{detectionInFlight ? "Detecting…" : "Detect clips"}
 												</ActionSubmitButton>

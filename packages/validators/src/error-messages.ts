@@ -87,8 +87,6 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	rss_unsupported_document: "That URL is not a supported RSS or Atom feed.",
 	rss_no_media_episodes:
 		"That feed does not contain downloadable audio or video episodes.",
-	rss_concurrent_ingest_limit_reached:
-		"Five RSS episodes are already importing in this workspace. Wait for one to finish and try again.",
 	rss_episode_not_found:
 		"That episode is no longer present in the feed. Refresh the feed and choose another episode.",
 	autopilot_rule_limit_reached:
@@ -96,9 +94,13 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	rss_missing_enclosure:
 		"That RSS episode doesn't have a downloadable audio file. Choose a different episode.",
 	upload_too_long:
-		"This video exceeds your plan's upload length limit. Upgrade your plan or upload a shorter video.",
-	quota_exceeded:
-		"You've used all your processing minutes for this month. Upgrade to keep going.",
+		"This video exceeds your plan's per-video length limit. Upgrade your plan or upload a shorter video.",
+	processing_quota_exhausted:
+		"This video needs more processing minutes than your workspace has left this month. Upgrade, or wait for next month's minutes, then retry the import.",
+	workspace_processing_capacity_reached:
+		"Your workspace is already processing as many videos as your plan allows. Try again when one finishes.",
+	upload_source_changed:
+		"The uploaded file changed after it was checked. Start a fresh upload.",
 	transcription_failed:
 		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
 	transcription_run_failed:

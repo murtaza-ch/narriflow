@@ -22,8 +22,7 @@ import {
 	projectService,
 	getIngestJobLifecycle,
 	workspaceLibraryService,
-	QuotaExceededError,
-	UploadTooLongError,
+	ProcessingUsageError,
 } from "@narriflow/services";
 import {
 	brandProfileProjectApplicationSchema,
@@ -33,9 +32,7 @@ import {
 
 /** True for plan-limit errors that should send the user to the upgrade view. */
 function isPlanLimitError(error: unknown): boolean {
-	return (
-		error instanceof QuotaExceededError || error instanceof UploadTooLongError
-	);
+	return error instanceof ProcessingUsageError;
 }
 
 /**

@@ -947,6 +947,10 @@ export function buildCopySource(bucket: string, key: string): string {
 export async function copyObject(params: {
   sourceKey: string;
   destinationKey: string;
+  /** Copy only if the source still has this ETag; otherwise the provider
+   * rejects the request with 412 PreconditionFailed. */
+  sourceIfMatch?: string;
+  signal?: AbortSignal;
 }) {
   await projectStorageDeadline(params.sourceKey);
   await projectStorageDeadline(params.destinationKey);
@@ -958,7 +962,9 @@ export async function copyObject(params: {
       Bucket: bucket,
       CopySource: buildCopySource(bucket, params.sourceKey),
       Key: params.destinationKey,
+      ...(params.sourceIfMatch ? { CopySourceIfMatch: params.sourceIfMatch } : {}),
     }),
+    { abortSignal: params.signal },
   );
 
   return { key: params.destinationKey };
@@ -1005,6 +1011,9 @@ export function classifyR2StorageError(error: unknown): string {
   }
   if (status === 404 || /nosuchkey|notfound/i.test(name)) {
     return "storage_object_missing";
+  }
+  if (status === 412 || /preconditionfailed/i.test(name)) {
+    return "storage_precondition_failed";
   }
   if (name === "AbortError") return "storage_operation_cancelled";
   return "storage_operation_failed";

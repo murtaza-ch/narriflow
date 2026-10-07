@@ -192,8 +192,6 @@ export {
 export {
 	projectService,
 	ProjectService,
-	QuotaExceededError,
-	UploadTooLongError,
 	LinkUnsupportedSourceError,
 	ProjectAccessDeniedError,
 	ProjectDeletionIncompleteError,
@@ -220,7 +218,6 @@ export {
 	UploadSessionIntegrityError,
 	UploadSessionInvalidStateError,
 	UploadSessionNotFoundError,
-	UploadSessionQuotaRefusedError,
 	type FinalizeUploadSessionOutcome,
 	type DiscardUploadSessionOutcome,
 	type GrantUploadPartsOutcome,
@@ -520,6 +517,19 @@ export {
 	type AutoRetryDecision,
 } from "./processing-retry-policy";
 export { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
+export {
+	ProcessingUsage,
+	ProcessingUsageError,
+	isProcessingUsageFailureCode,
+	PROCESSING_USAGE_TRANSACTION,
+	processingUsageFailureCatalog,
+	type ProcessingUsageDependencies,
+	type ProcessingUsageFailureCode,
+	type ProcessingUsageReservationView,
+	type ProcessingUsageSettlement,
+	type ProcessingUsageSummary,
+} from "./processing-usage";
+export { getProcessingUsage, processingCapacityFromEnv } from "./processing-usage-runtime";
 export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestRetryLimitExceededError, MAX_INGEST_RETRY_ATTEMPTS, type ClaimedIngestJob, type IngestClaimRef, type IngestExecutionContext, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
 
 export { LayoutEvidenceLifecycle, LayoutEvidenceClaimLost, type ClipPendingPreview, type ClipPendingAutoLayoutAnalysis } from "./layout-evidence";

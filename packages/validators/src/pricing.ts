@@ -38,20 +38,21 @@ export function processingMinutesFromSeconds(seconds: number | null | undefined)
   return Math.ceil(Math.max(0, seconds ?? 0) / 60);
 }
 
-export function isProcessingQuotaExceeded(input: {
-  usedMinutes: number;
-  requestedSeconds?: number | null;
-  limitMinutes: number;
-  blockAtLimitWithoutRequest?: boolean;
-}) {
-  const requestedMinutes = processingMinutesFromSeconds(input.requestedSeconds);
-  const total = input.usedMinutes + requestedMinutes;
+/**
+ * Default Processing Capacity: how many videos one Workspace may have in
+ * flight at once. Deployments may override these through validated
+ * configuration; intake beyond the limit is refused with retry guidance.
+ */
+export const PROCESSING_CAPACITY_DEFAULTS: Record<PricingTier, number> = {
+  free: 2,
+  creator: 5,
+  pro: 10,
+  business: 20,
+};
 
-  if (requestedMinutes === 0 && input.blockAtLimitWithoutRequest) {
-    return input.usedMinutes >= input.limitMinutes;
-  }
-
-  return total > input.limitMinutes;
+/** The UTC calendar month that owns processing usage admitted at `at`. */
+export function processingPeriodStart(at: Date): Date {
+  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), 1));
 }
 
 /** The paid tiers that map to a Stripe product. `free` has no Stripe object. */

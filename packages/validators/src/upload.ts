@@ -2,7 +2,9 @@ import { z } from "zod";
 import { contentPackSchema } from "./content-pack";
 import { sourceLanguageCodeSchema } from "./language";
 
-export const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024 * 1024;
+// Uploaded sources are pinned with one conditional server-side copy before
+// ingest probes them. R2 caps a single copy at 5 GiB minus 5 MiB.
+export const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024 * 1024 - 5 * 1024 * 1024;
 export const MAX_MEDIA_DURATION_SECONDS = 4 * 60 * 60;
 export const uploadMimeTypes = [
   "video/mp4",
@@ -40,6 +42,13 @@ export const openUploadSessionSchema = z
     brandTemplateId: z.string().uuid().nullable().optional(),
     brandProfileId: z.string().uuid().nullable().optional(),
     generationContext: uploadGenerationContextSchema,
+    /** Browser media metadata. Reserved at admission, never trusted to settle. */
+    declaredDurationSeconds: z
+      .number()
+      .positive()
+      .max(7 * 24 * 60 * 60)
+      .nullable()
+      .optional(),
   })
   .strict();
 

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createInMemoryUploadSessionHarness } from "./upload-session.test-support";
+import { ProcessingUsageError } from "./processing-usage";
+import { MAX_UPLOAD_SIZE_BYTES } from "@narriflow/validators";
 import {
   createUploadSessionModule,
   assertUploadProviderLifecyclePrerequisite,
@@ -9,7 +11,6 @@ import {
   UploadSessionIntegrityError,
   UploadSessionInvalidStateError,
   UploadSessionNotFoundError,
-  UploadSessionQuotaRefusedError,
   UploadSessionReconciliationClaimLostError,
   type UploadSessionDiagnosticEvent,
   uploadSessionConfigFromEnv,
@@ -132,7 +133,7 @@ describe("Upload Session", () => {
       partSizeBytes: 16 * 1024 * 1024,
       partCount: 7,
     });
-    expect(planUploadTransfer(5 * 1024 * 1024 * 1024, config)).toMatchObject({
+    expect(planUploadTransfer(MAX_UPLOAD_SIZE_BYTES, config)).toMatchObject({
       kind: "multipart",
       partCount: 320,
     });
@@ -816,7 +817,7 @@ describe("Upload Session", () => {
     });
   });
 
-  test("waits for a live admission claim instead of bypassing quota during a slow check", async () => {
+  test("waits for a live admission instead of reserving twice during a slow preflight", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const baseAdmission = harness.adapters.admission;
     let releaseQuota!: () => void;
@@ -832,10 +833,10 @@ describe("Upload Session", () => {
       config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
       admission: {
         ...baseAdmission,
-        async assertQuota(workspaceId) {
+        async resolveBrand(input) {
           signalQuotaEntered();
           await quotaReleased;
-          await baseAdmission.assertQuota(workspaceId);
+          return baseAdmission.resolveBrand(input);
         },
       },
     });
@@ -898,7 +899,8 @@ describe("Upload Session", () => {
     ]);
 
     expect(right.sessionId).toBe(left.sessionId);
-    expect(harness.facts.quotaChecks).toBe(2);
+    // Recovery reuses the reservation committed with the session row.
+    expect(harness.facts.quotaChecks).toBe(1);
     expect(harness.facts.brandResolutions).toBe(1);
     expect(harness.facts.exactKeyListings).toBe(1);
     expect(harness.facts.providerInitiations).toHaveLength(1);
@@ -2315,14 +2317,18 @@ describe("Upload Session", () => {
     expect(harness.facts.sessions[0]?.status).toBe("failed");
   });
 
-  test("records quota refusal once without brand or provider work", async () => {
+  test("records a Processing Usage refusal once without provider work", async () => {
     const harness = createInMemoryUploadSessionHarness();
     harness.failQuota(
-      new UploadSessionQuotaRefusedError({
-        tier: "free",
-        limitMinutes: 60,
-        usedMinutes: 60,
-        requestedMinutes: 0,
+      new ProcessingUsageError({
+        code: "processing_quota_exhausted",
+        message: "No minutes left",
+        details: {
+          tier: "free",
+          limitMinutes: 60,
+          remainingMinutes: 0,
+          requestedMinutes: null,
+        },
       }),
     );
     const module = createUploadSessionModule(harness.adapters);
@@ -2341,17 +2347,16 @@ describe("Upload Session", () => {
     };
 
     await expect(module.open(input)).rejects.toBeInstanceOf(
-      UploadSessionQuotaRefusedError,
+      ProcessingUsageError,
     );
     await expect(module.open(input)).rejects.toBeInstanceOf(
       UploadSessionInvalidStateError,
     );
     expect(harness.facts.quotaChecks).toBe(1);
-    expect(harness.facts.brandResolutions).toBe(0);
     expect(harness.facts.providerInitiations).toHaveLength(0);
     expect(harness.facts.sessions[0]).toMatchObject({
       status: "failed",
-      failureCode: "quota_exceeded",
+      failureCode: "processing_quota_exhausted",
     });
   });
 
