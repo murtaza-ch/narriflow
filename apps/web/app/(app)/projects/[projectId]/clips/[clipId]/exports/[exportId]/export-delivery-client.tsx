@@ -11,6 +11,7 @@ import {
 	Copy,
 	Download,
 	ExternalLink,
+	FileText,
 	Film,
 	Link2,
 	RefreshCw,
@@ -509,6 +510,21 @@ export function ExportDeliveryClient({
 										</>
 									)}
 								</Button>
+								<Flex gap="2">
+									{(["srt", "vtt"] as const).map((format) => (
+										<Button key={format} asChild={hasReady} variant="outline" size="sm" flex="1" disabled={!hasReady}>
+											{hasReady ? (
+												<a href={`${apiPath}/subtitles/${format}`} download>
+													<FileText size={14} /> {format.toUpperCase()} subtitles
+												</a>
+											) : (
+												<>
+													<FileText size={14} /> {format.toUpperCase()} subtitles
+												</>
+											)}
+										</Button>
+									))}
+								</Flex>
 								<Button
 									variant="outline"
 									w="full"

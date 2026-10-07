@@ -130,3 +130,43 @@ The user subsequently expanded both the export and clip cards into Codex's side 
 The native clip player loaded the 27.06-second preview file with readyState 4 and no media error. After the user pressed Play, the observed played range advanced from 4.00 to 7.14 seconds. The user clarified that they paused it manually, superseding the earlier report of an automatic early pause. No playback defect was established. Playback loading, advancement and manual pause are verified; the selected segment's automatic stopping point and replay behavior were not tested. Actual Codex clip/export screenshots were saved in the task's local visualization directory without signed media URLs.
 
 Live file transfer, upload/publication card interactions, exact-post confirmation, Claude/ChatGPT and revocation gates remain open.
+
+## Assistant connector launch (2026-10-08)
+
+The [assistant connector launch spec](../../.scratch/assistant-connector-launch/spec.md) added Operation Status, Download Grants with subtitles, Brand Profile selection, explicit export output, the review handoff, signed-scope continuations, and the caption-only aspect-ratio fix. Server version 0.4.0 exposes 29 public tools. Deterministic and disposable-database results are recorded with the commit; nothing below is verified on a live client yet.
+
+### Before live testing
+
+1. Apply migration `20261008000000_ingest_job_generation_run` once to the shared database after checking `DIRECT_URL` and `DATABASE_URL`. It backfills intake lineage and deletes development MCP Task handles and export receipts that used the previous result contracts.
+2. With explicit owner authorization at the time, switch the Clerk OAuth application's access-token format to opaque in the Clerk dashboard. The verifier already calls Clerk's online verification endpoint.
+3. Obtain a fresh opaque token through a real client. Record whether the verification response's `aud` contains the canonical `/mcp` URL, without saving token bytes. If it does not, stop: do not weaken the audience check; choose a Clerk configuration fix or a reviewed design change.
+4. Revoke a live connection and record `invalid_token` on the next tool call.
+
+### Clerk authorization lookup
+
+Clerk documents revocation of opaque access and refresh tokens (`POST /oauth_applications/{id}/revoke_token`) and online verification that reports revocation immediately. It documents no per-user lookup of a client's active authorization (checked 2026-10-08 against [How Clerk implements OAuth](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth) and [revokeToken](https://clerk.com/docs/reference/backend/oauth-applications/revoke-token)). Signed OAuth continuations therefore are not rechecked against Clerk; they expire at the earlier of ten minutes and the originating token's expiration, require the needed scope in their signed grant, and still require the signed-in person and current Workspace authority. Re-check if Clerk adds a grant lookup.
+
+### Live acceptance journey
+
+Run on Claude (web connector and Claude Code), ChatGPT (developer mode), and Codex desktop, each with an active Business workspace and an uploaded original file (not a YouTube link):
+
+1. Connect with scoped consent, then list workspaces.
+2. Upload an original file through the card or CLI, choosing a Brand Profile with `narriflow_list_brand_profiles`.
+3. Follow `narriflow_get_operation` with the returned intake operation to completion.
+4. Inspect clips and export one; check `output.requested` and `output.granted`.
+5. Call `narriflow_get_export_download` for video and subtitles; confirm a second call issues fresh links.
+6. Create the review handoff, send and approve the round in Narriflow as a signed-in member, then read the decision with `narriflow_get_review_round`.
+7. Revoke the connection and observe denial on the next request.
+
+On Claude, also call every public tool at least once. These inherited gates must pass before submission: exact-post confirmation (decline, expiry, changed intent), revocation, and membership removal, role change, and downgrade. "Unavailable" may be recorded only for a host capability a client lacks (Apps cards or Tasks), never for a Narriflow security or confirmation gate. Record client versions, negotiated protocol revision and extensions, workspace, project, operation and export IDs for each client.
+
+| Client | Version | Protocol / Apps / Tasks | Journey | Every tool | Security gates |
+| --- | --- | --- | --- | --- | --- |
+| Claude web connector | | | Pending | Pending | Pending |
+| Claude Code | | | Pending | n/a | Pending |
+| ChatGPT developer mode | | | Pending | n/a | Pending |
+| Codex desktop | | | Pending | n/a | Pending |
+
+### Submission
+
+Listing materials live in [docs/integrations/listing](../integrations/listing/README.md). Submitting to Claude's directory is outward-facing: the owner submits or explicitly authorizes it at the time, after this journey passes and the processing usage ledger is accepted. ChatGPT materials are prepared alongside; that submission waits for the Claude listing and the owner's go-ahead. Re-check both directories' requirement pages on the day of submission.

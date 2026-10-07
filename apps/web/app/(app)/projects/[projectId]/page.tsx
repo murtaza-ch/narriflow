@@ -58,6 +58,7 @@ import { ContentSuitePanel } from "./content-suite-panel";
 import { AnalyticsPanel } from "./analytics-panel";
 import { DubbingPanel } from "./dubbing-panel";
 import { ReviewPanel, type ReviewRoomData } from "./review-panel";
+import { resolveReviewPreselection } from "@/lib/review-preselection";
 import { ProjectShareButton } from "./project-share-button";
 import { PublishingProvider, ProjectPosts } from "./publishing-provider";
 import { RetryIngestButton } from "./render-clips-button";
@@ -140,7 +141,7 @@ export default async function ProjectDetailPage({
 	searchParams,
 }: {
 	params: Promise<{ projectId: string }>;
-	searchParams: Promise<{ tab?: string }>;
+	searchParams: Promise<{ tab?: string; reviewSelection?: string }>;
 }) {
 	const [{ projectId }, query] = await Promise.all([params, searchParams]);
 	const activeTab = projectTabFromSearchParam(query.tab);
@@ -220,6 +221,10 @@ export default async function ProjectDetailPage({
 	const reviewRoomData = reviewRoom
 		? (JSON.parse(JSON.stringify(reviewRoom)) as ReviewRoomData)
 		: null;
+	const reviewPreselection =
+		reviewRoomData && canManageReview
+			? resolveReviewPreselection(reviewRoomData.candidates, query.reviewSelection)
+			: null;
 	const transcript = fullTranscript ?? transcriptStatus;
 	const pricingTier = usage.tier;
 	// vizard-parity Phase C export options: whether this owner's plan can
@@ -951,6 +956,7 @@ export default async function ProjectDetailPage({
 									projectId={projectId}
 									initialData={reviewRoomData}
 									canManage={canManageReview}
+									preselection={reviewPreselection}
 								/>
 							) : null}
 						</Tabs.Content>

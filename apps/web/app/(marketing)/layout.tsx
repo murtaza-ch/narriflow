@@ -20,6 +20,7 @@ const FOOTER_COLUMNS: {
       { label: "Features", href: "/#features" },
       { label: "How it works", href: "/#pipeline" },
       { label: "Pricing", href: "/pricing" },
+      { label: "AI assistants", href: "/connector" },
       { label: "Home", href: "/home" },
     ],
   },

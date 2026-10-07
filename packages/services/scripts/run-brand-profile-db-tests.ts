@@ -33,14 +33,18 @@ try {
   } finally {
     client.release();
   }
+  // Raw SQL (such as the processing usage ledger) uses unqualified table
+  // names, so every test connection searches the disposable schema.
+  const testUrl = new URL(databaseUrl);
+  testUrl.searchParams.set("options", `-csearch_path=${schema}`);
   const child = Bun.spawn([process.execPath, "test", "packages/services/src/brand-profile.db.test.ts"], {
     cwd: root,
     env: {
       ...process.env,
       ALLOW_BRAND_PROFILE_DB_TESTS: "1",
       NARRIFLOW_WRITES_SCENE_TEMPLATES: "1",
-      DATABASE_URL: databaseUrl,
-      BRAND_PROFILE_TEST_DATABASE_URL: databaseUrl,
+      DATABASE_URL: testUrl.toString(),
+      BRAND_PROFILE_TEST_DATABASE_URL: testUrl.toString(),
       BRAND_PROFILE_TEST_DATABASE_SCHEMA: schema,
     },
     stdout: "inherit",

@@ -2296,13 +2296,19 @@ function retimeVisualLayersForInsertedScenes(
       };
       if (outputRange.endSec <= outputRange.startSec) return;
       if (layer.kind === "caption") {
+        // A word spanning an inserted scene belongs to each slice only for its
+        // own part, so neither slice shows it across the scene.
         const words = layer.words
           .filter((word) => word.endSec > startSec && word.startSec < endSec)
-          .map((word) => ({
-            ...word,
-            startSec: word.startSec + shift(word.startSec),
-            endSec: word.endSec + shift(Math.max(word.startSec, word.endSec - 0.000_001)),
-          }));
+          .map((word) => {
+            const wordStart = Math.max(word.startSec, startSec);
+            const wordEnd = Math.min(word.endSec, endSec);
+            return {
+              ...word,
+              startSec: wordStart + shift(wordStart),
+              endSec: wordEnd + shift(Math.max(wordStart, wordEnd - 0.000_001)),
+            };
+          });
         if (words.length === 0) return;
         slices.push({ ...layer, id: `${layer.id}:scene-slice:${index}`, activeRange: outputRange, words });
         return;
@@ -2311,6 +2317,61 @@ function retimeVisualLayersForInsertedScenes(
     });
     return slices;
   });
+}
+
+export interface CaptionCue {
+  readonly startSec: number;
+  readonly endSec: number;
+  readonly text: string;
+}
+
+const CAPTION_CUE_TARGET: CompositionTarget = { id: "caption-cues", aspectRatio: "9:16", width: 1080, height: 1920 };
+
+/** The one caption cue derivation. Burn-in plans these cues per target, and
+ * subtitle files read them directly: `wordsPerCue` grouping, edited time
+ * across cuts and inserted scenes, and censor masks. `ignoreVisibility` serves
+ * subtitles for exports whose burned-in captions are turned off. */
+export function deriveCaptionCues(
+  document: EditorDocument,
+  options: { readonly ignoreVisibility?: boolean } = {},
+): CaptionCue[] {
+  const editedTimeMap = buildEditedTimeMap(document.deletedRanges, {
+    startSec: document.clipStartSec,
+    endSec: document.clipEndSec,
+  });
+  const cueDocument = options.ignoreVisibility
+    ? { ...document, captionPreset: { ...document.captionPreset, visible: true } }
+    : document;
+  const totalDurationSec = editedTimeMap.editedDurationSec +
+    document.sceneBlocks.reduce((total, block) => total + block.durationSec, 0);
+  return retimeVisualLayersForInsertedScenes(
+    captionLayersForTarget({ document: cueDocument, target: CAPTION_CUE_TARGET, editedTimeMap }),
+    document.sceneBlocks,
+    totalDurationSec,
+  ).flatMap((layer) => layer.kind === "caption" && layer.words.length > 0
+    ? [{ ...captionCueVisibleRange(layer, totalDurationSec), text: captionCueText(layer.words) }]
+    : []);
+}
+
+export function captionCueText(words: readonly CompositionCaptionWord[]) {
+  return words.map((word) => word.text).join(" ");
+}
+
+/** When a caption word stops being the active word. Burned-in text events
+ * and subtitle cue ends both use it, so subtitles track the visible text
+ * rather than the cue's background envelope. */
+export function captionWordSegmentEnd(words: readonly CompositionCaptionWord[], index: number) {
+  const word = words[index]!;
+  return index + 1 < words.length ? words[index + 1]!.startSec : Math.max(word.endSec, word.startSec + 0.05);
+}
+
+/** A cue's text is visible from its first word until its last word's segment
+ * ends, and never after the export ends. */
+export function captionCueVisibleRange(layer: CompositionCaptionVisualLayer, totalDurationSec: number) {
+  return {
+    startSec: layer.words[0]!.startSec,
+    endSec: Math.min(totalDurationSec, captionWordSegmentEnd(layer.words, layer.words.length - 1)),
+  };
 }
 
 function captionLayersForTarget(input: {

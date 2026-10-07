@@ -1211,10 +1211,16 @@ export class ProjectService {
 			provider = detectedProvider;
 			sourceType = provider === "youtube" ? "youtube" : "link";
 
-			brandActorScope = parsed.brandProfileId ? actor : null;
+			// Assistant intake treats an omitted Brand Profile as the Workspace
+			// default, resolved after replay lookup so retries keep their identity.
+			const profileId =
+				parsed.brandProfileId === undefined && options.mutation
+					? await brandProfileService.getDefaultId(actor)
+					: parsed.brandProfileId;
+			brandActorScope = profileId ? actor : null;
 			profileResolved = brandActorScope
 				? await brandProfileService.resolveForProject(brandActorScope, {
-						profileId: parsed.brandProfileId!,
+						profileId: profileId!,
 						templateId: parsed.brandTemplateId,
 					})
 				: null;

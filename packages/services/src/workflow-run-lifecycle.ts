@@ -404,7 +404,7 @@ export class WorkflowRunLifecycle {
       errorCode: string | null;
       transition: string;
       followUpWorkflowRunId?: string;
-      generationRenderIds?: string[];
+      generationRenders?: NonNullable<WorkflowStageUpdatedEvent["generationRenders"]>;
       generationRenderResults?: NonNullable<WorkflowStageUpdatedEvent["generationRenderResults"]>;
       analyticsRequired?: boolean;
       notification?: RenderTerminalNotificationPayload;
@@ -455,7 +455,7 @@ export class WorkflowRunLifecycle {
       errorCode: input.errorCode,
       emittedAt: emittedAt.toISOString(),
       ...(input.followUpWorkflowRunId ? { followUpWorkflowRunId: input.followUpWorkflowRunId } : {}),
-      ...(input.generationRenderIds ? { generationRenderIds: input.generationRenderIds } : {}),
+      ...(input.generationRenders ? { generationRenders: input.generationRenders } : {}),
       ...(generationRenderResults ? { generationRenderResults } : {}),
       ...(input.notification ? { notification: input.notification } : {}),
     } satisfies WorkflowStageUpdatedEvent;
@@ -1006,10 +1006,10 @@ export class WorkflowRunLifecycle {
         const value = workflowStageUpdatedEventSchema.safeParse(event.payload);
         return value.success && value.data.projectId === input.projectId ? [value.data] : [];
       });
-      const handoff = parsed.find((event) => event.workflowRunId === detection.id && event.generationRenderIds);
-      if (!handoff?.generationRenderIds) return false;
+      const handoff = parsed.find((event) => event.workflowRunId === detection.id && event.generationRenders);
+      if (!handoff?.generationRenders) return false;
       const settledIds = new Set(parsed.flatMap((event) => (event.generationRenderResults ?? []).map((result) => result.renderId)));
-      const outstandingIds = handoff.generationRenderIds.filter((id) => !settledIds.has(id));
+      const outstandingIds = handoff.generationRenders.map((render) => render.renderId).filter((id) => !settledIds.has(id));
       const pending = await tx.clipRender.findMany({ where: { id: { in: outstandingIds }, status: "pending", exportVariantId: null,
         clip: { projectId: input.projectId, workflowRunId: detection.id } }, select: { id: true } });
       const cancelled = await tx.clipRender.updateMany({ where: { id: { in: pending.map((render) => render.id) }, status: "pending", exportVariantId: null,
@@ -1731,11 +1731,11 @@ export class WorkflowRunLifecycle {
       const generationRenders = await tx.clipRender.findMany({ where: { exportVariantId: null,
         clip: { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId },
         OR: input.renders.map((render) => ({ clipId: render.clipId, aspectRatio: render.aspectRatio as Prisma.ClipRenderWhereInput["aspectRatio"] })) },
-        orderBy: { id: "asc" }, select: { id: true } });
+        orderBy: { id: "asc" }, select: { id: true, clipId: true } });
       await this.appendEvent(tx, { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId,
         attemptId: attempt.attemptId, stage: "moment_detection", status: "running", progress: detection.progress,
         errorCode: null, transition: `render_handoff:${admitted.id}`, followUpWorkflowRunId: admitted.id,
-        generationRenderIds: generationRenders.map((render) => render.id) });
+        generationRenders: generationRenders.map((render) => ({ renderId: render.id, clipId: render.clipId })) });
       return admitted;
     });
   }

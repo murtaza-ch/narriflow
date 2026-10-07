@@ -412,6 +412,7 @@ export interface UploadSessionAdmission {
     actorUserId: string;
     brandTemplateId: string | null;
     brandProfileId: string | null;
+    useDefaultBrandProfile?: boolean;
   }): Promise<{
     templateId: string | null;
     snapshot: unknown;
@@ -501,6 +502,9 @@ export interface OpenUploadSessionInput {
   };
   brandTemplateId: string | null;
   brandProfileId: string | null;
+  /** An assistant omitted the Brand Profile: admission applies the Workspace
+   * default once. The requested input, not the resolved default, is fingerprinted. */
+  useDefaultBrandProfile?: boolean;
   generation: unknown;
   /** Browser media metadata; reserved at admission, never trusted to settle. */
   declaredDurationSeconds?: number | null;
@@ -708,6 +712,7 @@ function immutableInputFingerprint(input: OpenUploadSessionInput) {
     source: input.source,
     brandTemplateId: input.brandTemplateId,
     brandProfileId: input.brandProfileId,
+    useDefaultBrandProfile: input.useDefaultBrandProfile || undefined,
     generation: input.generation,
     declaredDurationSeconds: input.declaredDurationSeconds ?? undefined,
   });
@@ -866,6 +871,7 @@ export function createUploadSessionModule(
         actorUserId: input.actorUserId,
         brandTemplateId: input.brandTemplateId,
         brandProfileId: input.brandProfileId,
+        useDefaultBrandProfile: input.useDefaultBrandProfile,
       });
     })();
     admissionPreflights.set(key, preflight);
@@ -4172,9 +4178,10 @@ const productionUploadSessionModule = createUploadSessionModule({
   admission: {
     async resolveBrand(input) {
       const actor = await workspaceService.requireActor(input.actorUserId, input.workspaceId, "content.view");
-      if (input.brandProfileId) {
+      const profileId = input.brandProfileId ?? (input.useDefaultBrandProfile ? await brandProfileService.getDefaultId(actor) : null);
+      if (profileId) {
         const resolved = await brandProfileService.resolveForProject(actor, {
-          profileId: input.brandProfileId,
+          profileId,
           templateId: input.brandTemplateId,
         });
         return {
@@ -4222,6 +4229,8 @@ export class UploadSessionService {
       source: parsed.source,
       brandTemplateId: parsed.brandTemplateId ?? null,
       brandProfileId: parsed.brandProfileId ?? null,
+      // Browser intake always states its choice; only an omitted field means default.
+      useDefaultBrandProfile: parsed.brandProfileId === undefined,
       generation: parsed.generationContext,
       declaredDurationSeconds: parsed.declaredDurationSeconds ?? null,
     });

@@ -6,7 +6,7 @@ Implement the approved stateless SDK v2 architecture and complete the safe clip 
 
 ## Contracts
 
-Strict Zod contracts live in validators. Public results project product facts, operation identifiers, status guidance, and ordinary review links; no storage keys, provider internals, full transcripts, upload grants, or temporary media URLs. Workspace discovery uses workspaceId. Mutations select workspace explicitly and require clientIdempotencyKey. Keys bind immutable input and replay accepted outcomes; domain mutation and identity commit atomically. During limiter outages preserve reads/status/replays and pause new writes.
+Strict Zod contracts live in validators. Public results project product facts, operation identifiers, status guidance, and ordinary review links; no storage keys, provider internals, full transcripts, upload grants, or temporary media URLs, except the result of the dedicated download tool (`narriflow_get_export_download`). List, get, and export tools remain URL-free, and diagnostics never log URLs. Workspace discovery uses workspaceId. Mutations select workspace explicitly and require clientIdempotencyKey. Keys bind immutable input and replay accepted outcomes; domain mutation and identity commit atomically. During limiter outages preserve reads/status/replays and pause new writes.
 
 ## Workflow
 

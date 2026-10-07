@@ -572,6 +572,7 @@ model WorkflowRun {
   contentPack    ContentPack?  @relation(fields: [contentPackId], references: [id], onDelete: SetNull)
   renderVariants ClipRender[]
   exportBundle   ExportBundle?
+  ingestHandoffs IngestJob[]    @relation("IngestJobGenerationRun")
 
   // Raw partial unique index (not expressible in Prisma schema — see the
   // 20260729000000_one_live_clip_rendering_run migration): at most one
@@ -699,6 +700,10 @@ model IngestJob {
   claimExpiresAt           DateTime?
   generationHandoffAt      DateTime?
   generationHandoffRetryAt DateTime?
+  /// The speech-to-text run this intake handed off to, recorded with the
+  /// handoff acknowledgement. Operation Status follows this lineage and never
+  /// infers it from the Project's latest run.
+  generationRunId          String?         @db.Uuid
   lastError                String?
   createdAt                DateTime        @default(now())
   updatedAt                DateTime        @updatedAt
@@ -707,6 +712,7 @@ model IngestJob {
   uploadSessionId          String?         @unique @db.Uuid
   project                  Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
   uploadSession            UploadSession?  @relation("UploadSessionIngestJob", fields: [uploadSessionId], references: [id], onDelete: SetNull)
+  generationRun            WorkflowRun?    @relation("IngestJobGenerationRun", fields: [generationRunId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([status, claimExpiresAt])

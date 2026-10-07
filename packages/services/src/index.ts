@@ -81,6 +81,8 @@ export {
 	verifyReviewSession,
 	deriveReviewRoundStatus,
 	reviewGuestCanEditComment,
+	encodeReviewSelection,
+	decodeReviewSelection,
 } from "./review.service";
 export {
 	reviewNotificationService,
@@ -539,4 +541,7 @@ export type { ActorScope } from "./actor-scope";
 export { createMcpOperationExecutor, mcpOperationFingerprint, McpOperationConflictError, type McpMutationOptions, type McpOperationIdentity } from "./mcp-operation";
 export { getMcpOperationExecutor, prismaMcpOperationPersistence } from "./mcp-operation-runtime";
 export { createMcpTaskRegistry, MCP_TASK_TTL_MS, MCP_TASK_POLL_INTERVAL_MS, type McpTaskRecord, type McpTaskOwner, type McpTaskResolution } from "./mcp-task";
-export { prismaMcpTaskPersistence, pruneExpiredMcpTasks, getMcpTaskPersistence, getMcpTaskDomainState, cancelMcpTaskDomainWork } from "./mcp-task-runtime";
+export { prismaMcpTaskPersistence, pruneExpiredMcpTasks, getMcpTaskPersistence, cancelMcpTaskDomainWork } from "./mcp-task-runtime";
+export { createOperationStatusReader, deriveGenerationStatus, deriveExportStatus, deriveIntakePhase, type OperationKind, type OperationState, type OperationStatus, type OperationItem, type TrustedOperationStatus } from "./operation-status";
+export { operationStatusService } from "./operation-status-runtime";
+export { clipExportSubtitleFiles, type ClipExportSubtitleFile } from "./clip-export-subtitles";

@@ -2,14 +2,14 @@ import { CreateTaskResultV2Schema, GetTaskResultV2Schema, UpdateTaskRequestV2Sch
   hasTaskClientCapabilityV2, TASKS_EXTENSION_ID_V2 } from "@modelcontextprotocol/ext-tasks/core/v2";
 import { isInputRequiredResult, ProtocolError, ProtocolErrorCode, McpServer, Server, type Implementation, type ServerOptions,
   type Transport, type CallToolRequest, type CallToolResult, type ServerContext, type InputRequiredResult } from "@modelcontextprotocol/server";
-import { clipExportService, createMcpTaskRegistry, getMcpTaskPersistence, getMcpTaskDomainState, cancelMcpTaskDomainWork, workspaceService,
+import { clipExportService, createMcpTaskRegistry, getMcpTaskPersistence, operationStatusService, cancelMcpTaskDomainWork, workspaceService,
   MCP_TASK_TTL_MS, MCP_TASK_POLL_INTERVAL_MS, ExpectedDomainFailureError, isExpectedDomainFailure,
   type McpTaskRecord, type McpTaskResolution } from "@narriflow/services";
-import { mcpExportSchema, mcpOperationSchema, mcpResultSchema } from "@narriflow/validators";
+import { mcpCreatedClipExportResultSchema, mcpOperationSchema, mcpResultSchema } from "@narriflow/validators";
 import { z } from "zod";
 import { mcpCallerId } from "./mcp-confirmation";
 import { mcpExport } from "./mcp-projections";
-import { McpToolAdmission, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
+import { McpToolAdmission, mcpOperationReadScope, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
 
 type Registry = ReturnType<typeof createMcpTaskRegistry>;
 type TaskOptions = {
@@ -18,7 +18,7 @@ type TaskOptions = {
   assertNewMutationAllowed?: (context: { tool: NarriflowMcpToolName; principal: NarriflowMcpPrincipal; workspaceId: string }) => void | Promise<void>;
   registry?: (principal: NarriflowMcpPrincipal) => Registry;
 };
-const operation = z.strictObject({ workspaceId: z.string().uuid(), domainKind: z.enum(["ingest", "generation", "export"]),
+const operation = z.strictObject({ workspaceId: z.string().uuid(), domainKind: z.enum(["intake", "generation", "export"]),
   domainId: z.string().uuid(), projectId: z.string().uuid(), clipId: z.string().uuid().optional() });
 const taskParams = z.object({ taskId: z.string().uuid(), _meta: z.record(z.string(), z.unknown()).optional() }).strict();
 
@@ -76,7 +76,7 @@ export function mcpTaskTerminalResult(record: McpTaskRecord, status: "completed"
   const initial = record.initialResult as CallToolResult;
   const structured = initial.structuredContent as { data: Record<string, unknown> };
   const finalData = data ?? { ...structured.data, status };
-  const schema = record.domainKind === "export" ? mcpResultSchema(z.strictObject({ export: mcpExportSchema })) : mcpResultSchema(mcpOperationSchema);
+  const schema = record.domainKind === "export" ? mcpResultSchema(mcpCreatedClipExportResultSchema) : mcpResultSchema(mcpOperationSchema);
   const validated = schema.parse({ data: finalData });
   // The SDK does not stamp cache fields on nested eventual ToolResults.
   return { resultType: "complete", ttlMs: 0, cacheScope: "private", content: [{ type: "text", text: JSON.stringify(validated.data) }], structuredContent: validated,
@@ -86,24 +86,37 @@ export function mcpTaskTerminalResult(record: McpTaskRecord, status: "completed"
 function productionRegistry(principal: NarriflowMcpPrincipal, options: TaskOptions): Registry {
   const admission = new McpToolAdmission(workspaceService);
   const scope = (record: McpTaskRecord) => ({ actorUserId: principal.userId, workspaceId: record.workspaceId });
+  // Tasks are a transport for Operation Status; the module owns the lineage.
+  const operationStatus = async (record: McpTaskRecord) => {
+    const actor = await admission.requireWorkspace("narriflow_get_operation", principal, record.workspaceId, mcpOperationReadScope(record.domainKind));
+    const status = await operationStatusService.read(actor, { kind: record.domainKind, id: record.domainId });
+    if (status.results.projectId !== null && status.results.projectId !== record.projectId) throw new ExpectedDomainFailureError({ code: "mcp_task_not_found", kind: "missing", message: "Task operation is unavailable" });
+    return status;
+  };
   return createMcpTaskRegistry({ persistence: getMcpTaskPersistence(),
     authorize: async (record) => {
-      await admission.requireWorkspace(record.domainKind === "export" ? "narriflow_get_clip_export" : "narriflow_get_project", principal, record.workspaceId);
-      if (!await getMcpTaskDomainState(record)) throw new ExpectedDomainFailureError({ code: "mcp_task_not_found", kind: "missing", message: "Task operation is unavailable" });
+      try { await operationStatus(record); }
+      catch (error) {
+        if (isExpectedDomainFailure(error) && error.code === "operation_not_found") throw new ExpectedDomainFailureError({ code: "mcp_task_not_found", kind: "missing", message: "Task operation is unavailable" });
+        throw error;
+      }
     },
     resolve: async (record): Promise<McpTaskResolution> => {
-      const state = await getMcpTaskDomainState(record);
-      if (!state) return { status: "failed", error: { code: -32003, message: "Operation is unavailable" } };
-      if (state.cancelled) return { status: "cancelled" };
+      const status = await operationStatus(record).catch((error: unknown) => {
+        if (isExpectedDomainFailure(error) && error.code === "operation_not_found") return null;
+        throw error;
+      });
+      if (!status) return { status: "failed", error: { code: -32003, message: "Operation is unavailable" } };
+      if (status.state === "cancelled") return { status: "cancelled" };
+      if (status.state === "working") return { status: "working" };
       if (record.domainKind === "export") {
-        if (!["ready", "partial_ready", "failed"].includes(state.status)) return { status: "working" };
         const snapshot = await clipExportService.getWorkspaceOwned(scope(record), record.domainId);
         if (!snapshot) return { status: "failed", error: { code: -32003, message: "Export is unavailable" } };
-        return { status: "completed", result: mcpTaskTerminalResult(record, snapshot.status === "failed" ? "failed" : "completed",
-          { export: mcpExport(snapshot, new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").origin) }) };
+        const initial = (record.initialResult as CallToolResult).structuredContent as { data: Record<string, unknown> };
+        return { status: "completed", result: mcpTaskTerminalResult(record, status.state === "failed" ? "failed" : "completed",
+          { ...initial.data, export: mcpExport(snapshot, new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").origin) }) };
       }
-      if (["completed", "partial", "failed"].includes(state.status)) return { status: "completed", result: mcpTaskTerminalResult(record, state.status === "failed" ? "failed" : "completed") };
-      return { status: "working" };
+      return { status: "completed", result: mcpTaskTerminalResult(record, status.state === "failed" ? "failed" : "completed") };
     },
     beforeCancel: async (record) => {
       const tool = record.domainKind === "export" ? "narriflow_create_clip_export" : "narriflow_generate_clips";

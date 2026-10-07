@@ -1,5 +1,5 @@
 import { measureCaptionTextEm } from "@narriflow/caption-fonts";
-import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import { captionWordSegmentEnd, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import {
 	CAPTION_CUE_TILTS_DEG,
 	CAPTION_EASE_ACCEL,
@@ -160,10 +160,7 @@ function cueEvents(
 
 	cue.words.forEach((activeWord, activeIndex) => {
 		const segStart = activeWord.startSec;
-		const segEnd =
-			activeIndex + 1 < cue.words.length
-				? cue.words[activeIndex + 1]!.startSec
-				: Math.max(activeWord.endSec, segStart + 0.05);
+		const segEnd = captionWordSegmentEnd(cue.words, activeIndex);
 		if (segEnd <= segStart) return;
 		const segMs = Math.round((segEnd - segStart) * 1000);
 		const fade =

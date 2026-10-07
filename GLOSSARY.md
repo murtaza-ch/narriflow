@@ -110,7 +110,7 @@ One exclusive, time-bounded and heartbeat-renewed right to execute an Ingest Job
 _Avoid_: Workflow Attempt, worker ID, ingest status
 
 **Ingest Generation Handoff**:
-The durable obligation left by a completed Ingest Job to admit post-ingest generation using the committed Content Pack. Admission, transcript setup and handoff acknowledgment commit together. Draft setup waits; transient admission failures defer; permanent admission failures settle the Ingest Job and Project with an actionable reason and durable notification intent.
+The durable obligation left by a completed Ingest Job to admit post-ingest generation using the committed Content Pack. Admission, transcript setup and handoff acknowledgment commit together, and the acknowledgment records the exact speech-to-text run the intake handed off to. Draft setup waits; transient admission failures defer; permanent admission failures settle the Ingest Job and Project with an actionable reason and durable notification intent.
 _Avoid_: Generation callback, best-effort trigger, ready with no clips
 
 **Processing Usage Reservation**:
@@ -120,6 +120,10 @@ _Avoid_: Quota row, usage counter, minutes balance
 **Processing Capacity**:
 The number of a Workspace's videos in flight, derived under the Workspace usage lock from unsettled reservations plus Projects with an active Workflow Run or accepted export renders. Only intake admission is refused when it reaches the tier limit.
 _Avoid_: Concurrency counter
+
+**Operation Status**:
+The transport-neutral, lineage-derived state of one accepted mutation: an intake, a generation, or an export. It reports `working`, `completed`, `partial`, `failed`, or `cancelled`, with progress, per-clip or per-format outcomes, the Project, Clip, and export IDs produced, and a typed failure code. An intake follows its Upload Session or Ingest Job into the stored generation run it handed off to; it never infers work from the Project's latest run. MCP tools and Tasks read it; it carries no media URLs.
+_Avoid_: Task state, project status, job status
 
 **Media Cleanup**:
 The durable execution module that owns exact-key removal of unreferenced private media after an approved producer commits its database state. It owns idempotent obligation admission, provisional copy-compensation holds, fenced claims, renewal, storage outcome classification, bounded retry, settlement, and identifier-safe diagnostics. Clip Editor Document Persistence, detected Clip replacement, and Clip duplication still own the decision and transaction that create or adopt cleanup intent.
@@ -178,6 +182,10 @@ _Avoid_: Workflow Run, bulk job, campaign
 **Review Round**:
 An immutable client submission containing selected Clip Export revisions, guest access policy, comments, and approval decisions.
 _Avoid_: Share link, project snapshot, approval request
+
+**Download Grant**:
+One short-lived private URL issued on explicit request for one finished export file, together with subtitle text derived from the export's frozen snapshot. Each request issues fresh grants; listings and status results never contain them, and audit logs record the grant without its URL.
+_Avoid_: Download link (that names the signed-in export page), share link
 
 **Generated Media Job**:
 One metered provider request that may produce a Visual Asset after moderation and usage settlement.

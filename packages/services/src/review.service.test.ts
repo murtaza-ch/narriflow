@@ -7,6 +7,11 @@ import {
   issueReviewSession,
   verifyReviewPasscode,
   verifyReviewSession,
+  decodeReviewSelection,
+  encodeReviewSelection,
+  reviewRoundSummary,
+  validateReviewHandoffSelection,
+  type ReviewHandoffExport,
 } from "./review.service";
 
 describe("review guest security primitives", () => {
@@ -70,4 +75,47 @@ describe("review guest security primitives", () => {
 		expect(brandApprovalRequiredByDefault({ ...snapshot, approvalRule: "none" })).toBe(false);
 		expect(brandApprovalRequiredByDefault(null)).toBe(false);
 	});
+});
+
+describe("assistant review handoff", () => {
+  const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+  const ready = (n: number, patch: Partial<ReviewHandoffExport> = {}): ReviewHandoffExport => ({ id: uuid(n), projectId: uuid(100), clipId: uuid(200 + n), status: "ready",
+    editorRevision: 3, currentEditorRevision: 3, completedVariantIds: [uuid(300 + n)], ...patch });
+  const pick = (n: number) => ({ exportId: uuid(n), variantIds: [uuid(300 + n)] });
+
+  test("normalizes a valid selection for the composer", () => {
+    expect(validateReviewHandoffSelection([pick(1), pick(2)], [ready(1), ready(2)])).toEqual({ projectId: uuid(100), items: [
+      { clipId: uuid(201), exportId: uuid(1), editorRevision: 3, variantIds: [uuid(301)] },
+      { clipId: uuid(202), exportId: uuid(2), editorRevision: 3, variantIds: [uuid(302)] },
+    ] });
+  });
+  test("refuses incomplete, stale, foreign, mixed-project, and duplicate-clip selections", () => {
+    const refuse = (items: Array<{ exportId: string; variantIds: string[] }>, rows: ReviewHandoffExport[], code: string) =>
+      expect(() => validateReviewHandoffSelection(items, rows)).toThrow(expect.objectContaining({ code }));
+    refuse([pick(1)], [ready(1, { status: "partial_ready" })], "review_item_stale");
+    refuse([pick(1)], [ready(1, { currentEditorRevision: 4 })], "review_item_stale");
+    refuse([pick(1)], [], "review_item_stale");
+    refuse([{ exportId: uuid(1), variantIds: [uuid(999)] }], [ready(1)], "review_item_stale");
+    refuse([pick(1), pick(2)], [ready(1), ready(2, { projectId: uuid(101) })], "review_items_mixed_projects");
+    refuse([pick(1), pick(2)], [ready(1), ready(2, { clipId: uuid(201) })], "review_items_duplicate");
+  });
+  test("composer preselection round-trips and ignores malformed entries", () => {
+    const encoded = encodeReviewSelection([pick(1), pick(2)]);
+    expect(decodeReviewSelection(encoded)).toEqual([pick(1), pick(2)]);
+    expect(decodeReviewSelection(`${encoded};not-a-uuid:x;${uuid(9)}:`)).toEqual([pick(1), pick(2)]);
+    expect(decodeReviewSelection(undefined)).toEqual([]);
+  });
+  test("round summaries carry decisions and comment counts but no access secrets or emails", () => {
+    const row = {
+      id: uuid(1), projectId: uuid(100), revision: 2, title: "Client cut", status: "open", decision: null,
+      sentAt: new Date("2026-10-07T10:00:00Z"), expiresAt: null, revokedAt: null,
+      accessTokenHash: "token-hash-secret", deliveryTokenEncrypted: "delivery-secret", passcodeHash: "passcode-secret", recipientEmails: ["client@example.test"],
+      items: [{ id: uuid(2), clipId: uuid(3), exportId: uuid(4), editorRevision: 1, required: true, currentDecision: "changes_requested", clip: { title: "Hook" } }],
+      comments: [{ itemId: uuid(2), body: "secret body", authorName: "client@example.test" }, { itemId: null }],
+    };
+    const summary = reviewRoundSummary(row, new Date("2026-10-07T12:00:00Z"));
+    expect(summary).toMatchObject({ status: "changes_requested", generalCommentCount: 1, items: [{ decision: "changes_requested", commentCount: 1 }] });
+    const serialized = JSON.stringify(summary);
+    for (const secret of ["token-hash-secret", "delivery-secret", "passcode-secret", "client@example.test", "secret body"]) expect(serialized).not.toContain(secret);
+  });
 });

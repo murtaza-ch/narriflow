@@ -662,6 +662,36 @@ describe("Upload Session", () => {
     expect(harness.facts.brandResolutions).toBe(1);
   });
 
+  test("an omitted assistant Brand Profile resolves once at admission while the requested input stays the replay identity", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const resolutions: unknown[] = [];
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      admission: {
+        async resolveBrand(input) {
+          resolutions.push(input);
+          return { templateId: null, snapshot: null, profileId: "workspace-default-profile", profileSnapshot: { name: "Default" } };
+        },
+      },
+    });
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "57575757-5757-4575-8575-575757575757",
+      title: "Assistant upload",
+      source: { fileName: "assistant.mp4", sizeBytes: 33_554_432, contentType: "video/mp4", browserFingerprint: '["assistant.mp4",33554432,"video/mp4",57]' },
+      brandTemplateId: null,
+      brandProfileId: null,
+      useDefaultBrandProfile: true,
+      generation: { languageCode: "auto", contentPack: CONTENT_PACK },
+    };
+    const first = await module.open(input);
+    expect(await module.open(input)).toEqual(first);
+    expect(resolutions).toEqual([expect.objectContaining({ brandProfileId: null, useDefaultBrandProfile: true })]);
+    expect(harness.facts.sessions[0]?.brandProfileId).toBe("workspace-default-profile");
+    await expect(module.open({ ...input, useDefaultBrandProfile: false })).rejects.toMatchObject({ code: "upload_session_idempotency_conflict" });
+  });
+
   test("active multipart replay returns completed-part facts without another provider start", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const module = createUploadSessionModule({

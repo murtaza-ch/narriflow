@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReviewPreselection } from "@/lib/review-preselection";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -118,14 +119,18 @@ function parseRecipients(value: string) {
   return [...new Set(value.split(/[\s,;]+/).map((email) => email.trim().toLowerCase()).filter(Boolean))];
 }
 
-export function ReviewPanel({ projectId, initialData, canManage }: { projectId: string; initialData: ReviewRoomData; canManage: boolean }) {
+export function ReviewPanel({ projectId, initialData, canManage, preselection = null }: { projectId: string; initialData: ReviewRoomData; canManage: boolean; preselection?: ReviewPreselection | null }) {
   const router = useRouter();
   const [data, setData] = useState(initialData);
   const [activeRoundId, setActiveRoundId] = useState(initialData.rounds[0]?.id ?? null);
-  const [creating, setCreating] = useState(false);
+  // An assistant's review handoff opens the composer with its checked exports;
+  // the member still chooses recipients, passcode, expiry, and sends.
+  const [creating, setCreating] = useState(Boolean(preselection && Object.keys(preselection.selections).length > 0));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(preselection?.dropped
+    ? `${preselection.dropped} selected export${preselection.dropped === 1 ? " is" : "s are"} no longer current and ${preselection.dropped === 1 ? "was" : "were"} left out.`
+    : null);
   const [title, setTitle] = useState(`${initialData.project.title} review`);
   const [message, setMessage] = useState("");
   const [passcode, setPasscode] = useState("");
@@ -135,7 +140,7 @@ export function ReviewPanel({ projectId, initialData, canManage }: { projectId: 
   const [approvalRequired, setApprovalRequired] = useState(
 	initialData.project.approvalRequiredByDefault,
 	);
-  const [selections, setSelections] = useState<Record<string, DraftSelection>>({});
+  const [selections, setSelections] = useState<Record<string, DraftSelection>>(preselection?.selections ?? {});
   const [contextCommentIds, setContextCommentIds] = useState<string[]>([]);
   const [replyBody, setReplyBody] = useState("");
   const [replyParentId, setReplyParentId] = useState<string | null>(null);

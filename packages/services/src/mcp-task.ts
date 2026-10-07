@@ -4,7 +4,7 @@ import { ExpectedDomainFailureError } from "./expected-domain-failure";
 export const MCP_TASK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MCP_TASK_POLL_INTERVAL_MS = 5000;
 export type McpTaskStatus = "working" | "completed" | "failed" | "cancelled";
-export type McpTaskDomain = "ingest" | "generation" | "export";
+export type McpTaskDomain = "intake" | "generation" | "export";
 export interface McpTaskRecord {
   id: string; ownerUserId: string; callerId: string; workspaceId: string; toolName: string;
   domainKind: McpTaskDomain; domainId: string; projectId: string; clipId: string | null;

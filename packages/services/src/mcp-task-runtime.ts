@@ -3,11 +3,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import type { McpTaskPersistence, McpTaskRecord, McpTaskResolution } from "./mcp-task";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
-import { accessibleProjectWhere } from "./project-access";
-import { generationTaskState } from "./mcp-generation-task";
-import { workflowStageUpdatedEventSchema } from "@narriflow/validators";
 import { clipExportService } from "./clip-export.service";
-import type { GenerationTaskRun } from "./mcp-generation-task";
 
 function json(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -57,61 +53,16 @@ export function getMcpTaskPersistence() {
   return prismaMcpTaskPersistence(prisma);
 }
 
-export async function getMcpTaskDomainState(record: McpTaskRecord) {
-  const prisma = getPrismaClient();
-  if (!prisma) throw new Error("Task storage is unavailable");
-  const project = await prisma.project.findFirst({ where: { id: record.projectId, workspaceId: record.workspaceId, ...accessibleProjectWhere() }, select: { id: true } });
-  if (!project) return null;
-  if (record.domainKind === "export") {
-    const row = await prisma.clipExport.findFirst({ where: { id: record.domainId, projectId: record.projectId, workspaceId: record.workspaceId }, select: { status: true, errorCode: true } });
-    return row ? { status: row.status, cancelled: row.errorCode === "MCP_CANCELLED" } : null;
-  }
-  if (record.domainKind === "ingest") {
-    const row = await prisma.ingestJob.findFirst({ where: { id: record.domainId, projectId: record.projectId }, select: { status: true } });
-    return row ? { status: row.status, cancelled: row.status === "cancelled" } : null;
-  }
-  const select = { id: true, stage: true, status: true, errorCode: true, idempotencyKey: true, contentPackId: true } as const;
-  const origin = await prisma.workflowRun.findFirst({ where: { id: record.domainId, projectId: record.projectId }, select });
-  if (!origin || origin.stage !== "stt") return null;
-  const detection = await prisma.workflowRun.findFirst({
-    where: { projectId: record.projectId, stage: "moment_detection", idempotencyKey: `${origin.idempotencyKey}__moment_detection`, contentPackId: origin.contentPackId }, select,
-  });
-  const renders = detection ? await prisma.clipRender.findMany({ where: {
-    exportVariantId: null, clip: { projectId: record.projectId, workflowRunId: detection.id },
-  }, select: { id: true, status: true, errorCode: true, failureDisposition: true } }) : [];
-  const events = detection ? await prisma.workflowEvent.findMany({ where: { projectId: record.projectId, workflowRunId: detection.id },
-    orderBy: { seq: "desc" }, select: { payload: true, errorCode: true } }) : [];
-  const handoff = events.map((event) => workflowStageUpdatedEventSchema.safeParse(event.payload))
-    .find((event) => event.success && event.data.projectId === record.projectId && event.data.workflowRunId === detection?.id && event.data.followUpWorkflowRunId);
-  const renderId = handoff?.success ? handoff.data.followUpWorkflowRunId : undefined;
-  // The mutable render cache can be reset or deleted by Studio or a later
-  // generation. Its original Render Work Set and drain lineage retain history.
-  const renderRuns = renderId ? await prisma.$queryRaw<GenerationTaskRun[]>`
-    WITH RECURSIVE family AS (
-      SELECT run."id", run."stage", run."status", run."errorCode", run."idempotencyKey", run."contentPackId", ARRAY[run."id"] AS visited
-      FROM "WorkflowRun" AS run
-      WHERE run."id" = ${renderId}::uuid AND run."projectId" = ${record.projectId}::uuid AND run."stage" = 'clip_rendering'
-      UNION ALL
-      SELECT child."id", child."stage", child."status", child."errorCode", child."idempotencyKey", child."contentPackId", family.visited || child."id"
-      FROM family INNER JOIN "WorkflowRun" AS child ON child."idempotencyKey" = 'drain-' || family."id"::text
-      WHERE child."projectId" = ${record.projectId}::uuid AND child."stage" = 'clip_rendering' AND NOT child."id" = ANY(family.visited)
-    ) SELECT "id", "stage", "status", "errorCode", "idempotencyKey", "contentPackId" FROM family
-  ` : [];
-  const renderEvents = renderRuns.length ? await prisma.workflowEvent.findMany({ where: { projectId: record.projectId,
-    workflowRunId: { in: renderRuns.map((run) => run.id) } }, orderBy: { seq: "asc" }, select: { payload: true, errorCode: true } }) : [];
-  const renderOutcomes = [...events].reverse().concat(renderEvents).flatMap((event) => {
-    const parsed = workflowStageUpdatedEventSchema.safeParse(event.payload);
-    return parsed.success && parsed.data.projectId === record.projectId
-      ? (parsed.data.generationRenderResults ?? []).map((result) => ({ id: result.renderId, status: result.status, errorCode: result.errorCode })) : [];
-  });
-  return generationTaskState({ origin, detection, renders, renderRuns, renderOutcomes,
-    expectedRenderIds: handoff?.success ? handoff.data.generationRenderIds : undefined });
-}
-
 export async function cancelMcpTaskDomainWork(record: McpTaskRecord) {
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("Task storage is unavailable");
-  if (record.domainKind === "ingest") {
+  if (record.domainKind === "intake") {
+    // After handoff the intake continues as its stored generation run.
+    const handedOff = await prisma.ingestJob.findFirst({ where: { id: record.domainId, projectId: record.projectId }, select: { generationRunId: true } });
+    if (handedOff?.generationRunId) {
+      await getWorkflowRunLifecycle().cancelQueuedGenerationOperation({ workspaceId: record.workspaceId, projectId: record.projectId, workflowRunId: handedOff.generationRunId });
+      return;
+    }
     await getIngestJobLifecycle().cancelQueuedOperation({ actorUserId: record.ownerUserId, workspaceId: record.workspaceId, projectId: record.projectId, ingestJobId: record.domainId });
   } else if (record.domainKind === "generation") {
     await getWorkflowRunLifecycle().cancelQueuedGenerationOperation({ workspaceId: record.workspaceId, projectId: record.projectId, workflowRunId: record.domainId });

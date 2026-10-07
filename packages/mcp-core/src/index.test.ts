@@ -56,6 +56,8 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       "narriflow_list_clips", "narriflow_get_clip", "narriflow_create_clip_export", "narriflow_get_clip_export",
       "narriflow_list_social_accounts", "narriflow_get_publishing_options", "narriflow_prepare_social_post",
       "narriflow_schedule_social_post", "narriflow_list_social_publications",
+      "narriflow_get_operation", "narriflow_get_export_download", "narriflow_list_brand_profiles",
+      "narriflow_create_review_handoff", "narriflow_list_review_rounds", "narriflow_get_review_round",
     ].sort());
     expect(modelTools.map((tool) => tool.name).sort()).toEqual(Object.keys(MCP_TOOL_ADMISSIONS).sort());
 
@@ -69,6 +71,11 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       tools.find((tool) => tool.name === "narriflow_publish_social_publication_again")
         ?.annotations?.destructiveHint,
     ).toBe(true);
+    // Connector additions only read; the review handoff creates and sends nothing.
+    for (const name of ["narriflow_get_operation", "narriflow_get_export_download", "narriflow_list_brand_profiles",
+      "narriflow_create_review_handoff", "narriflow_list_review_rounds", "narriflow_get_review_round"]) {
+      expect(tools.find((tool) => tool.name === name)?.annotations).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    }
   });
 
   test("returns a cacheable modern discovery document without issuing a session", async () => {
@@ -368,6 +375,12 @@ const toolArguments: Record<Exclude<NarriflowMcpToolName, "narriflow_list_worksp
   narriflow_prepare_social_post: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID, projectId: RESOURCE_ID, clipId: RESOURCE_ID, expectedEditorRevision: 3, clipExportId: RESOURCE_ID, clipExportVariantId: RESOURCE_ID, accountId: RESOURCE_ID, platform: "youtube_shorts", caption: "Example caption", aspectRatio: "9:16", resolution: "1080p", scheduledFor: "2026-10-06T00:00:00.000Z" },
   narriflow_schedule_social_post: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID, preparationToken: "x".repeat(40) },
   narriflow_list_social_publications: { workspaceId: WORKSPACE_ID, projectId: RESOURCE_ID },
+  narriflow_get_operation: { workspaceId: WORKSPACE_ID, operation: { kind: "intake", id: RESOURCE_ID } },
+  narriflow_get_export_download: { workspaceId: WORKSPACE_ID, exportId: RESOURCE_ID },
+  narriflow_list_brand_profiles: { workspaceId: WORKSPACE_ID },
+  narriflow_create_review_handoff: { workspaceId: WORKSPACE_ID, items: [{ exportId: RESOURCE_ID, variantIds: [RESOURCE_ID] }] },
+  narriflow_list_review_rounds: { workspaceId: WORKSPACE_ID, projectId: RESOURCE_ID },
+  narriflow_get_review_round: { workspaceId: WORKSPACE_ID, roundId: RESOURCE_ID },
 };
 
 describe("MCP registered tool admission and failures", () => {
@@ -385,7 +398,7 @@ describe("MCP registered tool admission and failures", () => {
         expect(result.structuredContent).toMatchObject({ data: { error: "test_membership_denied", kind: "forbidden" } });
         expect(actorSpy).toHaveBeenLastCalledWith(ACTOR_ID, WORKSPACE_ID, MCP_TOOL_ADMISSIONS[tool].capability);
       }
-      expect(actorSpy).toHaveBeenCalledTimes(22);
+      expect(actorSpy).toHaveBeenCalledTimes(Object.keys(toolArguments).length);
       expect(snapshotSpy).not.toHaveBeenCalled(); expect(usageSpy).not.toHaveBeenCalled(); expect(runSpy).not.toHaveBeenCalled();
     } finally { actorSpy.mockRestore(); snapshotSpy.mockRestore(); usageSpy.mockRestore(); runSpy.mockRestore(); }
   });

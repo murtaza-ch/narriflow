@@ -33,7 +33,7 @@ function fixture() {
       inputSchema: z.strictObject({ clientIdempotencyKey: z.string().uuid() }),
       outputSchema: z.strictObject({ data: z.strictObject({ projectId: z.string().uuid(), operationId: z.string().uuid() }) }),
     }, async () => ({ content: [], structuredContent: { data: { projectId, operationId: domainId } },
-      _meta: { "narriflow/operation": { workspaceId, domainKind: "ingest", domainId, projectId }, privateGrant: "must-not-survive" } }));
+      _meta: { "narriflow/operation": { workspaceId, domainKind: "intake", domainId, projectId }, privateGrant: "must-not-survive" } }));
     return server;
     },
   });
@@ -62,7 +62,7 @@ test("Tasks discovery and tool handles require the negotiated modern extension",
   const created = await h.rpc("tools/call", { name: "narriflow_submit_video", arguments: { clientIdempotencyKey: key } });
   expect(created.result).toMatchObject({ resultType: "task", status: "working", ttlMs: 604800000, pollIntervalMs: 5000 });
   expect(created.result.taskId).toBeString();
-  expect(created.result._meta["narriflow/operation"]).toEqual({ workspaceId, domainKind: "ingest", domainId, projectId });
+  expect(created.result._meta["narriflow/operation"]).toEqual({ workspaceId, domainKind: "intake", domainId, projectId });
   expect(created.result._meta.privateGrant).toBeUndefined();
 });
 test("expired retained Tasks do not block an accepted operation replay", async () => {
@@ -111,8 +111,8 @@ test("eventual Task ToolResults carry private zero-TTL cache fields on the wire"
   const h = fixture();
   const created = (await h.rpc("tools/call", { name: "narriflow_submit_video", arguments: { clientIdempotencyKey: key } })).result;
   const record = h.rows.get(created.taskId)!;
-  record.initialResult = { structuredContent: { data: { projectId, operationId: domainId, operationKind: "ingest", status: "accepted",
-    statusTool: "narriflow_get_project", reviewUrl: "http://localhost/projects/project" } } };
+  record.initialResult = { structuredContent: { data: { projectId, operation: { kind: "intake", id: domainId }, status: "accepted",
+    statusTool: "narriflow_get_operation", reviewUrl: "http://localhost/projects/project" } } };
   h.finish({ status: "completed", result: mcpTaskTerminalResult(record, "completed") });
   const eventual = (await h.rpc("tasks/get", { taskId: created.taskId })).result;
   expect(eventual).toMatchObject({ status: "completed", result: { resultType: "complete", ttlMs: 0, cacheScope: "private",

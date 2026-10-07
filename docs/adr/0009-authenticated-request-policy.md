@@ -37,6 +37,14 @@ Workspace discovery is the explicit exception. OAuth lists current memberships s
 The MCP failure adapter exhaustively translates all eight `ExpectedDomainFailure` kinds into a tool error with the stable domain code, safe message and semantic kind. It preserves bounded details and retry guidance. Unknown exceptions produce a generic error without exposing their message. Admission failures use the same typed contract; changing message wording cannot change classification.
 
 
+## 2026-10-08: OAuth application scopes and signed continuations
+
+This supersedes the 2026-10-04 sentence that limits application scopes to Workspace API keys. OAuth principals carry the application scopes granted at Clerk consent, and MCP admission checks them exactly as it checks API-key scopes, both in HTTP preflight and in tool admission. `narriflow_get_operation` takes its scope from the operation it reads: `exports:read` for exports and `projects:read` otherwise.
+
+Signed continuations (publication confirmation and the upload handoff) record the originating credential kind and its granted scopes. Admission requires the needed scope from that signed set; nothing synthesizes scopes. API-key continuations also recheck the live key. OAuth continuations expire at the earlier of ten minutes and the originating access token's expiration. Clerk documents no per-user lookup of a client's active authorization, so OAuth continuations are bounded by that expiry rather than rechecked.
+
+The upload handoff authorizes only the initial `open`, within its expiry. Later `status`, `grants`, `finalize`, and `discard` requests for that Upload Session run under the signed-in person's current membership, `processing.consume`, and Business access; the expired signature only identifies which of their sessions continues.
+
 ## 2026-10-04: Automatic workspace entry
 
 Authentication entry lives in a custom Chakra modal on the homepage. Sign-in, sign-up, password recovery, and provider completion share one destination parameter. `/auth/continue` uses identity-only page admission to synchronously synchronize the Clerk user and provision the personal Workspace, Owner membership, billing account, and first-use defaults before redirecting. It does not depend on webhook timing or the current selected Workspace’s capabilities. Failures retain the destination and offer a retry.

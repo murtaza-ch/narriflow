@@ -739,7 +739,7 @@ export class IngestJobLifecycle {
               select: { id: true },
             });
             if (prior) throw new IngestGenerationAlreadyAdmitted();
-            await this.acknowledgeHandoff(tx, job);
+            await this.acknowledgeHandoff(tx, job, run.id);
             if (run.created)
               await tx.transcript.upsert({
                 where: { projectId: project.id },
@@ -900,9 +900,11 @@ export class IngestJobLifecycle {
   private async lockGeneration(tx: Tx, projectId: string): Promise<void> {
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${projectId}, 0)) IS NULL AS "locked"`;
   }
+  /** Records the handoff and the exact run it handed off to, atomically. */
   private async acknowledgeHandoff(
     tx: Tx,
     job: { id: string; projectId: string },
+    generationRunId: string,
   ): Promise<void> {
     const clock = await this.now(tx);
     const accepted = await tx.ingestJob.updateMany({
@@ -913,7 +915,7 @@ export class IngestJobLifecycle {
         generationHandoffAt: null,
         project: { ingestStatus: "ready", ...accessibleProjectWhere(clock) },
       },
-      data: { generationHandoffAt: clock, generationHandoffRetryAt: null },
+      data: { generationHandoffAt: clock, generationHandoffRetryAt: null, generationRunId },
     });
     if (!accepted.count) throw new IngestJobClaimLost(job.id);
   }
@@ -923,13 +925,16 @@ export class IngestJobLifecycle {
     job: { id: string; projectId: string },
     contentPackId: string,
   ): Promise<boolean | null> {
+    // The earliest run for this committed pack is the generation the intake
+    // started; a later regeneration must not become this intake's lineage.
     const existing = await tx.workflowRun.findFirst({
       where: { projectId: job.projectId, stage: "stt", contentPackId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       select: { id: true },
     });
     if (!existing) return null;
     try {
-      await this.acknowledgeHandoff(tx, job);
+      await this.acknowledgeHandoff(tx, job, existing.id);
       return true;
     } catch (error) {
       if (error instanceof IngestJobClaimLost) return false;

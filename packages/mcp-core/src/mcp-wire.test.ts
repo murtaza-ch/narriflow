@@ -313,4 +313,14 @@ describe("Authenticated stateless MCP wire", () => {
 		expect(response.headers.get("WWW-Authenticate")).toContain(scope);
 		expect(h.factories).toEqual([]);
 	});
+	test("Operation Status preflight asks for the scope of the operation's kind", async () => {
+		const h = harness();
+		const exported = await h.fetch(modernRequest("tools/call", { name: "narriflow_get_operation", arguments: { operation: { kind: "export", id: "00000000-0000-4000-8000-000000000001" } } }));
+		expect(exported.status).toBe(403);
+		expect(exported.headers.get("WWW-Authenticate")).toContain("exports:read");
+		expect(h.factories).toEqual([]);
+		const intake = await h.fetch(modernRequest("tools/call", { name: "narriflow_get_operation", arguments: { operation: { kind: "intake", id: "00000000-0000-4000-8000-000000000001" } } }));
+		expect(intake.status).not.toBe(403);
+		expect(h.factories).toHaveLength(1);
+	});
 });

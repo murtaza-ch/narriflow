@@ -63,7 +63,9 @@ export const workflowStageUpdatedEventSchema = z
     progress: z.number().min(0).max(100),
     errorCode: z.string().nullable().default(null),
     followUpWorkflowRunId: z.string().uuid().optional(),
-    generationRenderIds: z.array(z.string().uuid()).max(2000).optional(),
+    /** The renders a detection handoff froze for its generation, with their
+     * clips, so outcomes keep clip identity after render or clip deletion. */
+    generationRenders: z.array(z.strictObject({ renderId: z.string().uuid(), clipId: z.string().uuid() })).max(2000).optional(),
     generationRenderResults: z.array(z.strictObject({
       renderId: z.string().uuid(),
       status: z.enum(["completed", "failed"]),

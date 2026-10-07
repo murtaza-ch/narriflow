@@ -542,18 +542,18 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       },
     });
     expect(await module.processGenerationHandoffs(1)).toBe(1);
-    expect(
-      (await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } }))
-        .generationHandoffAt,
-    ).not.toBeNull();
-    expect(
-      await prisma.workflowRun.count({
-        where: {
-          projectId: project.id,
-          idempotencyKey: autoTriggerIdempotencyKey(project.id, pack.id),
-        },
-      }),
-    ).toBe(1);
+    const handedOff = await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(handedOff.generationHandoffAt).not.toBeNull();
+    const admitted = await prisma.workflowRun.findMany({
+      where: {
+        projectId: project.id,
+        idempotencyKey: autoTriggerIdempotencyKey(project.id, pack.id),
+      },
+      select: { id: true },
+    });
+    expect(admitted).toHaveLength(1);
+    // The admitted run is stored as this intake's lineage with the acknowledgement.
+    expect(handedOff.generationRunId).toBe(admitted[0]!.id);
     expect(
       (
         await prisma.transcript.findUniqueOrThrow({
@@ -592,10 +592,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         where: { projectId: project.id, stage: "stt" },
       }),
     ).toBe(1);
-    expect(
-      (await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } }))
-        .generationHandoffAt,
-    ).not.toBeNull();
+    const acknowledged = await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(acknowledged.generationHandoffAt).not.toBeNull();
+    expect(acknowledged.generationRunId).toBe(manual.id);
     expect(
       (await prisma.project.findUniqueOrThrow({ where: { id: project.id } }))
         .ingestStatus,

@@ -82,7 +82,7 @@ export function createNarriflowTokenVerifier(deps: McpVerifierDependencies): OAu
       let user: { id: string } | null;
       try { user = await deps.findUser(claims.subject); } catch { throw new McpAuthUnavailableError(); }
       if (!user) throw new OAuthError(OAuthErrorCode.InvalidToken, "Sign in to Narriflow once before connecting an MCP client");
-      const principal: NarriflowMcpPrincipal = { kind: "oauth", userId: user.id, clientId: claims.client_id, scopes: claims.scopes };
+      const principal: NarriflowMcpPrincipal = { kind: "oauth", userId: user.id, clientId: claims.client_id, scopes: claims.scopes, expiresAt: claims.expiration };
       return { token, clientId: claims.client_id, scopes: claims.scopes, expiresAt: claims.expiration,
         extra: { narriflowPrincipal: principal } };
     },

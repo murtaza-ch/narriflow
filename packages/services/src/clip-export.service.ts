@@ -24,6 +24,7 @@ export { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-access";
 import { headObject, presignDownloadUrl } from "./r2-storage";
+import { clipExportSubtitleFiles } from "./clip-export-subtitles";
 import { workspaceService } from "./workspace.service";
 import {
   ExpectedDomainFailureError,
@@ -99,22 +100,31 @@ function normalizeAspectRatios(values: ClipAspectRatio[]): ClipAspectRatio[] {
     .filter((value) => requested.has(value));
 }
 
+function clipTitleSlug(clipTitle: string) {
+  return clipTitle
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "narriflow-clip";
+}
+
+/** Subtitles describe the revision, not a format, so one file serves every variant. */
+export function clipExportSubtitleBaseName(clipTitle: string, editorRevision: number) {
+  return `${clipTitleSlug(clipTitle)}-v${editorRevision}`;
+}
+
 export function clipExportDownloadFileName(input: {
   clipTitle: string;
   aspectRatio: ClipAspectRatio;
   resolution: ClipRenderResolution;
   editorRevision: number;
 }): string {
-  const titleSlug = input.clipTitle
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
+  const titleSlug = clipTitleSlug(input.clipTitle);
   const aspectSlug =
     clipAspectRatioOptions.find((option) => option.value === input.aspectRatio)
       ?.slug ?? input.aspectRatio.replace(":", "x");
-  return `${titleSlug || "narriflow-clip"}-${aspectSlug}-${input.resolution}-v${input.editorRevision}.mp4`;
+  return `${titleSlug}-${aspectSlug}-${input.resolution}-v${input.editorRevision}.mp4`;
 }
 
 export function buildClipExportFingerprint(input: {
@@ -134,6 +144,25 @@ export function buildClipExportFingerprint(input: {
       }),
     )
     .digest("hex");
+}
+
+export interface ClipExportOutput {
+  requested: { resolution: ClipRenderResolution };
+  granted: { resolution: ClipRenderResolution; watermark: boolean };
+  /** Set when the plan changed the requested output. */
+  reason: "plan_limit" | null;
+}
+
+/** Exports never change silently: callers see what they asked for, what the
+ * plan grants, and why the two differ. */
+export function resolveClipExportOutput(tier: PricingTier, requested: ClipRenderResolution): ClipExportOutput {
+  const resolution = requested === "1080p" && !hasFeature(tier, "export.1080p") ? "720p" : requested;
+  const watermark = !hasFeature(tier, "export.noWatermark");
+  return {
+    requested: { resolution: requested },
+    granted: { resolution, watermark },
+    reason: resolution !== requested || watermark ? "plan_limit" : null,
+  };
 }
 
 export function hashClipShareToken(token: string): string {
@@ -398,6 +427,29 @@ export function assertSceneExportReferenceRows(
   }
 }
 
+async function loadDeliverableExport(scope: ActorScope, where: { id: string; projectId?: string; clipId?: string }) {
+  await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.download");
+  const row = await requirePrisma().clipExport.findFirst({
+    where: { ...where, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+    include: {
+      clip: { select: { title: true, hookText: true } },
+      project: { select: { sourceDurationSeconds: true } },
+      variants: { orderBy: { createdAt: "asc" }, include: { render: { select: { clipSnapshot: true } } } },
+    },
+  });
+  if (!row) throw new ClipExportError("export_not_found", "Export not found");
+  return row;
+}
+
+/** Every variant of an export freezes the same revision, so any render's
+ * snapshot is the export's snapshot. Never falls back to the live clip. */
+function exportSubtitles(row: Awaited<ReturnType<typeof loadDeliverableExport>>) {
+  const snapshot = row.variants.find((variant) => variant.render?.clipSnapshot)?.render?.clipSnapshot;
+  if (!snapshot) throw new ClipExportError("export_snapshot_missing", "Export snapshot is missing");
+  return clipExportSubtitleFiles(snapshot, row.project.sourceDurationSeconds,
+    clipExportSubtitleBaseName(row.clip.title?.trim() || row.clip.hookText, row.editorRevision));
+}
+
 export class ClipExportService {
   async create(
     scope: ActorScope,
@@ -410,7 +462,7 @@ export class ClipExportService {
     },
     idempotencyKey: string,
     mutation?: McpMutationOptions,
-  ): Promise<{ export: ClipExportSnapshot; reused: boolean }> {
+  ): Promise<{ export: ClipExportSnapshot; reused: boolean; output: ClipExportOutput }> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
     let clip: NonNullable<Awaited<ReturnType<typeof loadClip>>>;
@@ -418,6 +470,7 @@ export class ClipExportService {
     let watermark: boolean;
     let aspectRatios: ClipAspectRatio[];
     let fingerprint: string;
+    let output: ClipExportOutput;
     const loadClip = () =>
       prisma.clip.findFirst({
         where: {
@@ -460,11 +513,8 @@ export class ClipExportService {
         }),
       );
 
-      resolution =
-        input.resolution === "1080p" && !hasFeature(tier, "export.1080p")
-          ? "720p"
-          : input.resolution;
-      watermark = !hasFeature(tier, "export.noWatermark");
+      output = resolveClipExportOutput(tier, input.resolution);
+      ({ resolution, watermark } = output.granted);
       aspectRatios = normalizeAspectRatios(input.aspectRatios);
       fingerprint = buildClipExportFingerprint({
         editorRevision: clip.editorRevision,
@@ -556,7 +606,9 @@ export class ClipExportService {
         return {
           resourceType: "clip_export",
           resourceId: row.id,
-          value: { export: await toExportSnapshot(row, false), reused },
+          // The receipt records the granted output; the idempotency fingerprint
+          // above covers the requested input.
+          value: { export: await toExportSnapshot(row, false), reused, output },
         };
       },
     });
@@ -581,6 +633,46 @@ export class ClipExportService {
       include: exportInclude,
     });
     return row ? toExportSnapshot(row, true) : null;
+  }
+
+  /** Download Grants: fresh short-lived private URLs for one completed
+   * export's files, issued only on explicit request, plus subtitles derived
+   * from the export's frozen snapshot. The audit log never records a URL. */
+  async issueDownloadGrants(
+    scope: ActorScope,
+    exportId: string,
+    options: { variantId?: string; credentialKind: string },
+  ) {
+    const row = await loadDeliverableExport(scope, { id: exportId });
+    if (options.variantId && !row.variants.some((variant) => variant.id === options.variantId)) {
+      throw new ClipExportError("export_not_found", "Export variant not found");
+    }
+    const ready = row.variants.filter((variant) =>
+      variant.status === "completed" && variant.storageKey && (!options.variantId || variant.id === options.variantId));
+    if (ready.length === 0) throw new ClipExportError("export_not_ready", "No finished file is available for this export yet");
+    const clipTitle = row.clip.title?.trim() || row.clip.hookText;
+    const expiresAt = new Date(Date.now() + EXPORT_DOWNLOAD_TTL_SECONDS * 1000).toISOString();
+    const variants = await Promise.all(ready.map(async (variant) => {
+      const aspectRatio = clipAspectRatioFromDb[clipAspectRatioDbSchema.parse(variant.aspectRatio)];
+      const resolution = clipRenderResolutionSchema.parse(variant.resolution);
+      const fileName = clipExportDownloadFileName({ clipTitle, aspectRatio, resolution, editorRevision: row.editorRevision });
+      return {
+        variantId: variant.id, aspectRatio, resolution, watermark: variant.watermark, fileName,
+        sizeBytes: variant.sizeBytes === null ? null : Number(variant.sizeBytes),
+        downloadUrl: await presignDownloadUrl({ key: variant.storageKey!, expiresIn: EXPORT_DOWNLOAD_TTL_SECONDS, fileName }),
+        expiresAt,
+      };
+    }));
+    const subtitles = exportSubtitles(row);
+    console.warn(JSON.stringify({ level: "info", message: "export_download_granted", exportId: row.id, projectId: row.projectId,
+      variantIds: variants.map((variant) => variant.variantId), actorUserId: scope.actorUserId, workspaceId: scope.workspaceId,
+      credentialKind: options.credentialKind, expiresAt }));
+    return { exportId: row.id, projectId: row.projectId, clipId: row.clipId, editorRevision: row.editorRevision, variants, subtitles };
+  }
+
+  /** Subtitle files for the web export page; same derivation as Download Grants. */
+  async getSubtitles(scope: ActorScope, projectId: string, clipId: string, exportId: string) {
+    return exportSubtitles(await loadDeliverableExport(scope, { id: exportId, projectId, clipId }));
   }
 
   async getWorkspaceOwned(

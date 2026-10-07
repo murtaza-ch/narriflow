@@ -506,6 +506,11 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 		"content.download",
 	),
 	project(
+		"GET",
+		"/projects/:id/clips/:clipId/exports/:exportId/subtitles/:format",
+		"content.download",
+	),
+	project(
 		"POST",
 		"/projects/:id/clips/:clipId/exports/:exportId/retry",
 		"processing.consume",

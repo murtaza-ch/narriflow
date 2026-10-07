@@ -15,6 +15,9 @@ import {
   type PricingTier,
 } from "@narriflow/validators";
 import { hasFeature } from "./plan-features";
+import type { ActorScope } from "./actor-scope";
+import { accessibleProjectWhere } from "./project-access";
+import { workspaceService } from "./workspace.service";
 import { checkRateLimit } from "./rate-limit";
 import { presignDownloadUrl } from "./r2-storage";
 import {
@@ -46,6 +49,7 @@ const REVIEW_FAILURES = {
   review_item_not_found: "missing",
   review_item_stale: "conflict",
   review_items_duplicate: "invalid",
+  review_items_mixed_projects: "invalid",
   review_media_not_found: "missing",
   review_origin_invalid: "invalid",
   review_project_not_found: "missing",
@@ -307,7 +311,124 @@ export function verifyReviewSession(value: string, secret: string, now = new Dat
   return parsed as ReviewSessionClaims;
 }
 
+export interface ReviewHandoffExport {
+  id: string;
+  projectId: string;
+  clipId: string;
+  status: string;
+  editorRevision: number;
+  currentEditorRevision: number;
+  completedVariantIds: string[];
+}
+
+/** Applies Review Round selection rules before a person opens the composer:
+ * one Project, one export per clip, and complete exports of the current
+ * revision with completed variants. */
+export function validateReviewHandoffSelection(
+  items: Array<{ exportId: string; variantIds: string[] }>,
+  exports: ReviewHandoffExport[],
+) {
+  const byId = new Map(exports.map((row) => [row.id, row]));
+  const selected = items.map((item) => {
+    const row = byId.get(item.exportId);
+    const variants = new Set(row?.completedVariantIds ?? []);
+    if (!row || row.status !== "ready" || row.editorRevision !== row.currentEditorRevision ||
+      new Set(item.variantIds).size !== item.variantIds.length || item.variantIds.some((id) => !variants.has(id))) {
+      throw new ReviewServiceError("review_item_stale", "Each selected export must be complete, current, and use its completed formats");
+    }
+    return { row, variantIds: item.variantIds };
+  });
+  if (new Set(selected.map(({ row }) => row.projectId)).size !== 1) {
+    throw new ReviewServiceError("review_items_mixed_projects", "A review round contains exports from one project");
+  }
+  if (new Set(selected.map(({ row }) => row.clipId)).size !== selected.length) {
+    throw new ReviewServiceError("review_items_duplicate", "A clip can appear only once in a review round");
+  }
+  return {
+    projectId: selected[0]!.row.projectId,
+    items: selected.map(({ row, variantIds }) => ({ clipId: row.clipId, exportId: row.id, editorRevision: row.editorRevision, variantIds })),
+  };
+}
+
+/** Composer preselection travels in the URL as `exportId:variantId,variantId;...`.
+ * It carries no authority; the composer rechecks every item. */
+export function encodeReviewSelection(items: Array<{ exportId: string; variantIds: string[] }>) {
+  return items.map((item) => `${item.exportId}:${item.variantIds.join(",")}`).join(";");
+}
+
+export function decodeReviewSelection(value: string | undefined | null) {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!value || value.length > 4_000) return [];
+  return value.split(";").slice(0, 20).flatMap((entry) => {
+    const [exportId, variants = ""] = entry.split(":");
+    const variantIds = variants.split(",").filter((id) => uuid.test(id)).slice(0, 4);
+    return exportId && uuid.test(exportId) && variantIds.length ? [{ exportId, variantIds }] : [];
+  });
+}
+
+type ReviewRoundSummaryRow = {
+  id: string; projectId: string; revision: number; title: string; status: string; decision: string | null;
+  sentAt: Date | null; expiresAt: Date | null; revokedAt: Date | null;
+  items: Array<{ id: string; clipId: string; exportId: string; editorRevision: number; required: boolean; currentDecision: string | null; clip: { title: string | null } }>;
+  comments: Array<{ itemId: string | null }>;
+};
+
+/** Assistant-facing round facts. Access tokens, passcodes, recipient and
+ * reviewer emails, and comment bodies never leave Narriflow this way. */
+export function reviewRoundSummary(round: ReviewRoundSummaryRow, now = new Date()) {
+  return {
+    roundId: round.id, projectId: round.projectId, revision: round.revision, title: round.title,
+    status: deriveReviewRoundStatus({ ...round, items: round.items }, now),
+    decision: round.decision, sentAt: round.sentAt?.toISOString() ?? null, expiresAt: round.expiresAt?.toISOString() ?? null,
+    items: round.items.map((item) => ({ itemId: item.id, clipId: item.clipId, clipTitle: item.clip.title, exportId: item.exportId,
+      editorRevision: item.editorRevision, required: item.required, decision: item.currentDecision,
+      commentCount: round.comments.filter((comment) => comment.itemId === item.id).length })),
+    generalCommentCount: round.comments.filter((comment) => comment.itemId === null).length,
+  };
+}
+
+const reviewRoundSummarySelect = {
+  id: true, projectId: true, revision: true, title: true, status: true, decision: true, sentAt: true, expiresAt: true, revokedAt: true,
+  items: { orderBy: { position: "asc" as const }, select: { id: true, clipId: true, exportId: true, editorRevision: true, required: true, currentDecision: true, clip: { select: { title: true } } } },
+  comments: { select: { itemId: true } },
+} as const;
+
 export class ReviewService {
+  async prepareHandoff(scope: ActorScope, items: Array<{ exportId: string; variantIds: string[] }>) {
+    const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
+    if (!hasFeature(actor.pricingTier, "review.rooms")) {
+      throw new ReviewServiceError("review_feature_unavailable", "Review rooms are not available on this plan");
+    }
+    const rows = await requirePrisma().clipExport.findMany({
+      where: { id: { in: items.map((item) => item.exportId) }, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+      select: { id: true, projectId: true, clipId: true, status: true, editorRevision: true, clip: { select: { editorRevision: true } },
+        variants: { where: { status: "completed", storageKey: { not: null } }, select: { id: true } } },
+    });
+    return validateReviewHandoffSelection(items, rows.map((row) => ({ id: row.id, projectId: row.projectId, clipId: row.clipId, status: row.status,
+      editorRevision: row.editorRevision, currentEditorRevision: row.clip.editorRevision, completedVariantIds: row.variants.map((variant) => variant.id) })));
+  }
+
+  async listRoundSummaries(scope: ActorScope, input: { projectId?: string; limit: number }) {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
+    const { workspaceId } = scope;
+    const rounds = await requirePrisma().reviewRound.findMany({
+      where: { workspaceId, ...(input.projectId ? { projectId: input.projectId } : {}), project: { workspaceId, ...accessibleProjectWhere() } },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: input.limit, select: reviewRoundSummarySelect,
+    });
+    const now = new Date();
+    return rounds.map((round) => reviewRoundSummary(round, now));
+  }
+
+  async getRoundSummary(scope: ActorScope, roundId: string) {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
+    const { workspaceId } = scope;
+    const round = await requirePrisma().reviewRound.findFirst({
+      where: { id: roundId, workspaceId, project: { workspaceId, ...accessibleProjectWhere() } }, select: reviewRoundSummarySelect,
+    });
+    if (!round) throw new ReviewServiceError("review_round_not_found", "Review round was not found");
+    return reviewRoundSummary(round);
+  }
+
   async createRound(scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier }, input: unknown) {
     if (!hasFeature(scope.pricingTier, "review.rooms")) {
       throw new ReviewServiceError("review_feature_unavailable", "Review rooms are not available on this plan");

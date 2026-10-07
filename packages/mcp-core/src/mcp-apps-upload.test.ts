@@ -20,21 +20,21 @@ describe("App Upload Session progress", () => {
     await expect(waitForUploadAcceptance(pending, { maximumPolls: 2, wait: async (delay) => { expect(delay).toBe(30_000); }, readStatus: async () => { reads++; return pending; } })).rejects.toThrow("still verifying");
     expect(reads).toBe(2);
   });
-  test("shares accepted durable IDs with the host without private transfer fields", async () => {
+  test("shares the accepted intake operation with the host without private transfer fields", async () => {
     const messages: unknown[] = [];
-    const accepted = { _meta: { uploadTransfer: { outcome: "queued_for_ingest", projectId: "project", queuedJobId: "job", sessionId: "private-session", grants: [{ url: "private-grant" }], storageKey: "private-storage" } } };
+    const accepted = { _meta: { uploadTransfer: { outcome: "queued_for_ingest", projectId: "project", queuedJobId: "job", sessionId: "session", grants: [{ url: "private-grant" }], storageKey: "private-storage" } } };
     expect(await notifyUploadAcceptance(accepted, { workspaceId: "workspace", clientIdempotencyKey: "private-key" }, "https://narriflow.test", {
       updateModelContext: async (message) => { messages.push(message); },
       sendMessage: async (message) => { messages.push(message); return {}; },
     })).toBe(true);
     expect(messages).toEqual([
-      { content: [{ type: "text", text: JSON.stringify({ data: { status: "queued_for_ingest", workspaceId: "workspace", projectId: "project", ingestJobId: "job", statusTool: "narriflow_get_project", reviewUrl: "https://narriflow.test/projects/project" } }) }] },
-      { role: "user", content: [{ type: "text", text: JSON.stringify({ data: { status: "queued_for_ingest", workspaceId: "workspace", projectId: "project", ingestJobId: "job", statusTool: "narriflow_get_project", reviewUrl: "https://narriflow.test/projects/project" } }) }] },
+      { content: [{ type: "text", text: JSON.stringify({ data: { status: "queued_for_ingest", workspaceId: "workspace", projectId: "project", operation: { kind: "intake", id: "session" }, statusTool: "narriflow_get_operation", reviewUrl: "https://narriflow.test/projects/project" } }) }] },
+      { role: "user", content: [{ type: "text", text: JSON.stringify({ data: { status: "queued_for_ingest", workspaceId: "workspace", projectId: "project", operation: { kind: "intake", id: "session" }, statusTool: "narriflow_get_operation", reviewUrl: "https://narriflow.test/projects/project" } }) }] },
     ]);
     expect(JSON.stringify(messages)).not.toContain("private");
   });
   test("preserves accepted upload facts when the host cannot receive context", async () => {
-    const result = { _meta: { uploadTransfer: { outcome: "queued_for_ingest", projectId: "project", queuedJobId: "job" } } };
+    const result = { _meta: { uploadTransfer: { outcome: "queued_for_ingest", projectId: "project", queuedJobId: "job", sessionId: "session" } } };
     expect(await notifyUploadAcceptance(result, { workspaceId: "workspace" }, "https://narriflow.test", {})).toBe(false);
     expect(await notifyUploadAcceptance(result, { workspaceId: "workspace" }, "https://narriflow.test", { updateModelContext: async () => { throw new Error("Disconnected"); } })).toBe(false);
     expect(result._meta.uploadTransfer.projectId).toBe("project");

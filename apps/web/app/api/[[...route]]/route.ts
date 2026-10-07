@@ -1239,6 +1239,20 @@ app.get("/projects/:id/clips/:clipId/exports/:exportId", async (c) => {
 	return c.json(result, 200, { "Cache-Control": "private, no-store" });
 });
 
+/** SRT and VTT for one export, derived on demand from its frozen snapshot. */
+app.get("/projects/:id/clips/:clipId/exports/:exportId/subtitles/:format", async (c) => {
+	const format = c.req.param("format");
+	if (format !== "srt" && format !== "vtt") return c.json({ error: "subtitle_format_invalid" }, 400);
+	const appUser = authenticatedHonoActor(c);
+	const files = await clipExportService.getSubtitles(appUser, c.req.param("id"), c.req.param("clipId"), c.req.param("exportId"));
+	const file = files.find((entry) => entry.format === format)!;
+	return c.body(file.content, 200, {
+		"Content-Type": format === "srt" ? "application/x-subrip; charset=utf-8" : "text/vtt; charset=utf-8",
+		"Content-Disposition": `attachment; filename="${file.fileName}"`,
+		"Cache-Control": "private, no-store",
+	});
+});
+
 app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 	const result = await clipExportService.retryFailed(appUser, c.req.param("id"), c.req.param("clipId"), c.req.param("exportId"));

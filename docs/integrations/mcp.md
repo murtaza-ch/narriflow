@@ -15,9 +15,9 @@ canonical `/mcp` resource in their verified audience. Both credentials use:
 | Scope | Tools |
 | --- | --- |
 | Discovery, no scope | `narriflow_list_workspaces` |
-| `projects:read` | `narriflow_list_projects`, `narriflow_get_project`, `narriflow_list_clips`, `narriflow_get_clip` |
+| `projects:read` | `narriflow_list_projects`, `narriflow_get_project`, `narriflow_list_clips`, `narriflow_get_clip`, `narriflow_list_brand_profiles`, `narriflow_get_operation` (intake and generation) |
 | `usage:read` | `narriflow_get_workspace_usage` |
-| `exports:read` | `narriflow_get_clip_export` |
+| `exports:read` | `narriflow_get_clip_export`, `narriflow_get_export_download`, `narriflow_get_operation` (export), `narriflow_create_review_handoff`, `narriflow_list_review_rounds`, `narriflow_get_review_round` |
 | `autopilot:read` | `narriflow_list_autopilot_rules` |
 | `publishing:read` | `narriflow_list_social_accounts`, `narriflow_get_publishing_options`, `narriflow_list_social_publications`, `narriflow_get_social_publication` |
 | `processing:write` | `narriflow_submit_video`, `narriflow_upload_video`, `narriflow_generate_clips` |
@@ -36,11 +36,34 @@ and replay receipts commit together. Link submission commits ingest and
 generation settings together, using canonical Content Pack defaults/quota.
 New forced generations cannot overlap active generation work.
 
-Follow project progress, list clips, review their editor revisions and create
-exports for selected aspect ratios/resolution. Clip lists default to 20,
-capped at 50. Excerpts are opt-in. Results contain compact product facts and
-ordinary review/download links. Temporary media URLs and upload grants appear
-only in client/App metadata.
+`narriflow_submit_video` and `narriflow_upload_video` accept an optional
+`brandProfileId` from `narriflow_list_brand_profiles`; omitting it applies the
+Workspace default Brand Profile when intake is admitted, so a retry keeps its
+identity even if the default changes.
+
+Every accepted mutation returns `operation: { kind, id }` and
+`statusTool: "narriflow_get_operation"`. Operation Status follows exactly that
+work: an intake (link import or Upload Session) through its stored generation
+run, a generation through detection and its frozen renders, or an export and
+its formats. It reports `working`, `completed`, `partial`, `failed`, or
+`cancelled` with per-clip or per-format outcomes. `narriflow_get_project` is a
+Project snapshot and never stands in for accepted work.
+
+List clips, review their editor revisions and create exports for selected
+aspect ratios/resolution. Export results report the requested resolution and
+the granted resolution and watermark, with `reason: "plan_limit"` when the plan
+changed them. Clip lists default to 20, capped at 50. Excerpts are opt-in.
+Results contain compact product facts and ordinary review links, never media
+URLs, except `narriflow_get_export_download`: on explicit request it issues
+fresh Download Grants (15 minutes) for finished files plus SRT and VTT text
+derived from the export's frozen snapshot. Upload grants appear only in App
+metadata.
+
+To send exports to a client, `narriflow_create_review_handoff` checks Review
+Round rules and returns a Narriflow link that opens the composer with those
+exports selected. It creates and sends nothing; a signed-in member sets
+recipients and sends. Review read tools report status, per-clip decisions and
+comment counts without access tokens, passcodes or emails.
 
 Prepare the exact export variant, revision, destination, caption, provider
 settings and time before scheduling. Preparation is not approval. Scheduling
@@ -48,6 +71,8 @@ requires an accepted MRTR form, App button or authenticated web confirmation
 of that same intent, then rechecks review approval. Signed continuations bind
 caller/workspace/tool/intent for ten minutes. Accepted scheduling retries can
 replay after expiry; expired unaccepted intents require new preparation.
+Continuations carry the originating credential kind and granted scopes;
+OAuth continuations end no later than the access token that created them.
 Recovery tools inspect/reconcile existing operations; publish-again requires
 explicit duplicate-risk acknowledgement.
 
@@ -118,11 +143,12 @@ and atomic ingest handoff. The local helper supports Codex/Claude Code:
 
 ```bash
 # Load NARRIFLOW_API_KEY and NARRIFLOW_URL through your environment/secret store.
-bun run mcp:upload --file /absolute/path/video.mp4 --workspace <workspaceId> --key <UUID>
+bun run mcp:upload --file /absolute/path/video.mp4 --workspace <workspaceId> --key <UUID> [--brand <brandProfileId>]
 ```
 
 Its key needs `processing:write`. Reuse the same UUID and unchanged file to
-resume. The helper prints its operation key before networking and never sends
+resume. The helper prints its idempotency key before networking, prints the
+intake operation to follow when it finishes, and never sends
 the Narriflow credential to storage. `--settings` accepts a JSON file matching
 the MCP generation-settings contract. Attachment adapters remain disabled
 until their specific host file contract is tested.
@@ -149,7 +175,7 @@ handles support modern `tasks/get`, `tasks/update` and cooperative
 `tasks/cancel`, with five-second suggested polling. Ownership, originating
 operation, result contract and terminal snapshot persist for seven days.
 Expiry does not cancel domain work; completed outcomes remain immutable.
-Generation Tasks follow transcription, detection and default render lineage.
+Tasks read Operation Status, so intake Tasks follow import into generation.
 Unsupported clients receive ordinary operation IDs/status guidance.
 Task HTTP requests send `MCP-Name` equal to `params.taskId`.
 

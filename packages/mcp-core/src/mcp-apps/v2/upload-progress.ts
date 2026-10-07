@@ -16,10 +16,11 @@ export async function notifyUploadAcceptance(result: UploadBridgeResult, context
   sendMessage?(message: ContextMessage & { role: "user" }): Promise<{ isError?: boolean }>;
 }) {
   const accepted = transfer(result);
-  if (accepted.outcome !== "queued_for_ingest" || typeof accepted.projectId !== "string" || typeof accepted.queuedJobId !== "string" || typeof context.workspaceId !== "string") throw new Error("Upload completion did not include durable project identifiers");
+  if (accepted.outcome !== "queued_for_ingest" || typeof accepted.projectId !== "string" || typeof accepted.sessionId !== "string" || typeof context.workspaceId !== "string") throw new Error("Upload completion did not include durable project identifiers");
+  // The Upload Session is the intake operation; it follows import into generation.
   const facts = {
     status: "queued_for_ingest", workspaceId: context.workspaceId, projectId: accepted.projectId,
-    ingestJobId: accepted.queuedJobId, statusTool: "narriflow_get_project",
+    operation: { kind: "intake", id: accepted.sessionId }, statusTool: "narriflow_get_operation",
     reviewUrl: `${appOrigin}/projects/${encodeURIComponent(accepted.projectId)}`,
   };
   const message: ContextMessage = { content: [{ type: "text", text: JSON.stringify({ data: facts }) }] };

@@ -70,7 +70,7 @@ export function createNarriflowMcpHttpHandler(deps: NarriflowMcpHttpDependencies
         if (message && typeof message === "object" && "method" in message && message.method === "tools/call" && "params" in message) {
           const params = message.params;
           if (params && typeof params === "object" && "name" in params && typeof params.name === "string") {
-            const scope = mcpToolRequiredScope(params.name);
+            const scope = mcpToolRequiredScope(params.name, "arguments" in params ? params.arguments : undefined);
             if (scope) {
               requiredScopes = [scope];
               if (!principal.scopes.includes(scope)) throw new OAuthError(OAuthErrorCode.InsufficientScope, "Application scope consent is required");

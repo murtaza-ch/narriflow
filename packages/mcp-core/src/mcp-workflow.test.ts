@@ -68,7 +68,7 @@ describe("Compact MCP workflow", () => {
     const key = "00000000-0000-4000-8000-000000000005";
     const client = await connect({ ...principal, scopes: ["processing:write"] });
     const result = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key, generation: { clipCountTarget: 6, clipLengthPreset: "under_30s" } } });
-    expect(result.structuredContent).toMatchObject({ data: { projectId, operationId, operationKind: "generation", status: "accepted", statusTool: "narriflow_get_project" } });
+    expect(result.structuredContent).toMatchObject({ data: { projectId, operation: { kind: "generation", id: operationId }, status: "accepted", statusTool: "narriflow_get_operation" } });
     expect(trigger).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), projectId, expect.objectContaining({ contentPack: expect.objectContaining({ clipCountTarget: 6, clipDurationSecTarget: 25, maxDurationSec: 35 }) }), key, expect.objectContaining({ mutation: expect.objectContaining({ clientIdempotencyKey: key, callerId: `oauth:test-client:${userId}` }) }));
   });
 

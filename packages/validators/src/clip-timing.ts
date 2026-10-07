@@ -718,3 +718,35 @@ export function mergeCorrectedWordsIntoWindow(
     };
   });
 }
+
+/** Timing an export render uses for one frozen clip. Burn-in and subtitle
+ * files both read it, so their cues cannot drift apart. */
+export function resolveClipRenderTiming(input: {
+  llmModel: string | null;
+  startSec: number;
+  endSec: number;
+  utterances: TranscriptUtterance[];
+}) {
+  if (input.llmModel === "caption-only") {
+    const startSec = Math.max(0, input.startSec);
+    const endSec = Math.max(startSec + 0.01, input.endSec);
+    return {
+      startSec,
+      endSec,
+      durationSec: endSec - startSec,
+      transcriptSlice: normalizeTranscriptSliceForClip(input.utterances, startSec, endSec),
+    };
+  }
+
+  // tailPadSec 0: the clip's stored bounds were already pad- and collision-
+  // normalized against the full transcript at detection/edit time, and the
+  // slice passed here can't see the word that follows the clip — re-padding
+  // from slice-only data used to push the rendered end ~0.25s past the
+  // stored end, straight into the next sentence.
+  return getEffectiveClipTiming({
+    utterances: input.utterances,
+    startSec: input.startSec,
+    endSec: input.endSec,
+    tailPadSec: 0,
+  });
+}

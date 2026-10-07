@@ -8,6 +8,7 @@ import {
   clipExportVariantStorageKey,
   deriveClipExportAggregate,
   hashClipShareToken,
+  resolveClipExportOutput,
   sceneExportOwnerWhere,
 } from "./clip-export.service";
 
@@ -188,5 +189,13 @@ describe("clip export storage and sharing", () => {
     expect(hash).not.toContain(token);
     expect(hashClipShareToken(token)).toBe(hash);
     expect(hashClipShareToken(`${token}x`)).not.toBe(hash);
+  });
+});
+
+describe("explicit export output", () => {
+  test("reports the requested resolution, the granted output, and the plan-limit reason", () => {
+    expect(resolveClipExportOutput("free", "1080p")).toEqual({ requested: { resolution: "1080p" }, granted: { resolution: "720p", watermark: true }, reason: "plan_limit" });
+    expect(resolveClipExportOutput("free", "720p")).toEqual({ requested: { resolution: "720p" }, granted: { resolution: "720p", watermark: true }, reason: "plan_limit" });
+    expect(resolveClipExportOutput("business", "1080p")).toEqual({ requested: { resolution: "1080p" }, granted: { resolution: "1080p", watermark: false }, reason: null });
   });
 });

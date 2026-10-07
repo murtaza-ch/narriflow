@@ -4,7 +4,8 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import { createMcpTaskRegistry, type McpTaskRecord } from "./mcp-task";
-import { prismaMcpTaskPersistence, getMcpTaskDomainState, cancelMcpTaskDomainWork } from "./mcp-task-runtime";
+import { prismaMcpTaskPersistence, cancelMcpTaskDomainWork } from "./mcp-task-runtime";
+import { createOperationStatusReader } from "./operation-status";
 import { workspaceService } from "./workspace.service";
 import { buildMcpContentPack } from "@narriflow/validators";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
@@ -37,13 +38,17 @@ db("durable MCP Task lifecycle", () => {
     projectId = (await prisma.project.create({ data: { workspaceId, createdByUserId: userId, title: "Task fixture", sourceMediaUrl: "https://example.test/video.mp4", ingestStatus: "ready" } })).id;
   });
   afterAll(async () => { globals.narriflowPrismaClient = previous; await prisma?.$disconnect(); await pool?.end(); });
+  /** MCP Tasks read the shared Operation Status module. */
+  async function operationState(record: Pick<McpTaskRecord, "workspaceId" | "domainKind" | "domainId">) {
+    return (await createOperationStatusReader(prisma).read({ workspaceId: record.workspaceId }, { kind: record.domainKind, id: record.domainId })).state;
+  }
   function registry() {
     return createMcpTaskRegistry({ persistence: prismaMcpTaskPersistence(prisma),
       authorize: async (record) => { await workspaceService.requireActor(record.ownerUserId, record.workspaceId, "content.view"); },
       resolve: async (record) => {
-        const state = await getMcpTaskDomainState(record);
-        if (state?.cancelled) return { status: "cancelled" };
-        if (state?.status === "completed") return { status: "completed", result: { done: true } };
+        const state = await operationState(record);
+        if (state === "cancelled") return { status: "cancelled" };
+        if (state === "completed") return { status: "completed", result: { done: true } };
         return { status: "working" };
       }, cancel: cancelMcpTaskDomainWork,
     });
@@ -76,7 +81,9 @@ db("durable MCP Task lifecycle", () => {
         stage, status, progress: 50, errorCode: null, emittedAt: new Date().toISOString(), ...extra } } });
   }
   async function handoff(childId: string, workId: string, renderIds: string[]) {
-    await event(childId, "moment_detection", "running", { followUpWorkflowRunId: workId, generationRenderIds: renderIds });
+    const renders = await prisma.clipRender.findMany({ where: { id: { in: renderIds } }, select: { id: true, clipId: true } });
+    await event(childId, "moment_detection", "running", { followUpWorkflowRunId: workId,
+      generationRenders: renderIds.map((renderId) => ({ renderId, clipId: renders.find((render) => render.id === renderId)!.clipId })) });
   }
   test("concurrent registrations reconnect to one handle and immutable terminal snapshot", async () => {
     const input = await taskInput(); const owned = { ownerUserId: input.ownerUserId, callerId: input.callerId };
@@ -122,10 +129,10 @@ db("durable MCP Task lifecycle", () => {
     const input = await taskInput(); const row = await registry().register(input);
     const child = await detection(input, "queued");
     await detection(await taskInput(), "failed");
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "working", cancelled: false });
+    expect(await operationState(row)).toBe("working");
     expect((await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId })).status).toBe("working");
     await prisma.workflowRun.update({ where: { id: child.id }, data: { status: "failed", errorCode: "detection_failed" } });
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "failed", cancelled: false });
+    expect(await operationState(row)).toBe("failed");
   });
   test("generation waits for its clip renders and reports partial rendering", async () => {
     const input = await taskInput(); const row = await registry().register(input);
@@ -135,10 +142,22 @@ db("durable MCP Task lifecycle", () => {
     const completed = await prisma.clipRender.create({ data: { clipId: first.id, aspectRatio: "ratio_9_16", status: "completed", workflowRunId: work.id } });
     const rendering = await prisma.clipRender.create({ data: { clipId: second.id, aspectRatio: "ratio_9_16", status: "pending", workflowRunId: work.id } });
     await handoff(child.id, work.id, [completed.id, rendering.id]);
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "working", cancelled: false });
+    expect(await operationState(row)).toBe("working");
     await prisma.clipRender.update({ where: { id: rendering.id }, data: { status: "failed", errorCode: "render_failed" } });
     await prisma.workflowRun.update({ where: { id: work.id }, data: { status: "partial" } });
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "partial", cancelled: false });
+    expect(await operationState(row)).toBe("partial");
+  });
+  test("cancelling a handed-off intake Task cancels its queued generation, not the finished import", async () => {
+    const generation = await taskInput();
+    const job = await prisma.ingestJob.create({ data: { projectId, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date(),
+      generationHandoffAt: new Date(), generationRunId: generation.domainId } });
+    const input = { ...generation, toolName: "narriflow_submit_video", domainKind: "intake" as const, domainId: job.id };
+    const row = await registry().register(input);
+    expect(await operationState(row)).toBe("working");
+    await registry().cancel(row.id, { ownerUserId: userId, callerId: input.callerId });
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).status).toBe("completed");
+    expect(await operationState(row)).toBe("cancelled");
+    expect((await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId })).status).toBe("cancelled");
   });
   test("cancellation reaches a queued detection child while a running detection wins", async () => {
     const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "queued");
@@ -165,7 +184,7 @@ db("durable MCP Task lifecycle", () => {
     expect((await prisma.clipRender.findUniqueOrThrow({ where: { id: running.id } })).status).toBe("rendering");
     expect((await prisma.clipRender.findUniqueOrThrow({ where: { id: other.id } })).status).toBe("pending");
     expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: shared.id } })).status).toBe("running");
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "working", cancelled: false });
+    expect(await operationState(row)).toBe("working");
     await prisma.clipRender.update({ where: { id: running.id }, data: { status: "completed" } });
     await event(shared.id, "clip_rendering", "running", { generationRenderResults: [{ renderId: running.id, status: "completed", errorCode: null }] });
     expect((await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId })).status).toBe("cancelled");
@@ -181,7 +200,7 @@ db("durable MCP Task lifecycle", () => {
     const admitted = await lifecycle.admitAutoRenderWork(attempt, { idempotencyKey: `auto-render-${child.id}`,
       renders: [{ clipId: generated.id, aspectRatio: "ratio_9_16", resolution: "1080p" }] });
     await lifecycle.completeMomentDetection(attempt);
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "working", cancelled: false });
+    expect(await operationState(row)).toBe("working");
     const renderAttemptId = randomUUID();
     await prisma.workflowRun.update({ where: { id: admitted.id }, data: { status: "running", attemptId: renderAttemptId,
       attemptCount: 1, leaseOwner: "mcp-generation-history", leaseExpiresAt: new Date(Date.now() + 60_000) } });
@@ -191,14 +210,14 @@ db("durable MCP Task lifecycle", () => {
     expect(await lifecycle.markClipRenderVariantRendering(renderAttempt, renderId)).toBe(true);
     expect(await lifecycle.completeClipRenderVariant(renderAttempt, renderId, { storageKey: "private/test.mp4", sizeBytes: 100, durationSec: 30 })).toBe(true);
     // Original child outcomes settle even while a shared run remains active.
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "completed", cancelled: false });
+    expect(await operationState(row)).toBe("completed");
     await prisma.clipRender.update({ where: { id: renderId }, data: { status: "pending", storageKey: null, workflowRunId: null } });
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "completed", cancelled: false });
+    expect(await operationState(row)).toBe("completed");
     await registry().cancel(row.id, { ownerUserId: userId, callerId: input.callerId });
     expect((await prisma.clipRender.findUniqueOrThrow({ where: { id: renderId } })).status).toBe("pending");
     await prisma.workflowRun.update({ where: { id: admitted.id }, data: { status: "completed" } });
     const unrelatedDrain = await prisma.workflowRun.create({ data: { projectId, stage: "clip_rendering", status: "queued", idempotencyKey: `drain-${admitted.id}` } });
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "completed", cancelled: false });
+    expect(await operationState(row)).toBe("completed");
     await prisma.workflowRun.update({ where: { id: unrelatedDrain.id }, data: { status: "completed" } });
   });
   test("retryable child failure does not settle a Task before the later attempt succeeds", async () => {
@@ -212,17 +231,17 @@ db("durable MCP Task lifecycle", () => {
     await lifecycle.beginRenderWorkSet(first);
     expect(await lifecycle.markClipRenderVariantRendering(first, render.id)).toBe(true);
     expect(await lifecycle.failClipRenderVariant(first, render.id, "temporary_provider_error", "retryable")).toBe(true);
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "working", cancelled: false });
+    expect(await operationState(row)).toBe("working");
     expect((await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId })).status).toBe("working");
     expect((await lifecycle.settleRenderWorkSet(first)).status).toBe("requeued");
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "working", cancelled: false });
+    expect(await operationState(row)).toBe("working");
     await prisma.workflowRun.update({ where: { id: work.id }, data: { nextAttemptAt: null } });
     const second = await lifecycle.claim("clip_rendering");
     if (!second) throw new Error("Expected retry claim");
     await lifecycle.beginRenderWorkSet(second);
     expect(await lifecycle.markClipRenderVariantRendering(second, render.id)).toBe(true);
     expect(await lifecycle.completeClipRenderVariant(second, render.id, { storageKey: "private/retry.mp4", sizeBytes: 100, durationSec: 30 })).toBe(true);
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "completed", cancelled: false });
+    expect(await operationState(row)).toBe("completed");
   });
   test("permanent failure history survives later clip replacement before the first Task poll", async () => {
     const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "completed");
@@ -238,6 +257,6 @@ db("durable MCP Task lifecycle", () => {
     expect(await lifecycle.markClipRenderVariantRendering(attempt, render.id)).toBe(true);
     expect(await lifecycle.failClipRenderVariant(attempt, render.id, "render_failed", "permanent")).toBe(true);
     await prisma.clip.deleteMany({ where: { workflowRunId: child.id } });
-    expect(await getMcpTaskDomainState(row)).toEqual({ status: "failed", cancelled: false });
+    expect(await operationState(row)).toBe("failed");
   });
 });

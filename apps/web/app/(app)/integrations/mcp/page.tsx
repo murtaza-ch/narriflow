@@ -180,6 +180,9 @@ export default async function McpIntegrationPage() {
           title="Use one URL in every supported client"
           description="Confirm the connection in your AI client."
         />
+        <Text fontSize="13px" color="fg.muted">
+          The <Link href="/connector">public connector page</Link> explains what assistants can do, the data they reach, and how to disconnect.
+        </Text>
         <CopyControl value={mcpUrl} label="Copy URL" />
         <Flex align="flex-start" gap="2" color="fg.muted">
           <CheckCircle2 size={15} style={{ marginTop: 3, flexShrink: 0 }} />

@@ -13,6 +13,8 @@ export interface UploadVideoOptions {
   filePath: string;
   clientIdempotencyKey: string;
   title?: string;
+  /** Omit to use the Workspace's default Brand Profile. */
+  brandProfileId?: string;
   contentType?: UploadMimeType;
   generationContext?: OpenUploadSessionInput["generationContext"];
   fetch?: typeof fetch;
@@ -37,7 +39,7 @@ export async function uploadVideo(options: UploadVideoOptions): Promise<Finalize
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(options.filePath, { signal: options.signal })) digest.update(chunk);
   const fingerprint = `sha256:${digest.digest("hex")}`;
-  const input = openUploadSessionSchema.parse({ clientIdempotencyKey: options.clientIdempotencyKey, title: options.title ?? basename(options.filePath), source: { fileName: basename(options.filePath), sizeBytes: file.size, contentType, browserFingerprint: fingerprint }, generationContext: options.generationContext ?? { contentPack: buildMcpContentPack(), languageCode: null } });
+  const input = openUploadSessionSchema.parse({ clientIdempotencyKey: options.clientIdempotencyKey, title: options.title ?? basename(options.filePath), source: { fileName: basename(options.filePath), sizeBytes: file.size, contentType, browserFingerprint: fingerprint }, ...(options.brandProfileId ? { brandProfileId: options.brandProfileId } : {}), generationContext: options.generationContext ?? { contentPack: buildMcpContentPack(), languageCode: null } });
   const transport = options.fetch ?? fetch;
   async function request<T>(action: string, body: unknown): Promise<T> {
     const response = await transport(new URL(`/mcp/integrations/${encodeURIComponent(options.workspaceId)}/upload-sessions/${action}`, endpoint), { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}` }, body: JSON.stringify(body), signal: options.signal, redirect: "error" });
@@ -118,14 +120,15 @@ function abortableDelay(ms: number, signal?: AbortSignal) {
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { file: { type: "string" }, workspace: { type: "string" }, key: { type: "string" }, title: { type: "string" }, "content-type": { type: "string" }, settings: { type: "string" } }, strict: true });
-  if (!values.file || !values.workspace) throw new Error("Usage: bun run apps/mcp/src/upload.ts --file <path> --workspace <UUID> --key <UUID> [--title <title>]. Set NARRIFLOW_API_KEY and NARRIFLOW_URL in the environment.");
+  const { values } = parseArgs({ options: { file: { type: "string" }, workspace: { type: "string" }, key: { type: "string" }, title: { type: "string" }, brand: { type: "string" }, "content-type": { type: "string" }, settings: { type: "string" } }, strict: true });
+  if (!values.file || !values.workspace) throw new Error("Usage: bun run apps/mcp/src/upload.ts --file <path> --workspace <UUID> --key <UUID> [--title <title>] [--brand <Brand Profile UUID>]. Set NARRIFLOW_API_KEY and NARRIFLOW_URL in the environment.");
   const clientIdempotencyKey = values.key ?? randomUUID();
   // Print the replay key before networking, so an interrupted upload can resume.
   process.stderr.write(`Upload idempotency key: ${clientIdempotencyKey}\n`);
   const settings = mcpGenerationSettingsSchema.parse(values.settings ? JSON.parse(await readFile(values.settings, "utf8")) : {});
-  const result = await uploadVideo({ endpoint: process.env.NARRIFLOW_URL ?? "http://localhost:3000", apiKey: process.env.NARRIFLOW_API_KEY ?? "", workspaceId: values.workspace, filePath: values.file, clientIdempotencyKey, title: values.title, contentType: values["content-type"] as UploadMimeType | undefined, generationContext: { contentPack: buildMcpContentPack(settings), languageCode: settings.languageCode } });
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  const result = await uploadVideo({ endpoint: process.env.NARRIFLOW_URL ?? "http://localhost:3000", apiKey: process.env.NARRIFLOW_API_KEY ?? "", workspaceId: values.workspace, filePath: values.file, clientIdempotencyKey, title: values.title, brandProfileId: values.brand, contentType: values["content-type"] as UploadMimeType | undefined, generationContext: { contentPack: buildMcpContentPack(settings), languageCode: settings.languageCode } });
+  // The Upload Session is the intake operation to follow with narriflow_get_operation.
+  process.stdout.write(`${JSON.stringify({ ...result, operation: { kind: "intake", id: result.sessionId }, statusTool: "narriflow_get_operation" })}\n`);
 }
 
 if (import.meta.main) main().catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : "Upload failed"}\n`); process.exitCode = 1; });

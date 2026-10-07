@@ -67,6 +67,7 @@ export function uploadView(payload: Facts, context: Facts): CardView {
   };
 }
 export function progressView(payload: Facts): CardView {
+  if (typeof payload.state === "string") return operationView(payload);
   const exported = record(payload.export);
   const project = record(payload.project);
   const progress = record(payload.progress);
@@ -76,6 +77,8 @@ export function progressView(payload: Facts): CardView {
   const percentValue = exported.progress ?? progress.percent;
   const percent = typeof percentValue === "number" ? Math.min(100, Math.max(0, percentValue)) : null;
   const variants = Array.isArray(exported.variants) ? exported.variants.map(record) : [];
+  const output = record(payload.output);
+  const limited = output.reason === "plan_limit" ? `<p class="notice">Your plan delivers ${escapeHtml(record(output.granted).resolution)}${record(output.granted).watermark ? " with a watermark" : ""}.</p>` : "";
   return {
     title: isExport ? (ready ? "Your export is ready" : "Preparing your export") : text(project.title) || "Creating your clips",
     badge: label(state) || "Processing",
@@ -83,7 +86,31 @@ export function progressView(payload: Facts): CardView {
       <progress class="operation-progress" max="100" ${percent === null && !ready ? "" : `value="${ready ? 100 : percent}"`} aria-label="${isExport ? "Export" : "Project"} progress"></progress>
       <p class="subtle">${state === "failed" ? "Open Narriflow to inspect the failure and retry." : ready ? (isExport ? "Open Narriflow to preview and download your export." : "Open your project to review the clips and choose what to export.") : "You can check back here while Narriflow works."}</p></section>
       ${isExport || payload.project ? `<dl class="settings-band">${isExport ? fact("Quality", exported.resolution) + fact("Version", number(exported.editorRevision)) + fact("Format", variants.map((variant) => text(variant.aspectRatio)).join(", ")) : fact("Source", label(project.sourceType)) + fact("Duration", typeof project.durationSeconds === "number" ? clock(project.durationSeconds) : "Not available yet") + fact("Language", text(project.languageCode)?.toUpperCase() || "Automatic")}</dl>` : ""}
-      ${exported.isOlderVersion ? '<p class="notice">This export uses an earlier edit. Open Narriflow to review the current version.</p>' : ""}`,
+      ${limited}${exported.isOlderVersion ? '<p class="notice">This export uses an earlier edit. Open Narriflow to review the current version.</p>' : ""}`,
+  };
+}
+/** Operation Status: the exact work one request started. */
+function operationView(payload: Facts): CardView {
+  const reference = record(payload.operation);
+  const isExport = reference.kind === "export";
+  const state = text(payload.state);
+  const done = state === "completed";
+  const percent = typeof payload.progress === "number" ? Math.round(Math.min(1, Math.max(0, payload.progress)) * 100) : null;
+  const items = Array.isArray(payload.items) ? payload.items.map(record) : [];
+  const finished = items.filter((item) => item.state === "completed").length;
+  const noun = isExport ? "formats" : "clips";
+  const subtle = state === "failed" ? "Open Narriflow to inspect the failure and retry."
+    : state === "partial" ? `${finished} of ${items.length} ${noun} finished. Open Narriflow to review the rest.`
+    : state === "cancelled" ? "This work was cancelled."
+    : done ? (isExport ? "Ask for the export files, or open Narriflow to preview them." : "Open your project to review the clips and choose what to export.")
+    : "You can check back here while Narriflow works.";
+  return {
+    title: isExport ? (done ? "Your export is ready" : "Preparing your export") : done ? "Your clips are ready" : "Creating your clips",
+    badge: label(state) || "Processing",
+    html: `<section class="operation"><div class="operation-heading"><h2>${escapeHtml(isExport ? "Clip export" : label(payload.stage) || "Video processing")}</h2><strong>${done ? "Complete" : percent === null ? "In progress" : `${percent}%`}</strong></div>
+      <progress class="operation-progress" max="100" ${percent === null && !done ? "" : `value="${done ? 100 : percent}"`} aria-label="${isExport ? "Export" : "Processing"} progress"></progress>
+      <p class="subtle">${escapeHtml(subtle)}</p></section>
+      ${items.length ? `<dl class="settings-band">${fact(isExport ? "Formats ready" : "Clips ready", `${finished} of ${items.length}`)}</dl>` : ""}`,
   };
 }
 export function confirmationView(payload: Facts, locale?: string): CardView {

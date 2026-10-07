@@ -21,7 +21,7 @@ describe("online MCP credential verification", () => {
   test("uses verified audience and application scopes", async () => {
     const result = await verifier().verifyAccessToken("access-token");
     expect(result.scopes).toEqual(["projects:read"]);
-    expect(result.extra?.narriflowPrincipal).toMatchObject({ userId: "app-user", kind: "oauth" });
+    expect(result.extra?.narriflowPrincipal).toMatchObject({ userId: "app-user", kind: "oauth", expiresAt: 2_000_000_000 });
   });
   for (const patch of [
     { aud: undefined }, { aud: ["https://another.example/mcp"] }, { revoked: true },

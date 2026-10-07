@@ -341,6 +341,29 @@ export class BrandProfileService {
     return Promise.all(rows.map(toAggregate));
   }
 
+  /** Assistant-facing list: names and defaults only, with no asset access URLs. */
+  async listSummaries(scope: BrandActorScope) {
+    const prisma = this.requirePrisma();
+    const [rows, defaultId] = await Promise.all([
+      prisma.brandProfile.findMany({
+        where: { ...brandOwnerWhere(scope), deletedAt: null },
+        select: { id: true, name: true, defaultTemplate: { select: { id: true, name: true } } },
+        orderBy: [{ name: "asc" }, { id: "asc" }],
+        take: 100,
+      }),
+      this.getDefaultId(scope),
+    ]);
+    return rows.map((row) => ({ id: row.id, name: row.name, isDefault: row.id === defaultId, defaultStyle: row.defaultTemplate }));
+  }
+
+  /** Refuses a Brand Profile this actor cannot use, before an assistant
+   * handoff signs it. Intake admission resolves it again. */
+  async requireUsableId(scope: BrandActorScope, id: string) {
+    const profile = await this.requirePrisma().brandProfile.findFirst({ where: { id, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } });
+    if (!profile) throw new BrandProfileNotFoundError();
+    return profile.id;
+  }
+
   async getDefaultId(scope: BrandActorScope) {
     const prisma = this.requirePrisma();
     const owner = resolveBrandOwner(scope);

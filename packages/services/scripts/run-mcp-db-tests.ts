@@ -76,6 +76,7 @@ try {
 	for (const suite of [
 		"packages/services/src/mcp-operation.db.test.ts",
 		"packages/services/src/mcp-task.db.test.ts",
+		"packages/services/src/operation-status.db.test.ts",
 	]) {
 		await run(["bun", "test", suite], {
 			ALLOW_MCP_DB_TESTS: "1",

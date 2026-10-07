@@ -1302,7 +1302,7 @@ export async function processClipDetectionRun(
       try {
         await adapters.clips.autoQueueDefaultRenders(
           attempt,
-          "16:9",
+          contentPack.defaultAspectRatio,
         );
       } catch (error) {
         log("error", "auto_render_queue_failed", {

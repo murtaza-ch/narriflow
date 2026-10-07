@@ -574,7 +574,8 @@ async function runUploadSessionTransfer(
               browserFingerprint: fingerprint,
             },
             brandTemplateId: input.brandTemplateId,
-            brandProfileId: input.brandProfileId ?? null,
+            // Omitted (not null) lets an assistant handoff use the Workspace default.
+            ...(input.brandProfileId === undefined ? {} : { brandProfileId: input.brandProfileId }),
             generationContext: input.generationContext,
             ...(input.declaredDurationSeconds
               ? { declaredDurationSeconds: input.declaredDurationSeconds }

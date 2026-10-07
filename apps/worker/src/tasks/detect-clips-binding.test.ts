@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { WorkflowAttemptLost, WorkflowFailure, type ClaimedWorkflowAttempt } from "@narriflow/services";
 import { contentPackSchema } from "@narriflow/validators";
 import type { ContentPack as StoredContentPack, Transcript } from "@prisma/client";
@@ -16,7 +16,7 @@ const attempt: ClaimedWorkflowAttempt = {
 function storedPack(): StoredContentPack {
   return {
     ...contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 10, clipDurationSecTarget: 45,
-      platformPlaybookVersion: "platform-playbook-v1", mode: "caption_only", processingStartSec: 5, processingEndSec: 35 }),
+      platformPlaybookVersion: "platform-playbook-v1", mode: "caption_only", processingStartSec: 5, processingEndSec: 35, defaultAspectRatio: "1:1" }),
     id: "bound-pack", projectId: "project", draft: false, createdAt: new Date(), updatedAt: new Date(),
   };
 }
@@ -72,7 +72,7 @@ describe("Clip detection bound Content Pack execution", () => {
     expect(h.counts().transcriptReads).toBe(0);
   });
 
-  test("a valid bound caption-only pack preserves its window through persistence and render admission", async () => {
+  test("a valid bound caption-only pack preserves its window and requested aspect ratio through persistence and render admission", async () => {
     const pack = storedPack();
     const h = harness(async () => pack);
     h.persistence.project.getTranscriptForWorker = async () => ({
@@ -90,13 +90,38 @@ describe("Clip detection bound Content Pack execution", () => {
       saved = true;
     };
     h.persistence.clips.autoQueueDefaultRenders = async (received, aspectRatio) => {
-      expect(received).toEqual(attempt); expect(aspectRatio).toBe("16:9"); expect(saved).toBe(true); rendered = true;
+      expect(received).toEqual(attempt); expect(aspectRatio).toBe("1:1"); expect(saved).toBe(true); rendered = true;
     };
     await processClipDetectionRun(attempt, h.context, h.persistence);
     expect(rendered).toBe(true);
     expect(h.counts().completions).toBe(1);
     expect(h.failures).toEqual([]);
     expect(h.notices).toEqual([]);
+  });
+
+  test("a clip-mode pack queues automatic renders in its requested aspect ratio", async () => {
+    const pack = { ...storedPack(), mode: "clip", processingStartSec: null, processingEndSec: null, defaultAspectRatio: "4:5" } as StoredContentPack;
+    const h = harness(async () => pack);
+    const utterances = Array.from({ length: 12 }, (_, index) => ({ speaker: "A", startSec: index * 5, endSec: index * 5 + 4.8,
+      text: `Sentence number ${index + 1} explains one complete idea.`, words: [] }));
+    h.persistence.project.getTranscriptForWorker = async () => ({
+      projectId: attempt.projectId, status: "completed", text: "Ready source", speakerCount: 1,
+      durationSeconds: 60, languageCode: "en", utterancesJson: utterances,
+    } as unknown as Transcript);
+    const clip = { title: "Complete idea", start_time: 0, end_time: 39.8, hook_text: "Sentence number 1", payoff_text: "Sentence number 8",
+      reasoning: "Complete story", category: "story", platform_fit: ["tiktok"], hook_strength: 80, emotional_intensity: 60,
+      story_completeness_score: 90, broll_cues: [] };
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => Response.json({ status: "completed",
+      output_text: JSON.stringify({ clips: [clip] }), usage: { total_tokens: 10 } })) as unknown as typeof fetch);
+    const previousKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "test-key";
+    let renderedRatio: string | null = null;
+    h.persistence.clips.persistDetectedClips = async () => {};
+    h.persistence.clips.autoQueueDefaultRenders = async (_received, aspectRatio) => { renderedRatio = aspectRatio; };
+    try { await processClipDetectionRun(attempt, h.context, h.persistence); }
+    finally { fetchSpy.mockRestore(); process.env.OPENAI_API_KEY = previousKey; }
+    expect(h.failures).toEqual([]);
+    expect(renderedRatio).toBe("4:5");
   });
 
   test("a binding read failure keeps its causal retry classification", async () => {

@@ -38,8 +38,7 @@ import {
 	clipAspectRatioFromDb,
 	clipAspectRatioOptions,
 	clipRenderResolutionSchema,
-	getEffectiveClipTiming,
-	normalizeTranscriptSliceForClip,
+	resolveClipRenderTiming,
 	resolveEffectiveFramingMode,
 	resolveEffectiveLogoSettings,
 	SCREEN_LAYOUT_ENGINE_VERSION,
@@ -51,7 +50,6 @@ import type {
 	ClipRenderResolution,
 	EditorDocument,
 	StudioEdits,
-	TranscriptUtterance,
 } from "@narriflow/validators";
 import { buildClipCutPlan } from "./cut-plan";
 import {
@@ -384,40 +382,6 @@ export interface ClipRenderAttemptDependencies {
 			diagnose: ClipRenderAttemptAdapters["diagnose"],
 		) => ClipRenderAttemptAdapters["diagnose"],
 	): ClipRenderAttemptAdapters;
-}
-
-function resolveRenderTimingForClip(input: {
-	llmModel: string | null;
-	startSec: number;
-	endSec: number;
-	utterances: TranscriptUtterance[];
-}) {
-	if (input.llmModel === "caption-only") {
-		const startSec = Math.max(0, input.startSec);
-		const endSec = Math.max(startSec + 0.01, input.endSec);
-		return {
-			startSec,
-			endSec,
-			durationSec: endSec - startSec,
-			transcriptSlice: normalizeTranscriptSliceForClip(
-				input.utterances,
-				startSec,
-				endSec,
-			),
-		};
-	}
-
-	// tailPadSec 0: the clip's stored bounds were already pad- and collision-
-	// normalized against the full transcript at detection/edit time, and the
-	// slice passed here can't see the word that follows the clip — re-padding
-	// from slice-only data used to push the rendered end ~0.25s past the
-	// stored end, straight into the next sentence.
-	return getEffectiveClipTiming({
-		utterances: input.utterances,
-		startSec: input.startSec,
-		endSec: input.endSec,
-		tailPadSec: 0,
-	});
 }
 
 type SourceProbe = WorkerMediaInspection;
@@ -1933,7 +1897,7 @@ async function renderClipGroup(input: {
 		? (renderGroup[0]!
 				.clipSnapshot as unknown as (typeof renderGroup)[number]["clip"])
 		: renderGroup[0]!.clip;
-	const effective = resolveRenderTimingForClip({
+	const effective = resolveClipRenderTiming({
 		llmModel: clip.llmModel,
 		utterances: editorDocument.transcriptSlice,
 		startSec: editorDocument.clipStartSec,

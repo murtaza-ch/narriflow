@@ -9,8 +9,24 @@ export function mcpCallerId(principal: NarriflowMcpPrincipal) {
   return principal.kind === "api_key" ? `api_key:${principal.apiKeyId}:${principal.userId}` : `oauth:${principal.clientId}:${principal.userId}`;
 }
 type ClockAndSecret = { secret?: string; now?: number; allowExpired?: boolean };
-const confirmationSchema = z.strictObject({ version: z.literal(1), stage: z.enum(["prepared", "approved"]), callerId: z.string().max(512), actorUserId: z.string().uuid(), workspaceId: z.string().uuid(), tool: z.literal("narriflow_schedule_social_post"), digest: z.string().regex(/^[a-f0-9]{64}$/), expiresAtMs: z.number().int(), intent: mcpPrepareSocialPostSchema });
+/** Signed continuations carry the originating credential's kind and the
+ * application scopes it held when signing. Admission requires the needed
+ * scope from this signed set; nothing reconstructs or widens it. */
+const signedGrant = { principalKind: z.enum(["oauth", "api_key"]), scopes: z.array(z.string().min(1).max(128)).max(64) };
+const confirmationSchema = z.strictObject({ version: z.literal(2), stage: z.enum(["prepared", "approved"]), callerId: z.string().max(512), actorUserId: z.string().uuid(), workspaceId: z.string().uuid(), ...signedGrant, tool: z.literal("narriflow_schedule_social_post"), digest: z.string().regex(/^[a-f0-9]{64}$/), expiresAtMs: z.number().int(), intent: mcpPrepareSocialPostSchema });
 type ConfirmationState = z.infer<typeof confirmationSchema>;
+export const MCP_CONTINUATION_TTL_MS = 600_000;
+/** OAuth continuations end no later than the access token that created them. */
+export function mcpContinuationExpiresAtMs(principal: NarriflowMcpPrincipal, now: number) {
+  const ttl = now + MCP_CONTINUATION_TTL_MS;
+  return principal.kind === "oauth" && principal.expiresAt !== undefined ? Math.min(ttl, principal.expiresAt * 1000) : ttl;
+}
+function grant(principal: NarriflowMcpPrincipal) {
+  return { principalKind: principal.kind, scopes: [...principal.scopes] };
+}
+function signedKindMatchesCaller(state: { principalKind: "oauth" | "api_key"; callerId: string }) {
+  return state.callerId.startsWith(state.principalKind === "api_key" ? "api_key:" : "oauth:");
+}
 function fail(code: string, kind: "invalid" | "forbidden" | "conflict" | "unavailable", message: string): never {
   throw new ExpectedDomainFailureError({ code, kind, message });
 }
@@ -40,14 +56,14 @@ function open(token: string, options: ClockAndSecret) {
   let decoded: unknown;
   try { decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { fail("mcp_confirmation_invalid", "invalid", "Publication confirmation is invalid"); }
   const parsed = confirmationSchema.safeParse(decoded);
-  if (!parsed.success || parsed.data.digest !== digest(parsed.data.intent) || parsed.data.workspaceId !== parsed.data.intent.workspaceId) fail("mcp_confirmation_invalid", "invalid", "Publication confirmation is invalid");
+  if (!parsed.success || parsed.data.digest !== digest(parsed.data.intent) || parsed.data.workspaceId !== parsed.data.intent.workspaceId || !signedKindMatchesCaller(parsed.data)) fail("mcp_confirmation_invalid", "invalid", "Publication confirmation is invalid");
   if (!options.allowExpired && (options.now ?? Date.now()) >= parsed.data.expiresAtMs) fail("mcp_confirmation_expired", "conflict", "Publication confirmation expired. Prepare this post again with a new request key.");
   return parsed.data;
 }
 export function createMcpConfirmation(principal: NarriflowMcpPrincipal, input: z.input<typeof mcpPrepareSocialPostSchema>, options: ClockAndSecret = {}) {
   const intent = mcpPrepareSocialPostSchema.parse(input);
-  const expiresAtMs = (options.now ?? Date.now()) + 600_000;
-  const state: ConfirmationState = { version: 1, stage: "prepared", callerId: mcpCallerId(principal), actorUserId: principal.userId, workspaceId: intent.workspaceId, tool: "narriflow_schedule_social_post", digest: digest(intent), expiresAtMs, intent };
+  const expiresAtMs = mcpContinuationExpiresAtMs(principal, options.now ?? Date.now());
+  const state: ConfirmationState = { version: 2, stage: "prepared", callerId: mcpCallerId(principal), actorUserId: principal.userId, workspaceId: intent.workspaceId, ...grant(principal), tool: "narriflow_schedule_social_post", digest: digest(intent), expiresAtMs, intent };
   return { token: seal(state, options), expiresAt: new Date(expiresAtMs).toISOString() };
 }
 export function verifyMcpPreparation(token: string, options: ClockAndSecret & { principal?: NarriflowMcpPrincipal; actorUserId?: string; workspaceId?: string; clientIdempotencyKey?: string } = {}) {
@@ -65,20 +81,23 @@ export function acceptMcpConfirmation(token: string, options: ClockAndSecret & {
 export function verifyMcpConfirmation(token: string, receipt: string, principal: NarriflowMcpPrincipal, workspaceId: string, clientIdempotencyKey: string, options: ClockAndSecret = {}) {
   const state = verifyMcpPreparation(token, { ...options, principal, workspaceId, clientIdempotencyKey });
   const approved = open(receipt, options);
-  if (approved.stage !== "approved" || approved.digest !== state.digest || approved.callerId !== state.callerId || approved.expiresAtMs !== state.expiresAtMs || approved.workspaceId !== state.workspaceId) fail("mcp_confirmation_required", "forbidden", "Confirm this exact publication before scheduling it");
+  if (approved.stage !== "approved" || approved.digest !== state.digest || approved.callerId !== state.callerId || approved.expiresAtMs !== state.expiresAtMs || approved.workspaceId !== state.workspaceId || canonical(approved.scopes) !== canonical(state.scopes) || approved.principalKind !== state.principalKind) fail("mcp_confirmation_required", "forbidden", "Confirm this exact publication before scheduling it");
   return state;
 }
 
-const uploadHandoffSchema = z.strictObject({ version: z.literal(1), actorUserId: z.string().uuid(), callerId: z.string().max(512), workspaceId: z.string().uuid(), tool: z.literal("narriflow_upload_video"), expiresAtMs: z.number().int(), intent: mcpUploadVideoSchema });
+const uploadHandoffSchema = z.strictObject({ version: z.literal(2), actorUserId: z.string().uuid(), callerId: z.string().max(512), workspaceId: z.string().uuid(), ...signedGrant, tool: z.literal("narriflow_upload_video"), expiresAtMs: z.number().int(), intent: mcpUploadVideoSchema });
+export type McpUploadHandoffState = z.infer<typeof uploadHandoffSchema>;
 export function createMcpUploadHandoff(principal: NarriflowMcpPrincipal, input: z.input<typeof mcpUploadVideoSchema>, options: ClockAndSecret = {}) {
   const intent = mcpUploadVideoSchema.parse(input);
-  const expiresAtMs = (options.now ?? Date.now()) + 600_000;
-  const state = { version: 1, actorUserId: principal.userId, callerId: mcpCallerId(principal), workspaceId: intent.workspaceId, tool: "narriflow_upload_video", expiresAtMs, intent };
+  const expiresAtMs = mcpContinuationExpiresAtMs(principal, options.now ?? Date.now());
+  const state = { version: 2, actorUserId: principal.userId, callerId: mcpCallerId(principal), workspaceId: intent.workspaceId, ...grant(principal), tool: "narriflow_upload_video", expiresAtMs, intent };
   const payload = Buffer.from(JSON.stringify(state)).toString("base64url");
   const mac = createHmac("sha256", secret(options)).update(`narriflow.mcp.upload.v1:${payload}`).digest("base64url");
   return { token: `${payload}.${mac}`, expiresAt: new Date(expiresAtMs).toISOString() };
 }
-export function verifyMcpUploadHandoff(token: string, options: ClockAndSecret & { actorUserId?: string; workspaceId?: string; principal?: NarriflowMcpPrincipal; allowAcceptedTransfer?: boolean } = {}) {
+/** `allowExpired` only identifies which Upload Session a signed-in person is
+ * finishing; it never authorizes the assistant to start one. */
+export function verifyMcpUploadHandoff(token: string, options: ClockAndSecret & { actorUserId?: string; workspaceId?: string; principal?: NarriflowMcpPrincipal } = {}): McpUploadHandoffState {
   if (token.length > 32_768) fail("mcp_upload_handoff_invalid", "invalid", "The upload handoff is invalid");
   const [payload, suppliedMac, extra] = token.split(".");
   if (!payload || !suppliedMac || extra) fail("mcp_upload_handoff_invalid", "invalid", "The upload handoff is invalid");
@@ -88,8 +107,8 @@ export function verifyMcpUploadHandoff(token: string, options: ClockAndSecret & 
   let decoded: unknown;
   try { decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { fail("mcp_upload_handoff_invalid", "invalid", "The upload handoff is invalid"); }
   const parsed = uploadHandoffSchema.safeParse(decoded);
-  if (!parsed.success || parsed.data.workspaceId !== parsed.data.intent.workspaceId) fail("mcp_upload_handoff_invalid", "invalid", "The upload handoff is invalid");
-  if (!options.allowAcceptedTransfer && (options.now ?? Date.now()) >= parsed.data.expiresAtMs) fail("mcp_upload_handoff_expired", "conflict", "The upload handoff expired. Open the upload tool again to continue.");
+  if (!parsed.success || parsed.data.workspaceId !== parsed.data.intent.workspaceId || !signedKindMatchesCaller(parsed.data)) fail("mcp_upload_handoff_invalid", "invalid", "The upload handoff is invalid");
+  if (!options.allowExpired && (options.now ?? Date.now()) >= parsed.data.expiresAtMs) fail("mcp_upload_handoff_expired", "conflict", "The upload handoff expired. Open the upload tool again to continue.");
   if (options.actorUserId && options.actorUserId !== parsed.data.actorUserId || options.workspaceId && options.workspaceId !== parsed.data.workspaceId || options.principal && mcpCallerId(options.principal) !== parsed.data.callerId) fail("mcp_upload_handoff_binding_mismatch", "forbidden", "This upload handoff belongs to another caller or workspace");
   return parsed.data;
 }

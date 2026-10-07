@@ -32,6 +32,12 @@ const browserPeers = {
   narriflow_prepare_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule/preview" },
   narriflow_schedule_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule" },
   narriflow_list_social_publications: { method: "GET", path: "/projects/:id/social-posts" },
+  narriflow_get_operation: { module: "app/(app)/projects/[projectId]/page.tsx" },
+  narriflow_get_export_download: { method: "GET", path: "/projects/:id/clips/:clipId/exports/:exportId" },
+  narriflow_list_brand_profiles: { method: "GET", path: "/brand-profiles" },
+  narriflow_create_review_handoff: { method: "GET", path: "/projects/:id/review-rounds" },
+  narriflow_list_review_rounds: { method: "GET", path: "/projects/:id/review-rounds" },
+  narriflow_get_review_round: { method: "GET", path: "/projects/:id/review-rounds" },
 } satisfies Record<WorkspaceToolName, BrowserPeer>;
 
 describe("MCP and browser capability parity", () => {
