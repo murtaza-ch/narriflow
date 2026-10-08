@@ -1031,6 +1031,12 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
 		"api.manage",
 	),
 	action(
+		"app/(app)/settings/actions.ts",
+		"rotateCallbackSigningSecretAction",
+		"workspace",
+		"api.manage",
+	),
+	action(
 		"app/(app)/brand-kit/style-actions.ts",
 		"createBrandTemplateAction",
 		"workspace",

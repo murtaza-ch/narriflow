@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { sendEmail } from "@narriflow/email";
-import { workspaceMembershipService, workspaceService,
+import { callbackSigningSecrets, hasFeature, WorkspaceOperationError, workspaceMembershipService, workspaceService,
 } from "@narriflow/services";
 import {
+  executeWorkspaceAction,
   executeWorkspaceActionWithInput,
   authenticatedActionResultError,
 } from "@/lib/authenticated-request-action";
@@ -262,5 +263,18 @@ export async function revokeApiKeyAction(keyId: string) {
     await workspaceService.revokeApiKey(appUser.actorUserId, appUser.workspaceId, parsedInput.keyId,
     );
     revalidatePath("/settings/api");
+  });
+}
+
+/** Creates or rotates the Workspace's Completion Callback signing secret. The
+ * secret is returned once; the previous one keeps signing for 24 hours. */
+export async function rotateCallbackSigningSecretAction() {
+  return executeWorkspaceAction("api.manage", async (appUser) => {
+    if (!hasFeature(appUser.workspace.pricingTier, "integrations.api")) {
+      throw new WorkspaceOperationError("workspace_api_requires_business", "Callback signing secrets require Business");
+    }
+    const rotated = await callbackSigningSecrets.rotate(appUser.workspaceId);
+    revalidatePath("/settings/api");
+    return { ok: true as const, secret: rotated.secret, createdAt: rotated.createdAt };
   });
 }
