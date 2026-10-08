@@ -39,9 +39,8 @@ import {
   type OperationStatus,
   type RateLimitResult,
 } from "@narriflow/services";
-import { buildGenerationContentPack, generationSettingsSchema, type WorkspaceApiKeyScope } from "@narriflow/validators";
+import { buildGenerationContentPack, generationSettingsSchema, restApiSchemas as schemas, type WorkspaceApiKeyScope } from "@narriflow/validators";
 import { domainFailureHttpStatus } from "../authenticated-request-http";
-import * as schemas from "./schemas";
 
 /** Public REST API v1. A separate Hono app from the browser API: Workspace API
  * keys only, the key's Workspace only, and the same commands and admission
@@ -87,15 +86,15 @@ type RestContext = Context<Env>;
 const security = [{ bearerAuth: [] }];
 const json = <T>(schema: T, description: string) => ({ description, content: { "application/json": { schema } } });
 const errors = {
-  400: json(schemas.errorSchema, "Invalid request"),
-  401: json(schemas.errorSchema, "Missing or invalid API key"),
-  402: json(schemas.errorSchema, "The Workspace needs active Business access"),
-  403: json(schemas.errorSchema, "Scope, role, or Workspace boundary refusal"),
-  404: json(schemas.errorSchema, "Not found"),
-  409: json(schemas.errorSchema, "Conflict, including an idempotency key reused with different input"),
-  422: json(schemas.errorSchema, "Unprocessable"),
-  429: json(schemas.errorSchema, "Rate limited; see Retry-After"),
-  503: json(schemas.errorSchema, "Temporarily unavailable; see Retry-After"),
+  400: json(schemas.restErrorSchema, "Invalid request"),
+  401: json(schemas.restErrorSchema, "Missing or invalid API key"),
+  402: json(schemas.restErrorSchema, "The Workspace needs active Business access"),
+  403: json(schemas.restErrorSchema, "Scope, role, or Workspace boundary refusal"),
+  404: json(schemas.restErrorSchema, "Not found"),
+  409: json(schemas.restErrorSchema, "Conflict, including an idempotency key reused with different input"),
+  422: json(schemas.restErrorSchema, "Unprocessable"),
+  429: json(schemas.restErrorSchema, "Rate limited; see Retry-After"),
+  503: json(schemas.restErrorSchema, "Temporarily unavailable; see Retry-After"),
 } as const;
 const body = <T>(schema: T) => ({ body: { required: true, content: { "application/json": { schema } } } });
 
@@ -185,7 +184,7 @@ export function createRestApi(dependencies: RestApiDependencies) {
       return respond(status, { error: error.code, message: error.message, details: boundedExpectedDomainFailureDetails(error.details), retryAfterSeconds }, insufficientScope);
     }
     log({ level: "error", message: "rest_api_failed", requestId, route: c.req.routePath, errorName: error instanceof Error ? error.name : "unknown" });
-    return respond(500, { error: "internal_error", message: "Narriflow could not complete this request" });
+    return respond(500, { error: "internal_error", message: "Narriflow could not complete this request. Retry with the same idempotency key, or contact support with the request ID." });
   });
 
   app.notFound((c) => { throw new RestFailure(404, "route_not_found", `No ${c.req.method} ${c.req.path} endpoint exists`); });
@@ -195,7 +194,7 @@ export function createRestApi(dependencies: RestApiDependencies) {
   const newMutationGuard = (c: RestContext) => async () => { requireNewMutationAllowed(c.get("limiter")); };
   const idempotencyKey = (c: RestContext) => {
     const key = c.req.header("idempotency-key") ?? "";
-    if (!schemas.IDEMPOTENCY_KEY_PATTERN.test(key)) throw new RestFailure(400, "idempotency_key_required", "Send an Idempotency-Key header of 1–200 URL-safe characters");
+    if (!schemas.REST_IDEMPOTENCY_KEY_PATTERN.test(key)) throw new RestFailure(400, "idempotency_key_required", "Send an Idempotency-Key header of 1–200 URL-safe characters");
     return key;
   };
   const mutation = async (c: RestContext, callback?: { url: string }): Promise<IntegrationMutation> => ({
@@ -238,7 +237,7 @@ export function createRestApi(dependencies: RestApiDependencies) {
   };
   const decodeOperation = (value: string) => {
     const operation = decodeOperationId(value);
-    if (!operation) throw new ExpectedDomainFailureError({ code: "operation_not_found", kind: "missing", message: "This operation is unavailable" });
+    if (!operation) throw new ExpectedDomainFailureError({ code: "operation_not_found", kind: "missing", message: "This operation doesn't exist in the key's workspace. Use the operation ID returned by the accepted request." });
     return operation;
   };
 
@@ -257,7 +256,7 @@ export function createRestApi(dependencies: RestApiDependencies) {
     })
     .openapi(route({ method: "post", path: "/uploads", summary: "Open an Upload Session", tags: ["Uploads"],
       description: "Returns signed transfer URLs. Use transfer \"single\" to upload any supported size with one PUT. Retrying with the same Idempotency-Key returns the same Upload Session.",
-      request: { headers: schemas.idempotencyHeaders, ...body(schemas.openUploadRequestSchema) },
+      request: { headers: schemas.restIdempotencyHeaders, ...body(schemas.openUploadRequestSchema) },
       responses: { 200: json(schemas.uploadResultSchema, "The Upload Session") } }), async (c) => {
       const input = c.req.valid("json");
       const actor = await admit(c, "POST /uploads");
@@ -266,7 +265,8 @@ export function createRestApi(dependencies: RestApiDependencies) {
       const outcome = await uploads.open(actor, {
         clientIdempotencyKey: key,
         title: input.title ?? input.file.name,
-        source: { fileName: input.file.name, sizeBytes: input.file.sizeBytes, contentType: input.file.contentType, browserFingerprint: `rest:${input.file.sizeBytes}:${input.file.contentType}` },
+        // The shared upload rule replaces this with a fingerprint every transport computes alike.
+        source: { fileName: input.file.name, sizeBytes: input.file.sizeBytes, contentType: input.file.contentType, browserFingerprint: "rest" },
         ...(input.brandProfileId ? { brandProfileId: input.brandProfileId } : {}),
         generationContext: { contentPack: buildGenerationContentPack(settings), languageCode: settings.languageCode },
         transfer: input.transfer,
@@ -274,35 +274,35 @@ export function createRestApi(dependencies: RestApiDependencies) {
       return c.json({ upload: uploadView(outcome) }, 200);
     })
     .openapi(route({ method: "get", path: "/uploads/{id}", summary: "Read an Upload Session", tags: ["Uploads"],
-      request: { params: schemas.uuidParam }, responses: { 200: json(schemas.uploadResultSchema, "The Upload Session") } }), async (c) => {
+      request: { params: schemas.restUuidParam }, responses: { 200: json(schemas.uploadResultSchema, "The Upload Session") } }), async (c) => {
       const actor = await admit(c, "GET /uploads/{id}");
       return c.json({ upload: uploadView(await uploadSessionService.statusById(actor, c.req.valid("param").id)) }, 200);
     })
     .openapi(route({ method: "post", path: "/uploads/{id}/grants", summary: "Issue more multipart part URLs", tags: ["Uploads"],
-      request: { params: schemas.uuidParam, ...body(schemas.grantPartsRequestSchema) }, responses: { 200: json(schemas.grantPartsResultSchema, "Signed part URLs") } }), async (c) => {
+      request: { params: schemas.restUuidParam, ...body(schemas.grantPartsRequestSchema) }, responses: { 200: json(schemas.grantPartsResultSchema, "Signed part URLs") } }), async (c) => {
       const actor = await admit(c, "POST /uploads/{id}/grants");
       const granted = await uploads.grant(actor, { sessionId: c.req.valid("param").id, partNumbers: c.req.valid("json").partNumbers });
       return c.json({ uploadId: granted.sessionId, expiresAt: granted.expiresAt, parts: granted.grants }, 200);
     })
     .openapi(route({ method: "post", path: "/uploads/{id}/finalize", summary: "Finalize an upload and start its intake", tags: ["Uploads"],
       description: "Starts the upload intake. Repeating finalize for the same Upload Session returns its current state; a different callback URL is a conflict.",
-      request: { params: schemas.uuidParam, ...body(schemas.finalizeUploadRequestSchema) }, responses: { 200: json(schemas.uploadResultSchema, "The accepted intake") } }), async (c) => {
+      request: { params: schemas.restUuidParam, ...body(schemas.finalizeUploadRequestSchema) }, responses: { 200: json(schemas.uploadResultSchema, "The accepted intake") } }), async (c) => {
       const input = c.req.valid("json");
       const actor = await admit(c, "POST /uploads/{id}/finalize");
       const sessionId = c.req.valid("param").id;
       const callback = input.callback ? { url: await assertCompletionCallbackUrl(input.callback.url, dependencies.callbackResolver) } : undefined;
-      const outcome = await uploads.finalize(actor, { sessionId, parts: input.parts }, { callback });
+      const outcome = await uploads.finalize(actor, { sessionId, parts: input.parts }, { callback }, newMutationGuard(c));
       return c.json({ upload: uploadView(outcome), callback: callback ? { eventId: callbackEventId(sessionId) } : null }, 200);
     })
     .openapi(route({ method: "delete", path: "/uploads/{id}", summary: "Discard an unfinished upload", tags: ["Uploads"],
-      request: { params: schemas.uuidParam }, responses: { 200: json(schemas.uploadResultSchema, "The discarded Upload Session") } }), async (c) => {
+      request: { params: schemas.restUuidParam }, responses: { 200: json(schemas.uploadResultSchema, "The discarded Upload Session") } }), async (c) => {
       const actor = await admit(c, "DELETE /uploads/{id}");
       await newMutationGuard(c)();
       return c.json({ upload: uploadView(await uploads.discard(actor, { sessionId: c.req.valid("param").id })) }, 200);
     })
     .openapi(route({ method: "post", path: "/projects", summary: "Submit a video link", tags: ["Projects"],
       description: "Imports a supported video link with committed generation settings. Accepts an optional completion callback.",
-      request: { headers: schemas.idempotencyHeaders, ...body(schemas.submitVideoRequestSchema) }, responses: { 202: json(schemas.acceptedProjectSchema, "Accepted intake") } }), async (c) => {
+      request: { headers: schemas.restIdempotencyHeaders, ...body(schemas.submitVideoRequestSchema) }, responses: { 202: json(schemas.acceptedProjectSchema, "Accepted intake") } }), async (c) => {
       const input = c.req.valid("json");
       const actor = await admit(c, "POST /projects");
       const result = await submitVideo(actor, { url: input.url, title: input.title, brandProfileId: input.brandProfileId, generation: generation(input.generation) }, await mutation(c, input.callback));
@@ -317,14 +317,14 @@ export function createRestApi(dependencies: RestApiDependencies) {
         nextCursor: page.nextCursor, totalCount: page.totalCount }, 200);
     })
     .openapi(route({ method: "get", path: "/projects/{id}", summary: "Get a project", tags: ["Projects"],
-      request: { params: schemas.uuidParam }, responses: { 200: json(schemas.projectResultSchema, "The project") } }), async (c) => {
+      request: { params: schemas.restUuidParam }, responses: { 200: json(schemas.projectResultSchema, "The project") } }), async (c) => {
       const snapshot = await projectService.getProjectSnapshot(await admit(c, "GET /projects/{id}"), c.req.valid("param").id);
-      if (!snapshot.project) throw new ExpectedDomainFailureError({ code: "project_not_found", kind: "missing", message: "Project not found" });
+      if (!snapshot.project) throw new ExpectedDomainFailureError({ code: "project_not_found", kind: "missing", message: "This project doesn't exist in the key's workspace, or it has been deleted. List projects for current IDs." });
       return c.json({ project: projectView(snapshot.project, origin()),
         progress: snapshot.progress ? { ...snapshot.progress, stage: snapshot.activeRun?.stage ?? null, percent: snapshot.activeRun?.progress ?? null } : null }, 200);
     })
     .openapi(route({ method: "post", path: "/projects/{id}/generations", summary: "Generate clips", tags: ["Projects"],
-      request: { params: schemas.uuidParam, headers: schemas.idempotencyHeaders, ...body(schemas.generateClipsRequestSchema) },
+      request: { params: schemas.restUuidParam, headers: schemas.restIdempotencyHeaders, ...body(schemas.generateClipsRequestSchema) },
       responses: { 202: json(schemas.acceptedProjectSchema, "Accepted generation") } }), async (c) => {
       const input = c.req.valid("json");
       const projectId = c.req.valid("param").id;
@@ -334,13 +334,13 @@ export function createRestApi(dependencies: RestApiDependencies) {
       return c.json({ projectId, operation: accepted(result.operation), reviewUrl: `${origin()}/projects/${projectId}`, callback: result.callback }, 202);
     })
     .openapi(route({ method: "get", path: "/projects/{id}/clips", summary: "List a project's clips by virality", tags: ["Clips"],
-      request: { params: schemas.uuidParam, query: schemas.listClipsQuery }, responses: { 200: json(schemas.clipsResultSchema, "A page of clips") } }), async (c) => {
+      request: { params: schemas.restUuidParam, query: schemas.listClipsQuery }, responses: { 200: json(schemas.clipsResultSchema, "A page of clips") } }), async (c) => {
       const query = c.req.valid("query");
       const page = await clipService.listClipReviewFacts(await admit(c, "GET /projects/{id}/clips"), c.req.valid("param").id, { limit: query.limit, cursor: query.cursor ?? null, includeTranscriptExcerpt: query.includeTranscriptExcerpt });
       return c.json({ items: page.items.map((clip) => clipView(clip, origin(), query.includeTranscriptExcerpt)), nextCursor: page.nextCursor }, 200);
     })
     .openapi(route({ method: "get", path: "/clips/{id}", summary: "Get a clip", tags: ["Clips"],
-      request: { params: schemas.uuidParam, query: schemas.getClipQuery }, responses: { 200: json(schemas.clipResultSchema, "The clip") } }), async (c) => {
+      request: { params: schemas.restUuidParam, query: schemas.getClipQuery }, responses: { 200: json(schemas.clipResultSchema, "The clip") } }), async (c) => {
       const actor = await admit(c, "GET /clips/{id}");
       const { includeTranscriptExcerpt } = c.req.valid("query");
       const clip = await locateClip(actor, c.req.valid("param").id);
@@ -348,7 +348,7 @@ export function createRestApi(dependencies: RestApiDependencies) {
     })
     .openapi(route({ method: "post", path: "/clips/{id}/exports", summary: "Export a clip revision", tags: ["Exports"],
       description: "Exports the exact editor revision in the selected formats. The response reports any plan limit applied to resolution or watermark.",
-      request: { params: schemas.uuidParam, headers: schemas.idempotencyHeaders, ...body(schemas.createExportRequestSchema) },
+      request: { params: schemas.restUuidParam, headers: schemas.restIdempotencyHeaders, ...body(schemas.createExportRequestSchema) },
       responses: { 202: json(schemas.createdExportResultSchema, "Accepted export") } }), async (c) => {
       const input = c.req.valid("json");
       const actor = await admit(c, "POST /clips/{id}/exports");
@@ -358,29 +358,29 @@ export function createRestApi(dependencies: RestApiDependencies) {
       return c.json({ export: exportView(result.export, origin()), reused: result.reused, output: result.output, operation: accepted(result.operation), callback: result.callback }, 202);
     })
     .openapi(route({ method: "get", path: "/exports/{id}", summary: "Get an export", tags: ["Exports"],
-      request: { params: schemas.uuidParam }, responses: { 200: json(schemas.exportResultSchema, "The export") } }), async (c) => {
+      request: { params: schemas.restUuidParam }, responses: { 200: json(schemas.exportResultSchema, "The export") } }), async (c) => {
       const actor = await admit(c, "GET /exports/{id}");
       const located = await locateExport(actor, c.req.valid("param").id);
       const snapshot = await clipExportService.getOwned(actor, located.projectId, located.clipId, located.exportId);
-      if (!snapshot) throw new ExpectedDomainFailureError({ code: "clip_export_not_found", kind: "missing", message: "Clip export was not found" });
+      if (!snapshot) throw new ExpectedDomainFailureError({ code: "clip_export_not_found", kind: "missing", message: "This export doesn't exist in the key's workspace. Use the export ID returned when it was requested." });
       return c.json({ export: exportView(snapshot, origin()) }, 200);
     })
     .openapi(route({ method: "get", path: "/exports/{id}/download", summary: "Issue Download Grants and subtitles", tags: ["Exports"],
       description: "Fresh private download URLs (valid 15 minutes) for a finished export's files, plus SRT and VTT subtitles. Call again for new URLs.",
-      request: { params: schemas.uuidParam, query: schemas.exportDownloadQuery }, responses: { 200: json(schemas.exportDownloadResultSchema, "Download Grants") } }), async (c) => {
+      request: { params: schemas.restUuidParam, query: schemas.exportDownloadQuery }, responses: { 200: json(schemas.exportDownloadResultSchema, "Download Grants") } }), async (c) => {
       const actor = await admit(c, "GET /exports/{id}/download");
       return c.json(await clipExportService.issueDownloadGrants(actor, c.req.valid("param").id, { variantId: c.req.valid("query").variantId, credentialKind: "api_key" }), 200);
     })
     .openapi(route({ method: "get", path: "/operations/{id}", summary: "Get Operation Status", tags: ["Operations"],
       description: "Follows exactly the work one accepted request started, with per-clip or per-format outcomes.",
-      request: { params: schemas.operationIdParam }, responses: { 200: json(schemas.operationSchema, "Operation Status") } }), async (c) => {
+      request: { params: schemas.restOperationIdParam }, responses: { 200: json(schemas.operationSchema, "Operation Status") } }), async (c) => {
       const operation = decodeOperation(c.req.valid("param").id);
       const actor = await admit(c, "GET /operations/{id}", operationReadScope(operation.kind));
       return c.json(operationView(await operationStatusService.read(actor, operation)), 200);
     })
     .openapi(route({ method: "post", path: "/operations/{id}/callback/redeliver", summary: "Redeliver completion callbacks", tags: ["Operations"],
       description: "Resets this operation's delivered or failed callbacks with a fresh attempt budget and the same event IDs.",
-      request: { params: schemas.operationIdParam, headers: schemas.idempotencyHeaders }, responses: { 202: json(schemas.redeliverResultSchema, "Callbacks queued again") } }), async (c) => {
+      request: { params: schemas.restOperationIdParam, headers: schemas.restIdempotencyHeaders }, responses: { 202: json(schemas.redeliverResultSchema, "Callbacks queued again") } }), async (c) => {
       const operation = decodeOperation(c.req.valid("param").id);
       const actor: ActorScope = await admit(c, "POST /operations/{id}/callback/redeliver", operationWriteScope(operation.kind));
       const result = await redeliverCallbacks(actor, operation, await mutation(c));

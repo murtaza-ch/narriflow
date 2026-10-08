@@ -8,9 +8,11 @@ uses only HTTP Request, Wait, Code, Google Drive, and Slack nodes with the
 
 ## Flow
 
-1. **New video in Drive** polls the input folder; **Download video** fetches the file.
-2. **Prepare upload** builds idempotency keys from the execution ID, the item
-   index, and the action name, so several files in one run never collide.
+1. **New video in Drive** polls the input folder; **Download video** fetches the
+   files, and **One file at a time** runs the rest of the flow once per file,
+   looping back after each Slack post.
+2. **Prepare upload** builds idempotency keys from the execution ID, the Drive
+   file ID, and the action name, so several files in one run never collide.
 3. **Open upload** calls `POST /uploads` with `transfer: "single"`, and
    **PUT file to storage** sends the bytes to the signed URL.
 4. **Finalize with callback** calls `POST /uploads/{id}/finalize` with
@@ -20,7 +22,9 @@ uses only HTTP Request, Wait, Code, Google Drive, and Slack nodes with the
    suffix `intake`.
 6. On resume, **Verify intake event** checks the Standard Webhooks signature
    and timestamp, that the event's `operationId` is the one this execution
-   waits for, and that its event ID is new. Anything else returns to waiting.
+   waits for, and that its event ID is new. It reads the raw body through
+   n8n's binary helper, so filesystem and S3 binary storage both work.
+   Anything else returns to waiting.
    A valid event triggers a fresh read of Operation Status, which decides
    whether the intake is done.
 7. **List top clips** and **Export clip** request 9:16 1080p exports of the top
@@ -62,7 +66,8 @@ Checked in the repository (2026-10-08):
 
 - The workflow graph has no dangling connections, every Code node and
   expression parses, and the JSON holds no secrets.
-- **Verify intake event** accepts an event signed by Narriflow's signer during
+- **Verify intake event**, reading the body through a stubbed binary helper,
+  accepts an event signed by Narriflow's signer during
   a rotation overlap (two signatures) and rejects a duplicate event ID, a
   tampered body, another operation's event, and a stale timestamp.
 

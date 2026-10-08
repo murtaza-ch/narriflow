@@ -132,7 +132,7 @@ export default function ApiReferencePage() {
     <Stack as="main" mx="auto" w="full" maxW="820px" minW="0" px="6" pt={{ base: "14", md: "20" }} pb="24" gap="10">
       <PageHeader
         title="Narriflow API"
-        description="Upload a video or submit a link, generate captioned clips, export them, and download the files over HTTPS. Automation tools can wait on a signed callback instead of polling."
+        description="HTTPS endpoints for Business workspaces, with an OpenAPI 3.1 document."
       />
 
       <Stack gap="8">

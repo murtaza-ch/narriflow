@@ -26,8 +26,8 @@ import {
   type GrantUploadPartsInput as ValidatedGrantUploadPartsInput,
 } from "@narriflow/validators";
 import { brandTemplateService } from "./brand-template.service";
-import type { CallbackRegistration } from "./completion-callback";
-import { ensureUploadCallback, prepareUploadCallback, registerUploadCallback } from "./completion-callback-runtime";
+import { registerUploadCallback, type CallbackRegistration } from "./completion-callback";
+import { ensureUploadCallback, prepareUploadCallback } from "./completion-callback-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
 import { brandProfileService } from "./brand-profile.service";
 import { projectRetentionService } from "./project-retention.service";
@@ -4380,7 +4380,17 @@ export class UploadSessionService {
    * address sessions by ID rather than by browser key and fingerprint. */
   async statusById(scope: ActorScope, sessionId: string) {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
-    const session = await prismaUploadSessionPersistence.findByIdForWorkspace({ sessionId, workspaceId: scope.workspaceId });
+    return this.ownStatus(scope, await prismaUploadSessionPersistence.findByIdForWorkspace({ sessionId, workspaceId: scope.workspaceId }));
+  }
+
+  /** Reads the caller's own Upload Session by its stored key. Integrations
+   * use this instead of the browser key-and-fingerprint check. */
+  async statusByClientKey(scope: ActorScope, clientIdempotencyKey: string) {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
+    return this.ownStatus(scope, await prismaUploadSessionPersistence.findByClientKey({ workspaceId: scope.workspaceId, clientIdempotencyKey }));
+  }
+
+  private async ownStatus(scope: ActorScope, session: UploadSessionRecord | null) {
     if (!session || session.actorUserId !== scope.actorUserId) throw new UploadSessionNotFoundError();
     return productionUploadSessionModule.status({
       actorUserId: scope.actorUserId,

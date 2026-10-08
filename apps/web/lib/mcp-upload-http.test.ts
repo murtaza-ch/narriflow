@@ -16,7 +16,7 @@ function fixture(existing: boolean) {
       // Integration callers name sessions by their own key; the session stores the per-user derivation.
       expect(opening.clientIdempotencyKey).toBe(integrationUploadSessionKey(actor.actorUserId, input.clientIdempotencyKey));
       opens++; return { outcome: "queued_for_ingest", sessionId: "session", projectId: "project", queuedJobId: "job" }; },
-    async status() {
+    async statusByClientKey() {
       if (!existing) throw new ExpectedDomainFailureError({ code: "upload_session_not_found", kind: "missing", message: "Upload not found" });
       return { outcome: "queued_for_ingest", sessionId: "session", projectId: "project", queuedJobId: "job" };
     },

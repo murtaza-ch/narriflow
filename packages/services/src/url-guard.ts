@@ -424,6 +424,15 @@ export const pinnedTransport: PinnedTransport = (url, request) =>
         for (let index = 0; index + 1 < incoming.rawHeaders.length; index += 2) {
           responseHeaders.append(incoming.rawHeaders[index]!, incoming.rawHeaders[index + 1]!);
         }
+        // Bodyless responses never reach a decoder: an empty "gzip" body
+        // would otherwise fail asynchronously outside the caller's control.
+        if (NULL_BODY_STATUSES.has(status) || request.method === "HEAD") {
+          incoming.resume();
+          const response = new Response(null, { status, statusText: incoming.statusMessage, headers: responseHeaders });
+          Object.defineProperty(response, "url", { value: url.toString() });
+          resolve(response);
+          return;
+        }
         const encoding = responseHeaders.get("content-encoding")?.trim().toLowerCase();
         const decoder = encoding === "gzip" || encoding === "x-gzip" ? createGunzip()
           : encoding === "deflate" ? createInflate()
@@ -436,15 +445,8 @@ export const pinnedTransport: PinnedTransport = (url, request) =>
           body = incoming.pipe(decoder);
           incoming.on("error", (error) => decoder.destroy(error));
         }
-        if (NULL_BODY_STATUSES.has(status) || request.method === "HEAD") {
-          incoming.resume();
-        }
-        const response = new Response(
-          NULL_BODY_STATUSES.has(status) || request.method === "HEAD"
-            ? null
-            : (Readable.toWeb(body) as ReadableStream<Uint8Array>),
-          { status, statusText: incoming.statusMessage, headers: responseHeaders },
-        );
+        const response = new Response(Readable.toWeb(body) as ReadableStream<Uint8Array>,
+          { status, statusText: incoming.statusMessage, headers: responseHeaders });
         Object.defineProperty(response, "url", { value: url.toString() });
         resolve(response);
       },

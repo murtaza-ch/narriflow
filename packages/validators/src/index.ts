@@ -29,6 +29,7 @@ export * from "./logo-overlay";
 export * from "./logo-position";
 export * from "./integration";
 export * from "./mcp";
+export * as restApiSchemas from "./rest-api";
 export * from "./output-type";
 export * from "./pricing";
 export * from "./billing-copy";

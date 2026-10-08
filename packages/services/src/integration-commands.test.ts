@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { integrationKeyUuid, integrationUploadSessionKey } from "./integration-commands";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import { integrationKeyUuid, integrationUploadSessionKey, integrationUploadSessions } from "./integration-commands";
+import type { UploadSessionService } from "./upload-session.service";
 
 const USER = "00000000-0000-4000-8000-000000000001";
 
@@ -17,5 +19,35 @@ describe("integration key derivation", () => {
     expect(integrationKeyUuid(USER, "generate_clips", "key-2")).not.toBe(base);
     // Tuple serialization is unambiguous across component boundaries.
     expect(integrationKeyUuid(USER, "generate_clips", "a\",\"b")).not.toBe(integrationKeyUuid(USER, "generate_clips", "a"));
+  });
+});
+
+describe("integration Upload Sessions", () => {
+  const actor = { actorUserId: USER, workspaceId: "00000000-0000-4000-8000-000000000009" };
+  const paused = () => { throw new ExpectedDomainFailureError({ code: "mutations_unavailable", kind: "unavailable", message: "Paused" }); };
+  const opening = (fingerprint: string) => ({ clientIdempotencyKey: "caller-key", title: "Talk", source: { fileName: "talk.mp4", sizeBytes: 10, contentType: "video/mp4" as const, browserFingerprint: fingerprint },
+    generationContext: { contentPack: {} as never, languageCode: null } });
+
+  test("MCP and REST opening the same file under one key send identical session input", async () => {
+    const seen: unknown[] = [];
+    const sessions = integrationUploadSessions({ open: async (_actor: unknown, input: unknown) => { seen.push(input); return {} as never; } } as unknown as UploadSessionService);
+    await sessions.open(actor, opening("sha256-from-the-cli"));
+    await sessions.open(actor, opening("rest"));
+    expect(seen[0]).toEqual(seen[1]);
+    expect(seen[0]).toMatchObject({ clientIdempotencyKey: integrationUploadSessionKey(USER, "caller-key") });
+  });
+
+  test("finalize pauses during a limiter outage unless its finalization was already accepted", async () => {
+    let state = "uploading";
+    let finalized = 0;
+    const sessions = integrationUploadSessions({
+      statusById: async () => ({ outcome: state }) as never,
+      finalize: async () => { finalized++; return {} as never; },
+    } as unknown as UploadSessionService);
+    await expect(sessions.finalize(actor, { sessionId: "s", parts: [] }, {}, paused)).rejects.toMatchObject({ code: "mutations_unavailable" });
+    expect(finalized).toBe(0);
+    state = "reconciling";
+    await sessions.finalize(actor, { sessionId: "s", parts: [] }, {}, paused);
+    expect(finalized).toBe(1);
   });
 });

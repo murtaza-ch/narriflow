@@ -1,6 +1,6 @@
 import type { ActorScope } from "./actor-scope";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
-import { receiptCallback } from "./completion-callback-runtime";
+import { receiptCallback } from "./completion-callback";
 import type { IntegrationMutation } from "./operation-receipt";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";

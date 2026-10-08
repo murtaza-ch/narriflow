@@ -11,7 +11,7 @@ import { ExpectedDomainFailureError, isExpectedDomainFailure } from "./expected-
 import type { IntegrationCommand } from "./integration-admission";
 import type { IntegrationMutation } from "./operation-receipt";
 import { getPrismaClient } from "@narriflow/db/client";
-import { callbackEventId, resetCompletionCallbacks } from "./completion-callback-runtime";
+import { callbackEventId, resetCompletionCallbacks } from "./completion-callback";
 import { accessibleProjectWhere } from "./project-access";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { operationStatusService } from "./operation-status-runtime";
@@ -38,38 +38,66 @@ export function integrationUploadSessionKey(actorUserId: string, callerKey: stri
   return integrationKeyUuid(actorUserId, "open_upload", callerKey);
 }
 
-type UploadSessionCommands = Pick<UploadSessionService, "open" | "status" | "grant" | "finalize" | "discard">;
+type UploadSessionCommands = Pick<UploadSessionService, "open" | "statusByClientKey" | "statusById" | "grant" | "finalize" | "discard">;
 type OpenUploadArguments = Parameters<UploadSessionService["open"]>;
+type FinalizeArguments = Parameters<UploadSessionService["finalize"]>;
+type ReadUploadArguments = Parameters<UploadSessionService["status"]>;
+type NewMutationGuard = () => void | Promise<void>;
 
-export interface IntegrationUploadSessions extends Omit<UploadSessionCommands, "open"> {
+export interface IntegrationUploadSessions {
   /** `beforeAccept` is the new-mutation limiter. While it is unavailable,
    * open still resumes a session that already exists for this key. */
-  open(actor: OpenUploadArguments[0], input: OpenUploadArguments[1], beforeAccept?: () => void | Promise<void>): ReturnType<UploadSessionService["open"]>;
+  open(actor: OpenUploadArguments[0], input: OpenUploadArguments[1], beforeAccept?: NewMutationGuard): ReturnType<UploadSessionService["open"]>;
+  /** Integrations name sessions by key alone; no browser fingerprint applies. */
+  status(actor: ReadUploadArguments[0], input: Pick<ReadUploadArguments[1], "clientIdempotencyKey">): ReturnType<UploadSessionService["status"]>;
+  grant: UploadSessionService["grant"];
+  /** Finalize starts the intake, so it is a new mutation unless the session's
+   * finalization was already accepted. */
+  finalize(actor: FinalizeArguments[0], input: FinalizeArguments[1], options?: FinalizeArguments[2], beforeAccept?: NewMutationGuard): ReturnType<UploadSessionService["finalize"]>;
+  discard: UploadSessionService["discard"];
+}
+
+/** The source fingerprint integrations store: file facts every transport
+ * knows, so MCP and REST opening the same file under one key match. */
+function integrationSourceFingerprint(source: { fileName: string; sizeBytes: number; contentType: string }) {
+  return `integration:${JSON.stringify([source.fileName, source.sizeBytes, source.contentType])}`;
+}
+
+async function unlessAccepted(beforeAccept: NewMutationGuard | undefined, accepted: () => Promise<boolean>) {
+  try {
+    await beforeAccept?.();
+  } catch (limiterError) {
+    if (!isExpectedDomainFailure(limiterError) || limiterError.code !== "mutations_unavailable") throw limiterError;
+    if (!await accepted().catch((lookupError) => {
+      if (isExpectedDomainFailure(lookupError) && lookupError.code === "upload_session_not_found") return false;
+      throw lookupError;
+    })) throw limiterError;
+  }
 }
 
 /** Upload Sessions as integrations see them: callers name a session by their
  * own key, and the session stores the per-user derived UUID. Grants, finalize,
  * and discard address the session by ID. */
 export function integrationUploadSessions(service: UploadSessionCommands): IntegrationUploadSessions {
+  const status = (actor: ActorScope, callerKey: string) => service.statusByClientKey(actor, integrationUploadSessionKey(actor.actorUserId, callerKey));
   return {
     async open(actor, input, beforeAccept) {
-      const clientIdempotencyKey = integrationUploadSessionKey(actor.actorUserId, input.clientIdempotencyKey);
-      try {
-        await beforeAccept?.();
-      } catch (limiterError) {
-        if (!isExpectedDomainFailure(limiterError) || limiterError.code !== "mutations_unavailable") throw limiterError;
-        try {
-          await service.status(actor, { clientIdempotencyKey, sessionId: null, browserFingerprint: input.source.browserFingerprint });
-        } catch (lookupError) {
-          if (isExpectedDomainFailure(lookupError) && lookupError.code === "upload_session_not_found") throw limiterError;
-          throw lookupError;
-        }
-      }
-      return service.open(actor, { ...input, clientIdempotencyKey });
+      await unlessAccepted(beforeAccept, async () => Boolean(await status(actor, input.clientIdempotencyKey)));
+      return service.open(actor, {
+        ...input,
+        clientIdempotencyKey: integrationUploadSessionKey(actor.actorUserId, input.clientIdempotencyKey),
+        source: { ...input.source, browserFingerprint: integrationSourceFingerprint(input.source) },
+      });
     },
-    status: (actor, input) => service.status(actor, { ...input, clientIdempotencyKey: integrationUploadSessionKey(actor.actorUserId, input.clientIdempotencyKey) }),
+    status: (actor, input) => status(actor, input.clientIdempotencyKey),
     grant: (actor, input) => service.grant(actor, input),
-    finalize: (actor, input, options) => service.finalize(actor, input, options),
+    async finalize(actor, input, options, beforeAccept) {
+      await unlessAccepted(beforeAccept, async () => {
+        const current = await service.statusById(actor, input.sessionId);
+        return current.outcome !== "uploading";
+      });
+      return service.finalize(actor, input, options);
+    },
     discard: (actor, input) => service.discard(actor, input),
   };
 }
@@ -99,7 +127,7 @@ export async function submitVideo(
     { generationContext: generationContext(input.generation), mutation },
   );
   if (!accepted.queuedJobId) {
-    throw new ExpectedDomainFailureError({ code: "intake_operation_missing", kind: "unavailable", message: "The accepted import has no operation identifier" });
+    throw new ExpectedDomainFailureError({ code: "intake_operation_missing", kind: "unavailable", message: "The import was accepted but its status isn't available yet. Retry the request with the same idempotency key." });
   }
   const receiptId = "receiptId" in accepted ? accepted.receiptId : "";
   return {
@@ -165,21 +193,25 @@ function prisma() {
 /** Resolves a clip addressed by ID alone to its accessible Project. */
 export async function locateClip(actor: ActorScope, clipId: string) {
   const clip = await prisma().clip.findFirst({ where: { id: clipId, project: { workspaceId: actor.workspaceId, ...accessibleProjectWhere() } }, select: { projectId: true } });
-  if (!clip) notFound("clip_not_found", "Clip not found");
+  if (!clip) notFound("clip_not_found", "This clip doesn't exist in the key's workspace. List the project's clips for current IDs.");
   return { projectId: clip.projectId, clipId };
 }
 
 /** Resolves an export addressed by ID alone to its accessible clip. */
 export async function locateExport(actor: ActorScope, exportId: string) {
   const row = await prisma().clipExport.findFirst({ where: { id: exportId, workspaceId: actor.workspaceId, project: { workspaceId: actor.workspaceId, ...accessibleProjectWhere() } }, select: { projectId: true, clipId: true } });
-  if (!row) notFound("clip_export_not_found", "Clip export was not found");
+  if (!row) notFound("clip_export_not_found", "This export doesn't exist in the key's workspace. Use the export ID returned when it was requested.");
   return { projectId: row.projectId, clipId: row.clipId, exportId };
 }
 
-/** Asks for an operation's completion events again. Visibility is rechecked
- * through Operation Status, and the reset runs once per idempotency key. */
+/** Asks for an operation's completion events again, once per idempotency
+ * key. A live operation's visibility is rechecked through Operation Status; a
+ * deleted or expired one is still redeliverable, because its frozen
+ * `unavailable` event stays scoped to this Workspace. */
 export async function redeliverCallbacks(actor: ActorScope, operation: OperationRef, mutation: IntegrationMutation) {
-  await operationStatusService.read(actor, operation);
+  await operationStatusService.read(actor, operation).catch((error) => {
+    if (!isExpectedDomainFailure(error) || error.code !== "operation_not_found") throw error;
+  });
   const accepted = await getOperationReceiptExecutor().execute({
     identity: { workspaceId: actor.workspaceId, actorUserId: actor.actorUserId, command: "redeliver_callback", clientIdempotencyKey: mutation.clientIdempotencyKey },
     input: { operation },

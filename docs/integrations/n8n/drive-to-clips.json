@@ -49,8 +49,22 @@
     },
     {
       "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "4665386a-de31-566c-9614-d16000b36dec",
+      "name": "One file at a time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        330,
+        300
+      ]
+    },
+    {
+      "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Idempotency keys come from the execution, the item, and the action, so\n// several files in one run never collide and a retried request replays.\nconst out = [];\nfor (let index = 0; index < $input.all().length; index++) {\n  const item = $input.all()[index];\n  const buffer = await this.helpers.getBinaryDataBuffer(index, 'data');\n  const keys = (action) => `${$execution.id}:${index}:${action}`;\n  out.push({\n    json: {\n      fileId: item.json.id,\n      file: { name: item.binary.data.fileName || item.json.name, sizeBytes: buffer.length, contentType: item.binary.data.mimeType || 'video/mp4' },\n      keys: { open: keys('open'), export: keys('export') },\n    },\n    binary: item.binary,\n  });\n}\nreturn out;"
+        "jsCode": "// Idempotency keys come from the execution, the Drive file, and the action,\n// so several files in one run never collide and a retried request replays.\nconst out = [];\nfor (let index = 0; index < $input.all().length; index++) {\n  const item = $input.all()[index];\n  const buffer = await this.helpers.getBinaryDataBuffer(index, 'data');\n  const keys = (action) => `${$execution.id}:${item.json.id}:${action}`;\n  out.push({\n    json: {\n      fileId: item.json.id,\n      file: { name: item.binary.data.fileName || item.json.name, sizeBytes: buffer.length, contentType: item.binary.data.mimeType || 'video/mp4' },\n      keys: { open: keys('open'), export: keys('export') },\n    },\n    binary: item.binary,\n  });\n}\nreturn out;"
       },
       "id": "8655ca75-d7d1-5d57-a0a2-6f2ea10e45c8",
       "name": "Prepare upload",
@@ -262,7 +276,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Verify the Standard Webhooks signature, then accept only a new event for an\n// operation this execution is waiting on. Anything else waits again.\nconst crypto = require('crypto');\nlet secret = $vars.NARRIFLOW_CALLBACK_SECRET;\ntry { secret = secret || $env.NARRIFLOW_CALLBACK_SECRET; } catch {}\nif (!secret) throw new Error('Set the NARRIFLOW_CALLBACK_SECRET variable (whsec_\u2026) from Narriflow Settings \u2192 API');\nconst key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');\nconst waiting = new Set($('Track operations').first().json.operationIds);\nconst seen = $getWorkflowStaticData('global');\nseen.narriflowEvents = seen.narriflowEvents || {};\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst id = headers['webhook-id'];\nconst timestamp = Number(headers['webhook-timestamp']);\nconst raw = item.binary && item.binary.data\n  ? Buffer.from(item.binary.data.data, 'base64').toString('utf8')\n  : JSON.stringify(item.json.body);\nconst expected = crypto.createHmac('sha256', key).update(`${id}.${timestamp}.${raw}`).digest('base64');\nconst offered = String(headers['webhook-signature'] || '').split(' ').map((part) => part.split(',')[1]);\nconst fresh = Math.abs(Date.now() / 1000 - timestamp) < 300;\nconst signed = offered.some((signature) => signature && signature.length === expected.length\n  && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)));\nlet event = null;\ntry { event = JSON.parse(raw); } catch {}\nconst accepted = Boolean(signed && fresh && event && event.id === id\n  && waiting.has(event.data.operationId) && !seen.narriflowEvents[id]);\nif (accepted) seen.narriflowEvents[id] = Date.now();\nreturn [{ json: { accepted, eventId: id || null, operationId: event?.data?.operationId ?? null } }];"
+        "jsCode": "// Verify the Standard Webhooks signature, then accept only a new event for an\n// operation this execution is waiting on. Anything else waits again.\nconst crypto = require('crypto');\nlet secret = $vars.NARRIFLOW_CALLBACK_SECRET;\ntry { secret = secret || $env.NARRIFLOW_CALLBACK_SECRET; } catch {}\nif (!secret) throw new Error('Set the NARRIFLOW_CALLBACK_SECRET variable (whsec_\u2026) from Narriflow Settings \u2192 API');\nconst key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');\nconst waiting = new Set($('Track operations').first().json.operationIds);\nconst seen = $getWorkflowStaticData('global');\nseen.narriflowEvents = seen.narriflowEvents || {};\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst id = headers['webhook-id'];\nconst timestamp = Number(headers['webhook-timestamp']);\n// The raw body is binary data; n8n may keep it in filesystem or S3 storage.\nconst raw = item.binary && item.binary.data\n  ? (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8')\n  : JSON.stringify(item.json.body);\nconst expected = crypto.createHmac('sha256', key).update(`${id}.${timestamp}.${raw}`).digest('base64');\nconst offered = String(headers['webhook-signature'] || '').split(' ').map((part) => part.split(',')[1]);\nconst fresh = Math.abs(Date.now() / 1000 - timestamp) < 300;\nconst signed = offered.some((signature) => signature && signature.length === expected.length\n  && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)));\nlet event = null;\ntry { event = JSON.parse(raw); } catch {}\nconst accepted = Boolean(signed && fresh && event && event.id === id\n  && waiting.has(event.data.operationId) && !seen.narriflowEvents[id]);\nif (accepted) seen.narriflowEvents[id] = Date.now();\nreturn [{ json: { accepted, eventId: id || null, operationId: event?.data?.operationId ?? null } }];"
       },
       "id": "a7b36e19-5383-56c4-b523-c8fb04a39601",
       "name": "Verify intake event",
@@ -555,7 +569,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Verify the Standard Webhooks signature, then accept only a new event for an\n// operation this execution is waiting on. Anything else waits again.\nconst crypto = require('crypto');\nlet secret = $vars.NARRIFLOW_CALLBACK_SECRET;\ntry { secret = secret || $env.NARRIFLOW_CALLBACK_SECRET; } catch {}\nif (!secret) throw new Error('Set the NARRIFLOW_CALLBACK_SECRET variable (whsec_\u2026) from Narriflow Settings \u2192 API');\nconst key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');\nconst waiting = new Set($('Track exports').first().json.operationIds);\nconst seen = $getWorkflowStaticData('global');\nseen.narriflowEvents = seen.narriflowEvents || {};\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst id = headers['webhook-id'];\nconst timestamp = Number(headers['webhook-timestamp']);\nconst raw = item.binary && item.binary.data\n  ? Buffer.from(item.binary.data.data, 'base64').toString('utf8')\n  : JSON.stringify(item.json.body);\nconst expected = crypto.createHmac('sha256', key).update(`${id}.${timestamp}.${raw}`).digest('base64');\nconst offered = String(headers['webhook-signature'] || '').split(' ').map((part) => part.split(',')[1]);\nconst fresh = Math.abs(Date.now() / 1000 - timestamp) < 300;\nconst signed = offered.some((signature) => signature && signature.length === expected.length\n  && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)));\nlet event = null;\ntry { event = JSON.parse(raw); } catch {}\nconst accepted = Boolean(signed && fresh && event && event.id === id\n  && waiting.has(event.data.operationId) && !seen.narriflowEvents[id]);\nif (accepted) seen.narriflowEvents[id] = Date.now();\nreturn [{ json: { accepted, eventId: id || null, operationId: event?.data?.operationId ?? null } }];"
+        "jsCode": "// Verify the Standard Webhooks signature, then accept only a new event for an\n// operation this execution is waiting on. Anything else waits again.\nconst crypto = require('crypto');\nlet secret = $vars.NARRIFLOW_CALLBACK_SECRET;\ntry { secret = secret || $env.NARRIFLOW_CALLBACK_SECRET; } catch {}\nif (!secret) throw new Error('Set the NARRIFLOW_CALLBACK_SECRET variable (whsec_\u2026) from Narriflow Settings \u2192 API');\nconst key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');\nconst waiting = new Set($('Track exports').first().json.operationIds);\nconst seen = $getWorkflowStaticData('global');\nseen.narriflowEvents = seen.narriflowEvents || {};\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst id = headers['webhook-id'];\nconst timestamp = Number(headers['webhook-timestamp']);\n// The raw body is binary data; n8n may keep it in filesystem or S3 storage.\nconst raw = item.binary && item.binary.data\n  ? (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8')\n  : JSON.stringify(item.json.body);\nconst expected = crypto.createHmac('sha256', key).update(`${id}.${timestamp}.${raw}`).digest('base64');\nconst offered = String(headers['webhook-signature'] || '').split(' ').map((part) => part.split(',')[1]);\nconst fresh = Math.abs(Date.now() / 1000 - timestamp) < 300;\nconst signed = offered.some((signature) => signature && signature.length === expected.length\n  && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)));\nlet event = null;\ntry { event = JSON.parse(raw); } catch {}\nconst accepted = Boolean(signed && fresh && event && event.id === id\n  && waiting.has(event.data.operationId) && !seen.narriflowEvents[id]);\nif (accepted) seen.narriflowEvents[id] = Date.now();\nreturn [{ json: { accepted, eventId: id || null, operationId: event?.data?.operationId ?? null } }];"
       },
       "id": "480cb4d3-6711-5289-ae33-ea711365a3b8",
       "name": "Verify export event",
@@ -792,6 +806,18 @@
     },
     "Download video": {
       "main": [
+        [
+          {
+            "node": "One file at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One file at a time": {
+      "main": [
+        [],
         [
           {
             "node": "Prepare upload",
@@ -1154,6 +1180,17 @@
         [
           {
             "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to Slack": {
+      "main": [
+        [
+          {
+            "node": "One file at a time",
             "type": "main",
             "index": 0
           }

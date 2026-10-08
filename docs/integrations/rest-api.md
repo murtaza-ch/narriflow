@@ -10,8 +10,8 @@ records the design.
 - `apps/web/app/api/v1/[[...route]]/route.ts` mounts the app. It is a
   separate Hono app, not part of the browser API or its declaration
   inventory. `apps/web/proxy.ts` lets `/api/v1` bypass Clerk.
-- `apps/web/lib/rest-api/` holds the routes (`app.ts`) and REST envelopes
-  (`schemas.ts`). `REST_ENDPOINT_COMMANDS` maps every endpoint to one
+- `apps/web/lib/rest-api/app.ts` holds the routes; REST envelopes live in
+  `packages/validators/src/rest-api.ts`. `REST_ENDPOINT_COMMANDS` maps every endpoint to one
   integration command.
 - `packages/services/src/integration-admission.ts` is the command table
   shared with MCP. `integration-commands.ts` holds the shared commands,

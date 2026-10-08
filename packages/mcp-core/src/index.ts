@@ -261,7 +261,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
       const outcome = action === "open" ? await uploadSessions.open(actor, schemas.openUploadSessionSchema.parse(body), assertNewMutationAllowed)
         : action === "status" ? await uploadSessions.status(actor, schemas.readUploadSessionSchema.parse(body))
         : action === "grants" ? await uploadSessions.grant(actor, schemas.grantUploadPartsSchema.parse(body))
-        : action === "finalize" ? await uploadSessions.finalize(actor, schemas.finalizeUploadSessionSchema.parse(body))
+        : action === "finalize" ? await uploadSessions.finalize(actor, schemas.finalizeUploadSessionSchema.parse(body), {}, assertNewMutationAllowed)
         : await uploadSessions.discard(actor, schemas.discardUploadSessionSchema.parse(body));
       // The private adapter payload is for the embedded client. Grants and media
       // access locations never appear in model-visible content or structuredContent.

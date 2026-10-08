@@ -28,6 +28,25 @@ export interface OperationStatus {
   failureCode: string | null;
 }
 
+const OPERATION_KIND_CODES: Record<OperationKind, number> = { intake: 1, generation: 2, export: 3 };
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Public operation IDs are opaque: they encode kind and domain ID, and every
+ * read decodes them server-side and rechecks Workspace access. */
+export function encodeOperationId(operation: { kind: OperationKind; id: string }) {
+  return `op_${Buffer.concat([Buffer.from([OPERATION_KIND_CODES[operation.kind]]), Buffer.from(operation.id.replaceAll("-", ""), "hex")]).toString("base64url")}`;
+}
+
+export function decodeOperationId(value: string): { kind: OperationKind; id: string } | null {
+  if (!/^op_[A-Za-z0-9_-]{23}$/.test(value)) return null;
+  const bytes = Buffer.from(value.slice(3), "base64url");
+  const kind = (Object.entries(OPERATION_KIND_CODES).find(([, code]) => code === bytes[0])?.[0] ?? null) as OperationKind | null;
+  if (!kind || bytes.length !== 17) return null;
+  const hex = bytes.subarray(1).toString("hex");
+  const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return UUID_PATTERN.test(id) ? { kind, id } : null;
+}
+
 /** Trusted reads report deleted, expired, or purged lineage as unavailable. */
 export type TrustedOperationStatus = OperationStatus | { kind: OperationKind; id: string; state: "unavailable" };
 

@@ -25,7 +25,9 @@ export function createMcpUploadHttpHandler(dependencies: McpUploadHttpDependenci
         if (context.req.path.endsWith("/discard")) admitted.beforeAccept();
         return admitted.actor;
       },
-      service: { ...dependencies.service, open: (actor, input) => dependencies.service.open(actor, input, admitted.beforeAccept) },
+      service: { ...dependencies.service,
+        open: (actor, input) => dependencies.service.open(actor, input, admitted.beforeAccept),
+        finalize: (actor, input) => dependencies.service.finalize(actor, input, {}, admitted.beforeAccept) },
     }));
     const result = await routes.fetch(request);
     result.headers.set("Cache-Control", "private, no-store");

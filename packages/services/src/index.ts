@@ -542,10 +542,10 @@ export { createOperationReceiptExecutor, operationFingerprint, OperationIdempote
 export { getOperationReceiptExecutor, prismaOperationReceiptPersistence } from "./operation-receipt-runtime";
 export { createMcpTaskRegistry, MCP_TASK_TTL_MS, MCP_TASK_POLL_INTERVAL_MS, type McpTaskRecord, type McpTaskOwner, type McpTaskResolution } from "./mcp-task";
 export { prismaMcpTaskPersistence, pruneExpiredMcpTasks, getMcpTaskPersistence, cancelMcpTaskDomainWork } from "./mcp-task-runtime";
-export { createOperationStatusReader, deriveGenerationStatus, deriveExportStatus, deriveIntakePhase, type OperationKind, type OperationState, type OperationStatus, type OperationItem, type TrustedOperationStatus } from "./operation-status";
+export { createOperationStatusReader, decodeOperationId, encodeOperationId, deriveGenerationStatus, deriveExportStatus, deriveIntakePhase, type OperationKind, type OperationState, type OperationStatus, type OperationItem, type TrustedOperationStatus } from "./operation-status";
 export { operationStatusService } from "./operation-status-runtime";
 export { clipExportSubtitleFiles, type ClipExportSubtitleFile } from "./clip-export-subtitles";
 export { IntegrationAdmission, IntegrationAdmissionError, INTEGRATION_COMMANDS, INTEGRATION_SURFACE_FEATURES, INTEGRATION_ACCESS_MESSAGES, operationReadScope, operationWriteScope, type IntegrationCommand, type IntegrationPrincipal, type IntegrationSurface } from "./integration-admission";
 export { integrationKeyUuid, integrationUploadSessionKey, integrationUploadSessions, locateClip, locateExport, redeliverCallbacks, submitVideo, generateClips, createClipExport, projectView, clipView, exportView, type OperationRef, type IntegrationUploadSessions } from "./integration-commands";
-export { assertCompletionCallbackUrl, buildCallbackPayload, CALLBACK_RETRY_DELAYS_MS, decodeOperationId, encodeOperationId, generateCallbackSigningSecret, signCallback, type CallbackPayload } from "./completion-callback";
-export { callbackEventId, callbackSigningSecrets, CallbackSecretRequiredError, createCompletionCallbackProcessor, getCompletionCallbackProcessor, type CompletionCallbackProcessorDependencies } from "./completion-callback-runtime";
+export { assertCompletionCallbackUrl, buildCallbackPayload, CALLBACK_RETRY_DELAYS_MS, callbackEventId, CallbackSecretRequiredError, createCompletionCallbackProcessor, generateCallbackSigningSecret, signCallback, type CallbackPayload, type CompletionCallbackProcessorDependencies } from "./completion-callback";
+export { callbackSigningSecrets, getCompletionCallbackProcessor } from "./completion-callback-runtime";

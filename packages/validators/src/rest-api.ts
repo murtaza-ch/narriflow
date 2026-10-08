@@ -1,35 +1,23 @@
 import { z } from "zod";
-import {
-  clipExportRequestSchema,
-  clipViewSchema,
-  exportViewSchema,
-  generationSettingsSchema,
-  mcpBrandProfilesResultSchema,
-  mcpExportDownloadResultSchema,
-  mcpExportOutputSchema,
-  mcpOperationStatusResultSchema,
-  mcpProgressSchema,
-  mcpWorkspaceUsageResultSchema,
-  projectViewSchema,
-  uploadMimeTypeSchema,
-  MAX_UPLOAD_SIZE_BYTES,
-} from "@narriflow/validators";
+import { clipExportRequestSchema, clipViewSchema, exportViewSchema, generationSettingsSchema, projectViewSchema } from "./integration";
+import { mcpBrandProfilesResultSchema, mcpExportDownloadResultSchema, mcpExportOutputSchema, mcpOperationStatusResultSchema, mcpProgressSchema, mcpWorkspaceUsageResultSchema } from "./mcp";
+import { uploadMimeTypeSchema, MAX_UPLOAD_SIZE_BYTES } from "./upload";
 
 /** REST v1 request and response envelopes. Command inputs and resource views
  * come from the shared validators; this file adds only REST's own shape.
  * Changes are additive; breaking changes require /api/v2. */
 
 const id = z.string().uuid();
-export const uuidParam = z.object({ id: id.describe("Resource ID") });
-export const operationIdParam = z.object({ id: z.string().regex(/^op_[A-Za-z0-9_-]{23}$/).describe("Operation ID from an accepted request") });
+export const restUuidParam = z.object({ id: id.describe("Resource ID") });
+export const restOperationIdParam = z.object({ id: z.string().regex(/^op_[A-Za-z0-9_-]{23}$/).describe("Operation ID from an accepted request") });
 
-export const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._~:-]{1,200}$/;
-export const idempotencyHeaders = z.object({
-  "idempotency-key": z.string().regex(IDEMPOTENCY_KEY_PATTERN)
+export const REST_IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._~:-]{1,200}$/;
+export const restIdempotencyHeaders = z.object({
+  "idempotency-key": z.string().regex(REST_IDEMPOTENCY_KEY_PATTERN)
     .describe("1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict."),
 });
 
-export const errorSchema = z.strictObject({
+export const restErrorSchema = z.strictObject({
   error: z.string().describe("Stable error code"),
   message: z.string(),
   requestId: z.string(),

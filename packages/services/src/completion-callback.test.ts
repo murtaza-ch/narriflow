@@ -6,14 +6,13 @@ import {
   CALLBACK_RETRY_DELAYS_MS,
   classifyDelivery,
   createCallbackCipher,
-  decodeOperationId,
   deliverCallback,
-  encodeOperationId,
   generateCallbackSigningSecret,
   nextAttemptDelayMs,
   nextObservationDelayMs,
   signCallback,
 } from "./completion-callback";
+import { decodeOperationId, encodeOperationId } from "./operation-status";
 
 const publicResolver = async () => [{ address: "93.184.216.34", family: 4 }];
 const OPERATION = { kind: "export" as const, id: "6d27d010-f52c-4e5c-9ea3-012c0bf7d921" };

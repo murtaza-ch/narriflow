@@ -1,6 +1,6 @@
 import type { ActorScope } from "./actor-scope";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
-import { receiptCallback } from "./completion-callback-runtime";
+import { receiptCallback } from "./completion-callback";
 import { operationFingerprint, type IntegrationMutation } from "./operation-receipt";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { getProcessingUsage } from "./processing-usage-runtime";

@@ -439,6 +439,23 @@ describe("pinned connections", () => {
     }
   });
 
+  test("a bodyless response that claims gzip resolves without decoding", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((_request, response) => { response.writeHead(204, { "content-encoding": "gzip" }); response.end(); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const { pinnedTransport } = await import("./url-guard");
+      const response = await pinnedTransport(new URL(`http://hooks.invalid:${port}/`), {
+        addresses: [{ address: "127.0.0.1", family: 4 }], method: "POST", headers: new Headers(), body: "{}", signal: AbortSignal.timeout(5_000),
+      });
+      expect(response.status).toBe(204);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   test("TLS connections to a pinned address present the URL hostname as SNI", async () => {
     const { createServer } = await import("node:net");
     // The server name travels in clear text inside the ClientHello.
