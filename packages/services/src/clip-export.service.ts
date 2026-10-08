@@ -1,5 +1,6 @@
 import type { ActorScope } from "./actor-scope";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import { receiptCallback } from "./completion-callback-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -537,6 +538,7 @@ export class ClipExportService {
         aspectRatios: normalizeAspectRatios(input.aspectRatios),
         resolution: input.resolution,
       },
+      callback: receiptCallback(scope.workspaceId, mutation, (value: { export: { id: string } }) => ({ kind: "export", id: value.export.id })),
       authorize: async () => {
         await workspaceService.requireActor(
           scope.actorUserId,

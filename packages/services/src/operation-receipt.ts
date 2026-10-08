@@ -13,6 +13,7 @@ export const RECEIPT_COMMANDS = [
 	"recheck_social_publication",
 	"confirm_social_publication",
 	"publish_social_publication_again",
+	"redeliver_callback",
 ] as const;
 export type ReceiptCommand = (typeof RECEIPT_COMMANDS)[number];
 
@@ -29,6 +30,16 @@ export interface OperationReceiptIdentity {
 export interface IntegrationMutation {
 	clientIdempotencyKey: string;
 	beforeAccept?: () => Promise<void>;
+	/** A validated Completion Callback URL, for commands that start work. */
+	callback?: { url: URL };
+}
+
+/** Registers a Completion Callback in the acceptance transaction. Its
+ * fingerprint joins the request fingerprint, so a replay with another URL
+ * conflicts, and a replay never registers twice. */
+export interface ReceiptCallback<Tx, T> {
+	fingerprint: string;
+	register(tx: Tx, accepted: { receiptId: string; value: T }): Promise<void>;
 }
 
 export interface OperationReceipt extends Omit<OperationReceiptIdentity, "command"> {
@@ -98,6 +109,7 @@ export function createOperationReceiptExecutor<Tx>(
 			authorize: () => Promise<void>;
 			beforeAccept?: () => Promise<void>;
 			prepare?: () => Promise<void>;
+			callback?: ReceiptCallback<Tx, NoInfer<T>>;
 			/** A mutation may commit a durable refusal, such as a released usage
 			 * reservation, without a receipt. Its error reaches the caller after
 			 * commit, and a replay re-evaluates against the committed state. */
@@ -107,7 +119,7 @@ export function createOperationReceiptExecutor<Tx>(
 				| { resourceType: string; resourceId: string; value: T }
 				| { refusal: ExpectedDomainFailureError }
 			>;
-		}): Promise<{ operationId: string; replayed: boolean; value: T }> {
+		}): Promise<{ receiptId: string; replayed: boolean; value: T }> {
 			if (
 				!input.identity.clientIdempotencyKey ||
 				input.identity.clientIdempotencyKey.length > 200
@@ -119,12 +131,16 @@ export function createOperationReceiptExecutor<Tx>(
 				});
 			}
 			await input.authorize();
-			const fingerprint = operationFingerprint(input.input);
+			const fingerprint = operationFingerprint(
+				input.callback
+					? { input: input.input, callback: input.callback.fingerprint }
+					: input.input,
+			);
 			const replay = (receipt: OperationReceipt) => {
 				if (receipt.fingerprint !== fingerprint)
 					throw new OperationIdempotencyConflictError();
 				return {
-					operationId: receipt.id,
+					receiptId: receipt.id,
 					replayed: true,
 					value: receipt.result as T,
 				};
@@ -156,7 +172,8 @@ export function createOperationReceiptExecutor<Tx>(
 						resourceId: result.resourceId,
 						result: value,
 					});
-					return { operationId: id, replayed: false, value };
+					await input.callback?.register(tx, { receiptId: id, value });
+					return { receiptId: id, replayed: false, value };
 				});
 				if ("refusal" in outcome) throw outcome.refusal;
 				return outcome;

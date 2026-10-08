@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   buildGenerationContentPack,
   type ClipExportRequest,
@@ -11,31 +10,25 @@ import { clipExportService } from "./clip-export.service";
 import { ExpectedDomainFailureError, isExpectedDomainFailure } from "./expected-domain-failure";
 import type { IntegrationCommand } from "./integration-admission";
 import type { IntegrationMutation } from "./operation-receipt";
+import { resetCompletionCallbacks } from "./completion-callback-runtime";
+import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import { operationStatusService } from "./operation-status-runtime";
 import { projectService } from "./project.service";
+import { workspaceService } from "./workspace.service";
 import type { UploadSessionService } from "./upload-session.service";
+import { uuidV5 } from "./uuid-v5";
 
 /** Transport-neutral commands that MCP tools and REST endpoints both call.
  * Each returns domain facts; adapters add their own status pointers. */
 
 const INTEGRATION_KEY_NAMESPACE = "8d2f1c3a-6b4e-5f70-9a1d-2c3b4e5f6a7b";
 
-function uuidBytes(uuid: string) {
-  return Buffer.from(uuid.replaceAll("-", ""), "hex");
-}
-
-/** RFC 9562 UUIDv5 of one acting user's command and caller key. Integration
- * keys are arbitrary strings, while Upload Sessions and Workflow Runs keep
- * their own UUID identities; deriving them per user keeps equal caller keys
- * from different users, or different commands, apart. */
+/** UUIDv5 of one acting user's command and caller key. Integration keys are
+ * arbitrary strings, while Upload Sessions and Workflow Runs keep their own
+ * UUID identities; deriving them per user keeps equal caller keys from
+ * different users, or different commands, apart. */
 export function integrationKeyUuid(actorUserId: string, command: IntegrationCommand, callerKey: string) {
-  const hash = createHash("sha1")
-    .update(uuidBytes(INTEGRATION_KEY_NAMESPACE))
-    .update(JSON.stringify([actorUserId, command, callerKey]))
-    .digest();
-  hash[6] = (hash[6]! & 0x0f) | 0x50;
-  hash[8] = (hash[8]! & 0x3f) | 0x80;
-  const hex = hash.subarray(0, 16).toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return uuidV5(INTEGRATION_KEY_NAMESPACE, JSON.stringify([actorUserId, command, callerKey]));
 }
 
 /** The Upload Session key shared by every integration transport. */
@@ -145,6 +138,26 @@ export async function createClipExport(
     ...accepted,
     operation: { kind: "export", id: accepted.export.id } satisfies OperationRef,
   };
+}
+
+/** Asks for an operation's completion events again. Visibility is rechecked
+ * through Operation Status, and the reset runs once per idempotency key. */
+export async function redeliverCallbacks(actor: ActorScope, operation: OperationRef, mutation: IntegrationMutation) {
+  await operationStatusService.read(actor, operation);
+  const accepted = await getOperationReceiptExecutor().execute({
+    identity: { workspaceId: actor.workspaceId, actorUserId: actor.actorUserId, command: "redeliver_callback", clientIdempotencyKey: mutation.clientIdempotencyKey },
+    input: { operation },
+    authorize: async () => {
+      await workspaceService.requireActor(actor.actorUserId, actor.workspaceId, "processing.consume");
+    },
+    beforeAccept: mutation.beforeAccept,
+    mutate: async (tx) => ({
+      resourceType: "completion_callback",
+      resourceId: operation.id,
+      value: { callbacks: await resetCompletionCallbacks(tx, actor, operation, new Date()) },
+    }),
+  });
+  return { ...accepted.value, replayed: accepted.replayed };
 }
 
 type Project = NonNullable<Awaited<ReturnType<typeof projectService.getProjectSnapshot>>["project"]>;

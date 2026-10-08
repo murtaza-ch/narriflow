@@ -10,9 +10,12 @@ import {
   type UploadSessionRecord,
   type UploadSessionStorage,
 } from "./upload-session.service";
+import type { CallbackRegistration } from "./completion-callback";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 
 export function createInMemoryUploadSessionHarness() {
   const sessions: UploadSessionRecord[] = [];
+  const callbacks = new Map<string, CallbackRegistration>();
   const providerInitiations: Array<{
     storageKey: string;
     providerUploadId: string;
@@ -243,7 +246,14 @@ export function createInMemoryUploadSessionHarness() {
       }
       return session;
     },
-    async beginFinalization({ sessionId, parts, reconcileAt, updatedAt }) {
+    async registerUploadCallback({ sessionId, callback }) {
+      const existing = callbacks.get(sessionId);
+      if (existing && existing.urlFingerprint !== callback.urlFingerprint) {
+        throw new ExpectedDomainFailureError({ code: "operation_idempotency_conflict", kind: "conflict", message: "Callback differs" });
+      }
+      callbacks.set(sessionId, callback);
+    },
+    async beginFinalization({ sessionId, parts, reconcileAt, updatedAt, callback }) {
       const session = sessions.find((candidate) => candidate.id === sessionId);
       if (!session) throw new Error("Upload Session reservation not found");
       if (
@@ -255,6 +265,7 @@ export function createInMemoryUploadSessionHarness() {
         return { claimed: false, session };
       }
       session.status = "finalizing";
+      if (callback) callbacks.set(sessionId, callback);
       session.completionParts = parts;
       session.completionIntentMalformed = false;
       session.reconcileAt = reconcileAt;
@@ -713,6 +724,7 @@ export function createInMemoryUploadSessionHarness() {
     } satisfies UploadSessionModuleDependencies,
     facts: {
       sessions,
+      callbacks,
       providerInitiations,
       projects,
       get quotaChecks() {

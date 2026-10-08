@@ -1192,6 +1192,47 @@ describe("Upload Session", () => {
     expect(harness.facts.brandResolutions).toBe(1);
   });
 
+  describe("Completion Callbacks", () => {
+    const registration = (url: string) => ({ encryptedUrl: `sealed:${url}`, urlHost: "hooks.example", urlFingerprint: url });
+    const openSingle = async (harness: ReturnType<typeof createInMemoryUploadSessionHarness>, module: ReturnType<typeof createUploadSessionModule>, key: string) => {
+      const opened = await module.open({
+        ...ACTOR, clientIdempotencyKey: key, title: "Callback source",
+        source: { fileName: "callback.mp4", sizeBytes: 1024, contentType: "video/mp4", browserFingerprint: "machine" },
+        brandTemplateId: null, brandProfileId: null, generation: { languageCode: "en", contentPack: CONTENT_PACK },
+      });
+      if (opened.outcome !== "uploading" || opened.transfer.kind !== "single") throw new Error("expected single transfer");
+      harness.putSingleObject(opened.sessionId, { sizeBytes: 1024, contentType: "video/mp4" });
+      return opened;
+    };
+
+    test("finalize registers its callback with the finalization intent, once across retries", async () => {
+      const harness = createInMemoryUploadSessionHarness();
+      const module = createUploadSessionModule({ ...harness.adapters, config: defaultUploadSessionConfig() });
+      const opened = await openSingle(harness, module, "71000000-0000-4000-8000-000000000001");
+      const finalize = (url?: string) => module.finalize({ ...ACTOR, sessionId: opened.sessionId, parts: [], ...(url ? { callback: registration(url) } : {}) });
+      await finalize("https://hooks.example/a");
+      await finalize("https://hooks.example/a");
+      expect([...harness.facts.callbacks.entries()]).toEqual([[opened.sessionId, registration("https://hooks.example/a")]]);
+      await expect(finalize("https://hooks.example/b")).rejects.toMatchObject({ code: "operation_idempotency_conflict" });
+    });
+
+    test("a finalize after open's implicit single-PUT finalization still registers its callback", async () => {
+      const harness = createInMemoryUploadSessionHarness();
+      const module = createUploadSessionModule({ ...harness.adapters, config: defaultUploadSessionConfig() });
+      const key = "71000000-0000-4000-8000-000000000002";
+      const opened = await openSingle(harness, module, key);
+      // A browser-style retry of open finds the stored object and finalizes it.
+      await module.open({
+        ...ACTOR, clientIdempotencyKey: key, title: "Callback source",
+        source: { fileName: "callback.mp4", sizeBytes: 1024, contentType: "video/mp4", browserFingerprint: "machine" },
+        brandTemplateId: null, brandProfileId: null, generation: { languageCode: "en", contentPack: CONTENT_PACK },
+      });
+      expect(harness.facts.callbacks.size).toBe(0);
+      await module.finalize({ ...ACTOR, sessionId: opened.sessionId, parts: [], callback: registration("https://hooks.example/a") });
+      expect(harness.facts.callbacks.get(opened.sessionId)).toEqual(registration("https://hooks.example/a"));
+    });
+  });
+
   test("finalizes multipart bytes into exactly one queued Project handoff", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const module = createUploadSessionModule({

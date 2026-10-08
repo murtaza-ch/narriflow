@@ -284,7 +284,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				throw new Error("Must not mutate");
 			},
 		});
-		expect(replay.operationId).toBe(accepted.operationId);
+		expect(replay.receiptId).toBe(accepted.receiptId);
 		expect(replay.value).toEqual(accepted.value);
 	});
 
@@ -307,7 +307,8 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				mutation,
 			}),
 		]);
-		expect(duplicate).toEqual(first);
+		expect({ ...duplicate, replayed: false }).toEqual({ ...first, replayed: false });
+		expect([first.replayed, duplicate.replayed].filter(Boolean)).toHaveLength(1);
 		expect(first.queuedJobId).toBeString();
 		const stored = await prisma.project.findUniqueOrThrow({
 			where: { id: first.project.id },
@@ -327,7 +328,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				},
 			},
 		});
-		expect(replay).toEqual(first);
+		expect(replay).toEqual({ ...first, replayed: true });
 		await expect(
 			projectService.queueLinkIngest(scope, input, {
 				generationContext: {
@@ -410,7 +411,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 					},
 				},
 			}),
-		).toEqual(first);
+		).toEqual({ ...first, replayed: true });
 		expect(
 			await prisma.workflowRun.count({ where: { projectId: project.id } }),
 		).toBe(1);
@@ -507,7 +508,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 			await projectService.triggerGeneration(scope, project.id, request, key, {
 				mutation: { clientIdempotencyKey: key },
 			}),
-		).toEqual(first);
+		).toEqual({ ...first, replayed: true });
 		await prisma.workflowRun.update({
 			where: { id: renderRun.id },
 			data: { status: "completed" },
@@ -657,7 +658,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		});
 		expect(
 			await clipExportService.create(scope, project.id, clip.id, format, key),
-		).toEqual(first);
+		).toEqual({ ...first, replayed: true });
 		await expect(
 			clipExportService.create(
 				scope,

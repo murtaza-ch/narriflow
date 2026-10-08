@@ -850,6 +850,8 @@ model Workspace {
   reviewApprovalOverrides    ReviewApprovalOverride[]
   socialPosts                SocialPost[]
   publicationManualDecisions PublicationManualDecision[]
+  completionCallbacks        CompletionCallback[]
+  callbackSigningSecrets     CallbackSigningSecret[]
   billingAccount             WorkspaceBillingAccount?
 
   @@index([ownerUserId])
@@ -2492,6 +2494,57 @@ model OperationReceipt {
   @@unique([workspaceId, actorUserId, command, clientIdempotencyKey], map: "OperationReceipt_identity_key")
   @@index([resourceType, resourceId])
   @@index([workspaceId, createdAt])
+}
+
+/// Completion Callback: a signed, at-least-once notification delivered to a
+/// caller-supplied URL when one accepted operation reaches a terminal
+/// Operation Status. Exactly one of `receiptId` (link intake, generation,
+/// export) and `uploadSessionId` (upload intake) is set. There is no foreign
+/// key to Project, so deleting a Project can't drop a pending delivery.
+model CompletionCallback {
+  id                 String    @id @default(uuid()) @db.Uuid
+  workspaceId        String    @db.Uuid
+  operationKind      String
+  operationId        String    @db.Uuid
+  receiptId          String?   @unique @db.Uuid
+  uploadSessionId    String?   @unique @db.Uuid
+  /// AES-256-GCM sealed URL; logs and errors carry only `urlHost`.
+  encryptedUrl       String
+  urlHost            String
+  urlFingerprint     String
+  eventId            String    @unique @db.Uuid
+  /// waiting | pending | delivered | failed | cancelled
+  state              String    @default("waiting")
+  observationCount   Int       @default(0)
+  nextObservationAt  DateTime  @default(now())
+  attempts           Int       @default(0)
+  nextAttemptAt      DateTime?
+  leaseOwner         String?
+  leaseExpiresAt     DateTime?
+  /// Frozen once the operation is terminal; redelivery resends it unchanged.
+  payload            Json?
+  lastResponseStatus Int?
+  deliveredAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([state, nextObservationAt])
+  @@index([state, nextAttemptAt])
+  @@index([workspaceId, operationKind, operationId])
+}
+
+/// A Workspace's Completion Callback signing secret. The current secret has no
+/// `retiresAt`; after rotation the previous one keeps signing until it retires.
+model CallbackSigningSecret {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @db.Uuid
+  encryptedSecret String
+  createdAt       DateTime  @default(now())
+  retiresAt       DateTime?
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, retiresAt])
 }
 
 /// Request-owned handle for existing work. Expiry never changes domain work.

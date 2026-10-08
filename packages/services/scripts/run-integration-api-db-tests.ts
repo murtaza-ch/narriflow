@@ -75,6 +75,7 @@ try {
 	});
 	for (const suite of [
 		"packages/services/src/operation-receipt.db.test.ts",
+		"packages/services/src/completion-callback.db.test.ts",
 		"packages/services/src/mcp-task.db.test.ts",
 		"packages/services/src/operation-status.db.test.ts",
 	]) {

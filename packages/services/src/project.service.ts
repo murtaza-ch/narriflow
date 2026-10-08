@@ -1,5 +1,6 @@
 import type { ActorScope } from "./actor-scope";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import { receiptCallback } from "./completion-callback-runtime";
 import { operationFingerprint, type IntegrationMutation } from "./operation-receipt";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { getProcessingUsage } from "./processing-usage-runtime";
@@ -968,6 +969,7 @@ export class ProjectService {
 					settings: parsed,
 					contentPackId: options.existingContentPackId ?? null,
 				},
+				callback: receiptCallback(scope.workspaceId, mutation, (value: { workflowRunId: string }) => ({ kind: "generation", id: value.workflowRunId })),
 				authorize: async () => {
 					await this.requireActor(scope, "processing.consume");
 				},
@@ -1351,6 +1353,7 @@ export class ProjectService {
 					source: parsed,
 					generationContext: options.generationContext ?? null,
 				},
+				callback: receiptCallback(actor.workspaceId, mutation, (value: { queuedJobId: string }) => ({ kind: "intake", id: value.queuedJobId })),
 				authorize: async () => {
 					await this.requireActor(scope, "processing.consume");
 				},

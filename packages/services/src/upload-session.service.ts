@@ -26,6 +26,9 @@ import {
   type GrantUploadPartsInput as ValidatedGrantUploadPartsInput,
 } from "@narriflow/validators";
 import { brandTemplateService } from "./brand-template.service";
+import type { CallbackRegistration } from "./completion-callback";
+import { ensureUploadCallback, prepareUploadCallback, registerUploadCallback } from "./completion-callback-runtime";
+import type { IntegrationMutation } from "./operation-receipt";
 import { brandProfileService } from "./brand-profile.service";
 import { projectRetentionService } from "./project-retention.service";
 import {
@@ -265,12 +268,22 @@ export interface UploadSessionPersistence {
     sessionId: string;
     expiredAt: Date;
   }): Promise<UploadSessionRecord>;
+  /** Stores the durable finalization intent. A Completion Callback, when
+   * given, is registered in the same transaction as a successful claim. */
   beginFinalization(input: {
     sessionId: string;
     parts: Array<{ partNumber: number; etag: string }>;
     reconcileAt: Date;
     updatedAt: Date;
+    callback?: CallbackRegistration;
   }): Promise<{ claimed: boolean; session: UploadSessionRecord }>;
+  /** Registers the upload intake's callback for a session whose finalization
+   * was already accepted. Idempotent; another URL is a conflict. */
+  registerUploadCallback(input: {
+    sessionId: string;
+    workspaceId: string;
+    callback: CallbackRegistration;
+  }): Promise<void>;
   handoff(input: {
     sessionId: string;
     queuedJobId: string;
@@ -583,6 +596,8 @@ export interface FinalizeUploadSessionInput {
   workspaceId: string;
   sessionId: string;
   parts: Array<{ partNumber: number; etag: string }>;
+  /** Completion Callback for the upload intake this finalize starts. */
+  callback?: CallbackRegistration;
 }
 
 export interface GrantUploadPartsInput {
@@ -2257,7 +2272,13 @@ export function createUploadSessionModule(
       if (!current || current.actorUserId !== input.actorUserId) {
         throw new UploadSessionNotFoundError();
       }
+      // A finalization accepted earlier (including open's implicit single-PUT
+      // finalization) still registers this request's callback, exactly once.
+      const registerAccepted = async (sessionId: string) => {
+        if (input.callback) await dependencies.persistence.registerUploadCallback({ sessionId, workspaceId: input.workspaceId, callback: input.callback });
+      };
       if (current.status === "queued_for_ingest" && current.queuedJobId) {
+        await registerAccepted(current.id);
         return {
           outcome: "queued_for_ingest",
           sessionId: current.id,
@@ -2266,9 +2287,11 @@ export function createUploadSessionModule(
         };
       }
       if (current.status === "finalizing") {
+        await registerAccepted(current.id);
         return settledFinalizationOutcome(current);
       }
       if (current.status === "reconciling") {
+        await registerAccepted(current.id);
         return {
           outcome: "reconciling",
           sessionId: current.id,
@@ -2301,6 +2324,7 @@ export function createUploadSessionModule(
         parts,
         reconcileAt: new Date(finalizationAcceptedAt.getTime() + 5_000),
         updatedAt: finalizationAcceptedAt,
+        callback: input.callback,
       });
       if (!finalization.claimed) {
         if (
@@ -2311,6 +2335,9 @@ export function createUploadSessionModule(
               finalizationAcceptedAt.getTime())
         ) {
           return expireTransfer(finalization.session, finalizationAcceptedAt);
+        }
+        if (["finalizing", "reconciling", "queued_for_ingest"].includes(finalization.session.status)) {
+          await registerAccepted(finalization.session.id);
         }
         return settledFinalizationOutcome(finalization.session);
       }
@@ -3447,33 +3474,41 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     if (!row) throw new Error("Upload Session not found");
     return fromPrismaUploadSession(row);
   },
-  async beginFinalization({ sessionId, parts, reconcileAt, updatedAt }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
-      where: {
-        id: sessionId,
-        status: "uploading",
-        expiresAt: { gt: updatedAt },
-        hardExpiresAt: { gt: updatedAt },
-        reconciliationAttemptId: null,
-      },
-      data: {
-        status: "finalizing",
-        completionParts: {
-          version: 1,
-          parts,
-        } satisfies Prisma.InputJsonValue,
-        reconcileAt,
-        updatedAt,
-      },
+  async beginFinalization({ sessionId, parts, reconcileAt, updatedAt, callback }) {
+    return requiredPrisma().$transaction(async (tx) => {
+      const updated = await tx.uploadSession.updateMany({
+        where: {
+          id: sessionId,
+          status: "uploading",
+          expiresAt: { gt: updatedAt },
+          hardExpiresAt: { gt: updatedAt },
+          reconciliationAttemptId: null,
+        },
+        data: {
+          status: "finalizing",
+          completionParts: {
+            version: 1,
+            parts,
+          } satisfies Prisma.InputJsonValue,
+          reconcileAt,
+          updatedAt,
+        },
+      });
+      const row = await tx.uploadSession.findUnique({
+        where: { id: sessionId },
+      });
+      if (!row) throw new Error("Upload Session not found");
+      if (updated.count === 1 && callback) {
+        await registerUploadCallback(tx, { workspaceId: row.workspaceId, sessionId, registration: callback });
+      }
+      return {
+        claimed: updated.count === 1,
+        session: fromPrismaUploadSession(row),
+      };
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
-      where: { id: sessionId },
-    });
-    if (!row) throw new Error("Upload Session not found");
-    return {
-      claimed: updated.count === 1,
-      session: fromPrismaUploadSession(row),
-    };
+  },
+  async registerUploadCallback({ sessionId, workspaceId, callback }) {
+    await ensureUploadCallback({ workspaceId, sessionId, registration: callback });
   },
   async handoff({
     sessionId,
@@ -4275,6 +4310,7 @@ export class UploadSessionService {
   async finalize(
     scope: ActorScope,
     input: ValidatedFinalizeUploadSessionInput,
+    options: Pick<IntegrationMutation, "callback"> = {},
   ) {
     const startedAt = performance.now();
     const parsed = finalizeUploadSessionSchema.parse(input);
@@ -4289,6 +4325,7 @@ export class UploadSessionService {
       workspaceId: workspaceId,
       sessionId: parsed.sessionId,
       parts: parsed.parts,
+      callback: prepareUploadCallback(options),
     });
     console.warn(
       JSON.stringify({

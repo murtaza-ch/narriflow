@@ -7,6 +7,7 @@ import {
 	assertUploadProviderLifecyclePrerequisite,
 	getWorkflowRunLifecycle,
 	getSocialPublicationRuntime,
+	getCompletionCallbackProcessor,
 	getIngestJobLifecycle,
 	IngestJobClaimLost,
 	reviewService,
@@ -73,6 +74,9 @@ const workflowLeaseReapIntervalMs = Number(
 );
 const workflowEventDispatchIntervalMs = Number(
 	process.env.WORKFLOW_EVENT_DISPATCH_INTERVAL_MS ?? "1000",
+);
+const completionCallbackPollIntervalMs = Number(
+	process.env.COMPLETION_CALLBACK_POLL_INTERVAL_MS ?? "5000",
 );
 const maxConsecutivePollFailures = Number(
 	process.env.WORKER_MAX_CONSECUTIVE_POLL_FAILURES ?? "20",
@@ -392,6 +396,15 @@ const workflowEventLoop = createPollLoop("workflow_events", async () => {
 	return getWorkflowRunLifecycle().dispatchEvents(100);
 });
 
+// Completion Callbacks: observe accepted operations until terminal, then
+// deliver signed events. Observation backs off per row; this cadence only
+// bounds how soon a due row is noticed.
+const completionCallbackLoop = createPollLoop("completion_callbacks", async () => {
+	if (workerShutdown.signal.aborted) return 0;
+	const callbacks = getCompletionCallbackProcessor();
+	return (await callbacks.observe()) + (await callbacks.deliver());
+});
+
 const workspaceBillingLoop = createPollLoop("workspace_billing", async () => {
 	if (!billingService.isConfigured()) return 0;
 	const result = await billingService.reconcileDueAccounts();
@@ -550,6 +563,7 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: uploadSessionMaintenanceLoop, intervalMs: 30 * 1000 },
 	{ loop: workflowLeaseLoop, intervalMs: workflowLeaseReapIntervalMs },
 	{ loop: workflowEventLoop, intervalMs: workflowEventDispatchIntervalMs },
+	{ loop: completionCallbackLoop, intervalMs: completionCallbackPollIntervalMs },
 	{ loop: workspaceBillingLoop, intervalMs: workspaceBillingPollIntervalMs },
 	{ loop: ingestLoop, intervalMs: pollIntervalMs },
 	{ loop: sttLoop, intervalMs: pollIntervalMs },

@@ -130,7 +130,7 @@ describe("Operation Receipt acceptance", () => {
 		});
 		failPreparation();
 		const replay = await failed;
-		expect(replay.operationId).toBe(first.operationId);
+		expect(replay.receiptId).toBe(first.receiptId);
 		expect(replay.value).toEqual(first.value);
 		expect(h.writes()).toBe(1);
 	});
@@ -164,7 +164,7 @@ describe("Operation Receipt acceptance", () => {
 			},
 		});
 		expect(replay.value).toEqual({ ruleId: "rule-a", number: 1 });
-		expect(replay.operationId).toBe(first.operationId);
+		expect(replay.receiptId).toBe(first.receiptId);
 		expect(replay.replayed).toBe(true);
 		expect(h.writes()).toBe(1);
 		expect(authorizations).toBe(2);
@@ -229,7 +229,7 @@ describe("Operation Receipt acceptance", () => {
 			),
 		);
 		expect(h.writes()).toBe(1);
-		expect(new Set(results.map((result) => result.operationId)).size).toBe(1);
+		expect(new Set(results.map((result) => result.receiptId)).size).toBe(1);
 		expect(results.filter((result) => !result.replayed).length).toBe(1);
 	});
 
@@ -304,5 +304,47 @@ describe("Operation Receipt acceptance", () => {
 				}),
 			});
 		expect(h.writes()).toBe(4);
+	});
+
+	test("a callback registers once in the acceptance transaction and never on replay", async () => {
+		const h = harness();
+		const registered: string[] = [];
+		const callback = (url: string) => ({
+			fingerprint: url,
+			register: async (tx: { write(): number }, accepted: { receiptId: string }) => {
+				tx.write();
+				registered.push(`${accepted.receiptId}:${url}`);
+			},
+		});
+		const run = (url: string) =>
+			h.execute({
+				identity,
+				input: { title: "same" },
+				authorize: async () => {},
+				callback: callback(url),
+				mutate: async () => ({ resourceType: "project", resourceId: "p", value: {} }),
+			});
+		const first = await run("https://a.example/hook");
+		const replay = await run("https://a.example/hook");
+		expect(replay.replayed).toBe(true);
+		expect(registered).toEqual([`${first.receiptId}:https://a.example/hook`]);
+		await expect(run("https://b.example/hook")).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
+		await expect(
+			h.execute({ identity, input: { title: "same" }, authorize: async () => {}, mutate: async () => ({ resourceType: "project", resourceId: "p", value: {} }) }),
+		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
+	});
+
+	test("a refused callback registration rolls back the acceptance", async () => {
+		const h = harness();
+		await expect(
+			h.execute({
+				identity,
+				input: {},
+				authorize: async () => {},
+				callback: { fingerprint: "u", register: async () => { throw new Error("No signing secret"); } },
+				mutate: async (tx) => ({ resourceType: "project", resourceId: "p", value: { count: tx.write() } }),
+			}),
+		).rejects.toThrow("No signing secret");
+		expect(h.writes()).toBe(0);
 	});
 });
