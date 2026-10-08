@@ -508,6 +508,7 @@ export interface OpenUploadSessionInput {
   generation: unknown;
   /** Browser media metadata; reserved at admission, never trusted to settle. */
   declaredDurationSeconds?: number | null;
+  transfer?: "auto" | "single";
 }
 
 export interface ReadUploadSessionInput {
@@ -715,6 +716,7 @@ function immutableInputFingerprint(input: OpenUploadSessionInput) {
     useDefaultBrandProfile: input.useDefaultBrandProfile || undefined,
     generation: input.generation,
     declaredDurationSeconds: input.declaredDurationSeconds ?? undefined,
+    transfer: input.transfer === "single" ? "single" : undefined,
   });
 }
 
@@ -749,6 +751,7 @@ function terminalFreshUploadAllowed(session: UploadSessionRecord) {
 export function planUploadTransfer(
   sizeBytes: number,
   config: UploadSessionConfig,
+  transfer: "auto" | "single" = "auto",
 ): {
   kind: UploadTransferKind;
   partSizeBytes: number | null;
@@ -761,7 +764,8 @@ export function planUploadTransfer(
   ) {
     throw new Error("Unsupported upload source size");
   }
-  if (sizeBytes <= config.smallFileThresholdBytes) {
+  // The product maximum stays within R2's 5 GiB single-PUT limit.
+  if (transfer === "single" || sizeBytes <= config.smallFileThresholdBytes) {
     return { kind: "single", partSizeBytes: null, partCount: 1 };
   }
   const partSizeBytes = Math.max(
@@ -1700,6 +1704,7 @@ export function createUploadSessionModule(
       const transfer = planUploadTransfer(
         input.source.sizeBytes,
         dependencies.config,
+        input.transfer,
       );
       const storageKey = `workspaces/${input.workspaceId}/upload-sessions/${sessionId}/${sanitizeFileName(input.source.fileName)}`;
       const reservationRecord = (brand: ResolvedBrand): UploadSessionRecord => ({
@@ -4233,6 +4238,7 @@ export class UploadSessionService {
       useDefaultBrandProfile: parsed.brandProfileId === undefined,
       generation: parsed.generationContext,
       declaredDurationSeconds: parsed.declaredDurationSeconds ?? null,
+      transfer: parsed.transfer,
     });
     console.warn(
       JSON.stringify({
@@ -4331,6 +4337,21 @@ export class UploadSessionService {
       }),
     );
     return result;
+  }
+
+  /** Reads the caller's own Upload Session by ID, for API callers that
+   * address sessions by ID rather than by browser key and fingerprint. */
+  async statusById(scope: ActorScope, sessionId: string) {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
+    const session = await prismaUploadSessionPersistence.findByIdForWorkspace({ sessionId, workspaceId: scope.workspaceId });
+    if (!session || session.actorUserId !== scope.actorUserId) throw new UploadSessionNotFoundError();
+    return productionUploadSessionModule.status({
+      actorUserId: scope.actorUserId,
+      workspaceId: scope.workspaceId,
+      clientIdempotencyKey: session.clientIdempotencyKey,
+      sessionId: session.id,
+      browserFingerprint: session.browserFingerprint,
+    });
   }
 
   async status(

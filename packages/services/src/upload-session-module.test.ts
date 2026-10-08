@@ -139,6 +139,15 @@ describe("Upload Session", () => {
     });
   });
 
+  test("a single-transfer request plans one PUT at any supported size", () => {
+    const config = defaultUploadSessionConfig();
+    for (const size of [1, 200 * 1024 * 1024, MAX_UPLOAD_SIZE_BYTES]) {
+      expect(planUploadTransfer(size, config, "single")).toEqual({ kind: "single", partSizeBytes: null, partCount: 1 });
+    }
+    expect(planUploadTransfer(MAX_UPLOAD_SIZE_BYTES, config, "auto")).toMatchObject({ kind: "multipart" });
+    expect(() => planUploadTransfer(MAX_UPLOAD_SIZE_BYTES + 1, config, "single")).toThrow();
+  });
+
   test("opens multipart transfer with one bounded grant window", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const module = createUploadSessionModule({
@@ -172,6 +181,23 @@ describe("Upload Session", () => {
       Array.from({ length: 16 }, (_, index) => index + 1),
     );
     expect(opened.transfer.grantExpiresAt).toBe("2026-08-27T00:15:00.000Z");
+    expect(harness.facts.multipartPartListings).toBe(0);
+  });
+
+  test("opens a near-limit single transfer as one signed PUT", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const module = createUploadSessionModule({ ...harness.adapters, config: defaultUploadSessionConfig() });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "40000000-0000-4000-8000-000000000044",
+      title: "One request",
+      source: { fileName: "large.mp4", sizeBytes: MAX_UPLOAD_SIZE_BYTES, contentType: "video/mp4", browserFingerprint: "machine" },
+      brandTemplateId: null,
+      brandProfileId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+      transfer: "single",
+    });
+    if (opened.outcome !== "uploading" || opened.transfer.kind !== "single") throw new Error("expected single transfer");
     expect(harness.facts.multipartPartListings).toBe(0);
   });
 

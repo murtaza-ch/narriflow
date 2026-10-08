@@ -546,4 +546,4 @@ export { createOperationStatusReader, deriveGenerationStatus, deriveExportStatus
 export { operationStatusService } from "./operation-status-runtime";
 export { clipExportSubtitleFiles, type ClipExportSubtitleFile } from "./clip-export-subtitles";
 export { IntegrationAdmission, IntegrationAdmissionError, INTEGRATION_COMMANDS, INTEGRATION_SURFACE_FEATURES, INTEGRATION_ACCESS_MESSAGES, operationReadScope, operationWriteScope, type IntegrationCommand, type IntegrationPrincipal, type IntegrationSurface } from "./integration-admission";
-export { integrationKeyUuid, integrationUploadSessionKey, integrationUploadSessions, submitVideo, generateClips, createClipExport, projectView, clipView, exportView, type OperationRef } from "./integration-commands";
+export { integrationKeyUuid, integrationUploadSessionKey, integrationUploadSessions, submitVideo, generateClips, createClipExport, projectView, clipView, exportView, type OperationRef, type IntegrationUploadSessions } from "./integration-commands";

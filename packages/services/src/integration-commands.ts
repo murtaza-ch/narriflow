@@ -8,7 +8,7 @@ import {
 import type { ActorScope } from "./actor-scope";
 import type { clipService } from "./clip.service";
 import { clipExportService } from "./clip-export.service";
-import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import { ExpectedDomainFailureError, isExpectedDomainFailure } from "./expected-domain-failure";
 import type { IntegrationCommand } from "./integration-admission";
 import type { IntegrationMutation } from "./operation-receipt";
 import { projectService } from "./project.service";
@@ -44,13 +44,34 @@ export function integrationUploadSessionKey(actorUserId: string, callerKey: stri
 }
 
 type UploadSessionCommands = Pick<UploadSessionService, "open" | "status" | "grant" | "finalize" | "discard">;
+type OpenUploadArguments = Parameters<UploadSessionService["open"]>;
+
+export interface IntegrationUploadSessions extends Omit<UploadSessionCommands, "open"> {
+  /** `beforeAccept` is the new-mutation limiter. While it is unavailable,
+   * open still resumes a session that already exists for this key. */
+  open(actor: OpenUploadArguments[0], input: OpenUploadArguments[1], beforeAccept?: () => void | Promise<void>): ReturnType<UploadSessionService["open"]>;
+}
 
 /** Upload Sessions as integrations see them: callers name a session by their
  * own key, and the session stores the per-user derived UUID. Grants, finalize,
  * and discard address the session by ID. */
-export function integrationUploadSessions(service: UploadSessionCommands): UploadSessionCommands {
+export function integrationUploadSessions(service: UploadSessionCommands): IntegrationUploadSessions {
   return {
-    open: (actor, input) => service.open(actor, { ...input, clientIdempotencyKey: integrationUploadSessionKey(actor.actorUserId, input.clientIdempotencyKey) }),
+    async open(actor, input, beforeAccept) {
+      const clientIdempotencyKey = integrationUploadSessionKey(actor.actorUserId, input.clientIdempotencyKey);
+      try {
+        await beforeAccept?.();
+      } catch (limiterError) {
+        if (!isExpectedDomainFailure(limiterError) || limiterError.code !== "mutations_unavailable") throw limiterError;
+        try {
+          await service.status(actor, { clientIdempotencyKey, sessionId: null, browserFingerprint: input.source.browserFingerprint });
+        } catch (lookupError) {
+          if (isExpectedDomainFailure(lookupError) && lookupError.code === "upload_session_not_found") throw limiterError;
+          throw lookupError;
+        }
+      }
+      return service.open(actor, { ...input, clientIdempotencyKey });
+    },
     status: (actor, input) => service.status(actor, { ...input, clientIdempotencyKey: integrationUploadSessionKey(actor.actorUserId, input.clientIdempotencyKey) }),
     grant: (actor, input) => service.grant(actor, input),
     finalize: (actor, input) => service.finalize(actor, input),

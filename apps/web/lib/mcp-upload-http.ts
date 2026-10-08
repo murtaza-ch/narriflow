@@ -1,14 +1,13 @@
 import { Hono } from "hono";
-import type { ActorScope, UploadSessionService } from "@narriflow/services";
+import type { ActorScope, IntegrationUploadSessions } from "@narriflow/services";
 import { isExpectedDomainFailure, boundedExpectedDomainFailureDetails } from "@narriflow/services";
-import { openUploadSessionSchema } from "@narriflow/validators";
 import { mcpFailureMessage } from "@narriflow/mcp-core";
 import { createUploadSessionHttpRoutes } from "../app/api/[[...route]]/upload-session-http";
 
 export interface McpUploadHttpDependencies {
   admit(request: Request, workspaceId: string): Promise<{ actor: ActorScope; beforeAccept: () => void }>;
   authenticationFailure(error: unknown): Response | null;
-  service: Pick<UploadSessionService, "open" | "finalize" | "grant" | "status" | "discard">;
+  service: IntegrationUploadSessions;
 }
 
 /** OAuth/key uploads share the browser Upload Session HTTP adapter and its
@@ -23,24 +22,10 @@ export function createMcpUploadHttpHandler(dependencies: McpUploadHttpDependenci
     routes.onError((error) => failure(error));
     routes.route(`/mcp/integrations/${workspaceId}`, createUploadSessionHttpRoutes({
       getActor: async (context) => {
-        if (context.req.path.endsWith("/open")) {
-          const body = await context.req.json().catch(() => null);
-          const input = openUploadSessionSchema.safeParse(body);
-          if (input.success) {
-            try { admitted.beforeAccept(); }
-            catch (limiterError) {
-              if (!isExpectedDomainFailure(limiterError) || limiterError.code !== "mutations_unavailable") throw limiterError;
-              try { await dependencies.service.status(admitted.actor, { clientIdempotencyKey: input.data.clientIdempotencyKey, sessionId: null, browserFingerprint: input.data.source.browserFingerprint }); }
-              catch (error) {
-                if (isExpectedDomainFailure(error) && error.code === "upload_session_not_found") throw limiterError;
-                throw error;
-              }
-            }
-          }
-        } else if (context.req.path.endsWith("/discard")) admitted.beforeAccept();
+        if (context.req.path.endsWith("/discard")) admitted.beforeAccept();
         return admitted.actor;
       },
-      service: dependencies.service,
+      service: { ...dependencies.service, open: (actor, input) => dependencies.service.open(actor, input, admitted.beforeAccept) },
     }));
     const result = await routes.fetch(request);
     result.headers.set("Cache-Control", "private, no-store");

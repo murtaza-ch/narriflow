@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ExpectedDomainFailureError, type ActorScope, type UploadSessionService } from "@narriflow/services";
+import { ExpectedDomainFailureError, integrationUploadSessionKey, integrationUploadSessions, type ActorScope, type UploadSessionService } from "@narriflow/services";
 import { buildGenerationContentPack } from "@narriflow/validators";
 import { createMcpUploadHttpHandler } from "./mcp-upload-http";
 import { mcpIntegrationAuthenticationFailure, mcpIntegrationMutationGuard } from "./mcp-integration-admission";
@@ -12,20 +12,23 @@ const unavailable = () => { throw new ExpectedDomainFailureError({ code: "mutati
 function fixture(existing: boolean) {
   let opens = 0;
   const service = {
-    async open() { opens++; return { outcome: "queued_for_ingest", sessionId: "session", projectId: "project", queuedJobId: "job" }; },
+    async open(_actor: ActorScope, opening: { clientIdempotencyKey: string }) {
+      // Integration callers name sessions by their own key; the session stores the per-user derivation.
+      expect(opening.clientIdempotencyKey).toBe(integrationUploadSessionKey(actor.actorUserId, input.clientIdempotencyKey));
+      opens++; return { outcome: "queued_for_ingest", sessionId: "session", projectId: "project", queuedJobId: "job" }; },
     async status() {
       if (!existing) throw new ExpectedDomainFailureError({ code: "upload_session_not_found", kind: "missing", message: "Upload not found" });
       return { outcome: "queued_for_ingest", sessionId: "session", projectId: "project", queuedJobId: "job" };
     },
   } as unknown as UploadSessionService;
-  return { count: () => opens, handler: createMcpUploadHttpHandler({ service, admit: async () => ({ actor, beforeAccept: unavailable }), authenticationFailure: () => null }) };
+  return { count: () => opens, handler: createMcpUploadHttpHandler({ service: integrationUploadSessions(service), admit: async () => ({ actor, beforeAccept: unavailable }), authenticationFailure: () => null }) };
 }
 function request() { return new Request(`https://narriflow.test/mcp/integrations/${workspaceId}/upload-sessions/open`, { method: "POST", body: JSON.stringify(input), headers: { "Content-Type": "application/json" } }); }
 describe("authenticated integration uploads", () => {
   test("retains the authenticated request budget for every transfer action", async () => {
     let calls = 0;
     const handler = createMcpUploadHttpHandler({
-      service: { open: async () => { calls++; }, status: async () => { calls++; }, grant: async () => { calls++; }, finalize: async () => { calls++; }, discard: async () => { calls++; } } as unknown as UploadSessionService,
+      service: integrationUploadSessions({ open: async () => { calls++; }, status: async () => { calls++; }, grant: async () => { calls++; }, finalize: async () => { calls++; }, discard: async () => { calls++; } } as unknown as UploadSessionService),
       admit: async () => ({ actor, beforeAccept: mcpIntegrationMutationGuard({ allowed: false, availability: "available", remaining: 0, limit: 300 }) }),
       authenticationFailure: (error) => mcpIntegrationAuthenticationFailure(error, "https://narriflow.test/.well-known/oauth-protected-resource/mcp"),
     });
@@ -39,7 +42,7 @@ describe("authenticated integration uploads", () => {
   });
   test("reserves OAuth challenges for authentication failures and preserves domain admission failures", async () => {
     const handler = createMcpUploadHttpHandler({
-      service: {} as UploadSessionService,
+      service: integrationUploadSessions({} as UploadSessionService),
       admit: async () => { throw new ExpectedDomainFailureError({ code: "scope_required", kind: "forbidden", message: "Explicit processing consent is required" }); },
       authenticationFailure: (error) => mcpIntegrationAuthenticationFailure(error, "https://narriflow.test/.well-known/oauth-protected-resource/mcp"),
     });

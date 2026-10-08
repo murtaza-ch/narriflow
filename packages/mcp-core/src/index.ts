@@ -1,5 +1,5 @@
 import { acceptedContent, inputRequired, inputResponse, type InputRequiredResult, type ToolAnnotations, type ClientCapabilities } from "@modelcontextprotocol/server";
-import { autopilotService, brandProfileService, clipService, clipExportService, encodeReviewSelection, projectService, operationStatusService, reviewService, socialService, socialOAuthService, socialPublishingOptions, socialPublicationScheduling, uploadSessionService, workspaceService, workspaceLibraryService, getOperationReceiptExecutor, isExpectedDomainFailure, ExpectedDomainFailureError, submitVideo, generateClips, createClipExport, projectView, clipView, exportView, integrationUploadSessions, type IntegrationMutation } from "@narriflow/services";
+import { autopilotService, brandProfileService, clipService, clipExportService, encodeReviewSelection, projectService, operationStatusService, reviewService, socialService, socialOAuthService, socialPublishingOptions, socialPublicationScheduling, uploadSessionService, workspaceService, workspaceLibraryService, getOperationReceiptExecutor, ExpectedDomainFailureError, submitVideo, generateClips, createClipExport, projectView, clipView, exportView, integrationUploadSessions, type IntegrationMutation } from "@narriflow/services";
 import * as schemas from "@narriflow/validators";
 import * as z from "zod/v4";
 import { McpToolAdmission, mcpOperationReadScope, mcpToolFailure, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
@@ -256,16 +256,9 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
       const requestedWorkspaceId = z.string().uuid().parse(input.workspaceId);
       const actor = await workspace("narriflow_upload_video", current, requestedWorkspaceId);
       const { workspaceId: _workspaceId, ...body } = input;
-      if (action === "open") {
-        const opening = schemas.openUploadSessionSchema.parse(body);
-        try { await mutation("narriflow_upload_video", current, actor.workspaceId, opening.clientIdempotencyKey).beforeAccept?.(); }
-        catch (limiterError) {
-          if (!isExpectedDomainFailure(limiterError) || limiterError.code !== "mutations_unavailable") throw limiterError;
-          try { await uploadSessions.status(actor, { clientIdempotencyKey: opening.clientIdempotencyKey, sessionId: null, browserFingerprint: opening.source.browserFingerprint }); }
-          catch (lookupError) { if (isExpectedDomainFailure(lookupError) && lookupError.code === "upload_session_not_found") throw limiterError; throw lookupError; }
-        }
-      } else if (action === "discard") await options.assertNewMutationAllowed?.({ tool: "narriflow_upload_video", principal: current, workspaceId: actor.workspaceId });
-      const outcome = action === "open" ? await uploadSessions.open(actor, schemas.openUploadSessionSchema.parse(body))
+      const assertNewMutationAllowed = async () => { await options.assertNewMutationAllowed?.({ tool: "narriflow_upload_video", principal: current, workspaceId: actor.workspaceId }); };
+      if (action === "discard") await assertNewMutationAllowed();
+      const outcome = action === "open" ? await uploadSessions.open(actor, schemas.openUploadSessionSchema.parse(body), assertNewMutationAllowed)
         : action === "status" ? await uploadSessions.status(actor, schemas.readUploadSessionSchema.parse(body))
         : action === "grants" ? await uploadSessions.grant(actor, schemas.grantUploadPartsSchema.parse(body))
         : action === "finalize" ? await uploadSessions.finalize(actor, schemas.finalizeUploadSessionSchema.parse(body))

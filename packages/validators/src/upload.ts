@@ -42,6 +42,9 @@ export const openUploadSessionSchema = z
     brandTemplateId: z.string().uuid().nullable().optional(),
     brandProfileId: z.string().uuid().nullable().optional(),
     generationContext: uploadGenerationContextSchema,
+    /** `single` asks for one signed PUT at any supported size, for machine
+     * callers that can't orchestrate multipart parts. Browsers keep `auto`. */
+    transfer: z.enum(["auto", "single"]).optional(),
     /** Browser media metadata. Reserved at admission, never trusted to settle. */
     declaredDurationSeconds: z
       .number()
