@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { MCP_TOOL_COMMANDS } from "@narriflow/mcp-core";
 import { INTEGRATION_COMMANDS, type IntegrationCommand } from "@narriflow/services";
+import { createRestApi, REST_ENDPOINT_COMMANDS } from "./rest-api/app";
 import {
   browserSessionHonoSurfaces,
   browserSessionPages,
@@ -48,6 +49,14 @@ describe("integration and browser capability parity", () => {
     const commands = Object.entries(MCP_TOOL_COMMANDS);
     expect(commands.filter(([, command]) => command === null).map(([tool]) => tool)).toEqual(["narriflow_list_workspaces"]);
     for (const [, command] of commands) if (command) expect(INTEGRATION_COMMANDS[command]).toBeDefined();
+  });
+
+  test("every REST endpoint admits one integration command with a browser peer", async () => {
+    const app = createRestApi({ checkRateLimit: async () => ({ allowed: true, availability: "available", remaining: 1, limit: 1 }), appOrigin: () => "https://narriflow.test", log: () => {} });
+    const document = await (await app.request("/api/v1/openapi.json")).json() as { paths: Record<string, Record<string, unknown>> };
+    const documented = Object.entries(document.paths).flatMap(([path, methods]) => Object.keys(methods).map((method) => `${method.toUpperCase()} ${path.replace("/api/v1", "")}`));
+    expect(documented.sort()).toEqual(Object.keys(REST_ENDPOINT_COMMANDS).sort());
+    for (const command of Object.values(REST_ENDPOINT_COMMANDS)) expect(browserPeers[command]).toBeDefined();
   });
 
   for (const command of Object.keys(browserPeers) as IntegrationCommand[]) {

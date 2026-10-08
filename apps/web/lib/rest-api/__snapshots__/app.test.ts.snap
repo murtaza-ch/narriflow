@@ -1,0 +1,4443 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`REST v1 OpenAPI document lists exactly the v1 endpoints 1`] = `
+[
+  "DELETE /uploads/{id}",
+  "GET /brand-profiles",
+  "GET /clips/{id}",
+  "GET /exports/{id}",
+  "GET /exports/{id}/download",
+  "GET /operations/{id}",
+  "GET /projects",
+  "GET /projects/{id}",
+  "GET /projects/{id}/clips",
+  "GET /uploads/{id}",
+  "GET /workspace",
+  "POST /clips/{id}/exports",
+  "POST /operations/{id}/callback/redeliver",
+  "POST /projects",
+  "POST /projects/{id}/generations",
+  "POST /uploads",
+  "POST /uploads/{id}/finalize",
+  "POST /uploads/{id}/grants",
+]
+`;
+
+exports[`REST v1 OpenAPI document changes only additively: the whole document is snapshotted 1`] = `
+{
+  "components": {
+    "parameters": {},
+    "schemas": {
+      "AcceptedCallback": {
+        "additionalProperties": false,
+        "properties": {
+          "eventId": {
+            "description": "The webhook-id this operation's completion event will carry",
+            "format": "uuid",
+            "type": "string",
+          },
+        },
+        "required": [
+          "eventId",
+        ],
+        "type": [
+          "object",
+          "null",
+        ],
+      },
+      "AcceptedOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "intake",
+              "generation",
+              "export",
+            ],
+            "type": "string",
+          },
+          "operationId": {
+            "type": "string",
+          },
+          "statusUrl": {
+            "format": "uri",
+            "type": "string",
+          },
+        },
+        "required": [
+          "operationId",
+          "kind",
+          "statusUrl",
+        ],
+        "type": "object",
+      },
+      "AcceptedProjectOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "callback": {
+            "$ref": "#/components/schemas/AcceptedCallback",
+          },
+          "operation": {
+            "$ref": "#/components/schemas/AcceptedOperation",
+          },
+          "projectId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "reviewUrl": {
+            "format": "uri",
+            "type": "string",
+          },
+        },
+        "required": [
+          "projectId",
+          "operation",
+          "reviewUrl",
+          "callback",
+        ],
+        "type": "object",
+      },
+      "BrandProfilesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profiles": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "brandProfileId": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+                "defaultStyle": {
+                  "additionalProperties": false,
+                  "description": "Caption style used when generation.captionPreset is brand_default",
+                  "properties": {
+                    "name": {
+                      "maxLength": 200,
+                      "type": "string",
+                    },
+                    "templateId": {
+                      "format": "uuid",
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "templateId",
+                    "name",
+                  ],
+                  "type": [
+                    "object",
+                    "null",
+                  ],
+                },
+                "isDefault": {
+                  "type": "boolean",
+                },
+                "name": {
+                  "maxLength": 200,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "brandProfileId",
+                "name",
+                "isDefault",
+                "defaultStyle",
+              ],
+              "type": "object",
+            },
+            "maxItems": 100,
+            "type": "array",
+          },
+        },
+        "required": [
+          "profiles",
+        ],
+        "type": "object",
+      },
+      "CallbackRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "description": "Public HTTPS URL on port 443. Receives one signed operation.completed event.",
+            "format": "uri",
+            "maxLength": 2048,
+            "type": "string",
+          },
+        },
+        "required": [
+          "url",
+        ],
+        "type": "object",
+      },
+      "Clip": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "enum": [
+              "hook",
+              "insight",
+              "story",
+              "humor",
+              "controversy",
+              "emotional",
+              "tutorial",
+              "quote",
+              "debate",
+              "surprise",
+            ],
+            "type": "string",
+          },
+          "clipId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "durationSec": {
+            "minimum": 0,
+            "type": "number",
+          },
+          "editorRevision": {
+            "minimum": 0,
+            "type": "integer",
+          },
+          "endSec": {
+            "minimum": 0,
+            "type": "number",
+          },
+          "hasPreview": {
+            "type": "boolean",
+          },
+          "hookText": {
+            "maxLength": 2000,
+            "type": "string",
+          },
+          "platformFit": {
+            "items": {
+              "enum": [
+                "tiktok",
+                "youtube_shorts",
+                "instagram_reels",
+                "facebook_reels",
+              ],
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "projectId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "reasoning": {
+            "maxLength": 2000,
+            "type": "string",
+          },
+          "reviewUrl": {
+            "format": "uri",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "scores": {
+            "additionalProperties": false,
+            "properties": {
+              "durationOptimality": {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "number",
+              },
+              "emotionalIntensity": {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "number",
+              },
+              "hookStrength": {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "number",
+              },
+              "pacing": {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "number",
+              },
+              "storyCompleteness": {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "number",
+              },
+              "virality": {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "number",
+              },
+            },
+            "required": [
+              "virality",
+              "hookStrength",
+              "emotionalIntensity",
+              "storyCompleteness",
+              "pacing",
+              "durationOptimality",
+            ],
+            "type": "object",
+          },
+          "startSec": {
+            "minimum": 0,
+            "type": "number",
+          },
+          "status": {
+            "enum": [
+              "detected",
+              "edited",
+            ],
+            "type": "string",
+          },
+          "title": {
+            "maxLength": 500,
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "transcriptExcerpt": {
+            "maxLength": 2000,
+            "type": "string",
+          },
+        },
+        "required": [
+          "clipId",
+          "projectId",
+          "editorRevision",
+          "title",
+          "status",
+          "startSec",
+          "endSec",
+          "durationSec",
+          "hookText",
+          "reasoning",
+          "category",
+          "platformFit",
+          "scores",
+          "hasPreview",
+          "reviewUrl",
+        ],
+        "type": "object",
+      },
+      "ClipResult": {
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "$ref": "#/components/schemas/Clip",
+          },
+        },
+        "required": [
+          "clip",
+        ],
+        "type": "object",
+      },
+      "ClipsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Clip",
+            },
+            "type": "array",
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+        },
+        "required": [
+          "items",
+          "nextCursor",
+        ],
+        "type": "object",
+      },
+      "CreateExportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "aspectRatios": {
+            "items": {
+              "enum": [
+                "9:16",
+                "1:1",
+                "16:9",
+                "4:5",
+              ],
+              "type": "string",
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "type": "array",
+          },
+          "callback": {
+            "$ref": "#/components/schemas/CallbackRequest",
+          },
+          "expectedRevision": {
+            "minimum": 0,
+            "type": "integer",
+          },
+          "resolution": {
+            "enum": [
+              "720p",
+              "1080p",
+            ],
+            "type": "string",
+          },
+        },
+        "required": [
+          "expectedRevision",
+          "aspectRatios",
+          "resolution",
+        ],
+        "type": "object",
+      },
+      "CreatedExportResult": {
+        "additionalProperties": false,
+        "properties": {
+          "callback": {
+            "$ref": "#/components/schemas/AcceptedCallback",
+          },
+          "export": {
+            "$ref": "#/components/schemas/Export",
+          },
+          "operation": {
+            "$ref": "#/components/schemas/AcceptedOperation",
+          },
+          "output": {
+            "additionalProperties": false,
+            "properties": {
+              "granted": {
+                "additionalProperties": false,
+                "properties": {
+                  "resolution": {
+                    "enum": [
+                      "720p",
+                      "1080p",
+                    ],
+                    "type": "string",
+                  },
+                  "watermark": {
+                    "type": "boolean",
+                  },
+                },
+                "required": [
+                  "resolution",
+                  "watermark",
+                ],
+                "type": "object",
+              },
+              "reason": {
+                "description": "Why the granted output differs from the request",
+                "enum": [
+                  "plan_limit",
+                ],
+                "type": [
+                  "string",
+                  "null",
+                ],
+              },
+              "requested": {
+                "additionalProperties": false,
+                "properties": {
+                  "resolution": {
+                    "enum": [
+                      "720p",
+                      "1080p",
+                    ],
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "resolution",
+                ],
+                "type": "object",
+              },
+            },
+            "required": [
+              "requested",
+              "granted",
+              "reason",
+            ],
+            "type": "object",
+          },
+          "reused": {
+            "description": "An identical export of this revision already existed",
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "export",
+          "reused",
+          "output",
+          "operation",
+          "callback",
+        ],
+        "type": "object",
+      },
+      "Error": {
+        "additionalProperties": false,
+        "properties": {
+          "details": {
+            "additionalProperties": {},
+            "description": "Structured facts about the failure, such as limits or validation issues",
+            "type": "object",
+          },
+          "error": {
+            "description": "Stable error code",
+            "type": "string",
+          },
+          "message": {
+            "type": "string",
+          },
+          "requestId": {
+            "type": "string",
+          },
+          "retryAfterSeconds": {
+            "exclusiveMinimum": 0,
+            "type": "number",
+          },
+        },
+        "required": [
+          "error",
+          "message",
+          "requestId",
+        ],
+        "type": "object",
+      },
+      "Export": {
+        "additionalProperties": false,
+        "properties": {
+          "clipId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "completedAt": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+          },
+          "currentEditorRevision": {
+            "minimum": 0,
+            "type": "integer",
+          },
+          "editorRevision": {
+            "minimum": 0,
+            "type": "integer",
+          },
+          "exportId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "isOlderVersion": {
+            "type": "boolean",
+          },
+          "progress": {
+            "maximum": 100,
+            "minimum": 0,
+            "type": "number",
+          },
+          "projectId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "resolution": {
+            "enum": [
+              "720p",
+              "1080p",
+            ],
+            "type": "string",
+          },
+          "reviewUrl": {
+            "format": "uri",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "rendering",
+              "partial_ready",
+              "ready",
+              "failed",
+            ],
+            "type": "string",
+          },
+          "variants": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "aspectRatio": {
+                  "enum": [
+                    "9:16",
+                    "1:1",
+                    "16:9",
+                    "4:5",
+                  ],
+                  "type": "string",
+                },
+                "durationSeconds": {
+                  "minimum": 0,
+                  "type": [
+                    "number",
+                    "null",
+                  ],
+                },
+                "hasAsset": {
+                  "type": "boolean",
+                },
+                "resolution": {
+                  "enum": [
+                    "720p",
+                    "1080p",
+                  ],
+                  "type": "string",
+                },
+                "status": {
+                  "enum": [
+                    "pending",
+                    "rendering",
+                    "completed",
+                    "failed",
+                  ],
+                  "type": "string",
+                },
+                "variantId": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "variantId",
+                "aspectRatio",
+                "resolution",
+                "status",
+                "hasAsset",
+                "durationSeconds",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "watermark": {
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "exportId",
+          "projectId",
+          "clipId",
+          "editorRevision",
+          "currentEditorRevision",
+          "isOlderVersion",
+          "resolution",
+          "watermark",
+          "status",
+          "progress",
+          "createdAt",
+          "completedAt",
+          "variants",
+          "reviewUrl",
+        ],
+        "type": "object",
+      },
+      "ExportDownload": {
+        "additionalProperties": false,
+        "properties": {
+          "clipId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "editorRevision": {
+            "minimum": 0,
+            "type": "integer",
+          },
+          "exportId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "projectId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "subtitles": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "maxLength": 500000,
+                  "type": "string",
+                },
+                "fileName": {
+                  "maxLength": 200,
+                  "type": "string",
+                },
+                "format": {
+                  "enum": [
+                    "srt",
+                    "vtt",
+                  ],
+                  "type": "string",
+                },
+              },
+              "required": [
+                "format",
+                "fileName",
+                "content",
+              ],
+              "type": "object",
+            },
+            "maxItems": 2,
+            "type": "array",
+          },
+          "variants": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "aspectRatio": {
+                  "enum": [
+                    "9:16",
+                    "1:1",
+                    "16:9",
+                    "4:5",
+                  ],
+                  "type": "string",
+                },
+                "downloadUrl": {
+                  "description": "Private Download Grant; do not share or store",
+                  "format": "uri",
+                  "maxLength": 8192,
+                  "type": "string",
+                },
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": "string",
+                },
+                "fileName": {
+                  "maxLength": 200,
+                  "type": "string",
+                },
+                "resolution": {
+                  "enum": [
+                    "720p",
+                    "1080p",
+                  ],
+                  "type": "string",
+                },
+                "sizeBytes": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null",
+                  ],
+                },
+                "variantId": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+                "watermark": {
+                  "type": "boolean",
+                },
+              },
+              "required": [
+                "variantId",
+                "aspectRatio",
+                "resolution",
+                "watermark",
+                "fileName",
+                "sizeBytes",
+                "downloadUrl",
+                "expiresAt",
+              ],
+              "type": "object",
+            },
+            "maxItems": 4,
+            "type": "array",
+          },
+        },
+        "required": [
+          "exportId",
+          "projectId",
+          "clipId",
+          "editorRevision",
+          "variants",
+          "subtitles",
+        ],
+        "type": "object",
+      },
+      "ExportResult": {
+        "additionalProperties": false,
+        "properties": {
+          "export": {
+            "$ref": "#/components/schemas/Export",
+          },
+        },
+        "required": [
+          "export",
+        ],
+        "type": "object",
+      },
+      "FinalizeUploadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "callback": {
+            "$ref": "#/components/schemas/CallbackRequest",
+          },
+          "parts": {
+            "default": [],
+            "description": "Every uploaded part with its ETag; empty for a single PUT",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "etag": {
+                  "maxLength": 1024,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "partNumber": {
+                  "exclusiveMinimum": 0,
+                  "type": "integer",
+                },
+              },
+              "required": [
+                "partNumber",
+                "etag",
+              ],
+              "type": "object",
+            },
+            "maxItems": 10000,
+            "type": "array",
+          },
+        },
+        "type": "object",
+      },
+      "GenerateClipsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "callback": {
+            "$ref": "#/components/schemas/CallbackRequest",
+          },
+          "forceRegenerate": {
+            "default": false,
+            "type": "boolean",
+          },
+          "generation": {
+            "$ref": "#/components/schemas/GenerationSettings",
+          },
+        },
+        "type": "object",
+      },
+      "GenerationSettings": {
+        "additionalProperties": false,
+        "properties": {
+          "autoHook": {
+            "default": true,
+            "type": "boolean",
+          },
+          "captionPreset": {
+            "default": "brand_default",
+            "enum": [
+              "brand_default",
+              "bold-pop",
+              "blast",
+              "punch",
+              "spotlight",
+              "street",
+              "electric",
+              "rise",
+              "focus",
+              "glass",
+              "sticker",
+              "frosted-glass",
+              "highlighter",
+              "bubblegum",
+              "jelly",
+              "candy",
+              "retro",
+              "afterglow",
+              "cinema",
+              "karaoke",
+              "neon",
+              "glitch",
+              "flip",
+              "typewriter",
+              "block",
+            ],
+            "type": "string",
+          },
+          "clipCountTarget": {
+            "default": 10,
+            "maximum": 30,
+            "minimum": 3,
+            "type": "integer",
+          },
+          "clipLengthPreset": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "under_30s",
+              "30_to_60s",
+              "60_to_120s",
+              "120_to_180s",
+            ],
+            "type": "string",
+          },
+          "defaultAspectRatio": {
+            "default": "9:16",
+            "enum": [
+              "9:16",
+              "1:1",
+              "16:9",
+              "4:5",
+            ],
+            "type": "string",
+          },
+          "languageCode": {
+            "default": null,
+            "enum": [
+              "en",
+              "en_au",
+              "en_uk",
+              "en_us",
+              "es",
+              "fr",
+              "de",
+              "it",
+              "pt",
+              "nl",
+              "af",
+              "sq",
+              "am",
+              "ar",
+              "hy",
+              "as",
+              "az",
+              "ba",
+              "eu",
+              "be",
+              "bn",
+              "bs",
+              "br",
+              "bg",
+              "my",
+              "ca",
+              "zh",
+              "hr",
+              "cs",
+              "da",
+              "et",
+              "fo",
+              "fi",
+              "gl",
+              "ka",
+              "el",
+              "gu",
+              "ht",
+              "ha",
+              "haw",
+              "he",
+              "hi",
+              "hu",
+              "is",
+              "id",
+              "ja",
+              "jw",
+              "kn",
+              "kk",
+              "km",
+              "ko",
+              "lo",
+              "la",
+              "lv",
+              "ln",
+              "lt",
+              "lb",
+              "mk",
+              "mg",
+              "ms",
+              "ml",
+              "mt",
+              "mi",
+              "mr",
+              "mn",
+              "ne",
+              "no",
+              "nn",
+              "oc",
+              "pa",
+              "ps",
+              "fa",
+              "pl",
+              "ro",
+              "ru",
+              "sa",
+              "sr",
+              "sn",
+              "sd",
+              "si",
+              "sk",
+              "sl",
+              "so",
+              "su",
+              "sw",
+              "sv",
+              "tl",
+              "tg",
+              "ta",
+              "tt",
+              "te",
+              "th",
+              "bo",
+              "tr",
+              "tk",
+              "uk",
+              "ur",
+              "uz",
+              "vi",
+              "cy",
+              "yi",
+              "yo",
+              null,
+            ],
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "mode": {
+            "default": "clip",
+            "enum": [
+              "clip",
+              "caption_only",
+            ],
+            "type": "string",
+          },
+          "processingEndSec": {
+            "default": null,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null",
+            ],
+          },
+          "processingStartSec": {
+            "default": null,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null",
+            ],
+          },
+          "specificMoments": {
+            "default": "",
+            "maxLength": 500,
+            "type": "string",
+          },
+        },
+        "type": "object",
+      },
+      "GrantPartsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "partNumbers": {
+            "items": {
+              "exclusiveMinimum": 0,
+              "type": "integer",
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array",
+          },
+        },
+        "required": [
+          "partNumbers",
+        ],
+        "type": "object",
+      },
+      "GrantPartsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string",
+          },
+          "parts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "partNumber": {
+                  "type": "integer",
+                },
+                "url": {
+                  "format": "uri",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "partNumber",
+                "url",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "uploadId": {
+            "format": "uuid",
+            "type": "string",
+          },
+        },
+        "required": [
+          "uploadId",
+          "expiresAt",
+          "parts",
+        ],
+        "type": "object",
+      },
+      "OpenUploadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "brandProfileId": {
+            "description": "Omit to use the Workspace default Brand Profile",
+            "format": "uuid",
+            "type": "string",
+          },
+          "file": {
+            "additionalProperties": false,
+            "properties": {
+              "contentType": {
+                "enum": [
+                  "video/mp4",
+                  "video/quicktime",
+                  "video/webm",
+                  "video/x-matroska",
+                  "audio/mpeg",
+                  "audio/wav",
+                  "audio/x-wav",
+                  "audio/mp4",
+                  "audio/aac",
+                ],
+                "type": "string",
+              },
+              "name": {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string",
+              },
+              "sizeBytes": {
+                "exclusiveMinimum": 0,
+                "maximum": 5363466240,
+                "type": "integer",
+              },
+            },
+            "required": [
+              "name",
+              "sizeBytes",
+              "contentType",
+            ],
+            "type": "object",
+          },
+          "generation": {
+            "$ref": "#/components/schemas/GenerationSettings",
+          },
+          "title": {
+            "description": "Defaults to the file name",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string",
+          },
+          "transfer": {
+            "default": "auto",
+            "description": "single returns one signed PUT at any supported size; auto uses multipart above 100 MiB",
+            "enum": [
+              "auto",
+              "single",
+            ],
+            "type": "string",
+          },
+        },
+        "required": [
+          "file",
+        ],
+        "type": "object",
+      },
+      "Operation": {
+        "additionalProperties": false,
+        "properties": {
+          "failureCode": {
+            "maxLength": 200,
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "failureCode": {
+                  "maxLength": 200,
+                  "type": [
+                    "string",
+                    "null",
+                  ],
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+                "kind": {
+                  "enum": [
+                    "clip",
+                    "variant",
+                  ],
+                  "type": "string",
+                },
+                "state": {
+                  "enum": [
+                    "working",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                  ],
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "id",
+                "state",
+                "failureCode",
+              ],
+              "type": "object",
+            },
+            "maxItems": 2000,
+            "type": "array",
+          },
+          "kind": {
+            "enum": [
+              "intake",
+              "generation",
+              "export",
+            ],
+            "type": "string",
+          },
+          "operationId": {
+            "type": "string",
+          },
+          "progress": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number",
+          },
+          "results": {
+            "additionalProperties": false,
+            "properties": {
+              "clipIds": {
+                "items": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+                "maxItems": 2000,
+                "type": "array",
+              },
+              "exportId": {
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null",
+                ],
+              },
+              "projectId": {
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null",
+                ],
+              },
+            },
+            "required": [
+              "projectId",
+              "clipIds",
+              "exportId",
+            ],
+            "type": "object",
+          },
+          "reviewUrl": {
+            "format": "uri",
+            "maxLength": 4096,
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "stage": {
+            "maxLength": 60,
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "state": {
+            "enum": [
+              "working",
+              "completed",
+              "partial",
+              "failed",
+              "cancelled",
+            ],
+            "type": "string",
+          },
+          "statusUrl": {
+            "format": "uri",
+            "type": "string",
+          },
+        },
+        "required": [
+          "state",
+          "stage",
+          "progress",
+          "items",
+          "results",
+          "failureCode",
+          "reviewUrl",
+          "operationId",
+          "kind",
+          "statusUrl",
+        ],
+        "type": "object",
+      },
+      "Project": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+          },
+          "durationSeconds": {
+            "minimum": 0,
+            "type": [
+              "number",
+              "null",
+            ],
+          },
+          "ingestStatus": {
+            "enum": [
+              "pending",
+              "uploading",
+              "queued",
+              "downloading",
+              "normalizing",
+              "ready",
+              "failed",
+            ],
+            "type": "string",
+          },
+          "languageCode": {
+            "maxLength": 30,
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "projectId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "reviewUrl": {
+            "format": "uri",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "sourceType": {
+            "enum": [
+              "upload",
+              "youtube",
+              "rss",
+              "link",
+            ],
+            "type": "string",
+          },
+          "title": {
+            "maxLength": 500,
+            "type": "string",
+          },
+          "workspaceId": {
+            "format": "uuid",
+            "type": "string",
+          },
+        },
+        "required": [
+          "projectId",
+          "workspaceId",
+          "title",
+          "sourceType",
+          "ingestStatus",
+          "durationSeconds",
+          "languageCode",
+          "createdAt",
+          "reviewUrl",
+        ],
+        "type": "object",
+      },
+      "ProjectResult": {
+        "additionalProperties": false,
+        "properties": {
+          "progress": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "type": "boolean",
+              },
+              "label": {
+                "maxLength": 200,
+                "type": "string",
+              },
+              "percent": {
+                "maximum": 100,
+                "minimum": 0,
+                "type": [
+                  "number",
+                  "null",
+                ],
+              },
+              "stage": {
+                "maxLength": 100,
+                "type": [
+                  "string",
+                  "null",
+                ],
+              },
+              "status": {
+                "enum": [
+                  "ready",
+                  "processing",
+                  "queued",
+                  "failed",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "status",
+              "label",
+              "active",
+              "stage",
+              "percent",
+            ],
+            "type": [
+              "object",
+              "null",
+            ],
+          },
+          "project": {
+            "$ref": "#/components/schemas/Project",
+          },
+        },
+        "required": [
+          "project",
+          "progress",
+        ],
+        "type": "object",
+      },
+      "ProjectsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "clipCount": {
+                  "minimum": 0,
+                  "type": "integer",
+                },
+                "createdAt": {
+                  "format": "date-time",
+                  "type": "string",
+                },
+                "durationSeconds": {
+                  "minimum": 0,
+                  "type": [
+                    "number",
+                    "null",
+                  ],
+                },
+                "ingestStatus": {
+                  "enum": [
+                    "pending",
+                    "uploading",
+                    "queued",
+                    "downloading",
+                    "normalizing",
+                    "ready",
+                    "failed",
+                  ],
+                  "type": "string",
+                },
+                "languageCode": {
+                  "maxLength": 30,
+                  "type": [
+                    "string",
+                    "null",
+                  ],
+                },
+                "progress": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "active": {
+                      "type": "boolean",
+                    },
+                    "label": {
+                      "maxLength": 200,
+                      "type": "string",
+                    },
+                    "percent": {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": [
+                        "number",
+                        "null",
+                      ],
+                    },
+                    "stage": {
+                      "maxLength": 100,
+                      "type": [
+                        "string",
+                        "null",
+                      ],
+                    },
+                    "status": {
+                      "enum": [
+                        "ready",
+                        "processing",
+                        "queued",
+                        "failed",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "status",
+                    "label",
+                    "active",
+                    "stage",
+                    "percent",
+                  ],
+                  "type": "object",
+                },
+                "projectId": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+                "reviewUrl": {
+                  "format": "uri",
+                  "maxLength": 4096,
+                  "type": "string",
+                },
+                "sourceType": {
+                  "enum": [
+                    "upload",
+                    "youtube",
+                    "rss",
+                    "link",
+                  ],
+                  "type": "string",
+                },
+                "title": {
+                  "maxLength": 500,
+                  "type": "string",
+                },
+                "workspaceId": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "projectId",
+                "workspaceId",
+                "title",
+                "sourceType",
+                "ingestStatus",
+                "durationSeconds",
+                "languageCode",
+                "createdAt",
+                "reviewUrl",
+                "progress",
+                "clipCount",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "totalCount": {
+            "minimum": 0,
+            "type": "integer",
+          },
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "totalCount",
+        ],
+        "type": "object",
+      },
+      "RedeliverResult": {
+        "additionalProperties": false,
+        "properties": {
+          "callbacks": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "eventId": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+                "state": {
+                  "enum": [
+                    "waiting",
+                    "pending",
+                    "delivered",
+                    "failed",
+                    "cancelled",
+                  ],
+                  "type": "string",
+                },
+              },
+              "required": [
+                "eventId",
+                "state",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "callbacks",
+        ],
+        "type": "object",
+      },
+      "SubmitVideoRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "brandProfileId": {
+            "description": "Omit to use the Workspace default Brand Profile",
+            "format": "uuid",
+            "type": "string",
+          },
+          "callback": {
+            "$ref": "#/components/schemas/CallbackRequest",
+          },
+          "generation": {
+            "$ref": "#/components/schemas/GenerationSettings",
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string",
+          },
+          "url": {
+            "description": "A supported video link",
+            "format": "uri",
+            "maxLength": 4096,
+            "type": "string",
+          },
+        },
+        "required": [
+          "url",
+        ],
+        "type": "object",
+      },
+      "Upload": {
+        "additionalProperties": false,
+        "properties": {
+          "expiresAt": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "failureCode": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "operation": {
+            "additionalProperties": false,
+            "description": "The upload intake, once finalize accepts it",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "intake",
+                  "generation",
+                  "export",
+                ],
+                "type": "string",
+              },
+              "operationId": {
+                "type": "string",
+              },
+              "statusUrl": {
+                "format": "uri",
+                "type": "string",
+              },
+            },
+            "required": [
+              "operationId",
+              "kind",
+              "statusUrl",
+            ],
+            "type": [
+              "object",
+              "null",
+            ],
+          },
+          "projectId": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "retryAfterSeconds": {
+            "exclusiveMinimum": 0,
+            "type": [
+              "integer",
+              "null",
+            ],
+          },
+          "state": {
+            "enum": [
+              "uploading",
+              "reconciling",
+              "queued_for_ingest",
+              "terminal",
+              "discarded",
+              "compensating",
+            ],
+            "type": "string",
+          },
+          "transfer": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "headers": {
+                    "additionalProperties": {
+                      "type": "string",
+                    },
+                    "type": "object",
+                  },
+                  "kind": {
+                    "enum": [
+                      "single",
+                    ],
+                    "type": "string",
+                  },
+                  "method": {
+                    "enum": [
+                      "PUT",
+                    ],
+                    "type": "string",
+                  },
+                  "url": {
+                    "format": "uri",
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "kind",
+                  "method",
+                  "url",
+                  "headers",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "completedParts": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "etag": {
+                          "type": "string",
+                        },
+                        "partNumber": {
+                          "type": "integer",
+                        },
+                      },
+                      "required": [
+                        "partNumber",
+                        "etag",
+                      ],
+                      "type": "object",
+                    },
+                    "type": "array",
+                  },
+                  "concurrency": {
+                    "type": "integer",
+                  },
+                  "grantExpiresAt": {
+                    "format": "date-time",
+                    "type": "string",
+                  },
+                  "kind": {
+                    "enum": [
+                      "multipart",
+                    ],
+                    "type": "string",
+                  },
+                  "partCount": {
+                    "type": "integer",
+                  },
+                  "partSizeBytes": {
+                    "type": "integer",
+                  },
+                  "parts": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "partNumber": {
+                          "type": "integer",
+                        },
+                        "url": {
+                          "format": "uri",
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "partNumber",
+                        "url",
+                      ],
+                      "type": "object",
+                    },
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "kind",
+                  "partSizeBytes",
+                  "partCount",
+                  "concurrency",
+                  "parts",
+                  "grantExpiresAt",
+                  "completedParts",
+                ],
+                "type": "object",
+              },
+              {
+                "type": "null",
+              },
+            ],
+            "description": "Signed storage URLs. Never log or share them.",
+          },
+          "uploadId": {
+            "format": "uuid",
+            "type": "string",
+          },
+        },
+        "required": [
+          "uploadId",
+          "state",
+          "projectId",
+          "expiresAt",
+          "transfer",
+          "retryAfterSeconds",
+          "failureCode",
+          "operation",
+        ],
+        "type": "object",
+      },
+      "UploadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "callback": {
+            "$ref": "#/components/schemas/AcceptedCallback",
+          },
+          "upload": {
+            "$ref": "#/components/schemas/Upload",
+          },
+        },
+        "required": [
+          "upload",
+        ],
+        "type": "object",
+      },
+      "WorkspaceResult": {
+        "additionalProperties": false,
+        "properties": {
+          "usage": {
+            "additionalProperties": false,
+            "properties": {
+              "inFlight": {
+                "description": "Videos currently processing",
+                "minimum": 0,
+                "type": "integer",
+              },
+              "inFlightLimit": {
+                "description": "Videos the plan may process at once",
+                "exclusiveMinimum": 0,
+                "type": "integer",
+              },
+              "limitMinutes": {
+                "minimum": 0,
+                "type": "integer",
+              },
+              "maxUploadSeconds": {
+                "description": "Per-video duration limit",
+                "minimum": 0,
+                "type": "integer",
+              },
+              "remainingMinutes": {
+                "minimum": 0,
+                "type": "integer",
+              },
+              "reservedMinutes": {
+                "description": "Minutes reserved for videos still importing",
+                "minimum": 0,
+                "type": "integer",
+              },
+              "tier": {
+                "maxLength": 30,
+                "type": "string",
+              },
+              "usedMinutes": {
+                "description": "Settled processing minutes this UTC month",
+                "minimum": 0,
+                "type": "integer",
+              },
+            },
+            "required": [
+              "tier",
+              "usedMinutes",
+              "reservedMinutes",
+              "limitMinutes",
+              "remainingMinutes",
+              "inFlight",
+              "inFlightLimit",
+              "maxUploadSeconds",
+            ],
+            "type": "object",
+          },
+          "workspace": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+              },
+              "pricingTier": {
+                "type": "string",
+              },
+              "role": {
+                "enum": [
+                  "owner",
+                  "admin",
+                  "editor",
+                  "viewer",
+                ],
+                "type": "string",
+              },
+              "status": {
+                "type": "string",
+              },
+              "workspaceId": {
+                "format": "uuid",
+                "type": "string",
+              },
+            },
+            "required": [
+              "workspaceId",
+              "name",
+              "role",
+              "status",
+              "pricingTier",
+            ],
+            "type": "object",
+          },
+        },
+        "required": [
+          "workspace",
+          "usage",
+        ],
+        "type": "object",
+      },
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "A Workspace API key (nf_…) from Settings → API",
+        "scheme": "bearer",
+        "type": "http",
+      },
+    },
+  },
+  "info": {
+    "description": "Turn long videos into short, captioned clips. Changes within v1 are additive.",
+    "title": "Narriflow API",
+    "version": "1.0.0",
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/brand-profiles": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandProfilesResult",
+                },
+              },
+            },
+            "description": "Brand Profiles",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "List Brand Profiles",
+        "tags": [
+          "Workspace",
+        ],
+      },
+    },
+    "/api/v1/clips/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+          {
+            "in": "query",
+            "name": "includeTranscriptExcerpt",
+            "required": false,
+            "schema": {
+              "default": "false",
+              "enum": [
+                "true",
+                "false",
+              ],
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipResult",
+                },
+              },
+            },
+            "description": "The clip",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Get a clip",
+        "tags": [
+          "Clips",
+        ],
+      },
+    },
+    "/api/v1/clips/{id}/exports": {
+      "post": {
+        "description": "Exports the exact editor revision in the selected formats. The response reports any plan limit applied to resolution or watermark.",
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+          {
+            "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+              "pattern": "^[A-Za-z0-9._~:-]{1,200}$",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateExportRequest",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedExportResult",
+                },
+              },
+            },
+            "description": "Accepted export",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Export a clip revision",
+        "tags": [
+          "Exports",
+        ],
+      },
+    },
+    "/api/v1/exports/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportResult",
+                },
+              },
+            },
+            "description": "The export",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Get an export",
+        "tags": [
+          "Exports",
+        ],
+      },
+    },
+    "/api/v1/exports/{id}/download": {
+      "get": {
+        "description": "Fresh private download URLs (valid 15 minutes) for a finished export's files, plus SRT and VTT subtitles. Call again for new URLs.",
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+          {
+            "in": "query",
+            "name": "variantId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportDownload",
+                },
+              },
+            },
+            "description": "Download Grants",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Issue Download Grants and subtitles",
+        "tags": [
+          "Exports",
+        ],
+      },
+    },
+    "/api/v1/operations/{id}": {
+      "get": {
+        "description": "Follows exactly the work one accepted request started, with per-clip or per-format outcomes.",
+        "parameters": [
+          {
+            "description": "Operation ID from an accepted request",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Operation ID from an accepted request",
+              "pattern": "^op_[A-Za-z0-9_-]{23}$",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation",
+                },
+              },
+            },
+            "description": "Operation Status",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Get Operation Status",
+        "tags": [
+          "Operations",
+        ],
+      },
+    },
+    "/api/v1/operations/{id}/callback/redeliver": {
+      "post": {
+        "description": "Resets this operation's delivered or failed callbacks with a fresh attempt budget and the same event IDs.",
+        "parameters": [
+          {
+            "description": "Operation ID from an accepted request",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Operation ID from an accepted request",
+              "pattern": "^op_[A-Za-z0-9_-]{23}$",
+              "type": "string",
+            },
+          },
+          {
+            "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+              "pattern": "^[A-Za-z0-9._~:-]{1,200}$",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedeliverResult",
+                },
+              },
+            },
+            "description": "Callbacks queued again",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Redeliver completion callbacks",
+        "tags": [
+          "Operations",
+        ],
+      },
+    },
+    "/api/v1/projects": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer",
+            },
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 512,
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectsResult",
+                },
+              },
+            },
+            "description": "A page of projects",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "List projects",
+        "tags": [
+          "Projects",
+        ],
+      },
+      "post": {
+        "description": "Imports a supported video link with committed generation settings. Accepts an optional completion callback.",
+        "parameters": [
+          {
+            "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+              "pattern": "^[A-Za-z0-9._~:-]{1,200}$",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitVideoRequest",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedProjectOperation",
+                },
+              },
+            },
+            "description": "Accepted intake",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Submit a video link",
+        "tags": [
+          "Projects",
+        ],
+      },
+    },
+    "/api/v1/projects/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResult",
+                },
+              },
+            },
+            "description": "The project",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Get a project",
+        "tags": [
+          "Projects",
+        ],
+      },
+    },
+    "/api/v1/projects/{id}/clips": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer",
+            },
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 512,
+              "type": "string",
+            },
+          },
+          {
+            "in": "query",
+            "name": "includeTranscriptExcerpt",
+            "required": false,
+            "schema": {
+              "default": "false",
+              "enum": [
+                "true",
+                "false",
+              ],
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipsResult",
+                },
+              },
+            },
+            "description": "A page of clips",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "List a project's clips by virality",
+        "tags": [
+          "Clips",
+        ],
+      },
+    },
+    "/api/v1/projects/{id}/generations": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+          {
+            "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+              "pattern": "^[A-Za-z0-9._~:-]{1,200}$",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateClipsRequest",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedProjectOperation",
+                },
+              },
+            },
+            "description": "Accepted generation",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Generate clips",
+        "tags": [
+          "Projects",
+        ],
+      },
+    },
+    "/api/v1/uploads": {
+      "post": {
+        "description": "Returns signed transfer URLs. Use transfer "single" to upload any supported size with one PUT. Retrying with the same Idempotency-Key returns the same Upload Session.",
+        "parameters": [
+          {
+            "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+              "pattern": "^[A-Za-z0-9._~:-]{1,200}$",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenUploadRequest",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResult",
+                },
+              },
+            },
+            "description": "The Upload Session",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Open an Upload Session",
+        "tags": [
+          "Uploads",
+        ],
+      },
+    },
+    "/api/v1/uploads/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResult",
+                },
+              },
+            },
+            "description": "The discarded Upload Session",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Discard an unfinished upload",
+        "tags": [
+          "Uploads",
+        ],
+      },
+      "get": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResult",
+                },
+              },
+            },
+            "description": "The Upload Session",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Read an Upload Session",
+        "tags": [
+          "Uploads",
+        ],
+      },
+    },
+    "/api/v1/uploads/{id}/finalize": {
+      "post": {
+        "description": "Starts the upload intake. Repeating finalize for the same Upload Session returns its current state; a different callback URL is a conflict.",
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeUploadRequest",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResult",
+                },
+              },
+            },
+            "description": "The accepted intake",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Finalize an upload and start its intake",
+        "tags": [
+          "Uploads",
+        ],
+      },
+    },
+    "/api/v1/uploads/{id}/grants": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantPartsRequest",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantPartsResult",
+                },
+              },
+            },
+            "description": "Signed part URLs",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Issue more multipart part URLs",
+        "tags": [
+          "Uploads",
+        ],
+      },
+    },
+    "/api/v1/workspace": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceResult",
+                },
+              },
+            },
+            "description": "Workspace and usage",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Get the key's Workspace, plan, and processing usage",
+        "tags": [
+          "Workspace",
+        ],
+      },
+    },
+  },
+  "servers": [
+    {
+      "url": "http://localhost",
+    },
+  ],
+  "webhooks": {},
+}
+`;

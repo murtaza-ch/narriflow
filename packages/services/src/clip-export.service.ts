@@ -463,7 +463,7 @@ export class ClipExportService {
     },
     idempotencyKey: string,
     mutation?: IntegrationMutation,
-  ): Promise<{ export: ClipExportSnapshot; reused: boolean; output: ClipExportOutput; replayed: boolean }> {
+  ): Promise<{ export: ClipExportSnapshot; reused: boolean; output: ClipExportOutput; replayed: boolean; receiptId: string }> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
     let clip: NonNullable<Awaited<ReturnType<typeof loadClip>>>;
@@ -614,7 +614,7 @@ export class ClipExportService {
         };
       },
     });
-    return { ...accepted.value, replayed: accepted.replayed };
+    return { ...accepted.value, replayed: accepted.replayed, receiptId: accepted.receiptId };
   }
 
   async getOwned(

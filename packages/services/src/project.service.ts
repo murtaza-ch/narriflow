@@ -1091,7 +1091,7 @@ export class ProjectService {
 					};
 				},
 			});
-			return { ...accepted.value, replayed: accepted.replayed };
+			return { ...accepted.value, replayed: accepted.replayed, receiptId: accepted.receiptId };
 		}
 
 		if (!idempotencyKey)
@@ -1371,7 +1371,7 @@ export class ProjectService {
 					};
 				},
 			});
-			return { ...accepted.value, replayed: accepted.replayed };
+			return { ...accepted.value, replayed: accepted.replayed, receiptId: accepted.receiptId };
 		}
 		await prepare();
 		try {

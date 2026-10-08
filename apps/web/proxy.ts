@@ -31,15 +31,17 @@ const isProtectedRoute = createRouteMatcher([
 
 const isPublicInfrastructureRoute = createRouteMatcher([
   "/api/health",
+  "/api/v1(.*)",
   "/mcp(.*)",
   "/.well-known/oauth-protected-resource(.*)",
   "/.well-known/oauth-authorization-server(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
-  // MCP verifies its own OAuth/API-key bearer token. Its discovery documents
-  // and the health check are public infrastructure endpoints, so none should
-  // wait on or depend on Clerk's browser-session middleware.
+  // MCP verifies its own OAuth/API-key bearer token and the REST API verifies
+  // its own API keys. Their discovery documents and the health check are
+  // public infrastructure endpoints, so none should wait on or depend on
+  // Clerk's browser-session middleware.
   if (isPublicInfrastructureRoute(req)) return NextResponse.next();
 
   const { userId } = await auth();
@@ -67,6 +69,6 @@ export default clerkMiddleware(async (auth, req) => {
 
 export const config = {
   matcher: [
-    "/((?!_next|mcp(?:/|$)|\\.well-known/oauth-(?:protected-resource|authorization-server)(?:/|$)|api/health(?:/|$)|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+    "/((?!_next|mcp(?:/|$)|api/v1(?:/|$)|\\.well-known/oauth-(?:protected-resource|authorization-server)(?:/|$)|api/health(?:/|$)|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
   ],
 };

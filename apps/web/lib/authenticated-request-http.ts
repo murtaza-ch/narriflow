@@ -26,6 +26,12 @@ const DOMAIN_FAILURE_HTTP: Record<
   unavailable: { category: "unavailable", status: 503 },
 };
 
+/** The HTTP status for an expected domain failure, shared by the browser API
+ * and the public REST API. */
+export function domainFailureHttpStatus(kind: ExpectedDomainFailureKind) {
+  return DOMAIN_FAILURE_HTTP[kind].status;
+}
+
 export function authenticatedRequestDomainFailure(
   failure: ExpectedDomainFailure,
 ): AuthenticatedRequestFailure {

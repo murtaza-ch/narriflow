@@ -10,7 +10,9 @@ import { clipExportService } from "./clip-export.service";
 import { ExpectedDomainFailureError, isExpectedDomainFailure } from "./expected-domain-failure";
 import type { IntegrationCommand } from "./integration-admission";
 import type { IntegrationMutation } from "./operation-receipt";
-import { resetCompletionCallbacks } from "./completion-callback-runtime";
+import { getPrismaClient } from "@narriflow/db/client";
+import { callbackEventId, resetCompletionCallbacks } from "./completion-callback-runtime";
+import { accessibleProjectWhere } from "./project-access";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { operationStatusService } from "./operation-status-runtime";
 import { projectService } from "./project.service";
@@ -67,7 +69,7 @@ export function integrationUploadSessions(service: UploadSessionCommands): Integ
     },
     status: (actor, input) => service.status(actor, { ...input, clientIdempotencyKey: integrationUploadSessionKey(actor.actorUserId, input.clientIdempotencyKey) }),
     grant: (actor, input) => service.grant(actor, input),
-    finalize: (actor, input) => service.finalize(actor, input),
+    finalize: (actor, input, options) => service.finalize(actor, input, options),
     discard: (actor, input) => service.discard(actor, input),
   };
 }
@@ -75,6 +77,11 @@ export function integrationUploadSessions(service: UploadSessionCommands): Integ
 export interface OperationRef {
   kind: "intake" | "generation" | "export";
   id: string;
+}
+
+/** What an accepted starting command reports about its callback. */
+function acceptedCallback(mutation: IntegrationMutation, receiptId: string) {
+  return mutation.callback ? { eventId: callbackEventId(receiptId) } : null;
 }
 
 function generationContext(settings: GenerationSettings) {
@@ -94,10 +101,12 @@ export async function submitVideo(
   if (!accepted.queuedJobId) {
     throw new ExpectedDomainFailureError({ code: "intake_operation_missing", kind: "unavailable", message: "The accepted import has no operation identifier" });
   }
+  const receiptId = "receiptId" in accepted ? accepted.receiptId : "";
   return {
     projectId: accepted.project.id,
     operation: { kind: "intake", id: accepted.queuedJobId } satisfies OperationRef,
     replayed: "replayed" in accepted && accepted.replayed,
+    callback: acceptedCallback(mutation, receiptId),
   };
 }
 
@@ -114,10 +123,12 @@ export async function generateClips(
     integrationKeyUuid(actor.actorUserId, "generate_clips", mutation.clientIdempotencyKey),
     { mutation },
   );
+  const receiptId = "receiptId" in accepted ? accepted.receiptId : "";
   return {
     projectId: input.projectId,
     operation: { kind: "generation", id: accepted.workflowRunId } satisfies OperationRef,
     replayed: "replayed" in accepted && accepted.replayed,
+    callback: acceptedCallback(mutation, receiptId),
   };
 }
 
@@ -137,7 +148,32 @@ export async function createClipExport(
   return {
     ...accepted,
     operation: { kind: "export", id: accepted.export.id } satisfies OperationRef,
+    callback: acceptedCallback(mutation, accepted.receiptId),
   };
+}
+
+function notFound(code: string, message: string): never {
+  throw new ExpectedDomainFailureError({ code, kind: "missing", message });
+}
+
+function prisma() {
+  const client = getPrismaClient();
+  if (!client) throw new Error("Database client unavailable");
+  return client;
+}
+
+/** Resolves a clip addressed by ID alone to its accessible Project. */
+export async function locateClip(actor: ActorScope, clipId: string) {
+  const clip = await prisma().clip.findFirst({ where: { id: clipId, project: { workspaceId: actor.workspaceId, ...accessibleProjectWhere() } }, select: { projectId: true } });
+  if (!clip) notFound("clip_not_found", "Clip not found");
+  return { projectId: clip.projectId, clipId };
+}
+
+/** Resolves an export addressed by ID alone to its accessible clip. */
+export async function locateExport(actor: ActorScope, exportId: string) {
+  const row = await prisma().clipExport.findFirst({ where: { id: exportId, workspaceId: actor.workspaceId, project: { workspaceId: actor.workspaceId, ...accessibleProjectWhere() } }, select: { projectId: true, clipId: true } });
+  if (!row) notFound("clip_export_not_found", "Clip export was not found");
+  return { projectId: row.projectId, clipId: row.clipId, exportId };
 }
 
 /** Asks for an operation's completion events again. Visibility is rechecked
