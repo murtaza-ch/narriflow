@@ -427,6 +427,30 @@ r2ContractTest(
 );
 
 r2ContractTest(
+  "R2 accepts a large Upload Session single PUT through one signed URL",
+  async () => {
+    // Above the 100 MiB multipart threshold by default; set
+    // R2_CONTRACT_LARGE_PUT_BYTES near the 5 GiB product limit for a full run.
+    const sizeBytes = Number(process.env.R2_CONTRACT_LARGE_PUT_BYTES ?? 150 * 1024 * 1024);
+    const key = `${isolatedContractPrefix}/upload-session/${randomUUID()}/large-single.mp4`;
+    const directory = await mkdtemp(join(tmpdir(), "narriflow-r2-large-put-"));
+    const filePath = join(directory, "large.mp4");
+    try {
+      await writeFile(filePath, "");
+      await truncate(filePath, sizeBytes);
+      const url = await presignSingleUploadUrl({ key, contentType: "video/mp4", expiresIn: 600 });
+      const response = await fetch(url, { method: "PUT", headers: { "Content-Type": "video/mp4", "Content-Length": String(sizeBytes) }, body: Bun.file(filePath) });
+      expect(response.ok).toBe(true);
+      expect(await headObject(key)).toMatchObject({ sizeBytes, contentType: "video/mp4" });
+    } finally {
+      await deleteObject(key).catch(() => {});
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  30 * 60 * 1000,
+);
+
+r2ContractTest(
   "R2 Upload Session signed multipart, CORS, expiry, completion, and NoSuchUpload contracts converge",
   async () => {
     const runPrefix = `${isolatedContractPrefix}/upload-session/${randomUUID()}`;
