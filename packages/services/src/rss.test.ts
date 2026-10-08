@@ -150,8 +150,8 @@ describe("fetchRssFeed HTTP contracts", () => {
       etag: '"feed-v1"',
       lastModified: "Wed, 12 Aug 2026 10:00:00 GMT",
       resolver: async () => [{ address: "93.184.216.34", family: 4 }],
-      fetchImpl: async (_input, init) => {
-        receivedHeaders = new Headers(init?.headers);
+      transport: async (_url, request) => {
+        receivedHeaders = new Headers(request.headers);
         return new Response(null, { status: 304 });
       },
     });

@@ -5,7 +5,7 @@ import {
   guardedFetch,
   readResponseTextBounded,
   RemoteFetchError,
-  type FetchImplementation,
+  type PinnedTransport,
   type HostResolver,
 } from "./url-guard";
 
@@ -41,7 +41,7 @@ export type FetchRssFeedOptions = {
   etag?: string | null;
   lastModified?: string | null;
   /** Test/contract injection; production callers use guardedFetch defaults. */
-  fetchImpl?: FetchImplementation;
+  transport?: PinnedTransport;
   resolver?: HostResolver;
 };
 
@@ -342,7 +342,7 @@ export async function fetchRssFeed(
   const response = await guardedFetch(rssUrl, {
     headers,
     timeoutMs: RSS_FETCH_TIMEOUT_MS,
-    fetchImpl: options.fetchImpl,
+    transport: options.transport,
     resolver: options.resolver,
   });
 
