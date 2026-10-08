@@ -1,23 +1,23 @@
 import { acceptedContent, inputRequired, inputResponse, type InputRequiredResult, type ToolAnnotations, type ClientCapabilities } from "@modelcontextprotocol/server";
-import { autopilotService, brandProfileService, clipService, clipExportService, encodeReviewSelection, projectService, operationStatusService, reviewService, socialService, socialOAuthService, socialPublishingOptions, socialPublicationScheduling, uploadSessionService, workspaceService, workspaceLibraryService, getOperationReceiptExecutor, isExpectedDomainFailure, ExpectedDomainFailureError, type IntegrationMutation } from "@narriflow/services";
+import { autopilotService, brandProfileService, clipService, clipExportService, encodeReviewSelection, projectService, operationStatusService, reviewService, socialService, socialOAuthService, socialPublishingOptions, socialPublicationScheduling, uploadSessionService, workspaceService, workspaceLibraryService, getOperationReceiptExecutor, isExpectedDomainFailure, ExpectedDomainFailureError, submitVideo, generateClips, createClipExport, projectView, clipView, exportView, integrationUploadSessions, type IntegrationMutation } from "@narriflow/services";
 import * as schemas from "@narriflow/validators";
 import * as z from "zod/v4";
 import { McpToolAdmission, mcpOperationReadScope, mcpToolFailure, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
 import { createMcpConfirmation, verifyMcpPreparation, acceptMcpConfirmation, verifyMcpConfirmation, createMcpUploadHandoff, mcpPreparationDigest, MCP_CONTINUATION_TTL_MS } from "./mcp-confirmation";
-import { mcpProject, mcpClip, mcpExport, mcpAutopilotRule, mcpSocialAccount, mcpPublication, mcpPublicationRecovery } from "./mcp-projections";
+import { mcpAutopilotRule, mcpSocialAccount, mcpPublication, mcpPublicationRecovery } from "./mcp-projections";
 import { registerNarriflowMcpApps, getNarriflowAppToolMeta, supportsNarriflowApps } from "./mcp-apps";
 import { recordMcpDiagnostic } from "./mcp-diagnostics";
 import { installNarriflowTasks, NarriflowMcpServer as McpServer } from "./mcp-tasks";
 
-export { McpToolAdmission, MCP_TOOL_ADMISSIONS, MCP_WORKSPACE_ACCESS_MESSAGE, mcpFailureMessage, type NarriflowMcpToolName, type NarriflowMcpPrincipal } from "./mcp-tool-admission";
+export { McpToolAdmission, MCP_TOOL_COMMANDS, MCP_WORKSPACE_ACCESS_MESSAGE, mcpFailureMessage, type NarriflowMcpToolName, type NarriflowMcpPrincipal } from "./mcp-tool-admission";
 export * from "./mcp-confirmation";
-export { mcpProject, mcpExport } from "./mcp-projections";
 export const NARRIFLOW_MCP_SERVER_NAME = "narriflow";
 export const NARRIFLOW_MCP_SERVER_VERSION = "0.4.0";
 export const NARRIFLOW_MCP_INSTRUCTIONS = "Start with narriflow_list_workspaces and use the returned workspaceId. Mutations require an explicit workspaceId and a fresh clientIdempotencyKey; retry unchanged input with the same key after a lost response. Active Business access and explicit application scopes are required. Pick a Brand Profile with narriflow_list_brand_profiles, then submit a supported video link or use the upload picker, authenticated web handoff, or local upload command. Follow each accepted mutation with narriflow_get_operation and its returned operation reference; narriflow_get_project is only a Project snapshot. List clips, review their editor revision in Narriflow, request a revision-bound export, and fetch files and subtitles with narriflow_get_export_download only when the user asks for them. To send exports to a client, create a review handoff link; a person sends the round in Narriflow, and narriflow_get_review_round reports decisions. Prepare the exact social post and obtain user confirmation before scheduling. Recheck inspects an existing provider operation. Confirm publication requires evidence; publish again requires duplicate-risk acknowledgement. Media processing consumes workspace minute quota.";
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 const admission = new McpToolAdmission(workspaceService);
+const uploadSessions = integrationUploadSessions(uploadSessionService);
 export interface NarriflowMcpServerOptions {
   appOrigin?: string;
   protocolEra?: "modern" | "legacy";
@@ -75,13 +75,13 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
   server.registerTool("narriflow_list_projects", { ...config("List projects", "Page through workspace projects with compact progress facts", projectsOutput), inputSchema: schemas.mcpListProjectsSchema }, (input) => execute("narriflow_list_projects", projectsOutput, async (current) => {
     const actor = await workspace("narriflow_list_projects", current, input.workspaceId);
     const page = await workspaceLibraryService.listProjects(actor, { limit: input.limit, cursor: input.cursor ?? null });
-    return { data: { items: page.items.map((project) => ({ ...mcpProject(project, appOrigin), progress: { ...project.progress, stage: null, percent: null }, clipCount: project.clipCount })), nextCursor: page.nextCursor, totalCount: page.totalCount } };
+    return { data: { items: page.items.map((project) => ({ ...projectView(project, appOrigin), progress: { ...project.progress, stage: null, percent: null }, clipCount: project.clipCount })), nextCursor: page.nextCursor, totalCount: page.totalCount } };
   }));
   const projectOutput = schemas.mcpProjectResultSchema;
   server.registerTool("narriflow_get_project", { ...config("Get project snapshot", "Read a Project's current facts and latest activity; follow accepted work with narriflow_get_operation", projectOutput, readOnly, "progress"), inputSchema: schemas.mcpGetProjectSchema }, (input) => execute("narriflow_get_project", projectOutput, async (current) => {
     const actor = await workspace("narriflow_get_project", current, input.workspaceId);
     const snapshot = await projectService.getProjectSnapshot(actor, input.projectId);
-    return { data: { project: snapshot.project ? mcpProject(snapshot.project, appOrigin) : null, progress: snapshot.progress ? { ...snapshot.progress, stage: snapshot.activeRun?.stage ?? null, percent: snapshot.activeRun?.progress ?? null } : null } };
+    return { data: { project: snapshot.project ? projectView(snapshot.project, appOrigin) : null, progress: snapshot.progress ? { ...snapshot.progress, stage: snapshot.activeRun?.stage ?? null, percent: snapshot.activeRun?.progress ?? null } : null } };
   }));
   const usageOutput = schemas.mcpWorkspaceUsageResultSchema;
   server.registerTool("narriflow_get_workspace_usage", { ...config("Get workspace usage", "Read the plan, minutes used, reserved, and remaining this UTC month, videos processing against the capacity limit, and the per-video limit", usageOutput), inputSchema: schemas.mcpWorkspaceOnlySchema }, (input) => execute("narriflow_get_workspace_usage", usageOutput, async (current) => ({ data: await projectService.getUsageSummary(await workspace("narriflow_get_workspace_usage", current, input.workspaceId)) })));
@@ -89,25 +89,24 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
   server.registerTool("narriflow_list_clips", { ...config("List clips", "Page clips ranked by virality; transcript excerpts are opt-in", clipsOutput), inputSchema: schemas.mcpListClipsSchema }, (input) => execute("narriflow_list_clips", clipsOutput, async (current) => {
     const actor = await workspace("narriflow_list_clips", current, input.workspaceId);
     const page = await clipService.listClipReviewFacts(actor, input.projectId, input);
-    return { data: { items: page.items.map((clip) => mcpClip(clip, appOrigin, input.includeTranscriptExcerpt)), nextCursor: page.nextCursor } };
+    return { data: { items: page.items.map((clip) => clipView(clip, appOrigin, input.includeTranscriptExcerpt)), nextCursor: page.nextCursor } };
   }));
   const clipOutput = schemas.mcpClipResultSchema;
   server.registerTool("narriflow_get_clip", { ...config("Review a clip", "Read timing, scores and editor revision, then open visual review in Narriflow", clipOutput, readOnly, "clip-review"), inputSchema: schemas.mcpGetClipSchema }, (input) => execute("narriflow_get_clip", clipOutput, async (current) => {
     const actor = await workspace("narriflow_get_clip", current, input.workspaceId);
     const facts = await clipService.getClipReviewFacts(actor, input.projectId, input.clipId, input);
     const preview = supportsNarriflowApps(server.server.getClientCapabilities(), options.protocolEra) && facts.hasPreview ? await clipService.getClipPreviewSource(actor, input.projectId, input.clipId) : null;
-    return { data: { clip: mcpClip(facts, appOrigin, input.includeTranscriptExcerpt) }, ...(preview?.previewUrl ? { _meta: { previewMediaUrl: preview.previewUrl, previewStartSec: preview.previewStartSec, previewDurationSec: preview.previewDurationSec } } : {}) };
+    return { data: { clip: clipView(facts, appOrigin, input.includeTranscriptExcerpt) }, ...(preview?.previewUrl ? { _meta: { previewMediaUrl: preview.previewUrl, previewStartSec: preview.previewStartSec, previewDurationSec: preview.previewDurationSec } } : {}) };
   }));
   server.registerTool("narriflow_submit_video", { ...config("Submit a video link", "Atomically import supported media with committed clip generation settings", schemas.mcpOperationSchema, write, "progress"), inputSchema: schemas.mcpSubmitVideoSchema }, (input) => execute("narriflow_submit_video", schemas.mcpOperationSchema, async (current) => {
     const actor = await workspace("narriflow_submit_video", current, input.workspaceId);
-    const accepted = await projectService.queueLinkIngest(actor, { url: input.url, title: input.title, commitToken: input.clientIdempotencyKey, brandProfileId: input.brandProfileId }, { generationContext: { contentPack: schemas.buildMcpContentPack(input.generation), languageCode: input.generation.languageCode }, mutation: mutation("narriflow_submit_video", current, actor.workspaceId, input.clientIdempotencyKey) });
-    if (!accepted.queuedJobId) unavailable("mcp_ingest_operation_missing", "The accepted import has no operation identifier", "unavailable");
-    return { data: { projectId: accepted.project.id, operation: { kind: "intake", id: accepted.queuedJobId }, status: "accepted", statusTool: operationStatusTool, reviewUrl: `${appOrigin}/projects/${accepted.project.id}` }, _meta: operationMeta(actor.workspaceId, "intake", accepted.queuedJobId, accepted.project.id) };
+    const accepted = await submitVideo(actor, { url: input.url, title: input.title, brandProfileId: input.brandProfileId, generation: input.generation }, mutation("narriflow_submit_video", current, actor.workspaceId, input.clientIdempotencyKey));
+    return { data: { projectId: accepted.projectId, operation: accepted.operation, status: "accepted", statusTool: operationStatusTool, reviewUrl: `${appOrigin}/projects/${accepted.projectId}` }, _meta: operationMeta(actor.workspaceId, "intake", accepted.operation.id, accepted.projectId) };
   }));
   server.registerTool("narriflow_generate_clips", { ...config("Generate clips", "Start generation on a ready project using quota admission and durable retries", schemas.mcpOperationSchema, write, "progress"), inputSchema: schemas.mcpGenerateClipsSchema }, (input) => execute("narriflow_generate_clips", schemas.mcpOperationSchema, async (current) => {
     const actor = await workspace("narriflow_generate_clips", current, input.workspaceId);
-    const accepted = await projectService.triggerGeneration(actor, input.projectId, { contentPack: schemas.buildMcpContentPack(input.generation), languageCode: input.generation.languageCode, forceRegenerate: input.forceRegenerate }, input.clientIdempotencyKey, { mutation: mutation("narriflow_generate_clips", current, actor.workspaceId, input.clientIdempotencyKey) });
-    return { data: { projectId: input.projectId, operation: { kind: "generation", id: accepted.workflowRunId }, status: "accepted", statusTool: operationStatusTool, reviewUrl: `${appOrigin}/projects/${input.projectId}` }, _meta: operationMeta(actor.workspaceId, "generation", accepted.workflowRunId, input.projectId) };
+    const accepted = await generateClips(actor, { projectId: input.projectId, generation: input.generation, forceRegenerate: input.forceRegenerate }, mutation("narriflow_generate_clips", current, actor.workspaceId, input.clientIdempotencyKey));
+    return { data: { projectId: input.projectId, operation: accepted.operation, status: "accepted", statusTool: operationStatusTool, reviewUrl: `${appOrigin}/projects/${input.projectId}` }, _meta: operationMeta(actor.workspaceId, "generation", accepted.operation.id, input.projectId) };
   }));
   server.registerTool("narriflow_upload_video", { ...config("Upload a video", "Open an assistant picker or authenticated upload handoff; file bytes transfer directly to storage", schemas.mcpUploadHandoffSchema, write, "upload"), inputSchema: schemas.mcpUploadVideoSchema }, (input) => execute("narriflow_upload_video", schemas.mcpUploadHandoffSchema, async (current) => {
     const actor = await workspace("narriflow_upload_video", current, input.workspaceId);
@@ -115,19 +114,19 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
     // Workspace default when it is omitted.
     if (input.brandProfileId) await brandProfileService.requireUsableId(actor, input.brandProfileId);
     const handoff = createMcpUploadHandoff(current, input);
-    return { data: { workspaceId: actor.workspaceId, status: "awaiting_file", handoffUrl: `${appOrigin}/integrations/mcp/upload?intent=${encodeURIComponent(handoff.token)}`, localUploadCommand: "bun run mcp:upload --file <path> --workspace <workspaceId> --key <clientIdempotencyKey>", confirmationExpiresAt: handoff.expiresAt }, _meta: { uploadContext: { workspaceId: actor.workspaceId, clientIdempotencyKey: input.clientIdempotencyKey, title: input.title, ...(input.brandProfileId ? { brandProfileId: input.brandProfileId } : {}), generationContext: { contentPack: schemas.buildMcpContentPack(input.generation), languageCode: input.generation.languageCode } } } };
+    return { data: { workspaceId: actor.workspaceId, status: "awaiting_file", handoffUrl: `${appOrigin}/integrations/mcp/upload?intent=${encodeURIComponent(handoff.token)}`, localUploadCommand: "bun run mcp:upload --file <path> --workspace <workspaceId> --key <clientIdempotencyKey>", confirmationExpiresAt: handoff.expiresAt }, _meta: { uploadContext: { workspaceId: actor.workspaceId, clientIdempotencyKey: input.clientIdempotencyKey, title: input.title, ...(input.brandProfileId ? { brandProfileId: input.brandProfileId } : {}), generationContext: { contentPack: schemas.buildGenerationContentPack(input.generation), languageCode: input.generation.languageCode } } } };
   }));
   const createdExportOutput = schemas.mcpCreatedClipExportResultSchema;
   server.registerTool("narriflow_create_clip_export", { ...config("Create clip export", "Export the exact reviewed editor revision in explicitly selected formats; reports any plan limit applied to resolution or watermark", createdExportOutput, write, "progress"), inputSchema: schemas.mcpCreateClipExportSchema }, (input) => execute("narriflow_create_clip_export", createdExportOutput, async (current) => {
     const actor = await workspace("narriflow_create_clip_export", current, input.workspaceId);
-    const accepted = await clipExportService.create(actor, input.projectId, input.clipId, { expectedRevision: input.expectedRevision, aspectRatios: input.aspectRatios, resolution: input.resolution }, input.clientIdempotencyKey, mutation("narriflow_create_clip_export", current, actor.workspaceId, input.clientIdempotencyKey));
-    return { data: { export: mcpExport(accepted.export, appOrigin), reused: accepted.reused, output: accepted.output, operation: { kind: "export", id: accepted.export.id }, statusTool: operationStatusTool }, _meta: operationMeta(actor.workspaceId, "export", accepted.export.id, input.projectId, input.clipId) };
+    const accepted = await createClipExport(actor, { projectId: input.projectId, clipId: input.clipId, expectedRevision: input.expectedRevision, aspectRatios: input.aspectRatios, resolution: input.resolution }, mutation("narriflow_create_clip_export", current, actor.workspaceId, input.clientIdempotencyKey));
+    return { data: { export: exportView(accepted.export, appOrigin), reused: accepted.reused, output: accepted.output, operation: accepted.operation, statusTool: operationStatusTool }, _meta: operationMeta(actor.workspaceId, "export", accepted.operation.id, input.projectId, input.clipId) };
   }));
   const exportOutput = schemas.mcpClipExportResultSchema;
   server.registerTool("narriflow_get_clip_export", { ...config("Get clip export", "Read export progress and its Narriflow page; fetch files with narriflow_get_export_download", exportOutput), inputSchema: schemas.mcpGetClipExportSchema }, (input) => execute("narriflow_get_clip_export", exportOutput, async (current) => {
     const snapshot = await clipExportService.getOwned(await workspace("narriflow_get_clip_export", current, input.workspaceId), input.projectId, input.clipId, input.exportId);
     if (!snapshot) unavailable("clip_export_not_found", "Clip export was not found", "missing");
-    return { data: { export: mcpExport(snapshot, appOrigin) } };
+    return { data: { export: exportView(snapshot, appOrigin) } };
   }));
   const operationOutput = schemas.mcpOperationStatusResultSchema;
   server.registerTool("narriflow_get_operation", { ...config("Get operation status", "Follow exactly the work one accepted mutation started: state, progress, per-clip or per-format outcomes, and produced IDs", operationOutput, readOnly, "progress"), inputSchema: schemas.mcpGetOperationSchema }, (input) => execute("narriflow_get_operation", operationOutput, async (current) => {
@@ -230,7 +229,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
   const ruleOutput = schemas.mcpAutopilotRuleResultSchema;
   server.registerTool("narriflow_create_rss_autopilot_rule", { ...config("Create RSS autopilot rule", "Create a rule with committed generation defaults and caller retry identity", ruleOutput, write), inputSchema: schemas.mcpCreateAutopilotSchema }, (input) => execute("narriflow_create_rss_autopilot_rule", ruleOutput, async (current) => {
     const actor = await workspace("narriflow_create_rss_autopilot_rule", current, input.workspaceId);
-    const rule = await autopilotService.createRule(actor, { name: input.name, rssUrl: input.rssUrl, titlePrefix: input.titlePrefix ?? null, intervalMinutes: input.intervalMinutes, maxEpisodesPerRun: input.maxEpisodesPerRun, contentPack: schemas.buildMcpContentPack(input.generation), languageCode: input.generation.languageCode }, mutation("narriflow_create_rss_autopilot_rule", current, actor.workspaceId, input.clientIdempotencyKey));
+    const rule = await autopilotService.createRule(actor, { name: input.name, rssUrl: input.rssUrl, titlePrefix: input.titlePrefix ?? null, intervalMinutes: input.intervalMinutes, maxEpisodesPerRun: input.maxEpisodesPerRun, contentPack: schemas.buildGenerationContentPack(input.generation), languageCode: input.generation.languageCode }, mutation("narriflow_create_rss_autopilot_rule", current, actor.workspaceId, input.clientIdempotencyKey));
     return { data: { rule: mcpAutopilotRule(rule) } };
   }));
   server.registerTool("narriflow_run_autopilot_rule_now", { ...config("Run autopilot rule now", "Mark the rule due for the worker's next poll", ruleOutput, write), inputSchema: schemas.mcpRunAutopilotSchema }, (input) => execute("narriflow_run_autopilot_rule_now", ruleOutput, async (current) => {
@@ -261,16 +260,16 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
         const opening = schemas.openUploadSessionSchema.parse(body);
         try { await mutation("narriflow_upload_video", current, actor.workspaceId, opening.clientIdempotencyKey).beforeAccept?.(); }
         catch (limiterError) {
-          if (!isExpectedDomainFailure(limiterError) || limiterError.code !== "mcp_mutations_unavailable") throw limiterError;
-          try { await uploadSessionService.status(actor, { clientIdempotencyKey: opening.clientIdempotencyKey, sessionId: null, browserFingerprint: opening.source.browserFingerprint }); }
+          if (!isExpectedDomainFailure(limiterError) || limiterError.code !== "mutations_unavailable") throw limiterError;
+          try { await uploadSessions.status(actor, { clientIdempotencyKey: opening.clientIdempotencyKey, sessionId: null, browserFingerprint: opening.source.browserFingerprint }); }
           catch (lookupError) { if (isExpectedDomainFailure(lookupError) && lookupError.code === "upload_session_not_found") throw limiterError; throw lookupError; }
         }
       } else if (action === "discard") await options.assertNewMutationAllowed?.({ tool: "narriflow_upload_video", principal: current, workspaceId: actor.workspaceId });
-      const outcome = action === "open" ? await uploadSessionService.open(actor, schemas.openUploadSessionSchema.parse(body))
-        : action === "status" ? await uploadSessionService.status(actor, schemas.readUploadSessionSchema.parse(body))
-        : action === "grants" ? await uploadSessionService.grant(actor, schemas.grantUploadPartsSchema.parse(body))
-        : action === "finalize" ? await uploadSessionService.finalize(actor, schemas.finalizeUploadSessionSchema.parse(body))
-        : await uploadSessionService.discard(actor, schemas.discardUploadSessionSchema.parse(body));
+      const outcome = action === "open" ? await uploadSessions.open(actor, schemas.openUploadSessionSchema.parse(body))
+        : action === "status" ? await uploadSessions.status(actor, schemas.readUploadSessionSchema.parse(body))
+        : action === "grants" ? await uploadSessions.grant(actor, schemas.grantUploadPartsSchema.parse(body))
+        : action === "finalize" ? await uploadSessions.finalize(actor, schemas.finalizeUploadSessionSchema.parse(body))
+        : await uploadSessions.discard(actor, schemas.discardUploadSessionSchema.parse(body));
       // The private adapter payload is for the embedded client. Grants and media
       // access locations never appear in model-visible content or structuredContent.
       // A finalized upload is its intake operation: the Upload Session follows

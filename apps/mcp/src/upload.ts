@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { parseArgs } from "node:util";
-import { buildMcpContentPack, mcpGenerationSettingsSchema, openUploadSessionSchema, type OpenUploadSessionInput, type UploadMimeType } from "@narriflow/validators";
+import { buildGenerationContentPack, generationSettingsSchema, openUploadSessionSchema, type OpenUploadSessionInput, type UploadMimeType } from "@narriflow/validators";
 import type { FinalizeUploadSessionOutcome, GrantUploadPartsOutcome, OpenUploadSessionOutcome, ReadUploadSessionOutcome } from "@narriflow/services/upload-session.service";
 
 export interface UploadVideoOptions {
@@ -39,7 +39,7 @@ export async function uploadVideo(options: UploadVideoOptions): Promise<Finalize
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(options.filePath, { signal: options.signal })) digest.update(chunk);
   const fingerprint = `sha256:${digest.digest("hex")}`;
-  const input = openUploadSessionSchema.parse({ clientIdempotencyKey: options.clientIdempotencyKey, title: options.title ?? basename(options.filePath), source: { fileName: basename(options.filePath), sizeBytes: file.size, contentType, browserFingerprint: fingerprint }, ...(options.brandProfileId ? { brandProfileId: options.brandProfileId } : {}), generationContext: options.generationContext ?? { contentPack: buildMcpContentPack(), languageCode: null } });
+  const input = openUploadSessionSchema.parse({ clientIdempotencyKey: options.clientIdempotencyKey, title: options.title ?? basename(options.filePath), source: { fileName: basename(options.filePath), sizeBytes: file.size, contentType, browserFingerprint: fingerprint }, ...(options.brandProfileId ? { brandProfileId: options.brandProfileId } : {}), generationContext: options.generationContext ?? { contentPack: buildGenerationContentPack(), languageCode: null } });
   const transport = options.fetch ?? fetch;
   async function request<T>(action: string, body: unknown): Promise<T> {
     const response = await transport(new URL(`/mcp/integrations/${encodeURIComponent(options.workspaceId)}/upload-sessions/${action}`, endpoint), { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}` }, body: JSON.stringify(body), signal: options.signal, redirect: "error" });
@@ -125,8 +125,8 @@ async function main() {
   const clientIdempotencyKey = values.key ?? randomUUID();
   // Print the replay key before networking, so an interrupted upload can resume.
   process.stderr.write(`Upload idempotency key: ${clientIdempotencyKey}\n`);
-  const settings = mcpGenerationSettingsSchema.parse(values.settings ? JSON.parse(await readFile(values.settings, "utf8")) : {});
-  const result = await uploadVideo({ endpoint: process.env.NARRIFLOW_URL ?? "http://localhost:3000", apiKey: process.env.NARRIFLOW_API_KEY ?? "", workspaceId: values.workspace, filePath: values.file, clientIdempotencyKey, title: values.title, brandProfileId: values.brand, contentType: values["content-type"] as UploadMimeType | undefined, generationContext: { contentPack: buildMcpContentPack(settings), languageCode: settings.languageCode } });
+  const settings = generationSettingsSchema.parse(values.settings ? JSON.parse(await readFile(values.settings, "utf8")) : {});
+  const result = await uploadVideo({ endpoint: process.env.NARRIFLOW_URL ?? "http://localhost:3000", apiKey: process.env.NARRIFLOW_API_KEY ?? "", workspaceId: values.workspace, filePath: values.file, clientIdempotencyKey, title: values.title, brandProfileId: values.brand, contentType: values["content-type"] as UploadMimeType | undefined, generationContext: { contentPack: buildGenerationContentPack(settings), languageCode: settings.languageCode } });
   // The Upload Session is the intake operation to follow with narriflow_get_operation.
   process.stdout.write(`${JSON.stringify({ ...result, operation: { kind: "intake", id: result.sessionId }, statusTool: "narriflow_get_operation" })}\n`);
 }

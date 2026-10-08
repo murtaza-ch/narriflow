@@ -8,7 +8,7 @@ import { clipExportService, createMcpTaskRegistry, getMcpTaskPersistence, operat
 import { mcpCreatedClipExportResultSchema, mcpOperationSchema, mcpResultSchema } from "@narriflow/validators";
 import { z } from "zod";
 import { mcpCallerId } from "./mcp-confirmation";
-import { mcpExport } from "./mcp-projections";
+import { exportView } from "@narriflow/services";
 import { McpToolAdmission, mcpOperationReadScope, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
 
 type Registry = ReturnType<typeof createMcpTaskRegistry>;
@@ -114,7 +114,7 @@ function productionRegistry(principal: NarriflowMcpPrincipal, options: TaskOptio
         if (!snapshot) return { status: "failed", error: { code: -32003, message: "Export is unavailable" } };
         const initial = (record.initialResult as CallToolResult).structuredContent as { data: Record<string, unknown> };
         return { status: "completed", result: mcpTaskTerminalResult(record, status.state === "failed" ? "failed" : "completed",
-          { ...initial.data, export: mcpExport(snapshot, new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").origin) }) };
+          { ...initial.data, export: exportView(snapshot, new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").origin) }) };
       }
       return { status: "completed", result: mcpTaskTerminalResult(record, status.state === "failed" ? "failed" : "completed") };
     },

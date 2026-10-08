@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mcpSubmitVideoSchema, mcpListClipsSchema, mcpUploadHandoffSchema, mcpPrepareSocialPostSchema, buildMcpContentPack } from "./mcp";
+import { mcpSubmitVideoSchema, mcpListClipsSchema, mcpUploadHandoffSchema, mcpPrepareSocialPostSchema } from "./mcp";
+import { buildGenerationContentPack } from "./integration";
 
 describe("MCP public clip workflow contracts", () => {
   test("link intake requires an explicit workspace and retry identity", () => {
@@ -19,7 +20,7 @@ describe("MCP public clip workflow contracts", () => {
   });
 
   test("generation settings use the canonical duration ranges and playbook", () => {
-    const pack = buildMcpContentPack({ clipLengthPreset: "under_30s", clipCountTarget: 6 });
+    const pack = buildGenerationContentPack({ clipLengthPreset: "under_30s", clipCountTarget: 6 });
     expect(pack).toMatchObject({ clipCountTarget: 6, clipDurationSecTarget: 25, minDurationSec: 10,
       preferredMinDurationSec: 15, preferredMaxDurationSec: 30, maxDurationSec: 35,
       platformPlaybookVersion: "platform-playbook-v1", defaultAspectRatio: "9:16" });

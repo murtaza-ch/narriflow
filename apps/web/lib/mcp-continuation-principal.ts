@@ -20,7 +20,7 @@ export function continuationPrincipal(state: SignedContinuation): NarriflowMcpPr
 }
 
 function scopeRequired(scope: ContinuationScope): never {
-  throw new ExpectedDomainFailureError({ code: "mcp_scope_required", kind: "forbidden", message: `This connection requires ${scope}` });
+  throw new ExpectedDomainFailureError({ code: "scope_required", kind: "forbidden", message: `This connection requires ${scope}` });
 }
 
 /** Browser identity confirms the signed caller. The signed grant must include

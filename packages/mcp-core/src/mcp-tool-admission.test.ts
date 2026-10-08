@@ -6,7 +6,8 @@ import {
   type WorkspaceActorContext,
 } from "@narriflow/services";
 import { workspaceAllowsCapability, type WorkspaceCapability } from "@narriflow/validators";
-import { MCP_TOOL_ADMISSIONS, McpToolAdmission, mcpToolFailure, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
+import { INTEGRATION_COMMANDS } from "@narriflow/services";
+import { MCP_TOOL_COMMANDS, McpToolAdmission, mcpToolFailure, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
 
 const USER_ID = "00000000-0000-4000-8000-000000000001";
 const WORKSPACE_ID = "00000000-0000-4000-8000-000000000002";
@@ -48,20 +49,20 @@ function fixture() {
 describe("MCP tool admission", () => {
   test("every workspace tool admits explicitly scoped OAuth with its current capability and real actor", async () => {
     const current = fixture();
-    for (const tool of Object.keys(MCP_TOOL_ADMISSIONS) as NarriflowMcpToolName[]) {
+    for (const tool of Object.keys(MCP_TOOL_COMMANDS) as NarriflowMcpToolName[]) {
       if (tool === "narriflow_list_workspaces") continue;
       const admitted = await current.admission.requireWorkspace(tool, oauth, WORKSPACE_ID);
       expect(admitted).toMatchObject({ actorUserId: USER_ID, workspaceId: WORKSPACE_ID, workspaceOwnerUserId: "another-user" });
-      expect(current.calls.at(-1)).toEqual({ userId: USER_ID, workspaceId: WORKSPACE_ID, capability: MCP_TOOL_ADMISSIONS[tool].capability });
+      expect(current.calls.at(-1)).toEqual({ userId: USER_ID, workspaceId: WORKSPACE_ID, capability: INTEGRATION_COMMANDS[MCP_TOOL_COMMANDS[tool]!].capability });
     }
     expect(current.calls.find((call) => call.capability === "processing.consume")).toBeDefined();
   });
 
   test("every scoped tool rejects a key before Workspace access when its application scope is absent", async () => {
     const current = fixture();
-    for (const tool of Object.keys(MCP_TOOL_ADMISSIONS) as NarriflowMcpToolName[]) {
+    for (const tool of Object.keys(MCP_TOOL_COMMANDS) as NarriflowMcpToolName[]) {
       if (tool === "narriflow_list_workspaces") continue;
-      await expect(current.admission.requireWorkspace(tool, key)).rejects.toMatchObject({ code: "mcp_scope_required", kind: "forbidden" });
+      await expect(current.admission.requireWorkspace(tool, key)).rejects.toMatchObject({ code: "scope_required", kind: "forbidden" });
     }
     expect(current.calls).toEqual([]);
     expect(current.reads).toEqual([]);
@@ -69,12 +70,12 @@ describe("MCP tool admission", () => {
 
   test("each explicitly scoped key passes only its bound Workspace and never falls back to the owner's Workspace", async () => {
     const current = fixture();
-    for (const tool of Object.keys(MCP_TOOL_ADMISSIONS) as NarriflowMcpToolName[]) {
+    for (const tool of Object.keys(MCP_TOOL_COMMANDS) as NarriflowMcpToolName[]) {
       if (tool === "narriflow_list_workspaces") continue;
-      const scopedKey = { ...key, scopes: [MCP_TOOL_ADMISSIONS[tool].apiKeyScope] };
+      const scopedKey = { ...key, scopes: [INTEGRATION_COMMANDS[MCP_TOOL_COMMANDS[tool]!].scope] };
       expect((await current.admission.requireWorkspace(tool, scopedKey)).workspaceId).toBe(WORKSPACE_ID);
       const calls = current.calls.length;
-      await expect(current.admission.requireWorkspace(tool, scopedKey, "foreign-workspace")).rejects.toMatchObject({ code: "mcp_workspace_boundary_violation", kind: "forbidden" });
+      await expect(current.admission.requireWorkspace(tool, scopedKey, "foreign-workspace")).rejects.toMatchObject({ code: "workspace_boundary_violation", kind: "forbidden" });
       expect(current.calls).toHaveLength(calls);
     }
     expect(current.reads).toEqual([]);
@@ -95,11 +96,11 @@ describe("MCP tool admission", () => {
     const current = fixture();
     await current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID);
     current.actor.pricingTier = "pro";
-    await expect(current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).rejects.toMatchObject({ code: "mcp_workspace_access_unavailable", kind: "payment_required" });
+    await expect(current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).rejects.toMatchObject({ code: "integration_access_unavailable", kind: "payment_required" });
     current.actor.pricingTier = "business";
     current.actor.role = "owner";
     current.actor.status = "restricted";
-    await expect(current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).rejects.toMatchObject({ code: "mcp_workspace_access_unavailable", kind: "payment_required" });
+    await expect(current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).rejects.toMatchObject({ code: "integration_access_unavailable", kind: "payment_required" });
     await expect(current.admission.requireWorkspace("narriflow_run_autopilot_rule_now", oauth, WORKSPACE_ID)).rejects.toMatchObject({ code: "workspace_access_denied", kind: "forbidden" });
     current.actor.status = "active";
     expect((await current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).status).toBe("active");

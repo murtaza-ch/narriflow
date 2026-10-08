@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
-import { buildMcpContentPack, DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
+import { buildGenerationContentPack, DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import { Pool } from "pg";
 import {
   BrandProfileConflictError,
@@ -161,7 +161,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     const key = randomUUID();
     const assistantIntake = () => projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
       { url: "https://www.youtube.com/watch?v=brand-default-db-test", commitToken: key },
-      { generationContext: { contentPack: buildMcpContentPack(), languageCode: null }, mutation: { clientIdempotencyKey: key, callerId: `oauth:test:${f.user.id}` } });
+      { generationContext: { contentPack: buildGenerationContentPack(), languageCode: null }, mutation: { clientIdempotencyKey: key, callerId: `oauth:test:${f.user.id}` } });
     const first = await assistantIntake();
     expect((await prisma.project.findUniqueOrThrow({ where: { id: first.project.id }, select: { brandProfileId: true } })).brandProfileId).toBe(acme.id);
     const second = await brandProfileService.create(f.scope, { name: "Second", slug: "second" });

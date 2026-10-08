@@ -1089,7 +1089,7 @@ export class ProjectService {
 					};
 				},
 			});
-			return accepted.value;
+			return { ...accepted.value, replayed: accepted.replayed };
 		}
 
 		if (!idempotencyKey)
@@ -1368,7 +1368,7 @@ export class ProjectService {
 					};
 				},
 			});
-			return accepted.value;
+			return { ...accepted.value, replayed: accepted.replayed };
 		}
 		await prepare();
 		try {

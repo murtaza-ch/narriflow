@@ -1,4 +1,4 @@
-import { ExpectedDomainFailureError, type RateLimitResult } from "@narriflow/services";
+
 
 export const MCP_JSON_MAX_BYTES = 1024 * 1024;
 
@@ -71,10 +71,3 @@ export async function boundedMcpRequest(request: Request, maximum = MCP_JSON_MAX
   return new Request(request, { body });
 }
 
-/** Invoke only after the owning domain has checked its immutable replay identity. */
-export function requireMcpMutationLimiter(result: RateLimitResult) {
-  if (!result.allowed) throw new ExpectedDomainFailureError({ code: "mcp_request_limit_exceeded", kind: "rate_limited",
-    message: "MCP request limit exceeded", retryAfterSeconds: 60 });
-  if (result.availability !== "available") throw new ExpectedDomainFailureError({ code: "mcp_mutations_unavailable", kind: "unavailable",
-    message: "New mutations are paused while the request limiter is unavailable", retryAfterSeconds: 5 });
-}

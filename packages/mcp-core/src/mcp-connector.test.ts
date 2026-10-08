@@ -52,10 +52,10 @@ describe("Operation Status tool", () => {
     expect(data(intake)).toMatchObject({ operation: { kind: "intake", id: KEY }, state: "partial", items: [{ id: CLIP, state: "failed" }], reviewUrl: `https://app.narriflow.test/projects/${PROJECT}` });
     expect(read).toHaveBeenCalledWith(actor, { kind: "intake", id: KEY });
     const exported = await projectsOnly.callTool({ name: "narriflow_get_operation", arguments: { workspaceId: WORKSPACE, operation: { kind: "export", id: EXPORT } } });
-    expect(data(exported)).toMatchObject({ error: "mcp_scope_required", message: "This credential requires the exports:read scope" });
+    expect(data(exported)).toMatchObject({ error: "scope_required", message: "This credential requires the exports:read scope" });
     const exportsOnly = await connect(oauth(["exports:read"]));
     const generation = await exportsOnly.callTool({ name: "narriflow_get_operation", arguments: { workspaceId: WORKSPACE, operation: { kind: "generation", id: KEY } } });
-    expect(data(generation)).toMatchObject({ error: "mcp_scope_required" });
+    expect(data(generation)).toMatchObject({ error: "scope_required" });
   });
 
   test("accepted mutations point at their own operation, not the Project's latest run", async () => {
@@ -159,7 +159,7 @@ test("Workspace access errors name the requirement without sales prompts", async
   const client = await connect(oauth());
   track(spyOn(workspaceService, "requireActor").mockResolvedValue({ ...actor, pricingTier: "pro" }));
   const result = await client.callTool({ name: "narriflow_list_brand_profiles", arguments: { workspaceId: WORKSPACE } });
-  expect(data(result)).toMatchObject({ error: "mcp_workspace_access_unavailable", message: MCP_WORKSPACE_ACCESS_MESSAGE });
+  expect(data(result)).toMatchObject({ error: "integration_access_unavailable", message: MCP_WORKSPACE_ACCESS_MESSAGE });
 });
 
 test("quota and per-video limits reach assistants as the requirement, without upgrade prompts", async () => {

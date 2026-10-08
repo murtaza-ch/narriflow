@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { Stack, Text } from "@chakra-ui/react";
 import { verifyMcpUploadHandoff } from "@narriflow/mcp-core";
-import { hasFeature, isExpectedDomainFailure, workspaceService } from "@narriflow/services";
-import { buildMcpContentPack } from "@narriflow/validators";
+import { hasFeature, integrationUploadSessionKey, isExpectedDomainFailure, workspaceService } from "@narriflow/services";
+import { buildGenerationContentPack } from "@narriflow/validators";
 import { getPrismaClient } from "@narriflow/db/client";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
@@ -24,10 +24,10 @@ export default async function McpUploadHandoffPage({ searchParams }: { searchPar
     if (resumeOnly) {
       const prisma = getPrismaClient();
       if (!prisma) throw new Error("Upload Session storage is unavailable");
-      const existing = await prisma.uploadSession.findFirst({ where: { actorUserId: user.actorUserId, workspaceId: state.workspaceId, clientIdempotencyKey: state.intent.clientIdempotencyKey }, select: { id: true } });
+      const existing = await prisma.uploadSession.findFirst({ where: { actorUserId: user.actorUserId, workspaceId: state.workspaceId, clientIdempotencyKey: integrationUploadSessionKey(user.actorUserId, state.intent.clientIdempotencyKey) }, select: { id: true } });
       if (!existing) verifyMcpUploadHandoff(token ?? "", { actorUserId: user.actorUserId });
     }
-    const generationContext = { contentPack: buildMcpContentPack(state.intent.generation), languageCode: state.intent.generation.languageCode };
+    const generationContext = { contentPack: buildGenerationContentPack(state.intent.generation), languageCode: state.intent.generation.languageCode };
     return <Stack gap="6" maxW="800px"><PageHeader title="Choose a video for your assistant" description="The assistant's generation settings are committed with this upload. File bytes travel directly to Narriflow storage." /><Text fontSize="13px" color="fg.muted">{generationContext.contentPack.clipCountTarget} clips · {generationContext.contentPack.defaultAspectRatio} · {generationContext.contentPack.clipLengthPreset.replaceAll("_", " ")}</Text><McpUploadPicker token={token!} workspaceId={state.workspaceId} clientIdempotencyKey={state.intent.clientIdempotencyKey} title={state.intent.title} brandProfileId={state.intent.brandProfileId} resumeOnly={resumeOnly} generationContext={generationContext} /></Stack>;
   } catch (error) {
     if (!isExpectedDomainFailure(error)) throw error;

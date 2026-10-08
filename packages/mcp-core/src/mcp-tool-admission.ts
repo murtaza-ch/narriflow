@@ -1,87 +1,70 @@
 import {
   boundedExpectedDomainFailureDetails,
-  ExpectedDomainFailureError,
   hasFeature,
+  INTEGRATION_ACCESS_MESSAGES,
+  INTEGRATION_COMMANDS,
+  IntegrationAdmission,
   isExpectedDomainFailure,
-  type ExpectedDomainFailureCatalog,
+  operationReadScope,
   type ExpectedDomainFailureKind,
+  type IntegrationCommand,
+  type IntegrationPrincipal,
   type WorkspaceService,
 } from "@narriflow/services";
-import type { WorkspaceApiKeyScope, WorkspaceCapability } from "@narriflow/validators";
+import type { WorkspaceApiKeyScope } from "@narriflow/validators";
 
-export type NarriflowMcpPrincipal =
-  /** `expiresAt` is the access token's expiration in epoch seconds. */
-  | { kind: "oauth"; userId: string; clientId: string; scopes: string[]; expiresAt?: number }
-  | { kind: "api_key"; userId: string; clientId: string; apiKeyId: string; workspaceId: string; scopes: string[] };
+export type NarriflowMcpPrincipal = IntegrationPrincipal;
 
-/** Names the requirement only. Assistant directories forbid upgrade prompts
- * and checkout links in connector responses. */
-export const MCP_WORKSPACE_ACCESS_MESSAGE = "This workspace needs active Business access to use the Narriflow connector";
+export const MCP_WORKSPACE_ACCESS_MESSAGE = INTEGRATION_ACCESS_MESSAGES.mcp;
 
-type McpToolAdmissionPolicy =
-  | { admission: "workspace"; capability: WorkspaceCapability; apiKeyScope: WorkspaceApiKeyScope }
-  | { admission: "discovery"; capability: null; apiKeyScope: null };
+/** Each workspace tool is one integration command; discovery is MCP-only. */
+export const MCP_TOOL_COMMANDS = {
+  narriflow_confirm_social_publication: "confirm_social_publication",
+  narriflow_create_rss_autopilot_rule: "create_rss_autopilot_rule",
+  narriflow_get_project: "get_project",
+  narriflow_get_social_publication: "get_social_publication",
+  narriflow_get_workspace_usage: "get_workspace_usage",
+  narriflow_list_autopilot_rules: "list_autopilot_rules",
+  narriflow_list_projects: "list_projects",
+  narriflow_list_workspaces: null,
+  narriflow_run_autopilot_rule_now: "run_autopilot_rule_now",
+  narriflow_publish_social_publication_again: "publish_social_publication_again",
+  narriflow_recheck_social_publication: "recheck_social_publication",
+  narriflow_submit_video: "submit_video",
+  narriflow_upload_video: "open_upload",
+  narriflow_generate_clips: "generate_clips",
+  narriflow_list_clips: "list_clips",
+  narriflow_get_clip: "get_clip",
+  narriflow_create_clip_export: "create_clip_export",
+  narriflow_get_clip_export: "get_clip_export",
+  narriflow_list_social_accounts: "list_social_accounts",
+  narriflow_get_publishing_options: "get_publishing_options",
+  narriflow_prepare_social_post: "prepare_social_post",
+  narriflow_schedule_social_post: "schedule_social_post",
+  narriflow_list_social_publications: "list_social_publications",
+  narriflow_get_operation: "get_operation",
+  narriflow_get_export_download: "get_export_download",
+  narriflow_list_brand_profiles: "list_brand_profiles",
+  narriflow_create_review_handoff: "create_review_handoff",
+  narriflow_list_review_rounds: "list_review_rounds",
+  narriflow_get_review_round: "get_review_round",
+} as const satisfies Record<string, IntegrationCommand | null>;
 
-export const MCP_TOOL_ADMISSIONS = {
-  narriflow_confirm_social_publication: { admission: "workspace", capability: "publishing.manage", apiKeyScope: "publishing:write" },
-  narriflow_create_rss_autopilot_rule: { admission: "workspace", capability: "content.edit", apiKeyScope: "autopilot:write" },
-  narriflow_get_project: { admission: "workspace", capability: "content.view", apiKeyScope: "projects:read" },
-  narriflow_get_social_publication: { admission: "workspace", capability: "content.view", apiKeyScope: "publishing:read" },
-  narriflow_get_workspace_usage: { admission: "workspace", capability: "content.view", apiKeyScope: "usage:read" },
-  narriflow_list_autopilot_rules: { admission: "workspace", capability: "content.view", apiKeyScope: "autopilot:read" },
-  narriflow_list_projects: { admission: "workspace", capability: "content.view", apiKeyScope: "projects:read" },
-  narriflow_list_workspaces: { admission: "discovery", capability: null, apiKeyScope: null },
-  narriflow_run_autopilot_rule_now: { admission: "workspace", capability: "processing.consume", apiKeyScope: "autopilot:write" },
-  narriflow_publish_social_publication_again: { admission: "workspace", capability: "publishing.manage", apiKeyScope: "publishing:write" },
-  narriflow_recheck_social_publication: { admission: "workspace", capability: "publishing.manage", apiKeyScope: "publishing:write" },
-  narriflow_submit_video: { admission: "workspace", capability: "processing.consume", apiKeyScope: "processing:write" },
-  narriflow_upload_video: { admission: "workspace", capability: "processing.consume", apiKeyScope: "processing:write" },
-  narriflow_generate_clips: { admission: "workspace", capability: "processing.consume", apiKeyScope: "processing:write" },
-  narriflow_list_clips: { admission: "workspace", capability: "content.view", apiKeyScope: "projects:read" },
-  narriflow_get_clip: { admission: "workspace", capability: "content.view", apiKeyScope: "projects:read" },
-  narriflow_create_clip_export: { admission: "workspace", capability: "processing.consume", apiKeyScope: "exports:write" },
-  narriflow_get_clip_export: { admission: "workspace", capability: "content.download", apiKeyScope: "exports:read" },
-  narriflow_list_social_accounts: { admission: "workspace", capability: "content.view", apiKeyScope: "publishing:read" },
-  narriflow_get_publishing_options: { admission: "workspace", capability: "content.view", apiKeyScope: "publishing:read" },
-  narriflow_prepare_social_post: { admission: "workspace", capability: "publishing.manage", apiKeyScope: "publishing:write" },
-  narriflow_schedule_social_post: { admission: "workspace", capability: "publishing.manage", apiKeyScope: "publishing:write" },
-  narriflow_list_social_publications: { admission: "workspace", capability: "content.view", apiKeyScope: "publishing:read" },
-  /** Export operations require `exports:read` instead; see `requireWorkspace`'s scope override. */
-  narriflow_get_operation: { admission: "workspace", capability: "content.view", apiKeyScope: "projects:read" },
-  narriflow_get_export_download: { admission: "workspace", capability: "content.download", apiKeyScope: "exports:read" },
-  narriflow_list_brand_profiles: { admission: "workspace", capability: "content.view", apiKeyScope: "projects:read" },
-  narriflow_create_review_handoff: { admission: "workspace", capability: "content.view", apiKeyScope: "exports:read" },
-  narriflow_list_review_rounds: { admission: "workspace", capability: "content.view", apiKeyScope: "exports:read" },
-  narriflow_get_review_round: { admission: "workspace", capability: "content.view", apiKeyScope: "exports:read" },
-} as const satisfies Record<string, McpToolAdmissionPolicy>;
+export type NarriflowMcpToolName = keyof typeof MCP_TOOL_COMMANDS;
+type WorkspaceToolName = Exclude<NarriflowMcpToolName, "narriflow_list_workspaces">;
 
-export type NarriflowMcpToolName = keyof typeof MCP_TOOL_ADMISSIONS;
 /** Operation Status reads use the scope of the work they describe. */
-export function mcpOperationReadScope(kind: unknown): WorkspaceApiKeyScope {
-  return kind === "export" ? "exports:read" : "projects:read";
-}
+export const mcpOperationReadScope = operationReadScope;
 /** Embedded transfer actions use the same grants as their owning public tool. */
 export function mcpToolRequiredScope(name: string, args?: unknown): WorkspaceApiKeyScope | null {
   if (["narriflow_upload_open", "narriflow_upload_status", "narriflow_upload_grants", "narriflow_upload_finalize", "narriflow_upload_discard"].includes(name)) return "processing:write";
   if (name === "narriflow_accept_social_post_intent") return "publishing:write";
   if (name === "narriflow_get_operation") {
     const operation = args && typeof args === "object" ? (args as { operation?: unknown }).operation : undefined;
-    return mcpOperationReadScope(operation && typeof operation === "object" ? (operation as { kind?: unknown }).kind : undefined);
+    return operationReadScope(operation && typeof operation === "object" ? (operation as { kind?: unknown }).kind : undefined);
   }
-  return MCP_TOOL_ADMISSIONS[name as NarriflowMcpToolName]?.apiKeyScope ?? null;
-}
-type WorkspaceToolName = Exclude<NarriflowMcpToolName, "narriflow_list_workspaces">;
-
-const admissionFailureKinds = {
-  mcp_scope_required: "forbidden",
-  mcp_workspace_boundary_violation: "forbidden",
-  mcp_workspace_access_unavailable: "payment_required",
-} as const satisfies ExpectedDomainFailureCatalog<string>;
-
-class McpAdmissionFailure extends ExpectedDomainFailureError<keyof typeof admissionFailureKinds> {
-  constructor(code: keyof typeof admissionFailureKinds, message: string) {
-    super({ code, kind: admissionFailureKinds[code], message });
-  }
+  const command = MCP_TOOL_COMMANDS[name as NarriflowMcpToolName];
+  return command ? INTEGRATION_COMMANDS[command].scope : null;
 }
 
 type WorkspaceAdmission = Pick<WorkspaceService,
@@ -89,27 +72,14 @@ type WorkspaceAdmission = Pick<WorkspaceService,
 >;
 
 export class McpToolAdmission {
-  constructor(private readonly workspace: WorkspaceAdmission) {}
+  private readonly integration: IntegrationAdmission;
+  constructor(private readonly workspace: WorkspaceAdmission) {
+    this.integration = new IntegrationAdmission(workspace);
+  }
 
   /** `scope` replaces the tool's scope for a tool whose subject decides it. */
-  async requireWorkspace(tool: WorkspaceToolName, principal: NarriflowMcpPrincipal, requestedWorkspaceId?: string, scope: WorkspaceApiKeyScope = MCP_TOOL_ADMISSIONS[tool].apiKeyScope) {
-    const policy = MCP_TOOL_ADMISSIONS[tool];
-    if (!principal.scopes.includes(scope)) {
-      throw new McpAdmissionFailure("mcp_scope_required", `This credential requires the ${scope} scope`);
-    }
-    if (principal.kind === "api_key") {
-      if (requestedWorkspaceId && requestedWorkspaceId !== principal.workspaceId) {
-        throw new McpAdmissionFailure("mcp_workspace_boundary_violation", "This API key is bound to a different workspace");
-      }
-    }
-    const workspaceId = principal.kind === "api_key"
-      ? principal.workspaceId
-      : requestedWorkspaceId ?? await this.workspace.getPersonalWorkspaceId(principal.userId);
-    const actor = await this.workspace.requireActor(principal.userId, workspaceId, policy.capability);
-    if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) {
-      throw new McpAdmissionFailure("mcp_workspace_access_unavailable", MCP_WORKSPACE_ACCESS_MESSAGE);
-    }
-    return actor;
+  async requireWorkspace(tool: WorkspaceToolName, principal: NarriflowMcpPrincipal, requestedWorkspaceId?: string, scope?: WorkspaceApiKeyScope) {
+    return this.integration.requireWorkspace(MCP_TOOL_COMMANDS[tool], principal, { surface: "mcp", workspaceId: requestedWorkspaceId, scope });
   }
 
   async listWorkspaces(principal: NarriflowMcpPrincipal) {

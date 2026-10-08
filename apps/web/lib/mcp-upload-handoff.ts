@@ -1,6 +1,6 @@
 import type { McpUploadHandoffState, NarriflowMcpPrincipal } from "@narriflow/mcp-core";
 import { ExpectedDomainFailureError, type ActorScope } from "@narriflow/services";
-import { buildMcpContentPack, openUploadSessionSchema } from "@narriflow/validators";
+import { buildGenerationContentPack, openUploadSessionSchema } from "@narriflow/validators";
 
 export interface McpUploadHandoffDependencies {
   verify(token: string, options: { actorUserId: string; workspaceId: string; allowExpired?: boolean }): McpUploadHandoffState;
@@ -33,7 +33,7 @@ export async function admitMcpUploadHandoff(
     const parsed = openUploadSessionSchema.safeParse(body);
     if (!parsed.success) failure("mcp_upload_request_invalid", "invalid", "Upload request is invalid");
     const opening = parsed.data;
-    const frozenGeneration = { contentPack: buildMcpContentPack(state.intent.generation), languageCode: state.intent.generation.languageCode };
+    const frozenGeneration = { contentPack: buildGenerationContentPack(state.intent.generation), languageCode: state.intent.generation.languageCode };
     if (opening.clientIdempotencyKey !== state.intent.clientIdempotencyKey || opening.brandProfileId !== state.intent.brandProfileId || opening.brandTemplateId || JSON.stringify(opening.generationContext) !== JSON.stringify(frozenGeneration) || opening.title !== (state.intent.title ?? opening.source.fileName)) {
       failure("mcp_upload_handoff_conflict", "conflict", "Upload settings changed. Open the upload tool again before choosing the file.");
     }

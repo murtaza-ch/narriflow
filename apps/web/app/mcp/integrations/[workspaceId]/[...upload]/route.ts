@@ -3,7 +3,7 @@ import { McpToolAdmission, MCP_WORKSPACE_ACCESS_MESSAGE, verifyMcpUploadHandoff 
 import { getCurrentAppUser } from "@narriflow/auth";
 import { getPrismaClient } from "@narriflow/db/client";
 import { boundedMcpRequest, mcpCorsResponse, rejectMcpOrigin } from "@narriflow/mcp-core/http";
-import { checkRateLimit, ExpectedDomainFailureError, hasFeature, uploadSessionService, workspaceService } from "@narriflow/services";
+import { checkRateLimit, ExpectedDomainFailureError, hasFeature, integrationUploadSessionKey, integrationUploadSessions, uploadSessionService, workspaceService } from "@narriflow/services";
 import { authenticateMcpRequest, getMcpAllowedHosts, getMcpAllowedOrigins, getMcpAuthFailureResponse, getMcpMutationGuard } from "@/lib/mcp-auth";
 import { createMcpUploadHttpHandler } from "@/lib/mcp-upload-http";
 import { admitMcpContinuation } from "@/lib/mcp-continuation-principal";
@@ -20,7 +20,7 @@ const admission = new McpToolAdmission(workspaceService);
 async function requireUploadOwnerActor(userId: string, workspaceId: string) {
   const actor = await workspaceService.requireActor(userId, workspaceId, "processing.consume");
   if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) {
-    throw new ExpectedDomainFailureError({ code: "mcp_workspace_access_unavailable", kind: "payment_required", message: MCP_WORKSPACE_ACCESS_MESSAGE });
+    throw new ExpectedDomainFailureError({ code: "integration_access_unavailable", kind: "payment_required", message: MCP_WORKSPACE_ACCESS_MESSAGE });
   }
   return actor;
 }
@@ -40,13 +40,13 @@ const handler = createMcpUploadHttpHandler({
       admitContinuation: (state, scope) => admitMcpContinuation(state, scope),
       requireToolWorkspace: (principal, id) => admission.requireWorkspace("narriflow_upload_video", principal, id),
       requireOwnerActor: requireUploadOwnerActor,
-      findOwnedSession: async ({ sessionId, userId, workspaceId: id, clientIdempotencyKey }) => Boolean(await getPrismaClient()?.uploadSession.findFirst({ where: { id: sessionId, actorUserId: userId, workspaceId: id, clientIdempotencyKey }, select: { id: true } })),
+      findOwnedSession: async ({ sessionId, userId, workspaceId: id, clientIdempotencyKey }) => Boolean(await getPrismaClient()?.uploadSession.findFirst({ where: { id: sessionId, actorUserId: userId, workspaceId: id, clientIdempotencyKey: integrationUploadSessionKey(userId, clientIdempotencyKey) }, select: { id: true } })),
       principalGuard: getMcpMutationGuard,
       ownerGuard: async (userId) => mcpIntegrationMutationGuard(await checkRateLimit(`mcp-upload-owner:${userId}`, 300, 60)),
     });
   },
   authenticationFailure: getMcpAuthFailureResponse,
-  service: uploadSessionService,
+  service: integrationUploadSessions(uploadSessionService),
 });
 
 type Context = { params: Promise<{ workspaceId: string; upload: string[] }> };

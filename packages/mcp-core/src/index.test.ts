@@ -5,7 +5,8 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import { autopilotService, clipService, ExpectedDomainFailureError, projectService, workspaceService,
   type WorkspaceActorContext, type ExpectedDomainFailureKind } from "@narriflow/services";
 
-import { buildNarriflowMcpServer, MCP_TOOL_ADMISSIONS, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./index";
+import { INTEGRATION_COMMANDS } from "@narriflow/services";
+import { buildNarriflowMcpServer, MCP_TOOL_COMMANDS, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./index";
 
 const clients: Client[] = [];
 
@@ -59,7 +60,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       "narriflow_get_operation", "narriflow_get_export_download", "narriflow_list_brand_profiles",
       "narriflow_create_review_handoff", "narriflow_list_review_rounds", "narriflow_get_review_round",
     ].sort());
-    expect(modelTools.map((tool) => tool.name).sort()).toEqual(Object.keys(MCP_TOOL_ADMISSIONS).sort());
+    expect(modelTools.map((tool) => tool.name).sort()).toEqual(Object.keys(MCP_TOOL_COMMANDS).sort());
 
     const createRule = tools.find((tool) => tool.name === "narriflow_create_rss_autopilot_rule");
     const listProjects = tools.find((tool) => tool.name === "narriflow_list_projects");
@@ -163,10 +164,11 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(result.content?.[0]).toEqual({
       type: "text",
       text: JSON.stringify({
-        error: "mcp_scope_required",
+        error: "scope_required",
         kind: "forbidden",
         message: "This credential requires the usage:read scope",
         retryGuidance: "request_access",
+        details: { scope: "usage:read" },
       }),
     });
   });
@@ -193,10 +195,11 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(result.content?.[0]).toEqual({
       type: "text",
       text: JSON.stringify({
-        error: "mcp_scope_required",
+        error: "scope_required",
         kind: "forbidden",
         message: "This credential requires the publishing:write scope",
         retryGuidance: "request_access",
+        details: { scope: "publishing:write" },
       }),
     });
   });
@@ -235,10 +238,11 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(result.content?.[0]).toEqual({
       type: "text",
       text: JSON.stringify({
-        error: "mcp_scope_required",
+        error: "scope_required",
         kind: "forbidden",
         message: "This credential requires the publishing:write scope",
         retryGuidance: "request_access",
+        details: { scope: "publishing:write" },
       }),
     });
   });
@@ -300,7 +304,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(result.content?.[0]).toEqual({
       type: "text",
       text: JSON.stringify({
-        error: "mcp_workspace_boundary_violation",
+        error: "workspace_boundary_violation",
         kind: "forbidden",
         message: "This API key is bound to a different workspace",
         retryGuidance: "request_access",
@@ -396,7 +400,7 @@ describe("MCP registered tool admission and failures", () => {
       for (const tool of Object.keys(toolArguments) as Array<keyof typeof toolArguments>) {
         const result = await client.callTool({ name: tool, arguments: toolArguments[tool] });
         expect(result.structuredContent).toMatchObject({ data: { error: "test_membership_denied", kind: "forbidden" } });
-        expect(actorSpy).toHaveBeenLastCalledWith(ACTOR_ID, WORKSPACE_ID, MCP_TOOL_ADMISSIONS[tool].capability);
+        expect(actorSpy).toHaveBeenLastCalledWith(ACTOR_ID, WORKSPACE_ID, INTEGRATION_COMMANDS[MCP_TOOL_COMMANDS[tool]!].capability);
       }
       expect(actorSpy).toHaveBeenCalledTimes(Object.keys(toolArguments).length);
       expect(snapshotSpy).not.toHaveBeenCalled(); expect(usageSpy).not.toHaveBeenCalled(); expect(runSpy).not.toHaveBeenCalled();
@@ -410,14 +414,14 @@ describe("MCP registered tool admission and failures", () => {
         workspaceId: WORKSPACE_ID, scopes: [] });
       for (const tool of Object.keys(toolArguments) as Array<keyof typeof toolArguments>) {
         const result = await missingScope.callTool({ name: tool, arguments: toolArguments[tool] });
-        expect(result.structuredContent).toMatchObject({ data: { error: "mcp_scope_required", kind: "forbidden",
-          message: `This credential requires the ${MCP_TOOL_ADMISSIONS[tool].apiKeyScope} scope` } });
+        expect(result.structuredContent).toMatchObject({ data: { error: "scope_required", kind: "forbidden",
+          message: `This credential requires the ${INTEGRATION_COMMANDS[MCP_TOOL_COMMANDS[tool]!].scope} scope` } });
       }
       const scoped = await connect({ kind: "api_key", userId: ACTOR_ID, clientId: "key-client", apiKeyId: RESOURCE_ID,
         workspaceId: WORKSPACE_ID, scopes: ["projects:read", "exports:read", "usage:read", "autopilot:read", "autopilot:write", "publishing:read", "publishing:write", "processing:write", "exports:write"] });
       for (const tool of Object.keys(toolArguments) as Array<keyof typeof toolArguments>) {
         const result = await scoped.callTool({ name: tool, arguments: { ...toolArguments[tool], workspaceId: RESOURCE_ID } });
-        expect(result.structuredContent).toMatchObject({ data: { error: "mcp_workspace_boundary_violation", kind: "forbidden" } });
+        expect(result.structuredContent).toMatchObject({ data: { error: "workspace_boundary_violation", kind: "forbidden" } });
       }
       expect(actorSpy).not.toHaveBeenCalled();
     } finally { actorSpy.mockRestore(); }

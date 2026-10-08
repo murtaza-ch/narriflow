@@ -4,7 +4,7 @@ import type { RateLimitResult } from "@narriflow/services";
 import { McpAuthUnavailableError } from "./mcp-auth";
 import { recordMcpDiagnostic } from "./mcp-diagnostics";
 import { mcpRateLimitKey } from "./mcp-http-handler";
-import { requireMcpMutationLimiter } from "./mcp-http";
+import { requireNewMutationAllowed } from "@narriflow/services";
 import type { NarriflowMcpPrincipal } from "./mcp-tool-admission";
 
 interface RequestAdmission { principal: NarriflowMcpPrincipal; limiter: RateLimitResult }
@@ -65,7 +65,7 @@ export function createAuthenticatedStdioTransport(options: {
     assertNewMutationAllowed() {
       const admission = current.getStore();
       if (!admission) throw new Error("Stdio request admission is missing");
-      requireMcpMutationLimiter(admission.limiter);
+      requireNewMutationAllowed(admission.limiter);
     },
   };
 }

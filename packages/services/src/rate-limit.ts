@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import {
   boundedRedisRetryDelay,
   installOptionalRedisErrorHandler,
@@ -81,4 +82,14 @@ export async function checkRateLimit(
     if (redis) resetClient(redis);
     return { allowed: true, remaining: limit, limit, availability: "unavailable" };
   }
+}
+
+/** Integration admission for a new mutation. Invoke only after the owning
+ * domain has checked its immutable replay identity, so accepted work still
+ * replays while the limiter is unavailable. */
+export function requireNewMutationAllowed(result: RateLimitResult) {
+  if (!result.allowed) throw new ExpectedDomainFailureError({ code: "request_limit_exceeded", kind: "rate_limited",
+    message: "Request limit exceeded", retryAfterSeconds: 60 });
+  if (result.availability !== "available") throw new ExpectedDomainFailureError({ code: "mutations_unavailable", kind: "unavailable",
+    message: "New mutations are paused while the request limiter is unavailable", retryAfterSeconds: 5 });
 }

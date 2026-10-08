@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { boundedMcpRequest, mcpCorsResponse, rejectMcpOrigin, requireMcpMutationLimiter } from "./mcp-http";
+import { boundedMcpRequest, mcpCorsResponse, rejectMcpOrigin } from "./mcp-http";
+import { requireNewMutationAllowed } from "@narriflow/services";
 
 const origins = ["https://app.example", "http://localhost:3000"];
 test("origin admission includes scheme and port and refuses malformed origin values", () => {
@@ -33,7 +34,7 @@ test("preserves allowed request bytes and routing headers", async () => {
   expect((result as Request).headers.get("MCP-Method")).toBe("tools/list");
 });
 test("unavailable limiter pauses new writes with a typed retryable failure", () => {
-  expect(() => requireMcpMutationLimiter({ allowed: true, availability: "unavailable", remaining: 300, limit: 300 }))
-    .toThrow(expect.objectContaining({ code: "mcp_mutations_unavailable", kind: "unavailable", retryAfterSeconds: 5 }));
-  expect(() => requireMcpMutationLimiter({ allowed: true, availability: "available", remaining: 299, limit: 300 })).not.toThrow();
+  expect(() => requireNewMutationAllowed({ allowed: true, availability: "unavailable", remaining: 300, limit: 300 }))
+    .toThrow(expect.objectContaining({ code: "mutations_unavailable", kind: "unavailable", retryAfterSeconds: 5 }));
+  expect(() => requireNewMutationAllowed({ allowed: true, availability: "available", remaining: 299, limit: 300 })).not.toThrow();
 });

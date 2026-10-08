@@ -3,7 +3,8 @@ import { bearerAuthChallengeResponse, createMcpHandler, hostHeaderValidationResp
 import type { RateLimitResult } from "@narriflow/services";
 import { McpAuthUnavailableError, principalFromMcpAuth } from "./mcp-auth";
 import { recordMcpDiagnostic } from "./mcp-diagnostics";
-import { boundedMcpRequest, mcpCorsResponse, rejectMcpOrigin, requireMcpMutationLimiter } from "./mcp-http";
+import { boundedMcpRequest, mcpCorsResponse, rejectMcpOrigin } from "./mcp-http";
+import { requireNewMutationAllowed } from "@narriflow/services";
 import { mcpToolRequiredScope, type NarriflowMcpPrincipal } from "./mcp-tool-admission";
 
 export function mcpAuthFailureResponse(error: unknown, metadataUrl: string, requiredScopes: string[] = []) {
@@ -32,7 +33,7 @@ export function createNarriflowMcpHttpHandler(deps: NarriflowMcpHttpDependencies
   const diagnostic = deps.diagnostic ?? recordMcpDiagnostic;
   const handler = createMcpHandler(({ authInfo, era }) => {
     const limiter = authInfo?.extra?.mcpLimiter as RateLimitResult;
-    return deps.buildServer(principalFromMcpAuth(authInfo), { protocolEra: era, assertNewMutationAllowed: () => requireMcpMutationLimiter(limiter) });
+    return deps.buildServer(principalFromMcpAuth(authInfo), { protocolEra: era, assertNewMutationAllowed: () => requireNewMutationAllowed(limiter) });
   });
   return async (input: Request): Promise<Response> => {
     const started = performance.now();

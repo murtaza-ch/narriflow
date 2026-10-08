@@ -29,7 +29,7 @@ export function createMcpUploadHttpHandler(dependencies: McpUploadHttpDependenci
           if (input.success) {
             try { admitted.beforeAccept(); }
             catch (limiterError) {
-              if (!isExpectedDomainFailure(limiterError) || limiterError.code !== "mcp_mutations_unavailable") throw limiterError;
+              if (!isExpectedDomainFailure(limiterError) || limiterError.code !== "mutations_unavailable") throw limiterError;
               try { await dependencies.service.status(admitted.actor, { clientIdempotencyKey: input.data.clientIdempotencyKey, sessionId: null, browserFingerprint: input.data.source.browserFingerprint }); }
               catch (error) {
                 if (isExpectedDomainFailure(error) && error.code === "upload_session_not_found") throw limiterError;
@@ -52,7 +52,7 @@ export function createMcpUploadHttpHandler(dependencies: McpUploadHttpDependenci
     if (auth) return auth;
     if (isExpectedDomainFailure(error)) {
       const status = { missing: 404, invalid: 400, forbidden: 403, unauthenticated: 401, conflict: 409, unavailable: 503, payment_required: 402, unprocessable: 422, rate_limited: 429 }[error.kind] ?? 400;
-      return Response.json({ error: error.code, message: mcpFailureMessage(error), details: boundedExpectedDomainFailureDetails(error.details) }, { status, headers: { "Cache-Control": "private, no-store", ...(status === 503 || status === 429 ? { "Retry-After": String(error.retryAfterSeconds ?? 5) } : {}), ...(error.code === "mcp_scope_required" ? { "WWW-Authenticate": 'Bearer error="insufficient_scope", scope="processing:write"' } : {}) } });
+      return Response.json({ error: error.code, message: mcpFailureMessage(error), details: boundedExpectedDomainFailureDetails(error.details) }, { status, headers: { "Cache-Control": "private, no-store", ...(status === 503 || status === 429 ? { "Retry-After": String(error.retryAfterSeconds ?? 5) } : {}), ...(error.code === "scope_required" ? { "WWW-Authenticate": 'Bearer error="insufficient_scope", scope="processing:write"' } : {}) } });
     }
     console.warn(JSON.stringify({ level: "error", message: "mcp_upload_request_failed" }));
     return Response.json({ error: "mcp_upload_unavailable", message: "Upload is temporarily unavailable" }, { status: 503, headers: { "Cache-Control": "private, no-store", "Retry-After": "5" } });

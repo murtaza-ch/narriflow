@@ -4,7 +4,7 @@ import {
 	StreamableHTTPClientTransport,
 	type Tool,
 } from "@modelcontextprotocol/client";
-import { MCP_TOOL_ADMISSIONS } from "../src/mcp-tool-admission";
+import { MCP_TOOL_COMMANDS } from "../src/mcp-tool-admission";
 
 // This live smoke check does not mint/revoke credentials, choose an arbitrary
 // customer's workspace, start workers, or create domain work. Complete OAuth
@@ -156,7 +156,7 @@ async function main() {
 				.sort();
 			assert.deepEqual(
 				modelTools,
-				Object.keys(MCP_TOOL_ADMISSIONS).sort(),
+				Object.keys(MCP_TOOL_COMMANDS).sort(),
 				"The live model tool catalog differs from the current shared admission catalog",
 			);
 			const workspaceFacts = data(

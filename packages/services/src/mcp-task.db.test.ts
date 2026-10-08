@@ -7,7 +7,7 @@ import { createMcpTaskRegistry, type McpTaskRecord } from "./mcp-task";
 import { prismaMcpTaskPersistence, cancelMcpTaskDomainWork } from "./mcp-task-runtime";
 import { createOperationStatusReader } from "./operation-status";
 import { workspaceService } from "./workspace.service";
-import { buildMcpContentPack } from "@narriflow/validators";
+import { buildGenerationContentPack } from "@narriflow/validators";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
 const url = process.env.INTEGRATION_TEST_DATABASE_URL;
@@ -54,7 +54,7 @@ db("durable MCP Task lifecycle", () => {
     });
   }
   async function taskInput(): Promise<Omit<McpTaskRecord, "id" | "status" | "terminalOutcome" | "createdAt" | "updatedAt" | "expiresAt" | "cancellationRequestedAt">> {
-    const pack = await prisma.contentPack.create({ data: { projectId, ...buildMcpContentPack() } });
+    const pack = await prisma.contentPack.create({ data: { projectId, ...buildGenerationContentPack() } });
     const run = await prisma.workflowRun.create({ data: { projectId, contentPackId: pack.id, stage: "stt", status: "queued", idempotencyKey: randomUUID() } });
     return { ownerUserId: userId, callerId: `oauth:client:${userId}`, workspaceId, toolName: "narriflow_generate_clips", domainKind: "generation", domainId: run.id,
       projectId, clipId: null, originatingOperationId: randomUUID(), resultContract: { version: 1 }, initialResult: { operationId: run.id } };

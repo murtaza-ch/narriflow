@@ -70,7 +70,7 @@ describe("Compact MCP workflow", () => {
     const client = await connect({ ...principal, scopes: ["processing:write"] });
     const result = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key, generation: { clipCountTarget: 6, clipLengthPreset: "under_30s" } } });
     expect(result.structuredContent).toMatchObject({ data: { projectId, operation: { kind: "generation", id: operationId }, status: "accepted", statusTool: "narriflow_get_operation" } });
-    expect(trigger).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), projectId, expect.objectContaining({ contentPack: expect.objectContaining({ clipCountTarget: 6, clipDurationSecTarget: 25, maxDurationSec: 35 }) }), key, expect.objectContaining({ mutation: expect.objectContaining({ clientIdempotencyKey: key }) }));
+    expect(trigger).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), projectId, expect.objectContaining({ contentPack: expect.objectContaining({ clipCountTarget: 6, clipDurationSecTarget: 25, maxDurationSec: 35 }) }), services.integrationKeyUuid(userId, "generate_clips", key), expect.objectContaining({ mutation: expect.objectContaining({ clientIdempotencyKey: key }) }));
   });
 
   test("export review exposes the exact revision and ordinary download page without signed URLs", async () => {
@@ -167,7 +167,7 @@ describe("Compact MCP workflow", () => {
       const past = Date.now() - 601_000;
       const prepared = createMcpConfirmation(publishing, publicationIntent(), { now: past });
       const receipt = acceptMcpConfirmation(prepared.token, { actorUserId: userId, accepted: true, now: past });
-      const result = await (await connect(publishing, { assertNewMutationAllowed: () => { throw new ExpectedDomainFailureError({ code: "mcp_mutations_unavailable", kind: "unavailable", message: "Paused" }); } })).callTool({ name: "narriflow_schedule_social_post", arguments: { workspaceId, clientIdempotencyKey: publicationIntent().clientIdempotencyKey, preparationToken: prepared.token, confirmationReceipt: receipt } });
+      const result = await (await connect(publishing, { assertNewMutationAllowed: () => { throw new ExpectedDomainFailureError({ code: "mutations_unavailable", kind: "unavailable", message: "Paused" }); } })).callTool({ name: "narriflow_schedule_social_post", arguments: { workspaceId, clientIdempotencyKey: publicationIntent().clientIdempotencyKey, preparationToken: prepared.token, confirmationReceipt: receipt } });
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toMatchObject({ data: { socialPostId: scheduledPublication().id } });
       expect(schedule).not.toHaveBeenCalled();
@@ -181,7 +181,7 @@ describe("Compact MCP workflow", () => {
       const schedule = spyOn(socialPublicationScheduling, "schedule"); mocks.push(schedule);
       const publishing = { ...principal, scopes: ["publishing:write"] };
       const prepared = createMcpConfirmation(publishing, publicationIntent(), { now: Date.now() - 601_000 });
-      const guard = () => { throw new ExpectedDomainFailureError({ code: "mcp_mutations_unavailable", kind: "unavailable", message: "Paused" }); };
+      const guard = () => { throw new ExpectedDomainFailureError({ code: "mutations_unavailable", kind: "unavailable", message: "Paused" }); };
       const result = await (await connect(publishing, { assertNewMutationAllowed: guard })).callTool({ name: "narriflow_schedule_social_post", arguments: { workspaceId, clientIdempotencyKey: publicationIntent().clientIdempotencyKey, preparationToken: prepared.token } });
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toMatchObject({ data: { socialPostId: scheduledPublication().id, status: "scheduled" } });

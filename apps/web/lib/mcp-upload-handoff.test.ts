@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createMcpUploadHandoff, verifyMcpUploadHandoff, MCP_CONTINUATION_TTL_MS, type NarriflowMcpPrincipal } from "@narriflow/mcp-core";
-import { buildMcpContentPack } from "@narriflow/validators";
+import { buildGenerationContentPack } from "@narriflow/validators";
 import type { ActorScope } from "@narriflow/services";
 import { admitMcpUploadHandoff, type McpUploadHandoffDependencies } from "./mcp-upload-handoff";
 
@@ -33,7 +33,7 @@ function request(action: string, body: unknown) {
 }
 const opening = { clientIdempotencyKey: key, title: "talk.mp4", brandProfileId, brandTemplateId: null,
   source: { fileName: "talk.mp4", sizeBytes: 1_000_000, contentType: "video/mp4", browserFingerprint: "f".repeat(64) },
-  generationContext: { contentPack: buildMcpContentPack(), languageCode: null } };
+  generationContext: { contentPack: buildGenerationContentPack(), languageCode: null } };
 const admit = (action: string, body: unknown, h: ReturnType<typeof harness>) => admitMcpUploadHandoff(request(action, body), { workspaceId, token, userId }, h.deps);
 
 describe("assistant upload handoff authority", () => {

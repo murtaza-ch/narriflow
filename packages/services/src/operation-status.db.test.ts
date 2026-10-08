@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
-import { buildMcpContentPack } from "@narriflow/validators";
+import { buildGenerationContentPack } from "@narriflow/validators";
 import { createOperationStatusReader } from "./operation-status";
 
 const url = process.env.INTEGRATION_TEST_DATABASE_URL;
@@ -32,7 +32,7 @@ db("Operation Status lineage", () => {
     return prisma.project.create({ data: { workspaceId, createdByUserId: userId, title: "Lineage", sourceMediaUrl: "r2://source.mp4", ingestStatus: "ready" } });
   }
   async function sttRun(projectId: string, status: string) {
-    const pack = await prisma.contentPack.create({ data: { projectId, ...buildMcpContentPack() } });
+    const pack = await prisma.contentPack.create({ data: { projectId, ...buildGenerationContentPack() } });
     return prisma.workflowRun.create({ data: { projectId, contentPackId: pack.id, stage: "stt", status, idempotencyKey: randomUUID() } });
   }
   const read = (kind: "intake" | "generation" | "export", id: string) => reader().read({ workspaceId }, { kind, id });

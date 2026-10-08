@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { ExpectedDomainFailureError, type ActorScope, type UploadSessionService } from "@narriflow/services";
-import { buildMcpContentPack } from "@narriflow/validators";
+import { buildGenerationContentPack } from "@narriflow/validators";
 import { createMcpUploadHttpHandler } from "./mcp-upload-http";
 import { mcpIntegrationAuthenticationFailure, mcpIntegrationMutationGuard } from "./mcp-integration-admission";
 import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 
 const workspaceId = "b6558e07-d826-46a2-a919-4c9a4e7c4c62";
-const input = { clientIdempotencyKey: "6d27d010-f52c-4e5c-9ea3-012c0bf7d921", title: "Video", source: { fileName: "video.mp4", sizeBytes: 12, contentType: "video/mp4", browserFingerprint: "exact-file" }, generationContext: { contentPack: buildMcpContentPack(), languageCode: null } };
+const input = { clientIdempotencyKey: "6d27d010-f52c-4e5c-9ea3-012c0bf7d921", title: "Video", source: { fileName: "video.mp4", sizeBytes: 12, contentType: "video/mp4", browserFingerprint: "exact-file" }, generationContext: { contentPack: buildGenerationContentPack(), languageCode: null } };
 const actor = { actorUserId: "actor", workspaceId } as ActorScope;
-const unavailable = () => { throw new ExpectedDomainFailureError({ code: "mcp_mutations_unavailable", kind: "unavailable", message: "New mutations are paused" }); };
+const unavailable = () => { throw new ExpectedDomainFailureError({ code: "mutations_unavailable", kind: "unavailable", message: "New mutations are paused" }); };
 function fixture(existing: boolean) {
   let opens = 0;
   const service = {
@@ -32,7 +32,7 @@ describe("authenticated integration uploads", () => {
     for (const action of ["open", "status", "grants", "finalize", "discard"]) {
       const response = await handler(new Request(`https://narriflow.test/mcp/integrations/${workspaceId}/upload-sessions/${action}`, { method: "POST", body: "{}" }), workspaceId);
       expect(response.status).toBe(429);
-      expect((await response.json()).error).toBe("mcp_request_limit_exceeded");
+      expect((await response.json()).error).toBe("request_limit_exceeded");
       expect(response.headers.get("Retry-After")).toBe("60");
     }
     expect(calls).toBe(0);
@@ -40,7 +40,7 @@ describe("authenticated integration uploads", () => {
   test("reserves OAuth challenges for authentication failures and preserves domain admission failures", async () => {
     const handler = createMcpUploadHttpHandler({
       service: {} as UploadSessionService,
-      admit: async () => { throw new ExpectedDomainFailureError({ code: "mcp_scope_required", kind: "forbidden", message: "Explicit processing consent is required" }); },
+      admit: async () => { throw new ExpectedDomainFailureError({ code: "scope_required", kind: "forbidden", message: "Explicit processing consent is required" }); },
       authenticationFailure: (error) => mcpIntegrationAuthenticationFailure(error, "https://narriflow.test/.well-known/oauth-protected-resource/mcp"),
     });
     const response = await handler(request(), workspaceId);
@@ -52,7 +52,7 @@ describe("authenticated integration uploads", () => {
     const { handler, count } = fixture(false);
     const response = await handler(request(), workspaceId);
     expect(response.status).toBe(503);
-    expect((await response.json()).error).toBe("mcp_mutations_unavailable");
+    expect((await response.json()).error).toBe("mutations_unavailable");
     expect(count()).toBe(0);
   });
   test("replays an already accepted intake during a limiter outage", async () => {
