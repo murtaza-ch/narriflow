@@ -122,8 +122,16 @@ The number of a Workspace's videos in flight, derived under the Workspace usage 
 _Avoid_: Concurrency counter
 
 **Operation Status**:
-The transport-neutral, lineage-derived state of one accepted mutation: an intake, a generation, or an export. It reports `working`, `completed`, `partial`, `failed`, or `cancelled`, with progress, per-clip or per-format outcomes, the Project, Clip, and export IDs produced, and a typed failure code. An intake follows its Upload Session or Ingest Job into the stored generation run it handed off to; it never infers work from the Project's latest run. MCP tools and Tasks read it; it carries no media URLs.
+The transport-neutral, lineage-derived state of one accepted mutation: an intake, a generation, or an export. It reports `working`, `completed`, `partial`, `failed`, or `cancelled`, with progress, per-clip or per-format outcomes, the Project, Clip, and export IDs produced, and a typed failure code. An intake follows its Upload Session or Ingest Job into the stored generation run it handed off to; it never infers work from the Project's latest run. MCP tools, Tasks, the REST API, and Completion Callbacks read it; it carries no media URLs.
 _Avoid_: Task state, project status, job status
+
+**Operation Receipt**:
+The durable acceptance record of one idempotent mutation. It is keyed by Workspace, acting user, canonical command, and the client's idempotency key, and it stores the input fingerprint and the accepted result. Rotating an API key or switching between MCP and REST replays the same receipt. Upload Sessions keep their own key instead; integrations derive it per user from the caller's key.
+_Avoid_: MCP operation, request log
+
+**Completion Callback**:
+A signed, at-least-once notification delivered to a caller-supplied URL when one accepted operation reaches a terminal Operation Status. It carries IDs only, follows the Standard Webhooks format, and is signed with the Workspace's callback signing secret. Each acceptance registers at most one.
+_Avoid_: Webhook subscription, event stream
 
 **Media Cleanup**:
 The durable execution module that owns exact-key removal of unreferenced private media after an approved producer commits its database state. It owns idempotent obligation admission, provisional copy-compensation holds, fenced claims, renewal, storage outcome classification, bounded retry, settlement, and identifier-safe diagnostics. Clip Editor Document Persistence, detected Clip replacement, and Clip duplication still own the decision and transaction that create or adopt cleanup intent.

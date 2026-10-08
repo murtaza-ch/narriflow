@@ -9,6 +9,10 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { rotateCallbackSigningSecretAction } from "../actions";
 import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
 
+// A fixed locale and zone keep server and client renders identical.
+const formatTime = (iso: string) =>
+  `${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(iso))} UTC`;
+
 export function CallbackSecretPanel({
   status,
   isBusiness,
@@ -44,8 +48,8 @@ export function CallbackSecretPanel({
         {!isBusiness ? <Text fontSize="13px" color="fg.muted">Completion callbacks require an active Business workspace.</Text> : (
           <Flex gap="3" align={{ base: "start", md: "center" }} direction={{ base: "column", md: "row" }}>
             <Text fontSize="13px" color="fg.subtle" flex="1">
-              {status.current ? `Current secret created ${new Date(status.current.createdAt).toLocaleString()}.` : "No signing secret yet. Callback requests are refused until one exists."}
-              {status.previousRetiresAt ? ` The previous secret keeps signing until ${new Date(status.previousRetiresAt).toLocaleString()}.` : ""}
+              {status.current ? `Current secret created ${formatTime(status.current.createdAt)}.` : "No signing secret yet. Callback requests are refused until one exists."}
+              {status.previousRetiresAt ? ` The previous secret keeps signing until ${formatTime(status.previousRetiresAt)}.` : ""}
             </Text>
             <Button type="button" size="sm" variant="outline" onClick={rotate} disabled={pending}>
               {pending ? <Spinner size="xs" /> : <RefreshCw size={14} />}{status.current ? "Rotate secret" : "Create secret"}

@@ -179,7 +179,7 @@ Tasks read Operation Status, so intake Tasks follow import into generation.
 Unsupported clients receive ordinary operation IDs/status guidance.
 Task HTTP requests send `MCP-Name` equal to `params.taskId`.
 
-Apply the `McpOperation` and `McpTask` migrations before running/deploying
+Apply the `OperationReceipt` and `McpTask` migrations before running/deploying
 their code. Verify both database URLs select the intended shared database.
 Run lint, typecheck, tests, dependency audit, build, `test:mcp:integration`,
 `test:integration-api:db` and lifecycle database gates. DB fixtures use disposable schemas.
