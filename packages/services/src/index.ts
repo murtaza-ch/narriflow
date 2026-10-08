@@ -538,8 +538,8 @@ export { LayoutEvidenceLifecycle, LayoutEvidenceClaimLost, type ClipPendingPrevi
 export { getLayoutEvidenceLifecycle } from "./layout-evidence-runtime";
 export type { ActorScope } from "./actor-scope";
 
-export { createMcpOperationExecutor, mcpOperationFingerprint, McpOperationConflictError, type McpMutationOptions, type McpOperationIdentity } from "./mcp-operation";
-export { getMcpOperationExecutor, prismaMcpOperationPersistence } from "./mcp-operation-runtime";
+export { createOperationReceiptExecutor, operationFingerprint, OperationIdempotencyConflictError, RECEIPT_COMMANDS, type ReceiptCommand, type IntegrationMutation, type OperationReceiptIdentity } from "./operation-receipt";
+export { getOperationReceiptExecutor, prismaOperationReceiptPersistence } from "./operation-receipt-runtime";
 export { createMcpTaskRegistry, MCP_TASK_TTL_MS, MCP_TASK_POLL_INTERVAL_MS, type McpTaskRecord, type McpTaskOwner, type McpTaskResolution } from "./mcp-task";
 export { prismaMcpTaskPersistence, pruneExpiredMcpTasks, getMcpTaskPersistence, cancelMcpTaskDomainWork } from "./mcp-task-runtime";
 export { createOperationStatusReader, deriveGenerationStatus, deriveExportStatus, deriveIntakePhase, type OperationKind, type OperationState, type OperationStatus, type OperationItem, type TrustedOperationStatus } from "./operation-status";

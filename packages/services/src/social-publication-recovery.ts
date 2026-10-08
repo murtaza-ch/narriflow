@@ -1,8 +1,8 @@
 import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
 import { randomUUID } from "node:crypto";
-import { getMcpOperationExecutor } from "./mcp-operation-runtime";
-import type { McpMutationOptions } from "./mcp-operation";
+import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import type { IntegrationMutation } from "./operation-receipt";
 import { Prisma, type SocialPlatform } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -431,7 +431,7 @@ export const socialPublicationRecovery = {
       actorUserId: string;
       socialPostId: string;
       now?: Date;
-      mutation?: McpMutationOptions;
+      mutation?: IntegrationMutation;
     } & RecheckSocialPublicationInput,
   ) {
     await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
@@ -488,11 +488,11 @@ export const socialPublicationRecovery = {
       };
     };
     const accepted = input.mutation
-      ? await getMcpOperationExecutor().execute({
+      ? await getOperationReceiptExecutor().execute({
           identity: {
             workspaceId: input.workspaceId,
-            callerId: input.mutation.callerId ?? input.actorUserId,
-            toolName: "narriflow_recheck_social_publication",
+            actorUserId: input.actorUserId,
+            command: "recheck_social_publication",
             clientIdempotencyKey: input.mutation.clientIdempotencyKey,
           },
           input: {
@@ -533,7 +533,7 @@ export const socialPublicationRecovery = {
       actorUserId: string;
       socialPostId: string;
       now?: Date;
-      mutation?: McpMutationOptions;
+      mutation?: IntegrationMutation;
     } & ConfirmSocialPublicationInput,
   ) {
     await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
@@ -701,11 +701,11 @@ export const socialPublicationRecovery = {
       };
     };
     const accepted = input.mutation
-      ? await getMcpOperationExecutor().execute({
+      ? await getOperationReceiptExecutor().execute({
           identity: {
             workspaceId: input.workspaceId,
-            callerId: input.mutation.callerId ?? input.actorUserId,
-            toolName: "narriflow_confirm_social_publication",
+            actorUserId: input.actorUserId,
+            command: "confirm_social_publication",
             clientIdempotencyKey: input.mutation.clientIdempotencyKey,
           },
           input: {
@@ -759,7 +759,7 @@ export const socialPublicationRecovery = {
       actorUserId: string;
       socialPostId: string;
       now?: Date;
-      mutation?: McpMutationOptions;
+      mutation?: IntegrationMutation;
     } & RepublishSocialPublicationInput,
   ) {
     await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
@@ -841,11 +841,11 @@ export const socialPublicationRecovery = {
       };
     };
     const accepted = input.mutation
-      ? await getMcpOperationExecutor().execute({
+      ? await getOperationReceiptExecutor().execute({
           identity: {
             workspaceId: input.workspaceId,
-            callerId: input.mutation.callerId ?? input.actorUserId,
-            toolName: "narriflow_publish_social_publication_again",
+            actorUserId: input.actorUserId,
+            command: "publish_social_publication_again",
             clientIdempotencyKey: input.mutation.clientIdempotencyKey,
           },
           input: {

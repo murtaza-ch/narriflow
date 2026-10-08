@@ -4,7 +4,7 @@ Evidence recorded on October 5, 2026. Implementation and automated verification 
 
 ## Automated coverage
 
-`bun run test:mcp:integration` runs the deterministic MCP transport, authentication, tool, continuation, App, and upload-helper suites, plus browser/MCP admission parity. CI invokes it explicitly. `bun run test:mcp:db` applies repository migrations in a disposable `mcp_test_` schema, checks durable acceptance and Tasks, and drops that schema. It does not migrate shared development data.
+`bun run test:mcp:integration` runs the deterministic MCP transport, authentication, tool, continuation, App, and upload-helper suites, plus browser/MCP admission parity. CI invokes it explicitly. `bun run test:integration-api:db` applies repository migrations in a disposable `integration_test_` schema, checks durable acceptance and Tasks, and drops that schema. It does not migrate shared development data.
 
 The final deterministic MCP gate passed 146 tests with 697 assertions across 18 files. Coverage includes modern complete responses, SDK-supported 2025-11-25 exchanges through the same factory, revocation, private zero-TTL caller isolation, routing header mismatches, malformed metadata, methods/CORS/body bounds, scope challenges, Apps/upload recovery, exact confirmation, and negotiated Tasks. Eventual nested Task ToolResults explicitly carry private zero-TTL fields, and Task expiry does not prevent durable operation replay.
 

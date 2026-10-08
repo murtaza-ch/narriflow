@@ -1,34 +1,34 @@
 import { describe, expect, test } from "bun:test";
 import {
-	createMcpOperationExecutor,
-	mcpOperationFingerprint,
-	McpOperationConflictError,
-	type McpOperationPersistence,
-	type McpOperationReceipt,
-} from "./mcp-operation";
+	createOperationReceiptExecutor,
+	operationFingerprint,
+	OperationIdempotencyConflictError,
+	type OperationReceiptPersistence,
+	type OperationReceipt,
+} from "./operation-receipt";
 
 test("request fingerprints use locale-independent Unicode key order", () => {
 	// UTF-8 SHA-256 of {"z":2,"ä":1}; code-point order places z before ä.
-	expect(mcpOperationFingerprint({ "ä": 1, z: 2 })).toBe(
+	expect(operationFingerprint({ "ä": 1, z: 2 })).toBe(
 		"896b8dd27b9b539d56c30c96acce8910a2293d7bef3fc3ef87195bc2eb778073",
 	);
-	expect(mcpOperationFingerprint({ z: 2, "ä": 1 })).toBe(
+	expect(operationFingerprint({ z: 2, "ä": 1 })).toBe(
 		"896b8dd27b9b539d56c30c96acce8910a2293d7bef3fc3ef87195bc2eb778073",
 	);
 });
 
 function harness(options: { loseCommitResponse?: boolean } = {}) {
-	let receipts = new Map<string, McpOperationReceipt>();
+	let receipts = new Map<string, OperationReceipt>();
 	let domainWrites = 0;
 	let tail = Promise.resolve();
-	const key = (identity: import("./mcp-operation").McpOperationIdentity) =>
+	const key = (identity: import("./operation-receipt").OperationReceiptIdentity) =>
 		JSON.stringify([
 			identity.workspaceId,
-			identity.callerId,
-			identity.toolName,
+			identity.actorUserId,
+			identity.command,
 			identity.clientIdempotencyKey,
 		]);
-	const persistence: McpOperationPersistence<{ write(): number }> = {
+	const persistence: OperationReceiptPersistence<{ write(): number }> = {
 		read: async (identity) => receipts.get(key(identity)) ?? null,
 		transaction: async (run) => {
 			const previous = tail;
@@ -57,7 +57,7 @@ function harness(options: { loseCommitResponse?: boolean } = {}) {
 		},
 	};
 	return {
-		execute: createMcpOperationExecutor({
+		execute: createOperationReceiptExecutor({
 			...persistence,
 			transaction: async (run) => {
 				const accepted = await persistence.transaction(run);
@@ -71,12 +71,12 @@ function harness(options: { loseCommitResponse?: boolean } = {}) {
 
 const identity = {
 	workspaceId: "workspace-a",
-	callerId: "caller-a",
-	toolName: "narriflow_create_rss_rule",
+	actorUserId: "user-a",
+	command: "create_rss_autopilot_rule" as const,
 	clientIdempotencyKey: "request-a",
 };
 
-describe("MCP mutation acceptance", () => {
+describe("Operation Receipt acceptance", () => {
 	test("resolves an acceptance whose commit response was lost", async () => {
 		const h = harness({ loseCommitResponse: true });
 		const accepted = await h.execute({
@@ -184,7 +184,7 @@ describe("MCP mutation acceptance", () => {
 		await h.execute(request);
 		await expect(
 			h.execute({ ...request, input: { caption: "Changed" } }),
-		).rejects.toBeInstanceOf(McpOperationConflictError);
+		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
 		expect(h.writes()).toBe(1);
 	});
 
@@ -285,11 +285,12 @@ describe("MCP mutation acceptance", () => {
 		expect(accepted.replayed).toBe(false);
 	});
 
-	test("request keys remain isolated by caller and workspace", async () => {
+	test("request keys remain isolated by acting user, command, and workspace", async () => {
 		const h = harness();
 		for (const owner of [
 			identity,
-			{ ...identity, callerId: "caller-b" },
+			{ ...identity, actorUserId: "user-b" },
+			{ ...identity, command: "run_autopilot_rule_now" as const },
 			{ ...identity, workspaceId: "workspace-b" },
 		])
 			await h.execute({
@@ -302,6 +303,6 @@ describe("MCP mutation acceptance", () => {
 					value: {},
 				}),
 			});
-		expect(h.writes()).toBe(3);
+		expect(h.writes()).toBe(4);
 	});
 });

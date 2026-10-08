@@ -1,6 +1,6 @@
 import type { ActorScope } from "./actor-scope";
-import { getMcpOperationExecutor } from "./mcp-operation-runtime";
-import type { McpMutationOptions } from "./mcp-operation";
+import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import type { IntegrationMutation } from "./operation-receipt";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -461,7 +461,7 @@ export class ClipExportService {
       resolution: ClipRenderResolution;
     },
     idempotencyKey: string,
-    mutation?: McpMutationOptions,
+    mutation?: IntegrationMutation,
   ): Promise<{ export: ClipExportSnapshot; reused: boolean; output: ClipExportOutput }> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
@@ -523,11 +523,11 @@ export class ClipExportService {
         watermark,
       });
     };
-    const accepted = await getMcpOperationExecutor().execute({
+    const accepted = await getOperationReceiptExecutor().execute({
       identity: {
         workspaceId: scope.workspaceId,
-        callerId: mutation?.callerId ?? scope.actorUserId,
-        toolName: "narriflow_create_clip_export",
+        actorUserId: scope.actorUserId,
+        command: "create_clip_export",
         clientIdempotencyKey: mutation?.clientIdempotencyKey ?? idempotencyKey,
       },
       input: {

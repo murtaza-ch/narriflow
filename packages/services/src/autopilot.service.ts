@@ -1,6 +1,6 @@
 import { workspaceService } from "./workspace.service";
-import { getMcpOperationExecutor } from "./mcp-operation-runtime";
-import type { McpMutationOptions } from "./mcp-operation";
+import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import type { IntegrationMutation } from "./operation-receipt";
 import type { ActorScope } from "./actor-scope";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -212,7 +212,7 @@ export class AutopilotService {
   async createRule(
     scope: ActorScope,
     input: AutopilotRuleInput,
-    mutation?: McpMutationOptions,
+    mutation?: IntegrationMutation,
   ): Promise<AutopilotRuleSnapshot> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const parsed = autopilotRuleInputSchema.parse(input);
@@ -263,11 +263,11 @@ export class AutopilotService {
       return toSnapshot(row);
     };
     if (mutation) {
-      const accepted = await getMcpOperationExecutor().execute({
+      const accepted = await getOperationReceiptExecutor().execute({
         identity: {
           workspaceId: scope.workspaceId,
-          callerId: mutation.callerId ?? scope.actorUserId,
-          toolName: "narriflow_create_rss_autopilot_rule",
+          actorUserId: scope.actorUserId,
+          command: "create_rss_autopilot_rule",
           clientIdempotencyKey: mutation.clientIdempotencyKey,
         },
         input: parsed,
@@ -395,7 +395,7 @@ export class AutopilotService {
   async triggerRuleNow(
     scope: ActorScope,
     ruleId: string,
-    mutation?: McpMutationOptions,
+    mutation?: IntegrationMutation,
   ): Promise<AutopilotRuleSnapshot> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
@@ -434,11 +434,11 @@ export class AutopilotService {
       return toSnapshot(row);
     };
     if (mutation) {
-      const accepted = await getMcpOperationExecutor().execute({
+      const accepted = await getOperationReceiptExecutor().execute({
         identity: {
           workspaceId: scope.workspaceId,
-          callerId: mutation.callerId ?? scope.actorUserId,
-          toolName: "narriflow_run_autopilot_rule_now",
+          actorUserId: scope.actorUserId,
+          command: "run_autopilot_rule_now",
           clientIdempotencyKey: mutation.clientIdempotencyKey,
         },
         input: { ruleId },

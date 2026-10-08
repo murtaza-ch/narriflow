@@ -5,7 +5,7 @@ import { Pool } from "pg";
 
 function configuredDatabaseUrl() {
 	const configured =
-		process.env.MCP_TEST_DATABASE_URL ??
+		process.env.INTEGRATION_TEST_DATABASE_URL ??
 		process.env.DIRECT_URL ??
 		process.env.DATABASE_URL;
 	if (configured) return configured;
@@ -35,10 +35,10 @@ const databaseUrl = configuredDatabaseUrl();
 if (!databaseUrl) throw new Error("DIRECT_URL or DATABASE_URL is required");
 
 const schema =
-	process.env.MCP_TEST_DATABASE_SCHEMA ??
-	`mcp_test_${randomUUID().replaceAll("-", "")}`;
-if (!/^mcp_test_[a-z0-9_]+$/.test(schema)) {
-	throw new Error("Unsafe MCP test schema name");
+	process.env.INTEGRATION_TEST_DATABASE_SCHEMA ??
+	`integration_test_${randomUUID().replaceAll("-", "")}`;
+if (!/^integration_test_[a-z0-9_]+$/.test(schema)) {
+	throw new Error("Unsafe integration test schema name");
 }
 
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
@@ -74,20 +74,20 @@ try {
 		DIRECT_URL: migrationUrl.toString(),
 	});
 	for (const suite of [
-		"packages/services/src/mcp-operation.db.test.ts",
+		"packages/services/src/operation-receipt.db.test.ts",
 		"packages/services/src/mcp-task.db.test.ts",
 		"packages/services/src/operation-status.db.test.ts",
 	]) {
 		await run(["bun", "test", suite], {
-			ALLOW_MCP_DB_TESTS: "1",
+			ALLOW_INTEGRATION_DB_TESTS: "1",
 			DATABASE_URL: testUrl.toString(),
 			DIRECT_URL: testUrl.toString(),
-			MCP_TEST_DATABASE_URL: testUrl.toString(),
-			MCP_TEST_DATABASE_SCHEMA: schema,
+			INTEGRATION_TEST_DATABASE_URL: testUrl.toString(),
+			INTEGRATION_TEST_DATABASE_SCHEMA: schema,
 		});
 	}
 } finally {
-	if (process.env.MCP_TEST_KEEP_SCHEMA !== "1") {
+	if (process.env.INTEGRATION_TEST_KEEP_SCHEMA !== "1") {
 		await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
 	}
 	await pool.end();

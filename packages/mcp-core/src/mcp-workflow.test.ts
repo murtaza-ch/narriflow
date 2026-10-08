@@ -3,7 +3,8 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { clipService, clipExportService, projectService, socialPublicationScheduling, workspaceService, ExpectedDomainFailureError } from "@narriflow/services";
 import { buildNarriflowMcpServer, type NarriflowMcpPrincipal, type NarriflowMcpServerOptions } from "./index";
-import { createMcpConfirmation, acceptMcpConfirmation } from "./mcp-confirmation";
+import * as services from "@narriflow/services";
+import { createMcpConfirmation, acceptMcpConfirmation, verifyMcpPreparation } from "./mcp-confirmation";
 const userId = "00000000-0000-4000-8000-000000000001";
 const workspaceId = "00000000-0000-4000-8000-000000000002";
 const projectId = "00000000-0000-4000-8000-000000000003";
@@ -69,7 +70,7 @@ describe("Compact MCP workflow", () => {
     const client = await connect({ ...principal, scopes: ["processing:write"] });
     const result = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key, generation: { clipCountTarget: 6, clipLengthPreset: "under_30s" } } });
     expect(result.structuredContent).toMatchObject({ data: { projectId, operation: { kind: "generation", id: operationId }, status: "accepted", statusTool: "narriflow_get_operation" } });
-    expect(trigger).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), projectId, expect.objectContaining({ contentPack: expect.objectContaining({ clipCountTarget: 6, clipDurationSecTarget: 25, maxDurationSec: 35 }) }), key, expect.objectContaining({ mutation: expect.objectContaining({ clientIdempotencyKey: key, callerId: `oauth:test-client:${userId}` }) }));
+    expect(trigger).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), projectId, expect.objectContaining({ contentPack: expect.objectContaining({ clipCountTarget: 6, clipDurationSecTarget: 25, maxDurationSec: 35 }) }), key, expect.objectContaining({ mutation: expect.objectContaining({ clientIdempotencyKey: key }) }));
   });
 
   test("export review exposes the exact revision and ordinary download page without signed URLs", async () => {
@@ -93,6 +94,34 @@ describe("Compact MCP workflow", () => {
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toMatchObject({ data: { error: "mcp_confirmation_required", kind: "forbidden" } });
       expect(schedule).not.toHaveBeenCalled();
+    });
+  });
+
+  test("a prepared-post replay from a second credential receives a continuation bound to that credential", async () => {
+    await withSecret(async () => {
+      admitActor();
+      const receipts = new Map<string, services.OperationReceiptIdentity & { id: string; fingerprint: string; resourceType: string; resourceId: string; result: unknown }>();
+      const key = (identity: services.OperationReceiptIdentity) => JSON.stringify([identity.workspaceId, identity.actorUserId, identity.command, identity.clientIdempotencyKey]);
+      const executor = services.createOperationReceiptExecutor<null>({
+        read: async (identity) => receipts.get(key(identity)) ?? null, transaction: (run) => run(null), lock: async () => {},
+        readInTransaction: async (_tx, identity) => receipts.get(key(identity)) ?? null,
+        create: async (_tx, receipt) => { receipts.set(key(receipt as services.OperationReceiptIdentity), receipt as never); },
+      });
+      mocks.push(spyOn(services, "getOperationReceiptExecutor").mockReturnValue(executor));
+      const intent = publicationIntent();
+      mocks.push(spyOn(clipService, "getClipReviewFacts").mockResolvedValue({ editorRevision: 3 } as never));
+      mocks.push(spyOn(clipExportService, "getOwned").mockResolvedValue({ editorRevision: 3, variants: [{ id: intent.clipExportVariantId, aspectRatio: "9:16", resolution: "1080p" }] } as never));
+      mocks.push(spyOn(services.socialOAuthService, "listAccounts").mockResolvedValue([{ id: intent.accountId, platform: intent.platform, status: "active", displayName: "Channel" }] as never));
+      const first = { kind: "api_key" as const, userId, clientId: "key-a", apiKeyId: "00000000-0000-4000-8000-0000000000a1", workspaceId, scopes: ["publishing:write"] };
+      const rotated = { ...first, clientId: "key-b", apiKeyId: "00000000-0000-4000-8000-0000000000b2" };
+      const prepare = async (subject: NarriflowMcpPrincipal) => ((await (await connect(subject)).callTool({ name: "narriflow_prepare_social_post", arguments: intent })).structuredContent as { data: { preparationToken: string; expiresAt: string } }).data;
+      const original = await prepare(first);
+      const replayed = await prepare(rotated);
+      expect(receipts.size).toBe(1);
+      expect(replayed.expiresAt).toBe(original.expiresAt);
+      expect(verifyMcpPreparation(replayed.preparationToken, { principal: rotated }).intent).toMatchObject(intent);
+      expect(() => verifyMcpPreparation(replayed.preparationToken, { principal: first })).toThrow(expect.objectContaining({ code: "mcp_confirmation_binding_mismatch" }));
+      expect(JSON.stringify([...receipts.values()][0]?.result)).not.toContain(original.preparationToken);
     });
   });
 

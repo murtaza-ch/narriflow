@@ -182,7 +182,7 @@ Task HTTP requests send `MCP-Name` equal to `params.taskId`.
 Apply the `McpOperation` and `McpTask` migrations before running/deploying
 their code. Verify both database URLs select the intended shared database.
 Run lint, typecheck, tests, dependency audit, build, `test:mcp:integration`,
-`test:mcp:db` and lifecycle database gates. DB fixtures use disposable schemas.
+`test:integration-api:db` and lifecycle database gates. DB fixtures use disposable schemas.
 The opt-in `test:mcp:e2e` checks an existing bearer credential read-only;
 it does not establish assistant OAuth consent.
 

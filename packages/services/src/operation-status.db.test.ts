@@ -6,9 +6,9 @@ import { Pool } from "pg";
 import { buildMcpContentPack } from "@narriflow/validators";
 import { createOperationStatusReader } from "./operation-status";
 
-const url = process.env.MCP_TEST_DATABASE_URL;
-const schema = process.env.MCP_TEST_DATABASE_SCHEMA;
-const enabled = process.env.ALLOW_MCP_DB_TESTS === "1" && Boolean(url);
+const url = process.env.INTEGRATION_TEST_DATABASE_URL;
+const schema = process.env.INTEGRATION_TEST_DATABASE_SCHEMA;
+const enabled = process.env.ALLOW_INTEGRATION_DB_TESTS === "1" && Boolean(url);
 const db = enabled ? describe : describe.skip;
 setDefaultTimeout(180_000);
 
@@ -19,7 +19,7 @@ db("Operation Status lineage", () => {
   let workspaceId: string;
   const reader = () => createOperationStatusReader(prisma);
   beforeAll(async () => {
-    if (!url || !schema || !/^mcp_test_[a-z0-9_]+$/.test(schema)) throw new Error("Operation Status tests require a disposable schema");
+    if (!url || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema)) throw new Error("Operation Status tests require a disposable schema");
     pool = new Pool({ connectionString: url, max: 5 });
     if ((await pool.query("SELECT current_schema() AS schema")).rows[0]?.schema !== schema) throw new Error("Wrong disposable schema");
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });

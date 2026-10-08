@@ -1,9 +1,9 @@
 import { acceptedContent, inputRequired, inputResponse, type InputRequiredResult, type ToolAnnotations, type ClientCapabilities } from "@modelcontextprotocol/server";
-import { autopilotService, brandProfileService, clipService, clipExportService, encodeReviewSelection, projectService, operationStatusService, reviewService, socialService, socialOAuthService, socialPublishingOptions, socialPublicationScheduling, uploadSessionService, workspaceService, workspaceLibraryService, getMcpOperationExecutor, isExpectedDomainFailure, ExpectedDomainFailureError, type McpMutationOptions } from "@narriflow/services";
+import { autopilotService, brandProfileService, clipService, clipExportService, encodeReviewSelection, projectService, operationStatusService, reviewService, socialService, socialOAuthService, socialPublishingOptions, socialPublicationScheduling, uploadSessionService, workspaceService, workspaceLibraryService, getOperationReceiptExecutor, isExpectedDomainFailure, ExpectedDomainFailureError, type IntegrationMutation } from "@narriflow/services";
 import * as schemas from "@narriflow/validators";
 import * as z from "zod/v4";
 import { McpToolAdmission, mcpOperationReadScope, mcpToolFailure, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
-import { createMcpConfirmation, verifyMcpPreparation, acceptMcpConfirmation, verifyMcpConfirmation, mcpCallerId, createMcpUploadHandoff } from "./mcp-confirmation";
+import { createMcpConfirmation, verifyMcpPreparation, acceptMcpConfirmation, verifyMcpConfirmation, createMcpUploadHandoff, mcpPreparationDigest, MCP_CONTINUATION_TTL_MS } from "./mcp-confirmation";
 import { mcpProject, mcpClip, mcpExport, mcpAutopilotRule, mcpSocialAccount, mcpPublication, mcpPublicationRecovery } from "./mcp-projections";
 import { registerNarriflowMcpApps, getNarriflowAppToolMeta, supportsNarriflowApps } from "./mcp-apps";
 import { recordMcpDiagnostic } from "./mcp-diagnostics";
@@ -43,8 +43,8 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
     requestState: { verify: async (state) => verifyMcpPreparation(state, { principal: await currentPrincipal() }) },
   });
   installNarriflowTasks(server, { principal, authenticatePrincipal: options.authenticatePrincipal, assertNewMutationAllowed: options.assertNewMutationAllowed });
-  const mutation = (tool: NarriflowMcpToolName, current: NarriflowMcpPrincipal, workspaceId: string, key: string): McpMutationOptions => ({
-    clientIdempotencyKey: key, callerId: mcpCallerId(current), beforeAccept: async () => { await options.assertNewMutationAllowed?.({ tool, principal: current, workspaceId }); },
+  const mutation = (tool: NarriflowMcpToolName, current: NarriflowMcpPrincipal, workspaceId: string, key: string): IntegrationMutation => ({
+    clientIdempotencyKey: key, beforeAccept: async () => { await options.assertNewMutationAllowed?.({ tool, principal: current, workspaceId }); },
   });
   const execute = async (tool: NarriflowMcpToolName, output: z.ZodType, operation: (current: NarriflowMcpPrincipal) => Promise<ToolOutcome | InputRequiredResult>) => {
     const started = Date.now();
@@ -178,7 +178,9 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
   server.registerTool("narriflow_prepare_social_post", { ...config("Prepare exact social post", "Preview the exact export, revision, destination, caption, settings and time; this does not approve publication", schemas.mcpPreparedPublicationSchema, write, "publication-confirmation"), inputSchema: schemas.mcpPrepareSocialPostSchema }, (input) => execute("narriflow_prepare_social_post", schemas.mcpPreparedPublicationSchema, async (current) => {
     const actor = await workspace("narriflow_prepare_social_post", current, input.workspaceId);
     let accountDisplayName = "";
-    const accepted = await getMcpOperationExecutor().execute({ identity: { workspaceId: actor.workspaceId, callerId: mcpCallerId(current), toolName: "narriflow_prepare_social_post", clientIdempotencyKey: input.clientIdempotencyKey }, input,
+    // The receipt stores only the credential-neutral intent. Each acceptance
+    // and replay mints a continuation for the credential calling now.
+    const accepted = await getOperationReceiptExecutor().execute({ identity: { workspaceId: actor.workspaceId, actorUserId: current.userId, command: "prepare_social_post", clientIdempotencyKey: input.clientIdempotencyKey }, input,
       authorize: async () => { await workspace("narriflow_prepare_social_post", current, input.workspaceId); }, beforeAccept: mutation("narriflow_prepare_social_post", current, actor.workspaceId, input.clientIdempotencyKey).beforeAccept,
       prepare: async () => {
         const [clip, exportSnapshot, accounts] = await Promise.all([clipService.getClipReviewFacts(actor, input.projectId, input.clipId), clipExportService.getOwned(actor, input.projectId, input.clipId, input.clipExportId), socialOAuthService.listAccounts(actor)]);
@@ -187,12 +189,11 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
         const variant = exportSnapshot?.variants.find((variant) => variant.id === input.clipExportVariantId && variant.aspectRatio === input.aspectRatio && variant.resolution === input.resolution);
         if (clip.editorRevision !== input.expectedEditorRevision || exportSnapshot?.editorRevision !== input.expectedEditorRevision || !variant) unavailable("publication_export_mismatch", "Review the current clip revision and select its exact export variant");
         accountDisplayName = account.displayName;
-      }, mutate: async () => {
-        const prepared = createMcpConfirmation(current, input);
-        return { resourceType: "project", resourceId: input.projectId, value: { status: "confirmation_required" as const, intent: input, accountDisplayName, preparationToken: prepared.token, confirmationUrl: `${appOrigin}/integrations/mcp/confirm?token=${encodeURIComponent(prepared.token)}`, expiresAt: prepared.expiresAt } };
-      },
+      }, mutate: async () => ({ resourceType: "project", resourceId: input.projectId,
+        value: { intent: input, accountDisplayName, digest: mcpPreparationDigest(input), expiresAtMs: Date.now() + MCP_CONTINUATION_TTL_MS } }),
     });
-    return { data: accepted.value };
+    const prepared = createMcpConfirmation(current, accepted.value.intent, { expiresAtMs: accepted.value.expiresAtMs });
+    return { data: { status: "confirmation_required" as const, intent: accepted.value.intent, accountDisplayName: accepted.value.accountDisplayName, preparationToken: prepared.token, confirmationUrl: `${appOrigin}/integrations/mcp/confirm?token=${encodeURIComponent(prepared.token)}`, expiresAt: prepared.expiresAt } };
   }));
   const scheduledOutput = schemas.mcpScheduledPublicationResultSchema;
   const scheduledOutcome = (post: Awaited<ReturnType<typeof socialPublicationScheduling.schedule>>) => ({ data: { socialPostId: post.id, projectId: post.projectId, clipId: post.clipId, status: post.status, scheduledFor: post.frozen.scheduledFor.toISOString(), reviewUrl: `${appOrigin}/projects/${post.projectId}?tab=publishing`, statusTool: "narriflow_get_social_publication" } });

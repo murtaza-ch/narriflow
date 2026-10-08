@@ -1,20 +1,38 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 
-export interface McpOperationIdentity {
+/** Canonical names of the idempotent mutations integrations accept. Every
+ * transport (browser, MCP, REST) records the same command for the same work. */
+export const RECEIPT_COMMANDS = [
+	"submit_video",
+	"generate_clips",
+	"create_clip_export",
+	"create_rss_autopilot_rule",
+	"run_autopilot_rule_now",
+	"prepare_social_post",
+	"recheck_social_publication",
+	"confirm_social_publication",
+	"publish_social_publication_again",
+] as const;
+export type ReceiptCommand = (typeof RECEIPT_COMMANDS)[number];
+
+/** An Operation Receipt is keyed by the acting user, never the credential, so
+ * rotating a key or switching transports replays the original acceptance. */
+export interface OperationReceiptIdentity {
 	workspaceId: string;
-	callerId: string;
-	toolName: string;
+	actorUserId: string;
+	command: ReceiptCommand;
 	clientIdempotencyKey: string;
 }
 
-export interface McpMutationOptions {
+/** Transport facts a service needs to accept an idempotent mutation. */
+export interface IntegrationMutation {
 	clientIdempotencyKey: string;
-	callerId?: string;
 	beforeAccept?: () => Promise<void>;
 }
 
-export interface McpOperationReceipt extends McpOperationIdentity {
+export interface OperationReceipt extends Omit<OperationReceiptIdentity, "command"> {
+	command: string;
 	id: string;
 	fingerprint: string;
 	resourceType: string;
@@ -22,26 +40,26 @@ export interface McpOperationReceipt extends McpOperationIdentity {
 	result: unknown;
 }
 
-export interface McpOperationPersistence<Tx> {
-	read(identity: McpOperationIdentity): Promise<McpOperationReceipt | null>;
+export interface OperationReceiptPersistence<Tx> {
+	read(identity: OperationReceiptIdentity): Promise<OperationReceipt | null>;
 	transaction<T>(run: (tx: Tx) => Promise<T>): Promise<T>;
-	lock(tx: Tx, identity: McpOperationIdentity): Promise<void>;
+	lock(tx: Tx, identity: OperationReceiptIdentity): Promise<void>;
 	readInTransaction(
 		tx: Tx,
-		identity: McpOperationIdentity,
-	): Promise<McpOperationReceipt | null>;
-	create(tx: Tx, receipt: McpOperationReceipt): Promise<void>;
+		identity: OperationReceiptIdentity,
+	): Promise<OperationReceipt | null>;
+	create(tx: Tx, receipt: OperationReceipt): Promise<void>;
 }
 
-export class McpOperationConflictError extends ExpectedDomainFailureError<"mcp_idempotency_conflict"> {
+export class OperationIdempotencyConflictError extends ExpectedDomainFailureError<"operation_idempotency_conflict"> {
 	constructor() {
 		super({
-			code: "mcp_idempotency_conflict",
+			code: "operation_idempotency_conflict",
 			kind: "conflict",
 			message:
 				"This request key was already accepted with different input. Use a new key for a new request.",
 		});
-		this.name = "McpOperationConflictError";
+		this.name = "OperationIdempotencyConflictError";
 	}
 }
 
@@ -63,19 +81,19 @@ function canonicalJson(value: unknown): string {
 		(typeof value === "number" && Number.isFinite(value))
 	)
 		return JSON.stringify(value);
-	throw new TypeError("MCP operation input and results must be JSON values");
+	throw new TypeError("Operation Receipt input and results must be JSON values");
 }
 
-export function mcpOperationFingerprint(input: unknown): string {
+export function operationFingerprint(input: unknown): string {
 	return createHash("sha256").update(canonicalJson(input)).digest("hex");
 }
 
-export function createMcpOperationExecutor<Tx>(
-	persistence: McpOperationPersistence<Tx>,
+export function createOperationReceiptExecutor<Tx>(
+	persistence: OperationReceiptPersistence<Tx>,
 ) {
 	return {
 		async execute<T>(input: {
-			identity: McpOperationIdentity;
+			identity: OperationReceiptIdentity;
 			input: unknown;
 			authorize: () => Promise<void>;
 			beforeAccept?: () => Promise<void>;
@@ -95,16 +113,16 @@ export function createMcpOperationExecutor<Tx>(
 				input.identity.clientIdempotencyKey.length > 200
 			) {
 				throw new ExpectedDomainFailureError({
-					code: "mcp_idempotency_key_required",
+					code: "operation_idempotency_key_required",
 					kind: "invalid",
 					message: "A bounded client idempotency key is required.",
 				});
 			}
 			await input.authorize();
-			const fingerprint = mcpOperationFingerprint(input.input);
-			const replay = (receipt: McpOperationReceipt) => {
+			const fingerprint = operationFingerprint(input.input);
+			const replay = (receipt: OperationReceipt) => {
 				if (receipt.fingerprint !== fingerprint)
-					throw new McpOperationConflictError();
+					throw new OperationIdempotencyConflictError();
 				return {
 					operationId: receipt.id,
 					replayed: true,

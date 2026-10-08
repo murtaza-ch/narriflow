@@ -1,6 +1,6 @@
 import type { ActorScope } from "./actor-scope";
-import { getMcpOperationExecutor } from "./mcp-operation-runtime";
-import { mcpOperationFingerprint, type McpMutationOptions } from "./mcp-operation";
+import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import { operationFingerprint, type IntegrationMutation } from "./operation-receipt";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { getProcessingUsage } from "./processing-usage-runtime";
 import {
@@ -945,22 +945,22 @@ export class ProjectService {
 		idempotencyKey: string,
 		options: {
 			existingContentPackId?: string;
-			mutation?: McpMutationOptions;
+			mutation?: IntegrationMutation;
 		} = {},
 	) {
 		const parsed = generateProjectRequestSchema.parse(input);
 		await this.requireActor(scope, "processing.consume");
 		if (options.mutation) {
 			const mutation = options.mutation;
-			const accepted = await getMcpOperationExecutor().execute<{
+			const accepted = await getOperationReceiptExecutor().execute<{
 				workflowRunId: string;
 				acceptedAt: string;
 				initialSeq: number;
 			}>({
 				identity: {
 					workspaceId: scope.workspaceId,
-					callerId: mutation.callerId ?? scope.actorUserId,
-					toolName: "narriflow_generate_clips",
+					actorUserId: scope.actorUserId,
+					command: "generate_clips",
 					clientIdempotencyKey: mutation.clientIdempotencyKey,
 				},
 				input: {
@@ -1063,9 +1063,9 @@ export class ProjectService {
 					if (
 						!acceptedRun.contentPack ||
 						acceptedRun.contentPack.draft ||
-						mcpOperationFingerprint(
+						operationFingerprint(
 							parseStoredContentPack(acceptedRun.contentPack),
-						) !== mcpOperationFingerprint(parsed.contentPack) ||
+						) !== operationFingerprint(parsed.contentPack) ||
 						acceptedRun.project.languageCode !== parsed.languageCode
 					) {
 						throw new ProjectServiceError(
@@ -1164,7 +1164,7 @@ export class ProjectService {
 				contentPack: ContentPack;
 				languageCode: string | null;
 			};
-			mutation?: McpMutationOptions;
+			mutation?: IntegrationMutation;
 		} = {},
 	) {
 		const parsed = linkIngestSchema.parse(input);
@@ -1340,11 +1340,11 @@ export class ProjectService {
 		};
 		if (options.mutation) {
 			const mutation = options.mutation;
-			const accepted = await getMcpOperationExecutor().execute({
+			const accepted = await getOperationReceiptExecutor().execute({
 				identity: {
 					workspaceId: actor.workspaceId,
-					callerId: mutation.callerId ?? actor.actorUserId,
-					toolName: "narriflow_submit_video",
+					actorUserId: actor.actorUserId,
+					command: "submit_video",
 					clientIdempotencyKey: mutation.clientIdempotencyKey,
 				},
 				input: {

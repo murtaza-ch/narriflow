@@ -62,8 +62,8 @@ jobs:
             command: test:brand-profiles:db
           - domain: Vizard Expansion
             command: test:vizard-expansion:db
-          - domain: MCP acceptance and Tasks
-            command: test:mcp:db
+          - domain: Integration API receipts, callbacks, and Tasks
+            command: test:integration-api:db
     services:
       postgres:
         image: postgres:17

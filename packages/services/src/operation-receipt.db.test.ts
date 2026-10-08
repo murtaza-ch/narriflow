@@ -15,10 +15,10 @@ import {
 	PLATFORM_PLAYBOOK_VERSION,
 } from "@narriflow/validators";
 import {
-	createMcpOperationExecutor,
-	McpOperationConflictError,
-} from "./mcp-operation";
-import { prismaMcpOperationPersistence } from "./mcp-operation-runtime";
+	createOperationReceiptExecutor,
+	OperationIdempotencyConflictError,
+} from "./operation-receipt";
+import { prismaOperationReceiptPersistence } from "./operation-receipt-runtime";
 import { projectService } from "./project.service";
 import { AutopilotService } from "./autopilot.service";
 import {
@@ -27,13 +27,13 @@ import {
 } from "./clip-export.service";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
-const databaseUrl = process.env.MCP_TEST_DATABASE_URL;
-const schema = process.env.MCP_TEST_DATABASE_SCHEMA;
-const enabled = process.env.ALLOW_MCP_DB_TESTS === "1" && Boolean(databaseUrl);
+const databaseUrl = process.env.INTEGRATION_TEST_DATABASE_URL;
+const schema = process.env.INTEGRATION_TEST_DATABASE_SCHEMA;
+const enabled = process.env.ALLOW_INTEGRATION_DB_TESTS === "1" && Boolean(databaseUrl);
 const describeDb = enabled ? describe : describe.skip;
 setDefaultTimeout(180_000);
 
-describeDb("MCP PostgreSQL acceptance invariants", () => {
+describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 	let prisma: PrismaClient;
 	let pool: Pool;
 	let priorPrisma: PrismaClient | undefined;
@@ -130,8 +130,8 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 	}
 
 	beforeAll(async () => {
-		if (!databaseUrl || !schema || !/^mcp_test_[a-z0-9_]+$/.test(schema))
-			throw new Error("MCP DB tests require a disposable mcp_test_ schema");
+		if (!databaseUrl || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema))
+			throw new Error("Integration DB tests require a disposable integration_test_ schema");
 		pool = new Pool({ connectionString: databaseUrl, max: 10 });
 		const selected = await pool.query('SELECT current_schema() AS "schema"');
 		if (selected.rows[0]?.schema !== schema)
@@ -164,13 +164,13 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 	});
 
 	test("concurrent duplicate requests commit one domain record and immutable receipt", async () => {
-		const executor = createMcpOperationExecutor(
-			prismaMcpOperationPersistence(prisma),
+		const executor = createOperationReceiptExecutor(
+			prismaOperationReceiptPersistence(prisma),
 		);
 		const identity = {
 			workspaceId,
-			callerId: actorUserId,
-			toolName: "test_acceptance",
+			actorUserId,
+			command: "create_rss_autopilot_rule" as const,
 			clientIdempotencyKey: randomUUID(),
 		};
 		const accepted = await Promise.all(
@@ -205,7 +205,7 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 				where: { workspaceId, title: "Single admission" },
 			}),
 		).toBe(1);
-		expect(await prisma.mcpOperation.count({ where: identity })).toBe(1);
+		expect(await prisma.operationReceipt.count({ where: identity })).toBe(1);
 		await expect(
 			executor.execute({
 				identity,
@@ -215,18 +215,18 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 					throw new Error("Must not mutate");
 				},
 			}),
-		).rejects.toBeInstanceOf(McpOperationConflictError);
+		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
 	});
 
 	test("interrupted acceptance rolls back domain work and survives executor restart", async () => {
 		const identity = {
 			workspaceId,
-			callerId: actorUserId,
-			toolName: "test_restart",
+			actorUserId,
+			command: "run_autopilot_rule_now" as const,
 			clientIdempotencyKey: randomUUID(),
 		};
-		const executor = createMcpOperationExecutor(
-			prismaMcpOperationPersistence(prisma),
+		const executor = createOperationReceiptExecutor(
+			prismaOperationReceiptPersistence(prisma),
 		);
 		await expect(
 			executor.execute({
@@ -250,7 +250,7 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 				where: { workspaceId, title: "Interrupted acceptance" },
 			}),
 		).toBe(0);
-		expect(await prisma.mcpOperation.count({ where: identity })).toBe(0);
+		expect(await prisma.operationReceipt.count({ where: identity })).toBe(0);
 		const accepted = await executor.execute({
 			identity,
 			input: {},
@@ -270,8 +270,8 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 				};
 			},
 		});
-		const restarted = createMcpOperationExecutor(
-			prismaMcpOperationPersistence(prisma),
+		const restarted = createOperationReceiptExecutor(
+			prismaOperationReceiptPersistence(prisma),
 		);
 		const replay = await restarted.execute({
 			identity,
@@ -291,7 +291,6 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 	test("link intake commits the ingest job and runnable generation settings together", async () => {
 		const mutation = {
 			clientIdempotencyKey: randomUUID(),
-			callerId: "oauth:test",
 		};
 		const scope = { actorUserId, workspaceId };
 		const input = {
@@ -337,7 +336,7 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 				},
 				mutation,
 			}),
-		).rejects.toBeInstanceOf(McpOperationConflictError);
+		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
 	});
 
 	test("generation reuses only the requested settings and replays accepted work during outages", async () => {
@@ -387,7 +386,7 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 			kind: "conflict",
 		});
 		expect(
-			await prisma.mcpOperation.count({
+			await prisma.operationReceipt.count({
 				where: { clientIdempotencyKey: changedKey },
 			}),
 		).toBe(0);
@@ -521,7 +520,7 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 			code: "project_has_active_workflow",
 		});
 		expect(
-			await prisma.mcpOperation.count({
+			await prisma.operationReceipt.count({
 				where: { clientIdempotencyKey: forcedKey },
 			}),
 		).toBe(0);
@@ -577,7 +576,7 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 				{ ...input, name: "Changed show" },
 				mutation,
 			),
-		).rejects.toBeInstanceOf(McpOperationConflictError);
+		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
 	});
 
 	test("run-now replays without resetting a later worker claim", async () => {
@@ -667,7 +666,7 @@ describeDb("MCP PostgreSQL acceptance invariants", () => {
 				{ ...format, resolution: "1080p" },
 				key,
 			),
-		).rejects.toBeInstanceOf(McpOperationConflictError);
+		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
 		await expect(
 			clipExportService.create(
 				scope,

@@ -60,9 +60,14 @@ function open(token: string, options: ClockAndSecret) {
   if (!options.allowExpired && (options.now ?? Date.now()) >= parsed.data.expiresAtMs) fail("mcp_confirmation_expired", "conflict", "Publication confirmation expired. Prepare this post again with a new request key.");
   return parsed.data;
 }
-export function createMcpConfirmation(principal: NarriflowMcpPrincipal, input: z.input<typeof mcpPrepareSocialPostSchema>, options: ClockAndSecret = {}) {
+export function mcpPreparationDigest(input: z.input<typeof mcpPrepareSocialPostSchema>) {
+  return digest(mcpPrepareSocialPostSchema.parse(input));
+}
+/** Mints a continuation bound to this credential. `expiresAtMs` carries a
+ * prepared intent's accepted expiry, so a replay can't extend the window. */
+export function createMcpConfirmation(principal: NarriflowMcpPrincipal, input: z.input<typeof mcpPrepareSocialPostSchema>, options: ClockAndSecret & { expiresAtMs?: number } = {}) {
   const intent = mcpPrepareSocialPostSchema.parse(input);
-  const expiresAtMs = mcpContinuationExpiresAtMs(principal, options.now ?? Date.now());
+  const expiresAtMs = Math.min(options.expiresAtMs ?? Number.POSITIVE_INFINITY, mcpContinuationExpiresAtMs(principal, options.now ?? Date.now()));
   const state: ConfirmationState = { version: 2, stage: "prepared", callerId: mcpCallerId(principal), actorUserId: principal.userId, workspaceId: intent.workspaceId, ...grant(principal), tool: "narriflow_schedule_social_post", digest: digest(intent), expiresAtMs, intent };
   return { token: seal(state, options), expiresAt: new Date(expiresAtMs).toISOString() };
 }

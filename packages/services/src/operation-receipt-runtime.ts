@@ -1,37 +1,37 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-	createMcpOperationExecutor,
-	type McpOperationIdentity,
-	type McpOperationPersistence,
-} from "./mcp-operation";
+	createOperationReceiptExecutor,
+	type OperationReceiptIdentity,
+	type OperationReceiptPersistence,
+} from "./operation-receipt";
 
-function unique(identity: McpOperationIdentity) {
-	return { workspaceId_callerId_toolName_clientIdempotencyKey: identity };
+function unique(identity: OperationReceiptIdentity) {
+	return { workspaceId_actorUserId_command_clientIdempotencyKey: identity };
 }
 
-export function prismaMcpOperationPersistence(
+export function prismaOperationReceiptPersistence(
 	prisma: PrismaClient,
-): McpOperationPersistence<Prisma.TransactionClient> {
+): OperationReceiptPersistence<Prisma.TransactionClient> {
 	return {
 		read: (identity) =>
-			prisma.mcpOperation.findUnique({ where: unique(identity) }),
+			prisma.operationReceipt.findUnique({ where: unique(identity) }),
 		transaction: (run) => prisma.$transaction(run),
 		async lock(tx, identity) {
 			// PostgreSQL releases the transaction lock on commit or rollback. Hash
 			// collisions merely serialize unrelated requests; they cannot replay them.
 			const name = JSON.stringify([
 				identity.workspaceId,
-				identity.callerId,
-				identity.toolName,
+				identity.actorUserId,
+				identity.command,
 				identity.clientIdempotencyKey,
 			]);
 			await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${name}, 0))::text`;
 		},
 		readInTransaction: (tx, identity) =>
-			tx.mcpOperation.findUnique({ where: unique(identity) }),
+			tx.operationReceipt.findUnique({ where: unique(identity) }),
 		async create(tx, receipt) {
-			await tx.mcpOperation.create({
+			await tx.operationReceipt.create({
 				data: {
 					...receipt,
 					result:
@@ -44,8 +44,8 @@ export function prismaMcpOperationPersistence(
 	};
 }
 
-export function getMcpOperationExecutor() {
+export function getOperationReceiptExecutor() {
 	const prisma = getPrismaClient();
 	if (!prisma) throw new Error("Database client unavailable");
-	return createMcpOperationExecutor(prismaMcpOperationPersistence(prisma));
+	return createOperationReceiptExecutor(prismaOperationReceiptPersistence(prisma));
 }
