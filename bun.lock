@@ -34,7 +34,6 @@
         "@clerk/nextjs": "^6.39.5",
         "@emotion/react": "11.14.0",
         "@ffprobe-installer/ffprobe": "2.1.2",
-        "@gsap/react": "^2.1.2",
         "@hono/zod-openapi": "^1.2.2",
         "@modelcontextprotocol/server": "2.0.0",
         "@narriflow/auth": "workspace:*",
@@ -43,17 +42,14 @@
         "@narriflow/email": "workspace:*",
         "@narriflow/mcp-core": "workspace:*",
         "@narriflow/services": "workspace:*",
-        "@narriflow/stage": "workspace:*",
         "@narriflow/ui": "workspace:*",
         "@narriflow/validators": "workspace:*",
         "@node-rs/argon2": "^2.2.0",
         "@prisma/client": "^7.4.2",
         "framer-motion": "^12.34.3",
         "geist": "^1.7.0",
-        "gsap": "^3.14.2",
         "hono": "^4.12.28",
         "ioredis": "^5.9.3",
-        "lenis": "^1.3.17",
         "lucide-react": "^0.577.0",
         "next": "16.3.6",
         "next-safe-action": "^8.1.3",
@@ -193,13 +189,6 @@
         "@types/pg": "8.15.5",
         "pg": "8.16.3",
         "standardwebhooks": "^1.1.1",
-      },
-    },
-    "packages/stage": {
-      "name": "@narriflow/stage",
-      "version": "0.0.0",
-      "dependencies": {
-        "@narriflow/validators": "workspace:*",
       },
     },
     "packages/ui": {
@@ -533,8 +522,6 @@
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.11", "", {}, "sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg=="],
 
-    "@gsap/react": ["@gsap/react@2.1.2", "", { "peerDependencies": { "gsap": "^3.12.5", "react": ">=17" } }, "sha512-JqliybO1837UcgH2hVOM4VO+38APk3ECNrsuSM4MuXp+rbf+/2IG2K1YJiqfTcXQHH7XlA0m3ykniFYstfq0Iw=="],
-
     "@hono/node-server": ["@hono/node-server@1.19.11", "", { "peerDependencies": { "hono": "^4" } }, "sha512-dr8/3zEaB+p0D2n/IUrlPF1HZm586qgJNXK1a9fhg/PzdtkK7Ksd5l312tJX2yBuALqDYBlG20QEbayqPyxn+g=="],
 
     "@hono/zod-openapi": ["@hono/zod-openapi@1.3.0", "", { "dependencies": { "@asteasolutions/zod-to-openapi": "^8.5.0", "@hono/zod-validator": "^0.7.6", "openapi3-ts": "^4.5.0" }, "peerDependencies": { "hono": ">=4.3.6", "zod": "^4.0.0" } }, "sha512-loDVevfMaaNa0slskhpMcqjSdidVXba2QJwNVmnS5Dp6L8AqSgtjJxWGJfRZtosyzYOb5gx4ZzXNCe+QhwY7xw=="],
@@ -644,8 +631,6 @@
     "@narriflow/mcp-server": ["@narriflow/mcp-server@workspace:apps/mcp"],
 
     "@narriflow/services": ["@narriflow/services@workspace:packages/services"],
-
-    "@narriflow/stage": ["@narriflow/stage@workspace:packages/stage"],
 
     "@narriflow/ui": ["@narriflow/ui@workspace:packages/ui"],
 
@@ -1289,8 +1274,6 @@
 
     "graphmatch": ["graphmatch@1.1.1", "", {}, "sha512-5ykVn/EXM1hF0XCaWh05VbYvEiOL2lY1kBxZtaYsyvjp7cmWOU1XsAdfQBwClraEofXDT197lFbXOEVMHpvQOg=="],
 
-    "gsap": ["gsap@3.15.0", "", {}, "sha512-dMW4CWBTUK1AEEDeZc1g4xpPGIrSf9fJF960qbTZmN/QwZIWY5wgliS6JWl9/25fpTGJrMRtSjGtOmPnfjZB+A=="],
-
     "happy-dom": ["happy-dom@20.11.12", "", { "dependencies": { "@types/node": ">=20.0.0", "@types/whatwg-mimetype": "^3.0.2", "@types/ws": "^8.18.1", "buffer-image-size": "^0.6.4", "entities": "^7.0.1", "whatwg-mimetype": "^3.0.0", "ws": "^8.21.0" } }, "sha512-7+mrTTD+6fOG3dx0URrDLrCX8QDTE+YujSOQD4VPZcYze/yJ0vVhRKaIBTjqlk+R4NetxVz21odnevHYIjIJ+g=="],
 
     "hasown": ["hasown@2.0.2", "", { "dependencies": { "function-bind": "^1.1.2" } }, "sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ=="],
@@ -1356,8 +1339,6 @@
     "json5": ["json5@2.2.3", "", { "bin": { "json5": "lib/cli.js" } }, "sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg=="],
 
     "lazystream": ["lazystream@1.0.1", "", { "dependencies": { "readable-stream": "^2.0.5" } }, "sha512-b94GiNHQNy6JNTrt5w6zNyffMrNkXZb3KTkCZJb2V1xaEGCk093vkZ2jk3tpaeP33/OiXC+WvK9AxUebnf5nbw=="],
-
-    "lenis": ["lenis@1.3.21", "", { "peerDependencies": { "@nuxt/kit": ">=3.0.0", "react": ">=17.0.0", "vue": ">=3.0.0" }, "optionalPeers": ["@nuxt/kit", "react", "vue"] }, "sha512-RXWTYm7KQE4Kv8ezxL6wvK0Oiv7aRr6FDo+eNaaniTeu7pLdHokqMIJ5CXO4x5ezvd+9ONdpSFkprLpXsVWmEw=="],
 
     "lines-and-columns": ["lines-and-columns@1.2.4", "", {}, "sha512-7ylylesZQ/PV29jhEDl3Ufjo6ZX7gCqJr5F7PKrqc93v7fzSymt1BpwEU8nAUXs8qzzvqhbjhK5QZg6Mt/HkBg=="],
 

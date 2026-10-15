@@ -23,7 +23,6 @@ const nextConfig: NextConfig = {
     "@narriflow/db",
     "@narriflow/email",
     "@narriflow/services",
-    "@narriflow/stage",
     "@narriflow/ui",
     "@narriflow/validators",
   ],

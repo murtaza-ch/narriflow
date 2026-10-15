@@ -2243,15 +2243,7 @@ export default function DashboardPrototype({ initialView }: { initialView?: stri
                   maxWidth: ratio === "9:16" ? 264 : 420,
                 }}
               >
-                <video
-                  controls
-                  playsInline
-                  preload="metadata"
-                  poster={thumbnail}
-                  src="/videos/caption-loop.mp4"
-                >
-                  <track kind="captions" src="/prototype-sample.vtt" srcLang="en" label="English" />
-                </video>
+                <img src={thumbnail} alt="Clip preview" />
                 <span className="nf-caption-overlay">
                   {activeClip.caption.split("\n").map((line, i) => (
                     <span className={i === 1 ? "accent" : ""} key={line}>
@@ -2260,7 +2252,7 @@ export default function DashboardPrototype({ initialView }: { initialView?: stri
                   ))}
                 </span>
               </div>
-              <small>Sample playback · changes stay in this demo</small>
+              <small>Sample preview · changes stay in this demo</small>
             </div>
             <div className="nf-preview-controls">
               <Pill tone="green">

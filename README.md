@@ -40,23 +40,9 @@ Current architecture and vocabulary live in [GLOSSARY.md](GLOSSARY.md) and the [
 - Social delivery: durable scheduling queue + native OAuth publishing clients and a supported webhook receiver channel
 - MCP: stateless `2026-07-28` Streamable HTTP endpoint at `/mcp`, plus a scoped API-key stdio fallback in `apps/mcp`
 
-## Landing page lab
+## Homepage
 
-Seven scroll-driven marketing landing variants live under `apps/web/app/(landing)/lp/*`
-(GSAP + ScrollTrigger + Lenis, shared product facts in `_components/landing-data.ts`,
-including shared pain-point and comparison data):
-
-- `/lp/blueprint` — porcelain Swiss-editorial (drawn rules, pinned pipeline, caption playground)
-- `/lp/studio` — graphite editor-session (scroll = scrubbing, horizontal timeline, render-queue pricing)
-- `/lp/signal` — kinetic poster maximalism (ultramarine blocks, odometer score, angled marquees)
-- `/lp/atelier` — luxury minimal (huge whitespace, blur-in reveals, scroll-inked statement, hairline pricing)
-- `/lp/system` — bento product-first (nine live tiles: video, score cycler, caption presets, ratio morph, publish statuses, autopilot feed)
-- `/lp/volt` — electric editorial variant
-- `/lp/pop` — neo-brutalist lime/ink (Positivus-style: highlighter pills, hard offset shadows, animated hero collage, interactive 01–06 accordion)
-
-A floating dial on each page switches variants. The looping product videos in
-`apps/web/public/videos/` are rendered with Remotion from `tools/videos`.
-See [the video project README](tools/videos/README.md) for setup and render commands.
+The homepage at `/` has a shared marketing header and a simple hero section.
 
 ## Before testing
 

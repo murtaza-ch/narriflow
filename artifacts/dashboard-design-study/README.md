@@ -12,7 +12,7 @@ Run from `apps/web` with `bun run dev`. The existing app environment is required
 
 One Krea-inspired dark direction, implemented as a coded browser demo. The first prototype covers Home → import/configure → processing → project review → preview → export/publish. The existing Narriflow navigation and project sections remain discoverable. Secondary workspace features and the full Studio are represented by entry points, not rebuilt here.
 
-All clip text, scores, output counts, accounts, and publication results in the prototype are fixtures. The YouTube thumbnail identifies the research source; the prototype's quotations are fictional examples, not its transcript. The local caption-loop video demonstrates playback. Rendering is simulated; downloads contain sample text or SRT. Links and chosen files are not uploaded. Data lasts only in React memory and resets on reload. External thumbnails require network access.
+All clip text, scores, output counts, accounts, and publication results in the prototype are fixtures. The YouTube thumbnail identifies the research source; the prototype's quotations are fictional examples, not its transcript. The preview uses the source thumbnail. Rendering is simulated; downloads contain sample text or SRT. Links and chosen files are not uploaded. Data lasts only in React memory and resets on reload. External thumbnails require network access.
 
 ## Design decisions
 
