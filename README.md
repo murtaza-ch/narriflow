@@ -42,7 +42,7 @@ Current architecture and vocabulary live in [GLOSSARY.md](GLOSSARY.md) and the [
 
 ## Homepage
 
-The homepage at `/` has a shared marketing header and a simple hero section.
+The homepage at `/` lives in `apps/web/app/(home)` with its own nav and footer; the other marketing pages keep the shared header in `(marketing)/layout.tsx`. It is a marketing re-theme that sits outside the Blueline app tokens: a light paper hero and dark product sections, Newsreader headlines over Geist, and flat colour only (blue for actions, caption yellow for tags). The hero's link field docks at the bottom of the screen while a pinned, scroll-driven product scene plays above it. Motion uses GSAP ScrollTrigger on Lenis smooth scrolling; visitors with `prefers-reduced-motion` get static layouts. Plan cards, caption styles and limits read from `@narriflow/validators`, so the copy cannot drift from billing or the caption catalog. The footer signup opens account creation with the email filled in (`/?auth=sign-up&email=…`); there is no separate newsletter list. The imagery in `apps/web/public/landing/` is generated and illustrative: the people shown are not customers.
 
 ## Before testing
 

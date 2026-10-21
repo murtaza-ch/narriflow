@@ -1,0 +1,410 @@
+/*
+ * The four closing variants under review (closing-variants.tsx). Flat: no
+ * borders, dot grids or drop shadows. Delete with the variants once one is
+ * chosen.
+ */
+
+.lx-end {
+  position: relative;
+  overflow: hidden;
+  background: var(--lx-ink);
+}
+
+.lx-close {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100svh;
+  padding: calc(var(--lx-header-h) + 40px) 20px 72px;
+  text-align: center;
+}
+
+.lx-close__title {
+  font-size: clamp(38px, 4.4vw, 68px);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+}
+
+.lx-close__note {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--lx-dim);
+}
+
+/* ---------- 1. Any link ---------- */
+
+.lx-links__field {
+  width: min(600px, 100%);
+  margin-top: 36px;
+}
+
+/* While the demo types, its link reads as typed text, not a placeholder. */
+.lx-links__field[data-demo] input::placeholder {
+  color: var(--lx-fg);
+}
+
+.lx-links__clips {
+  display: flex;
+  justify-content: center;
+  gap: clamp(10px, 1.6vw, 22px);
+  margin-top: 40px;
+}
+
+.lx-links__clips li {
+  width: clamp(100px, 12vw, 176px);
+  opacity: 0;
+  transform: translateY(36px) scale(0.94);
+  transition:
+    opacity 0.5s ease,
+    transform 0.8s var(--lx-ease);
+  transition-delay: calc(var(--i) * 90ms);
+}
+
+.lx-links__clips[data-phase="shown"] li {
+  opacity: 1;
+  transform: none;
+}
+
+.lx-links__clips[data-phase="leaving"] li {
+  opacity: 0;
+  transform: translateY(-18px) scale(0.97);
+  transition-duration: 0.35s;
+  transition-delay: calc(var(--i) * 40ms);
+}
+
+/* ---------- 2. Feed ---------- */
+
+.lx-close--feed {
+  flex-direction: row;
+  gap: clamp(40px, 8vw, 140px);
+  text-align: left;
+}
+
+.lx-feed__copy {
+  width: min(520px, 100%);
+}
+
+.lx-feed__copy .lx-linkform {
+  margin-top: 36px;
+}
+
+/* A stack: the playing clip in front, its neighbours' edges showing behind it. */
+.lx-feed {
+  --h: min(60svh, 580px);
+  position: relative;
+  flex: none;
+  width: calc(var(--h) * 9 / 16);
+  height: calc(var(--h) * 1.16);
+}
+
+.lx-feed__item {
+  position: absolute;
+  z-index: calc(10 - var(--a));
+  top: 50%;
+  left: 0;
+  width: 100%;
+  opacity: clamp(0, 1 - var(--a) * 0.5, 1);
+  pointer-events: none;
+  transform: translateY(calc(-50% + var(--o) * 12%)) scale(calc(1 - min(var(--a), 2) * 0.12));
+  transition:
+    transform 0.75s var(--lx-ease),
+    opacity 0.5s ease;
+}
+
+.lx-feed__item[data-near] {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* ---------- 3. Before / after ---------- */
+
+.lx-compare {
+  --x: 50%;
+  position: relative;
+  width: min(1180px, 100%, (100svh - 480px) * 21 / 9);
+  aspect-ratio: 21 / 9;
+  margin-top: 36px;
+  overflow: hidden;
+  border-radius: 20px;
+  background: #101012;
+  cursor: ew-resize;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.lx-compare img {
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+.lx-compare__before,
+.lx-compare__after {
+  position: absolute;
+  inset: 0;
+}
+
+.lx-compare__before img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 40%;
+}
+
+.lx-compare__after {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #101012;
+  clip-path: inset(0 0 0 var(--x));
+}
+
+.lx-compare__after ol {
+  display: flex;
+  gap: 3%;
+  height: 82%;
+}
+
+.lx-compare__after li {
+  height: 100%;
+  aspect-ratio: 9 / 16;
+}
+
+.lx-compare__tag {
+  position: absolute;
+  top: 16px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: #fff;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.lx-compare__before .lx-compare__tag {
+  left: 16px;
+}
+
+.lx-compare__after .lx-compare__tag {
+  right: 16px;
+}
+
+.lx-compare__handle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: var(--x);
+  width: 2px;
+  background: #fff;
+  translate: -50% 0;
+  outline: none;
+}
+
+.lx-compare__handle i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #fff;
+  color: #111;
+  translate: -50% -50%;
+}
+
+.lx-compare__handle:focus-visible i {
+  outline: 2px solid var(--lx-blue);
+  outline-offset: 3px;
+}
+
+.lx-compare__handle svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lx-compare__cta {
+  width: min(560px, 100%);
+  margin-top: 32px;
+}
+
+/* ---------- 4. Fan ---------- */
+
+.lx-fan {
+  --cw: clamp(92px, 11vw, 168px);
+  --ch: calc(var(--cw) * 16 / 9);
+  position: relative;
+  width: min(560px, 100%);
+  margin-top: 28px;
+  padding-top: calc(var(--ch) * 0.92);
+}
+
+.lx-fan__cards {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: calc(var(--ch) * 0.92);
+}
+
+.lx-fan__cards li {
+  position: absolute;
+  z-index: calc(5 - var(--a));
+  bottom: -18px;
+  left: calc(var(--cw) / -2);
+  width: var(--cw);
+  transform-origin: 50% 120%;
+  transition:
+    transform 0.9s var(--lx-ease),
+    opacity 0.6s ease;
+  transition-delay: calc(var(--a) * 50ms);
+}
+
+.lx-close--fan[data-state="closed"] .lx-fan__cards li {
+  opacity: 0;
+  transform: translateY(24%) scale(0.92);
+}
+
+.lx-close--fan[data-state="open"] .lx-fan__cards li {
+  transform: translateX(calc(var(--k) * 40%)) translateY(calc(var(--a) * 6%)) rotate(calc(var(--k) * 7deg));
+}
+
+.lx-close--fan[data-state="wide"] .lx-fan__cards li {
+  transform: translateX(calc(var(--k) * 64%)) translateY(calc(var(--a) * 9% - 8%)) rotate(calc(var(--k) * 11deg));
+}
+
+.lx-fan__field {
+  position: relative;
+  z-index: 10;
+}
+
+/* ---------- Narrow screens ---------- */
+
+@media (max-width: 959px) {
+  .lx-close--feed {
+    flex-direction: column;
+    gap: 44px;
+    text-align: center;
+  }
+
+  .lx-feed {
+    --h: min(52svh, 480px);
+  }
+}
+
+@media (max-width: 759px) {
+  .lx-compare {
+    width: 100%;
+    aspect-ratio: 1;
+  }
+
+  .lx-compare__before img {
+    object-position: 50% 40%;
+  }
+
+  .lx-compare__after ol {
+    height: 48%;
+  }
+
+  .lx-feed {
+    --h: min(44svh, 400px);
+  }
+
+  .lx-compare__tag {
+    top: 10px;
+    font-size: 11px;
+  }
+
+  .lx-compare__before .lx-compare__tag {
+    left: 10px;
+  }
+
+  .lx-compare__after .lx-compare__tag {
+    right: 10px;
+  }
+}
+
+/* ---------- Review dial: only while the closing is on screen ---------- */
+
+.lx-dial {
+  position: fixed;
+  z-index: 70;
+  left: 50%;
+  bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100vw - 24px);
+  padding: 5px;
+  overflow-x: auto;
+  border-radius: 999px;
+  background: rgba(17, 17, 19, 0.88);
+  font-size: 13px;
+  color: #fff;
+  opacity: 0;
+  pointer-events: none;
+  translate: -50% 16px;
+  scrollbar-width: none;
+  transition:
+    opacity 0.3s ease,
+    translate 0.4s var(--lx-ease);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.lx-dial[data-on] {
+  opacity: 1;
+  pointer-events: auto;
+  translate: -50% 0;
+}
+
+.lx-dial > span {
+  padding: 0 10px 0 12px;
+  font: 500 10.5px / 1 var(--lx-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8d8c87;
+}
+
+.lx-dial button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px 0 11px;
+  border-radius: 999px;
+  color: #bdbcb7;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.lx-dial button:hover {
+  color: #fff;
+}
+
+.lx-dial button em {
+  font: 500 10.5px / 1 var(--lx-mono);
+  font-style: normal;
+  color: #6d6c68;
+}
+
+.lx-dial button[aria-pressed="true"] {
+  background: var(--lx-blue);
+  color: #fff;
+}
+
+.lx-dial button[aria-pressed="true"] em {
+  color: rgba(255, 255, 255, 0.7);
+}

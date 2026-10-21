@@ -27,13 +27,22 @@ const ARROW_NUDGE = {
   "&:hover:not(:disabled) > svg": { transform: "translateX(3px)" },
 } as const;
 
-export function AuthForm({ mode, destination }: { mode: AuthMode; destination: string | null }) {
+export function AuthForm({
+  mode,
+  destination,
+  initialEmail = null,
+}: {
+  mode: AuthMode;
+  destination: string | null;
+  /** Prefills the email field, e.g. from the homepage footer signup. */
+  initialEmail?: string | null;
+}) {
   const router = useRouter();
   const signInHook = useSignIn();
   const signUpHook = useSignUp();
   const [formMode, setFormMode] = useState(mode);
   const [step, setStep] = useState<AuthStep>("credentials");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(initialEmail ?? "");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);

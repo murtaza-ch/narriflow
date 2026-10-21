@@ -31,6 +31,7 @@ export function AuthModal() {
     const next = new URLSearchParams(params.toString());
     next.delete("auth");
     next.delete("redirect_url");
+    next.delete("email");
     router.replace(next.size ? `/?${next}` : "/", { scroll: false });
   }
 
@@ -41,7 +42,7 @@ export function AuthModal() {
         <Dialog.Content bg="bg.panel" color="fg" borderColor="border" borderWidth="1px" borderRadius="xl" maxH="calc(100dvh - 24px)" boxShadow="2xl">
           <Dialog.CloseTrigger asChild><CloseButton aria-label="Close authentication" position="absolute" top="3" right="3" zIndex="1" /></Dialog.CloseTrigger>
           <Dialog.Body p={{ base: "6", sm: "8" }}>
-            <AuthForm key={mode} mode={mode} destination={params.get("redirect_url")} />
+            <AuthForm key={mode} mode={mode} destination={params.get("redirect_url")} initialEmail={params.get("email")} />
           </Dialog.Body>
         </Dialog.Content>
       </Dialog.Positioner>
