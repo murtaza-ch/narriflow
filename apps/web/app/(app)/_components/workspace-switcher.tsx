@@ -67,44 +67,46 @@ export function WorkspaceSwitcher({
 
   return (
     <Menu.Root positioning={{ placement: "bottom-start", gutter: 6 }}>
-      <Menu.Trigger asChild>
-        <Flex
-          as="button"
-          aria-label="Switch workspace"
-          w="full"
-          align="center"
-          gap="2.5"
-          px="3"
-          py="2.5"
-          borderRadius="l2"
-          textAlign="left"
-          cursor="pointer"
-          _hover={{ bg: "bg.subtle" }}
-        >
+      <Box px="3">
+        <Menu.Trigger asChild>
           <Flex
-            w="8"
-            h="8"
+            as="button"
+            aria-label="Switch workspace"
+            w="full"
             align="center"
-            justify="center"
+            gap="2.5"
+            px="2.5"
+            py="2.5"
             borderRadius="l2"
-            bg="bg.muted"
-            color="fg.muted"
-            flexShrink={0}
-            overflow="hidden"
+            textAlign="left"
+            cursor="pointer"
+            _hover={{ bg: "bg.subtle" }}
           >
-            {active?.avatarUrl ? <Image src={active.avatarUrl} alt="" w="full" h="full" objectFit="cover" /> : <Building2 size={15} />}
+            <Flex
+              w="8"
+              h="8"
+              align="center"
+              justify="center"
+              borderRadius="l2"
+              bg="bg.muted"
+              color="fg.muted"
+              flexShrink={0}
+              overflow="hidden"
+            >
+              {active?.avatarUrl ? <Image src={active.avatarUrl} alt="" w="full" h="full" objectFit="cover" /> : <Building2 size={15} />}
+            </Flex>
+            <Stack gap="0" minW="0" flex="1">
+              <Text fontSize="13px" fontWeight="600" truncate>
+                {active?.name ?? "Workspace"}
+              </Text>
+              <Text fontSize="11px" color="fg.subtle" textTransform="capitalize">
+                {active?.role ?? "member"}
+              </Text>
+            </Stack>
+            {isPending ? <Spinner size="xs" /> : <ChevronDown size={14} />}
           </Flex>
-          <Stack gap="0" minW="0" flex="1">
-            <Text fontSize="13px" fontWeight="600" truncate>
-              {active?.name ?? "Workspace"}
-            </Text>
-            <Text fontSize="11px" color="fg.subtle" textTransform="capitalize">
-              {active?.role ?? "member"}
-            </Text>
-          </Stack>
-          {isPending ? <Spinner size="xs" /> : <ChevronDown size={14} />}
-        </Flex>
-      </Menu.Trigger>
+        </Menu.Trigger>
+      </Box>
       <Portal>
         <Menu.Positioner>
           <Menu.Content w="320px" maxW="calc(100vw - 24px)" p="2" maxH="calc(100dvh - 100px)" overflowY="auto">
