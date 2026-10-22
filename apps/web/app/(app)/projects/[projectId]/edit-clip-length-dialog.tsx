@@ -16,14 +16,16 @@ import {
   Button,
   Dialog,
   Flex,
+  Grid,
   IconButton,
   Input,
-  Kbd,
   Portal,
+  Skeleton,
   Spinner,
+  Stack,
   Text,
 } from "@chakra-ui/react";
-import { Play, Search, X } from "lucide-react";
+import { Crop, Play, Search, X } from "lucide-react";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { Switch } from "@narriflow/ui/components/switch";
 import {
@@ -38,7 +40,10 @@ const MAX_DURATION_SEC = 120;
 /** Word gaps at or above this render as an inline silence chip, mirroring the
  *  transcript's real pauses so users can end a clip on a natural break. */
 const SILENCE_CHIP_MIN_SEC = 0.5;
-const DENSITY_BUCKETS = 120;
+const DENSITY_BUCKETS = 200;
+/** Transcript paragraphs break on a pause this long, or after this much talk. */
+const PARAGRAPH_PAUSE_SEC = 1.2;
+const PARAGRAPH_MAX_SEC = 30;
 /** Moving the end boundary seeks the player a little BEFORE the new end so
  *  the user immediately hears how the clip will finish. */
 const END_AUDITION_LEAD_SEC = 2;
@@ -384,34 +389,66 @@ export function EditClipLengthDialog(props: {
   // every selection change, which is what made selection feel broken.
   const transcriptDom = useMemo(() => {
     if (!flat) return null;
-    return flat.sentences.map((sentence, sentenceIndex) => {
-      const nodes: React.ReactNode[] = [];
-      for (let offset = 0; offset < sentence.wordCount; offset++) {
-        const index = sentence.firstWordIndex + offset;
-        const word = flat.words[index]!;
-        nodes.push(
-          <span key={index} data-widx={index} className="eclw">
-            {word.word}
-          </span>,
-        );
-        const next = flat.words[index + 1];
-        const gap =
-          next && next.sentenceIndex === word.sentenceIndex
-            ? next.startSec - word.endSec
-            : 0;
-        if (gap >= SILENCE_CHIP_MIN_SEC) {
-          nodes.push(
-            <span key={`g${index}`} className="eclgap">
-              [{gap.toFixed(1)}s]
-            </span>,
-          );
-        }
-        nodes.push(" ");
+    // Sentences flow inline inside paragraphs (timecode on the first only);
+    // a pause or a long run starts the next paragraph.
+    const paragraphs: number[][] = [];
+    flat.sentences.forEach((sentence, sentenceIndex) => {
+      const current = paragraphs.at(-1);
+      const first = current ? flat.sentences[current[0]!]! : null;
+      const previous = flat.sentences[sentenceIndex - 1];
+      const previousEnd = previous
+        ? (flat.words[previous.firstWordIndex + previous.wordCount - 1]?.endSec ?? 0)
+        : 0;
+      if (
+        !current ||
+        !first ||
+        sentence.startSec - previousEnd >= PARAGRAPH_PAUSE_SEC ||
+        sentence.startSec - first.startSec >= PARAGRAPH_MAX_SEC
+      ) {
+        paragraphs.push([sentenceIndex]);
+      } else {
+        current.push(sentenceIndex);
       }
+    });
+
+    return paragraphs.map((sentenceIndexes) => {
+      const firstSentence = flat.sentences[sentenceIndexes[0]!]!;
       return (
-        <div key={sentenceIndex} className="eclrow" data-sentence={sentenceIndex}>
-          <span className="ecltc">{formatClock(sentence.startSec)}</span>
-          <span className="eclbody">{nodes}</span>
+        <div key={sentenceIndexes[0]} className="eclrow">
+          <span className="ecltc">{formatClock(firstSentence.startSec)}</span>
+          <span className="eclbody">
+            {sentenceIndexes.map((sentenceIndex) => {
+              const sentence = flat.sentences[sentenceIndex]!;
+              const nodes: React.ReactNode[] = [];
+              for (let offset = 0; offset < sentence.wordCount; offset++) {
+                const index = sentence.firstWordIndex + offset;
+                const word = flat.words[index]!;
+                nodes.push(
+                  <span key={index} data-widx={index} className="eclw">
+                    {word.word}
+                  </span>,
+                );
+                const next = flat.words[index + 1];
+                const gap =
+                  next && next.sentenceIndex === word.sentenceIndex
+                    ? next.startSec - word.endSec
+                    : 0;
+                if (gap >= SILENCE_CHIP_MIN_SEC) {
+                  nodes.push(
+                    <span key={`g${index}`} className="eclgap">
+                      [{gap.toFixed(1)}s]
+                    </span>,
+                  );
+                }
+                nodes.push(" ");
+              }
+              return (
+                <span key={sentenceIndex} data-sentence={sentenceIndex}>
+                  {nodes}
+                </span>
+              );
+            })}
+          </span>
         </div>
       );
     });
@@ -751,23 +788,41 @@ export function EditClipLengthDialog(props: {
   // Speech-density strip: drawn structure — spoken-time coverage per bucket
   // over the whole source. The selection window and playhead are separate
   // positioned overlays so the bars never re-render.
+  // Per time slice: how much of it is speech, weighted by speaking rate —
+  // pauses dip and dense passages swell, so the strip reads like a waveform.
   const densityBars = useMemo(() => {
     if (!flat || flat.sourceDurationSec <= 0) return null;
-    const total = flat.sourceDurationSec;
-    const buckets = new Array<number>(DENSITY_BUCKETS).fill(0);
+    const bucketSec = flat.sourceDurationSec / DENSITY_BUCKETS;
+    const coverage = new Array<number>(DENSITY_BUCKETS).fill(0);
+    const counts = new Array<number>(DENSITY_BUCKETS).fill(0);
     for (const word of flat.words) {
-      const from = Math.max(
-        0,
-        Math.min(DENSITY_BUCKETS - 1, Math.floor((word.startSec / total) * DENSITY_BUCKETS)),
-      );
-      const to = Math.max(
-        0,
-        Math.min(DENSITY_BUCKETS - 1, Math.floor((word.endSec / total) * DENSITY_BUCKETS)),
-      );
-      for (let b = from; b <= to; b++) buckets[b] = Math.min(1, buckets[b]! + 0.34);
+      counts[Math.min(DENSITY_BUCKETS - 1, Math.floor(word.startSec / bucketSec))]! += 1;
+      let t = word.startSec;
+      while (t < word.endSec) {
+        const bucket = Math.min(DENSITY_BUCKETS - 1, Math.floor(t / bucketSec));
+        const segmentEnd = Math.min(word.endSec, (bucket + 1) * bucketSec);
+        if (segmentEnd <= t) break;
+        coverage[bucket]! += segmentEnd - t;
+        t = segmentEnd;
+      }
     }
-    return buckets;
+    const maxCount = Math.max(1, ...counts);
+    return coverage.map(
+      (covered, bucket) =>
+        Math.min(1, covered / bucketSec) * (0.35 + 0.65 * (counts[bucket]! / maxCount)),
+    );
   }, [flat]);
+
+  // Mirrored around the centre line, like an audio waveform.
+  const waveformPath = useMemo(() => {
+    if (!densityBars) return "";
+    const amplitude = (v: number) => Math.max(0.6, v * 24);
+    const top = densityBars.map((v, i) => `${i + 0.5},${28 - amplitude(v)}`);
+    const bottom = densityBars
+      .map((v, i) => `${i + 0.5},${28 + amplitude(v)}`)
+      .reverse();
+    return `M0,28 L${top.join(" L")} L${DENSITY_BUCKETS},28 L${bottom.join(" L")} Z`;
+  }, [densityBars]);
 
   const stripSecAtPointer = useCallback(
     (clientX: number): number | null => {
@@ -827,55 +882,53 @@ export function EditClipLengthDialog(props: {
         <Dialog.Backdrop zIndex={300} />
         <Dialog.Positioner zIndex={310}>
           <Dialog.Content
-            w="min(1180px, 96vw)"
-            maxW="min(1180px, 96vw)"
-            h="min(740px, 92vh)"
+            w="min(1240px, 94vw)"
+            maxW="min(1240px, 94vw)"
+            h="min(1080px, 94vh)"
             overflow="hidden"
             display="flex"
             flexDirection="column"
+            position="relative"
           >
-            {/* Header */}
-            <Flex
-              align="center"
-              justify="space-between"
-              px="5"
-              py="3"
-              borderBottomWidth="1px"
-              borderColor="border.subtle"
-            >
-              <Box>
-                <Text textStyle="eyebrow" color="fg.subtle">
-                  Trim / Extend
-                </Text>
-                <Text textStyle="title" fontSize="15px" color="fg">
-                  {props.clipTitle ?? "Edit clip length"}
-                </Text>
-              </Box>
-              <Dialog.CloseTrigger asChild>
-                <Button variant="ghost" size="sm" aria-label="Close">
-                  <X size={14} />
-                </Button>
-              </Dialog.CloseTrigger>
-            </Flex>
+            <Dialog.CloseTrigger asChild>
+              <IconButton
+                aria-label="Close"
+                size="sm"
+                variant="subtle"
+                borderRadius="full"
+                position="absolute"
+                top="4"
+                insetEnd="4"
+                zIndex="1"
+              >
+                <X size={15} />
+              </IconButton>
+            </Dialog.CloseTrigger>
 
             <Flex flex="1" minH="0">
-              {/* Player pane — auditions the selection against the source. */}
-              {props.sourceVideoUrl && (
-                <Flex
-                  direction="column"
-                  justify="center"
-                  w="clamp(280px, 34%, 400px)"
-                  flexShrink={0}
-                  p="4"
-                  gap="3"
-                  borderRightWidth="1px"
-                  borderColor="border.subtle"
-                >
-                  <MediaWell
-                    ratio={16 / 9}
-                    w="full"
-                    timecode={`${formatClock(clipElapsedSec)} / ${formatClock(durationSec)}`}
-                  >
+              {/* Player side — auditions the selection against the source. */}
+              <Flex direction="column" w="50%" flexShrink={0} bg="bg.subtle" px="6" pt="5" pb="6">
+                <Dialog.Title asChild>
+                  <Text textStyle="title" fontSize="18px" color="fg">
+                    Edit clip length
+                  </Text>
+                </Dialog.Title>
+                {props.clipTitle && (
+                  <Text fontSize="13px" color="fg.muted" mt="1" truncate>
+                    {props.clipTitle}
+                  </Text>
+                )}
+                <Flex flex="1" minH="0" align="center" justify="center" pt="4">
+                  {props.sourceVideoUrl ? (
+                    <MediaWell
+                      ratio={16 / 9}
+                      w="full"
+                      timecode={
+                        selection
+                          ? `${formatClock(clipElapsedSec)} / ${formatClock(durationSec)}`
+                          : undefined
+                      }
+                    >
                     {/* biome-ignore lint/a11y/useMediaCaption: the transcript IS the caption surface */}
                     <video
                       ref={videoRef}
@@ -908,44 +961,56 @@ export function EditClipLengthDialog(props: {
                         }
                       }}
                     />
-                    {!playing && (
-                      <Flex
-                        position="absolute"
-                        inset="0"
-                        align="center"
-                        justify="center"
-                        pointerEvents="none"
-                      >
-                        <IconButton
-                          aria-label="Play selection"
-                          size="lg"
-                          borderRadius="full"
-                          bg="rgba(14, 16, 19, 0.72)"
-                          color="white"
-                          _hover={{ bg: "rgba(14, 16, 19, 0.85)" }}
-                          pointerEvents="auto"
-                          onClick={togglePlay}
+                      {!selection ? (
+                        <Flex
+                          position="absolute"
+                          inset="0"
+                          align="center"
+                          justify="center"
+                          pointerEvents="none"
                         >
-                          <Play size={20} />
-                        </IconButton>
-                      </Flex>
-                    )}
-                  </MediaWell>
+                          <Spinner size="sm" color="studio.fgMuted" />
+                        </Flex>
+                      ) : (
+                        !playing && (
+                          <Flex
+                            position="absolute"
+                            inset="0"
+                            align="center"
+                            justify="center"
+                            pointerEvents="none"
+                          >
+                            <IconButton
+                              aria-label="Play selection"
+                              size="xl"
+                              borderRadius="full"
+                              bg="rgba(14, 16, 19, 0.6)"
+                              borderWidth="1.5px"
+                              borderColor="rgba(255, 255, 255, 0.85)"
+                              color="white"
+                              _hover={{ bg: "rgba(14, 16, 19, 0.8)" }}
+                              pointerEvents="auto"
+                              onClick={togglePlay}
+                            >
+                              <Play size={22} />
+                            </IconButton>
+                          </Flex>
+                        )
+                      )}
+                    </MediaWell>
+                  ) : (
+                    <Text fontSize="13px" color="fg.subtle" textAlign="center" maxW="280px">
+                      The source video is gone, so there is nothing to play. You can
+                      still set the clip from its transcript.
+                    </Text>
+                  )}
                 </Flex>
-              )}
+              </Flex>
 
-              {/* Transcript column */}
+              {/* Transcript side */}
               <Flex direction="column" flex="1" minW="0">
-                {/* Search */}
-                <Flex
-                  align="center"
-                  gap="2"
-                  px="5"
-                  py="2"
-                  borderBottomWidth="1px"
-                  borderColor="border.subtle"
-                >
-                  <Search size={13} color="var(--chakra-colors-fg-subtle)" />
+                <Flex align="center" gap="2.5" ps="6" pe="16" pt="5" pb="2">
+                  <Search size={16} color="var(--chakra-colors-fg-subtle)" />
                   <Input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
@@ -955,10 +1020,12 @@ export function EditClipLengthDialog(props: {
                         cycleMatch(e.shiftKey ? -1 : 1);
                       }
                     }}
-                    placeholder="Search transcript"
-                    size="xs"
+                    placeholder="Search"
+                    aria-label="Search transcript"
+                    size="sm"
                     variant="flushed"
                     borderColor="transparent"
+                    fontSize="14px"
                     flex="1"
                   />
                   {query.trim().length >= 2 && (
@@ -970,60 +1037,74 @@ export function EditClipLengthDialog(props: {
                   )}
                 </Flex>
 
-                {/* Transcript surface — all selection interaction lives here via
-                    geometric hit-testing; the word list itself never re-renders. */}
                 <Box
                   ref={setScrollBox}
                   flex="1"
                   minH="0"
                   overflowY="auto"
-                  px="5"
-                  py="4"
+                  ps="4"
+                  pe="6"
+                  pt="2"
+                  pb="6"
                   userSelect="none"
                   css={{
                     "& .eclrow": {
                       display: "flex",
-                      gap: "12px",
+                      gap: "16px",
                       // content-visibility implies PAINT CONTAINMENT: anything a
                       // child paints above the row box (the caret pin dots) gets
                       // clipped. The top padding keeps the pins inside the box.
                       paddingTop: "7px",
-                      marginBottom: "7px",
+                      marginBottom: "14px",
                       // Off-screen rows are neither laid out nor painted — the
                       // difference between an instant open and a seconds-long one.
                       contentVisibility: "auto",
-                      containIntrinsicSize: "auto 55px",
+                      containIntrinsicSize: "auto 180px",
                     },
                     "& .ecltc": {
                       fontFamily: "var(--chakra-fonts-mono)",
-                      fontSize: "11px",
-                      color: "var(--chakra-colors-fg-timecode)",
+                      fontSize: "12px",
+                      lineHeight: "30px",
+                      color: "var(--chakra-colors-fg-subtle)",
                       flexShrink: 0,
-                      width: "52px",
+                      width: "56px",
                       textAlign: "right",
-                      paddingTop: "2px",
                     },
                     "& .eclbody": {
-                      fontSize: "14px",
-                      lineHeight: 1.8,
-                      color: "var(--chakra-colors-fg-muted)",
+                      fontSize: "15px",
+                      lineHeight: "30px",
+                      color: "var(--chakra-colors-fg)",
                     },
                     "& .eclgap": {
-                      fontFamily: "var(--chakra-fonts-mono)",
-                      fontSize: "10px",
-                      color: "var(--chakra-colors-fg-timecode)",
-                      margin: "0 4px",
+                      fontStyle: "italic",
+                      fontSize: "13px",
+                      color: "var(--chakra-colors-fg-subtle)",
+                      margin: "0 5px",
                     },
+                    // Each word's box reaches half a space either side (padding
+                    // offset by an equal negative margin, so layout never moves):
+                    // neighbouring selected words meet and read as one band.
                     "& .eclw": {
                       position: "relative",
                       cursor: "pointer",
-                      borderRadius: "2px",
-                      padding: "0 1px",
+                      // Tall inline padding paints the band almost the full
+                      // 30px line, so consecutive selected lines read as one block.
+                      padding: "4px 0.14em",
+                      margin: "0 -0.14em",
+                      transition: "background 80ms ease",
+                    },
+                    "& .eclw:not(.sel):hover": {
+                      background: "var(--chakra-colors-bg-muted)",
+                      color: "var(--chakra-colors-fg)",
+                      borderRadius: "3px",
                     },
                     "& .eclw.sel": {
                       background: "var(--chakra-colors-accent-muted)",
                       color: "var(--chakra-colors-fg)",
                     },
+                    "& .eclw.sel.es": { borderRadius: "3px 0 0 3px" },
+                    "& .eclw.sel.ee": { borderRadius: "0 3px 3px 0" },
+                    "& .eclw.sel.es.ee": { borderRadius: "3px" },
                     "& .eclw.hit": {
                       textDecoration: "underline",
                       textDecorationColor: "var(--chakra-colors-accent-solid)",
@@ -1097,14 +1178,7 @@ export function EditClipLengthDialog(props: {
                     dragState.current = null;
                   }}
                 >
-                  {loading && (
-                    <Flex align="center" justify="center" h="full" gap="2">
-                      <Spinner size="sm" />
-                      <Text fontSize="sm" color="fg.muted">
-                        Loading transcript…
-                      </Text>
-                    </Flex>
-                  )}
+                  {loading && <TranscriptSkeleton />}
                   {loadError && (
                     <Flex align="center" justify="center" h="full">
                       <Text fontSize="sm" color="danger.fg">
@@ -1117,16 +1191,17 @@ export function EditClipLengthDialog(props: {
               </Flex>
             </Flex>
 
-            {/* Speech-density strip: click to jump the transcript, drag the
+            {/* Speech-density waveform: click to jump the transcript, drag the
                 selection window to move the clip through time. */}
-            {flat && densityBars && selection && totalSec > 0 && (
+            {(loading || (flat && densityBars && selection && totalSec > 0)) && (
+              <Box px="6" pt="5">
+                {flat && densityBars && selection && totalSec > 0 ? (
               <Box
                 ref={stripRef}
                 position="relative"
-                mx="5"
-                mt="2"
-                mb="1"
-                h="36px"
+                h="56px"
+                bg="bg.subtle"
+                borderRadius="l2"
                 cursor="pointer"
                 title="Click to jump · drag the window to move the clip"
                 onClick={(e) => {
@@ -1193,22 +1268,21 @@ export function EditClipLengthDialog(props: {
                 {/* biome-ignore lint/a11y/noSvgWithoutTitle: decorative speech-density strip; the timecode inputs and transcript convey the same information. */}
                 <svg
                   width="100%"
-                  height="36"
+                  height="56"
                   preserveAspectRatio="none"
-                  viewBox={`0 0 ${DENSITY_BUCKETS} 36`}
+                  viewBox={`0 0 ${DENSITY_BUCKETS} 56`}
                   style={{ display: "block" }}
                 >
-                  {densityBars.map((v, i) => (
-                    <rect
-                      key={i}
-                      x={i + 0.15}
-                      width={0.7}
-                      y={18 - v * 15}
-                      height={Math.max(1.5, v * 30)}
-                      rx={0.3}
-                      fill="var(--chakra-colors-border-emphasized)"
-                    />
-                  ))}
+                  <line
+                    x1="0"
+                    x2={DENSITY_BUCKETS}
+                    y1="28"
+                    y2="28"
+                    stroke="var(--chakra-colors-border-emphasized)"
+                    strokeWidth="1"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <path d={waveformPath} fill="var(--chakra-colors-border-emphasized)" />
                 </svg>
                 {/* Draggable selection window */}
                 <Box
@@ -1219,9 +1293,8 @@ export function EditClipLengthDialog(props: {
                   width={`${windowWidthPct}%`}
                   borderWidth="1.5px"
                   borderColor="accent.solid"
-                  borderRadius="l1"
-                  bg="accent.muted"
-                  opacity={0.85}
+                  borderRadius="l2"
+                  bg="accent.solid/15"
                   cursor="grab"
                   _active={{ cursor: "grabbing" }}
                   onPointerDown={(e) => {
@@ -1250,116 +1323,164 @@ export function EditClipLengthDialog(props: {
                     left={`${playheadPct}%`}
                     width="1.5px"
                     bg="fg"
-                    opacity={0.7}
                     pointerEvents="none"
-                  />
+                  >
+                    {/* Marker cap, like a scrubber head. */}
+                    <Box
+                      position="absolute"
+                      top="-7px"
+                      left="-4px"
+                      w="9.5px"
+                      h="9px"
+                      bg="fg"
+                      borderRadius="2px 2px 5px 5px"
+                    />
+                  </Box>
+                )}
+              </Box>
+                ) : (
+                  <Skeleton variant="pulse" bg="bg.muted" h="56px" borderRadius="l2" />
                 )}
               </Box>
             )}
 
-            {/* Footer */}
-            <Flex
-              align="center"
-              justify="space-between"
-              gap="3"
-              px="5"
-              py="3"
-              borderTopWidth="1px"
-              borderColor="border.subtle"
-              wrap="wrap"
-            >
-              <Flex align="center" gap="3" wrap="wrap">
-                <Flex align="center" gap="1.5">
-                  <Input
-                    value={startInput}
-                    onChange={(e) => setStartInput(e.target.value)}
-                    onFocus={() => setEditingField("start")}
-                    onBlur={() => commitTimecode("start")}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") e.currentTarget.blur();
-                      if (e.key === "Escape") {
-                        setEditingField(null);
-                        if (selection) setStartInput(formatClockCs(selection.startSec));
-                      }
-                    }}
-                    aria-label="Clip start timecode"
-                    size="xs"
-                    w="76px"
-                    textAlign="center"
-                    fontFamily="mono"
-                    fontSize="11px"
-                    borderColor="border.control"
-                    disabled={!flat}
-                  />
-                  <Text fontSize="11px" color="fg.subtle">
-                    –
+            {/* Footer — length on the left, timecodes centred, actions right. */}
+            <Grid templateColumns="1fr auto 1fr" alignItems="center" gap="4" px="6" py="4">
+              <Box minW="0">
+                {flat && !durationValid ? (
+                  <Text fontSize="12px" color="danger.fg">
+                    {`Clips must be ${MIN_DURATION_SEC}–${MAX_DURATION_SEC} seconds (currently ${durationSec.toFixed(1)}s).`}
                   </Text>
-                  <Input
-                    value={endInput}
-                    onChange={(e) => setEndInput(e.target.value)}
-                    onFocus={() => setEditingField("end")}
-                    onBlur={() => commitTimecode("end")}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") e.currentTarget.blur();
-                      if (e.key === "Escape") {
-                        setEditingField(null);
-                        if (selection) setEndInput(formatClockCs(selection.endSec));
-                      }
-                    }}
-                    aria-label="Clip end timecode"
-                    size="xs"
-                    w="76px"
-                    textAlign="center"
-                    fontFamily="mono"
-                    fontSize="11px"
-                    borderColor="border.control"
-                    disabled={!flat}
-                  />
-                  <Text textStyle="data" fontSize="12px" color="fg.timecode" ms="1">
-                    · {durationSec.toFixed(1)}s
+                ) : flat ? (
+                  <Text fontSize="13px" color="fg.muted">
+                    Length{" "}
+                    <Text as="span" textStyle="data" color="fg" fontWeight="600">
+                      {durationSec.toFixed(1)}s
+                    </Text>
                   </Text>
-                </Flex>
-                <Box maxW="420px">
-                  {flat && !durationValid && (
-                    <Text fontSize="11px" color="danger.fg">
-                      {`Clips must be ${MIN_DURATION_SEC}–${MAX_DURATION_SEC} seconds (currently ${durationSec.toFixed(1)}s).`}
-                    </Text>
-                  )}
-                  {saveError && (
-                    <Text fontSize="11px" color="danger.fg" mt="0.5">
-                      {saveError}
-                    </Text>
-                  )}
-                </Box>
+                ) : null}
+                {saveError && (
+                  <Text fontSize="12px" color="danger.fg" mt="0.5">
+                    {saveError}
+                  </Text>
+                )}
+              </Box>
+
+              <Flex align="center" gap="2">
+                {(
+                  [
+                    ["start", startInput, setStartInput, selection?.startSec],
+                    ["end", endInput, setEndInput, selection?.endSec],
+                  ] as const
+                ).map(([field, value, setValue, sec], index) => (
+                  <Flex key={field} align="center" gap="2">
+                    {index === 1 && (
+                      <Text fontSize="13px" color="fg.subtle">
+                        –
+                      </Text>
+                    )}
+                    {flat ? (
+                      <Input
+                        value={value}
+                        onChange={(e) => setValue(e.target.value)}
+                        onFocus={() => setEditingField(field)}
+                        onBlur={() => commitTimecode(field)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") e.currentTarget.blur();
+                          if (e.key === "Escape") {
+                            setEditingField(null);
+                            if (sec !== undefined) setValue(formatClockCs(sec));
+                          }
+                        }}
+                        aria-label={`Clip ${field} timecode`}
+                        size="md"
+                        w="112px"
+                        textAlign="center"
+                        fontFamily="mono"
+                        fontSize="14px"
+                        borderColor="border.control"
+                      />
+                    ) : (
+                      <Skeleton variant="pulse" bg="bg.muted" h="10" w="112px" borderRadius="l2" />
+                    )}
+                  </Flex>
+                ))}
               </Flex>
-              <Flex gap="3" align="center" flexShrink={0}>
+
+              <Flex justify="flex-end" align="center" gap="2">
                 <Switch
                   checked={autoReframe}
                   onCheckedChange={setAutoReframe}
                   disabled={saving}
+                  flexDirection="row-reverse"
+                  gap="2.5"
+                  h="10"
+                  px="3"
+                  borderWidth="1px"
+                  borderColor="border"
+                  borderRadius="l2"
                 >
-                  Auto reframe
+                  <Flex align="center" gap="2" fontSize="13px" color="fg">
+                    <Crop size={14} />
+                    Auto reframe
+                  </Flex>
                 </Switch>
-                <Button variant="outline" size="sm" onClick={() => props.onOpenChange(false)}>
+                <Button variant="subtle" size="md" onClick={() => props.onOpenChange(false)}>
                   Cancel
                 </Button>
                 <Button
-                  size="sm"
+                  size="md"
                   onClick={handleSave}
                   disabled={!selection || !durationValid || saving || loading}
                 >
                   {saving ? "Saving…" : "Save"}
-                  {!saving && (
-                    <Kbd ms="1.5" fontSize="10px" opacity={0.8}>
-                      ⌘S
-                    </Kbd>
-                  )}
                 </Button>
               </Flex>
-            </Flex>
+            </Grid>
           </Dialog.Content>
         </Dialog.Positioner>
       </Portal>
     </Dialog.Root>
+  );
+}
+
+/** Line widths for the loading transcript — paragraphs of ragged lines. */
+const SKELETON_PARAGRAPHS = [
+  [96, 91, 98, 88, 57],
+  [94, 97, 90, 73],
+  [95, 92, 97, 93, 86, 41],
+];
+
+/** Placeholder paragraphs in the transcript's own shape: timecode + lines. */
+function TranscriptSkeleton() {
+  return (
+    <Stack gap="7" pt="3" role="status" aria-label="Loading transcript">
+      {SKELETON_PARAGRAPHS.map((lines, paragraph) => (
+        <Flex key={paragraph} gap="16px">
+          <Skeleton
+            variant="pulse"
+            bg="bg.muted"
+            h="3"
+            w="44px"
+            ms="12px"
+            mt="2.5"
+            flexShrink={0}
+            borderRadius="l1"
+          />
+          <Stack gap="4.5" flex="1" pt="2.5">
+            {lines.map((width, line) => (
+              <Skeleton
+                key={line}
+                variant="pulse"
+                bg="bg.muted"
+                h="3"
+                borderRadius="l1"
+                style={{ width: `${width}%` }}
+              />
+            ))}
+          </Stack>
+        </Flex>
+      ))}
+    </Stack>
   );
 }
