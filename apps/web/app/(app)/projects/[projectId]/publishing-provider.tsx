@@ -72,6 +72,7 @@ import {
 } from "./publishing-draft";
 import { createPublishingCompositionSession, type PublishingCompositionSession, type PublishingOptions } from "./publishing-composition-session";
 import { PublishingPosts } from "./publishing-posts";
+import { PanelHeader } from "./panel-header";
 import { PublishingCover } from "./publishing-cover";
 
 type Config = {
@@ -128,17 +129,24 @@ export function usePublishing() {
 export function ProjectPosts() {
 	const c = usePublishing();
 	return (
-		<PublishingPosts
-			projectId={c.config.projectId}
-			timeZone={c.config.workspaceTimezone}
-			posts={c.posts}
-			clips={c.config.clips}
-			refresh={c.refresh}
-			loadOlderPosts={c.loadOlderPosts}
-			nextCursor={c.nextPostsCursor}
-			compose={c.compose}
-			filterable
-		/>
+		<Stack gap="6">
+			<PanelHeader
+				icon={<Send size={20} />}
+				title="Posts"
+				description="Every post made from this project's clips, scheduled or live, and where it stands on each platform."
+			/>
+			<PublishingPosts
+				projectId={c.config.projectId}
+				timeZone={c.config.workspaceTimezone}
+				posts={c.posts}
+				clips={c.config.clips}
+				refresh={c.refresh}
+				loadOlderPosts={c.loadOlderPosts}
+				nextCursor={c.nextPostsCursor}
+				compose={c.compose}
+				filterable
+			/>
+		</Stack>
 	);
 }
 export function PublishingProvider({

@@ -3,11 +3,12 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, Download, Mic2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Download, Languages, Mic2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Select } from "@narriflow/ui/components/select";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { EmptyState } from "@narriflow/ui/components/empty-state";
+import { StatusBadge } from "@narriflow/ui/components/status-badge";
+import { PanelHeader } from "./panel-header";
 import type {
   ClipAspectRatio,
   ClipDubSnapshot,
@@ -69,12 +70,31 @@ function downloadUrlFromPayload(payload: unknown): string | null {
 }
 
 
-const dubLabelColor: Record<ClipDubSnapshot["status"], string> = {
-  completed: "success.fg",
-  failed: "danger.fg",
-  processing: "accent.fg",
-  queued: "fg.muted",
+const dubBadgeStatus: Record<
+  ClipDubSnapshot["status"],
+  "completed" | "failed" | "processing" | "pending"
+> = {
+  completed: "completed",
+  failed: "failed",
+  processing: "processing",
+  queued: "pending",
 };
+
+function languageLabel(code: string) {
+  return languageOptions.find((option) => option.value === code)?.label ?? code.toUpperCase();
+}
+
+function voiceLabel(value: string) {
+  return voiceOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function FieldLabel({ children }: { children: string }) {
+  return (
+    <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="1.5">
+      {children}
+    </Text>
+  );
+}
 
 export function DubbingPanel({
   projectId,
@@ -197,31 +217,52 @@ export function DubbingPanel({
     }
   }
 
+  const busy = isPending || submitting;
+
   return (
-    <Box layerStyle="band">
-      <Stack gap="4">
-        <Box>
-          <Text textStyle="eyebrow" color="fg.subtle">
-            Voiceover dubs
-          </Text>
-          <Text mt="0.5" fontSize="xs" color="fg.muted">
-            Generate translated AI narration over completed clip renders.
-          </Text>
-        </Box>
+    <Stack gap="6">
+      <PanelHeader
+        icon={<Languages size={20} />}
+        title="Voiceover dubs"
+        description="Translate a rendered clip and narrate it with an AI voice. Your original render doesn't change."
+      />
+
+      {/* Composer */}
+      <Box
+        bg="bg.panel"
+        borderWidth="1px"
+        borderColor="border.subtle"
+        borderRadius="l3"
+        overflow="hidden"
+      >
+        <Flex
+          align="center"
+          justify="space-between"
+          gap="3"
+          px="5"
+          py="3.5"
+          borderBottomWidth="1px"
+          borderColor="border.subtle"
+        >
+          <Flex align="center" gap="2">
+            <Mic2 size={15} aria-hidden />
+            <Text fontSize="14px" fontWeight="550" color="fg">
+              New dub
+            </Text>
+          </Flex>
+        </Flex>
 
         <Grid
           templateColumns={{
             base: "1fr",
             sm: "repeat(2, minmax(0, 1fr))",
-            lg: "repeat(4, minmax(0, 1fr)) auto",
+            lg: "repeat(4, minmax(0, 1fr))",
           }}
-          gap="3"
-          alignItems="end"
+          gap="4"
+          p="5"
         >
           <Box>
-            <Text textStyle="eyebrow" color="fg.subtle" mb="1">
-              Clip
-            </Text>
+            <FieldLabel>Clip</FieldLabel>
             <Select
               items={clipItems}
               value={clipId}
@@ -241,9 +282,7 @@ export function DubbingPanel({
           </Box>
 
           <Box>
-            <Text textStyle="eyebrow" color="fg.subtle" mb="1">
-              Format
-            </Text>
+            <FieldLabel>Format</FieldLabel>
             <Select
               items={aspectRatioItems}
               value={aspectRatio}
@@ -256,9 +295,7 @@ export function DubbingPanel({
           </Box>
 
           <Box>
-            <Text textStyle="eyebrow" color="fg.subtle" mb="1">
-              Language
-            </Text>
+            <FieldLabel>Language</FieldLabel>
             <Select
               items={languageOptions}
               value={targetLanguageCode}
@@ -269,9 +306,7 @@ export function DubbingPanel({
           </Box>
 
           <Box>
-            <Text textStyle="eyebrow" color="fg.subtle" mb="1">
-              Voice
-            </Text>
+            <FieldLabel>Voice</FieldLabel>
             <Select
               items={voiceOptions}
               value={voice}
@@ -280,114 +315,206 @@ export function DubbingPanel({
               aria-label="Voice"
             />
           </Box>
-
-          <Button
-            size="sm"
-            disabled={
-              isPending || submitting || !selectedClip || aspectRatios.length === 0
-            }
-            onClick={requestDub}
-          >
-            {isPending || submitting ? <Spinner size="xs" /> : <Mic2 size={14} />}
-            <Text ms="1.5">
-              {isPending || submitting ? "Queueing" : "Generate dub"}
-            </Text>
-          </Button>
         </Grid>
 
-        {message ? (
-          <Flex role="alert" align="center" gap="1.5" color="danger.fg">
-            <AlertTriangle size={13} aria-hidden />
-            <Text fontSize="xs">{message}</Text>
-          </Flex>
-        ) : null}
+        <Flex
+          align="center"
+          justify="space-between"
+          gap="3"
+          wrap="wrap"
+          px="5"
+          py="3.5"
+          borderTopWidth="1px"
+          borderColor="border.subtle"
+          bg="bg.subtle"
+        >
+          {selectedClip ? (
+            <Flex align="center" gap="2" fontSize="13px" color="fg.muted" minW="0">
+              <Text color="fg">Clip {selectedClip.index + 1}</Text>
+              <Text textStyle="data" fontSize="12px">
+                {aspectRatio}
+              </Text>
+              <ArrowRight size={13} aria-hidden />
+              <Text color="fg">{languageLabel(targetLanguageCode)}</Text>
+              <Text>· {voiceLabel(voice)} voice</Text>
+            </Flex>
+          ) : (
+            <Text fontSize="13px" color="fg.muted">
+              Render a clip first. Dubs narrate over a finished render.
+            </Text>
+          )}
+          <Button
+            size="sm"
+            disabled={busy || !selectedClip || aspectRatios.length === 0}
+            onClick={requestDub}
+          >
+            {busy ? <Spinner size="xs" /> : <Mic2 size={14} />}
+            {busy ? "Queueing" : "Generate dub"}
+          </Button>
+        </Flex>
+      </Box>
 
-        {dubs.length > 0 ? (
-          <Stack gap="3">
-            {dubs.map((dub) => {
-              const clipIndex = clips.find((clip) => clip.id === dub.clipId)?.index;
-              return (
+      {message ? (
+        <Flex
+          role="alert"
+          align="center"
+          gap="2"
+          color="danger.fg"
+          borderStartWidth="3px"
+          borderColor="danger.solid"
+          ps="3"
+          py="2"
+        >
+          <AlertTriangle size={14} aria-hidden />
+          <Text fontSize="sm">{message}</Text>
+        </Flex>
+      ) : null}
+
+      {dubs.length > 0 ? (
+        <Box borderWidth="1px" borderColor="border.subtle" borderRadius="l3" overflow="hidden">
+          <Flex
+            px="5"
+            py="2.5"
+            bg="bg.subtle"
+            borderBottomWidth="1px"
+            borderColor="border.subtle"
+          >
+            <Text fontSize="12px" color="fg.muted">
+              {dubs.length} dub{dubs.length === 1 ? "" : "s"}
+            </Text>
+          </Flex>
+          {dubs.map((dub) => {
+            const clipIndex = clips.find((clip) => clip.id === dub.clipId)?.index;
+            return (
+              <Flex
+                key={dub.id}
+                align="center"
+                gap="4"
+                px="5"
+                py="3.5"
+                borderBottomWidth="1px"
+                borderColor="border.subtle"
+                flexWrap="wrap"
+                transition="background 120ms ease"
+                _hover={{ bg: "bg.subtle" }}
+                _last={{ borderBottomWidth: "0" }}
+              >
                 <Flex
-                  key={dub.id}
-                  position="relative"
+                  boxSize="10"
+                  flexShrink={0}
                   align="center"
-                  justify="space-between"
-                  gap="3"
-                  p="4"
-                  bg="bg.panel"
+                  justify="center"
                   borderRadius="l2"
-                  flexWrap="wrap"
-                  transition="background 120ms ease"
-                  _hover={{ bg: "bg.subtle" }}
+                  bg="accent.subtle"
+                  color="accent.fg"
+                  textStyle="data"
+                  fontSize="12px"
+                  fontWeight="600"
+                  aria-hidden="true"
                 >
-                  <Box minW="0">
-                    <Text fontSize="13px" color="fg" truncate>
-                      Clip {clipIndex === undefined ? "?" : clipIndex + 1} ·{" "}
-                      {dub.targetLanguageCode.toUpperCase()} · {dub.voice} ·{" "}
-                      <Text as="span" textStyle="data" fontSize="12px">
-                        {dub.aspectRatio}
-                      </Text>
-                    </Text>
-                    <Text
-                      textStyle="eyebrow"
-                      color={dubLabelColor[dub.status]}
-                      truncate
-                    >
-                      {dub.status}
-                      {dub.errorCode ? ` · ${userErrorMessage(dub.errorCode)}` : ""}
-                    </Text>
-                  </Box>
-                  {dub.status === "completed" ? (
-                    <Flex gap="1.5" flexShrink={0}>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={downloadingAsset !== null}
-                        onClick={() => downloadDub(dub, "video")}
-                      >
-                        {downloadingAsset === `${dub.id}:video` ? (
-                          <Spinner size="xs" />
-                        ) : (
-                          <Download size={12} />
-                        )}
-                        <Text ms="1">
-                          {downloadingAsset === `${dub.id}:video`
-                            ? "Preparing…"
-                            : "Video"}
-                        </Text>
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={downloadingAsset !== null}
-                        onClick={() => downloadDub(dub, "audio")}
-                      >
-                        {downloadingAsset === `${dub.id}:audio` ? (
-                          <Spinner size="xs" />
-                        ) : (
-                          <Download size={12} />
-                        )}
-                        <Text ms="1">
-                          {downloadingAsset === `${dub.id}:audio`
-                            ? "Preparing…"
-                            : "Audio"}
-                        </Text>
-                      </Button>
-                    </Flex>
-                  ) : null}
+                  {dub.targetLanguageCode.toUpperCase()}
                 </Flex>
-              );
-            })}
-          </Stack>
-        ) : (
-          <EmptyState
-            icon={<Mic2 size={22} aria-hidden />}
-            title="No dubs yet"
-            description="Add translated narration to a rendered clip."
-            ratio={9 / 16}
-          />
-        )}
-      </Stack>
-    </Box>
+                <Box minW="0" flex="1">
+                  <Text fontSize="14px" fontWeight="550" color="fg" truncate>
+                    {languageLabel(dub.targetLanguageCode)} · {voiceLabel(dub.voice)}
+                  </Text>
+                  <Text fontSize="12px" color="fg.subtle" truncate>
+                    Clip {clipIndex === undefined ? "?" : clipIndex + 1} ·{" "}
+                    <Text as="span" textStyle="data" fontSize="11px">
+                      {dub.aspectRatio}
+                    </Text>
+                    {dub.errorCode ? (
+                      <Text as="span" color="danger.fg">
+                        {" "}
+                        · {userErrorMessage(dub.errorCode)}
+                      </Text>
+                    ) : null}
+                  </Text>
+                </Box>
+                <StatusBadge status={dubBadgeStatus[dub.status]} label={dub.status} />
+                {dub.status === "completed" ? (
+                  <Flex gap="1.5" flexShrink={0}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={downloadingAsset !== null}
+                      onClick={() => downloadDub(dub, "video")}
+                    >
+                      {downloadingAsset === `${dub.id}:video` ? (
+                        <Spinner size="xs" />
+                      ) : (
+                        <Download size={13} />
+                      )}
+                      {downloadingAsset === `${dub.id}:video` ? "Preparing…" : "Video"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={downloadingAsset !== null}
+                      onClick={() => downloadDub(dub, "audio")}
+                    >
+                      {downloadingAsset === `${dub.id}:audio` ? (
+                        <Spinner size="xs" />
+                      ) : (
+                        <Download size={13} />
+                      )}
+                      {downloadingAsset === `${dub.id}:audio` ? "Preparing…" : "Audio"}
+                    </Button>
+                  </Flex>
+                ) : null}
+              </Flex>
+            );
+          })}
+        </Box>
+      ) : (
+        <Stack
+          align="center"
+          textAlign="center"
+          gap="4"
+          py="12"
+          px="6"
+          borderWidth="1px"
+          borderStyle="dashed"
+          borderColor="border"
+          borderRadius="l3"
+        >
+          <Flex
+            boxSize="12"
+            align="center"
+            justify="center"
+            borderRadius="l2"
+            bg="bg.muted"
+            color="fg.muted"
+            aria-hidden="true"
+          >
+            <Mic2 size={20} />
+          </Flex>
+          <Box>
+            <Text fontSize="15px" fontWeight="550" color="fg">
+              No dubs yet
+            </Text>
+            <Text fontSize="13px" color="fg.muted" mt="1" maxW="46ch">
+              Pick a rendered clip, choose a language and a voice, and generate. Each dub
+              comes with a video and a narration-only audio file.
+            </Text>
+          </Box>
+          <Flex gap="1.5" wrap="wrap" justify="center" maxW="520px">
+            {languageOptions.map((option) => (
+              <Text
+                key={option.value}
+                px="2.5"
+                py="1"
+                borderRadius="full"
+                bg="bg.muted"
+                fontSize="12px"
+                color="fg.muted"
+              >
+                {option.label}
+              </Text>
+            ))}
+          </Flex>
+        </Stack>
+      )}
+    </Stack>
   );
 }

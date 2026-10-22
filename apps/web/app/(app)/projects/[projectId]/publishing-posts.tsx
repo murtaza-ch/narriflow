@@ -105,38 +105,63 @@ export function PublishingPosts({
 			setBusy(null);
 		}
 	}
-	const visible = posts.filter(
-		(p) =>
-			filter === "all" ||
-			(filter === "attention"
-				? ["failed", "needs_attention"].includes(p.status)
-				: filter === "scheduled"
-					? ["scheduled", "preparing_video"].includes(p.status)
-					: filter === "inbox"
-						? p.status === "inbox_delivered"
-						: p.status === "posted"),
-	);
+	const matches = (p: SocialPostSnapshot, value: string) =>
+		value === "all" ||
+		(value === "attention"
+			? ["failed", "needs_attention"].includes(p.status)
+			: value === "scheduled"
+				? ["scheduled", "preparing_video"].includes(p.status)
+				: value === "inbox"
+					? p.status === "inbox_delivered"
+					: p.status === "posted");
+	const visible = posts.filter((p) => matches(p, filter));
 	return (
 		<Stack gap="4">
 			{filterable && (
 				<Flex justify="space-between" align="center" gap="3" wrap="wrap">
-					<Flex gap="1" wrap="wrap">
+					<Flex
+						gap="1"
+						wrap="wrap"
+						p="1"
+						bg="bg.subtle"
+						borderRadius="l2"
+						role="group"
+						aria-label="Filter posts"
+					>
 						{[
 							["all", "All posts"],
 							["scheduled", "Scheduled"],
 							["posted", "Published"],
 							["inbox", "TikTok inbox"],
 							["attention", "Needs attention"],
-						].map(([value, label]) => (
-							<Button
-								key={value}
-								variant={filter === value ? "outline" : "ghost"}
-								size="sm"
-								onClick={() => setFilter(value!)}
-							>
-								{label}
-							</Button>
-						))}
+						].map(([value, label]) => {
+							const count = posts.filter((p) => matches(p, value!)).length;
+							const active = filter === value;
+							return (
+								<Button
+									key={value}
+									variant="ghost"
+									size="sm"
+									bg={active ? "bg.panel" : "transparent"}
+									color={active ? "fg" : "fg.muted"}
+									boxShadow={active ? "xs" : undefined}
+									aria-pressed={active}
+									onClick={() => setFilter(value!)}
+								>
+									{label}
+									<Text
+										as="span"
+										textStyle="data"
+										fontSize="11px"
+										color={
+											value === "attention" && count > 0 ? "danger.fg" : "fg.subtle"
+										}
+									>
+										{count}
+									</Text>
+								</Button>
+							);
+						})}
 					</Flex>
 					<Button
 						aria-label="Refresh"
@@ -154,15 +179,56 @@ export function PublishingPosts({
 					{error}
 				</Text>
 			)}
-			{!visible.length && (
-				<Stack align="center" py="14" gap="3" bg="bg.panel" borderRadius="l2">
-					<Send size={24} />
-					<Text fontWeight="medium">No posts here yet</Text>
-					<Text color="fg.muted" fontSize="sm">
-						Publish or schedule a clip to see its progress here.
+			{!visible.length &&
+				(filterable && posts.length > 0 ? (
+					<Text py="10" textAlign="center" fontSize="sm" color="fg.muted">
+						No posts match this filter.
 					</Text>
-				</Stack>
-			)}
+				) : filterable ? (
+					<Stack
+						align="center"
+						textAlign="center"
+						gap="4"
+						py="14"
+						px="6"
+						borderWidth="1px"
+						borderStyle="dashed"
+						borderColor="border"
+						borderRadius="l3"
+					>
+						<Flex
+							boxSize="12"
+							align="center"
+							justify="center"
+							borderRadius="l2"
+							bg="bg.muted"
+							color="fg.muted"
+							aria-hidden="true"
+						>
+							<Send size={20} />
+						</Flex>
+						<Box>
+							<Text fontSize="15px" fontWeight="550" color="fg">
+								Nothing published yet
+							</Text>
+							<Text fontSize="13px" color="fg.muted" mt="1" maxW="44ch">
+								Publish or schedule a clip and follow it here, from upload to the
+								live link.
+							</Text>
+						</Box>
+						<Button asChild size="sm">
+							<Link href={`/projects/${projectId}`}>Choose a clip</Link>
+						</Button>
+					</Stack>
+				) : (
+					<Stack align="center" py="14" gap="3" bg="bg.panel" borderRadius="l2">
+						<Send size={24} />
+						<Text fontWeight="medium">No posts here yet</Text>
+						<Text color="fg.muted" fontSize="sm">
+							Publish or schedule a clip to see its progress here.
+						</Text>
+					</Stack>
+				))}
 			{visible.map((post) => {
 				const feedback = describeSocialPost(post, Date.now(), timeZone);
 				const clip = clips.find((c) => c.id === post.clipId);

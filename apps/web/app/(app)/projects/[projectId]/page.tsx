@@ -968,7 +968,7 @@ export default async function ProjectDetailPage({
 						{/* ANALYTICS */}
 						<Tabs.Content value="analytics" pt="6">
 							{activeTab === "analytics" && analytics ? (
-								<AnalyticsPanel analytics={analytics} />
+								<AnalyticsPanel analytics={analytics} clips={clips} />
 							) : null}
 						</Tabs.Content>
 

@@ -3,8 +3,9 @@
 import { useMemo } from "react";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
+import { Meter } from "@narriflow/ui/components/meter";
 import { userErrorMessage } from "@narriflow/validators";
-import { AlertTriangle } from "lucide-react";
+import { Activity, AlertTriangle } from "lucide-react";
 import { formatDateTime } from "@/lib/format";
 import {
   PROJECT_EVENT_ROW_LIMIT,
@@ -12,6 +13,7 @@ import {
   workflowStageLabel,
 } from "@/lib/project-state";
 import { useProjectEvents } from "./project-events-provider";
+import { PanelHeader } from "./panel-header";
 
 function stripeFor(status: string): string {
   if (status === "completed") return "success.solid";
@@ -43,58 +45,110 @@ export function ProjectEvents() {
   const rows = useMemo(() => projectActivityRows(events), [events]);
 
   return (
-    <Box layerStyle="band">
-      <Stack gap="4">
-        <Flex align="center" justify="space-between" gap="3">
-          <Box>
-            <Text textStyle="eyebrow" color="fg.subtle">
-              Activity
-            </Text>
-            <Text mt="0.5" fontSize="xs" color="fg.muted">
-              {events.length >= PROJECT_EVENT_ROW_LIMIT
-                ? `Most recent ${PROJECT_EVENT_ROW_LIMIT} workflow events, newest first, updating live.`
-                : "Workflow history for this project, updating live."}
-            </Text>
-          </Box>
-        </Flex>
-
-        {rows.length === 0 ? (
-          <Flex align="center" gap="2" py="2">
-            {/* Static accent dot — an open channel, not a blinking light */}
-            <Box w="6px" h="6px" borderRadius="2px" bg="accent.solid" />
-            <Text fontSize="sm" color="fg.muted">
-              Waiting for workflow updates.
-            </Text>
+    <Stack gap="6">
+      <PanelHeader
+        icon={<Activity size={20} />}
+        title="Activity"
+        badge={
+          <Flex
+            align="center"
+            gap="1.5"
+            px="2"
+            py="1"
+            borderRadius="full"
+            bg="accent.subtle"
+            color="accent.fg"
+            fontSize="11px"
+            lineHeight="1"
+          >
+            <Box boxSize="1.5" borderRadius="full" bg="accent.solid" />
+            Live
           </Flex>
-        ) : (
-          <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
-            {rows.map((event) => (
+        }
+        description={
+          events.length >= PROJECT_EVENT_ROW_LIMIT
+            ? `The last ${PROJECT_EVENT_ROW_LIMIT} workflow steps, newest first. New ones appear as they happen.`
+            : "Each step of this project's workflow, newest first. New ones appear as they happen."
+        }
+      />
+
+      {rows.length === 0 ? (
+        <Flex
+          align="center"
+          justify="center"
+          gap="2.5"
+          py="14"
+          borderWidth="1px"
+          borderStyle="dashed"
+          borderColor="border"
+          borderRadius="l3"
+        >
+          <Box boxSize="2" borderRadius="full" bg="accent.solid" animation="pulse" />
+          <Text fontSize="sm" color="fg.muted">
+            Waiting for workflow updates.
+          </Text>
+        </Flex>
+      ) : (
+        <Box borderWidth="1px" borderColor="border.subtle" borderRadius="l3" overflow="hidden">
+          {rows.map((event, index) => {
+            const tone = stripeFor(event.status);
+            return (
               <Flex
                 key={event.seq}
-                position="relative"
-                align="flex-start"
-                justify="space-between"
-                gap="3"
-                ps="3.5"
-                pe="1"
-                py="2.5"
-                borderBottomWidth="1px"
-                borderColor="border.subtle"
+                gap="4"
+                px="5"
                 transition="background 120ms ease"
                 _hover={{ bg: "bg.subtle" }}
               >
-                {/* 3px status stripe */}
-                <Box
-                  position="absolute"
-                  insetInlineStart="0"
-                  top="0"
-                  bottom="0"
-                  w="3px"
-                  bg={stripeFor(event.status)}
-                />
-                <Stack gap="1" minW="0" flex="1">
+                {/* Time */}
+                <Text
+                  textStyle="data"
+                  fontSize="11px"
+                  color="fg.subtle"
+                  w="132px"
+                  flexShrink={0}
+                  textAlign="right"
+                  pt="4"
+                  display={{ base: "none", md: "block" }}
+                >
+                  {formatDateTime(event.emittedAt)}
+                </Text>
+
+                {/* Rail: line through every row, a status dot on each */}
+                <Box position="relative" w="3" flexShrink={0}>
+                  <Box
+                    position="absolute"
+                    left="50%"
+                    top={index === 0 ? "5" : "0"}
+                    bottom={index === rows.length - 1 ? "calc(100% - 20px)" : "0"}
+                    w="1px"
+                    bg="border.subtle"
+                    transform="translateX(-50%)"
+                  />
+                  <Box
+                    position="absolute"
+                    left="50%"
+                    top="4"
+                    boxSize="3"
+                    borderRadius="full"
+                    bg={tone}
+                    borderWidth="3px"
+                    borderColor="bg.panel"
+                    transform="translateX(-50%)"
+                  />
+                </Box>
+
+                {/* Event */}
+                <Stack
+                  gap="1.5"
+                  minW="0"
+                  flex="1"
+                  py="3.5"
+                  borderBottomWidth={index === rows.length - 1 ? "0" : "1px"}
+                  borderColor="border.subtle"
+                >
                   <Flex align="center" gap="2.5" minW="0" wrap="wrap">
-                    <Text textStyle="data" fontSize="13px" color="fg" truncate>
+                    <Text fontSize="14px" fontWeight="550" color="fg" truncate>
                       {workflowStageLabel(event.stage)}
                     </Text>
                     <StatusBadge
@@ -107,32 +161,35 @@ export function ProjectEvents() {
                           | "queued"
                       }
                     />
-                    {event.progress > 0 && event.progress < 100 && (
-                      <Text textStyle="data" fontSize="11px" color="fg.subtle">
+                  </Flex>
+                  <Text
+                    textStyle="data"
+                    fontSize="11px"
+                    color="fg.subtle"
+                    display={{ base: "block", md: "none" }}
+                  >
+                    {formatDateTime(event.emittedAt)}
+                  </Text>
+                  {event.progress > 0 && event.progress < 100 ? (
+                    <Flex align="center" gap="2.5" maxW="320px">
+                      <Meter value={event.progress} aria-label={`${workflowStageLabel(event.stage)} progress`} />
+                      <Text textStyle="data" fontSize="11px" color="fg.subtle" flexShrink={0}>
                         {event.progress}%
                       </Text>
-                    )}
-                  </Flex>
-                  {event.errorCode && (
+                    </Flex>
+                  ) : null}
+                  {event.errorCode ? (
                     <Flex align="center" gap="1.5" color="danger.fg">
                       <AlertTriangle size={12} aria-hidden />
                       <Text fontSize="xs">{userErrorMessage(event.errorCode)}</Text>
                     </Flex>
-                  )}
+                  ) : null}
                 </Stack>
-                <Text
-                  textStyle="data"
-                  fontSize="11px"
-                  color="fg.subtle"
-                  flexShrink={0}
-                >
-                  {formatDateTime(event.emittedAt)}
-                </Text>
               </Flex>
-            ))}
-          </Stack>
-        )}
-      </Stack>
-    </Box>
+            );
+          })}
+        </Box>
+      )}
+    </Stack>
   );
 }
