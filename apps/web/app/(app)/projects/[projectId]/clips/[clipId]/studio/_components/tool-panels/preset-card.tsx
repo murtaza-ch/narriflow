@@ -28,19 +28,15 @@ export function PresetCard({
       aria-pressed={isSelected}
       textAlign="left"
       borderRadius="l3"
-      _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent", outlineOffset: "5px" }}
+      _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "4px" }}
     >
       <Box
         position="relative"
-        borderRadius="l3"
+        borderRadius="10px"
         overflow="hidden"
         transition="box-shadow 140ms ease"
-        boxShadow={
-          isSelected
-            ? "0 0 0 2px var(--chakra-colors-studio-accent), 0 0 0 5px color-mix(in srgb, var(--chakra-colors-studio-accent) 22%, transparent)"
-            : "inset 0 0 0 1px var(--chakra-colors-studio-border)"
-        }
-        _hover={isSelected ? {} : { boxShadow: "0 0 0 1px var(--chakra-colors-studio-border-strong)" }}
+        boxShadow={isSelected ? "0 0 0 2px var(--chakra-colors-studio-accent)" : undefined}
+        _hover={isSelected ? {} : { boxShadow: "0 0 0 2px var(--chakra-colors-studio-border-strong)" }}
       >
         <CaptionPresetPreview
           namedPreset={namedPreset}
@@ -66,12 +62,12 @@ export function PresetCard({
           </Flex>
         )}
       </Box>
-      <Box mt="6px" px="2px">
-        <Text fontSize="12px" color={isSelected ? "studio.fg" : "studio.fgMuted"} fontWeight="500">
+      <Box mt="8px" px="2px">
+        <Text fontSize="13px" color={isSelected ? "studio.fg" : "studio.fgMuted"} fontWeight="500">
           {namedPreset.name}
         </Text>
         <Flex align="center" justify="space-between" gap="5px" mt="2px">
-          <Text fontSize="10px" color="studio.fgSubtle">
+          <Text fontSize="11px" color="studio.fgSubtle">
             {CAPTION_MOTIONS[namedPreset.preset.animation].label}
           </Text>
           {NEW_PRESET_IDS.has(namedPreset.id) && (

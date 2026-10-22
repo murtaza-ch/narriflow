@@ -54,8 +54,8 @@ export function ProjectExpiration({ expiresAt }: { expiresAt: string }) {
       title={`Permanently deleted ${exact}`}
       aria-label={`${label}. Permanently deleted ${exact}.`}
     >
-      <Clock3 size={12} strokeWidth={1.75} aria-hidden="true" />
-      <Text textStyle="data" fontSize="11px" fontWeight="600">
+      <Clock3 size={14} strokeWidth={1.75} aria-hidden="true" />
+      <Text fontSize="12px" fontWeight="500" fontVariantNumeric="tabular-nums">
         {label}
       </Text>
     </HStack>

@@ -30,12 +30,10 @@ export interface ActionMenuProps {
 }
 
 /**
- * Blueline action menu (the kebab / "…" overflow pattern) on Chakra v3 Menu.
- *
- * Elevation only — a menu is one of the few surfaces that genuinely floats, so
- * it takes `layerStyle="panel"` where the rest of the app draws structure with
- * rules. Destructive items are grouped last behind a separator so the
- * irreversible action is never adjacent to an ordinary one.
+ * Action menu (the kebab / "…" overflow pattern) on Chakra v3 Menu. The theme's
+ * menu recipe draws the surface and rows. Destructive items are grouped last
+ * behind a separator so the irreversible action is never adjacent to an
+ * ordinary one.
  */
 export function ActionMenu({
   trigger,
@@ -55,14 +53,8 @@ export function ActionMenu({
         onSelect={item.onSelect}
         display="flex"
         alignItems="center"
-        gap="2.5"
-        px="2"
-        py="1.5"
-        borderRadius="l1"
-        fontSize="13.5px"
         color={item.destructive ? "danger.fg" : "fg"}
-        cursor="pointer"
-        _highlighted={{ bg: item.destructive ? "danger.subtle" : "bg.subtle" }}
+        _highlighted={{ bg: item.destructive ? "danger.subtle" : "bg.soft" }}
         _disabled={{ color: "fg.disabled", cursor: "not-allowed" }}
       >
         {/* Plain span, never Menu.ItemText — ItemText is a styled text slot
@@ -86,12 +78,7 @@ export function ActionMenu({
           {item.label}
         </ChakraMenu.ItemText>
         {item.hint ? (
-          <ChakraMenu.ItemCommand
-            fontSize="10px"
-            letterSpacing="0.06em"
-            color="fg.subtle"
-            flexShrink={0}
-          >
+          <ChakraMenu.ItemCommand flexShrink={0}>
             {item.hint}
           </ChakraMenu.ItemCommand>
         ) : null}
@@ -104,21 +91,10 @@ export function ActionMenu({
       <ChakraMenu.Trigger asChild>{trigger}</ChakraMenu.Trigger>
       <Portal>
         <ChakraMenu.Positioner>
-          <ChakraMenu.Content
-            layerStyle="panel"
-            boxShadow="cardHover"
-            borderRadius="l3"
-            minW="200px"
-            p="1"
-            aria-label={ariaLabel}
-          >
+          <ChakraMenu.Content aria-label={ariaLabel}>
             {ordinary.map(renderItem)}
             {destructive.length > 0 && ordinary.length > 0 ? (
-              <ChakraMenu.Separator
-                borderColor="border.subtle"
-                my="1"
-                mx="1"
-              />
+              <ChakraMenu.Separator />
             ) : null}
             {destructive.map(renderItem)}
           </ChakraMenu.Content>

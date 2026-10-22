@@ -2,7 +2,6 @@ import Link from "next/link";
 import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { SearchX } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
-import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
 
 export default function NotFound() {
   return (
@@ -19,13 +18,10 @@ export default function NotFound() {
         pointerEvents="none"
       />
       <Stack gap="5" maxW="420px" align="center" textAlign="center" position="relative" animation="fade-up">
-        <GhostFrame ratio={16 / 9} size="240px">
-          <SearchX size={24} />
-        </GhostFrame>
+        <Box color="fg.subtle">
+          <SearchX size={20} />
+        </Box>
         <Stack gap="1.5" align="center">
-          <Text textStyle="eyebrow" color="fg.subtle">
-            404 — Not found
-          </Text>
           <Heading as="h1" textStyle="title" fontSize="22px">
             Page not found
           </Heading>

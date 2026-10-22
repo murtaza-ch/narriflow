@@ -16,8 +16,6 @@ export function FormError({ message }: { message: string | null }) {
       px="3"
       py="2"
       borderRadius="l2"
-      borderWidth="1px"
-      borderColor="danger.emphasized"
       bg="danger.subtle"
       color="danger.fg"
       animation="fade-up"

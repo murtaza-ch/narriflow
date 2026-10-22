@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Box, Flex, Text } from "@chakra-ui/react";
-import { Crop, Minus, Move, Plus, RotateCcw } from "lucide-react";
+import { Crop, Minus, Move, Plus, RotateCcw, RotateCw } from "lucide-react";
 import type { SpeakerLayerTransform } from "@narriflow/validators";
 
 type EditMode = "move" | "crop";
@@ -32,6 +32,14 @@ const RESIZE_LABELS: Record<ResizeDirection, string> = {
   sw: "bottom left",
   w: "left",
   nw: "top left",
+};
+
+const ROLE_LABELS: Record<SpeakerLayerTransform["role"], string> = {
+  single: "Speaker",
+  top: "Top speaker",
+  bottom: "Bottom speaker",
+  third: "Third speaker",
+  fourth: "Fourth speaker",
 };
 
 const MIN_FRAME_SIZE = 0.08;
@@ -221,26 +229,24 @@ export function InteractiveSpeakerLayer({
       onKeyDown={handleKeyboard}
       _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent", outlineOffset: "2px" }}
       borderWidth={selected ? "2px" : hovered ? "1px" : "0"}
-      borderStyle={selected ? "solid" : "dashed"}
       borderColor="studio.accent"
     >
       {hovered && !selected && (
         <Flex
           position="absolute"
-          right="4px"
-          top="4px"
-          h="20px"
-          px="6px"
+          right="8px"
+          top="8px"
+          h="24px"
+          px="8px"
           align="center"
-          gap="4px"
-          bg="studio.accent"
-          color="accent.contrast"
-          borderRadius="l1"
-          textStyle="eyebrow"
-          fontSize="9px"
+          bg="studio.scrimStrong"
+          color="studio.fg"
+          borderRadius="6px"
+          fontSize="12px"
+          fontWeight="500"
           pointerEvents="none"
         >
-          Speaker · {layer.role}
+          {ROLE_LABELS[layer.role]}
         </Flex>
       )}
 
@@ -249,38 +255,36 @@ export function InteractiveSpeakerLayer({
           <Flex
             position="absolute"
             left="50%"
-            top={layer.frameY < 0.08 ? "8px" : "-38px"}
+            top={layer.frameY < 0.08 ? "8px" : "-48px"}
             transform="translateX(-50%)"
-            h="30px"
+            h="40px"
             align="center"
-            gap="1px"
-            px="3px"
+            gap="2px"
+            px="4px"
             bg="studio.surface"
             color="studio.fg"
-            borderWidth="1px"
-            borderColor="studio.borderStrong"
-            borderRadius="l2"
-            boxShadow="cardHover"
+            borderRadius="10px"
+            boxShadow="0 8px 24px rgba(0, 0, 0, 0.45)"
             onPointerDown={(event) => event.stopPropagation()}
             zIndex={20}
           >
             <ToolbarButton active={mode === "move"} label="Move" onClick={() => setMode("move")}>
-              <Move size={13} />
+              <Move size={16} />
             </ToolbarButton>
             <ToolbarButton active={mode === "crop"} label="Crop" onClick={() => setMode("crop")}>
-              <Crop size={13} />
+              <Crop size={16} />
             </ToolbarButton>
             <ToolbarButton label="Zoom out" onClick={() => changeZoom(-0.1)}>
-              <Minus size={13} />
+              <Minus size={16} />
             </ToolbarButton>
-            <Text minW="32px" textAlign="center" fontSize="10px" textStyle="data">
+            <Text minW="40px" textAlign="center" fontSize="13px" fontWeight="500" fontVariantNumeric="tabular-nums">
               {layer.cropZoom.toFixed(1)}×
             </Text>
             <ToolbarButton label="Zoom in" onClick={() => changeZoom(0.1)}>
-              <Plus size={13} />
+              <Plus size={16} />
             </ToolbarButton>
             <ToolbarButton label="Reset scene" onClick={onReset}>
-              <RotateCcw size={13} />
+              <RotateCcw size={16} />
             </ToolbarButton>
           </Flex>
 
@@ -335,10 +339,10 @@ export function InteractiveSpeakerLayer({
               zIndex={10}
             >
               <Box
-                w="10px"
-                h="10px"
-                bg="studio.surface"
-                borderWidth="1.5px"
+                w="12px"
+                h="12px"
+                bg="studio.fg"
+                borderWidth="2px"
                 borderColor="studio.accent"
                 borderRadius="full"
                 pointerEvents="none"
@@ -348,14 +352,17 @@ export function InteractiveSpeakerLayer({
           <Box
             position="absolute"
             left="50%"
-            bottom={layer.frameY + layer.frameHeight > 0.92 ? "8px" : "-28px"}
-            w="20px"
-            h="20px"
+            bottom={layer.frameY + layer.frameHeight > 0.92 ? "8px" : "-36px"}
+            w="26px"
+            h="26px"
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
             transform="translateX(-50%)"
-            bg="studio.surface"
-            borderWidth="1.5px"
-            borderColor="studio.accent"
+            bg="studio.fg"
+            color="studio.canvas"
             borderRadius="full"
+            boxShadow="0 2px 8px rgba(0, 0, 0, 0.4)"
             cursor="grab"
             onPointerDown={(event) => beginPointerGesture(event, "rotate")}
             aria-label="Rotate speaker layer"
@@ -381,7 +388,8 @@ export function InteractiveSpeakerLayer({
             }}
             _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent", outlineOffset: "2px" }}
           >
-            <Box position="absolute" left="50%" top="-9px" h="9px" borderLeftWidth="1px" borderColor="studio.accent" />
+            <RotateCw size={14} />
+            <Box position="absolute" left="50%" top="-9px" h="9px" borderLeftWidth="1.5px" borderColor="studio.accent" />
           </Box>
         </>
       )}
@@ -408,11 +416,11 @@ function ToolbarButton({
       title={label}
       align="center"
       justify="center"
-      w="24px"
-      h="24px"
-      borderRadius="l1"
+      w="32px"
+      h="32px"
+      borderRadius="8px"
       bg={active ? "studio.raised" : "transparent"}
-      color={active ? "studio.accentFg" : "studio.fgMuted"}
+      color={active ? "studio.fg" : "studio.fgMuted"}
       cursor="pointer"
       _hover={{ bg: "studio.raised", color: "studio.fg" }}
       onClick={(event) => {

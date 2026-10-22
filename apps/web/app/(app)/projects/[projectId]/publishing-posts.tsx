@@ -33,6 +33,7 @@ import {
 	SOCIAL_PLATFORM_LABELS,
 } from "@/lib/social-post-status";
 import { publishingRequest } from "./publishing-draft";
+import { EmptyState } from "@narriflow/ui/components/empty-state";
 
 export function PublishingPosts({
 	projectId,
@@ -120,13 +121,10 @@ export function PublishingPosts({
 			{filterable && (
 				<Flex justify="space-between" align="center" gap="3" wrap="wrap">
 					<Flex
-						gap="1"
-						wrap="wrap"
-						p="1"
-						bg="bg.subtle"
-						borderRadius="l2"
-						role="group"
-						aria-label="Filter posts"
+					gap="1"
+					wrap="wrap"
+					role="group"
+					aria-label="Filter posts"
 					>
 						{[
 							["all", "All posts"],
@@ -140,21 +138,19 @@ export function PublishingPosts({
 							return (
 								<Button
 									key={value}
-									variant="ghost"
+									variant={active ? "subtle" : "ghost"}
 									size="sm"
-									bg={active ? "bg.panel" : "transparent"}
 									color={active ? "fg" : "fg.muted"}
-									boxShadow={active ? "xs" : undefined}
 									aria-pressed={active}
 									onClick={() => setFilter(value!)}
 								>
 									{label}
 									<Text
 										as="span"
-										textStyle="data"
-										fontSize="11px"
+										fontSize="12px"
+										fontVariantNumeric="tabular-nums"
 										color={
-											value === "attention" && count > 0 ? "danger.fg" : "fg.subtle"
+										value === "attention" && count > 0 ? "danger.fg" : "fg.subtle"
 										}
 									>
 										{count}
@@ -185,49 +181,22 @@ export function PublishingPosts({
 						No posts match this filter.
 					</Text>
 				) : filterable ? (
-					<Stack
-						align="center"
-						textAlign="center"
-						gap="4"
-						py="14"
-						px="6"
-						borderWidth="1px"
-						borderStyle="dashed"
-						borderColor="border"
-						borderRadius="l3"
-					>
-						<Flex
-							boxSize="12"
-							align="center"
-							justify="center"
-							borderRadius="l2"
-							bg="bg.muted"
-							color="fg.muted"
-							aria-hidden="true"
-						>
-							<Send size={20} />
-						</Flex>
-						<Box>
-							<Text fontSize="15px" fontWeight="550" color="fg">
-								Nothing published yet
-							</Text>
-							<Text fontSize="13px" color="fg.muted" mt="1" maxW="44ch">
-								Publish or schedule a clip and follow it here, from upload to the
-								live link.
-							</Text>
-						</Box>
-						<Button asChild size="sm">
-							<Link href={`/projects/${projectId}`}>Choose a clip</Link>
-						</Button>
-					</Stack>
+					<EmptyState
+						icon={<Send />}
+						title="Nothing published yet"
+						description="Publish or schedule a clip and follow it here, from upload to the live link."
+						action={
+							<Button asChild size="sm">
+								<Link href={`/projects/${projectId}`}>Choose a clip</Link>
+							</Button>
+						}
+					/>
 				) : (
-					<Stack align="center" py="14" gap="3" bg="bg.panel" borderRadius="l2">
-						<Send size={24} />
-						<Text fontWeight="medium">No posts here yet</Text>
-						<Text color="fg.muted" fontSize="sm">
-							Publish or schedule a clip to see its progress here.
-						</Text>
-					</Stack>
+					<EmptyState
+						icon={<Send />}
+						title="No posts here yet"
+						description="Publish or schedule a clip to see its progress here."
+					/>
 				))}
 			{visible.map((post) => {
 				const feedback = describeSocialPost(post, Date.now(), timeZone);
@@ -241,12 +210,10 @@ export function PublishingPosts({
 						gap="3"
 						p="4"
 						borderWidth="1px"
-						borderColor="border"
-						borderRadius="xl"
+						borderColor="border.card"
+						borderRadius="l3"
 						bg="bg.panel"
-						_hover={{ borderColor: "border.emphasized" }}
-						transition="border-color 150ms"
-					>
+						>
 						<Flex
 							gridColumn="1 / -1"
 							justify="space-between"
@@ -257,8 +224,8 @@ export function PublishingPosts({
 							<Flex align="center" gap="3" minW="0">
 								<Flex
 									boxSize="10"
-									borderRadius="xl"
-									bg="bg.subtle"
+									borderRadius="full"
+									bg="bg.soft"
 									align="center"
 									justify="center"
 								>
@@ -283,15 +250,17 @@ export function PublishingPosts({
 								px="2"
 								py="1"
 								borderRadius="full"
-								bg="bg.subtle"
+								bg="bg.soft"
 								color={
-									feedback.tone === "success"
-										? "success.fg"
-										: feedback.tone === "danger"
-											? "danger.fg"
-											: feedback.tone === "warning"
-												? "warning.fg"
-												: "fg.muted"
+								feedback.tone === "success"
+								? "success.fg"
+								: feedback.tone === "accent"
+								? "accent.fg"
+								: feedback.tone === "danger"
+								? "danger.fg"
+								: feedback.tone === "warning"
+								? "warning.fg"
+								: "fg.muted"
 								}
 							>
 								{feedback.isBusy ? (
@@ -449,8 +418,8 @@ export function PublishingPosts({
 									</Button>
 								))}
 							{post.allowedActions.includes("reconnect_account") && (
-								<Button size="sm" variant="outline" asChild>
-									<Link href="/settings/social-accounts">
+								<Button size="sm" variant="subtle" asChild>
+								<Link href="/settings/social-accounts">
 										Reconnect account
 									</Link>
 								</Button>
@@ -460,12 +429,10 @@ export function PublishingPosts({
 							<Stack
 								gridColumn="1 / -1"
 								gap="3"
-								borderTopWidth="1px"
-								borderColor="border"
 								pt="3"
-							>
+								>
 								<Field.Root>
-									<Field.Label>Reason</Field.Label>
+								<Field.Label>Reason</Field.Label>
 									<Textarea
 										value={reason}
 										onChange={(e) => setReason(e.target.value)}
@@ -541,7 +508,7 @@ export function PublishingPosts({
 				);
 			})}
 			{nextCursor && filter === "all" && (
-				<Button variant="outline" onClick={() => void loadOlderPosts()}>
+				<Button variant="subtle" onClick={() => void loadOlderPosts()}>
 					Load older posts
 				</Button>
 			)}

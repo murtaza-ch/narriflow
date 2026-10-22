@@ -1,4 +1,4 @@
-import { Box, Stack, Text } from "@chakra-ui/react";
+import { Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
 import { projectService } from "@narriflow/services";
@@ -16,26 +16,24 @@ export default async function UsageSettingsPage() {
     ),
   );
   const minutes = (
-    <Text as="span" textStyle="data" fontSize="13px" color="fg.muted">
+    <Text as="span" fontSize="13px" color="fg.muted">
       min
     </Text>
   );
   return (
     <Stack gap="8">
-      <PageHeader eyebrow={appUser.workspace.workspaceName} title="Usage" />
+      <PageHeader title="Usage" />
       <StatBand columns={3}>
         <StatBand.Item label="Plan" value={<Text as="span" textTransform="capitalize">{usage.tier}</Text>} />
-        <StatBand.Item label="Minutes used" value={usage.usedMinutes} suffix={<Text textStyle="data" fontSize="13px" color="fg.muted">/ {usage.limitMinutes}</Text>} meter={percent} />
+        <StatBand.Item label="Minutes used" value={usage.usedMinutes} suffix={<Text fontSize="13px" color="fg.muted" fontVariantNumeric="tabular-nums">/ {usage.limitMinutes}</Text>} meter={percent} />
         <StatBand.Item label="Remaining" value={usage.remainingMinutes} suffix={minutes} />
         <StatBand.Item label="Reserved for videos in progress" value={usage.reservedMinutes} suffix={minutes} />
-        <StatBand.Item label="Videos processing" value={usage.inFlight} suffix={<Text textStyle="data" fontSize="13px" color="fg.muted">/ {usage.inFlightLimit}</Text>} />
+        <StatBand.Item label="Videos processing" value={usage.inFlight} suffix={<Text fontSize="13px" color="fg.muted" fontVariantNumeric="tabular-nums">/ {usage.inFlightLimit}</Text>} />
         <StatBand.Item label="Per-video limit" value={Math.round(usage.maxUploadSeconds / 60)} suffix={minutes} />
       </StatBand>
-      <Box borderRadius="l2" bg="bg.panel" p="5">
-        <Text fontSize="12px" color="fg.muted">
-          Source minutes reset at the start of each UTC month. A video counts once, in the month it was submitted. Deleting a project, regenerating clips, exporting, and dubbing don't change minutes used.
-        </Text>
-      </Box>
+      <Text fontSize="13px" color="fg.muted" maxW="64ch">
+        Source minutes reset at the start of each UTC month. A video counts once, in the month it was submitted. Deleting a project, regenerating clips, exporting, and dubbing don't change minutes used.
+      </Text>
     </Stack>
   );
 }

@@ -240,390 +240,352 @@ export function ExportDeliveryClient({
 		}
 	}
 
+	const ratio =
+		selected?.aspectRatio === "9:16"
+			? 9 / 16
+			: selected?.aspectRatio === "1:1"
+				? 1
+				: selected?.aspectRatio === "4:5"
+					? 4 / 5
+					: 16 / 9;
+
 	return (
-		<Box minH="100dvh" bg="bg">
+		// Same layout as the Studio it opens from: separate panels on the frame,
+		// 8px apart — a header, the preview, and one side panel.
+		<Flex
+			direction="column"
+			minH="100dvh"
+			bg="bg.sidebar"
+			p={{ base: "0", md: "2" }}
+			gap="2"
+		>
 			<Flex
 				as="header"
-				minH="56px"
+				h="56px"
+				flexShrink={0}
 				align="center"
 				justify="space-between"
-				px={{ base: "4", md: "6" }}
-				py="2"
-				bg="bg.surface"
-				borderBottomWidth="1px"
-				borderColor="border"
+				gap="3"
+				px="3"
+				bg="bg"
+				borderRadius={{ base: "0", md: "12px" }}
 			>
-				<HStack gap="3" minW="0">
+				<HStack gap="2" minW="0">
 					<Button asChild variant="ghost" size="sm">
 						<Link
 							href={`/projects/${data.projectId}/clips/${data.clipId}/studio`}
 						>
-							<ArrowLeft size={15} /> Studio
+							<ArrowLeft size={16} /> Studio
 						</Link>
 					</Button>
-					<Box w="1px" h="22px" bg="border" />
-					<Box minW="0">
-						<Text textStyle="eyebrow" color="fg.subtle">
-							Export delivery
-						</Text>
-						<Text
-							fontFamily="display"
-							fontWeight="600"
-							fontSize="14px"
-							truncate
-						>
-							{data.clipTitle}
-						</Text>
-					</Box>
+					<Text fontSize="16px" fontWeight="500" truncate>
+						{data.clipTitle}
+					</Text>
 				</HStack>
-				<StatusBadge
-					status={
-						data.status === "ready"
-							? "completed"
-							: data.status === "failed"
-								? "failed"
-								: "processing"
-					}
-					label={copy.label}
-				/>
+				{data.status === "ready" ? null : (
+					<StatusBadge
+						status={data.status === "failed" ? "failed" : "processing"}
+						label={copy.label}
+					/>
+				)}
 			</Flex>
 
-			<Box
-				maxW="1240px"
-				mx="auto"
-				px={{ base: "4", md: "6" }}
-				py={{ base: "5", md: "8" }}
-			>
-				{data.isOlderVersion ? (
-					<Flex
-						align={{ base: "flex-start", sm: "center" }}
-						direction={{ base: "column", sm: "row" }}
-						justify="space-between"
-						gap="3"
-						mb="5"
-						px="4"
-						py="3"
-						borderStartWidth="3px"
-						borderColor="accent.solid"
-						bg="bg.surface"
-					>
-						<Box>
-							<Text fontWeight="600" fontSize="13px">
-								A newer editor version exists
-							</Text>
-							<Text fontSize="12px" color="fg.muted">
-								This delivery stays pinned to version {data.editorRevision}.
-								Open Studio to export version {data.currentEditorRevision}.
-							</Text>
-						</Box>
-						<Button asChild size="sm" variant="outline">
-							<Link
-								href={`/projects/${data.projectId}/clips/${data.clipId}/studio`}
-							>
-								Export newer version
-							</Link>
-						</Button>
-					</Flex>
-				) : null}
-
-				<Grid
-					templateColumns={{
-						base: "1fr",
-						lg: "minmax(0, 1.65fr) minmax(300px, 0.75fr)",
-					}}
-					gap="6"
+			{data.isOlderVersion ? (
+				<Flex
+					align={{ base: "flex-start", sm: "center" }}
+					direction={{ base: "column", sm: "row" }}
+					justify="space-between"
+					gap="3"
+					px="5"
+					py="3"
+					bg="bg"
+					borderRadius={{ base: "0", md: "12px" }}
 				>
-					<Stack gap="4" minW="0">
-						<MediaWell
-							ratio={
-								selected?.aspectRatio === "9:16"
-									? 9 / 16
-									: selected?.aspectRatio === "1:1"
-										? 1
-										: selected?.aspectRatio === "4:5"
-											? 4 / 5
-											: 16 / 9
-							}
-							maxH={{ base: "70dvh", lg: "calc(100dvh - 190px)" }}
-							mx="auto"
-							w="full"
-							timecode={
-								selected?.durationSec
-									? formatDuration(selected.durationSec)
-									: undefined
-							}
+					<Box>
+						<Text fontWeight="500" fontSize="14px">
+							A newer editor version exists
+						</Text>
+						<Text fontSize="13px" color="fg.muted">
+							This delivery stays pinned to version {data.editorRevision}.
+							Open Studio to export version {data.currentEditorRevision}.
+						</Text>
+					</Box>
+					<Button asChild size="sm" variant="subtle">
+						<Link
+							href={`/projects/${data.projectId}/clips/${data.clipId}/studio`}
 						>
-							{selected?.downloadUrl ? (
-								<Box asChild w="full" h="full" bg="studio.canvas">
-									{/* biome-ignore lint/a11y/useMediaCaption: This is the final rendered export, which already burns the user's configured captions into the video. */}
-									<video
-										controls
-										playsInline
-										preload="metadata"
-										src={selected.previewUrl ?? selected.downloadUrl}
-										aria-label={`${selected.aspectRatio} exported video`}
-									/>
-								</Box>
-							) : (
-								<Flex
-									h="full"
-									minH="320px"
-									align="center"
-									justify="center"
-									direction="column"
-									gap="3"
-									color="studio.fgMuted"
-								>
-									{data.status === "failed" ? (
-										<AlertTriangle size={28} />
-									) : (
-										<Spinner size="md" />
-									)}
-									<Text fontSize="13px">
-										{data.status === "failed"
-											? "Render failed"
-											: "Rendering your saved version"}
-									</Text>
-								</Flex>
-							)}
-						</MediaWell>
+							Export newer version
+						</Link>
+					</Button>
+				</Flex>
+			) : null}
 
-						<Flex gap="2" wrap="wrap" aria-label="Export variants">
-							{data.variants.map((variant) => (
-								<Button
-									key={variant.id}
-									size="sm"
-									variant={variant.id === selected?.id ? "solid" : "outline"}
-									colorPalette={
-										variant.id === selected?.id ? "accent" : undefined
-									}
-									disabled={!variant.hasAsset}
-									onClick={() => setSelectedVariantId(variant.id)}
-									aria-pressed={variant.id === selected?.id}
-								>
-									{variant.status === "completed" ? (
-										<Check size={12} />
-									) : variant.status === "failed" ? (
-										<AlertTriangle size={12} />
-									) : (
-										<Clock3 size={12} />
-									)}
-									{variant.aspectRatio}
-								</Button>
-							))}
+			<Flex flex="1" minH="0" gap="2" direction={{ base: "column", lg: "row" }}>
+				{/* Preview panel — the video at its own aspect ratio, sized to the height */}
+				<Flex
+					flex="1"
+					minW="0"
+					direction="column"
+					align="center"
+					justify="center"
+					gap="4"
+					p={{ base: "4", md: "6" }}
+					bg="bg"
+					borderRadius={{ base: "0", md: "12px" }}
+				>
+					<MediaWell
+						ratio={ratio}
+						h={{ base: "auto", lg: "min(calc(100dvh - 200px), 820px)" }}
+						w={{ base: "full", lg: "auto" }}
+						maxW="full"
+						timecode={
+							selected?.durationSec
+								? formatDuration(selected.durationSec)
+								: undefined
+						}
+					>
+						{selected?.downloadUrl ? (
+							<Box asChild w="full" h="full" bg="studio.canvas">
+								{/* biome-ignore lint/a11y/useMediaCaption: This is the final rendered export, which already burns the user's configured captions into the video. */}
+								<video
+									controls
+									playsInline
+									preload="metadata"
+									src={selected.previewUrl ?? selected.downloadUrl}
+									aria-label={`${selected.aspectRatio} exported video`}
+								/>
+							</Box>
+						) : (
+							<Flex
+								h="full"
+								minH="320px"
+								align="center"
+								justify="center"
+								direction="column"
+								gap="3"
+								color="studio.fgMuted"
+							>
+								{data.status === "failed" ? (
+									<AlertTriangle size={24} />
+								) : (
+									<Spinner size="md" />
+								)}
+								<Text fontSize="13px">
+									{data.status === "failed"
+										? "Render failed"
+										: "Rendering your saved version"}
+								</Text>
+							</Flex>
+						)}
+					</MediaWell>
+
+					<Flex gap="2" wrap="wrap" justify="center" aria-label="Export variants">
+						{data.variants.map((variant) => (
+							<Button
+								key={variant.id}
+								size="sm"
+								variant="subtle"
+								borderWidth="2px"
+								borderColor={
+									variant.id === selected?.id ? "accent.solid" : "transparent"
+								}
+								bg={variant.id === selected?.id ? "accent.subtle" : undefined}
+								color="fg"
+								disabled={!variant.hasAsset}
+								onClick={() => setSelectedVariantId(variant.id)}
+								aria-pressed={variant.id === selected?.id}
+							>
+								{variant.status === "completed" ? (
+									<Check size={14} />
+								) : variant.status === "failed" ? (
+									<AlertTriangle size={14} />
+								) : (
+									<Clock3 size={14} />
+								)}
+								{variant.aspectRatio}
+							</Button>
+						))}
+					</Flex>
+				</Flex>
+
+				{/* Side panel — status, details and actions on one surface */}
+				<Stack
+					w={{ base: "full", lg: "380px" }}
+					flexShrink={0}
+					gap="6"
+					p="5"
+					bg="bg"
+					borderRadius={{ base: "0", md: "12px" }}
+					overflowY="auto"
+				>
+					<Stack gap="3">
+						<Flex align="baseline" justify="space-between" gap="3">
+							<Text fontSize="20px" fontWeight="500">
+								{copy.label}
+							</Text>
+							<Text fontSize="13px" fontVariantNumeric="tabular-nums" color="fg.muted">
+								{data.progress}%
+							</Text>
 						</Flex>
+						<Box
+							role="progressbar"
+							aria-label="Export progress"
+							aria-valuemin={0}
+							aria-valuemax={100}
+							aria-valuenow={data.progress}
+						>
+							<Progress value={data.progress} />
+						</Box>
+						<Text fontSize="13px" color="fg.muted">
+							{copy.detail}
+						</Text>
 					</Stack>
 
-					<Stack gap="4">
-						<Box layerStyle="panel" p="5">
-							<Stack gap="4">
-								<Box>
-									<Text textStyle="eyebrow" color="fg.subtle">
-										Delivery status
-									</Text>
-									<Flex align="baseline" justify="space-between" gap="3" mt="1">
-										<Text fontFamily="display" fontSize="22px" fontWeight="600">
-											{copy.label}
-										</Text>
-										<Text textStyle="data" fontSize="12px" color="fg.muted">
-											{data.progress}%
-										</Text>
-									</Flex>
-									<Text fontSize="12px" color="fg.muted" mt="1">
-										{copy.detail}
-									</Text>
-								</Box>
-								<Box
-									role="progressbar"
-									aria-label="Export progress"
-									aria-valuemin={0}
-									aria-valuemax={100}
-									aria-valuenow={data.progress}
-								>
-									<Progress value={data.progress} />
-								</Box>
-								<Grid
-									templateColumns="1fr 1fr"
-									gap="3"
-									pt="3"
-									borderTopWidth="1px"
-									borderColor="border"
-								>
-									<Box>
-										<Text textStyle="eyebrow" color="fg.subtle">
-											Version
-										</Text>
-										<Text textStyle="data" fontSize="12px">
-											v{data.editorRevision}
-										</Text>
-									</Box>
-									<Box>
-										<Text textStyle="eyebrow" color="fg.subtle">
-											Created
-										</Text>
-										<Text textStyle="data" fontSize="11px">
-											{formatDateTime(data.createdAt)}
-										</Text>
-									</Box>
-									<Box>
-										<Text textStyle="eyebrow" color="fg.subtle">
-											Resolution
-										</Text>
-										<Text textStyle="data" fontSize="12px">
-											{data.resolution}
-										</Text>
-									</Box>
-									<Box>
-										<Text textStyle="eyebrow" color="fg.subtle">
-											Watermark
-										</Text>
-										<Text fontSize="12px">
-											{data.watermark ? "Included" : "None"}
-										</Text>
-									</Box>
-								</Grid>
-							</Stack>
-						</Box>
+					<Grid templateColumns="1fr 1fr" columnGap="4" rowGap="4">
+						{(
+							[
+								["Version", `v${data.editorRevision}`],
+								["Created", formatDateTime(data.createdAt)],
+								["Resolution", data.resolution],
+								["Watermark", data.watermark ? "Included" : "None"],
+							] as const
+						).map(([label, value]) => (
+							<Box key={label}>
+								<Text textStyle="eyebrow" color="fg.muted">
+									{label}
+								</Text>
+								<Text fontSize="14px" mt="0.5" fontVariantNumeric="tabular-nums">
+									{value}
+								</Text>
+							</Box>
+						))}
+					</Grid>
 
-						<Box layerStyle="panel" p="5">
-							<Text textStyle="eyebrow" color="fg.subtle" mb="3">
-								Deliver
-							</Text>
-							<Stack gap="2">
-								<Button
-									asChild={Boolean(selected?.downloadUrl)}
-									colorPalette="brand"
-									disabled={!selected?.downloadUrl}
-									w="full"
+					<Stack gap="2">
+						<Button
+							asChild={Boolean(selected?.downloadUrl)}
+							colorPalette="brand"
+							disabled={!selected?.downloadUrl}
+							w="full"
+							size="md"
+						>
+							{selected?.downloadUrl ? (
+								<a
+									href={selected.downloadUrl}
+									download={`narriflow-${selected.aspectRatio.replace(":", "x")}.mp4`}
 								>
-									{selected?.downloadUrl ? (
-										<a
-											href={selected.downloadUrl}
-											download={`narriflow-${selected.aspectRatio.replace(":", "x")}.mp4`}
-										>
-											<Download size={14} /> Download {selected.aspectRatio} ·{" "}
-											{formatBytes(selected.sizeBytes)}
+									<Download size={16} /> Download {selected.aspectRatio} ·{" "}
+									{formatBytes(selected.sizeBytes)}
+								</a>
+							) : (
+								<>
+									<Download size={16} /> Download when ready
+								</>
+							)}
+						</Button>
+						<Flex gap="2">
+							{(["srt", "vtt"] as const).map((format) => (
+								<Button key={format} asChild={hasReady} variant="subtle" size="md" flex="1" disabled={!hasReady}>
+									{hasReady ? (
+										<a href={`${apiPath}/subtitles/${format}`} download>
+											<FileText size={16} /> {format.toUpperCase()} subtitles
 										</a>
 									) : (
 										<>
-											<Download size={14} /> Download when ready
+											<FileText size={16} /> {format.toUpperCase()} subtitles
 										</>
 									)}
 								</Button>
-								<Flex gap="2">
-									{(["srt", "vtt"] as const).map((format) => (
-										<Button key={format} asChild={hasReady} variant="outline" size="sm" flex="1" disabled={!hasReady}>
-											{hasReady ? (
-												<a href={`${apiPath}/subtitles/${format}`} download>
-													<FileText size={14} /> {format.toUpperCase()} subtitles
-												</a>
-											) : (
-												<>
-													<FileText size={14} /> {format.toUpperCase()} subtitles
-												</>
-											)}
-										</Button>
-									))}
+							))}
+						</Flex>
+						<Button
+							variant="subtle"
+							size="md"
+							w="full"
+							disabled={!hasReady || action === "share"}
+							onClick={() => void createShareLink()}
+						>
+							{action === "share" ? (
+								<Spinner size="xs" />
+							) : (
+								<Link2 size={16} />
+							)}
+							Create 7-day private link
+						</Button>
+						<Button asChild variant="subtle" size="md" w="full" disabled={!hasReady}>
+							<Link
+								href={`/projects/${data.projectId}?publishClip=${data.clipId}&publishExport=${data.id}`}
+							>
+								<ExternalLink size={16} /> Publish to social
+							</Link>
+						</Button>
+						{hasFailed ? (
+							<Button
+								variant="subtle"
+								size="md"
+								w="full"
+								disabled={action === "retry"}
+								onClick={() => void retry()}
+							>
+								{action === "retry" ? (
+									<Spinner size="xs" />
+								) : (
+									<RefreshCw size={16} />
+								)}{" "}
+								Retry failed variants
+							</Button>
+						) : null}
+
+						{shareUrl ? (
+							<Box mt="2" p="3" bg="bg.soft" borderRadius="l2">
+								<Flex align="center" gap="2" mb="2">
+									<ShieldCheck size={14} />
+									<Text fontSize="13px" fontWeight="500">
+										Private link copied
+									</Text>
 								</Flex>
-								<Button
-									variant="outline"
-									w="full"
-									disabled={!hasReady || action === "share"}
-									onClick={() => void createShareLink()}
-								>
-									{action === "share" ? (
-										<Spinner size="xs" />
-									) : (
-										<Link2 size={14} />
-									)}
-									Create 7-day private link
-								</Button>
-								<Button asChild variant="outline" w="full" disabled={!hasReady}>
-									<Link
-										href={`/projects/${data.projectId}?publishClip=${data.clipId}&publishExport=${data.id}`}
-									>
-										<ExternalLink size={14} /> Publish to social
-									</Link>
-								</Button>
-								{hasFailed ? (
+								<Text fontSize="12px" color="fg.muted" wordBreak="break-all">
+									{shareUrl}
+								</Text>
+								<Flex gap="2" mt="3">
 									<Button
-										variant="outline"
-										w="full"
-										disabled={action === "retry"}
-										onClick={() => void retry()}
+										size="sm"
+										variant="subtle"
+										onClick={() => void copyShareLink()}
 									>
-										{action === "retry" ? (
-											<Spinner size="xs" />
-										) : (
-											<RefreshCw size={14} />
-										)}{" "}
-										Retry failed variants
+										<Copy size={14} /> Copy again
 									</Button>
-								) : null}
-							</Stack>
-
-							{shareUrl ? (
-								<Box
-									mt="4"
-									p="3"
-									bg="bg.muted"
-									borderWidth="1px"
-									borderColor="border"
-									borderRadius="l1"
-								>
-									<Flex align="center" gap="2" mb="2">
-										<ShieldCheck size={13} />
-										<Text fontSize="12px" fontWeight="600">
-											Private link copied
-										</Text>
-									</Flex>
-									<Text fontSize="11px" color="fg.muted" wordBreak="break-all">
-										{shareUrl}
-									</Text>
-									<Flex gap="2" mt="3">
-										<Button
-											size="sm"
-											variant="outline"
-											onClick={() => void copyShareLink()}
-										>
-											<Copy size={12} /> Copy again
-										</Button>
-										<Button
-											size="sm"
-											variant="ghost"
-											disabled={action === "revoke"}
-											onClick={() => void revokeLinks()}
-										>
-											Revoke all
-										</Button>
-									</Flex>
-								</Box>
-							) : null}
-							{actionError ? (
-								<Flex mt="3" gap="2" color="danger.fg" role="alert">
-									<AlertTriangle size={13} />
-									<Text fontSize="11px">{actionError}</Text>
+									<Button
+										size="sm"
+										variant="ghost"
+										disabled={action === "revoke"}
+										onClick={() => void revokeLinks()}
+									>
+										Revoke all
+									</Button>
 								</Flex>
-							) : null}
-						</Box>
-
-						<Box layerStyle="well" p="4">
-							<Flex gap="3" align="flex-start">
-								<Film size={15} />
-								<Box>
-									<Text fontSize="12px" fontWeight="600">
-										Immutable delivery
-									</Text>
-									<Text fontSize="11px" color="fg.muted" mt="0.5">
-										Later edits create a new version. This export and its links
-										never silently change.
-									</Text>
-								</Box>
+							</Box>
+						) : null}
+						{actionError ? (
+							<Flex mt="1" gap="2" color="danger.fg" role="alert">
+								<AlertTriangle size={14} />
+								<Text fontSize="12px">{actionError}</Text>
 							</Flex>
-						</Box>
+						) : null}
 					</Stack>
-				</Grid>
-			</Box>
-		</Box>
+
+					{/* Quiet note at the foot of the panel, not a box */}
+					<Flex gap="2.5" align="flex-start" mt="auto" color="fg.subtle">
+						<Box flexShrink={0} mt="0.5">
+							<Film size={14} />
+						</Box>
+						<Text fontSize="12px" lineHeight="1.5">
+							Immutable delivery: later edits create a new version, so this
+							export and its links never silently change.
+						</Text>
+					</Flex>
+				</Stack>
+			</Flex>
+		</Flex>
 	);
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
+import { memo, useRef, useEffect, useCallback, useLayoutEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
 import { Combine, Copy, Plus, PanelsTopLeft, Scissors, ShieldCheck, Trash2, Undo2 } from "lucide-react";
@@ -40,13 +40,13 @@ const PAUSE_THRESHOLD = 0.4;
 // the toolbar's rendered top then lands ABOVE the scroll container's own
 // content start, where `overflowY: auto` clips it — the toolbar is either
 // invisible or cut off. `SELECTION_TOOLBAR_CLEARANCE_PX` is the toolbar's own
-// ~34px content height (26px button row + 4px padding top/bottom + ~2px
-// border) plus its 8px floating gap, rounded up — `top` is floored at the
-// container's current scroll position plus this clearance so the toolbar
-// always has room to render above its anchor without leaving the visible
-// scrolled area.
-const SELECTION_TOOLBAR_CLEARANCE_PX = 44;
-const SELECTION_TOOLBAR_HALF_WIDTH_PX = 142;
+// 40px height (32px button row + 4px padding top/bottom) plus its 8px
+// floating gap, rounded up — `top` is floored at the container's current
+// scroll position plus this clearance so the toolbar always has room to
+// render above its anchor without leaving the visible scrolled area. The
+// toolbar is ~300px wide, so it fits the transcript panel's 320px minimum.
+const SELECTION_TOOLBAR_CLEARANCE_PX = 52;
+const SELECTION_TOOLBAR_HALF_WIDTH_PX = 154;
 
 type TranscriptViewMode = "word" | "sentence" | "paragraph";
 
@@ -325,7 +325,7 @@ const EditableUtterance = memo(function EditableUtterance({
   activeWordIndex: number;
   onSeek: (editedTime: number) => void;
 }) {
-  const { editedTimeMap, captionPreset, updateWord, deletedRanges } = useStudio("editedTimeMap", "captionPreset", "updateWord", "deletedRanges");
+  const { editedTimeMap, updateWord, deletedRanges } = useStudio("editedTimeMap", "updateWord", "deletedRanges");
   const [editingWordIndex, setEditingWordIndex] = useState<number | null>(null);
 
   // Build words (with fallback for utterances without word-level timing)
@@ -340,8 +340,6 @@ const EditableUtterance = memo(function EditableUtterance({
 
   // Build display tokens with pause indicators
   const tokens = useMemo(() => buildDisplayTokens(words), [words]);
-
-  const highlightColor = captionPreset.highlightColor;
 
   const startEdit = useCallback(
     (wordIndex: number) => {
@@ -366,13 +364,16 @@ const EditableUtterance = memo(function EditableUtterance({
   );
 
   return (
+    // Inset 8px from the panel edges so the active-line fill floats inside
+    // the rounded panel; 8 + 12px keeps the text on the 20px column.
     <Box
       data-word-container={utteranceIndex}
-      px="16px"
-      py="8px"
-      lineHeight="1.75"
-      fontSize="13.5px"
-      borderRadius="l1"
+      mx="8px"
+      px="12px"
+      py="4px"
+      lineHeight="2"
+      fontSize="14px"
+      borderRadius="l2"
       bg={isActive ? "studio.accent/10" : "transparent"}
       _hover={{ bg: "rgba(255,255,255,0.04)" }}
       transition="background 150ms"
@@ -410,7 +411,7 @@ const EditableUtterance = memo(function EditableUtterance({
                   isDeleted
                     ? "studio.fgSubtle"
                     : isActiveWord
-                      ? highlightColor
+                      ? "studio.accentFg"
                       : "studio.fg"
                 }
                 textDecoration={isDeleted ? "line-through" : "none"}
@@ -479,23 +480,83 @@ function ViewModeButton({
   return (
     <Box
       as="button"
-      px="7px"
-      h="24px"
-      borderRadius="l1"
-      bg={selected ? "studio.raised" : "transparent"}
-      color={selected ? "studio.fg" : "studio.fgMuted"}
-      borderWidth="1px"
-      borderColor={selected ? "studio.borderStrong" : "transparent"}
-      fontSize="10.5px"
-      fontWeight="600"
+      position="relative"
+      h="26px"
+      bg="transparent"
+      color={selected ? "studio.fg" : "studio.fgSubtle"}
+      fontSize="13px"
+      fontWeight={selected ? "600" : "500"}
       aria-pressed={selected}
       onClick={() => onSelect(mode)}
-      _hover={{ color: "studio.fg", bg: "studio.raised" }}
+      transition="color 120ms ease"
+      _hover={{ color: "studio.fg" }}
     >
       {label}
+      {/* Underline marks the active view — no box around it */}
+      {selected ? (
+        <Box
+          position="absolute"
+          left="0"
+          right="0"
+          bottom="-1px"
+          h="2px"
+          borderRadius="full"
+          bg="studio.accent"
+        />
+      ) : null}
     </Box>
   );
 }
+
+/** Grows a textarea to fit its text, so subtitle text is never cut off —
+ *  re-measured when the text changes and when the column's width does. */
+function useAutoHeight(value: string) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the text is the trigger — re-measure whenever it changes.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) fitHeight(el);
+  }, [value]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      fitHeight(el);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return ref;
+}
+
+function fitHeight(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
+}
+
+/** Inline, boxless editing: the text reads like the transcript until focused. */
+const inlineEditorProps = {
+  mx: "-10px",
+  px: "10px",
+  py: "6px",
+  w: "calc(100% + 20px)",
+  minH: "0",
+  bg: "transparent",
+  borderWidth: "0",
+  borderRadius: "10px",
+  color: "studio.fg",
+  fontSize: "14px",
+  lineHeight: "1.7",
+  resize: "none",
+  overflow: "hidden",
+  transition: "background 120ms ease",
+  _hover: { bg: "studio.subtle" },
+  // A subtle grey edge marks the focused line for keyboard users.
+  _focusVisible: { bg: "studio.subtle", outline: "none", boxShadow: "inset 0 0 0 1px var(--chakra-colors-studio-border-focus)" },
+} as const;
 
 function LineAction({
   label,
@@ -513,10 +574,10 @@ function LineAction({
       as="button"
       align="center"
       justify="center"
-      w="24px"
-      h="24px"
-      borderRadius="l1"
-      color="studio.fgMuted"
+      w="28px"
+      h="28px"
+      borderRadius="8px"
+      color="studio.fgSubtle"
       bg="transparent"
       aria-disabled={disabled}
       tabIndex={disabled ? -1 : undefined}
@@ -563,39 +624,50 @@ const SubtitleLineEditor = memo(function SubtitleLineEditor({
     updateUtteranceText(index, trimmed);
   }, [draft, index, updateUtteranceText, utterance.text]);
 
+  const textRef = useAutoHeight(draft);
+
   return (
-    <Box px="12px" py="8px" borderBottomWidth="1px" borderColor="studio.border">
-      <Flex align="center" justify="space-between" mb="5px" gap="2">
-        <Flex align="center" gap="6px" minW="0">
-          <Text fontSize="10.5px" fontWeight="600" color="studio.accentFg">
+    <Box
+      px="20px"
+      py="10px"
+      css={{
+        "& [data-line-actions]": { opacity: 0, transition: "opacity 120ms ease" },
+        "&:hover [data-line-actions], &:focus-within [data-line-actions]": { opacity: 1 },
+      }}
+    >
+      <Flex align="center" justify="space-between" gap="2" minH="28px">
+        <Flex align="center" gap="8px" minW="0">
+          <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle">
             {utterance.speakerLabel}
           </Text>
-          <Text textStyle="data" fontSize="10px" color="studio.timecode">
+          <Text textStyle="data" fontSize="11px" color="studio.timecode">
             {Math.max(0, editedStartSec).toFixed(2)}–{Math.max(0, editedEndSec).toFixed(2)}
           </Text>
         </Flex>
-        <Flex align="center" gap="1px">
+        <Flex data-line-actions align="center" gap="1px">
           <LineAction label="Add subtitle line after" onClick={() => addSubtitleLineAfter(index)}>
-            <Plus size={13} />
+            <Plus size={15} />
           </LineAction>
           <LineAction
             label="Merge with next subtitle line"
             onClick={() => mergeSubtitleLineWithNext(index)}
             disabled={isLast}
           >
-            <Combine size={13} />
+            <Combine size={15} />
           </LineAction>
           <LineAction label="Delete subtitle line only" onClick={() => deleteSubtitleLine(index)}>
-            <Trash2 size={13} />
+            <Trash2 size={15} />
           </LineAction>
         </Flex>
       </Flex>
-      <Input
+      <Textarea
+        ref={textRef}
+        rows={1}
         value={draft}
-        onChange={(event: React.ChangeEvent<HTMLInputElement>) => setDraft(event.target.value)}
+        onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value.replace(/\n/g, " "))}
         onFocus={() => seekTo(sourceToEdited(editedTimeMap, utterance.startSec))}
         onBlur={commit}
-        onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
+        onKeyDown={(event: React.KeyboardEvent<HTMLTextAreaElement>) => {
           event.stopPropagation();
           if (event.key === "Enter") {
             event.preventDefault();
@@ -607,11 +679,7 @@ const SubtitleLineEditor = memo(function SubtitleLineEditor({
           }
         }}
         aria-label={`Subtitle line ${index + 1}`}
-        h="32px"
-        bg="studio.subtle"
-        borderColor="border.control"
-        color="studio.fg"
-        fontSize="12.5px"
+        {...inlineEditorProps}
       />
     </Box>
   );
@@ -640,15 +708,24 @@ const SubtitleParagraphEditor = memo(function SubtitleParagraphEditor({
     updateParagraphText(indices, trimmed);
   }, [draft, indices, sourceText, updateParagraphText]);
 
+  const textRef = useAutoHeight(draft);
+  const [editing, setEditing] = useState(false);
+
   return (
-    <Box px="14px" py="10px" borderBottomWidth="1px" borderColor="studio.border">
-      <Text fontSize="10.5px" fontWeight="600" color="studio.accentFg" mb="5px">
+    <Box px="20px" py="10px">
+      <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle" mb="2px">
         {speakerLabel}
       </Text>
       <Textarea
+        ref={textRef}
+        rows={2}
         value={draft}
         onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value)}
-        onBlur={commit}
+        onFocus={() => setEditing(true)}
+        onBlur={() => {
+          setEditing(false);
+          commit();
+        }}
         onKeyDown={(event: React.KeyboardEvent<HTMLTextAreaElement>) => {
           event.stopPropagation();
           if (event.key === "Escape") {
@@ -662,17 +739,14 @@ const SubtitleParagraphEditor = memo(function SubtitleParagraphEditor({
           }
         }}
         aria-label={`${speakerLabel} paragraph subtitles`}
-        minH="92px"
-        resize="vertical"
-        bg="studio.subtle"
-        borderColor="border.control"
-        color="studio.fg"
-        fontSize="12.5px"
-        lineHeight="1.6"
+        {...inlineEditorProps}
+        lineHeight="2"
       />
-      <Text mt="4px" fontSize="10px" color="studio.fgSubtle">
-        ⌘ Enter saves · timing remains attached to the original lines
-      </Text>
+      {editing ? (
+        <Text mt="6px" fontSize="12px" color="studio.fgSubtle">
+          ⌘ Enter saves · timing stays attached to the original lines
+        </Text>
+      ) : null}
     </Box>
   );
 });
@@ -682,37 +756,45 @@ const SubtitleParagraphEditor = memo(function SubtitleParagraphEditor({
 function ToolbarBtn({
   icon,
   label,
+  iconOnly = false,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
+  /** Universal actions (delete, copy) show the icon alone, named by tooltip. */
+  iconOnly?: boolean;
   onClick: () => void;
 }) {
   return (
     <Flex
       as="button"
       align="center"
-      gap="5px"
-      px="8px"
-      h="26px"
-      borderRadius="l1"
+      justify="center"
+      gap="6px"
+      minW="32px"
+      px={iconOnly ? "0" : "10px"}
+      h="32px"
+      borderRadius="8px"
       bg="transparent"
       border="none"
-      color="studio.fgMuted"
+      color="studio.fg"
       cursor="pointer"
-      fontSize="11.5px"
+      fontSize="13px"
       fontWeight="500"
+      whiteSpace="nowrap"
+      title={iconOnly ? label : undefined}
+      aria-label={iconOnly ? label : undefined}
       // Pressing a toolbar button would otherwise collapse the text
       // selection (the browser's default mousedown-outside-selection
       // behavior) BEFORE the click handler ever runs, wiping the very
       // selection the button is meant to act on.
       onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
       onClick={onClick}
-      _hover={{ bg: "studio.raised", color: "studio.fg" }}
-      transition="background 120ms ease, color 120ms ease"
+      _hover={{ bg: "studio.borderStrong" }}
+      transition="background 120ms ease"
     >
       {icon}
-      <Text fontSize="11px">{label}</Text>
+      {iconOnly ? null : label}
     </Flex>
   );
 }
@@ -742,14 +824,9 @@ function SelectionToolbar({
 }) {
   return (
     <Flex
-      // True elevation (floating, above transcript content) — but the
-      // studio's own chrome is permanently graphite regardless of app
-      // light/dark mode (keyboard-shortcuts-modal.tsx's same rule), so the
-      // layerStyle's shadow/radius/border-width are kept but its
-      // light/dark-flipping bg/border are overridden with studio.* tokens.
-      layerStyle="panel"
-      bg="studio.surface"
-      borderColor="studio.borderStrong"
+      bg="studio.raised"
+      borderRadius="10px"
+      boxShadow="0 8px 24px rgba(0, 0, 0, 0.45)"
       position="absolute"
       style={{
         top: `${top}px`,
@@ -763,16 +840,14 @@ function SelectionToolbar({
       onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
     >
       {isDeletedSelection ? (
-        <ToolbarBtn icon={<Undo2 size={13} />} label="Revert" onClick={onRevert} />
+        <ToolbarBtn icon={<Undo2 size={15} />} label="Revert" onClick={onRevert} />
       ) : (
         <>
-          <ToolbarBtn icon={<Trash2 size={13} />} label="Delete" onClick={onDelete} />
-          <Box w="1px" h="16px" bg="studio.border" mx="2px" />
-          <ToolbarBtn icon={<Copy size={13} />} label="Copy" onClick={onCopy} />
-          {canInsertScene && <ToolbarBtn icon={<PanelsTopLeft size={13} />} label="Insert scene" onClick={onInsertScene} />}
-          <Box w="1px" h="16px" bg="studio.border" mx="2px" />
+          <ToolbarBtn icon={<Trash2 size={16} />} label="Delete" iconOnly onClick={onDelete} />
+          <ToolbarBtn icon={<Copy size={15} />} label="Copy" iconOnly onClick={onCopy} />
+          {canInsertScene && <ToolbarBtn icon={<PanelsTopLeft size={15} />} label="Insert scene" onClick={onInsertScene} />}
           <ToolbarBtn
-            icon={<Scissors size={13} />}
+            icon={<Scissors size={15} />}
             label={creatingClip ? "Creating…" : "Create clip"}
             onClick={onCreateClip}
           />
@@ -1162,33 +1237,26 @@ export function TranscriptPanel() {
 
   return (
     <Box
-      w={{ base: "240px", md: "280px", xl: "300px" }}
-      minW={{ base: "240px", md: "280px", xl: "300px" }}
-      maxW={{ base: "240px", md: "280px", xl: "300px" }}
+      w="clamp(320px, 26vw, 480px)"
+      flexShrink={0}
       h="100%"
-      bg="studio.surface"
-      borderRightWidth="1px"
-      borderColor="studio.border"
+      bg="studio.canvas"
+      borderRadius="12px"
       display={{ base: "none", lg: "flex" }}
       flexDirection="column"
       overflow="hidden"
     >
       {/* Header */}
       <Flex
-        px="16px"
-        pt="12px"
-        pb="9px"
+        px="20px"
+        pt="10px"
+        pb="8px"
         direction="column"
         align="stretch"
-        borderBottomWidth="1px"
-        borderColor="studio.border"
         flexShrink={0}
-        gap="8px"
+        gap="10px"
       >
-        <Flex align="center" justify="space-between" gap="2">
-          <Text textStyle="eyebrow" color="studio.fgMuted">
-            Transcript
-          </Text>
+        <Flex align="center" justify="space-between" columnGap="3" rowGap="1" wrap="wrap">
           <Checkbox.Root
             checked={transcriptOnly}
             onCheckedChange={(e) => setTranscriptOnly(!!e.checked)}
@@ -1200,32 +1268,26 @@ export function TranscriptPanel() {
             <Checkbox.HiddenInput />
             <Checkbox.Control />
             <Checkbox.Label>
-              <Text fontSize="11px" color="studio.fgMuted">Transcript only</Text>
+              <Text fontSize="14px" color="studio.fgMuted">Transcript only</Text>
             </Checkbox.Label>
           </Checkbox.Root>
-        </Flex>
-        <Flex
-          role="group"
-          aria-label="Transcript editing view"
-          p="2px"
-          borderWidth="1px"
-          borderColor="studio.border"
-          borderRadius="l1"
-          bg="studio.subtle"
-          justify="space-between"
-        >
-          <ViewModeButton mode="word" current={viewMode} onSelect={handleViewModeChange} />
-          <ViewModeButton mode="sentence" current={viewMode} onSelect={handleViewModeChange} />
-          <ViewModeButton mode="paragraph" current={viewMode} onSelect={handleViewModeChange} />
+          <Flex role="group" aria-label="Transcript editing view" gap="4">
+            <ViewModeButton mode="word" current={viewMode} onSelect={handleViewModeChange} />
+            <ViewModeButton mode="sentence" current={viewMode} onSelect={handleViewModeChange} />
+            <ViewModeButton mode="paragraph" current={viewMode} onSelect={handleViewModeChange} />
+          </Flex>
         </Flex>
         <Button
-          size="xs"
-          variant="outline"
-          borderColor="studio.borderStrong"
-          justifyContent="flex-start"
+          size="sm"
+          variant="ghost"
+          color="studio.fg"
+          alignSelf="flex-start"
+          px="2"
+          ms="-2"
+          _hover={{ bg: "studio.subtle" }}
           onClick={() => setAutoCensorOpen(true)}
         >
-          <ShieldCheck size={13} /> Find sensitive words
+          <ShieldCheck size={15} /> Find sensitive words
         </Button>
       </Flex>
 
@@ -1234,6 +1296,7 @@ export function TranscriptPanel() {
         ref={scrollRef}
         flex="1"
         overflowY="auto"
+        overflowX="hidden"
         position="relative"
         py="8px"
         onScroll={handleScroll}
@@ -1279,12 +1342,11 @@ export function TranscriptPanel() {
             >
               {/* Speaker label */}
               <Text
-                fontSize="11px"
-                fontWeight="600"
-                color="studio.accentFg"
-                px="16px"
-                pt={i === 0 ? "4px" : "12px"}
-                pb="2px"
+                fontSize="12px"
+                fontWeight="500"
+                color="studio.fgSubtle"
+                px="20px"
+                pt={i === 0 ? "4px" : "14px"}
               >
                 {utterance.speakerLabel}
               </Text>

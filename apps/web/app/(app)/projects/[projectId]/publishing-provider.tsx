@@ -40,7 +40,9 @@ import {
 	CalendarClock,
 	ChevronDown,
 	Film,
+	Plus,
 	Send,
+	Share2,
 	Sparkles,
 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
@@ -294,32 +296,20 @@ export function PublishingProvider({
 									: { base: "100vw", md: "640px" }
 							}
 							h="100dvh"
-							bg="bg.panel"
+							bg="bg.sidebar"
 							display="flex"
 							flexDirection="column"
 						>
 							<Drawer.Header
 								px={{ base: "4", md: "6" }}
 								py="4"
-								borderBottomWidth="0"
-								borderColor="border"
 								flexShrink={0}
 							>
-								<Stack gap="1">
-									<Drawer.Title
-										display="flex"
-										alignItems="center"
-										gap="2"
-										fontSize="md"
-									>
-										{mode === "compose" ? (
-											<Send size={16} />
-										) : (
-											<CalendarClock size={16} />
-										)}
+								<Stack gap="0.5">
+									<Drawer.Title fontSize="18px" fontWeight="500">
 										{mode === "compose" ? "Publish" : "Posts"}
 									</Drawer.Title>
-									<Text color="fg.muted" fontSize="xs">
+									<Text color="fg.muted" fontSize="13px">
 										{selected.length === 1
 											? (selected[0]?.title ?? selected[0]?.hookText)
 											: `${selected.length} clips selected`}
@@ -327,7 +317,7 @@ export function PublishingProvider({
 								</Stack>
 							</Drawer.Header>
 							<Drawer.CloseTrigger asChild>
-								<CloseButton size="sm" aria-label="Close publishing drawer" />
+								<CloseButton size="sm" borderRadius="full" aria-label="Close publishing drawer" />
 							</Drawer.CloseTrigger>
 							{mode === "compose" && selected.length > 0 && !composition.recoveryUnavailable ? (
 								<PublishingComposer
@@ -341,17 +331,16 @@ export function PublishingProvider({
 							) : mode === "compose" && (composition.pending || composition.recoveryUnavailable) ? (
 								<PublishingRecoveryComposer session={session} onSubmitted={onSubmitted} projectId={config.projectId} />
 							) : (
-								<Drawer.Body p={{ base: "4", md: "6" }} overflowY="auto">
-									{submission?.items.some(
+								<Drawer.Body p={{ base: "4", md: "6" }} mx={{ base: "0", md: "2" }} mb={{ base: "0", md: "2" }} overflowY="auto" bg="bg" borderRadius={{ base: "0", md: "12px" }}>
+								{submission?.items.some(
 										(item) => item.status !== "succeeded",
 									) && (
 										<Stack
 											mb="4"
 											p="3"
-											borderWidth="1px"
-											borderColor="border"
+											bg="bg.soft"
 											borderRadius="l2"
-										>
+											>
 											<Text fontSize="sm">
 												Some items need attention. Submitted items will not be
 												sent again.
@@ -374,7 +363,7 @@ export function PublishingProvider({
 												))}
 											<Button
 												size="sm"
-												variant="outline"
+												variant="subtle"
 												onClick={() => compose(ids)}
 											>
 												Continue unfinished draft
@@ -700,15 +689,12 @@ function PublishingComposer({
 		: null;
 	return (
 		<>
-			<Drawer.Body p="0" overflow="hidden" display="grid" gridTemplateColumns={{base:"minmax(0, 1fr)", md:"240px minmax(0, 1fr)"}} gridTemplateRows={{base:"auto minmax(0, 1fr)",md:"minmax(0, 1fr)"}} minH="0">
-				<chakra.fieldset disabled={disabled || !restored} border="0" m="0" minW="0" p="4" bg="bg.subtle" borderRightWidth={{base: "0", md: "1px"}} borderBottomWidth={{base:"1px",md:"0"}} borderColor="border" overflowY="auto">
-									<Stack gap="6">
-										<Flex justify="space-between" gap="2" align="center">
-											<Text as="h3" fontSize="sm" fontWeight="semibold">
-												Publish to social
-											</Text>
-											
-										</Flex>
+			<Drawer.Body p="0" px={{ base: "0", md: "2" }} overflow="hidden" display="grid" gap="2" gridTemplateColumns={{base:"minmax(0, 1fr)", md:"260px minmax(0, 1fr)"}} gridTemplateRows={{base:"auto minmax(0, 1fr)",md:"minmax(0, 1fr)"}} minH="0">
+				<chakra.fieldset disabled={disabled || !restored} border="0" m="0" minW="0" p="5" bg="bg" borderRadius={{ base: "0", md: "12px" }} overflowY="auto">
+					<Stack gap="4">
+						<Text as="h3" textStyle="eyebrow" color="fg.muted">
+							Post to
+						</Text>
 										<Flex gap="2" wrap="wrap" direction={{base:"row",md:"column"}}>
 											{config.accounts.map((account) => {
 												const enabled = eligible.some(
@@ -739,19 +725,37 @@ function PublishingComposer({
 												);
 											})}
 										</Flex>
-										<Button variant="outline" size="sm" width="full" bg="bg.panel" asChild>
+										{config.accounts.length ? (
+											<Button variant="subtle" size="sm" width="full" asChild>
 												<Link
 													aria-label="Manage accounts"
 													title="Manage accounts"
 													href={`/settings/social-accounts?returnTo=${encodeURIComponent(`/projects/${config.projectId}?publishClips=${clips.map((c) => c.id).join(",")}`)}`}
 												>
-													<Settings2 size={15} /> Manage accounts
+													<Settings2 size={16} /> Manage accounts
 												</Link>
 											</Button>
-{!config.accounts.length && (
-											<Text fontSize="sm" color="fg.muted">
-												Connect a social account to publish this clip.
-											</Text>
+										) : (
+											<Stack align="center" textAlign="center" gap="3" py="8" px="2">
+												<Flex boxSize="11" borderRadius="full" bg="bg.soft" align="center" justify="center" color="fg.muted">
+													<Share2 size={20} />
+												</Flex>
+												<Box>
+													<Text fontSize="14px" fontWeight="500">
+														No accounts yet
+													</Text>
+													<Text fontSize="13px" color="fg.muted" mt="1">
+														Connect a social account to publish this clip.
+													</Text>
+												</Box>
+												<Button variant="subtle" size="sm" asChild>
+													<Link
+														href={`/settings/social-accounts?returnTo=${encodeURIComponent(`/projects/${config.projectId}?publishClips=${clips.map((c) => c.id).join(",")}`)}`}
+													>
+														<Plus size={16} /> Connect an account
+													</Link>
+												</Button>
+											</Stack>
 										)}
 										{config.accounts.length > 0 && !accounts.length && (
 											<Text fontSize="xs" color="fg.muted">
@@ -764,9 +768,10 @@ function PublishingComposer({
  minH="0" css={{"& > *": {flexShrink: 0}}}
 					flex="1"
 					minW="0"
-					p={{ base: "4", md: "7" }}
- bg="bg.subtle"
-					gap="7"
+					p={{ base: "4", md: "6" }}
+					bg="bg"
+					borderRadius={{ base: "0", md: "12px" }}
+					gap="6"
 				>
 					{!restored ? (
 						<Spinner />
@@ -780,8 +785,6 @@ function PublishingComposer({
 						width="full"
 						direction="row"
 						bg="bg.subtle"
-						borderBottomWidth="1px"
-						borderColor="border"
 						overflowX="auto"
 						p="2"
 						gap="2"
@@ -794,7 +797,7 @@ function PublishingComposer({
 							return (
 								<Button
 									key={clip.id}
-									variant="ghost" borderWidth="0" bg={active.id === clip.id ? "bg.panel" : "transparent"} _hover={{ bg: "bg.panel" }}
+									variant="ghost" bg={active.id === clip.id ? "accent.subtle" : "transparent"} _hover={{ bg: active.id === clip.id ? "accent.subtle" : "bg.soft" }}
 									aria-current={active.id === clip.id ? "true" : undefined}
 									width="180px" minW="180px" maxW="180px" flexShrink={0} whiteSpace="normal"
 									textAlign="start"
@@ -836,8 +839,8 @@ function PublishingComposer({
 											{clip.title ?? clip.hookText}
 										</Text>
 										<Text
-											fontSize="10px"
-											color={count ? "fg.muted" : "success.fg"}
+										fontSize="xs"
+										color={count ? "fg.muted" : "success.fg"}
 										>
 											{count ? "Needs review" : "Ready"}
 										</Text>
@@ -866,13 +869,7 @@ function PublishingComposer({
 								</Field.Root>
 							)}
 							{pending && (
-								<Box
-									bg="bg.subtle"
-									borderWidth="1px"
-									borderColor="border"
-									borderRadius="l2"
-									p="3"
-								>
+								<Box bg="bg.soft" borderRadius="l2" p="3">
 									<Text fontSize="sm">
 										A previous submission needs its result checked. Your saved
 										request will be reused.
@@ -892,17 +889,13 @@ function PublishingComposer({
 											justify="space-between"
 											gap="3"
 											align="center"
-											px="1"
-											py="2"
-											bg="transparent"
-											borderRadius="l2"
-										>
-											<Box>
-												<Text fontSize="xs" fontWeight="medium">
+											>
+											<Box minW="0">
+												<Text fontSize="14px" fontWeight="500" truncate>
 													{active.title ?? active.hookText}
 												</Text>
-												<Text fontSize="11px" color="fg.muted">
-													{formatDuration(active.durationSec)} ·{" "}
+												<Text fontSize="13px" color="fg.muted">
+												{formatDuration(active.durationSec)} ·{" "}
 													{activeMediaReady ? (
 														<CheckCircle2 size={13} aria-label="Video ready" />
 													) : (
@@ -912,12 +905,13 @@ function PublishingComposer({
 											</Box>
 											{!activeMediaReady && (
 												<Button
-													variant="outline"
-													size="xs"
+													variant="subtle"
+													size="sm"
+													flexShrink={0}
 													disabled={preparingVideo}
 													onClick={() => void prepare()}
 												>
-													<Film size={13} />
+													<Film size={16} />
 													{preparingVideo
 														? `Preparing ${activeExport?.progress ?? 0}%`
 														: activeExport?.status === "failed"
@@ -930,21 +924,21 @@ function PublishingComposer({
 {config.assistedCopyEnabled ? (
 <Collapsible.Root>
 <Collapsible.Trigger asChild><Button variant="ghost" size="sm" alignSelf="start"><Sparkles size={14}/>Description assistance<ChevronDown size={13}/></Button></Collapsible.Trigger>
-<Collapsible.Content><Stack bg="bg.panel" p={{base:"4",md:"6"}} borderRadius="2xl" gap="4" mt="2">
+<Collapsible.Content><Stack gap="4" mt="4">
 <Field.Root gap="3">
 <Field.Label>Regenerate descriptions</Field.Label>
-<Textarea aria-label="Regeneration instructions" value={instruction} rows={3} bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.7" placeholder="Adjust the tone or tell us what to emphasize." onChange={(e) => setInstruction(e.target.value)} />
+<Textarea aria-label="Regeneration instructions" value={instruction} rows={3} p="4" lineHeight="1.7" placeholder="Adjust the tone or tell us what to emphasize." onChange={(e) => setInstruction(e.target.value)} />
 </Field.Root>
 <Flex gap="2" wrap="wrap" align="center">
 {[{label:"Tone & voice", text:"Use our Tone & Voice"},{label:"Hashtags",text:"Add relevant hashtags"},{label:"Call to action",text:"Include a clear CTA"}].map(({label,text}) => <Button key={text} aria-label={text} variant="ghost" size="xs" onClick={() => setInstruction(v => [v,text].filter(Boolean).join(". "))}>{label}</Button>)}
-<Button ms="auto" size="sm" variant="outline" disabled={generating.length > 0} onClick={() => requestRegeneration(clips.length > 1 ? "all" : "current")}><Sparkles size={14}/>Regenerate all</Button>
+<Button ms="auto" size="sm" variant="subtle" disabled={generating.length > 0} onClick={() => requestRegeneration(clips.length > 1 ? "all" : "current")}><Sparkles size={14}/>Regenerate all</Button>
 </Flex>
 <Collapsible.Root>
 <Collapsible.Trigger asChild><Button variant="ghost" size="xs"><Settings2 size={14}/>AI options<ChevronDown size={13}/></Button></Collapsible.Trigger>
-<Collapsible.Content><Stack gap="4" pt="4" borderTopWidth="1px" borderColor="border" mt="3">
+<Collapsible.Content><Stack gap="4" pt="4" mt="3">
 <Field.Root><Field.Label>Keep these phrases</Field.Label><Input value={lockedPhrases} placeholder="Separate phrases with commas" onChange={e=>setLockedPhrases(e.target.value)}/></Field.Root>
 <Field.Root><Field.Label>Keep these hashtags</Field.Label><Input value={lockedHashtags} placeholder="#YourBrand" onChange={e=>setLockedHashtags(e.target.value)}/></Field.Root>
-{clips.length > 1 && <Button alignSelf="start" variant="outline" size="sm" disabled={generating.length > 0} onClick={() => requestRegeneration("current")}>Regenerate this clip</Button>}
+{clips.length > 1 && <Button alignSelf="start" variant="subtle" size="sm" disabled={generating.length > 0} onClick={() => requestRegeneration("current")}>Regenerate this clip</Button>}
 </Stack></Collapsible.Content></Collapsible.Root>
 </Stack></Collapsible.Content></Collapsible.Root>
 ) : <Text fontSize="xs" color="fg.muted">Automatic descriptions require a Creator plan. You can write your own description.</Text>}
@@ -967,9 +961,9 @@ function PublishingComposer({
 											<Stack
 												key={key}
 												gap="4"
-												borderWidth="0"
-												borderColor="border"
-												borderRadius="2xl"
+												borderWidth="1px"
+												borderColor="border.card"
+												borderRadius="l3"
 												p={{ base: "5", md: "7" }}
 												bg="bg.panel"
 												opacity={submitted ? 0.6 : 1}
@@ -1064,8 +1058,8 @@ function PublishingComposer({
 																	!d.edited && (
 																		<Flex gap="1" align="center">
 																			<Spinner size="xs" />
-																			<Text fontSize="10px" color="fg.muted">
-																				Writing…
+																			<Text fontSize="12px" color="fg.muted">
+																			Writing…
 																			</Text>
 																		</Flex>
 																	)}
@@ -1073,7 +1067,7 @@ function PublishingComposer({
 															<Textarea aria-label="Description"
 																value={d.caption}
 																rows={9}
-minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
+minH="220px" p="4" lineHeight="1.8"
 																resize="vertical"
 																placeholder={
 																	config.assistedCopyEnabled
@@ -1103,8 +1097,8 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 																>
 																	<Copy size={15} />
 																</Button>
-																<Text fontSize="10px" color="fg.muted">
-																	{d.caption.length}/{capability.textLimit}
+																<Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
+																{d.caption.length}/{capability.textLimit}
 																</Text>
 														</Flex>
 														{config.assistedCopyEnabled && (
@@ -1162,9 +1156,9 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 																			)}
 																			<Button
 																				size="xs"
-																				variant="outline"
+																				variant="subtle"
 																				disabled={
-																					!media ||
+																				!media ||
 																					!config.customThumbnailsEnabled
 																				}
 																				onClick={() =>
@@ -1281,9 +1275,9 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 														{optionErrors[account.id] && (
 															<Button
 																size="xs"
-																variant="outline"
+																variant="subtle"
 																onClick={() =>
-																	void publishingRequest<Options>(
+																void publishingRequest<Options>(
 																		`/api/projects/${config.projectId}/social-accounts/${account.id}/publishing-options`,
 																	)
 																		.then((value) => {
@@ -1341,12 +1335,13 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 									{replaceScope && (
 										<Box
 											p="3"
+											bg="bg.panel"
 											borderWidth="1px"
-											borderColor="border.emphasized"
+											borderColor="border.card"
 											borderRadius="l2"
-										>
+											>
 											<Text fontSize="sm" mb="3">
-												Replace edited descriptions for{" "}
+											Replace edited descriptions for{" "}
 												{replaceScope === "all"
 													? "all selected clips"
 													: replaceScope === "current"
@@ -1404,13 +1399,10 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 				alignItems="stretch"
 				gap="3"
 				flexShrink={0}
-				px={{ base: "4", md: "6" }}
-				py="4"
-				borderTopWidth="0"
-				borderColor="border"
-				bg="bg.panel"
-			>
-				{timing.scheduleMode !== "now" && (<chakra.fieldset disabled={disabled} border="0" p={{base:"3",md:"5"}} m="0" bg="bg.subtle" borderRadius="xl" maxH="40dvh" overflowY="auto">
+				px="4"
+				py="3"
+				>
+				{timing.scheduleMode !== "now" && (<chakra.fieldset disabled={disabled} border="0" p={{base:"3",md:"5"}} m="0" bg="bg" borderRadius="12px" maxH="40dvh" overflowY="auto">
 					<Stack gap="4"><Flex justify="space-between" align="center"><Text fontSize="sm" fontWeight="medium">Schedule posts</Text><Text fontSize="xs" color="fg.muted">{config.workspaceTimezone}</Text></Flex>
 						
 						
@@ -1551,25 +1543,31 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 				)}
 				<Flex justify="space-between" gap="3" align={{ base: "stretch", sm: "center" }} direction={{ base: "column", sm: "row" }}>
 					<chakra.fieldset disabled={disabled} border="0" p="0" m="0" flex="1" minW="0"><Flex gap="2" align="center" wrap="wrap">
-							<Button
-								size="sm"
-								variant={timing.scheduleMode === "now" ? "outline" : "ghost"}
-								onClick={() =>
-									setTiming((t) => ({ ...t, scheduleMode: "now" }))
-								}
-							>
-								Now
-							</Button>
-							<Button
-								size="sm"
-								variant={timing.scheduleMode !== "now" ? "outline" : "ghost"}
-								onClick={() =>
-									setTiming((t) => ({ ...t, scheduleMode: "scheduled" }))
-								}
-							>
-								<CalendarClock size={14} />
-								Schedule
-							</Button>
+							<Flex gap="0.5" p="0.5" bg="bg.soft" borderRadius="control">
+								<Button
+									size="sm"
+									variant="ghost"
+									bg={timing.scheduleMode === "now" ? "bg.raised" : "transparent"}
+									color={timing.scheduleMode === "now" ? "fg" : "fg.muted"}
+									onClick={() =>
+										setTiming((t) => ({ ...t, scheduleMode: "now" }))
+									}
+								>
+									Now
+								</Button>
+								<Button
+									size="sm"
+									variant="ghost"
+									bg={timing.scheduleMode !== "now" ? "bg.raised" : "transparent"}
+									color={timing.scheduleMode !== "now" ? "fg" : "fg.muted"}
+									onClick={() =>
+										setTiming((t) => ({ ...t, scheduleMode: "scheduled" }))
+									}
+								>
+									<CalendarClock size={16} />
+									Schedule
+								</Button>
+							</Flex>
 							<Text fontSize="xs" color="fg.muted" ms={{ base: "0", sm: "auto" }} overflowWrap="anywhere">
 								{config.workspaceTimezone}
 							</Text>
@@ -1585,7 +1583,7 @@ minH="220px" bg="bg.subtle" borderColor="transparent" p="4" lineHeight="1.8"
 								: ""}
 						</Text>
 						{submitBlockedReason && (
-							<Text fontSize="xs" color="warning.fg" role="status">
+							<Text fontSize="13px" color="fg.muted" role="status">
 								{submitBlockedReason}
 							</Text>
 						)}

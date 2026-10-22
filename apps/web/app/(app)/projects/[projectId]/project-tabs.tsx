@@ -141,7 +141,7 @@ export function ProjectTabs({
 	);
 }
 
-/** Small mono count badge next to the Clips tab trigger — pulled out so
+/** Small count badge next to the Clips tab trigger — pulled out so
  *  page.tsx can compute it server-side and pass it through as a node. */
 export function TabCountBadge({ count }: { count: number }) {
 	if (count <= 0) return null;
@@ -149,15 +149,14 @@ export function TabCountBadge({ count }: { count: number }) {
 		<Box
 			as="span"
 			ms="1.5"
-			px="1"
-			borderWidth="1px"
-			borderColor="border"
-			borderRadius="l1"
+			px="1.5"
+			bg="bg.soft"
+			borderRadius="full"
 			display="inline-block"
-			fontFamily="mono"
 			fontWeight="500"
-			fontSize="10px"
+			fontSize="11px"
 			lineHeight="1.5"
+			fontVariantNumeric="tabular-nums"
 			color="fg.muted"
 		>
 			{count}

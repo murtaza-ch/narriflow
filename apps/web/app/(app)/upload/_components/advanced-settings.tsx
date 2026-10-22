@@ -52,7 +52,7 @@ export function AdvancedSettings({
         alignItems="center"
         gap="1.5"
         textStyle="eyebrow"
-        color="fg.subtle"
+        color="fg.muted"
         cursor="pointer"
         transition="color 120ms ease"
         _hover={{ color: "fg" }}
@@ -70,13 +70,10 @@ export function AdvancedSettings({
         <Stack
           gap="3.5"
           mt="3"
-          pl="3"
-          borderLeftWidth="1px"
-          borderLeftColor="border"
           animation="fade-up"
         >
           <Box>
-            <Text textStyle="eyebrow" color="fg.subtle" mb="2">
+            <Text textStyle="eyebrow" color="fg.muted" mb="2">
               Platform targets
             </Text>
             <Flex gap="4" rowGap="2" flexWrap="wrap">
@@ -95,7 +92,7 @@ export function AdvancedSettings({
 
           <Grid templateColumns="1fr 1fr" gap="3">
             <Box>
-              <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+              <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
                 Clip count
               </Text>
               <NumberInput
@@ -114,7 +111,7 @@ export function AdvancedSettings({
               />
             </Box>
             <Box>
-              <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+              <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
                 Tone preferences
               </Text>
               <Input

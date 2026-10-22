@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Box, Checkbox, Flex, Input, Stack, Text } from "@chakra-ui/react";
+import { PanelButton, softFieldProps, tileProps } from "./panel-ui";
 import { AlertTriangle, Ban, ImageIcon, Link2, Palette } from "lucide-react";
 import {
   SCENE_LAYOUT_MIN_DURATION_SEC,
@@ -149,14 +150,14 @@ export function LayoutPanel() {
   };
 
   return (
-    <Stack gap="18px" p="12px">
+    <Stack gap="24px" px="20px" pt="16px" pb="20px">
       <Box>
         <Flex align="center" justify="space-between" gap="8px" mb="10px">
           <Box>
-            <Text textStyle="eyebrow" color="studio.fgMuted">
+            <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">
               Scene layout
             </Text>
-            <Text fontSize="10px" color="studio.fgSubtle" mt="2px">
+            <Text fontSize="12px" color="studio.fgSubtle" mt="2px">
               {hasSourceScene ? "Scene at the playhead" : "No source scene at the playhead"}
             </Text>
           </Box>
@@ -171,7 +172,7 @@ export function LayoutPanel() {
             <Checkbox.HiddenInput />
             <Checkbox.Control />
             <Checkbox.Label>
-              <Text fontSize="10.5px" color="studio.fgMuted" whiteSpace="nowrap">
+              <Text fontSize="12px" color="studio.fgMuted" whiteSpace="nowrap">
                 Apply to all scenes
               </Text>
             </Checkbox.Label>
@@ -179,15 +180,15 @@ export function LayoutPanel() {
         </Flex>
 
         {layoutScene?.coveredBy === "inserted-scene" ? (
-          <Text mb="10px" px="8px" py="6px" borderRadius="l1" bg="studio.raised" color="studio.fgMuted" fontSize="10.5px" lineHeight="1.5">
+          <Text mb="10px" px="12px" py="10px" borderRadius="10px" bg="studio.subtle" color="studio.fgMuted" fontSize="12px" lineHeight="1.5">
             This playhead is on an inserted scene. Move to source footage to choose its layout.
           </Text>
         ) : layoutScene?.coveredBy === "broll" ? (
-          <Text mb="10px" px="8px" py="6px" borderRadius="l1" bg="studio.raised" color="studio.fgMuted" fontSize="10.5px" lineHeight="1.5">
+          <Text mb="10px" px="12px" py="10px" borderRadius="10px" bg="studio.subtle" color="studio.fgMuted" fontSize="12px" lineHeight="1.5">
             B-roll covers this source scene in the preview. The layout still applies underneath it.
           </Text>
         ) : targetTooShort ? (
-          <Text mb="10px" px="8px" py="6px" borderRadius="l1" bg="studio.raised" color="studio.fgMuted" fontSize="10.5px" lineHeight="1.5">
+          <Text mb="10px" px="12px" py="10px" borderRadius="10px" bg="studio.subtle" color="studio.fgMuted" fontSize="12px" lineHeight="1.5">
             This source scene is too short to save a layout change.
           </Text>
         ) : null}
@@ -199,7 +200,7 @@ export function LayoutPanel() {
           disabled={!canApplyLayout}
         />
 
-        <Text mt="8px" fontSize="10.5px" color="studio.fgSubtle" lineHeight="1.5">
+        <Text mt="12px" fontSize="12px" color="studio.fgSubtle" lineHeight="1.5">
           {selected === "clip-default"
             ? `Clip default uses ${clipDefault}. This can be Auto, Center, Fit, Split, or Screen.`
             : selectedHint === "speaker-analysis"
@@ -210,14 +211,14 @@ export function LayoutPanel() {
         </Text>
       </Box>
 
-      <Box borderTopWidth="1px" borderColor="studio.border" pt="16px">
-        <Text textStyle="eyebrow" color="studio.fgMuted">
+      <Box>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">
           Clip background
         </Text>
-        <Text fontSize="10px" color="studio.fgSubtle" mt="2px" mb="10px">
+        <Text fontSize="12px" color="studio.fgSubtle" mt="2px" mb="12px">
           Background changes apply to every scene in this clip.
         </Text>
-        <Box display="grid" gridTemplateColumns="repeat(3, 1fr)" gap="6px">
+        <Box display="grid" gridTemplateColumns="repeat(3, 1fr)" gap="8px">
           {BACKGROUND_SUBMODES.map((mode) => {
             const active = background.mode === mode.id;
             return (
@@ -229,18 +230,13 @@ export function LayoutPanel() {
                 align="center"
                 justify="center"
                 gap="6px"
-                py="12px"
-                borderRadius="l2"
-                bg={active ? "studio.raised" : "studio.subtle"}
-                borderWidth="1px"
-                borderColor={active ? "studio.accent" : "studio.border"}
-                color={active ? "studio.accentFg" : "studio.fgMuted"}
-                cursor="pointer"
+                py="14px"
+                {...tileProps(active)}
+                color={active ? "studio.fg" : "studio.fgMuted"}
                 onClick={() => setBackgroundSubmode(mode.id)}
-                _hover={{ borderColor: active ? "studio.accent" : "studio.borderStrong" }}
               >
                 {mode.icon}
-                <Text fontSize="11px" fontWeight="500">{mode.label}</Text>
+                <Text fontSize="12px" fontWeight="500">{mode.label}</Text>
               </Flex>
             );
           })}
@@ -261,17 +257,16 @@ export function LayoutPanel() {
                   onClick={() => setColor(hex)}
                   w="100%"
                   aspectRatio={1}
-                  borderRadius="l2"
+                  borderRadius="8px"
                   bg={hex}
-                  borderWidth={active ? "2px" : "1px"}
-                  borderColor={active ? "studio.accent" : "studio.borderStrong"}
+                  boxShadow={active ? "0 0 0 2px var(--chakra-colors-studio-canvas), 0 0 0 4px var(--chakra-colors-studio-fg)" : "inset 0 0 0 1px rgba(255,255,255,0.08)"}
                   cursor="pointer"
                 />
               );
             })}
           </Box>
           <Flex align="center" gap="8px">
-            <Box w="32px" h="32px" flexShrink={0} borderRadius="l2" borderWidth="1px" borderColor="studio.borderStrong" bg={HEX_PATTERN.test(colorDraft) ? colorDraft : "studio.subtle"} />
+            <Box w="40px" h="40px" flexShrink={0} borderRadius="10px" boxShadow="inset 0 0 0 1px rgba(255,255,255,0.08)" bg={HEX_PATTERN.test(colorDraft) ? colorDraft : "studio.subtle"} />
             <Input
               aria-label="Background color hex"
               value={colorDraft}
@@ -283,21 +278,20 @@ export function LayoutPanel() {
               onBlur={endCoalesce}
               placeholder="#000000"
               size="sm"
-              bg="studio.subtle"
-              borderColor="studio.borderControl"
-              color="studio.fg"
+              h="40px"
+              {...softFieldProps}
               textStyle="data"
             />
           </Flex>
           {!HEX_PATTERN.test(colorDraft) ? (
-            <Text fontSize="10.5px" color="studio.fgSubtle">Use the format #RRGGBB.</Text>
+            <Text fontSize="12px" color="studio.fgSubtle">Use the format #RRGGBB.</Text>
           ) : null}
         </Stack>
       ) : null}
 
       {background.mode === "image" ? (
         <Stack gap="8px">
-          <Flex align="center" gap="8px" px="10px" h="34px" borderRadius="l2" bg="studio.subtle" borderWidth="1px" borderColor={imageUrlError ? "studio.dangerBorder" : "studio.borderControl"}>
+          <Flex align="center" gap="10px" px="12px" h="40px" borderRadius="10px" bg="studio.subtle" borderWidth={imageUrlError ? "1px" : "0"} borderColor="studio.dangerBorder">
             <Box color="studio.fgSubtle" flexShrink={0}><Link2 size={13} /></Box>
             <Input
               aria-label="Background image URL"
@@ -307,9 +301,9 @@ export function LayoutPanel() {
                 setImageUrlDraft(event.target.value);
                 setImageUrlError(false);
               }}
-              size="xs"
+              size="sm"
               flex="1"
-              fontSize="12px"
+              fontSize="13px"
               color="studio.fg"
               css={{ border: "none", outline: "none", background: "transparent", boxShadow: "none" }}
             />
@@ -317,13 +311,13 @@ export function LayoutPanel() {
           {imageUrlError ? (
             <Flex align="center" gap="5px" color="studio.danger">
               <AlertTriangle size={12} />
-              <Text fontSize="10.5px">Enter a valid http(s) image URL.</Text>
+              <Text fontSize="12px">Enter a valid http(s) image URL.</Text>
             </Flex>
           ) : null}
-          <Flex as="button" align="center" justify="center" h="34px" borderRadius="l2" bg="studio.raised" borderWidth="1px" borderColor="studio.borderStrong" color="studio.fg" fontSize="12px" fontWeight="600" cursor="pointer" gap="6px" onClick={applyImageUrl}>
-            <ImageIcon size={13} />
+          <PanelButton onClick={applyImageUrl}>
+            <ImageIcon size={15} />
             Apply image
-          </Flex>
+          </PanelButton>
         </Stack>
       ) : null}
     </Stack>

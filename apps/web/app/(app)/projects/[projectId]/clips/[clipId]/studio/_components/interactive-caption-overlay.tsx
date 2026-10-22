@@ -14,14 +14,15 @@ import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan"
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const HANDLE_POSITIONS = [
-  { cursor: "nw-resize", style: { top: -5, left: -5 } },
-  { cursor: "n-resize", style: { top: -5, left: "calc(50% - 5px)" } },
-  { cursor: "ne-resize", style: { top: -5, right: -5 } },
-  { cursor: "e-resize", style: { top: "calc(50% - 5px)", right: -5 } },
-  { cursor: "se-resize", style: { bottom: -5, right: -5 } },
-  { cursor: "s-resize", style: { bottom: -5, left: "calc(50% - 5px)" } },
-  { cursor: "sw-resize", style: { bottom: -5, left: -5 } },
-  { cursor: "w-resize", style: { top: "calc(50% - 5px)", left: -5 } },
+  // 12px handles, centred on the 2px selection border drawn at inset -2px.
+  { cursor: "nw-resize", style: { top: -7, left: -7 } },
+  { cursor: "n-resize", style: { top: -7, left: "calc(50% - 6px)" } },
+  { cursor: "ne-resize", style: { top: -7, right: -7 } },
+  { cursor: "e-resize", style: { top: "calc(50% - 6px)", right: -7 } },
+  { cursor: "se-resize", style: { bottom: -7, right: -7 } },
+  { cursor: "s-resize", style: { bottom: -7, left: "calc(50% - 6px)" } },
+  { cursor: "sw-resize", style: { bottom: -7, left: -7 } },
+  { cursor: "w-resize", style: { top: "calc(50% - 6px)", left: -7 } },
 ] as const;
 
 // ─── Snap Guide Lines ────────────────────────────────────────────────────────
@@ -106,11 +107,11 @@ export function DragResizeHandles({
         <Box
           key={i}
           position="absolute"
-          w="10px"
-          h="10px"
+          w="12px"
+          h="12px"
           borderRadius="full"
-          bg="white"
-          borderWidth="1.5px"
+          bg="studio.fg"
+          borderWidth="2px"
           borderColor="studio.accent"
           cursor={hp.cursor}
           zIndex={10}
@@ -347,10 +348,9 @@ export function InteractiveCaptionOverlay({
               position="absolute"
               inset="-2px"
               borderWidth="1px"
-              borderStyle="dashed"
               borderColor="studio.accent"
               opacity={0.7}
-              borderRadius="l1"
+              borderRadius="6px"
               pointerEvents="none"
             />
           )}
@@ -360,10 +360,9 @@ export function InteractiveCaptionOverlay({
             <Box
               position="absolute"
               inset="-2px"
-              borderWidth="1.5px"
-              borderStyle="solid"
+              borderWidth="2px"
               borderColor="studio.accent"
-              borderRadius="l1"
+              borderRadius="6px"
               pointerEvents="none"
             />
           )}

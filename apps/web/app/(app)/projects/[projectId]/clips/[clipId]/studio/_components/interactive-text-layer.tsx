@@ -163,10 +163,9 @@ export function InteractiveTextLayer({
               position="absolute"
               inset="-2px"
               borderWidth="1px"
-              borderStyle="dashed"
               borderColor="studio.accent"
               opacity={0.7}
-              borderRadius="l1"
+              borderRadius="6px"
               pointerEvents="none"
             />
           )}
@@ -175,10 +174,9 @@ export function InteractiveTextLayer({
             <Box
               position="absolute"
               inset="-2px"
-              borderWidth="1.5px"
-              borderStyle="solid"
+              borderWidth="2px"
               borderColor="studio.accent"
-              borderRadius="l1"
+              borderRadius="6px"
               pointerEvents="none"
             />
           )}

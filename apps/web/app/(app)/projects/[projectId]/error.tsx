@@ -24,7 +24,7 @@ export default function ProjectError({
         <EmptyState
           icon={
             <Flex color="danger.fg">
-              <AlertTriangle size={22} aria-hidden />
+              <AlertTriangle size={20} aria-hidden />
             </Flex>
           }
           title="We couldn't load this project"
@@ -46,7 +46,7 @@ export default function ProjectError({
           </Text>
         </Link>
         {error.digest ? (
-          <Text textStyle="data" fontSize="11px" color="fg.subtle">
+          <Text textStyle="data" fontSize="12px" color="fg.subtle">
             digest {error.digest}
           </Text>
         ) : null}

@@ -11,8 +11,12 @@ import { Box, Flex, Group, Input, Stack, Text } from "@chakra-ui/react";
 import { formatDuration, formatTimecode } from "@/lib/format";
 import { PanelHeader } from "./panel-header";
 
-/** Speakers keep one tint each, in order of first appearance. */
-const SPEAKER_PALETTES = ["accent", "success", "warning", "danger"] as const;
+/**
+ * Speakers keep one categorical tint each, in order of first appearance —
+ * the accent first, then hues that carry no status meaning (never danger or
+ * warning, which read as errors).
+ */
+const SPEAKER_PALETTES = ["accent", "purple", "orange", "pink", "cyan"] as const;
 
 function escapeRegExp(text: string) {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -128,9 +132,9 @@ export function TranscriptPanel({
 				description="Who said what, timed to the word. Your clips, captions and subtitle files all come from this text."
 				actions={
 					isReady ? (
-						<Group attached>
+						<Group>
 							{["txt", "srt", "vtt"].map((format, index) => (
-								<Button key={format} asChild size="sm" variant="outline">
+								<Button key={format} asChild size="sm" variant="subtle">
 									<a
 										href={`/api/projects/${projectId}/transcript/export?format=${format}`}
 										aria-label={`Download ${format.toUpperCase()}`}
@@ -167,7 +171,7 @@ export function TranscriptPanel({
 					value={(transcript.languageCode ?? "—").toUpperCase()}
 					suffix={
 						typeof transcript.languageConfidence === "number" ? (
-							<Text textStyle="data" fontSize="11px" color="fg.subtle">
+							<Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">
 								{Math.round(transcript.languageConfidence * 100)}%
 							</Text>
 						) : null
@@ -207,33 +211,43 @@ export function TranscriptPanel({
 					Transcribing now. Speaker labels and subtitle downloads show up here when it's done.
 				</Text>
 			) : transcript.utterances.length > 0 ? (
-				<Box borderWidth="1px" borderColor="border.subtle" borderRadius="l3" overflow="hidden">
+				<Box
+					bg="bg.panel"
+					borderWidth="1px"
+					borderColor="border.card"
+					borderRadius="l3"
+					overflow="hidden"
+				>
 					{/* Search */}
-					<Flex
-						align="center"
-						gap="2.5"
-						px="5"
-						py="2"
-						borderBottomWidth="1px"
-						borderColor="border.subtle"
-						bg="bg.subtle"
-					>
-						<Box color="fg.subtle" flexShrink={0}>
-							<Search size={15} aria-hidden />
+					<Flex align="center" gap="3" px="4" py="3">
+						<Box position="relative" flex="1">
+							<Box
+								position="absolute"
+								insetStart="3"
+								top="50%"
+								transform="translateY(-50%)"
+								color="fg.subtle"
+								pointerEvents="none"
+							>
+								<Search size={15} aria-hidden />
+							</Box>
+							<Input
+								value={query}
+								onChange={(event) => setQuery(event.target.value)}
+								placeholder="Search the transcript"
+								aria-label="Search the transcript"
+								size="sm"
+								fontSize="14px"
+								ps="9"
+							/>
 						</Box>
-						<Input
-							value={query}
-							onChange={(event) => setQuery(event.target.value)}
-							placeholder="Search the transcript"
-							aria-label="Search the transcript"
-							variant="flushed"
-							borderColor="transparent"
-							size="sm"
-							fontSize="14px"
-							flex="1"
-						/>
 						{searching ? (
-							<Text textStyle="data" fontSize="11px" color="fg.subtle" flexShrink={0}>
+							<Text
+								fontSize="12px"
+								fontVariantNumeric="tabular-nums"
+								color="fg.subtle"
+								flexShrink={0}
+							>
 								{visibleUtterances.length} of {transcript.utterances.length} lines
 							</Text>
 						) : null}
@@ -285,7 +299,7 @@ export function TranscriptPanel({
 												<Text fontSize="13px" fontWeight="550" color="fg">
 													{utterance.speakerLabel}
 												</Text>
-												<Text textStyle="data" fontSize="11px" color="fg.timecode">
+												<Text textStyle="data" fontSize="12px" color="fg.timecode">
 													{formatTimecode(utterance.startSec)} – {formatTimecode(utterance.endSec)}
 												</Text>
 											</Flex>

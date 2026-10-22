@@ -14,9 +14,58 @@ function controlStyle(size: keyof typeof controlSizes) {
 const controlVariants = { xs: controlStyle("xs"), sm: controlStyle("sm"), md: controlStyle("md"), lg: controlStyle("lg") };
 function buttonStyle(size: keyof typeof controlSizes) {
   const value = controlSizes[size];
-  return { h: value.height, minW: value.height, px: value.padding, gap: "2", fontSize: value.fontSize, "--button-height": `sizes.${value.height}` };
+  return { h: value.height, minW: value.height, px: value.padding, gap: "2", fontSize: value.fontSize, borderRadius: "control", "--button-height": `sizes.${value.height}` };
 }
 const buttonSizes = { xs: buttonStyle("xs"), sm: buttonStyle("sm"), md: buttonStyle("md"), lg: buttonStyle("lg") };
+/**
+ * Soft filled field: no visible border, a translucent fill that reads on any
+ * surface. Focus shows a subtle grey edge (border.focus), not the accent ring:
+ * a field is focused on every click, and a blue frame there is too loud.
+ * Inputs, textareas and selects share it.
+ */
+const fieldFocus = { borderColor: "border.focus", outline: "none", boxShadow: "none" } as const;
+const softField = {
+  bg: "bg.soft",
+  borderWidth: "1px",
+  borderColor: "transparent",
+  borderRadius: "control",
+  color: "fg",
+  focusVisibleRing: "none",
+  _hover: { bg: "bg.softHover" },
+  _placeholder: { color: "fg.subtle" },
+  _focus: fieldFocus,
+  _focusVisible: fieldFocus,
+} as const;
+/**
+ * Floating dropdown surface (menus, selects, popovers): no shadow; the raised
+ * fill separates it on graphite, and border.card adds a hairline on porcelain.
+ */
+const dropdownSurface = {
+  bg: "bg.raised",
+  borderWidth: "1px",
+  borderColor: "border.card",
+  borderRadius: "l2",
+  boxShadow: "none",
+} as const;
+/** One row in a dropdown list. */
+const dropdownItem = {
+  minH: "9",
+  px: "2.5",
+  gap: "2.5",
+  borderRadius: "8px",
+  fontSize: "14px",
+  color: "fg",
+  cursor: "pointer",
+  _highlighted: { bg: "bg.soft" },
+} as const;
+/** Secondary button: soft fill, no border, keeps its palette's text color. */
+const softButton = {
+  bg: "bg.soft",
+  borderColor: "transparent",
+  color: "colorPalette.fg",
+  _hover: { bg: "bg.softHover" },
+  _expanded: { bg: "bg.softHover" },
+} as const;
 const slotControlVariants = (slot: string) => ({ xs: { [slot]: controlVariants.xs }, sm: { [slot]: controlVariants.sm }, md: { [slot]: controlVariants.md }, lg: { [slot]: controlVariants.lg } });
 
 /** Shared dashboard tokens and Chakra component defaults. */
@@ -37,6 +86,12 @@ const config = defineConfig({
       outlineColor: "{colors.accent.solid}",
       outlineOffset: "2px",
       borderRadius: "4px",
+    },
+    // Rings are for keyboard users. After a pointer interaction (e.g. an
+    // outside click closing a menu, which refocuses its trigger) hide them;
+    // Provider sets the modality. Fields keep their own grey focus edge.
+    "html[data-input-modality='pointer'] *:focus-visible": {
+      outline: "none !important",
     },
     "*::-webkit-scrollbar": {
       width: "10px",
@@ -92,6 +147,15 @@ const config = defineConfig({
           800: { value: "#2A2A2A" },
           900: { value: "#191919" },
           950: { value: "#101010" },
+        },
+        // The dark-mode accent: a softer blue that keeps AA contrast on
+        // graphite. Shared by the app's dark mode and the always-dark Studio.
+        accentDark: {
+          solid: { value: "#8EAEEC" },
+          fg: { value: "#A8C3F5" },
+          emphasized: { value: "#3B4F6D" },
+          muted: { value: "#293448" },
+          subtle: { value: "#1A2332" },
         },
         // Accent scale for selection, links, and focus.
         accent: {
@@ -214,12 +278,13 @@ const config = defineConfig({
           lineHeight: "1.2",
         },
       },
-      // Quiet context labels use the same typeface as the rest of the app.
+      // Section label: a quiet 13px label above a group of content. Never
+      // an eyebrow over a title.
       eyebrow: {
         value: {
           fontFamily: "body",
           fontWeight: "500",
-          fontSize: "11px",
+          fontSize: "13px",
           letterSpacing: "0",
           textTransform: "none",
         },
@@ -266,7 +331,7 @@ const config = defineConfig({
         value: {
           bg: "bg.subtle",
           borderWidth: "1px",
-          borderColor: "border",
+          borderColor: "border.card",
           borderRadius: "l2",
           overflow: "hidden",
         },
@@ -286,7 +351,9 @@ const config = defineConfig({
       },
     },
     semanticTokens: {
-      radii: { l1: { value: "0.5rem" }, l2: { value: "0.75rem" }, l3: { value: "1.25rem" } },
+      // control: every single-line control (buttons, fields, selects,
+      // segmented tracks) shares one corner so they align in a row.
+      radii: { l1: { value: "0.5rem" }, l2: { value: "0.75rem" }, l3: { value: "1.25rem" }, control: { value: "10px" } },
       colors: {
         brand: {
           solid: {
@@ -309,46 +376,54 @@ const config = defineConfig({
           },
           focusRing: { value: "{colors.accent.solid}" },
         },
+        // Color roles, app and Studio alike (industry-standard placement):
+        // - accent (blue) marks interactive STATE: focus rings, links, checked
+        //   checkboxes/radios/switches, slider and progress fills, the
+        //   selected item in a set, the current tab/tool/nav item, selection
+        //   ranges and on-canvas selection, the playhead, and in-progress
+        //   status (processing, rendering, scheduled).
+        // - brand (neutral ink) is for primary buttons, text and surfaces.
+        // - Segmented controls and menus mark the chosen option with a neutral
+        //   raised fill, as macOS and iOS do; tabs use the accent underline.
+        // - warning/danger are status only. There is no green: "ready",
+        //   "done" and success states render in the accent (the success
+        //   tokens below alias it).
         accent: {
           solid: {
-            value: { _light: "{colors.accent.600}", _dark: "#8EAEEC" },
+            value: { _light: "{colors.accent.600}", _dark: "{colors.accentDark.solid}" },
           },
           // A dark label maintains contrast on the pale accent fill.
           contrast: {
             value: { _light: "#FFFFFF", _dark: "#101010" },
           },
           fg: {
-            value: { _light: "{colors.accent.600}", _dark: "#A8C3F5" },
+            value: { _light: "{colors.accent.600}", _dark: "{colors.accentDark.fg}" },
           },
           muted: {
-            value: { _light: "{colors.accent.100}", _dark: "#293448" },
+            value: { _light: "{colors.accent.100}", _dark: "{colors.accentDark.muted}" },
           },
           subtle: {
-            value: { _light: "{colors.accent.50}", _dark: "#1A2332" },
+            value: { _light: "{colors.accent.50}", _dark: "{colors.accentDark.subtle}" },
           },
           emphasized: {
-            value: { _light: "{colors.accent.200}", _dark: "#3B4F6D" },
+            value: { _light: "{colors.accent.200}", _dark: "{colors.accentDark.emphasized}" },
           },
           focusRing: { value: "{colors.accent.solid}" },
         },
+        // Success is the accent: the product has no green (see color roles).
         success: {
-          solid: {
-            value: { _light: "{colors.success.600}", _dark: "{colors.success.400}" },
-          },
-          contrast: { value: { _light: "#FFFFFF", _dark: "#101010" } },
-          fg: {
-            value: { _light: "{colors.success.700}", _dark: "{colors.success.400}" },
-          },
-          muted: {
-            value: { _light: "{colors.success.100}", _dark: "{colors.success.900}" },
-          },
-          subtle: {
-            value: { _light: "{colors.success.50}", _dark: "{colors.success.950}" },
-          },
-          emphasized: {
-            value: { _light: "{colors.success.200}", _dark: "{colors.success.800}" },
-          },
-          focusRing: { value: "{colors.success.500}" },
+          solid: { value: "{colors.accent.solid}" },
+          contrast: { value: "{colors.accent.contrast}" },
+          fg: { value: "{colors.accent.fg}" },
+          muted: { value: "{colors.accent.muted}" },
+          subtle: { value: "{colors.accent.subtle}" },
+          emphasized: { value: "{colors.accent.emphasized}" },
+          focusRing: { value: "{colors.accent.focusRing}" },
+        },
+        // Chakra's default palette is gray; its focus ring follows the accent
+        // so every control shows the same ring.
+        gray: {
+          focusRing: { value: "{colors.accent.solid}" },
         },
         warning: {
           solid: {
@@ -392,7 +467,9 @@ const config = defineConfig({
         },
         // Backgrounds — porcelain in light, graphite in dark.
         bg: {
-          sidebar: { value: { _light: "#F7F7F8", _dark: "#080808" } },
+          // The shell frame behind the sidebar and the inset content panel —
+          // a step darker than bg so the panel reads as one rounded sheet.
+          sidebar: { value: { _light: "#F0F1F3", _dark: "#080808" } },
           dialog: { value: { _light: "#FFFFFF", _dark: "#0D0D0F" } },
           raised: { value: { _light: "#FFFFFF", _dark: "#252525" } },
           scrim: { value: "rgba(0, 0, 0, 0.8)" },
@@ -414,6 +491,14 @@ const config = defineConfig({
           inverted: {
             value: { _light: "#101318", _dark: "#FBFBFC" },
           },
+          // Soft fill for controls: fields, secondary buttons, chips, option
+          // tiles. Translucent so it reads on the page and on panels alike.
+          soft: {
+            value: { _light: "rgba(16, 19, 24, 0.05)", _dark: "rgba(255, 255, 255, 0.06)" },
+          },
+          softHover: {
+            value: { _light: "rgba(16, 19, 24, 0.08)", _dark: "rgba(255, 255, 255, 0.1)" },
+          },
         },
         fg: {
           DEFAULT: {
@@ -429,7 +514,7 @@ const config = defineConfig({
             value: { _light: "#8F96A0", _dark: "#666666" },
           },
           accent: {
-            value: { _light: "{colors.accent.600}", _dark: "#A8C3F5" },
+            value: { _light: "{colors.accent.600}", _dark: "{colors.accentDark.fg}" },
           },
           // The timecode voice — mono, data-only (timecodes, live durations).
           timecode: {
@@ -462,10 +547,22 @@ const config = defineConfig({
           accent: {
             value: { _light: "{colors.accent.300}", _dark: "{colors.accent.700}" },
           },
+          // Card and panel edge: a hairline on porcelain, none on graphite,
+          // where the fill alone separates the surface.
+          card: {
+            value: { _light: "#E2E4E9", _dark: "transparent" },
+          },
+          // A focused field's edge: a subtle grey a step above the soft fill.
+          focus: {
+            value: { _light: "rgba(16, 19, 24, 0.24)", _dark: "rgba(255, 255, 255, 0.2)" },
+          },
         },
         // Studio editor chrome — permanently graphite, mode-invariant.
         // Chrome hexes map here; user caption/brand color values stay literal.
         studio: {
+          // The gaps between the editor's panels — the app's dark bg.sidebar,
+          // so the Studio reads as the same shell. Panels use canvas.
+          frame: { value: "#080808" },
           canvas: { value: "#101010" },
           // Translucent studio.canvas — the chip/badge ground for overlays
           // sitting on footage (duration chips, delete affordances). rgba()
@@ -489,8 +586,11 @@ const config = defineConfig({
           // fgSubtle is only legible on canvas/subtle/surface.
           fgMuted: { value: "#AAAAAA" },
           fgSubtle: { value: "#999999" },
-          accent: { value: "#8EAEEC" },
-          accentFg: { value: "#A8C3F5" },
+          // The app's dark-mode accent (see the color roles on accent below).
+          accent: { value: "{colors.accentDark.solid}" },
+          accentFg: { value: "{colors.accentDark.fg}" },
+          // Tint behind a selected item.
+          accentSubtle: { value: "{colors.accentDark.subtle}" },
           // Danger, mode-invariant — studio chrome never leaves graphite, so
           // the app-wide danger.fg/danger.solid (which flip _light/_dark) are
           // wrong here: light mode's danger.600 #C42B1C is only ~3.2:1 on
@@ -503,7 +603,9 @@ const config = defineConfig({
           danger: { value: "#F26D6D" },
           dangerBorder: { value: "#E5484D" },
           timecode: { value: "#B4BCCB" },
-          ring: { value: "#8EAEEC" },
+          ring: { value: "{colors.accentDark.solid}" },
+          // A focused field's edge — the app's border.focus on graphite.
+          borderFocus: { value: "rgba(255, 255, 255, 0.2)" },
         },
       },
     },
@@ -515,14 +617,14 @@ const config = defineConfig({
       nativeSelect: defineSlotRecipe({
         slots: ["root", "field", "indicator"],
         defaultVariants: { size: "sm" },
-        variants: { size: slotControlVariants("field") },
-        base: { field: { borderRadius: "l2", bg: "bg.subtle", borderColor: "border.emphasized" } },
+        base: { field: softField },
+        variants: { size: slotControlVariants("field"), variant: { outline: { field: softField } } },
       }),
       datePicker: defineSlotRecipe({
         slots: ["root", "control", "input", "trigger", "label", "content", "positioner"],
         defaultVariants: { size: "sm" },
-        variants: { size: slotControlVariants("input") },
-        base: { content: { bg: "bg.panel", color: "fg", borderWidth: "0", borderColor: "border", borderRadius: "xl", boxShadow: "lg", p: "4" }, positioner: { zIndex: "popover" }, input: { borderRadius: "l2", bg: "bg.subtle", borderColor: "border.emphasized", focusRing: "none", _focusVisible: { borderColor: "accent.focusRing", outline: "none", boxShadow: "none" } }, label: { fontSize: "13px", fontWeight: "500", color: "fg.muted" } },
+        variants: { size: slotControlVariants("input"), variant: { outline: { input: softField } } },
+        base: { content: { ...dropdownSurface, color: "fg", p: "4" }, positioner: { zIndex: "popover" }, input: softField, label: { fontSize: "13px", fontWeight: "500", color: "fg.muted" } },
       }),
       checkbox: defineSlotRecipe({
         slots: ["root", "control", "label", "indicator", "group"],
@@ -541,13 +643,18 @@ const config = defineConfig({
         slots: ["root", "item", "itemText", "itemHiddenInput", "indicator"],
         base: {
           root: {
-            bg: "bg.subtle",
-            borderWidth: "1px",
-            borderColor: "border.emphasized",
-            borderRadius: "l2",
+            bg: "bg.soft",
+            borderWidth: "0",
+            borderRadius: "control",
             p: "0.5",
           },
-          indicator: { bg: "bg.raised", borderRadius: "l1", boxShadow: "none" },
+          // White on porcelain, a lighter translucent step on graphite, so the
+          // chosen option reads on the page and on panels alike.
+          indicator: {
+            bg: { _light: "#FFFFFF", _dark: "rgba(255, 255, 255, 0.12)" },
+            borderRadius: "8px",
+            boxShadow: { _light: "0 1px 2px rgba(16, 19, 24, 0.12)", _dark: "none" },
+          },
           item: {
             borderRadius: "l1",
             color: "fg.muted",
@@ -560,7 +667,7 @@ const config = defineConfig({
       }),
       numberInput: defineSlotRecipe({
         defaultVariants: { size: "sm" },
-        variants: { size: slotControlVariants("input") },
+        variants: { size: slotControlVariants("input"), variant: { outline: { input: softField } } },
         slots: [
           "root",
           "label",
@@ -571,44 +678,23 @@ const config = defineConfig({
           "scrubber",
         ],
         base: {
-          input: {
-            bg: "bg.subtle",
-            borderColor: "border.emphasized",
-            borderRadius: "l2",
-            color: "fg",
-            fontVariantNumeric: "tabular-nums",
-          },
-          control: { borderColor: "border.emphasized", borderInlineStartWidth: "1px" },
+          input: { ...softField, fontVariantNumeric: "tabular-nums" },
+          control: { borderColor: "transparent", borderInlineStartWidth: "1px" },
           incrementTrigger: { color: "fg.muted", _hover: { bg: "bg.muted", color: "fg" } },
           decrementTrigger: { color: "fg.muted", _hover: { bg: "bg.muted", color: "fg" } },
         },
       }),
       select: defineSlotRecipe({
         defaultVariants: { size: "sm" },
-        variants: { size: slotControlVariants("trigger") },
+        variants: {
+          size: slotControlVariants("trigger"),
+          variant: { outline: { trigger: { ...softField, _expanded: { bg: "bg.softHover" } } } },
+        },
         slots: ["root", "trigger", "content", "item", "valueText", "indicator", "label"],
         base: {
-          trigger: {
-            bg: "bg.subtle",
-            borderColor: "border.emphasized",
-            borderRadius: "l2",
-            fontSize: "sm",
-            color: "fg",
-            cursor: "pointer",
-          },
-          content: {
-            bg: "bg.raised",
-            borderWidth: "1px",
-            borderColor: "border.emphasized",
-            borderRadius: "l2",
-            boxShadow: "0 12px 40px #0006",
-          },
-          item: {
-            fontSize: "sm",
-            borderRadius: "l1",
-            cursor: "pointer",
-            _highlighted: { bg: "bg.muted" },
-          },
+          trigger: { ...softField, fontSize: "sm", cursor: "pointer" },
+          content: { ...dropdownSurface, p: "1.5" },
+          item: dropdownItem,
         },
       }),
       dialog: defineSlotRecipe({
@@ -671,7 +757,7 @@ const config = defineConfig({
         },
         variants: {
           variant: {
-            outline: { root: { bg: "bg.panel", borderColor: "border.subtle" } },
+            outline: { root: { bg: "bg.panel", borderColor: "border.card" } },
             elevated: { root: { bg: "bg.panel", boxShadow: "none" } },
             subtle: { root: { bg: "bg.subtle" } },
           },
@@ -694,23 +780,19 @@ const config = defineConfig({
           "arrowTip",
           "contextTrigger",
           "triggerItem",
+          "itemCommand",
         ],
         base: {
-          content: {
-            bg: "bg.raised",
-            borderWidth: "0",
-            borderRadius: "l2",
-            p: "1.5",
-            boxShadow: "0 12px 40px #0006",
-          },
-          item: {
-            borderRadius: "l1",
-            fontSize: "sm",
-            px: "3",
-            py: "2",
-            _highlighted: { bg: "bg.muted" },
-          },
+          content: { ...dropdownSurface, p: "1.5", minW: "200px" },
+          item: { ...dropdownItem, py: "0" },
+          itemGroupLabel: { fontSize: "12px", fontWeight: "500", color: "fg.subtle", px: "2.5", pt: "2", pb: "1" },
+          separator: { borderColor: "border.subtle", my: "1.5", mx: "1" },
+          itemCommand: { fontSize: "12px", color: "fg.subtle" },
         },
+        // Chakra's default "subtle" variant highlights rows with its own
+        // bg.emphasized gray, which overrides the base above; keep the app's
+        // one hover fill instead.
+        variants: { variant: { subtle: { item: { _highlighted: { bg: "bg.soft" } } } } },
       }),
       popover: defineSlotRecipe({
         slots: [
@@ -727,12 +809,14 @@ const config = defineConfig({
           "arrowTip",
         ],
         base: {
-          content: { bg: "bg.raised", borderRadius: "l2", borderWidth: "0" },
+          content: dropdownSurface,
         },
       }),
       tabs: defineSlotRecipe({
         slots: ["root", "list", "trigger", "content", "indicator"],
         base: {
+          // The line variant draws the active underline in colorPalette.solid.
+          root: { colorPalette: "accent" },
           list: { borderColor: "border.subtle", gap: "4" },
           trigger: {
             fontSize: "sm",
@@ -772,10 +856,15 @@ const config = defineConfig({
         },
         variants: {
           size: buttonSizes,
+          // Secondary buttons are soft fills; none draw a border.
           variant: {
-            outline: { borderColor: "border.emphasized", bg: "transparent" },
-            ghost: { color: "fg.muted", _hover: { bg: "bg.muted", color: "fg" } },
-            subtle: { bg: "bg.muted", color: "fg", _hover: { bg: "bg.raised" } },
+            outline: softButton,
+            subtle: softButton,
+            ghost: {
+              color: "fg.muted",
+              _hover: { bg: "bg.soft", color: "fg" },
+              _expanded: { bg: "bg.soft", color: "fg" },
+            },
           },
         },
       }),
@@ -794,11 +883,9 @@ const config = defineConfig({
       },
       input: defineRecipe({
         defaultVariants: { size: "sm" },
-        variants: { size: controlVariants },
+        variants: { size: controlVariants, variant: { outline: softField } },
         base: {
-          borderRadius: "l2",
-          borderColor: "border.emphasized",
-          bg: "bg.subtle",
+          ...softField,
           _file: {
             bg: "bg.muted",
             color: "fg",
@@ -810,18 +897,11 @@ const config = defineConfig({
             cursor: "pointer",
             fontSize: "sm",
           },
-          _placeholder: { color: "fg.subtle" },
-          _focusVisible: { borderColor: "accent.focusRing", outlineColor: "accent.focusRing" },
         },
       }),
       textarea: {
-        base: {
-          borderRadius: "l2",
-          borderColor: "border.emphasized",
-          bg: "bg.subtle",
-          _placeholder: { color: "fg.subtle" },
-          _focusVisible: { borderColor: "accent.focusRing", outlineColor: "accent.focusRing" },
-        },
+        base: softField,
+        variants: { variant: { outline: softField } },
       },
     },
   },

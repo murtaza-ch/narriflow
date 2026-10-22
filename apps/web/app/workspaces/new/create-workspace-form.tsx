@@ -17,9 +17,9 @@ export function CreateWorkspaceForm() {
 
   return (
     <chakra.form action={action} maxW="560px">
-      <Stack gap="5" bg="bg.dialog" borderWidth="1px" borderColor="border" borderRadius="l3" p="6">
+      <Stack gap="5" bg="bg.panel" borderWidth="1px" borderColor="border.card" borderRadius="l3" p="6">
         <Stack gap="2">
-          <chakra.label htmlFor="workspace-name" fontSize="13px" fontWeight="600">
+          <chakra.label htmlFor="workspace-name" fontSize="13px" fontWeight="500">
             Workspace name
           </chakra.label>
           <Input
@@ -43,7 +43,7 @@ export function CreateWorkspaceForm() {
         </Stack>
 
         <Stack gap="2">
-          <chakra.label htmlFor="workspace-interval" fontSize="13px" fontWeight="600">
+          <chakra.label htmlFor="workspace-interval" fontSize="13px" fontWeight="500">
             Billing interval
           </chakra.label>
           <Select
@@ -67,7 +67,7 @@ export function CreateWorkspaceForm() {
         </Stack>
 
         {state.error ? (
-          <Box role="alert" layerStyle="well" borderLeftWidth="3px" borderLeftColor="danger.solid" px="4" py="3">
+          <Box role="alert" bg="danger.subtle" borderRadius="l2" px="4" py="3">
             <Text fontSize="13px" color="danger.fg">{state.error}</Text>
             {state.workspaceId ? (
               <Text fontSize="12px" color="fg.subtle" mt="1">
@@ -75,7 +75,7 @@ export function CreateWorkspaceForm() {
               </Text>
             ) : null}
             {state.requestId ? (
-              <Text fontSize="11px" color="fg.subtle" mt="1">
+              <Text fontSize="12px" color="fg.subtle" mt="1">
                 Support ID: {state.requestId}
               </Text>
             ) : null}
@@ -85,7 +85,7 @@ export function CreateWorkspaceForm() {
         <Button type="submit" alignSelf="flex-start" loading={pending} disabled={Boolean(state.checkoutUrl)}>
           Continue to secure checkout
         </Button>
-        <Text fontSize="11px" color="fg.subtle">
+        <Text fontSize="12px" color="fg.subtle">
           The workspace remains read-only until Stripe confirms payment.
         </Text>
       </Stack>

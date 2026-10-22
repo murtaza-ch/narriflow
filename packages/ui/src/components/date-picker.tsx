@@ -97,6 +97,7 @@ export function DatePicker({
 
   return (
     <ChakraDatePicker.Root
+        colorPalette="accent"
         ref={calendarPortal.rootRef}
         positioning={{ strategy: "fixed", placement: "bottom-start" }}
       value={dateValue(selected)}
@@ -214,6 +215,7 @@ export function DateTimePicker({
     <Flex gap="2" width={width} align="stretch">
       {name ? <input type="hidden" name={name} value={value} /> : null}
       <ChakraDatePicker.Root
+        colorPalette="accent"
         ref={calendarPortal.rootRef}
         positioning={{ strategy: "fixed", placement: "bottom-start" }}
         value={selected ? [selected] : []}

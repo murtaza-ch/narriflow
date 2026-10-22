@@ -14,6 +14,7 @@ import {
 } from "@/lib/project-state";
 import { useProjectEvents } from "./project-events-provider";
 import { PanelHeader } from "./panel-header";
+import { EmptyState } from "@narriflow/ui/components/empty-state";
 
 function stripeFor(status: string): string {
   if (status === "completed") return "success.solid";
@@ -58,7 +59,7 @@ export function ProjectEvents() {
             borderRadius="full"
             bg="accent.subtle"
             color="accent.fg"
-            fontSize="11px"
+            fontSize="12px"
             lineHeight="1"
           >
             <Box boxSize="1.5" borderRadius="full" bg="accent.solid" />
@@ -73,23 +74,9 @@ export function ProjectEvents() {
       />
 
       {rows.length === 0 ? (
-        <Flex
-          align="center"
-          justify="center"
-          gap="2.5"
-          py="14"
-          borderWidth="1px"
-          borderStyle="dashed"
-          borderColor="border"
-          borderRadius="l3"
-        >
-          <Box boxSize="2" borderRadius="full" bg="accent.solid" animation="pulse" />
-          <Text fontSize="sm" color="fg.muted">
-            Waiting for workflow updates.
-          </Text>
-        </Flex>
+        <EmptyState icon={<Activity />} title="Waiting for workflow updates." />
       ) : (
-        <Box borderWidth="1px" borderColor="border.subtle" borderRadius="l3" overflow="hidden">
+        <Box bg="bg.panel" borderWidth="1px" borderColor="border.card" borderRadius="l3" overflow="hidden">
           {rows.map((event, index) => {
             const tone = stripeFor(event.status);
             return (
@@ -102,9 +89,9 @@ export function ProjectEvents() {
               >
                 {/* Time */}
                 <Text
-                  textStyle="data"
-                  fontSize="11px"
+                  fontSize="12px"
                   color="fg.subtle"
+                  fontVariantNumeric="tabular-nums"
                   w="132px"
                   flexShrink={0}
                   textAlign="right"
@@ -163,9 +150,9 @@ export function ProjectEvents() {
                     />
                   </Flex>
                   <Text
-                    textStyle="data"
-                    fontSize="11px"
+                    fontSize="12px"
                     color="fg.subtle"
+                    fontVariantNumeric="tabular-nums"
                     display={{ base: "block", md: "none" }}
                   >
                     {formatDateTime(event.emittedAt)}
@@ -173,7 +160,7 @@ export function ProjectEvents() {
                   {event.progress > 0 && event.progress < 100 ? (
                     <Flex align="center" gap="2.5" maxW="320px">
                       <Meter value={event.progress} aria-label={`${workflowStageLabel(event.stage)} progress`} />
-                      <Text textStyle="data" fontSize="11px" color="fg.subtle" flexShrink={0}>
+                      <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums" flexShrink={0}>
                         {event.progress}%
                       </Text>
                     </Flex>

@@ -49,13 +49,12 @@ const languageItems = LANGUAGE_OPTIONS.map((option) => ({
 function SummaryChip({ children }: { children: ReactNode }) {
   return (
     <Box
-      px="2"
+      px="2.5"
       py="0.5"
-      borderWidth="1px"
-      borderColor="border"
-      borderRadius="l1"
-      textStyle="data"
-      fontSize="11px"
+      bg="bg.soft"
+      borderRadius="full"
+      fontSize="12px"
+      fontVariantNumeric="tabular-nums"
       color="fg.muted"
       whiteSpace="nowrap"
     >
@@ -79,7 +78,7 @@ function DurationField({
 }) {
   return (
     <Box>
-      <Text textStyle="eyebrow" color="fg.subtle" mb="1">
+      <Text textStyle="eyebrow" color="fg.muted" mb="1">
         {label}
       </Text>
       <NumberInput
@@ -156,11 +155,11 @@ export function AdvancedClipSettings({
       <Flex align="center" gap="1.5" wrap="wrap">
         <Button
           type="button"
-          variant="outline"
+          variant="subtle"
           size={compact ? "sm" : "xs"}
           onClick={() => setOpen(true)}
         >
-          <SlidersHorizontal size={13} aria-hidden />
+          <SlidersHorizontal size={16} aria-hidden />
           <Text ms="1.5">Detection settings</Text>
         </Button>
         <SummaryChip>{mode === "clip" ? "Best clips" : "Caption only"}</SummaryChip>
@@ -179,33 +178,23 @@ export function AdvancedClipSettings({
       >
         <Drawer.Backdrop />
         <Drawer.Positioner>
-          <Drawer.Content
-            borderInlineStartWidth="1px"
-          >
-            <Drawer.Header
-              px="5"
-              pt="5"
-              pb="4"
-              borderBottomWidth="1px"
-              borderColor="border"
-            >
+          <Drawer.Content>
+            <Drawer.Header px="5" pt="5" pb="4">
               <Flex align="center" justify="space-between" w="full" gap="3">
-                <Box>
-                  <Text textStyle="eyebrow" color="fg.subtle">
-                    Detection
-                  </Text>
-                  <Drawer.Title textStyle="title" fontSize="md" color="fg">
-                    Detection settings
-                  </Drawer.Title>
-                </Box>
+                <Drawer.Title textStyle="title" fontSize="18px" fontWeight="500" color="fg">
+                  Detection settings
+                </Drawer.Title>
                 <IconButton
                   type="button"
                   variant="ghost"
-                  size="xs"
+                  w="8"
+                  h="8"
+                  minW="8"
+                  borderRadius="full"
                   aria-label="Close detection settings"
                   onClick={() => setOpen(false)}
                 >
-                  <X size={14} />
+                  <X size={16} />
                 </IconButton>
               </Flex>
             </Drawer.Header>
@@ -214,7 +203,7 @@ export function AdvancedClipSettings({
               <Stack gap="5">
                 <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="3">
                   <Box>
-                    <Text textStyle="eyebrow" color="fg.subtle" mb="1">
+                    <Text textStyle="eyebrow" color="fg.muted" mb="1">
                       Mode
                     </Text>
                     <Select
@@ -227,7 +216,7 @@ export function AdvancedClipSettings({
                   </Box>
                   {sourceLanguageEditable && (
                     <Box>
-                      <Text textStyle="eyebrow" color="fg.subtle" mb="1">
+                      <Text textStyle="eyebrow" color="fg.muted" mb="1">
                         Language
                       </Text>
                       <Select
@@ -239,7 +228,7 @@ export function AdvancedClipSettings({
                     </Box>
                   )}
                   <Box>
-                    <Text textStyle="eyebrow" color="fg.subtle" mb="1">
+                    <Text textStyle="eyebrow" color="fg.muted" mb="1">
                       Clip length
                     </Text>
                     <Select
@@ -251,7 +240,7 @@ export function AdvancedClipSettings({
                     />
                   </Box>
                   <Box>
-                    <Text textStyle="eyebrow" color="fg.subtle" mb="1">
+                    <Text textStyle="eyebrow" color="fg.muted" mb="1">
                       Clips
                     </Text>
                     <NumberInput
@@ -267,7 +256,7 @@ export function AdvancedClipSettings({
                 </Grid>
 
                 <Box>
-                  <Text textStyle="eyebrow" color="fg.subtle" mb="2">
+                  <Text textStyle="eyebrow" color="fg.muted" mb="2">
                     Duration bounds (seconds)
                   </Text>
                   <Grid templateColumns={{ base: "1fr 1fr", sm: "repeat(3, 1fr)" }} gap="3">
@@ -280,7 +269,7 @@ export function AdvancedClipSettings({
                 </Box>
 
                 <Stack gap="2.5">
-                  <Text textStyle="eyebrow" color="fg.subtle">
+                  <Text textStyle="eyebrow" color="fg.muted">
                     Platforms
                   </Text>
                   <Flex gap="4" wrap="wrap">
@@ -306,7 +295,7 @@ export function AdvancedClipSettings({
                 </Stack>
 
                 <Box>
-                  <Text textStyle="eyebrow" color="fg.subtle" mb="1">
+                  <Text textStyle="eyebrow" color="fg.muted" mb="1">
                     Specific moments (optional)
                   </Text>
                   <Input
@@ -318,7 +307,7 @@ export function AdvancedClipSettings({
                 </Box>
 
                 <Box>
-                  <Text textStyle="eyebrow" color="fg.subtle" mb="1">
+                  <Text textStyle="eyebrow" color="fg.muted" mb="1">
                     Tone/category preferences
                   </Text>
                   <Input
@@ -341,15 +330,9 @@ export function AdvancedClipSettings({
               </Stack>
             </Drawer.Body>
 
-            <Drawer.Footer
-              px="5"
-              py="4"
-              borderTopWidth="1px"
-              borderColor="border"
-            >
+            <Drawer.Footer px="5" py="4">
               <Button
                 type="button"
-                variant="outline"
                 size="sm"
                 onClick={() => setOpen(false)}
               >

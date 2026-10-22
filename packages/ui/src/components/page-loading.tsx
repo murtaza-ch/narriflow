@@ -54,7 +54,7 @@ export function PageLoading({
               align="center"
               bg="bg.panel"
               borderWidth="1px"
-              borderColor="border"
+              borderColor="border.card"
               borderRadius="l2"
             >
               <Skeleton boxSize="10" borderRadius="l2" flexShrink={0} />

@@ -33,7 +33,7 @@ export function ThemeToggle() {
       color="fg.muted"
       cursor="pointer"
       transition="background 120ms ease, color 120ms ease"
-      _hover={{ bg: "bg.subtle", color: "fg" }}
+      _hover={{ bg: "bg.soft", color: "fg" }}
     >
       {colorMode === "light" ? <Moon size={16} /> : <Sun size={16} />}
     </Flex>

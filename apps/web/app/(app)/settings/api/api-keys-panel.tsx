@@ -72,9 +72,9 @@ export function ApiKeysPanel({
 
   return (
     <Stack gap="8">
-      <Box as="form" onSubmit={create} borderTopWidth="1px" borderColor="border" py="6">
+      <Box as="form" onSubmit={create} bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="6">
         <Stack gap="3">
-          <Flex align="center" gap="2"><KeyRound size={16} /><Text fontSize="14px" fontWeight="600">Create workspace API key</Text></Flex>
+          <Flex align="center" gap="2"><Box color="fg.muted" display="flex"><KeyRound size={16} /></Box><Text fontSize="16px" fontWeight="500">Create workspace API key</Text></Flex>
           <Text fontSize="13px" lineHeight="1.6" color="fg.muted">
             Workspace keys include project, export, usage, autopilot and publishing reads. Choose each write permission separately.
           </Text>
@@ -97,18 +97,18 @@ export function ApiKeysPanel({
           )}
           {error ? <Text fontSize="12px" color="danger.fg">{error}</Text> : null}
           {secret ? (
-            <Box layerStyle="well" p="4">
-              <Text fontSize="13px" fontWeight="600" mb="2">Copy this secret now. It will not be shown again.</Text>
-              <Flex gap="2"><Input value={secret} readOnly fontFamily="mono" aria-label="New workspace API key secret" /><Button type="button" variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(secret)}><Copy size={14} />Copy</Button></Flex>
+            <Box bg="bg.soft" borderRadius="l2" p="4">
+              <Text fontSize="13px" fontWeight="500" mb="2">Copy this secret now. It will not be shown again.</Text>
+              <Flex gap="2"><Input value={secret} readOnly fontFamily="mono" aria-label="New workspace API key secret" /><Button type="button" variant="subtle" size="sm" onClick={() => navigator.clipboard.writeText(secret)}><Copy size={14} />Copy</Button></Flex>
             </Box>
           ) : null}
         </Stack>
       </Box>
-      <Stack gap="0" borderTopWidth="1px" borderColor="border">
-        <Text textStyle="eyebrow" color="fg.subtle" py="3">Active keys · {keys.length}</Text>
+      <Stack gap="0" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="6">
+        <Text fontSize="16px" fontWeight="500" pb="3">Active keys</Text>
         {keys.length === 0 ? <Text py="6" fontSize="13px" color="fg.muted">No API keys in this workspace.</Text> : keys.map((key) => (
           <Flex key={key.id} align="center" gap="3" py="4" borderTopWidth="1px" borderColor="border.subtle">
-            <Stack gap="1" flex="1"><Text fontSize="13px" fontWeight="550">{key.name}</Text><Text fontSize="12px" color="fg.subtle" fontFamily="mono">{key.prefix}•••• · {key.lastUsedAt ? `last used ${new Date(key.lastUsedAt).toLocaleDateString()}` : "no recorded use"}</Text><Text fontSize="12px" color="fg.subtle" lineHeight="1.5">{key.scopes.join(" · ")}</Text></Stack>
+            <Stack gap="1" flex="1"><Text fontSize="14px" fontWeight="500">{key.name}</Text><Text fontSize="12px" color="fg.subtle"><Text as="span" fontFamily="mono">{key.prefix}••••</Text> · {key.lastUsedAt ? `last used ${new Date(key.lastUsedAt).toLocaleDateString()}` : "no recorded use"}</Text><Text fontSize="12px" color="fg.subtle" lineHeight="1.5">{key.scopes.join(" · ")}</Text></Stack>
             <Button size="sm" variant="ghost" aria-label={`Revoke ${key.name}`} onClick={() => revoke(key.id)} disabled={pending}><Trash2 size={14} /></Button>
           </Flex>
         ))}

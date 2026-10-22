@@ -28,9 +28,7 @@ export function AuthModeTabs({
       templateColumns="1fr 1fr"
       gap="1"
       p="1"
-      bg="bg.subtle"
-      borderWidth="1px"
-      borderColor="border"
+      bg="bg.soft"
       borderRadius="l2"
     >
       {TABS.map((tab) => {
@@ -46,8 +44,7 @@ export function AuthModeTabs({
             fontSize="13px"
             fontWeight="500"
             color={current ? "fg" : "fg.muted"}
-            bg={current ? { _light: "bg.panel", _dark: "bg.muted" } : "transparent"}
-            boxShadow={current ? "0 1px 2px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--chakra-colors-border)" : "none"}
+            bg={current ? "bg.raised" : "transparent"}
             transition="color 120ms ease, background 120ms ease"
             _hover={current ? undefined : { color: "fg" }}
           >

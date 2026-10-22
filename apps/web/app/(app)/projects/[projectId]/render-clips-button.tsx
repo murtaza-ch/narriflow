@@ -152,7 +152,7 @@ export function RenderClipsButton({
         <Button size={size} disabled={disabled || isPending}>
           {isPending ? <Spinner size="xs" borderTopColor="accent.contrast" /> : null}
           <Text ms={isPending ? "1" : "0"}>{buttonLabel}</Text>
-          <ChevronDown size={12} aria-hidden />
+          <ChevronDown size={16} aria-hidden />
         </Button>
       </Popover.Trigger>
       <Portal>
@@ -160,10 +160,10 @@ export function RenderClipsButton({
           <Popover.Content minW="240px" p="3">
             <Stack gap="3">
               <Box>
-                <Text textStyle="eyebrow" color="fg.subtle">
+                <Text textStyle="eyebrow" color="fg.muted">
                   Render formats
                 </Text>
-                <Text fontSize="11px" color="fg.muted" mt="0.5">
+                <Text fontSize="12px" color="fg.muted" mt="0.5">
                   Choose which variants to queue{" "}
                   {clipIds && clipIds.length > 0
                     ? `across the ${clipIds.length} selected clip${clipIds.length === 1 ? "" : "s"}`
@@ -185,9 +185,9 @@ export function RenderClipsButton({
                       px="2"
                       py="1.5"
                       borderRadius="l1"
-                      borderWidth="1px"
-                      borderColor={checked ? "border.emphasized" : "border"}
-                      bg={checked ? "bg.muted" : "transparent"}
+                      borderWidth="2px"
+                      borderColor={checked ? "accent.solid" : "transparent"}
+                      bg={checked ? "accent.subtle" : "bg.soft"}
                       transition="border-color 120ms ease, background 120ms ease"
                     >
                       <Checkbox
@@ -204,7 +204,7 @@ export function RenderClipsButton({
                           <Text fontSize="xs" color="fg">
                             {option.label}
                           </Text>
-                          <Text textStyle="data" fontSize="10px" color="fg.muted">
+                          <Text fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums">
                             {option.width}x{option.height}
                           </Text>
                         </Box>
@@ -215,7 +215,7 @@ export function RenderClipsButton({
               </Stack>
 
               <Box>
-                <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+                <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
                   Resolution
                 </Text>
                 <SegmentedControl
@@ -234,7 +234,7 @@ export function RenderClipsButton({
                   }
                 />
                 {!can1080pExport ? (
-                  <Text fontSize="11px" color="fg.muted" mt="1">
+                  <Text fontSize="12px" color="fg.muted" mt="1">
                     1080p exports and watermark-free renders need a paid plan.{" "}
                     <ChakraLink asChild color="accent.fg" textUnderlineOffset="3px">
                       <Link href="/settings/billing">Upgrade</Link>
@@ -245,7 +245,7 @@ export function RenderClipsButton({
               </Box>
 
               <Flex justify="space-between" align="center" gap="2">
-                <Text textStyle="data" fontSize="11px" color="fg.muted">
+                <Text fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums">
                   {selectedAspectRatios.length} format
                   {selectedAspectRatios.length === 1 ? "" : "s"} selected
                 </Text>
@@ -259,7 +259,7 @@ export function RenderClipsButton({
                   {isPending || submitting ? (
                     <Spinner size="xs" borderTopColor="accent.contrast" />
                   ) : (
-                    <Check size={12} />
+                    <Check size={16} />
                   )}
                   <Text ms="1">Queue render</Text>
                 </Button>
@@ -340,7 +340,7 @@ export function RetryIngestButton({
         <Button
           type="submit"
           size="sm"
-          variant="outline"
+          variant="subtle"
           disabled={disabled || isPending}
         >
           {isPending ? (

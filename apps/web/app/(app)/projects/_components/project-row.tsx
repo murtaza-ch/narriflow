@@ -36,7 +36,9 @@ export function ProjectRow({
         py="3"
         pr={{ base: "3", md: "4" }}
         pl={selectable ? "12" : { base: "3", md: "4" }}
-        borderRadius="l2"
+        borderRadius="l3"
+        borderWidth="1px"
+        borderColor="border.card"
         bg="bg.panel"
         outline={selected ? "2px solid" : "none"}
         outlineColor="accent.solid"
@@ -64,7 +66,7 @@ export function ProjectRow({
           >
             {project.title}
           </Text>
-          <Text fontSize="11px" color="fg.subtle" truncate>
+          <Text fontSize="12px" color="fg.subtle" truncate>
             {formatDateTime(project.createdAt)}
           </Text>
         </Stack>

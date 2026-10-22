@@ -13,7 +13,7 @@ function slugify(value: string) {
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <Stack gap="1.5"><Text textStyle="eyebrow" color="fg.subtle">{label}</Text>{children}</Stack>;
+  return <Stack gap="1.5"><Text fontSize="13px" fontWeight="500" color="fg">{label}</Text>{children}</Stack>;
 }
 
 export function BrandProfileCreateForm() {
@@ -68,7 +68,7 @@ export function BrandProfileCreateForm() {
     <Stack gap="8" animation="fade-up" animationFillMode="backwards" style={{ animationDelay: "55ms" }}>
       <Grid templateColumns={{ base: "1fr", lg: "1fr 1fr" }} gap="8">
         <Stack gap="5">
-          <Box borderTopWidth="1px" borderColor="border" pt="4"><Text textStyle="title" fontSize="21px">Identity</Text></Box>
+          <Text fontSize="16px" fontWeight="500">Identity</Text>
           <Field label="Profile name"><Input aria-label="Profile name" value={name} onChange={(event) => { const next = event.currentTarget.value; setName(next); if (!slugEdited) setSlug(slugify(next)); }} maxLength={80} placeholder="Northstar Coffee" /></Field>
           <Field label="URL slug"><Input aria-label="URL slug" value={slug} onChange={(event) => { setSlugEdited(true); setSlug(slugify(event.currentTarget.value)); }} maxLength={80} fontFamily="mono" /></Field>
           <Grid templateColumns="repeat(3, 1fr)" gap="3">
@@ -77,7 +77,7 @@ export function BrandProfileCreateForm() {
           <Field label="Publishing rule"><Select ariaLabel="Publishing rule" items={[{ label: "Direct publish", value: "none" }, { label: "Approval required", value: "approval_required" }]} value={approvalRule} onValueChange={setApprovalRule} /></Field>
         </Stack>
         <Stack gap="5">
-          <Box borderTopWidth="1px" borderColor="border" pt="4"><Text textStyle="title" fontSize="21px">Voice</Text></Box>
+          <Text fontSize="16px" fontWeight="500">Voice</Text>
           <Field label="Audience"><Textarea aria-label="Audience" value={audience} onChange={(event) => setAudience(event.currentTarget.value)} maxLength={500} resize="vertical" placeholder="Who should this brand sound like it understands?" /></Field>
           <Field label="Tone · comma separated"><Input aria-label="Tone · comma separated" value={tone} onChange={(event) => setTone(event.currentTarget.value)} placeholder="warm, specific, practical" /></Field>
           <Field label="Preferred terms"><Input aria-label="Preferred terms" value={preferredTerms} onChange={(event) => setPreferredTerms(event.currentTarget.value)} placeholder="coffee bar, seasonal menu" /></Field>
@@ -85,7 +85,7 @@ export function BrandProfileCreateForm() {
           <Field label="Hashtag guidance"><Textarea aria-label="Hashtag guidance" value={hashtagGuidance} onChange={(event) => setHashtagGuidance(event.currentTarget.value)} maxLength={500} resize="vertical" placeholder="Use two local tags and one campaign tag." /></Field>
         </Stack>
       </Grid>
-      <Box borderTopWidth="1px" borderColor="border" pt="5"><Button onClick={submit} disabled={!valid || pending}>{pending ? "Creating…" : "Create Brand Profile"}</Button></Box>
+      <Box><Button onClick={submit} disabled={!valid || pending}>{pending ? "Creating…" : "Create Brand Profile"}</Button></Box>
     </Stack>
   );
 }

@@ -2,15 +2,14 @@
 
 import { useState } from "react";
 import { Box, Flex, Text, HStack } from "@chakra-ui/react";
-import { ArrowLeft, Undo2, Redo2, Keyboard, RotateCcw } from "lucide-react";
+import { ChevronLeft, Undo2, Redo2, Keyboard, RotateCcw, Lock } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { ScoreMeter } from "@narriflow/ui/components/meter";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { formatDuration } from "@/lib/format";
 import { ClipActionsMenu } from "../../../../clip-actions-menu";
 import { useStudio, type StudioSaveState } from "./studio-shell";
 import { ResetConfirmDialog } from "./reset-confirm-dialog";
 import { StudioExportMenu } from "./studio-export-menu";
+import { useIsMac } from "./use-is-mac";
 
 function IconBtn({
   icon,
@@ -28,9 +27,9 @@ function IconBtn({
       as="button"
       align="center"
       justify="center"
-      w="32px"
-      h="32px"
-      borderRadius="l1"
+      w="36px"
+      h="36px"
+      borderRadius="l2"
       bg="transparent"
       border="none"
       color={disabled ? "fg.disabled" : "studio.fgMuted"}
@@ -123,6 +122,43 @@ function AutosaveIndicator({
   );
 }
 
+/**
+ * Shown in place of the save status while another tab holds the write lease.
+ * Sits in the bar rather than over the editor so Export and the tools stay
+ * reachable.
+ */
+function EditingElsewhereNotice({ onTakeOver }: { onTakeOver: () => void }) {
+  return (
+    <HStack gap="3" ms="3" me="2" role="status" aria-live="polite">
+      <HStack gap="1.5" color="studio.fgMuted">
+        <Lock size={14} />
+        <Text fontSize="13px" whiteSpace="nowrap">
+          Editing in another tab
+        </Text>
+      </HStack>
+      <Box
+        as="button"
+        h="32px"
+        px="3"
+        borderRadius="8px"
+        bg="studio.raised"
+        border="none"
+        color="studio.fg"
+        fontSize="13px"
+        fontWeight="500"
+        whiteSpace="nowrap"
+        cursor="pointer"
+        transition="background 120ms ease"
+        _hover={{ bg: "studio.borderStrong" }}
+        title="Only one tab can edit at a time. Taking over makes the other tab read-only."
+        onClick={onTakeOver}
+      >
+        Take over editing
+      </Box>
+    </HStack>
+  );
+}
+
 export function TopBar() {
   const router = useRouter();
   const {
@@ -138,37 +174,29 @@ export function TopBar() {
     canReset,
     saveState,
     isDocDirty,
-    aspectRatio,
-  } = useStudio("clipInfo", "canUndo", "canRedo", "showShortcuts", "setShowShortcuts", "handleUndo", "handleRedo", "handleReset", "resetState", "canReset", "saveState", "isDocDirty", "aspectRatio");
+    editingElsewhere,
+    handleTakeOverEditing,
+  } = useStudio("clipInfo", "canUndo", "canRedo", "showShortcuts", "setShowShortcuts", "handleUndo", "handleRedo", "handleReset", "resetState", "canReset", "saveState", "isDocDirty", "editingElsewhere", "handleTakeOverEditing");
+  const isMac = useIsMac();
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   return (
-    <Flex
-      h="48px"
-      align="center"
-      px="3"
-      gap="1"
-      bg="studio.surface"
-      borderBottomWidth="1px"
-      borderColor="studio.border"
-      flexShrink={0}
-    >
-      {/* Left: back + title + clip data */}
-      <HStack gap="2" flex="1" minW="0">
+    // The header is its own panel, like the transcript, tools and timeline.
+    <Flex h="56px" align="center" px="3" gap="2" bg="studio.canvas" borderRadius="12px" flexShrink={0}>
+      {/* Left: back + clip title */}
+      <HStack gap="1.5" flex="1" minW="0">
         <IconBtn
-          icon={<ArrowLeft size={16} />}
+          icon={<ChevronLeft size={20} />}
           onClick={() => router.push(`/projects/${clipInfo.projectId}`)}
           label="Back to project"
         />
         <Text
-          fontFamily="display"
-          fontSize="13px"
-          fontWeight="600"
+          fontSize="18px"
+          fontWeight="500"
+          letterSpacing="-0.01em"
           color="studio.fg"
-          whiteSpace="nowrap"
-          overflow="hidden"
-          textOverflow="ellipsis"
-          maxW="300px"
+          truncate
+          maxW="560px"
         >
           {clipInfo.clipTitle ?? clipInfo.title}
         </Text>
@@ -188,52 +216,40 @@ export function TopBar() {
           }
           onDeleted={() => router.push(`/projects/${clipInfo.projectId}`)}
         />
-
-        <Box w="1px" h="20px" bg="studio.border" mx="1" flexShrink={0} />
-
-        <HStack gap="2" flexShrink={0} display={{ base: "none", md: "flex" }}>
-          <Text textStyle="data" fontSize="12px" color="studio.timecode">
-            {formatDuration(clipInfo.duration)}
-          </Text>
-          <Text textStyle="data" fontSize="12px" color="studio.fgMuted">
-            {aspectRatio}
-          </Text>
-          <ScoreMeter score={clipInfo.viralityScore} size="sm" />
-        </HStack>
       </HStack>
 
-      {/* Right: autosave + history + shortcuts + export */}
+      {/* Right: history, shortcuts, save state, export */}
       <HStack gap="1" flexShrink={0}>
-        <AutosaveIndicator saveState={saveState} isDocDirty={isDocDirty} />
-
-        <Box w="1px" h="20px" bg="studio.border" mx="1" />
-
         <IconBtn
-          icon={<Undo2 size={16} />}
+          icon={<Undo2 size={18} />}
           onClick={handleUndo}
           disabled={!canUndo}
-          label="Undo (Ctrl+Z)"
+          label={isMac ? "Undo (⌘Z)" : "Undo (Ctrl+Z)"}
         />
         <IconBtn
-          icon={<Redo2 size={16} />}
+          icon={<Redo2 size={18} />}
           onClick={handleRedo}
           disabled={!canRedo}
-          label="Redo (Ctrl+Shift+Z)"
+          label={isMac ? "Redo (⇧⌘Z)" : "Redo (Ctrl+Shift+Z)"}
         />
         <IconBtn
-          icon={<RotateCcw size={16} />}
+          icon={<RotateCcw size={17} />}
           onClick={() => setShowResetConfirm(true)}
-          disabled={!canReset || resetState === "resetting"}
+          disabled={!canReset || resetState === "resetting" || editingElsewhere}
           label="Reset to original"
         />
         <IconBtn
-          icon={<Keyboard size={16} />}
+          icon={<Keyboard size={18} />}
           onClick={() => setShowShortcuts(!showShortcuts)}
           label="Keyboard shortcuts"
         />
-
-        <Box w="1px" h="20px" bg="studio.border" mx="1" />
-
+        {editingElsewhere ? (
+          <EditingElsewhereNotice onTakeOver={handleTakeOverEditing} />
+        ) : (
+          <Box ms="3" me="2">
+            <AutosaveIndicator saveState={saveState} isDocDirty={isDocDirty} />
+          </Box>
+        )}
         <StudioExportMenu />
       </HStack>
 

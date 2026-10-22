@@ -19,18 +19,15 @@ export function CaptionPresetGallery({
   onChange: (id: CaptionPresetId) => void;
 }) {
   const railRef = useRef<HTMLDivElement>(null);
-  const selectedName = captionPresetOptions.find(
-    (option) => option.id === value,
-  )?.name;
   return (
     <Stack gap="3">
       <Flex align="center" justify="space-between" gap="3">
         <Box>
-          <Text as="h2" fontSize="14px" fontWeight="600">
+          <Text as="h2" fontSize="16px" fontWeight="500">
             Caption style
           </Text>
-          <Text fontSize="11px" color="fg.muted" mt="1">
-            {selectedName} selected · Sample preview
+          <Text fontSize="12px" color="fg.subtle" mt="1">
+            Sample preview
           </Text>
         </Box>
         <Flex gap="1.5">
@@ -53,16 +50,15 @@ export function CaptionPresetGallery({
                     : "smooth",
                 })
               }
-              boxSize="30px"
+              boxSize="32px"
               rounded="full"
-              borderWidth="1px"
-              borderColor="border.control"
+              bg="bg.soft"
               display="flex"
               alignItems="center"
               justifyContent="center"
               color="fg.muted"
               cursor="pointer"
-              _hover={{ bg: "bg.muted", color: "fg" }}
+              _hover={{ bg: "bg.softHover", color: "fg" }}
               _focusVisible={{
                 outline: "2px solid",
                 outlineColor: "accent.solid",
@@ -123,7 +119,6 @@ export function CaptionPresetGallery({
                 position="relative"
                 overflow="hidden"
                 transition="border-color 150ms ease"
-                _hover={{ borderColor: "accent.solid" }}
               >
                 {namedPreset ? (
                   <CaptionPresetPreview
@@ -141,29 +136,22 @@ export function CaptionPresetGallery({
                     justify="center"
                     gap="4"
                     p="3"
-                    bg="accent.subtle"
-                    color="accent.fg"
+                    bg="bg.subtle"
+                    color="fg"
                   >
-                    <Flex
-                      boxSize="44px"
-                      borderWidth="1px"
-                      borderColor="accent.emphasized"
-                      rounded="xl"
-                      align="center"
-                      justify="center"
-                    >
-                      <Palette size={22} strokeWidth={1.5} />
-                    </Flex>
-                    <Text fontSize="13px" fontWeight="550" textAlign="center">
+                    <Box color="fg.muted">
+                      <Palette size={20} strokeWidth={1.75} />
+                    </Box>
+                    <Text fontSize="13px" fontWeight="500" textAlign="center">
                       Your brand,
                       <br />
                       every clip.
                     </Text>
                     <Text
-                      fontSize="10px"
+                      fontSize="12px"
                       color="fg.muted"
                       textAlign="center"
-                      lineHeight="1.6"
+                      lineHeight="1.5"
                     >
                       Use the template selected during import.
                     </Text>

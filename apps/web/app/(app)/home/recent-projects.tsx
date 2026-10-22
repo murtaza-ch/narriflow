@@ -15,12 +15,12 @@ export function RecentProjects({
 }) {
   return (
     <Stack as="section" gap="5">
-      <Heading as="h2" fontSize="md">
+      <Heading as="h2" fontSize="md" fontWeight="500">
         Recent projects
       </Heading>
       {items.length === 0 ? (
         <EmptyState
-          icon={<FolderOpen size={24} />}
+          icon={<FolderOpen size={20} />}
           title="No projects yet"
           description="Your imported videos and clips will appear here."
           action={

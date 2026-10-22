@@ -71,7 +71,7 @@ interface SectionProps {
 function Section({ title, templates, defaultId, ownership }: SectionProps) {
   return (
     <Box as="section">
-      <Text textStyle="eyebrow" color="fg.subtle" mb="2">
+      <Text textStyle="eyebrow" color="fg.muted" mb="2">
         {title}
       </Text>
       <Box layerStyle="band">
@@ -226,8 +226,8 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
       {/* Compact type specimen; full video positioning is shown in the style editor. */}
       <MediaWell
         ratio={4 / 3}
-        borderColor={isDefault ? "border.accent" : "border"}
-        borderWidth={isDefault ? "2px" : "1px"}
+        borderColor={isDefault ? "accent.solid" : "transparent"}
+        borderWidth="2px"
         transition="border-color 120ms ease"
       >
         <CaptionSpecimen preset={preset} />
@@ -298,13 +298,10 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
           </Menu.Trigger>
           <Portal>
             <Menu.Positioner>
-              <Menu.Content minW="10rem" p="1">
+              <Menu.Content>
                 {!isDefault ? (
                   <Menu.Item
                     value="set-default"
-                    fontSize="13px"
-                    gap="2"
-                    borderRadius="l1"
                     onClick={handleSetDefault}
                   >
                     <Box boxSize="3" borderRadius="full" borderWidth="1px" borderColor="border.control" />
@@ -313,9 +310,6 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
                 ) : null}
                 <Menu.Item
                   value="duplicate"
-                  fontSize="13px"
-                  gap="2"
-                  borderRadius="l1"
                   onClick={handleDuplicate}
                 >
                   {pendingAction === "duplicate" ? (
@@ -326,7 +320,7 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
                   Duplicate
                 </Menu.Item>
                 {ownership === "mine" ? (
-                  <Menu.Item value="edit" fontSize="13px" gap="2" borderRadius="l1" asChild>
+                  <Menu.Item value="edit" asChild>
                     <Link href={`/brand-kit/styles/${template.id}`}>
                       <Pencil size={13} />
                       Edit
@@ -338,9 +332,6 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
                     <Menu.Separator />
                     <Menu.Item
                       value="delete"
-                      fontSize="13px"
-                      gap="2"
-                      borderRadius="l1"
                       color="danger.fg"
                       onClick={() => void handleDelete()}
                     >

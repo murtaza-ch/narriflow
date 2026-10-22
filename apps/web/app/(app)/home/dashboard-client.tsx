@@ -29,7 +29,7 @@ export function HeroPasteLinkField() {
   return (
     <Stack gap="2" w="full">
       {/* Attached control group: input + button share one boundary. */}
-      <Flex asChild bg="bg.muted" borderWidth="1px" borderColor="border.emphasized" borderRadius="15px" p="2" ps="4" gap="3" align="center">
+      <Flex asChild borderRadius="15px" p="2" ps="4" gap="3" align="center">
         <form onSubmit={submit}>
           <Box color="fg.subtle" flexShrink={0} display={{ base: "none", sm: "block" }}><Link2 size={18} /></Box>
           <Input
@@ -46,7 +46,7 @@ export function HeroPasteLinkField() {
             bg="transparent"
             px="0"
             position="relative"
-            _focusVisible={{ zIndex: 1 }}
+            _focusVisible={{ zIndex: 1, boxShadow: "none", outline: "none" }}
           />
           <Button
             type="submit"

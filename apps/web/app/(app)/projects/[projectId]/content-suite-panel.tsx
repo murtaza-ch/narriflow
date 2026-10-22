@@ -56,8 +56,8 @@ function TypeTile({ type }: { type: string }) {
       flexShrink={0}
       align="center"
       justify="center"
-      borderRadius="l2"
-      bg="bg.muted"
+      borderRadius="full"
+      bg="bg.soft"
       color="fg.muted"
       aria-hidden="true"
     >
@@ -73,7 +73,7 @@ function Bar(props: { w: string; h?: string; accent?: boolean }) {
       h={props.h ?? "1.5"}
       w={props.w}
       borderRadius="full"
-      bg={props.accent ? "accent.muted" : "border.emphasized"}
+      bg={props.accent ? "accent.muted" : "bg.softHover"}
       flexShrink={0}
     />
   );
@@ -85,7 +85,7 @@ function FormatSketch({ type }: { type: TextOutputType }) {
     case "blog_post":
       return (
         <Stack gap="2">
-          <Box h="9" borderRadius="l1" bg="border.subtle" />
+          <Box h="9" borderRadius="l1" bg="bg.soft" />
           <Bar w="78%" h="2" accent />
           <Bar w="100%" />
           <Bar w="92%" />
@@ -95,7 +95,7 @@ function FormatSketch({ type }: { type: TextOutputType }) {
     case "x_thread":
       return (
         <Stack gap="2.5" position="relative">
-          <Box position="absolute" left="7px" top="3" bottom="3" w="1px" bg="border.emphasized" />
+          <Box position="absolute" left="7px" top="3" bottom="3" w="1px" bg="bg.softHover" />
           {(
             [
               ["90%", "64%"],
@@ -127,9 +127,9 @@ function FormatSketch({ type }: { type: TextOutputType }) {
           <Bar w="94%" />
           <Bar w="72%" />
           <Flex gap="1.5" pt="0.5">
-            <Box boxSize="2.5" borderRadius="full" bg="border.emphasized" />
-            <Box boxSize="2.5" borderRadius="full" bg="border.emphasized" />
-            <Box boxSize="2.5" borderRadius="full" bg="border.emphasized" />
+            <Box boxSize="2.5" borderRadius="full" bg="bg.softHover" />
+            <Box boxSize="2.5" borderRadius="full" bg="bg.softHover" />
+            <Box boxSize="2.5" borderRadius="full" bg="bg.softHover" />
           </Flex>
         </Stack>
       );
@@ -155,8 +155,7 @@ function FormatSketch({ type }: { type: TextOutputType }) {
           px="3"
           py="2.5"
           borderRadius="l1"
-          borderWidth="1px"
-          borderColor="border.emphasized"
+          bg="bg.soft"
         >
           <Box color="accent.fg" opacity={0.8}>
             <Quote size={16} />
@@ -176,13 +175,11 @@ function FormatCard({ type, writing }: { type: TextOutputType; writing: boolean 
       gap="0"
       bg="bg.panel"
       borderWidth="1px"
-      borderColor="border.subtle"
+      borderColor="border.card"
       borderRadius="l3"
       overflow="hidden"
-      transition="border-color 160ms ease"
-      _hover={{ borderColor: "border" }}
     >
-      <Box position="relative" h="148px" p="5" bg="bg.subtle" borderBottomWidth="1px" borderColor="border.subtle">
+      <Box position="relative" h="148px" p="5" bg="bg.subtle">
         <Box h="full" animation={writing ? "pulse" : undefined}>
           <FormatSketch type={type} />
         </Box>
@@ -250,14 +247,14 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
       p="5"
       bg="bg.panel"
       borderWidth="1px"
-      borderColor="border.subtle"
+      borderColor="border.card"
       borderRadius="l3"
     >
       <Flex align="center" justify="space-between" gap="3">
         <Flex align="center" gap="3" minW="0">
           <TypeTile type={asset.type} />
           <Box minW="0">
-            <Text textStyle="eyebrow" color="fg.subtle">
+            <Text textStyle="eyebrow" color="fg.muted">
               {labelFor(asset.type)}
             </Text>
             <Text fontSize="14px" fontWeight="550" color="fg" truncate>
@@ -265,7 +262,7 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
             </Text>
           </Box>
         </Flex>
-        <Button size="sm" variant="outline" onClick={copy} flexShrink={0}>
+        <Button size="sm" variant="subtle" onClick={copy} flexShrink={0}>
           {copied ? <Check size={13} /> : <Copy size={13} />}
           {copied ? "Copied" : "Copy"}
         </Button>
@@ -275,7 +272,7 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
         maxH="300px"
         overflowY="auto"
         borderRadius="l2"
-        bg="bg.subtle"
+        bg="bg.soft"
         px="4"
         py="3.5"
         fontSize="13px"
@@ -286,7 +283,7 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
       >
         {asset.body}
       </Box>
-      <Text textStyle="data" fontSize="11px" color="fg.subtle">
+      <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">
         {wordCount.toLocaleString()} words
       </Text>
     </Stack>
@@ -383,7 +380,7 @@ export function ContentSuitePanel({
         actions={
           <Button
             size="sm"
-            variant={assets.length > 0 ? "outline" : "solid"}
+            variant={assets.length > 0 ? "subtle" : "solid"}
             onClick={generate}
             disabled={generating || loading}
           >

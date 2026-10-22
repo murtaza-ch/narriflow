@@ -107,7 +107,7 @@ export function DeleteProjectButton({
         <ActionMenu
           ariaLabel="Project actions"
           trigger={
-            <IconButton aria-label="Project actions" variant="outline" size="sm" disabled={pending}>
+            <IconButton aria-label="Project actions" variant="subtle" size="sm" disabled={pending}>
               <MoreHorizontal size={16} />
             </IconButton>
           }
@@ -142,7 +142,7 @@ export function DeleteProjectButton({
           disabled={pending}
           onClick={handleTriggerClick}
         >
-          {pending ? <Spinner size="xs" /> : <Trash2 size={13} />}
+          {pending ? <Spinner size="xs" /> : <Trash2 size={16} />}
         </IconButton>
       ) : (
         <Button
@@ -153,7 +153,7 @@ export function DeleteProjectButton({
           disabled={pending}
           onClick={handleTriggerClick}
         >
-          {pending ? <Spinner size="xs" /> : <Trash2 size={13} />}
+          {pending ? <Spinner size="xs" /> : <Trash2 size={16} />}
           <Text ms="1.5">Delete project</Text>
         </Button>
       )}

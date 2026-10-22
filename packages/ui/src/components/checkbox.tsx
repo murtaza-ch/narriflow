@@ -17,7 +17,7 @@ export const Checkbox = React.forwardRef<HTMLLabelElement, CheckboxProps>(
     return (
       <ChakraCheckbox.Root
         ref={ref}
-        colorPalette="brand"
+        colorPalette="accent"
         onCheckedChange={(details) => onCheckedChange?.(details.checked === true)}
         {...rest}
       >

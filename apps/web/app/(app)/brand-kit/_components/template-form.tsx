@@ -344,18 +344,13 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
             <Box
               as="label"
               display="block"
-              layerStyle="well"
-              borderStyle="dashed"
-              borderColor="border.control"
+              bg="bg.soft"
+              borderRadius="l2"
               p="5"
               textAlign="center"
               cursor={logoUploading ? "not-allowed" : "pointer"}
-              transition="border-color 120ms ease, background 120ms ease"
-              _hover={
-                logoUploading
-                  ? undefined
-                  : { borderColor: "border.emphasized", bg: "bg.muted" }
-              }
+              transition="background 120ms ease"
+              _hover={logoUploading ? undefined : { bg: "bg.softHover" }}
             >
               <chakra.input
                 type="file"
@@ -368,7 +363,13 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
                 srOnly
               />
               <Flex direction="column" align="center" gap="1.5">
-                {logoUploading ? <Spinner size="sm" /> : <UploadIcon size={18} />}
+                {logoUploading ? (
+                  <Spinner size="sm" />
+                ) : (
+                  <Box color="fg.muted">
+                    <UploadIcon size={18} />
+                  </Box>
+                )}
                 <Text fontSize="12.5px" color={logoUploading ? "fg.disabled" : "fg.muted"}>
                   {logoUploading
                     ? "Uploading…"
@@ -377,7 +378,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
                       : "Upload PNG or SVG"}
                 </Text>
                 {state.logoStorageKey && (
-                  <Text textStyle="data" fontSize="10px" color="fg.subtle">
+                  <Text textStyle="data" fontSize="12px" color="fg.subtle">
                     {state.logoStorageKey.split("/").pop()}
                   </Text>
                 )}
@@ -420,20 +421,20 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
                       w="8"
                       h="8"
                       borderRadius="l2"
-                      borderWidth="1px"
-                      borderColor={selected ? "border.accent" : "border.control"}
-                      bg={selected ? "bg.accent" : "bg.subtle"}
+                      borderWidth="2px"
+                      borderColor={selected ? "accent.solid" : "transparent"}
+                      bg={selected ? "accent.subtle" : "bg.soft"}
                       display="inline-flex"
                       alignItems="center"
                       justifyContent="center"
                       cursor="pointer"
                       transition="background 120ms ease, border-color 120ms ease"
-                      _hover={{ borderColor: "border.emphasized" }}
+                      _hover={{ bg: selected ? "accent.subtle" : "bg.softHover" }}
                     >
                       <Box
                         boxSize="1.5"
                         borderRadius="full"
-                        bg={selected ? "accent.solid" : "border.emphasized"}
+                        bg={selected ? "accent.solid" : "fg.subtle"}
                       />
                     </chakra.button>
                   );
@@ -576,13 +577,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
           </Flex>
         )}
 
-        <Flex
-          gap="2.5"
-          justify="flex-end"
-          borderTopWidth="1px"
-          borderColor="border"
-          pt="5"
-        >
+        <Flex gap="2.5" justify="flex-end">
           <Button loading={pending} onClick={handleSubmit}>
             {mode === "create" ? "Create style" : "Save changes"}
           </Button>
@@ -627,10 +622,10 @@ function FormSection({
 }) {
   return (
     <Box as="section">
-      <Text textStyle="eyebrow" color="fg.subtle" mb="2">
+      <Text fontSize="16px" fontWeight="500" mb="4">
         {title}
       </Text>
-      <Box layerStyle="band">{children}</Box>
+      {children}
     </Box>
   );
 }
@@ -731,13 +726,10 @@ function TemplatePreview({
       </PhoneFrame>
 
       <Stack gap="0.5" px="1" maxW="280px" w="full">
-        <Text textStyle="eyebrow" color="fg.subtle">
-          Live preview
-        </Text>
-        <Text fontSize="13px" fontWeight="600" color="fg" truncate>
+        <Text fontSize="13px" fontWeight="500" color="fg" truncate>
           {input.name}
         </Text>
-        <Text textStyle="data" fontSize="11px" color="fg.muted">
+        <Text fontSize="12px" color="fg.subtle">
           {CAPTION_MOTIONS[captionPreset.animation].label} · {captionPreset.position} · {captionPreset.fontName}
           {input.logoStorageKey ? " · with logo" : ""}
         </Text>

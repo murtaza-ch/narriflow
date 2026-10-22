@@ -321,9 +321,6 @@ export function ClipsPanel({
 		const clip = clips[0]!;
 		return (
 			<Box>
-				<Text textStyle="eyebrow" color="fg.subtle" mb="2">
-					Captioned Video
-				</Text>
 				<Box layerStyle="band">
 					<ClipRow
 						clip={clip}
@@ -391,15 +388,20 @@ export function ClipsPanel({
 							<Popover.Trigger asChild>
 								<IconButton
 									size="sm"
-									variant="outline"
+									variant="subtle"
 									aria-label={
 										activeFilterCount > 0
 											? `Filters (${activeFilterCount} active)`
 											: "Filters"
 									}
 									title="Filters"
-									color="fg.muted"
-									_hover={{ bg: "bg.muted", color: "fg" }}
+									bg={activeFilterCount > 0 ? "accent.subtle" : undefined}
+									color={activeFilterCount > 0 ? "accent.fg" : "fg.muted"}
+									_hover={
+										activeFilterCount > 0
+											? { bg: "accent.muted" }
+											: { bg: "bg.softHover", color: "fg" }
+									}
 								>
 									<Filter size={16} aria-hidden="true" />
 								</IconButton>
@@ -408,7 +410,7 @@ export function ClipsPanel({
 								<Popover.Positioner>
 									<Popover.Content minW="260px" p="3">
 										<Stack gap="2.5">
-											<Text textStyle="eyebrow" color="fg.subtle">
+											<Text textStyle="eyebrow" color="fg.muted">
 												Filters
 											</Text>
 											<Select
@@ -464,7 +466,7 @@ export function ClipsPanel({
 							onCheckedChange={(checked) => toggleSelectAll(checked)}
 							aria-label="Select all visible clips"
 						>
-							<Text fontSize="12px" color="fg.muted">
+							<Text fontSize="13px" color="fg.muted" fontVariantNumeric="tabular-nums">
 								{selectedIds.size > 0
 									? `${selectedIds.size} selected`
 									: "Select all"}
@@ -473,7 +475,7 @@ export function ClipsPanel({
 						{selectedIds.size > 0 && (
 							<Button
 								size="sm"
-								variant="outline"
+								variant="subtle"
 								disabled={!publishing.config.canPublish}
 								onClick={() =>
 									publishing.compose(
@@ -500,12 +502,12 @@ export function ClipsPanel({
 
 				{filteredClips.length === 0 ? (
 					<EmptyState
-						icon={<Filter size={24} />}
+						icon={<Filter size={20} />}
 						title="No clips match your filters"
 						description="Try a different duration, score, or category."
 						action={
 							hasActiveFilters ? (
-								<Button variant="outline" size="sm" onClick={clearFilters}>
+								<Button variant="subtle" size="sm" onClick={clearFilters}>
 									Clear filters
 								</Button>
 							) : undefined
@@ -527,8 +529,8 @@ export function ClipsPanel({
 							top="20"
 							alignSelf="flex-start"
 						>
-							<Text fontSize="10px" color="fg.subtle" mb="3" px="2">
-								In this project · {sortedClips.length}
+							<Text textStyle="eyebrow" color="fg.muted" mb="3" px="2">
+								In this project
 							</Text>
 							<Stack gap="2" maxH="calc(100vh - 160px)" overflowY="auto">
 								{sortedClips.map((clip) => {
@@ -550,17 +552,17 @@ export function ClipsPanel({
 											minH="48px"
 											p="2"
 											borderRadius="l2"
-											bg={isActive ? "bg.muted" : "transparent"}
+											bg={isActive ? "accent.subtle" : "transparent"}
 											w="full"
 											cursor="pointer"
 											aria-label={`Jump to clip ${rank}`}
 											aria-current={isActive ? "true" : undefined}
-											_hover={{ bg: "bg.muted" }}
+											_hover={{ bg: isActive ? "accent.subtle" : "bg.soft" }}
 										>
 											<Text
-												textStyle="data"
-												fontSize="11px"
+												fontSize="12px"
 												fontWeight={isActive ? "600" : "500"}
+												fontVariantNumeric="tabular-nums"
 												color={isActive ? "accent.fg" : "fg.subtle"}
 												transition="color 120ms ease"
 											>

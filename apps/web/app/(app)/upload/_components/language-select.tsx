@@ -27,12 +27,6 @@ export function LanguageSelect({ value, onChange }: LanguageSelectProps) {
       }}
       placeholder="Select language"
       size="md"
-      css={{
-        "& [data-part=trigger]": {
-          background: "var(--chakra-colors-bg-panel)",
-          borderColor: "var(--chakra-colors-border)",
-        },
-      }}
     />
   );
 }

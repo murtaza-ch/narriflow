@@ -18,14 +18,11 @@ const STEP_ICONS: Record<string, LucideIcon> = {
   Publish: Send,
 };
 
-const STEP_COLORS: Record<
-  PipelineStepState,
-  { bg: string; border: string; fg: string }
-> = {
-  done: { bg: "bg.panel", border: "border.emphasized", fg: "accent.fg" },
-  active: { bg: "accent.subtle", border: "accent.fg", fg: "accent.fg" },
-  failed: { bg: "danger.subtle", border: "danger.fg", fg: "danger.fg" },
-  todo: { bg: "bg", border: "border", fg: "fg.muted" },
+const STEP_COLORS: Record<PipelineStepState, { bg: string; fg: string }> = {
+  done: { bg: "accent.subtle", fg: "accent.fg" },
+  active: { bg: "accent.solid", fg: "accent.contrast" },
+  failed: { bg: "danger.subtle", fg: "danger.fg" },
+  todo: { bg: "bg.soft", fg: "fg.muted" },
 };
 
 export function PipelineStepper({
@@ -78,7 +75,7 @@ export function PipelineStepper({
                 left="48px"
                 w="calc(100% - 60px)"
                 h="1px"
-                bg={step.state === "done" ? "border.emphasized" : "border"}
+                bg={step.state === "done" ? "accent.solid" : "bg.muted"}
               />
             )}
             <Flex align="center" aria-hidden="true">
@@ -87,9 +84,7 @@ export function PipelineStepper({
                 h="36px"
                 align="center"
                 justify="center"
-                borderRadius="xl"
-                borderWidth="1px"
-                borderColor={colors.border}
+                borderRadius="full"
                 bg={colors.bg}
                 color={colors.fg}
                 flexShrink={0}
@@ -98,9 +93,9 @@ export function PipelineStepper({
               </Flex>
             </Flex>
             <Text
-              fontSize={{ base: "10px", md: "xs" }}
+              fontSize="xs"
               fontWeight="medium"
-              color={step.state === "failed" ? "danger.fg" : step.state === "todo" ? "fg.subtle" : "fg.muted"}
+              color={step.state === "failed" ? "danger.fg" : step.state === "todo" ? "fg.subtle" : step.state === "active" ? "fg" : "fg.muted"}
             >
               {step.label}
             </Text>

@@ -116,7 +116,7 @@ export function ProjectCard({
           </Box>
 
           <Stack gap="1">
-            <Text fontSize="11px" color="fg.subtle">
+            <Text fontSize="12px" color="fg.subtle">
               {formatDateTime(project.createdAt)}
             </Text>
             <Text

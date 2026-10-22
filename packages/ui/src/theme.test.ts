@@ -143,7 +143,7 @@ describe("single-line control consistency", () => {
       const resolved = style?.["@layer recipes"] as Record<string, unknown>;
       expect(resolved.height).toBe("var(--chakra-sizes-9)");
       expect(resolved.fontSize).toBe("13px");
-      expect(resolved.borderRadius).toBe("var(--chakra-radii-l2)");
+      expect(resolved.borderRadius).toBe("var(--chakra-radii-control)");
     }
     const segmented = system.sva(system.getSlotRecipe("segmentGroup"))({ size: "sm" });
     expect((segmented.root?.["@layer recipes"] as Record<string, unknown>).height).toBe("var(--chakra-sizes-9)");

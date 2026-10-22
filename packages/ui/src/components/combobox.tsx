@@ -83,13 +83,16 @@ export const Combobox = React.forwardRef<HTMLDivElement, ComboboxProps>(
             placeholder={placeholder}
             h="10"
             px="3"
-            bg="bg.panel"
+            bg="bg.soft"
             borderWidth="1px"
-            borderColor="border.control"
-            borderRadius="l2"
+            borderColor="transparent"
+            borderRadius="control"
             fontSize="13.5px"
             color="fg"
-            _hover={{ borderColor: "border.emphasized" }}
+            focusVisibleRing="none"
+            _hover={{ bg: "bg.softHover" }}
+            _focus={{ borderColor: "border.focus", outline: "none" }}
+            _focusVisible={{ borderColor: "border.focus", outline: "none" }}
           />
           <ChakraCombobox.IndicatorGroup>
             <ChakraCombobox.ClearTrigger color="fg.muted" />
@@ -99,12 +102,12 @@ export const Combobox = React.forwardRef<HTMLDivElement, ComboboxProps>(
         <Portal>
           <ChakraCombobox.Positioner>
             <ChakraCombobox.Content
-              bg="bg.panel"
+              bg="bg.raised"
               borderWidth="1px"
-              borderColor="border"
-              borderRadius="l3"
-              boxShadow="card"
-              p="1"
+              borderColor="border.card"
+              borderRadius="l2"
+              boxShadow="none"
+              p="1.5"
             >
               <ChakraCombobox.Empty px="2" py="2" color="fg.muted" fontSize="13px">
                 {emptyText}
@@ -113,13 +116,13 @@ export const Combobox = React.forwardRef<HTMLDivElement, ComboboxProps>(
                 <ChakraCombobox.Item
                   key={item.value}
                   item={item}
-                  px="2"
-                  py="1.5"
-                  borderRadius="l1"
-                  fontSize="13.5px"
+                  minH="9"
+                  px="2.5"
+                  borderRadius="8px"
+                  fontSize="14px"
                   color="fg"
                   cursor="pointer"
-                  _highlighted={{ bg: "bg.subtle" }}
+                  _highlighted={{ bg: "bg.soft" }}
                   _disabled={{ color: "fg.disabled", cursor: "not-allowed" }}
                 >
                   <ChakraCombobox.ItemText>{item.label}</ChakraCombobox.ItemText>

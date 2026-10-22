@@ -21,14 +21,12 @@ export function SharedExportClient({ exported }: { exported: ClipExportSnapshot 
         align="center"
         justify="space-between"
         px={{ base: "4", md: "6" }}
-        bg="bg.surface"
-        borderBottomWidth="1px"
-        borderColor="border"
-      >
+        bg="bg.panel"
+        >
         <Text fontFamily="display" fontWeight="700" fontSize="15px">NARRIFLOW</Text>
         <Flex align="center" gap="2" color="fg.muted">
           <ShieldCheck size={14} />
-          <Text fontSize="11px">Private delivery link</Text>
+          <Text fontSize="12px">Private delivery link</Text>
         </Flex>
       </Flex>
 
@@ -68,9 +66,8 @@ export function SharedExportClient({ exported }: { exported: ClipExportSnapshot 
         </MediaWell>
 
         <Stack gap="4">
-          <Box layerStyle="panel" p="5">
-            <Text textStyle="eyebrow" color="fg.subtle">Shared export</Text>
-            <Text fontFamily="display" fontSize="22px" fontWeight="600" mt="1">
+          <Box bg="bg.panel" borderWidth="1px" borderColor="border.card" borderRadius="l3" p="5">
+          <Text fontFamily="display" fontSize="22px" fontWeight="600">
               {exported.clipTitle}
             </Text>
             <Text fontSize="12px" color="fg.muted" mt="1">
@@ -81,8 +78,7 @@ export function SharedExportClient({ exported }: { exported: ClipExportSnapshot 
                 <Button
                   key={variant.id}
                   asChild
-                  variant={index === 0 ? "solid" : "outline"}
-                  colorPalette={index === 0 ? "accent" : undefined}
+                  variant={index === 0 ? "solid" : "subtle"}
                   w="full"
                 >
                   <a
@@ -95,11 +91,11 @@ export function SharedExportClient({ exported }: { exported: ClipExportSnapshot 
               ))}
             </Stack>
           </Box>
-          <Flex layerStyle="well" p="4" gap="3" align="flex-start">
+          <Flex bg="bg.soft" borderRadius="l2" p="4" gap="3" align="flex-start">
             <Check size={14} />
             <Box>
-              <Text fontSize="12px" fontWeight="600">Version {exported.editorRevision}</Text>
-              <Text fontSize="11px" color="fg.muted" mt="0.5">
+              <Text fontSize="13px" fontWeight="500">Version {exported.editorRevision}</Text>
+              <Text fontSize="12px" color="fg.muted" mt="0.5">
                 This link always delivers the exact version that was shared.
               </Text>
             </Box>

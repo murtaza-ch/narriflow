@@ -20,10 +20,11 @@ export const TIMELINE_BASE_PX_PER_SEC = 80;
 export const TIMELINE_ZOOM_MIN = 0.05;
 export const TIMELINE_ZOOM_MAX = 8;
 
-/** Below this many px per word, individual chips would be illegible —
- *  nothing renders and the segment label (already drawn) carries the low-
- *  zoom view instead. */
-export const WORD_CHIP_MIN_PX_PER_WORD = 28;
+/** Below this many px per *average* word, individual chips would be
+ *  illegible — shorter-than-average words overlap — so nothing renders and
+ *  the caption lines carry the view. Set so the fit-whole-clip zoom the
+ *  timeline opens at still shows lines, and chips appear on zooming in. */
+export const WORD_CHIP_MIN_PX_PER_WORD = 56;
 
 /** Fit-to-word preset target: comfortably legible without wasting space. */
 export const FIT_WORD_TARGET_PX_PER_WORD = 100;

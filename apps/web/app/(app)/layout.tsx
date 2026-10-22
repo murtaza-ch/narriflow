@@ -41,7 +41,7 @@ export default async function AppLayout({ children,
   }
 
   return (
-    <Box minH="100dvh" bg="bg" color="fg">
+    <Box minH="100dvh" bg="bg.sidebar" color="fg">
       {/* AppChrome (client) owns the sidebar/offset/mobile-nav vs. /upload
           funnel split — see its own comment for why that needs to be one
           pathname check rather than each piece hiding itself. */}

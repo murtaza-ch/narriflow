@@ -3,13 +3,20 @@
 import { Dialog, Flex, Portal, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 
+const actionProps = {
+  h: "40px",
+  px: "4",
+  borderRadius: "10px",
+  fontSize: "14px",
+  fontWeight: "500",
+} as const;
+
 /**
  * Confirmation for Reset-to-original (vizard-parity.md Phase A step 4) — a
  * destructive, unrecoverable-once-confirmed action (it discards every studio
  * edit, including anything not yet autosaved), so it gets an explicit
  * confirm step rather than firing straight off the top-bar icon button.
- * Styled as a true Blueline elevated surface (Chakra Dialog, studio.* tokens
- * only) matching keyboard-shortcuts-modal.tsx.
+ * Studio tokens only, matching keyboard-shortcuts-modal.tsx.
  */
 export function ResetConfirmDialog({
   open,
@@ -32,39 +39,52 @@ export function ResetConfirmDialog({
         <Dialog.Backdrop zIndex={300} />
         <Dialog.Positioner zIndex={310}>
           <Dialog.Content
-            w="min(420px, 90vw)"
-            maxW="min(420px, 90vw)"
+            w="min(440px, 92vw)"
+            maxW="min(440px, 92vw)"
+            bg="studio.surface"
             color="studio.fg"
+            borderRadius="14px"
             p="6"
           >
-            <Stack gap="4">
+            <Stack gap="2">
               <Dialog.Title asChild>
-                <Text fontFamily="display" fontSize="15px" fontWeight="600" color="studio.fg">
+                <Text fontSize="18px" fontWeight="500" color="studio.fg">
                   Reset this clip to its original version?
                 </Text>
               </Dialog.Title>
-              <Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">
-                All edits — captions, transcript changes, B-roll, transitions,
-                text overlays, and music — will be lost. This can't be undone.
-              </Text>
-              <Flex justify="flex-end" gap="2" pt="2">
-                <Dialog.CloseTrigger asChild>
-                  <Button size="sm" variant="ghost" disabled={confirming}>
-                    Cancel
-                  </Button>
-                </Dialog.CloseTrigger>
-                <Button
-                  size="sm"
-                  colorPalette="danger"
-                  variant="outline"
-                  onClick={onConfirm}
-                  loading={confirming}
-                  loadingText="Resetting…"
-                >
-                  Reset clip
-                </Button>
-              </Flex>
+              <Dialog.Description asChild>
+                <Text fontSize="14px" color="studio.fgMuted" lineHeight="1.6">
+                  All edits — captions, transcript changes, B-roll, transitions,
+                  text overlays, and music — will be lost. This can't be undone.
+                </Text>
+              </Dialog.Description>
             </Stack>
+            <Flex justify="flex-end" gap="2" mt="6">
+              {/* ActionTrigger, not CloseTrigger: the dialog recipe pins
+                  CloseTrigger to the top-right corner. */}
+              <Dialog.ActionTrigger asChild>
+                <Button
+                  {...actionProps}
+                  bg="studio.raised"
+                  color="studio.fg"
+                  _hover={{ bg: "studio.borderStrong" }}
+                  disabled={confirming}
+                >
+                  Cancel
+                </Button>
+              </Dialog.ActionTrigger>
+              <Button
+                {...actionProps}
+                bg="danger.600"
+                color="white"
+                _hover={{ bg: "danger.700" }}
+                onClick={onConfirm}
+                loading={confirming}
+                loadingText="Resetting…"
+              >
+                Reset clip
+              </Button>
+            </Flex>
           </Dialog.Content>
         </Dialog.Positioner>
       </Portal>

@@ -8,6 +8,7 @@ import { usePreviewPlayer } from "./audio-library";
 import { MusicTab } from "./music-tab";
 import { SfxTab } from "./sfx-tab";
 import { UploadsTab } from "./uploads-tab";
+import { studioSliderCss } from "./panel-ui";
 
 type MusicPanelTab = "music" | "sfx";
 
@@ -41,8 +42,8 @@ export function MusicPanel() {
       <audio ref={player.audioRef} preload="metadata" style={{ display: "none" }} />
 
       <Flex
-        px="12px"
-        h="43px"
+        px="20px"
+        h="40px"
         align="end"
         gap="20px"
         borderBottomWidth="1px"
@@ -59,13 +60,14 @@ export function MusicPanel() {
               role="tab"
               aria-selected={selected}
               align="center"
-              h="43px"
-              pt="2px"
+              h="40px"
+              mb="-1px"
               borderBottomWidth="2px"
               borderColor={selected ? "studio.accent" : "transparent"}
               color={selected ? "studio.fg" : "studio.fgMuted"}
-              fontSize="12px"
-              fontWeight={selected ? "600" : "500"}
+              fontSize="14px"
+              fontWeight="500"
+              _hover={{ color: "studio.fg" }}
               cursor="pointer"
               transition="border-color 120ms ease, color 120ms ease"
               onClick={() => chooseTab(tab.id)}
@@ -78,14 +80,14 @@ export function MusicPanel() {
 
       {showUploads ? (
         <Box>
-          <Flex px="12px" pt="12px" align="center" justify="space-between">
+          <Flex px="20px" pt="16px" align="center" justify="space-between">
             <Flex
               as="button"
               align="center"
               gap="6px"
               color="studio.fgMuted"
-              fontSize="11px"
-              fontWeight="600"
+              fontSize="13px"
+              fontWeight="500"
               cursor="pointer"
               _hover={{ color: "studio.fg" }}
               onClick={() => setShowUploads(false)}
@@ -94,7 +96,7 @@ export function MusicPanel() {
             </Flex>
             <Flex align="center" gap="6px" color="studio.fgMuted">
               <Upload size={13} />
-              <Text textStyle="eyebrow">Uploads</Text>
+              <Text fontSize="12px" fontWeight="500">Uploads</Text>
             </Flex>
           </Flex>
           <UploadsTab
@@ -116,9 +118,9 @@ export function MusicPanel() {
         />
       )}
 
-      <Box px="12px" pb="12px" pt="4px">
-        <Flex align="center" justify="space-between" mb="7px">
-          <Text textStyle="eyebrow" color="studio.fgMuted">
+      <Box px="20px" pb="20px" pt="8px">
+        <Flex align="center" justify="space-between" mb="10px">
+          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">
             Source audio
           </Text>
           <Flex
@@ -128,8 +130,8 @@ export function MusicPanel() {
             align="center"
             gap="5px"
             color={sourceAudio.muted ? "studio.danger" : "studio.fgMuted"}
-            fontSize="10.5px"
-            fontWeight="600"
+            fontSize="12px"
+            fontWeight="500"
             cursor="pointer"
             _hover={{ color: sourceAudio.muted ? "studio.danger" : "studio.fg" }}
             onClick={() => updateSourceAudio({ muted: !sourceAudio.muted })}
@@ -140,12 +142,11 @@ export function MusicPanel() {
         </Flex>
         <Flex
           align="center"
-          gap="9px"
-          p="10px"
+          gap="12px"
+          px="14px"
+          h="44px"
           bg="studio.subtle"
-          borderWidth="1px"
-          borderColor="studio.border"
-          borderRadius="l2"
+          borderRadius="10px"
         >
           <Slider.Root
             aria-label={["Source audio volume"]}
@@ -161,7 +162,7 @@ export function MusicPanel() {
             }
             onValueChangeEnd={endCoalesce}
             size="sm"
-            colorPalette="accent"
+            css={studioSliderCss}
             flex="1"
           >
             <Slider.Control>
@@ -171,7 +172,7 @@ export function MusicPanel() {
               <Slider.Thumbs />
             </Slider.Control>
           </Slider.Root>
-          <Text textStyle="data" fontSize="10.5px" color="studio.fgMuted" w="34px" textAlign="right">
+          <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="40px" textAlign="right">
             {sourceAudio.volume}%
           </Text>
         </Flex>

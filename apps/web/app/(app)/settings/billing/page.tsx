@@ -57,7 +57,7 @@ export default async function BillingPage({
             label="Used this month"
             value={usedMinutes}
             suffix={
-              <Text textStyle="data" fontSize="13px" color="fg.muted">
+              <Text fontSize="13px" color="fg.muted" fontVariantNumeric="tabular-nums">
                 / {limitMinutes} min
               </Text>
             }
@@ -70,7 +70,7 @@ export default async function BillingPage({
             label="Remaining"
             value={remaining}
             suffix={
-              <Text textStyle="data" fontSize="13px" color="fg.muted">
+              <Text fontSize="13px" color="fg.muted">
                 min
               </Text>
             }

@@ -15,12 +15,12 @@ export default async function NewBrandProfilePage() {
         <PageHeader
           title="Build a Brand Profile"
           description="Applies to new projects. Add styles and media next."
-          actions={<Button variant="outline" asChild><Link href="/brand-kit">Cancel</Link></Button>}
+          actions={<Button variant="subtle" asChild><Link href="/brand-kit">Cancel</Link></Button>}
         />
       </Box>
       {enabled ? <BrandProfileCreateForm /> : (
-        <Box bg="bg.panel" borderRadius="l2" p="7">
-          <Stack gap="2"><Text textStyle="eyebrow" color="accent.fg">Read-only release group</Text><Text fontSize="14px">Brand Profile creation is paused. Existing profiles and projects remain readable.</Text></Stack>
+        <Box bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="7">
+          <Text fontSize="14px">Brand Profile creation is paused. Existing profiles and projects remain readable.</Text>
         </Box>
       )}
     </Stack>

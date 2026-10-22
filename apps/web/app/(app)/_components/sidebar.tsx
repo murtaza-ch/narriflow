@@ -7,17 +7,12 @@ import { Logo } from "@narriflow/ui/components/logo";
 import { NavLink } from "@narriflow/ui/components/nav-link";
 import { Meter } from "@narriflow/ui/components/meter";
 import { Button, IconButton } from "@narriflow/ui/components/button";
-import { AccountMenu } from "./account-menu";
 import { Fragment } from "react";
 import { NAV_ITEMS } from "./nav-items";
 import { usagePalette } from "./usage-palette";
 import { WorkspaceSwitcher, type WorkspaceMenuPresentation, type WorkspaceSwitcherItem } from "./workspace-switcher";
 
 interface SidebarProps {
-  email: string | null;
-  firstName: string | null;
-  lastName: string | null;
-  imageUrl: string | null;
   usedMinutes: number;
   limitMinutes: number;
   activeWorkspaceId: string;
@@ -30,7 +25,6 @@ interface SidebarProps {
 }
 
 export function Sidebar({
-  email, firstName, lastName, imageUrl,
   usedMinutes,
   limitMinutes,
   collapsed,
@@ -47,7 +41,7 @@ export function Sidebar({
   return (
     <Flex
       as="aside"
-      w={collapsed ? "68px" : "232px"}
+      w={collapsed ? "68px" : "256px"}
       bg="bg.sidebar"
       h="100dvh"
       position="fixed"
@@ -55,11 +49,9 @@ export function Sidebar({
       left="0"
       display={{ base: "none", lg: "flex" }}
       direction="column"
-      borderRightWidth="1px"
-      borderColor="border"
       zIndex="30"
     >
-      {/* Logo — hairline aligns with the content top bar */}
+      {/* Logo — centred on the panel header beside it */}
       <Flex
         h="80px"
         css={{ "@media (max-height: 800px)": { height: "64px" } }}
@@ -85,7 +77,7 @@ export function Sidebar({
         ) : null}
         {NAV_ITEMS.map(({ label, href, icon: Icon }) => (
           <Fragment key={href}>
-          {href === "/autopilot" && !collapsed && <Text fontSize="10px" color="fg.subtle" px="3" pt="5" pb="2">Workspace</Text>}
+          {href === "/autopilot" && !collapsed && <Text textStyle="eyebrow" color="fg.muted" px="3" pt="5" pb="2">Workspace</Text>}
           <NavLink collapsed={collapsed} href={href} icon={<Icon size={17} />}>
             {label}
           </NavLink>
@@ -97,15 +89,16 @@ export function Sidebar({
       </Stack>
 
       {/* Usage mini-meter */}
-      {!collapsed && <Box px="3" py="3" borderTopWidth="1px" borderColor="border.subtle" flexShrink={0}>
-        <Box px="2.5" pt="1" pb="3">
-          <Flex align="baseline" justify="space-between" gap="3" mb="1.5">
-            <Text textStyle="eyebrow" color="fg.subtle">
+      {!collapsed && <Box px="3" pb="4" flexShrink={0}>
+        <Box px="3" pt="1">
+          <Flex align="baseline" justify="space-between" gap="2" mb="1.5">
+            <Text textStyle="eyebrow" color="fg.muted" whiteSpace="nowrap">
               Monthly minutes
             </Text>
             <Text
-              textStyle="data"
-              fontSize="11px"
+              whiteSpace="nowrap"
+              fontSize="12px"
+              fontVariantNumeric="tabular-nums"
               color={palette === "accent" ? "fg.muted" : `${palette}.fg`}
             >
               {Math.round(usedMinutes)}/{Math.round(limitMinutes)} min
@@ -119,7 +112,6 @@ export function Sidebar({
           />
         </Box>
       </Box>}
-      <Box px="3" pb="3"><AccountMenu email={email} firstName={firstName} lastName={lastName} imageUrl={imageUrl} variant={collapsed ? "avatar" : "row"} /></Box>
     </Flex>
   );
 }

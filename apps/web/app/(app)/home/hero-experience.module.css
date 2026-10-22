@@ -1,13 +1,13 @@
 .experience { min-width: 0; container-type: inline-size; }
-.motionToggle:focus-visible, .importLinks a:focus-visible { outline: 2px solid var(--chakra-colors-fg-muted); outline-offset: 4px; }
+.motionToggle:focus-visible, .importLinks a:focus-visible { outline: 2px solid var(--chakra-colors-accent-solid); outline-offset: 4px; }
 .centeredHero { position: relative; isolation: isolate; overflow: hidden; display: grid; place-items: center; min-height: 355px; padding: 42px 24px; border-radius: 22px; border: none; background: var(--chakra-colors-bg-panel); color: var(--chakra-colors-fg); --accent: var(--chakra-colors-fg); --rx: 0deg; --ry: 0deg; }
 .centerContent { position: relative; z-index: 2; width: min(100%, 620px); text-align: center; }
 .centerContent h1 { font-size: clamp(27px,2.65vw,40px); font-weight: 560; letter-spacing: -.045em; line-height: 1.2; }
 .centerContent h1 span { color: var(--accent); }
 .description { font-size: 12px; line-height: 1.7; margin: 13px auto 27px; color: var(--chakra-colors-fg-muted); }
 .importArea { width: 100%; margin: auto; }
-.importArea form { min-height: 67px; padding: 10px 10px 10px 20px; gap: 12px; border: 1px solid #ffffff; border-radius: 14px; background: #fafafa; box-shadow: 0 0 0 5px #ffffff06, 0 12px 32px #00000030; transition: box-shadow .2s; }
-.importArea form:focus-within { box-shadow: 0 0 0 4px #a3a3a370,0 12px 32px #0003; }
+.importArea form { min-height: 67px; padding: 10px 10px 10px 20px; gap: 12px; border: none; border-radius: 14px; background: #fafafa; box-shadow: 0 0 0 5px #ffffff06, 0 12px 32px #00000030; transition: box-shadow .2s; }
+.importArea form:focus-within { box-shadow: 0 0 0 1px rgba(16, 19, 24, 0.24), 0 12px 32px #0003; }
 .importArea form > div { color: #858585; }
 .importArea input { color: #242424; font-size: 14px; min-width: 0; }
 .importArea input::placeholder { color: #808080; }
@@ -15,9 +15,9 @@
 .importArea button:disabled { opacity: .7; }
 .importArea button:not(:disabled):hover { background: #454545; }
 .importLinks { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 18px; }
-.importLinks a { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--chakra-colors-fg-muted); border: 1px solid var(--chakra-colors-border); background: transparent; padding: 8px 13px; border-radius: 8px; transition: background .2s; }
-.importLinks a:hover { background: var(--chakra-colors-bg-muted); }
-.motionToggle { position: absolute; bottom: 15px; right: 15px; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--chakra-colors-border); color: var(--chakra-colors-fg-muted); cursor: pointer; z-index: 3; }
+.importLinks a { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--chakra-colors-fg-muted); border: none; background: var(--chakra-colors-bg-soft); padding: 8px 13px; border-radius: 8px; transition: background .2s; }
+.importLinks a:hover { background: var(--chakra-colors-bg-soft-hover); }
+.motionToggle { position: absolute; bottom: 15px; right: 15px; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: none; background: var(--chakra-colors-bg-soft); color: var(--chakra-colors-fg-muted); cursor: pointer; z-index: 3; }
 .toolCard { position: relative; flex-wrap: wrap; overflow: hidden; border: none; --rx: 0deg; --ry: 0deg; }
 .toolCard > div:nth-last-child(2) { flex-basis: 70%; }
 .toolArt { position: relative; width: 100%; height: 96px; perspective: 500px; display: grid; place-items: center; }
@@ -36,6 +36,6 @@
   .description { font-size: 11px; max-width: 280px; margin-bottom: 24px; }
   .importArea form { min-height: 60px; padding: 7px 7px 7px 12px; gap: 7px; }
   .importArea input { font-size: 12px; }.importArea button { padding-inline: 12px; height: 43px; font-size: 11px; }.importArea button svg { width: 13px; }
-  .importLinks { gap: 8px; }.importLinks a { font-size: 10px; padding: 8px 9px; }.toolArt { height: 89px; }
+  .importLinks { gap: 8px; }.importLinks a { font-size: 12px; padding: 8px 9px; }.toolArt { height: 89px; }
 }
 @media(prefers-reduced-motion:reduce) { .toolCard .wave i { animation: none; }.experience form, .toolCard .toolArt > div, .toolCard .miniClips > span, .toolCard .captionArt strong, .toolCard .paperArt > span { transition: none; } }

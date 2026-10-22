@@ -14,7 +14,7 @@ interface ResendButtonProps {
 }
 
 /**
- * Resend-code button with a mono countdown and a "new code sent"
+ * Resend-code button with a countdown and a "new code sent"
  * confirmation micro-state (aria-live so the feedback is announced).
  */
 export function ResendButton({ onResend, disabled }: ResendButtonProps) {
@@ -49,8 +49,8 @@ export function ResendButton({ onResend, disabled }: ResendButtonProps) {
   return (
     <Flex align="center" justify="center" gap="2" minH="8">
       {remaining > 0 ? (
-        // Quiet mono countdown — not a disabled control, just a timer.
-        <Text textStyle="data" fontSize="12px" color="fg.subtle">
+        // Quiet countdown — not a disabled control, just a timer.
+        <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">
           Resend code in {remaining}s
         </Text>
       ) : (

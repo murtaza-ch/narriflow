@@ -12,9 +12,8 @@ import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Switch } from "@narriflow/ui/components/switch";
-import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
 import { deriveProcessingChecklist, userErrorMessage, type PipelineStepState, type ProcessingStageInput, type CaptionPresetId } from "@narriflow/validators";
-import { AlertTriangle, Check, RotateCcw } from "lucide-react";
+import { AlertTriangle, Check, RotateCcw, ScanSearch } from "lucide-react";
 import { formatDuration } from "@/lib/format";
 import {
   ingestRecoveryAction,
@@ -35,12 +34,12 @@ import { AdvancedClipSettings } from "./advanced-clip-settings";
 
 const NODE_COLORS: Record<
   PipelineStepState,
-  { node: string; connector: string; label: string }
+  { node: string; mark: string; connector: string; label: string }
 > = {
-  done: { node: "success.solid", connector: "success.solid", label: "fg" },
-  active: { node: "accent.solid", connector: "border.emphasized", label: "fg" },
-  failed: { node: "danger.solid", connector: "border", label: "danger.fg" },
-  todo: { node: "border.emphasized", connector: "border", label: "fg.subtle" },
+  done: { node: "success.subtle", mark: "success.fg", connector: "success.solid", label: "fg" },
+  active: { node: "accent.solid", mark: "accent.contrast", connector: "bg.muted", label: "fg" },
+  failed: { node: "danger.subtle", mark: "danger.fg", connector: "bg.muted", label: "danger.fg" },
+  todo: { node: "bg.soft", mark: "fg.subtle", connector: "bg.muted", label: "fg.subtle" },
 };
 
 function ChecklistStepper({
@@ -62,9 +61,7 @@ function ChecklistStepper({
                 align="center"
                 justify="center"
                 borderRadius="full"
-                borderWidth="1.5px"
-                borderColor={colors.node}
-                bg={node.state === "done" ? "success.subtle" : "transparent"}
+                bg={colors.node}
                 flexShrink={0}
               >
                 {node.state === "done" ? (
@@ -76,7 +73,13 @@ function ChecklistStepper({
                     <AlertTriangle size={11} />
                   </Box>
                 ) : (
-                  <Text textStyle="data" fontSize="10px" lineHeight="1" color={colors.label}>
+                  <Text
+                    fontSize="11px"
+                    fontWeight="500"
+                    lineHeight="1"
+                    fontVariantNumeric="tabular-nums"
+                    color={colors.mark}
+                  >
                     {index + 1}
                   </Text>
                 )}
@@ -91,7 +94,7 @@ function ChecklistStepper({
                   {node.label}
                 </Text>
                 {node.detail && (
-                  <Text textStyle="data" fontSize="11px" color="fg.subtle">
+                  <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
                     {node.detail}
                   </Text>
                 )}
@@ -257,7 +260,17 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
         : null;
 
   return (
-    <Stack gap="6" maxW="640px" mx="auto" w="full" p={{ base: "5", md: "8" }} bg="bg.panel" borderRadius="l3">
+    <Stack
+      gap="6"
+      maxW="640px"
+      mx="auto"
+      w="full"
+      p={{ base: "5", md: "8" }}
+      bg="bg.panel"
+      borderRadius="l3"
+      borderWidth="1px"
+      borderColor="border.card"
+    >
       <Stack gap="3" align="center" textAlign="center">
         <Box w="180px">{props.mediaWell}</Box>
         <Stack gap="1" align="center">
@@ -289,7 +302,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
         <Box
           position="relative"
           p="4"
-          bg="bg.subtle"
+          bg="bg.soft"
           borderRadius="l2"
           overflow="hidden"
         >
@@ -299,7 +312,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
               <Text fontSize="sm">{userErrorMessage(props.ingestErrorCode)}</Text>
             </Flex>
             {ingestRecoveryAction(props.ingestErrorCode) === "new_upload" ? (
-              <Button asChild size="sm" variant="outline" alignSelf="flex-start">
+              <Button asChild size="sm" variant="subtle" alignSelf="flex-start">
                 <Link href="/upload">Upload video instead</Link>
               </Button>
             ) : (
@@ -318,7 +331,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
         <Box
           position="relative"
           p="4"
-          bg="bg.subtle"
+          bg="bg.soft"
           borderRadius="l2"
           overflow="hidden"
         >
@@ -332,7 +345,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
         <Box
           position="relative"
           p="4"
-          bg="bg.subtle"
+          bg="bg.soft"
           borderRadius="l2"
           overflow="hidden"
         >
@@ -353,7 +366,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
                 <input type="hidden" name="idempotencyKey" value={transcribeRetryKey} />
                 <Flex align="center" gap="2" wrap="wrap">
                   <ActionSubmitButton pendingLabel="Retrying…" size="sm">
-                    <RotateCcw size={12} />
+                    <RotateCcw size={16} />
                     <Text ms="1">Retry transcription</Text>
                   </ActionSubmitButton>
                   <AdvancedClipSettings
@@ -370,7 +383,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
                 <input type="hidden" name="idempotencyKey" value={regenerateIdempotencyKey} />
                 <Flex align="center" gap="2" wrap="wrap">
                   <ActionSubmitButton pendingLabel="Retrying…" size="sm">
-                    <RotateCcw size={12} />
+                    <RotateCcw size={16} />
                     <Text ms="1">Retry detection</Text>
                   </ActionSubmitButton>
                   <AdvancedClipSettings
@@ -390,7 +403,9 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
           distinct from the generic danger band above). */}
       {noClipsDetected && (
         <Flex direction="column" align="center" gap="4" py="8" textAlign="center">
-          <GhostFrame ratio={9 / 16} size="88px" />
+          <Box color="fg.subtle" aria-hidden="true">
+            <ScanSearch size={20} />
+          </Box>
           <Stack gap="1" align="center">
             <Text textStyle="title" fontSize="15px" color="fg">
               No clip-worthy moments found
@@ -409,7 +424,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
             />
             <Flex align="center" gap="2" wrap="wrap" justify="center">
               <ActionSubmitButton pendingLabel="Starting…" size="sm">
-                <RotateCcw size={12} />
+                <RotateCcw size={16} />
                 <Text ms="1">Re-run detection</Text>
               </ActionSubmitButton>
               <AdvancedClipSettings

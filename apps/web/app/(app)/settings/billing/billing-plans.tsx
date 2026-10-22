@@ -264,8 +264,10 @@ export function BillingPlans({
       <Box
         ref={statusRef}
         tabIndex={-1}
-        borderRadius="l2"
+        borderRadius="l3"
         bg="bg.panel"
+        borderWidth="1px"
+        borderColor="border.card"
         p="5"
         outline="none"
         role="status"
@@ -280,7 +282,7 @@ export function BillingPlans({
             </Flex>
             <Text fontSize="13px" color="fg.muted">{status.body}</Text>
             {status.dateLabel && status.dateValue ? (
-              <Text textStyle="data" fontSize="12px" color="fg.subtle">
+              <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
                 {status.dateLabel} · {status.dateValue}
               </Text>
             ) : null}
@@ -300,16 +302,16 @@ export function BillingPlans({
       </Box>
 
       {view.plan === "business" ? (
-        <Grid layerStyle="band" templateColumns={{ base: "1fr", md: "repeat(2, 1fr)" }} gap="0">
-          <Box py="4" pr={{ md: "5" }} borderBottomWidth={{ base: "1px", md: "0" }} borderRightWidth={{ base: "0", md: "1px" }} borderColor="border.subtle">
-            <Text textStyle="eyebrow" color="fg.subtle">Additional paid seats</Text>
-            <Text textStyle="data" fontSize="24px" mt="1">{view.desiredAdditionalSeats}</Text>
-            <Text fontSize="12px" color="fg.muted">Owner seat included. Viewers are free.</Text>
+        <Grid layerStyle="band" templateColumns={{ base: "1fr", md: "repeat(2, 1fr)" }} columnGap="8" rowGap="6">
+          <Box>
+            <Text textStyle="eyebrow" color="fg.muted">Additional paid seats</Text>
+            <Text fontWeight="500" fontVariantNumeric="tabular-nums" fontSize="24px" mt="1">{view.desiredAdditionalSeats}</Text>
+            <Text fontSize="13px" color="fg.muted">Owner seat included. Viewers are free.</Text>
           </Box>
-          <Box py="4" pl={{ md: "5" }}>
-            <Text textStyle="eyebrow" color="fg.subtle">Synchronized seats</Text>
-            <Text textStyle="data" fontSize="24px" mt="1">{view.synchronizedAdditionalSeats ?? "—"}</Text>
-            <Text fontSize="12px" color="fg.muted">
+          <Box>
+            <Text textStyle="eyebrow" color="fg.muted">Synchronized seats</Text>
+            <Text fontWeight="500" fontVariantNumeric="tabular-nums" fontSize="24px" mt="1">{view.synchronizedAdditionalSeats ?? "—"}</Text>
+            <Text fontSize="13px" color="fg.muted">
               {view.synchronizedAdditionalSeats === view.desiredAdditionalSeats ? "Matches committed membership" : "Updating in the background"}
             </Text>
           </Box>
@@ -319,7 +321,7 @@ export function BillingPlans({
       {mayStartCheckout ? (
         <Stack gap="5">
           <Flex align="center" justify="space-between" gap="3" wrap="wrap">
-            <Text textStyle="eyebrow" color="fg.subtle">Choose a plan</Text>
+            <Text textStyle="eyebrow" color="fg.muted">Choose a plan</Text>
             <SegmentedControl size="sm" aria-label="Billing interval" items={[{ label: "Monthly", value: "monthly" }, { label: "Annual · save ~33%", value: "annual" }]} value={interval} onValueChange={(value) => setInterval(value as BillingInterval)} />
           </Flex>
           <Grid layerStyle="band" templateColumns={{ base: "1fr", md: `repeat(${Math.min(3, availableTiers.length)}, minmax(0, 1fr))` }} gap="3">
@@ -327,12 +329,14 @@ export function BillingPlans({
               const info = PRICING_TABLE[tier];
               const perMonth = interval === "annual" ? String(Math.round(info.annualUsd / 12)) : String(info.monthlyUsd);
               return (
-                <Stack key={tier} gap="4" p="5" bg="bg.panel" borderRadius="l2">
-                  <Text textStyle="eyebrow" color={tier === "creator" ? "accent.fg" : "fg.subtle"}>{tier === "creator" ? "Recommended" : "Plan"}</Text>
-                  <Text textStyle="title" fontSize="16px">{info.name}</Text>
-                  <Flex align="baseline" gap="1"><Text textStyle="data" fontSize="28px">${perMonth}</Text><Text fontSize="12px" color="fg.muted">/mo</Text></Flex>
-                  <Text fontSize="12px" color="fg.muted">{MONTHLY_PROCESSING_MINUTE_LIMITS[tier]} processing min/mo · uploads up to {MAX_UPLOAD_LENGTH_SECONDS[tier] / 60} min</Text>
-                  <Button size="sm" variant={tier === "creator" ? "solid" : "outline"} loading={busy === tier} disabled={busy !== null} onClick={() => checkout(tier)}>
+                <Stack key={tier} gap="4" p="5" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card">
+                  <Flex align="baseline" justify="space-between" gap="2">
+                    <Text textStyle="title" fontSize="16px">{info.name}</Text>
+                    {tier === "creator" ? <Text fontSize="12px" fontWeight="500" color="accent.fg">Recommended</Text> : null}
+                  </Flex>
+                  <Flex align="baseline" gap="1"><Text fontWeight="500" fontVariantNumeric="tabular-nums" fontSize="28px">${perMonth}</Text><Text fontSize="13px" color="fg.muted">/mo</Text></Flex>
+                  <Text fontSize="13px" color="fg.muted">{MONTHLY_PROCESSING_MINUTE_LIMITS[tier]} processing min/mo · uploads up to {MAX_UPLOAD_LENGTH_SECONDS[tier] / 60} min</Text>
+                  <Button size="sm" variant={tier === "creator" ? "solid" : "subtle"} loading={busy === tier} disabled={busy !== null} onClick={() => checkout(tier)}>
                     Continue with {info.name}
                   </Button>
                 </Stack>

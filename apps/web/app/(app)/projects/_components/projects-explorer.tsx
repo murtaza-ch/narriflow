@@ -131,8 +131,8 @@ function MoveProjectsDialog({
       placement="center"
     >
       <Dialog.Trigger asChild>
-        <Button size="sm" variant="outline" disabled={projects.length === 0}>
-          <FolderInput size={13} />
+        <Button size="sm" variant="subtle" disabled={projects.length === 0}>
+          <FolderInput size={16} />
           Move to
         </Button>
       </Dialog.Trigger>
@@ -141,11 +141,13 @@ function MoveProjectsDialog({
         <Dialog.Positioner>
           <Dialog.Content maxW="480px">
             <Dialog.Header>
-              <Dialog.Title>{title}</Dialog.Title>
+              <Dialog.Title fontSize="18px" fontWeight="500">
+                {title}
+              </Dialog.Title>
             </Dialog.Header>
             <Dialog.Body>
               <Stack gap="4">
-                <InputGroup color="fg.subtle" startElement={<Search size={13} />}>
+                <InputGroup color="fg.subtle" startElement={<Search size={16} />}>
                   <Input
                     value={query}
                     onChange={(event) => setQuery(event.currentTarget.value)}
@@ -160,16 +162,19 @@ function MoveProjectsDialog({
                       <Button
                         key={destination.id || "projects"}
                         size="sm"
-                        variant={selected ? "outline" : "ghost"}
+                        variant="ghost"
                         justifyContent="flex-start"
+                        bg={selected ? "accent.subtle" : undefined}
+                        color={selected ? "accent.fg" : undefined}
+                        _hover={{ bg: selected ? "accent.subtle" : "bg.soft" }}
                         onClick={() => setSelectedFolderId(destination.id)}
                       >
-                        <Folder size={14} />
+                        <Folder size={16} />
                         <Text flex="1" textAlign="left">
                           {destination.name}
                         </Text>
                         {selected ? (
-                          <Text fontSize="11px" color="fg.subtle">
+                          <Text fontSize="12px">
                             {currentFolderId === destination.id ? "Current" : "Selected"}
                           </Text>
                         ) : null}
@@ -186,9 +191,11 @@ function MoveProjectsDialog({
             </Dialog.Body>
             <Dialog.Footer>
               <Flex justify="flex-end" gap="2" w="full">
-                <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
-                  Cancel
-                </Button>
+                <Dialog.ActionTrigger asChild>
+                  <Button size="sm" variant="subtle">
+                    Cancel
+                  </Button>
+                </Dialog.ActionTrigger>
                 <Button
                   size="sm"
                   onClick={move}
@@ -462,12 +469,12 @@ export function ProjectsExplorer({
 
       {projects.length === 0 ? (
         <EmptyState
-          icon={<Inbox size={22} strokeWidth={1.5} />}
+          icon={<Inbox size={20} strokeWidth={1.5} />}
           title={folderName && !hasActiveFilters ? "This folder is empty" : "No projects match your filters"}
           description={folderName && !hasActiveFilters ? "Move a project here or start a new upload." : "Try another search or clear filters."}
           action={
             hasActiveFilters ? (
-              <Button size="sm" variant="outline" onClick={clearFilters}>
+              <Button size="sm" variant="subtle" onClick={clearFilters}>
                 Clear filters
               </Button>
             ) : undefined
@@ -524,18 +531,18 @@ export function ProjectsExplorer({
           <Stack align="center" gap="2">
             <Button
               size="sm"
-              variant="outline"
+              variant="subtle"
               onClick={loadMoreProjects}
               loading={isLoadingMore}
             >
               Load more projects
             </Button>
-            <Text textStyle="data" fontSize="11px" color="fg.subtle">
+            <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
               Loaded {projects.length} of {totalCount}
             </Text>
             {loadError ? (
               <HStack gap="1.5" color="danger.fg">
-                <TriangleAlert size={13} aria-hidden="true" />
+                <TriangleAlert size={16} aria-hidden="true" />
                 <Text fontSize="13px">{loadError}</Text>
               </HStack>
             ) : null}
@@ -543,9 +550,9 @@ export function ProjectsExplorer({
         </Center>
       ) : totalCount > projects.length ? (
         <Text
-          textStyle="data"
-          fontSize="11px"
+          fontSize="12px"
           color="fg.subtle"
+          fontVariantNumeric="tabular-nums"
           textAlign="center"
         >
           Loaded {projects.length} of {totalCount}

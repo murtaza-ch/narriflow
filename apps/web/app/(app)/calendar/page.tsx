@@ -26,7 +26,7 @@ function statusStripe(tone: SocialPostTone) {
 	if (tone === "danger") return "danger.solid";
 	if (tone === "success" || tone === "accent") return "accent.solid";
 	if (tone === "warning") return "warning.solid";
-	return "border.emphasized";
+	return "fg.subtle";
 }
 
 function calendarWindow(
@@ -219,7 +219,6 @@ export default async function CalendarPage({
 		<Stack gap="8">
 			<CalendarLiveRefresh delayMs={liveRefreshDelay} />
 			<PageHeader
-				eyebrow={`Timezone · ${timezone}`}
 				title="Calendar"
 				actions={
 					canPublish ? (
@@ -233,50 +232,58 @@ export default async function CalendarPage({
 				}
 			/>
 			<Flex align="center" justify="space-between" gap="3" wrap="wrap">
-				<Text textStyle="title" fontSize="18px">
-					{window.label}
-				</Text>
-				<Flex gap="1" align="center" wrap="wrap">
-					<Button
-						asChild
-						variant="ghost"
-						size="sm"
-						aria-label="Previous period"
-					>
-						<Link href={navigationHref(-1)}>
-							<ChevronLeft size={16} />
-						</Link>
-					</Button>
-					<Button asChild variant="outline" size="sm">
-						<Link href={`/calendar?view=${view}`}>Today</Link>
-					</Button>
-					<Button asChild variant="ghost" size="sm" aria-label="Next period">
-						<Link href={navigationHref(1)}>
-							<ChevronRight size={16} />
-						</Link>
-					</Button>
-
-					<Button
-						size="sm"
-						variant={view === "month" ? "outline" : "ghost"}
-						asChild
-					>
-						<Link href={navigationHref(0, "month")}>Month</Link>
-					</Button>
-					<Button
-						size="sm"
-						variant={view === "week" ? "outline" : "ghost"}
-						asChild
-					>
-						<Link href={navigationHref(0, "week")}>Week</Link>
-					</Button>
-					<Button
-						size="sm"
-						variant={view === "list" ? "outline" : "ghost"}
-						asChild
-					>
-						<Link href={navigationHref(0, "list")}>List</Link>
-					</Button>
+				<Flex align="baseline" gap="3" wrap="wrap">
+					<Text textStyle="title" fontSize="18px">
+						{window.label}
+					</Text>
+					<Text fontSize="12px" color="fg.subtle">
+						Timezone · {timezone}
+					</Text>
+				</Flex>
+				<Flex gap="4" align="center" wrap="wrap">
+					<Flex gap="1" align="center">
+						<Button
+							asChild
+							variant="ghost"
+							size="sm"
+							aria-label="Previous period"
+						>
+							<Link href={navigationHref(-1)}>
+								<ChevronLeft size={16} />
+							</Link>
+						</Button>
+						<Button asChild variant="subtle" size="sm">
+							<Link href={`/calendar?view=${view}`}>Today</Link>
+						</Button>
+						<Button asChild variant="ghost" size="sm" aria-label="Next period">
+							<Link href={navigationHref(1)}>
+								<ChevronRight size={16} />
+							</Link>
+						</Button>
+					</Flex>
+					<Flex gap="1" align="center">
+						<Button
+							size="sm"
+							variant={view === "month" ? "subtle" : "ghost"}
+							asChild
+						>
+							<Link href={navigationHref(0, "month")}>Month</Link>
+						</Button>
+						<Button
+							size="sm"
+							variant={view === "week" ? "subtle" : "ghost"}
+							asChild
+						>
+							<Link href={navigationHref(0, "week")}>Week</Link>
+						</Button>
+						<Button
+							size="sm"
+							variant={view === "list" ? "subtle" : "ghost"}
+							asChild
+						>
+							<Link href={navigationHref(0, "list")}>List</Link>
+						</Button>
+					</Flex>
 				</Flex>
 			</Flex>
 			<form
@@ -347,13 +354,13 @@ export default async function CalendarPage({
 						})),
 					]}
 				/>
-				<Button type="submit" size="sm" variant="outline">
+				<Button type="submit" size="sm" variant="subtle">
 					Apply filters
 				</Button>
 			</form>
 			{visiblePosts.length === 0 && view === "list" ? (
 				<EmptyState
-					icon={<CalendarDays size={22} />}
+					icon={<CalendarDays size={20} />}
 					title="No scheduled posts"
 					description="Schedule a clip from a project to add it to your calendar."
 					action={
@@ -376,22 +383,28 @@ export default async function CalendarPage({
 								gap="4"
 								p="4"
 								bg="bg.panel"
-								borderRadius="l2"
+								borderRadius="l3"
+								borderWidth="1px"
+								borderColor="border.card"
 							>
 								<Stack gap="0.5" flex="1" minW="0">
-									<Text fontSize="13px" fontWeight="600" lineClamp={1}>
+									<Text fontSize="14px" fontWeight="500" lineClamp={1}>
 										{post.caption}
 									</Text>
-									<Text fontSize="11px" color="fg.subtle">
+									<Text fontSize="12px" color="fg.subtle">
 										{post.project.title} ·{" "}
 										{post.socialAccount?.displayName ?? "No account selected"}
 									</Text>
 								</Stack>
 								<Stack gap="0" align={{ md: "flex-end" }}>
-									<Text textStyle="eyebrow" color="fg.muted">
+									<Text fontSize="13px" color="fg.muted">
 										{post.platform.replace("_", " ")} · {feedback.label}
 									</Text>
-									<Text textStyle="data" fontSize="11px" color="fg.subtle">
+									<Text
+										fontSize="12px"
+										color="fg.subtle"
+										fontVariantNumeric="tabular-nums"
+									>
 										{post.scheduledFor
 											? formatInTimezone(post.scheduledFor, timezone)
 											: feedback.detail}
@@ -431,24 +444,26 @@ export default async function CalendarPage({
 				</Stack>
 			) : (
 				<Box
-					borderRadius="l2"
-					bg="bg.panel"
+					borderRadius="l3"
 					overflowX="auto"
-					borderTopWidth="1px"
-					borderLeftWidth="1px"
-					borderColor="border"
+					borderWidth="1px"
+					borderColor="border.card"
 				>
-					<Grid templateColumns="repeat(7, minmax(120px, 1fr))" minW="840px">
+					{/* The 1px gap over a hairline ground draws the grid lines between cells. */}
+					<Grid
+						templateColumns="repeat(7, minmax(120px, 1fr))"
+						minW="840px"
+						gap="1px"
+						bg="border.subtle"
+					>
 						{["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
 							<Box
 								key={label}
 								px="3"
 								py="2"
-								borderRightWidth="1px"
-								borderBottomWidth="1px"
-								borderColor="border"
+								bg="bg.panel"
 								textStyle="eyebrow"
-								color="fg.subtle"
+								color="fg.muted"
 							>
 								{label}
 							</Box>
@@ -470,14 +485,11 @@ export default async function CalendarPage({
 									gap="2"
 									minH={view === "week" ? "360px" : "126px"}
 									p="2.5"
-									borderRightWidth="1px"
-									borderBottomWidth="1px"
-									borderColor="border"
-									bg={muted ? "bg" : "bg.panel"}
+									bg={muted ? "bg.subtle" : "bg.panel"}
 								>
 									<Text
-										textStyle="data"
-										fontSize="11px"
+										fontSize="12px"
+										fontVariantNumeric="tabular-nums"
 										color={
 											isToday
 												? "accent.contrast"
@@ -510,17 +522,17 @@ export default async function CalendarPage({
 												bg="bg.muted"
 												borderRadius="l1"
 											>
-												<Text fontSize="11px" fontWeight="600" lineClamp={2}>
+												<Text fontSize="12px" fontWeight="500" lineClamp={2}>
 													{post.caption}
 												</Text>
-												<Text mt="1" fontSize="10px" color="fg.subtle">
+												<Text mt="1" fontSize="12px" color="fg.subtle">
 													{post.platform.replace("_", " ")} · {feedback.label}
 												</Text>
 												{post.status === "needs_attention" ? (
 													<Link href={`/projects/${post.projectId}?tab=posts`}>
 														<Text
 															mt="1"
-															fontSize="10px"
+															fontSize="12px"
 															textDecoration="underline"
 														>
 															Resolve safely

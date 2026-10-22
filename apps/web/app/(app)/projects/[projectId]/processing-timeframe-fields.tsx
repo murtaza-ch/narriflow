@@ -33,7 +33,7 @@ export function ProcessingTimeframeFields({
   if (!durationSec) {
     return (
       <Box>
-        <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+        <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
           Processing timeframe
         </Text>
         <Grid templateColumns={{ base: "1fr", md: "1fr 1fr" }} gap="2">

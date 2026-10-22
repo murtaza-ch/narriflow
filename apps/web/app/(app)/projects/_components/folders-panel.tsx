@@ -94,7 +94,7 @@ export function FoldersPanel({
 
   return (
     <Stack gap="3">
-      <Text fontSize="13px" fontWeight="600" color="fg">
+      <Text textStyle="eyebrow" color="fg.muted">
         Folders
       </Text>
 
@@ -108,10 +108,12 @@ export function FoldersPanel({
             align="center"
             minW="0"
             minH="68px"
-            borderRadius="l2"
+            borderRadius="l3"
+            borderWidth="1px"
+            borderColor="border.card"
             bg="bg.panel"
-            transition="border-color 120ms ease, background 120ms ease"
-            _hover={{ borderColor: "border.emphasized", bg: "bg.subtle" }}
+            transition="background 120ms ease"
+            _hover={{ bg: "bg.subtle" }}
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => dropProject(event, folder.id)}
           >
@@ -159,7 +161,7 @@ export function FoldersPanel({
                     <Text fontSize="13px" fontWeight="500" truncate>
                       {folder.name}
                     </Text>
-                    <Text fontSize="11px" color="fg.subtle">
+                    <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
                       {folder.count} {folder.count === 1 ? "project" : "projects"}
                     </Text>
                   </Stack>
@@ -177,17 +179,14 @@ export function FoldersPanel({
                     aria-label={`Actions for ${folder.name}`}
                     disabled={pending}
                   >
-                    {pending ? <Spinner size="xs" /> : <MoreHorizontal size={14} />}
+                    {pending ? <Spinner size="xs" /> : <MoreHorizontal size={16} />}
                   </IconButton>
                 </Menu.Trigger>
                 <Portal>
                   <Menu.Positioner>
-                    <Menu.Content minW="9rem" p="1">
+                    <Menu.Content>
                       <Menu.Item
                         value="rename"
-                        gap="2"
-                        fontSize="13px"
-                        borderRadius="l1"
                         onClick={() => {
                           setEditingId(folder.id);
                           setEditingName(folder.name);
@@ -199,9 +198,6 @@ export function FoldersPanel({
                       <Menu.Separator />
                       <Menu.Item
                         value="delete"
-                        gap="2"
-                        fontSize="13px"
-                        borderRadius="l1"
                         color="danger.fg"
                         onClick={() => void deleteFolder(folder.id, folder.name)}
                       >
@@ -218,7 +214,7 @@ export function FoldersPanel({
       </Grid>
 
       {error ? (
-        <Text role="alert" fontSize="11px" color="danger.fg">
+        <Text role="alert" fontSize="12px" color="danger.fg">
           {error}
         </Text>
       ) : null}

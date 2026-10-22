@@ -13,6 +13,7 @@ import {
 import { Meter } from "@narriflow/ui/components/meter";
 import type { AnalyticsSnapshot, ClipSnapshot } from "@narriflow/validators";
 import { PanelHeader } from "./panel-header";
+import { EmptyState } from "@narriflow/ui/components/empty-state";
 
 function MetricCard({
 	icon,
@@ -33,24 +34,16 @@ function MetricCard({
 			p="5"
 			bg="bg.panel"
 			borderWidth="1px"
-			borderColor="border.subtle"
+			borderColor="border.card"
 			borderRadius="l3"
 		>
 			<Flex align="center" justify="space-between" gap="3">
 				<Text fontSize="13px" color="fg.muted">
 					{label}
 				</Text>
-				<Flex
-					boxSize="8"
-					align="center"
-					justify="center"
-					borderRadius="l2"
-					bg={tone === "danger" ? "danger.subtle" : "bg.muted"}
-					color={tone === "danger" ? "danger.fg" : "fg.muted"}
-					aria-hidden="true"
-				>
+				<Box color={tone === "danger" ? "danger.fg" : "fg.muted"} aria-hidden="true">
 					{icon}
-				</Flex>
+				</Box>
 			</Flex>
 			<Text
 				fontSize="30px"
@@ -104,37 +97,11 @@ export function AnalyticsPanel({
 		return (
 			<Stack gap="6">
 				{header}
-				<Stack
-					align="center"
-					textAlign="center"
-					gap="4"
-					py="14"
-					px="6"
-					borderWidth="1px"
-					borderStyle="dashed"
-					borderColor="border"
-					borderRadius="l3"
-				>
-					<Flex
-						boxSize="12"
-						align="center"
-						justify="center"
-						borderRadius="l2"
-						bg="bg.muted"
-						color="fg.muted"
-						aria-hidden="true"
-					>
-						<BarChart3 size={20} />
-					</Flex>
-					<Box>
-						<Text fontSize="15px" fontWeight="550" color="fg">
-							No activity yet
-						</Text>
-						<Text fontSize="13px" color="fg.muted" mt="1" maxW="46ch">
-							Render, download or post a clip and the counts start here.
-						</Text>
-					</Box>
-				</Stack>
+				<EmptyState
+					icon={<BarChart3 />}
+					title="No activity yet"
+					description="Render, download or post a clip and the counts start here."
+				/>
 			</Stack>
 		);
 	}
@@ -201,12 +168,12 @@ export function AnalyticsPanel({
 			</Stack>
 
 			{clipRows.length > 0 ? (
-				<Box borderWidth="1px" borderColor="border.subtle" borderRadius="l3" overflowX="auto">
+				<Box overflowX="auto">
 					<Grid
 						templateColumns={`minmax(220px, 1fr) repeat(${CLIP_COLUMNS.length}, 88px)`}
 						minW="760px"
 					>
-						<Text px="5" py="2.5" fontSize="12px" color="fg.muted" bg="bg.subtle">
+						<Text px="5" py="2.5" fontSize="12px" color="fg.muted">
 							Clip
 						</Text>
 						{CLIP_COLUMNS.map(([key, label]) => (
@@ -216,7 +183,6 @@ export function AnalyticsPanel({
 								py="2.5"
 								fontSize="12px"
 								color="fg.muted"
-								bg="bg.subtle"
 								textAlign="right"
 							>
 								{label}
@@ -240,8 +206,8 @@ export function AnalyticsPanel({
 										key={key}
 										px="3"
 										py="3"
-										textStyle="data"
 										fontSize="13px"
+										fontVariantNumeric="tabular-nums"
 										textAlign="right"
 										borderTopWidth="1px"
 										borderColor="border.subtle"

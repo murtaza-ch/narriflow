@@ -58,7 +58,9 @@ export function ClipStyleSettings({
     <Stack
       gap="5"
       bg="bg.panel"
-      rounded="2xl"
+      borderRadius="l3"
+      borderWidth="1px"
+      borderColor="border.card"
       p={{ base: "4", md: "5" }}
     >
       <FormatSettings
@@ -68,26 +70,21 @@ export function ClipStyleSettings({
         onClipLengthChange={setClipLengthPreset}
         showClipLength={mode === "clip"}
       />
-      <Box borderTopWidth="1px" borderColor="border.subtle" pt="4">
-        <CaptionPresetGallery
-          value={captionPreset}
-          onChange={setCaptionPreset}
-        />
-      </Box>
+      <CaptionPresetGallery value={captionPreset} onChange={setCaptionPreset} />
       {mode === "clip" ? (
         <Grid
           templateColumns="1fr"
           gap="4"
-          bg="bg.subtle"
-          rounded="xl"
+          bg="bg.soft"
+          borderRadius="l2"
           p="4"
         >
           <Flex align="center" justify="space-between" gap="3">
             <Box>
-              <Text id="auto-hook-label" fontSize="13px" fontWeight="550">
+              <Text id="auto-hook-label" fontSize="14px" fontWeight="500">
                 Start with a hook
               </Text>
-              <Text fontSize="11px" color="fg.muted" mt="1">
+              <Text fontSize="13px" color="fg.muted" mt="1">
                 Prioritize attention-grabbing openings.
               </Text>
             </Box>
@@ -105,13 +102,13 @@ export function ClipStyleSettings({
         <Flex
           gap="2"
           align="center"
-          bg="bg.subtle"
-          rounded="xl"
+          bg="bg.soft"
+          borderRadius="l2"
           p="4"
           color="fg.muted"
         >
           <Info size={16} />
-          <Text fontSize="12px">
+          <Text fontSize="13px">
             Your full video will be transcribed and rendered with captions.
           </Text>
         </Flex>
@@ -120,13 +117,17 @@ export function ClipStyleSettings({
         <>
           <Field.Root>
             <Flex justify="space-between" align="center" w="full">
-              <Field.Label fontSize="13px" fontWeight="550">
+              <Field.Label fontSize="13px" fontWeight="500">
                 Find a specific moment{" "}
                 <chakra.span fontWeight="400" color="fg.subtle" ml="1">
                   Optional
                 </chakra.span>
               </Field.Label>
-              <Text fontSize="11px" color="fg.subtle">
+              <Text
+                fontSize="12px"
+                color="fg.subtle"
+                fontVariantNumeric="tabular-nums"
+              >
                 {specificMoments.length}/500
               </Text>
             </Flex>
@@ -138,20 +139,16 @@ export function ClipStyleSettings({
               rows={2}
               maxLength={500}
               fontSize="13px"
-              bg="bg.subtle"
-              rounded="lg"
             />
           </Field.Root>
-          <Box borderTopWidth="1px" borderColor="border.subtle" pt="3">
-            <AdvancedSettings
-              platformTargets={platformTargets}
-              onPlatformTargetsChange={setPlatformTargets}
-              clipCountTarget={clipCountTarget}
-              onClipCountTargetChange={setClipCountTarget}
-              toneConstraints={toneConstraints}
-              onToneConstraintsChange={setToneConstraints}
-            />
-          </Box>
+          <AdvancedSettings
+            platformTargets={platformTargets}
+            onPlatformTargetsChange={setPlatformTargets}
+            clipCountTarget={clipCountTarget}
+            onClipCountTargetChange={setClipCountTarget}
+            toneConstraints={toneConstraints}
+            onToneConstraintsChange={setToneConstraints}
+          />
         </>
       )}
     </Stack>

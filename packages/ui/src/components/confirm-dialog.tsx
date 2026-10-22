@@ -87,7 +87,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
               <Button
                 variant="solid"
                 size="sm"
-                colorPalette={destructive ? "danger" : "accent"}
+                colorPalette={destructive ? "danger" : "brand"}
                 loading={loading}
                 onClick={() => void onConfirm()}
               >

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Box, Flex, Image, Input, Slider, Stack, Text } from "@chakra-ui/react";
+import { chipProps, softFieldProps, studioSliderCss, softFocusWithin } from "./panel-ui";
 import {
   Check,
   ChevronDown,
@@ -50,19 +51,10 @@ function CategoryChip({
       aria-pressed={active}
       align="center"
       flexShrink={0}
-      h="26px"
-      px="10px"
-      borderRadius="full"
-      bg={active ? "studio.accent" : "studio.subtle"}
-      borderWidth="1px"
-      borderColor={active ? "studio.accent" : "studio.border"}
-      color={active ? "accent.contrast" : "studio.fgMuted"}
-      fontSize="10.5px"
-      fontWeight="600"
       textTransform="capitalize"
       cursor="pointer"
       transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-      _hover={{ borderColor: active ? "studio.accent" : "studio.borderStrong" }}
+      {...chipProps(active)}
       onClick={onClick}
     >
       {label}
@@ -91,16 +83,16 @@ function TrackRow({
   return (
     <Stack
       gap="0"
-      p="7px"
-      bg={active || selected ? "studio.raised" : "transparent"}
-      borderWidth="1px"
-      borderColor={selected ? "studio.accent" : active ? "studio.borderStrong" : "transparent"}
-      borderRadius="l2"
+      p="8px"
+      bg={active || selected ? "studio.subtle" : "transparent"}
+      borderWidth="2px"
+      borderColor={selected ? "studio.accent" : "transparent"}
+      borderRadius="10px"
       transition="background 120ms ease, border-color 120ms ease"
-      _hover={{ bg: "studio.raised", borderColor: selected ? "studio.accent" : "studio.border" }}
+      _hover={{ bg: "studio.subtle" }}
     >
       <Flex align="center" gap="8px">
-        <Box position="relative" w="40px" h="40px" flexShrink={0} overflow="hidden" borderRadius="l2">
+        <Box position="relative" w="44px" h="44px" flexShrink={0} overflow="hidden" borderRadius="8px">
           <Image
             src="/images/audio/music-cover.png"
             alt=""
@@ -134,10 +126,10 @@ function TrackRow({
         </Box>
 
         <Stack gap="1px" minW="0" flex="1">
-          <Text fontSize="11.5px" color="studio.fg" fontWeight="500" truncate>
+          <Text fontSize="13px" color="studio.fg" fontWeight="500" truncate>
             {asset.title}
           </Text>
-          <Text textStyle="data" fontSize="10px" color="studio.fgMuted">
+          <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
             {formatDuration(asset.durationSec)}
             {asset.scope === "user" ? " · upload" : ""}
           </Text>
@@ -164,17 +156,15 @@ function TrackRow({
             as="button"
             aria-label={selected ? `${asset.title} is in use` : `Use ${asset.title}`}
             aria-pressed={selected}
-            w="25px"
-            h="25px"
+            w="32px"
+            h="32px"
             align="center"
             justify="center"
             borderRadius="full"
-            bg={selected ? "studio.accent" : "studio.subtle"}
-            borderWidth="1px"
-            borderColor={selected ? "studio.accent" : "studio.borderControl"}
-            color={selected ? "accent.contrast" : "studio.fgMuted"}
+            bg={selected ? "studio.accent" : "studio.raised"}
+            color={selected ? "studio.canvas" : "studio.fg"}
             cursor="pointer"
-            _hover={{ borderColor: "studio.accent" }}
+            _hover={selected ? undefined : { bg: "studio.borderStrong" }}
             onClick={onUse}
           >
             {selected ? <Check size={13} /> : <Plus size={13} />}
@@ -192,7 +182,7 @@ function TrackRow({
             step={0.05}
             onValueChange={(event) => player.seek(event.value[0] ?? 0)}
             size="sm"
-            colorPalette="accent"
+            css={studioSliderCss}
             flex="1"
           >
             <Slider.Control>
@@ -202,7 +192,7 @@ function TrackRow({
               <Slider.Thumbs />
             </Slider.Control>
           </Slider.Root>
-          <Text textStyle="data" fontSize="9.5px" color="studio.fgMuted" whiteSpace="nowrap">
+          <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" whiteSpace="nowrap">
             {formatDuration(player.currentTime)} / {formatDuration(duration)}
           </Text>
         </Flex>
@@ -271,19 +261,18 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   };
 
   return (
-    <Stack gap="10px" p="12px">
-      <Flex align="center" gap="7px">
+    <Stack gap="14px" px="20px" pt="16px" pb="16px">
+      <Flex align="center" gap="8px">
         <Flex
           align="center"
-          gap="7px"
-          h="34px"
-          px="10px"
+          gap="10px"
+          h="40px"
+          px="12px"
           flex="1"
           bg="studio.subtle"
-          borderWidth="1px"
-          borderColor="studio.borderControl"
-          borderRadius="l2"
-          _focusWithin={{ borderColor: "studio.ring" }}
+          borderRadius="10px"
+          color="studio.fgSubtle"
+          _focusWithin={softFocusWithin}
         >
           <Search size={14} />
           <Input
@@ -295,7 +284,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
             border="0"
             outline="0"
             bg="transparent"
-            fontSize="11.5px"
+            fontSize="14px"
             color="studio.fg"
             _focusVisible={{ boxShadow: "none" }}
             _placeholder={{ color: "studio.fgSubtle" }}
@@ -309,17 +298,15 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
         <Flex
           as="button"
           aria-label="Open audio uploads"
-          w="34px"
-          h="34px"
+          w="40px"
+          h="40px"
           align="center"
           justify="center"
-          borderRadius="l2"
+          borderRadius="10px"
           bg="studio.subtle"
-          borderWidth="1px"
-          borderColor="studio.borderControl"
           color="studio.fgMuted"
           cursor="pointer"
-          _hover={{ borderColor: "studio.borderStrong", color: "studio.fg" }}
+          _hover={{ bg: "studio.raised", color: "studio.fg" }}
           onClick={onOpenUploads}
         >
           <Upload size={14} />
@@ -341,16 +328,16 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               <Box animation="spin">
                 <LoaderCircle size={14} />
               </Box>
-              <Text fontSize="11px">Loading music…</Text>
+              <Text fontSize="13px">Loading music…</Text>
             </Flex>
           ) : error ? (
             <Text fontSize="11px" color="studio.danger" py="14px" textAlign="center">
               {error}
             </Text>
           ) : visibleAssets.length === 0 ? (
-            <Stack align="center" gap="5px" py="22px" px="12px" textAlign="center">
-              <Music size={18} />
-              <Text fontSize="11.5px" color="studio.fgMuted">
+            <Stack align="center" gap="8px" py="28px" px="12px" textAlign="center">
+              <Music size={20} />
+              <Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">
                 {category === "saved"
                   ? "Save tracks with the star and they’ll collect here."
                   : search
@@ -362,9 +349,9 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
                   as="button"
                   align="center"
                   gap="5px"
-                  color="studio.accentFg"
-                  fontSize="10.5px"
-                  fontWeight="600"
+                  color="studio.fg"
+                  fontSize="13px"
+                  fontWeight="500"
                   cursor="pointer"
                   onClick={onOpenUploads}
                 >
@@ -392,17 +379,14 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
           align="center"
           justify="space-between"
           gap="8px"
-          px="10px"
-          py="8px"
-          bg="studio.raised"
-          borderWidth="1px"
-          borderColor="studio.accent"
-          borderLeftWidth="3px"
-          borderRadius="l2"
+          px="14px"
+          py="12px"
+          bg="studio.subtle"
+          borderRadius="10px"
         >
-          <Flex align="center" gap="6px" minW="0">
-            <Music size={13} />
-            <Text fontSize="10.5px" color="studio.fg" fontWeight="600" truncate>
+          <Flex align="center" gap="10px" minW="0">
+            <Music size={15} />
+            <Text fontSize="13px" color="studio.fg" fontWeight="500" truncate>
               {music.title ?? "Music applied"}
             </Text>
           </Flex>
@@ -417,15 +401,16 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
         align="center"
         justify="space-between"
         color="studio.fgMuted"
-        fontSize="10.5px"
-        fontWeight="600"
+        fontSize="13px"
+        fontWeight="500"
         cursor="pointer"
+        _hover={{ color: "studio.fg" }}
         onClick={() => setShowLinkInput((value) => !value)}
       >
-        <Flex align="center" gap="5px">
-          <Link2 size={12} /> Paste a link instead
+        <Flex align="center" gap="8px">
+          <Link2 size={14} /> Paste a link instead
         </Flex>
-        <ChevronDown size={12} style={{ transform: showLinkInput ? "rotate(180deg)" : undefined }} />
+        <ChevronDown size={14} style={{ transform: showLinkInput ? "rotate(180deg)" : undefined }} />
       </Flex>
       {showLinkInput ? (
         <Stack gap="7px">
@@ -435,9 +420,9 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
             value={urlDraft}
             onChange={(event) => setUrlDraft(event.target.value)}
             size="sm"
-            bg="studio.subtle"
-            borderColor="studio.borderControl"
-            fontSize="11px"
+            h="40px"
+            fontSize="13px"
+            {...softFieldProps}
           />
           <Flex gap="7px">
             <Input
@@ -446,20 +431,20 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               value={titleDraft}
               onChange={(event) => setTitleDraft(event.target.value)}
               size="sm"
-              bg="studio.subtle"
-              borderColor="studio.borderControl"
-              fontSize="11px"
+              h="40px"
+              fontSize="13px"
+              {...softFieldProps}
             />
             <Flex
               as="button"
               align="center"
               justify="center"
-              px="10px"
-              borderRadius="l2"
-              bg="studio.accent"
-              color="accent.contrast"
-              fontSize="10.5px"
-              fontWeight="600"
+              px="16px"
+              borderRadius="10px"
+              bg="studio.fg"
+              color="studio.canvas"
+              fontSize="13px"
+              fontWeight="500"
               onClick={applyLink}
             >
               Apply
@@ -472,26 +457,25 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
         as="button"
         align="center"
         justify="space-between"
-        h="32px"
-        px="9px"
+        h="40px"
+        px="12px"
         bg="studio.subtle"
-        borderWidth="1px"
-        borderColor="studio.border"
-        borderRadius="l2"
-        color="studio.fgMuted"
-        fontSize="10.5px"
-        fontWeight="600"
+        borderRadius="10px"
+        color="studio.fg"
+        fontSize="13px"
+        fontWeight="500"
         cursor="pointer"
+        _hover={{ bg: "studio.raised" }}
         onClick={() => setShowMix((value) => !value)}
       >
-        <Flex align="center" gap="6px">
-          <SlidersHorizontal size={12} /> Mix & timing
+        <Flex align="center" gap="8px">
+          <SlidersHorizontal size={14} /> Mix & timing
         </Flex>
-        <ChevronDown size={12} style={{ transform: showMix ? "rotate(180deg)" : undefined }} />
+        <ChevronDown size={14} style={{ transform: showMix ? "rotate(180deg)" : undefined }} />
       </Flex>
 
       {showMix ? (
-        <Stack gap="10px" p="10px" bg="studio.subtle" borderWidth="1px" borderColor="studio.border" borderRadius="l2">
+        <Stack gap="14px" p="14px" bg="studio.subtle" borderRadius="10px">
           {([
             ["Volume", music.volume, 0, 100, 1, "%", "Music volume", "music-volume"],
             ["Start", Math.min(music.startOffsetSec, startOffsetMaxSec), 0, startOffsetMaxSec, 0.5, "s", "Music start offset", "music-start-offset"],
@@ -499,7 +483,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
             ["Fade out", music.fadeOutSec, 0, 5, 0.1, "s", "Music fade out", "music-fade-out"],
           ] as const).map(([label, value, min, max, step, suffix, aria, coalesceKey]) => (
             <Flex key={label} align="center" gap="8px">
-              <Text fontSize="10.5px" color="studio.fgMuted" w="44px" flexShrink={0}>{label}</Text>
+              <Text fontSize="12px" color="studio.fgMuted" w="56px" flexShrink={0}>{label}</Text>
               <Slider.Root
                 aria-label={[aria]}
                 value={[value]}
@@ -515,34 +499,33 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
                 }}
                 onValueChangeEnd={endCoalesce}
                 size="sm"
-                colorPalette="accent"
+                css={studioSliderCss}
                 flex="1"
               >
                 <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
               </Slider.Root>
-              <Text textStyle="data" fontSize="10px" color="studio.fgMuted" w="36px" textAlign="right">
+              <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="40px" textAlign="right">
                 {suffix === "%" ? Math.round(value) : value.toFixed(1)}{suffix}
               </Text>
             </Flex>
           ))}
           <Flex align="center" justify="space-between" pt="2px">
             <Stack gap="0">
-              <Text fontSize="10.5px" color="studio.fg" fontWeight="600">Duck under speech</Text>
-              <Text fontSize="9.5px" color="studio.fgSubtle">Lower music while people talk.</Text>
+              <Text fontSize="13px" color="studio.fg" fontWeight="500">Duck under speech</Text>
+              <Text fontSize="12px" color="studio.fgSubtle">Lower music while people talk.</Text>
             </Stack>
             <Flex
               as="button"
               aria-pressed={music.ducking}
               aria-label={music.ducking ? "Disable ducking" : "Enable ducking"}
-              h="22px"
-              px="8px"
+              h="30px"
+              px="14px"
               align="center"
-              borderRadius="l2"
-              borderWidth="1px"
-              borderColor={music.ducking ? "studio.accent" : "studio.borderControl"}
-              color={music.ducking ? "studio.accentFg" : "studio.fgMuted"}
-              fontSize="10px"
-              fontWeight="600"
+              borderRadius="full"
+              bg={music.ducking ? "studio.accent" : "studio.raised"}
+              color={music.ducking ? "studio.canvas" : "studio.fgMuted"}
+              fontSize="12px"
+              fontWeight="500"
               onClick={() => updateMusic({ ducking: !music.ducking })}
             >
               {music.ducking ? "On" : "Off"}

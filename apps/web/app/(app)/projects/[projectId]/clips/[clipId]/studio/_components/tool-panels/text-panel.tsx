@@ -14,6 +14,7 @@ import {
   Portal,
   parseColor,
 } from "@chakra-ui/react";
+import { PanelButton, PanelTabs, softFieldProps, tileProps, studioSliderCss } from "./panel-ui";
 import { Plus, X, Bold } from "lucide-react";
 import { useStudio } from "../studio-shell";
 import type { StudioTextLayer } from "@narriflow/validators";
@@ -62,19 +63,19 @@ function ToggleBtn({
       align="center"
       justify="center"
       gap="4px"
-      w="52px"
-      h="44px"
-      borderRadius="l2"
+      w="56px"
+      h="48px"
+      borderRadius="10px"
       bg={active ? "studio.raised" : "studio.subtle"}
-      border="1px solid"
-      borderColor={active ? "studio.accent" : "studio.border"}
-      color={active ? "studio.accentFg" : "studio.fgMuted"}
+      borderWidth="2px"
+      borderColor={active ? "studio.accent" : "transparent"}
+      color={active ? "studio.fg" : "studio.fgMuted"}
       cursor="pointer"
-      fontSize="10px"
-      fontWeight="600"
+      fontSize="11px"
+      fontWeight="500"
       onClick={onClick}
       transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-      _hover={{ borderColor: active ? "studio.accent" : "studio.borderStrong", color: active ? "studio.accentFg" : "studio.fg" }}
+      _hover={{ bg: "studio.raised", color: "studio.fg" }}
     >
       {icon}
       {label}
@@ -111,13 +112,13 @@ function ColorField({
         <ColorPicker.HiddenInput />
         <ColorPicker.Control>
           <ColorPicker.Trigger
-            w="32px"
-            h="32px"
-            borderRadius="l2"
-            borderWidth="1px"
-            borderColor="studio.borderStrong"
+            w="36px"
+            h="36px"
+            borderRadius="10px"
+            borderWidth="0"
+            bg="studio.subtle"
             cursor="pointer"
-            p="2px"
+            p="4px"
             aria-label={`${label} color`}
           >
             <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="l1" />
@@ -231,17 +232,15 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
 
   return (
     <Stack
-      gap="10px"
-      px="10px"
-      py="10px"
-      mt="4px"
-      borderRadius="l2"
-      bg="studio.raised"
-      borderWidth="1px"
-      borderColor="studio.accent"
+      gap="14px"
+      px="14px"
+      py="14px"
+      mt="6px"
+      borderRadius="10px"
+      bg="studio.subtle"
     >
       <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">Text</Text>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Text</Text>
         <Textarea
           value={textDraft}
           maxLength={280}
@@ -273,17 +272,14 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
           rows={2}
           size="sm"
           variant="outline"
-          fontSize="12px"
-          bg="studio.subtle"
-          borderColor="studio.borderControl"
-          color="studio.fg"
-          _focusVisible={{ borderColor: "studio.ring", boxShadow: "none" }}
+          fontSize="13px"
+          {...softFieldProps}
           resize="vertical"
         />
       </Box>
 
       <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">Font</Text>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Font</Text>
         <Flex gap="6px" wrap="wrap">
           {FONTS.map((f) => {
             const isActive = layer.fontName === f;
@@ -292,20 +288,20 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
                 key={f}
                 as="button"
                 aria-pressed={isActive}
-                px="8px"
-                py="5px"
-                borderRadius="l2"
-                bg={isActive ? "studio.subtle" : "transparent"}
-                border="1px solid"
-                borderColor={isActive ? "studio.accent" : "studio.border"}
+                px="10px"
+                h="32px"
+                borderRadius="8px"
+                bg={isActive ? "studio.raised" : "studio.canvas"}
+                borderWidth="2px"
+                borderColor={isActive ? "studio.accent" : "transparent"}
                 cursor="pointer"
                 onClick={() => update({ fontName: f })}
                 transition="background 120ms ease, border-color 120ms ease"
-                _hover={{ borderColor: isActive ? "studio.accent" : "studio.borderStrong" }}
+                _hover={{ bg: "studio.raised" }}
               >
                 <Text
-                  fontSize="11px"
-                  color={isActive ? "studio.accentFg" : "studio.fgMuted"}
+                  fontSize="12px"
+                  color={isActive ? "studio.fg" : "studio.fgMuted"}
                   style={{ fontFamily: `"${f}", Arial, sans-serif` }}
                 >
                   {f}
@@ -318,7 +314,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
 
       <Flex gap="10px" align="flex-end">
         <Box flex="1">
-          <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">Font size</Text>
+          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Font size</Text>
           <Flex align="center" gap="10px">
             <Slider.Root
               aria-label={["Font size"]}
@@ -329,7 +325,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
               onValueChange={(e) => update({ fontSize: e.value[0]! }, `text-layer-fontsize-${layer.id}`)}
               onValueChangeEnd={endCoalesce}
               size="sm"
-              colorPalette="accent"
+              css={studioSliderCss}
               flex="1"
             >
               <Slider.Control>
@@ -339,7 +335,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
                 <Slider.Thumbs />
               </Slider.Control>
             </Slider.Root>
-            <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="28px" textAlign="right">
+            <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="28px" textAlign="right">
               {layer.fontSize}
             </Text>
           </Flex>
@@ -366,7 +362,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
       </Flex>
 
       <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">Outline width</Text>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Outline width</Text>
         <Flex align="center" gap="10px">
           <Slider.Root
             aria-label={["Outline width"]}
@@ -377,7 +373,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
             onValueChange={(e) => update({ outlineWidth: e.value[0]! }, `text-layer-outline-${layer.id}`)}
             onValueChangeEnd={endCoalesce}
             size="sm"
-            colorPalette="accent"
+            css={studioSliderCss}
             flex="1"
           >
             <Slider.Control>
@@ -387,14 +383,14 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
               <Slider.Thumbs />
             </Slider.Control>
           </Slider.Root>
-          <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="16px">
+          <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="16px">
             {layer.outlineWidth}
           </Text>
         </Flex>
       </Box>
 
       <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">Background</Text>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Background</Text>
         <Flex gap="6px" align="center" mb="8px">
           <ToggleBtn
             icon={<Box w="14px" h="14px" bg="studio.fgSubtle" borderRadius="2px" />}
@@ -428,7 +424,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
               onValueChange={(e) => update({ backgroundOpacity: e.value[0]! }, `text-layer-bgopacity-${layer.id}`)}
               onValueChangeEnd={endCoalesce}
               size="sm"
-              colorPalette="accent"
+              css={studioSliderCss}
               flex="1"
             >
               <Slider.Control>
@@ -438,7 +434,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
                 <Slider.Thumbs />
               </Slider.Control>
             </Slider.Root>
-            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="28px">
+            <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="28px">
               {layer.backgroundOpacity.toFixed(2)}
             </Text>
           </Flex>
@@ -446,7 +442,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
       </Box>
 
       <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">Timing (seconds)</Text>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Timing (seconds)</Text>
         <Flex gap="8px">
           <Box flex="1">
             <Text fontSize="10.5px" color="studio.fgSubtle" mb="3px">Start</Text>
@@ -458,11 +454,8 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
               onBlur={commitStart}
               onKeyDown={commitOnEnter}
               size="sm"
-              fontSize="12px"
-              bg="studio.subtle"
-              borderColor="studio.borderControl"
-              color="studio.fg"
-              _focusVisible={{ borderColor: "studio.ring", boxShadow: "none" }}
+              fontSize="13px"
+              {...softFieldProps}
             />
           </Box>
           <Box flex="1">
@@ -476,11 +469,8 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
               onBlur={commitEnd}
               onKeyDown={commitOnEnter}
               size="sm"
-              fontSize="12px"
-              bg="studio.subtle"
-              borderColor="studio.borderControl"
-              color="studio.fg"
-              _focusVisible={{ borderColor: "studio.ring", boxShadow: "none" }}
+              fontSize="13px"
+              {...softFieldProps}
             />
           </Box>
         </Flex>
@@ -553,74 +543,46 @@ export function TextPanel() {
   return (
     <Stack gap="0">
       {/* Tabs */}
-      <Flex px="12px" pt="12px" gap="4px" mb="12px" role="tablist" aria-label="Text overlays">
-        {(["presets", "custom"] as const).map((tab) => {
-          const isActive = activeTab === tab;
-          return (
-            <Flex
-              key={tab}
-              as="button"
-              role="tab"
-              aria-selected={isActive}
-              align="center"
-              px="12px"
-              py="6px"
-              borderRadius="l2"
-              bg={isActive ? "studio.raised" : "transparent"}
-              border="1px solid"
-              borderColor={isActive ? "studio.borderStrong" : "transparent"}
-              color={isActive ? "studio.fg" : "studio.fgMuted"}
-              cursor="pointer"
-              fontSize="12px"
-              fontWeight="500"
-              onClick={() => setActiveTab(tab)}
-              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-              textTransform="capitalize"
-            >
-              {tab}
-            </Flex>
-          );
-        })}
-      </Flex>
+      <PanelTabs
+        ariaLabel="Text overlays"
+        items={[
+          { id: "presets", label: "Presets" },
+          { id: "custom", label: "Custom" },
+        ]}
+        value={activeTab}
+        onChange={setActiveTab}
+      />
 
       {activeTab === "presets" && (
-        <Stack gap="6px" px="12px" pb="12px">
+        <Stack gap="8px" px="20px" pt="16px" pb="16px">
           {PRESETS.map((p) => (
             <Flex
               key={p.id}
               align="center"
               justify="space-between"
-              px="12px"
-              py="12px"
-              borderRadius="l2"
-              bg={selectedPreset === p.id ? "studio.raised" : "studio.subtle"}
-              border="1px solid"
-              borderColor={selectedPreset === p.id ? "studio.accent" : "studio.border"}
-              cursor="pointer"
+              px="16px"
+              py="14px"
+              {...tileProps(selectedPreset === p.id)}
               onClick={() => setSelectedPreset(selectedPreset === p.id ? null : p.id)}
-              transition="background 120ms ease, border-color 120ms ease"
-              _hover={{ borderColor: selectedPreset === p.id ? "studio.accent" : "studio.borderStrong" }}
             >
               <Box>
-                <Text fontSize="11px" color="studio.fgMuted" mb="3px" fontWeight="500">{p.label}</Text>
+                <Text fontSize="12px" color="studio.fgMuted" mb="4px" fontWeight="500">{p.label}</Text>
                 <Text style={p.style}>{p.preview}</Text>
               </Box>
               <Box
                 as="button"
                 aria-label={`Add ${p.label} overlay`}
-                w="26px"
-                h="26px"
+                w="32px"
+                h="32px"
                 borderRadius="full"
                 bg="studio.raised"
-                borderWidth="1px"
-                borderColor="studio.borderStrong"
                 display="flex"
                 alignItems="center"
                 justifyContent="center"
                 cursor="pointer"
-                color="studio.fgMuted"
-                _hover={{ borderColor: "studio.accent", color: "studio.accentFg" }}
-                transition="border-color 120ms ease, color 120ms ease"
+                color="studio.fg"
+                _hover={{ bg: "studio.fg", color: "studio.canvas" }}
+                transition="background 120ms ease, color 120ms ease"
                 onClick={(e: React.MouseEvent) => {
                   e.stopPropagation();
                   addLayer({
@@ -637,7 +599,7 @@ export function TextPanel() {
                   });
                 }}
               >
-                <Plus size={12} />
+                <Plus size={15} />
               </Box>
             </Flex>
           ))}
@@ -645,9 +607,9 @@ export function TextPanel() {
       )}
 
       {activeTab === "custom" && (
-        <Stack gap="12px" px="12px" pb="12px">
+        <Stack gap="20px" px="20px" pt="16px" pb="16px">
           <Box>
-            <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">Text content</Text>
+            <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Text content</Text>
             <Textarea
               placeholder="Type your text..."
               value={customText}
@@ -655,17 +617,13 @@ export function TextPanel() {
               rows={3}
               size="sm"
               variant="outline"
-              fontSize="12px"
-              bg="studio.subtle"
-              borderColor="studio.borderControl"
-              color="studio.fg"
-              _placeholder={{ color: "studio.fgSubtle" }}
-              _focusVisible={{ borderColor: "studio.ring", boxShadow: "none" }}
+              fontSize="14px"
+              {...softFieldProps}
               resize="vertical"
             />
           </Box>
           <Box>
-            <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">Font size</Text>
+            <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Font size</Text>
             <Flex align="center" gap="10px">
               <Slider.Root
                 aria-label={["Font size"]}
@@ -674,7 +632,7 @@ export function TextPanel() {
                 max={80}
                 onValueChange={(event) => setFontSize(event.value[0] ?? 44)}
                 size="sm"
-                colorPalette="accent"
+                css={studioSliderCss}
                 flex="1"
               >
                 <Slider.Control>
@@ -684,45 +642,29 @@ export function TextPanel() {
                   <Slider.Thumbs />
                 </Slider.Control>
               </Slider.Root>
-              <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="24px" textAlign="right">
+              <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="24px" textAlign="right">
                 {fontSize}
               </Text>
             </Flex>
           </Box>
-          {/* Secondary action — Export owns the view's solid button */}
-          <Flex
-            as="button"
-            align="center"
-            justify="center"
-            h="34px"
-            borderRadius="l2"
-            bg="studio.raised"
-            borderWidth="1px"
-            borderColor="studio.borderStrong"
-            color="studio.fg"
-            fontSize="12px"
-            fontWeight="600"
-            cursor="pointer"
-            gap="6px"
-            _hover={{ borderColor: "studio.fgSubtle" }}
-            transition="border-color 120ms ease"
+          <PanelButton
             onClick={() => {
               addLayer({ text: customText, fontSize });
               setCustomText("");
             }}
           >
-            <Plus size={14} />
+            <Plus size={16} />
             Add text overlay
-          </Flex>
+          </PanelButton>
         </Stack>
       )}
 
       {studioEdits.textLayers.length > 0 && (
-        <Box px="12px" pb="12px">
-          <Text textStyle="eyebrow" color="studio.fgMuted" mb="8px">
+        <Box px="20px" pb="20px" pt="4px">
+          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="10px">
             Layers
           </Text>
-          <Stack gap="4px">
+          <Stack gap="6px">
             {studioEdits.textLayers.map((layer) => {
               const isSelected = selectedTextLayerId === layer.id;
               return (
@@ -730,25 +672,19 @@ export function TextPanel() {
                   <Flex
                     align="center"
                     justify="space-between"
-                    px="10px"
-                    py="8px"
-                    borderRadius="l2"
-                    bg={isSelected ? "studio.raised" : "studio.subtle"}
-                    borderWidth="1px"
-                    borderColor={isSelected ? "studio.accent" : "studio.border"}
-                    cursor="pointer"
-                    transition="background 120ms ease, border-color 120ms ease"
-                    _hover={{ borderColor: isSelected ? "studio.accent" : "studio.borderStrong" }}
+                    px="14px"
+                    py="10px"
+                    {...tileProps(isSelected)}
                     onClick={() => {
                       selectTextLayer(layer.id);
                       seekTo(layer.startSec);
                     }}
                   >
                     <Box minW="0">
-                      <Text fontSize="11px" color="studio.fg" overflow="hidden" whiteSpace="nowrap" textOverflow="ellipsis">
+                      <Text fontSize="13px" color="studio.fg" overflow="hidden" whiteSpace="nowrap" textOverflow="ellipsis">
                         {layer.text}
                       </Text>
-                      <Text textStyle="data" fontSize="10.5px" color="studio.timecode">
+                      <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.timecode">
                         {layer.startSec.toFixed(1)}s – {layer.endSec ? `${layer.endSec.toFixed(1)}s` : "end"}
                       </Text>
                     </Box>

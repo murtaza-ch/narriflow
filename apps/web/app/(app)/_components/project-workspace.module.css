@@ -1,6 +1,5 @@
 .workspace { min-width: 0; }
-.topbar { border-bottom: 1px solid var(--chakra-colors-border-subtle); }
-.brand { border-left: 1px solid var(--chakra-colors-border); padding-left: 24px; }
+.topbar { min-height: 64px; }
 .main { max-width: 1280px; margin: 0 auto; padding: 36px 40px 80px; }
 .workspace [data-project-back] { display: none; }
 .workspace [data-project-heading] { margin-bottom: 12px; }

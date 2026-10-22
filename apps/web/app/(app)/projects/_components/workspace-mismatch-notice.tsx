@@ -30,7 +30,10 @@ export function WorkspaceMismatchNotice({
       gap="3"
       py="3"
       px="4"
-      bg="bg.subtle"
+      borderWidth="1px"
+      borderColor="border.card"
+      borderRadius="l3"
+      bg="bg.panel"
     >
       <Text fontSize="sm">
         This Project belongs to {workspaceName}. Switch Workspaces to open it.
@@ -38,7 +41,7 @@ export function WorkspaceMismatchNotice({
       </Text>
       <Button
         size="sm"
-        variant="outline"
+        variant="subtle"
         loading={pending}
         onClick={() =>
           startTransition(async () => {

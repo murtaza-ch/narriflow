@@ -29,15 +29,15 @@ export default async function WorkspaceSettingsPage() {
       appUser.workspace.status === "active");
   return (
     <Stack gap="8">
-      <PageHeader eyebrow={workspace.name} title="Workspace settings" />
-      <Box borderRadius="l2" bg="bg.panel" p="6">
+      <PageHeader title="Workspace settings" />
+      <Box borderRadius="l3" bg="bg.panel" borderWidth="1px" borderColor="border.card" p="6">
         <AuthenticatedActionForm action={updateWorkspaceAction}>
           <Stack gap="3" maxW="520px">
-                  <label htmlFor="workspace-name"><Text as="span" fontSize="13px" fontWeight="600">Workspace name</Text></label>
+                  <label htmlFor="workspace-name"><Text as="span" fontSize="13px" fontWeight="500">Workspace name</Text></label>
             <Input id="workspace-name" name="name" defaultValue={workspace.name} maxLength={80} disabled={!canManage} />
-                  <label htmlFor="workspace-timezone"><Text as="span" fontSize="13px" fontWeight="600">Timezone</Text></label>
+                  <label htmlFor="workspace-timezone"><Text as="span" fontSize="13px" fontWeight="500">Timezone</Text></label>
             <Combobox id="workspace-timezone" name="timezone" ariaLabel="Workspace timezone" defaultValue={workspace.timezone} items={TIMEZONE_ITEMS} placeholder="Search timezones" disabled={!canManage} />
-            <Text fontSize="11px" color="fg.subtle">Used for the calendar and publishing defaults.</Text>
+            <Text fontSize="12px" color="fg.subtle">Used for the calendar and publishing defaults.</Text>
             {canManage ? (
               <ActionSubmitButton pendingLabel="Saving…" size="sm" alignSelf="flex-start">Save workspace</ActionSubmitButton>
             ) : null}
@@ -45,13 +45,11 @@ export default async function WorkspaceSettingsPage() {
         </AuthenticatedActionForm>
       </Box>
       <WorkspaceAvatarControl avatarUrl={avatarUrls[appUser.workspaceId] ?? null} workspaceName={workspace.name} canManage={canManage} />
-      <Box borderRadius="l2" bg="bg.panel" p="5">
-        <Text fontSize="12px" color="fg.muted">
-          Status:{" "}
-          <Text as="span" textTransform="capitalize" color="fg">{workspace.status.replace("_", " ")}</Text>
-          {workspace.personalOwnerUserId ? " · Personal workspace" : " · Collaborative workspace"}
-        </Text>
-      </Box>
+      <Text fontSize="12px" color="fg.subtle">
+        Status:{" "}
+        <Text as="span" textTransform="capitalize" color="fg.muted">{workspace.status.replace("_", " ")}</Text>
+        {workspace.personalOwnerUserId ? " · Personal workspace" : " · Collaborative workspace"}
+      </Text>
     </Stack>
   );
 }

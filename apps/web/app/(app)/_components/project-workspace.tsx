@@ -8,6 +8,7 @@ import { Box, Flex } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
 import styles from "./project-workspace.module.css";
+import { ShellPanel } from "./shell-panel";
 
 export function ProjectWorkspace({ children, account, themeToggle }: { children: ReactNode; account: ReactNode; themeToggle: ReactNode }) {
   const pathname = usePathname();
@@ -17,17 +18,22 @@ export function ProjectWorkspace({ children, account, themeToggle }: { children:
   if (pathname.includes("/clips/")) return children;
 
   return (
-    <Box className={styles.workspace} data-project-view={view} minH="100dvh" bg="bg" color="fg">
-      <Flex as="header" className={styles.topbar} align="center" justify="space-between" gap="4" px={{ base: "4", md: "8" }} py="4">
-        <Flex align="center" gap="5">
-          <Button asChild variant="ghost" size="sm"><Link href="/projects"><ArrowLeft size={16} />Projects</Link></Button>
-          <Box className={styles.brand}><Logo size="sm" /></Box>
+    // Same frame as the main shell: the page sits in one inset panel.
+    <Flex className={styles.workspace} data-project-view={view} direction="column" minH="100dvh" bg="bg.sidebar" color="fg" p={{ base: "0", lg: "2" }}>
+      <ShellPanel>
+        <Flex as="header" className={styles.topbar} align="center" justify="space-between" gap="4" px={{ base: "4", md: "6" }}>
+          <Flex align="center" gap="5">
+            <Button asChild variant="ghost" size="sm"><Link href="/projects"><ArrowLeft size={16} />Projects</Link></Button>
+            <Box className={styles.brand}><Logo size="sm" /></Box>
+          </Flex>
+          <Flex align="center" gap="2">{themeToggle}{account}</Flex>
         </Flex>
-        <Flex align="center" gap="3">{themeToggle}{account}</Flex>
-      </Flex>
-      <Box as="main" className={styles.main}>
-        {children}
-      </Box>
-    </Box>
+        {/* w="full": inside the panel's flex column, the CSS module's
+            auto margins would otherwise shrink the page to its content. */}
+        <Box as="main" className={styles.main} w="full">
+          {children}
+        </Box>
+      </ShellPanel>
+    </Flex>
   );
 }

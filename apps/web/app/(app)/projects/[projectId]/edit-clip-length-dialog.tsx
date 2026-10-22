@@ -1027,9 +1027,10 @@ export function EditClipLengthDialog(props: {
                     borderColor="transparent"
                     fontSize="14px"
                     flex="1"
+                    _focusVisible={{ borderColor: "border.focus", boxShadow: "none" }}
                   />
                   {query.trim().length >= 2 && (
-                    <Text textStyle="data" fontSize="11px" color="fg.timecode" flexShrink={0}>
+                    <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums" flexShrink={0}>
                       {matchInfo.count === 0
                         ? "0 matches"
                         : `${matchInfo.active + 1}/${matchInfo.count}`}
@@ -1322,7 +1323,7 @@ export function EditClipLengthDialog(props: {
                     bottom="0"
                     left={`${playheadPct}%`}
                     width="1.5px"
-                    bg="fg"
+                    bg="accent.solid"
                     pointerEvents="none"
                   >
                     {/* Marker cap, like a scrubber head. */}
@@ -1332,7 +1333,7 @@ export function EditClipLengthDialog(props: {
                       left="-4px"
                       w="9.5px"
                       h="9px"
-                      bg="fg"
+                      bg="accent.solid"
                       borderRadius="2px 2px 5px 5px"
                     />
                   </Box>
@@ -1354,7 +1355,7 @@ export function EditClipLengthDialog(props: {
                 ) : flat ? (
                   <Text fontSize="13px" color="fg.muted">
                     Length{" "}
-                    <Text as="span" textStyle="data" color="fg" fontWeight="600">
+                    <Text as="span" color="fg" fontWeight="600" fontVariantNumeric="tabular-nums">
                       {durationSec.toFixed(1)}s
                     </Text>
                   </Text>
@@ -1398,7 +1399,6 @@ export function EditClipLengthDialog(props: {
                         textAlign="center"
                         fontFamily="mono"
                         fontSize="14px"
-                        borderColor="border.control"
                       />
                     ) : (
                       <Skeleton variant="pulse" bg="bg.muted" h="10" w="112px" borderRadius="l2" />
@@ -1416,8 +1416,7 @@ export function EditClipLengthDialog(props: {
                   gap="2.5"
                   h="10"
                   px="3"
-                  borderWidth="1px"
-                  borderColor="border"
+                  bg="bg.soft"
                   borderRadius="l2"
                 >
                   <Flex align="center" gap="2" fontSize="13px" color="fg">

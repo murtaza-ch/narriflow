@@ -54,9 +54,11 @@ export function SourceSetupFlow({
     <Stack gap="5" maxW={step === 2 ? "640px" : "860px"} mx="auto">
       <Stack
         gap="4"
-        bg={step === 2 ? "bg.panel" : "bg.subtle"}
+        bg="bg.panel"
+        borderWidth="1px"
+        borderColor="border.card"
         p={{ base: "4", md: step === 2 ? "5" : "3" }}
-        rounded="2xl"
+        borderRadius="l3"
       >
         <Flex
           display={step === 2 ? "flex" : "none"}
@@ -64,7 +66,7 @@ export function SourceSetupFlow({
           align="center"
           gap="2"
         >
-          <Text fontSize="12px" color="fg.muted">
+          <Text fontSize="13px" color="fg.muted">
             {sourceLabel}
           </Text>
           <Button
@@ -109,7 +111,7 @@ export function SourceSetupFlow({
                 size="sm"
               />
             ) : (
-              <Text fontSize="13px" fontWeight="550" truncate>
+              <Text fontSize="13px" fontWeight="500" truncate>
                 {title}
               </Text>
             )}
@@ -146,9 +148,6 @@ export function SourceSetupFlow({
             {metadata}
             <Button
               h="46px"
-              rounded="xl"
-              bg="accent.solid"
-              color="accent.contrast"
               disabled={!canContinue || locked}
               onClick={() => changeStep(3)}
             >
@@ -156,7 +155,7 @@ export function SourceSetupFlow({
               {mode === "clip" ? "clip settings" : "caption settings"}
               <ArrowRight size={16} />
             </Button>
-            <Text fontSize="11px" color="fg.muted" textAlign="center">
+            <Text fontSize="12px" color="fg.subtle" textAlign="center">
               Your upload starts after you confirm your settings.
             </Text>
           </>
@@ -178,8 +177,6 @@ export function SourceSetupFlow({
             zIndex="10"
             bg="bg"
             py="4"
-            borderTopWidth="1px"
-            borderColor="border.subtle"
           >
             {actions(aspectRatio)}
           </Stack>

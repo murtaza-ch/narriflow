@@ -308,21 +308,28 @@ export function SocialAccountsPanel({
 	return (
 		<Box as="section">
 			{facebookSelectionToken && facebookPages.length > 0 ? (
-				<Box mb="6" borderTopWidth="3px" borderColor="accent.solid" pt="4">
-					<Text textStyle="eyebrow" color="accent.fg">
+				<Box
+					mb="6"
+					p="5"
+					bg="bg.panel"
+					borderRadius="l3"
+					borderWidth="1px"
+					borderColor="border.card"
+				>
+					<Text fontSize="16px" fontWeight="500">
 						Choose one Facebook Page
 					</Text>
 					<Text mt="1" fontSize="13px" color="fg.muted">
 						Only the Page you choose will be connected to this workspace.
 					</Text>
-					<Stack mt="3" gap="0" borderTopWidth="1px" borderColor="border">
+					<Stack mt="3" gap="0">
 						{facebookPages.map((page) => (
 							<Flex
 								key={page.id}
 								py="3"
 								align="center"
 								gap="3"
-								borderBottomWidth="1px"
+								borderTopWidth="1px"
 								borderColor="border.subtle"
 							>
 								<SocialAvatar
@@ -330,12 +337,12 @@ export function SocialAccountsPanel({
 									name={page.name ?? "Facebook Page"}
 									size="8"
 								/>
-								<Text flex="1" fontSize="13px" fontWeight="600">
+								<Text flex="1" fontSize="14px" fontWeight="500">
 									{page.name ?? "Facebook Page"}
 								</Text>
 								<Button
 									size="sm"
-									variant="outline"
+									variant="subtle"
 									disabled={selectingPage !== null}
 									onClick={() => selectFacebookPage(page.id)}
 								>
@@ -348,7 +355,7 @@ export function SocialAccountsPanel({
 			) : null}
 			{accounts.length > 0 ? (
 				<Stack gap="3" mb="8" maxW="600px">
-					<Text as="h2" fontSize="sm" fontWeight="600">
+					<Text as="h2" fontSize="16px" fontWeight="500">
 						Connected accounts
 					</Text>
 					<SimpleGrid
@@ -369,8 +376,8 @@ export function SocialAccountsPanel({
 								minW="0"
 								p="4"
 								borderWidth="1px"
-								borderColor="border.subtle"
-								borderRadius="l2"
+								borderColor="border.card"
+								borderRadius="l3"
 								bg="bg.panel"
 							>
 								<Box position="relative" flexShrink={0}>
@@ -397,7 +404,7 @@ export function SocialAccountsPanel({
 									</Flex>
 								</Box>
 								<Box flex="1" minW="0" w="full" textAlign="center">
-									<Text fontSize="sm" fontWeight="600" overflowWrap="anywhere">
+									<Text fontSize="14px" fontWeight="500" overflowWrap="anywhere">
 										{account.displayName}
 									</Text>
 									<Text fontSize="xs" color="fg.muted" overflowWrap="anywhere">
@@ -414,7 +421,7 @@ export function SocialAccountsPanel({
 									) : null}
 								</Box>
 								{canManage && account.status !== "active" ? (
-									<Button variant="outline" size="sm" asChild>
+									<Button variant="subtle" size="sm" asChild>
 										<Link href={connectHref(account.platform, returnTo)}>
 											Reconnect
 										</Link>
@@ -440,7 +447,7 @@ export function SocialAccountsPanel({
 				</Stack>
 			) : null}
 			<Stack gap="2" mb="5" maxW="560px">
-				<Text as="h2" fontSize="sm" fontWeight="600">
+				<Text as="h2" fontSize="16px" fontWeight="500">
 					{accounts.length
 						? "Add an account"
 						: "Connect your first social account"}
@@ -481,12 +488,10 @@ export function SocialAccountsPanel({
 						<Box
 							key={platform}
 							asChild
-							borderWidth="1px"
-							borderStyle="dashed"
-							borderColor="border"
+							bg="bg.soft"
 							borderRadius="l2"
-							transition="background 120ms ease, border-color 120ms ease"
-							_hover={{ bg: "bg.subtle", borderColor: "fg.subtle" }}
+							transition="background 120ms ease"
+							_hover={{ bg: "bg.softHover" }}
 							_focusVisible={{
 								outline: "2px solid",
 								outlineColor: "accent.solid",
@@ -503,9 +508,7 @@ export function SocialAccountsPanel({
 					) : (
 						<Box
 							key={platform}
-							borderWidth="1px"
-							borderStyle="dashed"
-							borderColor="border"
+							bg="bg.soft"
 							borderRadius="l2"
 							color="fg.muted"
 						>

@@ -62,8 +62,6 @@ export function RetryImportBand({
       overflow="hidden"
       borderRadius="l2"
       bg="danger.subtle"
-      borderWidth="1px"
-      borderColor="danger.muted"
       px="4"
       py="3.5"
     >
@@ -79,7 +77,7 @@ export function RetryImportBand({
         <form action={formAction}>
           <input type="hidden" name="projectId" value={projectId} />
           <Flex align="center" gap="3" wrap="wrap">
-            <Button type="submit" size="sm" variant="outline" disabled={isPending}>
+            <Button type="submit" size="sm" variant="subtle" disabled={isPending}>
               {isPending ? <Spinner size="xs" borderTopColor="accent.fg" /> : null}
               <Text ms={isPending ? "1" : "0"}>Retry import</Text>
             </Button>
@@ -87,7 +85,7 @@ export function RetryImportBand({
               type="button"
               onClick={onSaveAndFinishLater}
               disabled={savingDraft}
-              fontSize="12.5px"
+              fontSize="13px"
               color="fg"
               textDecoration="underline"
               textUnderlineOffset="3px"

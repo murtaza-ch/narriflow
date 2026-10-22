@@ -363,7 +363,7 @@ export function ClipActionsMenu({
             _hover={
               surface === "studio"
                 ? { bg: "studio.raised", color: "studio.fg" }
-                : { bg: "bg.muted", color: "fg" }
+                : { bg: "bg.softHover", color: "fg" }
             }
           >
             <MoreVertical size={15} />
@@ -388,7 +388,7 @@ export function ClipActionsMenu({
               maxW="md"
             >
               <Dialog.Header pt="5" pb="0" px="5">
-                <Dialog.Title textStyle="title" fontSize="15px" color="fg">
+                <Dialog.Title textStyle="title" fontSize="18px" fontWeight="500" color="fg">
                   Rename clip
                 </Dialog.Title>
               </Dialog.Header>
@@ -399,8 +399,6 @@ export function ClipActionsMenu({
                   maxLength={CLIP_TITLE_MAX_LENGTH}
                   disabled={renameSaving}
                   aria-label="Clip title"
-                  bg="bg.panel"
-                  borderColor="border.control"
                   onChange={(event) => setRenameValue(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
@@ -410,11 +408,11 @@ export function ClipActionsMenu({
                   }}
                 />
                 <Flex justify="space-between" gap="3" mt="1.5">
-                  <Text fontSize="11px" color="fg.subtle">
+                  <Text fontSize="12px" color="fg.subtle">
                     Shown in your clip list and the studio. Not burned into the
                     video.
                   </Text>
-                  <Text textStyle="data" fontSize="11px" color="fg.subtle" flexShrink={0}>
+                  <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums" flexShrink={0}>
                     {renameValue.trim().length}/{CLIP_TITLE_MAX_LENGTH}
                   </Text>
                 </Flex>
@@ -436,17 +434,14 @@ export function ClipActionsMenu({
                     void loadSuggestions();
                   }}
                 >
-                  <Sparkles size={13} />
+                  <Sparkles size={16} />
                   <Text ms="1.5">Suggest with AI</Text>
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={renameSaving}
-                  onClick={() => setRenameOpen(false)}
-                >
-                  Cancel
-                </Button>
+                <Dialog.ActionTrigger asChild>
+                  <Button variant="subtle" size="sm" disabled={renameSaving}>
+                    Cancel
+                  </Button>
+                </Dialog.ActionTrigger>
                 <Button
                   variant="solid"
                   size="sm"
@@ -480,7 +475,7 @@ export function ClipActionsMenu({
               maxW="md"
             >
               <Dialog.Header pt="5" pb="0" px="5">
-                <Dialog.Title textStyle="title" fontSize="15px" color="fg">
+                <Dialog.Title textStyle="title" fontSize="18px" fontWeight="500" color="fg">
                   Title ideas
                 </Dialog.Title>
               </Dialog.Header>
@@ -498,7 +493,7 @@ export function ClipActionsMenu({
                     </Text>
                   </Flex>
                 ) : suggestions.length > 0 ? (
-                  <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+                  <Stack gap="1">
                     {suggestions.map((suggestion) => (
                       <Flex
                         key={suggestion}
@@ -509,12 +504,11 @@ export function ClipActionsMenu({
                         textAlign="start"
                         w="full"
                         py="2.5"
-                        px="1"
-                        borderBottomWidth="1px"
-                        borderColor="border.subtle"
+                        px="3"
+                        borderRadius="l1"
                         cursor={applyingTitle ? "progress" : "pointer"}
                         transition="background 120ms ease"
-                        _hover={{ bg: "bg.subtle" }}
+                        _hover={{ bg: "bg.soft" }}
                         // Chakra's `as="button"` doesn't carry native button
                         // props through its types, so this is aria-disabled plus
                         // a no-op handler rather than the `disabled` attribute —
@@ -557,14 +551,15 @@ export function ClipActionsMenu({
                 >
                   Try again
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={Boolean(applyingTitle)}
-                  onClick={closeSuggestions}
-                >
-                  Cancel
-                </Button>
+                <Dialog.ActionTrigger asChild>
+                  <Button
+                    variant="subtle"
+                    size="sm"
+                    disabled={Boolean(applyingTitle)}
+                  >
+                    Cancel
+                  </Button>
+                </Dialog.ActionTrigger>
               </Dialog.Footer>
             </Dialog.Content>
           </Dialog.Positioner>

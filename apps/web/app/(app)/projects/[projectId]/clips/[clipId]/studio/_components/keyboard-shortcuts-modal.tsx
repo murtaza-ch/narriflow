@@ -1,59 +1,117 @@
 "use client";
 
-import { Box, Dialog, Flex, Portal, Text } from "@chakra-ui/react";
+import { Fragment } from "react";
+import { Box, Dialog, Flex, Grid, Portal, Stack, Text } from "@chakra-ui/react";
 import { X } from "lucide-react";
 import { useStudio } from "./studio-shell";
+import { useIsMac } from "./use-is-mac";
 
-// Only shortcuts the shell actually implements are listed.
-const SHORTCUTS = [
-  { command: "Play / Pause",                 win: "Space",             mac: "Space" },
-  { command: "Zoom in",                      win: "+",                 mac: "+" },
-  { command: "Zoom out",                     win: "-",                 mac: "-" },
-  { command: "Resize timeline to fit",       win: "\\",                mac: "\\" },
-  { command: "Move forward to next frame",   win: "Right arrow (→)",   mac: "Right arrow (→)" },
-  { command: "Move backward to prev frame",  win: "Left arrow (←)",    mac: "Left arrow (←)" },
-  { command: "Jump forward 5 seconds",       win: "Shift + →",         mac: "Shift + →" },
-  { command: "Jump back 5 seconds",          win: "Shift + ←",         mac: "Shift + ←" },
-  { command: "Split clips",                  win: "D or Ctrl+B",       mac: "D or Ctrl+B" },
-  { command: "Delete clips",                 win: "Backspace (⌫)",     mac: "Backspace (⌫)" },
-  { command: "Create clip from selection",   win: "Ctrl+Shift+C",      mac: "⇧⌘C" },
-  { command: "Back to start",                win: "1 or Home",         mac: "1 or Home or Fn+←" },
-  { command: "Go to end",                    win: "End",               mac: "Fn + Right Arrow (→)" },
-  { command: "Undo",                         win: "Ctrl+Z",            mac: "⌘Z" },
-  { command: "Redo",                         win: "Ctrl+Shift+Z",      mac: "⌘⇧Z" },
-  { command: "Toggle timeline",              win: "H",                 mac: "H" },
-  { command: "Toggle timeline snapping",     win: "N",                 mac: "N" },
-  { command: "Open shortcuts",               win: "?",                 mac: "?" },
-  { command: "Close / Cancel",               win: "Esc",               mac: "Esc" },
+/** One way to press a shortcut: the keys held together, e.g. ["⌘", "Z"]. */
+type Combo = readonly string[];
+type Shortcut = { command: string; win: readonly Combo[]; mac: readonly Combo[] };
+
+type Group = { title: string; shortcuts: readonly Shortcut[] };
+
+// Only shortcuts the shell actually implements are listed, in two columns of
+// about equal height.
+const COLUMNS: readonly (readonly Group[])[] = [
+  [
+    {
+      title: "Playback",
+      shortcuts: [
+        { command: "Play or pause", win: [["Space"]], mac: [["Space"]] },
+        { command: "Next frame", win: [["→"]], mac: [["→"]] },
+        { command: "Previous frame", win: [["←"]], mac: [["←"]] },
+        { command: "Forward 5 seconds", win: [["Shift", "→"]], mac: [["⇧", "→"]] },
+        { command: "Back 5 seconds", win: [["Shift", "←"]], mac: [["⇧", "←"]] },
+        { command: "Back to start", win: [["1"], ["Home"]], mac: [["1"], ["Home"], ["Fn", "←"]] },
+        { command: "Go to end", win: [["End"]], mac: [["Fn", "→"]] },
+      ],
+    },
+    {
+      title: "General",
+      shortcuts: [
+        { command: "Keyboard shortcuts", win: [["?"]], mac: [["?"]] },
+        { command: "Close or cancel", win: [["Esc"]], mac: [["Esc"]] },
+      ],
+    },
+  ],
+  [
+    {
+      title: "Editing",
+      shortcuts: [
+        { command: "Split at playhead", win: [["D"], ["Ctrl", "B"]], mac: [["D"], ["⌘", "B"]] },
+        { command: "Delete selected", win: [["Backspace"], ["Delete"]], mac: [["⌫"]] },
+        { command: "Clip from selection", win: [["Ctrl", "Shift", "C"]], mac: [["⇧", "⌘", "C"]] },
+        { command: "Undo", win: [["Ctrl", "Z"]], mac: [["⌘", "Z"]] },
+        { command: "Redo", win: [["Ctrl", "Shift", "Z"]], mac: [["⌘", "⇧", "Z"]] },
+      ],
+    },
+    {
+      title: "Timeline",
+      shortcuts: [
+        { command: "Zoom in", win: [["+"]], mac: [["+"]] },
+        { command: "Zoom out", win: [["-"]], mac: [["-"]] },
+        { command: "Zoom to fit", win: [["\\"]], mac: [["\\"]] },
+        { command: "Show or hide timeline", win: [["H"]], mac: [["H"]] },
+        { command: "Snapping on or off", win: [["N"]], mac: [["N"]] },
+      ],
+    },
+  ],
 ];
 
-function KbdTag({ children }: { children: string }) {
+function Key({ children }: { children: string }) {
   return (
-    <Box
-      as="span"
-      display="inline-block"
-      px="6px"
-      py="2px"
+    <Flex
+      as="kbd"
+      align="center"
+      justify="center"
+      minW="26px"
+      h="26px"
+      px="7px"
+      borderRadius="6px"
       bg="studio.raised"
-      borderWidth="1px"
-      borderColor="studio.borderStrong"
-      borderRadius="l1"
-      fontSize="11px"
-      fontFamily="mono"
+      boxShadow="inset 0 -1px 0 rgba(0, 0, 0, 0.35)"
       color="studio.fg"
-      letterSpacing="0.03em"
+      fontFamily="body"
+      fontSize="12px"
+      fontWeight="500"
+      lineHeight="1"
     >
       {children}
-    </Box>
+    </Flex>
+  );
+}
+
+function Keys({ combos }: { combos: readonly Combo[] }) {
+  return (
+    <Flex align="center" gap="1.5" flexShrink={0}>
+      {combos.map((combo, index) => (
+        <Fragment key={combo.join("+")}>
+          {index > 0 ? (
+            <Text fontSize="12px" color="studio.fgSubtle" px="0.5">
+              or
+            </Text>
+          ) : null}
+          <Flex gap="1">
+            {combo.map((key) => (
+              <Key key={key}>{key}</Key>
+            ))}
+          </Flex>
+        </Fragment>
+      ))}
+    </Flex>
   );
 }
 
 /**
  * Keyboard shortcuts reference — a Chakra Dialog. Rendered in a portal, so it
- * styles exclusively with mode-invariant studio.* tokens.
+ * styles exclusively with mode-invariant studio.* tokens. Shows the keys for
+ * the platform the editor is running on.
  */
 export function KeyboardShortcutsModal() {
   const { showShortcuts, setShowShortcuts } = useStudio("showShortcuts", "setShowShortcuts");
+  const isMac = useIsMac();
 
   return (
     <Dialog.Root
@@ -65,31 +123,20 @@ export function KeyboardShortcutsModal() {
         <Dialog.Backdrop zIndex={300} />
         <Dialog.Positioner zIndex={310}>
           <Dialog.Content
-            w="min(860px, 90vw)"
-            maxW="min(860px, 90vw)"
-            maxH="80vh"
+            w="min(760px, 92vw)"
+            maxW="min(760px, 92vw)"
+            maxH="84vh"
             overflow="hidden"
             display="flex"
             flexDirection="column"
+            bg="studio.surface"
             color="studio.fg"
+            borderRadius="14px"
           >
             {/* Header */}
-            <Flex
-              px="6"
-              py="4"
-              align="center"
-              justify="space-between"
-              borderBottomWidth="1px"
-              borderColor="studio.border"
-              flexShrink={0}
-            >
+            <Flex px="6" pt="5" pb="2" align="center" justify="space-between" flexShrink={0}>
               <Dialog.Title asChild>
-                <Text
-                  fontFamily="display"
-                  fontSize="15px"
-                  fontWeight="600"
-                  color="studio.fg"
-                >
+                <Text fontSize="18px" fontWeight="500" color="studio.fg">
                   Keyboard shortcuts
                 </Text>
               </Dialog.Title>
@@ -99,9 +146,9 @@ export function KeyboardShortcutsModal() {
                   aria-label="Close keyboard shortcuts"
                   align="center"
                   justify="center"
-                  w="28px"
-                  h="28px"
-                  borderRadius="l1"
+                  w="32px"
+                  h="32px"
+                  borderRadius="full"
                   bg="transparent"
                   border="none"
                   color="studio.fgMuted"
@@ -109,14 +156,16 @@ export function KeyboardShortcutsModal() {
                   _hover={{ color: "studio.fg", bg: "studio.raised" }}
                   transition="background 120ms ease, color 120ms ease"
                 >
-                  <X size={16} />
+                  <X size={17} />
                 </Flex>
               </Dialog.CloseTrigger>
             </Flex>
 
-            {/* Table */}
             <Box
               overflowY="auto"
+              px="6"
+              pt="3"
+              pb="6"
               css={{
                 "&::-webkit-scrollbar": { width: "4px" },
                 "&::-webkit-scrollbar-thumb": {
@@ -125,52 +174,39 @@ export function KeyboardShortcutsModal() {
                 },
               }}
             >
-              {/* Column headers */}
-              <Flex
-                px="6"
-                py="2.5"
-                bg="studio.subtle"
-                borderBottomWidth="1px"
-                borderColor="studio.border"
-                position="sticky"
-                top="0"
-                zIndex={1}
+              <Grid
+                templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))" }}
+                columnGap="10"
+                rowGap="7"
               >
-                <Text flex="2" textStyle="eyebrow" color="studio.fgMuted">
-                  Command
-                </Text>
-                <Text flex="1" textStyle="eyebrow" color="studio.fgMuted">
-                  Windows
-                </Text>
-                <Text flex="1" textStyle="eyebrow" color="studio.fgMuted">
-                  macOS
-                </Text>
-              </Flex>
-
-              {SHORTCUTS.map((row) => (
-                <Flex
-                  key={row.command}
-                  px="6"
-                  py="3"
-                  align="center"
-                  borderBottomWidth="1px"
-                  borderColor="studio.border"
-                  _hover={{ bg: "studio.subtle" }}
-                  transition="background 120ms ease"
-                >
-                  <Text flex="2" fontSize="13px" color="studio.fg">
-                    {row.command}
-                  </Text>
-                  <Box flex="1">
-                    <KbdTag>{row.win}</KbdTag>
-                  </Box>
-                  <Box flex="1">
-                    <KbdTag>{row.mac}</KbdTag>
-                  </Box>
-                </Flex>
-              ))}
-
-              <Box h="4" />
+                {COLUMNS.map((groups) => (
+                  <Stack key={groups.map((group) => group.title).join()} gap="7">
+                    {groups.map((group) => (
+                      <Box key={group.title}>
+                        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">
+                          {group.title}
+                        </Text>
+                        <Stack gap="0">
+                          {group.shortcuts.map((shortcut) => (
+                            <Flex
+                              key={shortcut.command}
+                              align="center"
+                              justify="space-between"
+                              gap="4"
+                              minH="38px"
+                            >
+                              <Text fontSize="14px" color="studio.fg">
+                                {shortcut.command}
+                              </Text>
+                              <Keys combos={isMac ? shortcut.mac : shortcut.win} />
+                            </Flex>
+                          ))}
+                        </Stack>
+                      </Box>
+                    ))}
+                  </Stack>
+                ))}
+              </Grid>
             </Box>
           </Dialog.Content>
         </Dialog.Positioner>

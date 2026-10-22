@@ -12,21 +12,19 @@ export function RetentionBanner() {
       justify="space-between"
       direction={{ base: "column", sm: "row" }}
       gap="4"
-      borderTopWidth="1px"
-      borderBottomWidth="1px"
-      borderColor="border"
-      borderInlineStartWidth="3px"
-      borderInlineStartColor="accent.solid"
+      borderWidth="1px"
+      borderColor="border.card"
+      borderRadius="l3"
       py="4"
       px={{ base: "4", md: "5" }}
-      bg="bg.subtle"
+      bg="bg.panel"
     >
       <Flex gap="3" align="flex-start">
         <Box color="accent.fg" pt="0.5" flexShrink={0}>
-          <Clock3 size={17} strokeWidth={1.75} aria-hidden="true" />
+          <Clock3 size={18} strokeWidth={1.75} aria-hidden="true" />
         </Box>
         <Stack gap="1">
-          <Text textStyle="eyebrow" color="fg">
+          <Text fontSize="14px" fontWeight="500" color="fg">
             Free storage · 3 days
           </Text>
           <Text fontSize="13px" color="fg.muted" lineHeight="1.55">
@@ -35,7 +33,7 @@ export function RetentionBanner() {
           </Text>
         </Stack>
       </Flex>
-      <Button size="sm" variant="outline" asChild flexShrink={0}>
+      <Button size="sm" variant="subtle" asChild flexShrink={0}>
         <Link href="/settings/billing">Keep my projects</Link>
       </Button>
     </Flex>

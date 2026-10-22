@@ -39,7 +39,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
             title={template.name}
             description="Built-in styles are read-only. Duplicate to customize."
             actions={
-              <Button variant="outline" colorPalette="gray" asChild>
+              <Button variant="subtle" asChild>
                 <Link href={returnHref}>Back</Link>
               </Button>
             }
@@ -56,7 +56,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
           title={`Edit · ${template.name}`}
           description="Changes apply to new projects only."
           actions={
-            <Button variant="outline" colorPalette="gray" asChild>
+            <Button variant="subtle" asChild>
               <Link href={returnHref}>Cancel</Link>
             </Button>
           }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import createCache from "@emotion/cache"
 import { CacheProvider } from "@emotion/react"
 import { useServerInsertedHTML } from "next/navigation"
@@ -62,7 +62,37 @@ function EmotionRegistry({ children }: { children: React.ReactNode }) {
   return <CacheProvider value={cache}>{children}</CacheProvider>
 }
 
+/**
+ * Records the last input type on <html data-input-modality>. Closing a menu,
+ * popover or dialog with an outside click hands focus back to its trigger,
+ * and browsers mark that programmatic focus :focus-visible — so pointer users
+ * got a focus ring they never asked for. The theme hides rings while the
+ * modality is "pointer"; any key press switches back to "keyboard".
+ */
+function useInputModality() {
+  useEffect(() => {
+    const root = document.documentElement
+    // Start as "pointer": focus moved by script at load (e.g. a drawer opened
+    // from the URL) shouldn't ring until the user actually presses a key.
+    root.dataset.inputModality ??= "pointer"
+    const onPointerDown = () => {
+      root.dataset.inputModality = "pointer"
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Meta" || event.key === "Control" || event.key === "Alt" || event.key === "Shift") return
+      root.dataset.inputModality = "keyboard"
+    }
+    window.addEventListener("pointerdown", onPointerDown, true)
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true)
+      window.removeEventListener("keydown", onKeyDown, true)
+    }
+  }, [])
+}
+
 export function Provider({ children }: { children: React.ReactNode }) {
+  useInputModality()
   return (
     <EmotionRegistry>
       <ColorModeProvider>

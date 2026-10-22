@@ -31,6 +31,6 @@ export default async function McpUploadHandoffPage({ searchParams }: { searchPar
     return <Stack gap="6" maxW="800px"><PageHeader title="Choose a video for your assistant" description="The assistant's generation settings are committed with this upload. File bytes travel directly to Narriflow storage." /><Text fontSize="13px" color="fg.muted">{generationContext.contentPack.clipCountTarget} clips · {generationContext.contentPack.defaultAspectRatio} · {generationContext.contentPack.clipLengthPreset.replaceAll("_", " ")}</Text><McpUploadPicker token={token!} workspaceId={state.workspaceId} clientIdempotencyKey={state.intent.clientIdempotencyKey} title={state.intent.title} brandProfileId={state.intent.brandProfileId} resumeOnly={resumeOnly} generationContext={generationContext} /></Stack>;
   } catch (error) {
     if (!isExpectedDomainFailure(error)) throw error;
-    return <Stack gap="4"><PageHeader title="Upload handoff unavailable" description="Open the upload tool again from your assistant. This handoff may have expired or belong to another account." /><Button asChild variant="outline"><Link href="/integrations/mcp">Back to MCP integration</Link></Button></Stack>;
+    return <Stack gap="4"><PageHeader title="Upload handoff unavailable" description="Open the upload tool again from your assistant. This handoff may have expired or belong to another account." /><Button asChild variant="subtle"><Link href="/integrations/mcp">Back to MCP integration</Link></Button></Stack>;
   }
 }

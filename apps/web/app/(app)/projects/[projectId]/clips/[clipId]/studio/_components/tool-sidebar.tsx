@@ -12,8 +12,6 @@ import {
   X,
   PanelsTopLeft,
 } from "lucide-react";
-import { ScoreMeter } from "@narriflow/ui/components/meter";
-import { formatDuration } from "@/lib/format";
 import { useStudio } from "./studio-shell";
 import type { ToolId } from "./studio-shell";
 
@@ -27,16 +25,17 @@ import { TransitionsPanel } from "./tool-panels/transitions-panel";
 import { LayoutPanel } from "./tool-panels/layout-panel";
 import { ScenesPanel } from "./tool-panels/scenes-panel";
 
-const TOOLS: { id: ToolId; label: string; icon: React.ReactNode }[] = [
-  { id: "captions",    label: "Captions",       icon: <Subtitles size={17} /> },
-  { id: "brand",       label: "Brand template", icon: <LayoutGrid size={17} /> },
-  { id: "broll",       label: "B-Roll",         icon: <Clapperboard size={17} /> },
-  { id: "transitions", label: "Motion",         icon: <Shuffle size={17} /> },
-  { id: "text",        label: "Text",           icon: <Type size={17} /> },
-  { id: "music",       label: "Music",          icon: <Music size={17} /> },
-  { id: "layout",      label: "Layout",         icon: <Crop size={17} /> },
-  { id: "scenes",      label: "Scenes",         icon: <PanelsTopLeft size={17} /> },
-];
+/** `railLabel` is the short name under the rail icon; `label` titles the panel. */
+const TOOLS: { id: ToolId; label: string; railLabel?: string; icon: React.ReactNode }[] = [
+  { id: "captions",    label: "Captions", icon: <Subtitles size={22} /> },
+  { id: "brand",       label: "Brand template", railLabel: "Brand", icon: <LayoutGrid size={22} /> },
+  { id: "broll",       label: "B-Roll",   icon: <Clapperboard size={22} /> },
+  { id: "transitions", label: "Motion",   icon: <Shuffle size={22} /> },
+  { id: "text",        label: "Text",     icon: <Type size={22} /> },
+  { id: "music",       label: "Music",    icon: <Music size={22} /> },
+  { id: "layout",      label: "Layout",   icon: <Crop size={22} /> },
+  { id: "scenes",      label: "Scenes",   icon: <PanelsTopLeft size={22} /> },
+]
 
 const PANEL_MAP: Record<ToolId, React.ReactNode> = {
   "captions":    <CaptionsPanel />,
@@ -49,69 +48,9 @@ const PANEL_MAP: Record<ToolId, React.ReactNode> = {
   "scenes":      <ScenesPanel />,
 };
 
-/** Hairline definition row for the no-selection Inspector view. */
-function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <Flex
-      align="center"
-      justify="space-between"
-      gap="3"
-      py="3"
-      borderBottomWidth="1px"
-      borderColor="studio.border"
-    >
-      <Text fontSize="12px" color="studio.fgMuted">
-        {label}
-      </Text>
-      {children}
-    </Flex>
-  );
-}
-
 /**
- * Default Inspector contents when no tool is active — the clip's own data
- * (virality score, category, duration, format).
- */
-function ClipProperties() {
-  const { clipInfo, aspectRatio, segments } = useStudio("clipInfo", "aspectRatio", "segments");
-
-  return (
-    <Stack gap="0" px="4" pt="2">
-      <PropertyRow label="Virality score">
-        <ScoreMeter score={clipInfo.viralityScore} size="md" showLabel />
-      </PropertyRow>
-      <PropertyRow label="Category">
-        <Text fontSize="12px" fontWeight="600" color="studio.fg" textTransform="capitalize">
-          {clipInfo.category || "—"}
-        </Text>
-      </PropertyRow>
-      <PropertyRow label="Duration">
-        <Text textStyle="data" fontSize="12px" color="studio.timecode">
-          {formatDuration(clipInfo.duration)}
-        </Text>
-      </PropertyRow>
-      <PropertyRow label="Format">
-        <Text textStyle="data" fontSize="12px" color="studio.fg">
-          {aspectRatio}
-        </Text>
-      </PropertyRow>
-      <PropertyRow label="Segments">
-        <Text textStyle="data" fontSize="12px" color="studio.fg">
-          {segments.length}
-        </Text>
-      </PropertyRow>
-      <Text fontSize="12px" color="studio.fgSubtle" lineHeight="1.6" pt="4">
-        Select a tool above to style captions, add overlays, or swap in B-roll.
-        Click the caption on the video to edit it directly.
-      </Text>
-    </Stack>
-  );
-}
-
-/**
- * The Inspector — one fixed-width contextual panel replacing the old
- * icon-rail + slide-out pair. Contents follow the active tool; with nothing
- * selected it shows the clip's properties.
+ * Tool rail on the editor's right edge, and — only while a tool is open — its
+ * panel floating beside it. With no tool selected the canvas gets the room.
  */
 export function ToolSidebar() {
   const { activeTool, setActiveTool } = useStudio("activeTool", "setActiveTool");
@@ -123,26 +62,77 @@ export function ToolSidebar() {
   const activeLabel = TOOLS.find((t) => t.id === activeTool)?.label;
 
   return (
-    <Flex
-      direction="column"
-      w={{ base: "260px", md: "300px" }}
-      h="100%"
-      bg="studio.surface"
-      borderLeftWidth="1px"
-      borderColor="studio.border"
-      flexShrink={0}
-      overflow="hidden"
-    >
-      {/* Tool tabs */}
-      <Flex
-        px="2"
-        py="2"
+    <Flex h="100%" flexShrink={0} gap="2">
+      {activeTool ? (
+        <Flex
+          direction="column"
+          w={{ base: "300px", md: "380px" }}
+          bg="studio.canvas"
+          borderRadius="12px"
+          overflow="hidden"
+        >
+          <Flex px="5" pt="4" pb="3" align="center" justify="space-between" flexShrink={0}>
+            <Text fontSize="16px" fontWeight="500" color="studio.fg">
+              {activeLabel}
+            </Text>
+            <Flex
+              as="button"
+              aria-label="Close tool panel"
+              align="center"
+              justify="center"
+              w="30px"
+              h="30px"
+              borderRadius="l2"
+              bg="transparent"
+              border="none"
+              color="studio.fgMuted"
+              cursor="pointer"
+              _hover={{ color: "studio.fg", bg: "studio.raised" }}
+              transition="background 120ms ease, color 120ms ease"
+              onClick={() => setActiveTool(null)}
+            >
+              <X size={16} />
+            </Flex>
+          </Flex>
+          <Box
+            flex="1"
+            overflowY="auto"
+            css={{
+              "&::-webkit-scrollbar": { width: "4px" },
+              "&::-webkit-scrollbar-thumb": {
+                background: "var(--chakra-colors-studio-raised)",
+                borderRadius: "4px",
+              },
+            }}
+          >
+            {PANEL_MAP[activeTool]}
+          </Box>
+        </Flex>
+      ) : null}
+
+      {/* Eight tools must fit short laptop screens: below 900px tall the
+          buttons compact, below 760px they drop to icons (names stay in the
+          tooltip and accessible label); anything shorter scrolls. */}
+      <Stack
+        w="92px"
+        h="100%"
         gap="1"
-        borderBottomWidth="1px"
-        borderColor="studio.border"
+        py="3"
+        px="2"
+        bg="studio.canvas"
+        borderRadius="12px"
         role="tablist"
         aria-label="Studio tools"
-        flexShrink={0}
+        aria-orientation="vertical"
+        overflowY="auto"
+        css={{
+          "@media (max-height: 900px)": { paddingBlock: "8px" },
+          "& > [role=tab]": {
+            "@media (max-height: 900px)": { minHeight: "58px", gap: "4px", paddingBlock: "6px" },
+            "@media (max-height: 760px)": { minHeight: "44px" },
+          },
+          "@media (max-height: 760px)": { "& [data-rail-label]": { display: "none" } },
+        }}
       >
         {TOOLS.map((tool) => {
           const isActive = activeTool === tool.id;
@@ -154,87 +144,31 @@ export function ToolSidebar() {
               aria-selected={isActive}
               aria-label={tool.label}
               title={tool.label}
+              direction="column"
               align="center"
               justify="center"
-              flex="1"
-              h="36px"
-              borderRadius="l1"
-              position="relative"
-              bg={isActive ? "studio.raised" : "transparent"}
+              gap="1.5"
+              w="full"
+              minH="76px"
+              py="2"
+              flexShrink={0}
+              borderRadius="10px"
+              bg={isActive ? "studio.accentSubtle" : "transparent"}
               border="none"
               color={isActive ? "studio.accentFg" : "studio.fgMuted"}
               cursor="pointer"
               transition="background 120ms ease, color 120ms ease"
-              _hover={{ bg: "studio.raised", color: isActive ? "studio.accentFg" : "studio.fg" }}
+              _hover={{ bg: isActive ? "studio.accentSubtle" : "studio.subtle", color: isActive ? "studio.accentFg" : "studio.fg" }}
               onClick={() => handleToolClick(tool.id)}
             >
               {tool.icon}
-              {/* 3px active stripe — state is never hue alone */}
-              {isActive && (
-                <Box
-                  position="absolute"
-                  bottom="-1px"
-                  left="6px"
-                  right="6px"
-                  h="3px"
-                  borderRadius="full"
-                  bg="studio.accent"
-                />
-              )}
+              <Text data-rail-label fontSize="12px" fontWeight="500" lineHeight="1.25" textAlign="center">
+                {tool.railLabel ?? tool.label}
+              </Text>
             </Flex>
           );
         })}
-      </Flex>
-
-      {/* Panel header */}
-      <Flex
-        px="4"
-        py="3"
-        align="center"
-        justify="space-between"
-        borderBottomWidth="1px"
-        borderColor="studio.border"
-        flexShrink={0}
-      >
-        <Text textStyle="eyebrow" color="studio.fgMuted">
-          {activeLabel ?? "Clip properties"}
-        </Text>
-        {activeTool && (
-          <Flex
-            as="button"
-            aria-label="Close tool panel"
-            align="center"
-            justify="center"
-            w="24px"
-            h="24px"
-            borderRadius="l1"
-            bg="transparent"
-            border="none"
-            color="studio.fgMuted"
-            cursor="pointer"
-            _hover={{ color: "studio.fg", bg: "studio.raised" }}
-            transition="background 120ms ease, color 120ms ease"
-            onClick={() => setActiveTool(null)}
-          >
-            <X size={14} />
-          </Flex>
-        )}
-      </Flex>
-
-      {/* Panel content */}
-      <Box
-        flex="1"
-        overflowY="auto"
-        css={{
-          "&::-webkit-scrollbar": { width: "4px" },
-          "&::-webkit-scrollbar-thumb": {
-            background: "var(--chakra-colors-studio-raised)",
-            borderRadius: "4px",
-          },
-        }}
-      >
-        {activeTool ? PANEL_MAP[activeTool] : <ClipProperties />}
-      </Box>
+      </Stack>
     </Flex>
   );
 }

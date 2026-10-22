@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useReverification, useSession, useUser } from "@clerk/nextjs";
 import { isReverificationCancelledError } from "@clerk/nextjs/errors";
-import { Box, CloseButton, Dialog, Flex, Portal, Stack, Text } from "@chakra-ui/react";
-import { KeyRound } from "lucide-react";
-import { Button } from "@narriflow/ui/components/button";
+import { Box, Dialog, Flex, Portal, Stack, Text } from "@chakra-ui/react";
+import { KeyRound, X } from "lucide-react";
+import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
 import { supportsPasskeys } from "@/lib/auth-flow";
@@ -52,10 +52,10 @@ export function PasskeySettings() {
     }
   }
 
-  return <Box borderRadius="l2" bg="bg.panel" p={{ base: "4", md: "6" }}>
+  return <Box borderRadius="l3" bg="bg.panel" borderWidth="1px" borderColor="border.card" p={{ base: "4", md: "6" }}>
     <Stack gap="5">
       <Stack gap="1">
-        <Text as="h2" fontSize="lg" fontWeight="600">Passkeys</Text>
+        <Text as="h2" fontSize="16px" fontWeight="500">Passkeys</Text>
         <Text fontSize="sm" color="fg.muted">Sign in with your fingerprint, face, or device PIN. Adding a passkey is optional.</Text>
       </Stack>
       <FormError message={error} />
@@ -77,14 +77,14 @@ function PasskeyRow({ passkey, disabled, onRename, onRemove }: {
   onRemove: () => void;
 }) {
   const [name, setName] = useState(passkey.name ?? "Passkey");
-  return <Stack borderWidth="1px" borderColor="border" borderRadius="l2" p="4" gap="3">
+  return <Stack bg="bg.soft" borderRadius="l2" p="4" gap="3">
     <Label htmlFor={`passkey-${passkey.id}`}>Passkey name</Label>
     <Flex gap="2" wrap="wrap">
       <Input id={`passkey-${passkey.id}`} value={name} maxLength={64} onChange={(e) => setName(e.target.value)} disabled={disabled} flex="1" minW="140px" />
-      <Button variant="outline" disabled={disabled || !name.trim() || name.trim() === passkey.name} onClick={() => onRename(name.trim())}>Save name</Button>
+      <Button variant="subtle" disabled={disabled || !name.trim() || name.trim() === passkey.name} onClick={() => onRename(name.trim())}>Save name</Button>
       <Button variant="ghost" disabled={disabled} onClick={onRemove}>Remove</Button>
     </Flex>
-    <Text fontSize="xs" color="fg.muted">{passkey.lastUsedAt ? `Last used ${passkey.lastUsedAt.toLocaleDateString()}` : `Added ${passkey.createdAt.toLocaleDateString()}`}</Text>
+    <Text fontSize="12px" color="fg.subtle">{passkey.lastUsedAt ? `Last used ${passkey.lastUsedAt.toLocaleDateString()}` : `Added ${passkey.createdAt.toLocaleDateString()}`}</Text>
   </Stack>;
 }
 
@@ -137,18 +137,20 @@ function ReverificationDialog({ request, onClose }: { request: VerificationReque
 
   return <Dialog.Root open onOpenChange={({ open }) => { if (!open) cancel(); }} placement="center" scrollBehavior="inside">
     <Portal><Dialog.Backdrop /><Dialog.Positioner p="4"><Dialog.Content maxW="420px" bg="bg.panel" color="fg">
-      <Dialog.CloseTrigger asChild><CloseButton aria-label="Cancel verification" position="absolute" top="2" right="2" /></Dialog.CloseTrigger>
-      <Dialog.Header><Dialog.Title>Verify it’s you</Dialog.Title></Dialog.Header>
+      <Dialog.CloseTrigger asChild><IconButton aria-label="Cancel verification" variant="ghost" borderRadius="full" boxSize="8" position="absolute" top="3" right="3"><X size={16} /></IconButton></Dialog.CloseTrigger>
+      <Dialog.Header><Dialog.Title fontSize="18px" fontWeight="500">Verify it’s you</Dialog.Title></Dialog.Header>
       <Dialog.Body><Stack gap="4">
-        <Dialog.Description color="fg.muted" fontSize="sm">Verify your account to change your passkeys.</Dialog.Description>
+        <Dialog.Description color="fg.muted" fontSize="13px">Verify your account to change your passkeys.</Dialog.Description>
         <FormError message={error} />
-        {method && <form onSubmit={(e) => { e.preventDefault(); void verify(); }}><Stack gap="3">
+        {method && <form id="account-verification-form" onSubmit={(e) => { e.preventDefault(); void verify(); }}><Stack gap="3">
           <Label htmlFor="account-verification">{method === "password" ? "Password" : "Email verification code"}</Label>
           {method === "password" ? <PasswordInput id="account-verification" autoComplete="current-password" value={value} required onChange={(e) => setValue(e.target.value)} disabled={pending} /> : <Input id="account-verification" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" value={value} required onChange={(e) => setValue(e.target.value)} disabled={pending} />}
-          <Button type="submit" loading={pending}>Verify</Button>
         </Stack></form>}
-        {canUsePasskey && <Button variant="outline" disabled={pending} onClick={() => verify(true)}><KeyRound size={16} />Verify with a passkey</Button>}
-        <Button variant="ghost" onClick={cancel}>Cancel</Button>
+        {canUsePasskey && <Button variant="subtle" disabled={pending} onClick={() => verify(true)}><KeyRound size={16} />Verify with a passkey</Button>}
+        <Flex justify="flex-end" gap="2">
+          <Dialog.ActionTrigger asChild><Button variant="subtle">Cancel</Button></Dialog.ActionTrigger>
+          {method && <Button type="submit" form="account-verification-form" loading={pending}>Verify</Button>}
+        </Flex>
       </Stack></Dialog.Body>
     </Dialog.Content></Dialog.Positioner></Portal>
   </Dialog.Root>;

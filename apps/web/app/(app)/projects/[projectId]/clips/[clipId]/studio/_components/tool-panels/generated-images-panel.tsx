@@ -10,6 +10,7 @@ import {
   Text,
   Textarea,
 } from "@chakra-ui/react";
+import { chipProps, softButtonProps, softFieldProps } from "./panel-ui";
 import {
   BookmarkPlus,
   Download,
@@ -351,56 +352,53 @@ export function GeneratedImagesPanel() {
 
   return (
     <Stack gap="0" h="100%" overflowY="auto">
-      <Stack gap="12px" p="12px" borderBottomWidth="1px" borderColor="studio.border">
+      <Stack gap="14px" px="20px" pt="16px" pb="20px" borderBottomWidth="1px" borderColor="studio.border">
         <Flex align="center" justify="space-between">
-          <Box>
-            <Text textStyle="eyebrow" color="studio.fgMuted">GENERATE STILL</Text>
-            <Text fontSize="12px" color="studio.fg">Production image model · Deployment managed</Text>
-          </Box>
-          <Text fontFamily="mono" fontSize="10px" color="studio.fgMuted">
+          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">Generate a still</Text>
+          <Text fontFamily="mono" fontSize="11px" color="studio.fgMuted">
             {usage ? `${usage.remaining}/${usage.dailyLimit} remaining` : "Usage loading"}
           </Text>
         </Flex>
 
         {!generatedImagesCapability.available ? (
-          <Box layerStyle="well" p="10px" borderLeftWidth="3px" borderLeftColor="studio.accent">
-            <Text fontSize="11px" color="studio.fg">New generation is unavailable</Text>
-            <Text mt="3px" fontSize="10px" color="studio.fgMuted">{unavailableCopy}</Text>
+          <Box bg="studio.subtle" borderRadius="10px" p="14px">
+            <Text fontSize="13px" color="studio.fg" fontWeight="500">New generation is unavailable</Text>
+            <Text mt="4px" fontSize="12px" color="studio.fgMuted">{unavailableCopy}</Text>
           </Box>
         ) : null}
 
-        <Flex gap="5px">
+        <Flex gap="6px">
           {([
             { id: "transcript_selection", label: "Selection", disabled: !selectionContext },
             { id: "broll_cue", label: "B-roll cue", disabled: !cue },
             { id: "manual", label: "Manual", disabled: false },
           ] as const).map((item) => (
-            <Button key={item.id} size="xs" flex="1" variant="outline" borderColor={origin === item.id ? "studio.accent" : "studio.border"} bg={origin === item.id ? "studio.raised" : "transparent"} disabled={item.disabled || !generatedImagesCapability.available} onClick={() => setOrigin(item.id)}>
+            <Button key={item.id} flex="1" variant="ghost" {...chipProps(origin === item.id)} disabled={item.disabled || !generatedImagesCapability.available} onClick={() => setOrigin(item.id)}>
               {item.label}
             </Button>
           ))}
         </Flex>
 
         {derivedContext && contextIncluded ? (
-          <Box layerStyle="well" p="9px" borderLeftWidth="3px" borderLeftColor="studio.accent">
+          <Box bg="studio.subtle" borderRadius="10px" p="14px">
             <Flex justify="space-between" gap="8px" align="start">
               <Box minW="0">
-                <Text textStyle="eyebrow" color="studio.fgMuted">CONTEXT</Text>
-                <Text mt="3px" fontSize="11px" lineClamp="3" color="studio.fgMuted">{derivedContext}</Text>
+                <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">Context</Text>
+                <Text mt="4px" fontSize="13px" lineClamp="3" color="studio.fg">{derivedContext}</Text>
               </Box>
               <Button size="2xs" variant="ghost" disabled={!generatedImagesCapability.available} onClick={() => setContextIncluded(false)}>Remove</Button>
             </Flex>
           </Box>
         ) : derivedContext ? (
-          <Button size="xs" variant="outline" onClick={() => setContextIncluded(true)}>Restore derived context</Button>
+          <Button size="sm" {...softButtonProps} onClick={() => setContextIncluded(true)}>Restore derived context</Button>
         ) : null}
 
         {origin === "broll_cue" && clipInfo.brollCues.length > 1 ? (
           <Stack gap="5px">
-            <Text textStyle="eyebrow" color="studio.fgMuted">B-ROLL CUE</Text>
+            <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">B-roll cue</Text>
             {clipInfo.brollCues.map((item, index) => (
-              <Button key={`${item.atSec}:${item.query}`} size="xs" variant="outline" justifyContent="start" borderColor={cueIndex === index ? "studio.accent" : "studio.border"} disabled={!generatedImagesCapability.available} onClick={() => setCueIndex(index)}>
-                <Text fontFamily="mono" fontSize="9px">{item.atSec.toFixed(1)}s</Text>
+              <Button key={`${item.atSec}:${item.query}`} variant="ghost" justifyContent="start" gap="2" {...chipProps(cueIndex === index)} disabled={!generatedImagesCapability.available} onClick={() => setCueIndex(index)}>
+                <Text fontFamily="mono" fontSize="11px">{item.atSec.toFixed(1)}s</Text>
                 <Text lineClamp="1">{item.query}</Text>
               </Button>
             ))}
@@ -411,25 +409,24 @@ export function GeneratedImagesPanel() {
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           placeholder="Describe the frame—subject, setting, light, camera…"
-          minH="82px"
+          minH="96px"
           resize="vertical"
-          fontSize="12px"
-          bg="studio.subtle"
-          borderColor="studio.border"
+          fontSize="14px"
+          {...softFieldProps}
           disabled={!generatedImagesCapability.available}
         />
 
-        <SimpleGrid columns={2} gap="5px">
+        <SimpleGrid columns={2} gap="6px">
           {STYLES.map((item) => (
-            <Button key={item.id} size="xs" variant="outline" borderColor={style === item.id ? "studio.accent" : "studio.border"} bg={style === item.id ? "studio.raised" : "transparent"} disabled={!generatedImagesCapability.available} onClick={() => setStyle(item.id)}>
+            <Button key={item.id} variant="ghost" {...chipProps(style === item.id)} disabled={!generatedImagesCapability.available} onClick={() => setStyle(item.id)}>
               {item.label}
             </Button>
           ))}
         </SimpleGrid>
 
-        <SimpleGrid columns={3} gap="5px">
+        <SimpleGrid columns={3} gap="6px">
           {(["9:16", "16:9", "1:1"] as const).map((value) => (
-            <Button key={value} size="xs" variant="outline" borderColor={requestedAspectRatio === value ? "studio.accent" : "studio.border"} bg={requestedAspectRatio === value ? "studio.raised" : "transparent"} disabled={!generatedImagesCapability.available} onClick={() => setRequestedAspectRatio(value)}>
+            <Button key={value} variant="ghost" {...chipProps(requestedAspectRatio === value)} disabled={!generatedImagesCapability.available} onClick={() => setRequestedAspectRatio(value)}>
               {value}
             </Button>
           ))}
@@ -437,22 +434,22 @@ export function GeneratedImagesPanel() {
 
         {limitExhausted ? <Text fontSize="11px" color="studio.fgMuted">Your workspace has used its available images for this period.</Text> : null}
         {error ? <Text fontSize="11px" color="danger.fg">{error}</Text> : null}
-        <Button size="sm" colorPalette="brand" onClick={() => void generate()} disabled={!generatedImagesCapability.available || limitExhausted || submitting || (!prompt.trim() && !contextIncluded)}>
+        <Button h="44px" borderRadius="10px" fontSize="14px" colorPalette="brand" onClick={() => void generate()} disabled={!generatedImagesCapability.available || limitExhausted || submitting || (!prompt.trim() && !contextIncluded)}>
           {submitting ? <Spinner size="xs" /> : <Sparkles size={14} />}
           Generate {requestedAspectRatio}
         </Button>
       </Stack>
 
-      <Stack gap="10px" p="12px">
+      <Stack gap="12px" px="20px" pt="16px" pb="20px">
         <Flex align="center" justify="space-between">
-          <Text textStyle="eyebrow" color="studio.fgMuted">GENERATED MEDIA</Text>
+          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">Generated media</Text>
           <Button size="2xs" variant="ghost" aria-label="Refresh generated images" onClick={() => void refresh()}><RefreshCw size={12} /></Button>
         </Flex>
 
         {loading ? <Flex py="24px" justify="center"><Spinner /></Flex> : null}
         {pending.map((job) => (
-          <Flex key={job.id} layerStyle="well" minH="74px" p="10px" align="center" gap="10px">
-            <Flex w="44px" h="54px" align="center" justify="center" bg="studio.canvas" borderWidth="1px" borderColor="studio.border"><Spinner size="xs" /></Flex>
+          <Flex key={job.id} bg="studio.subtle" borderRadius="10px" minH="74px" p="12px" align="center" gap="12px">
+            <Flex w="44px" h="54px" align="center" justify="center" bg="studio.canvas" borderRadius="6px"><Spinner size="xs" /></Flex>
             <Box minW="0" flex="1">
               <Text fontSize="11px" color="studio.fg">{jobStatusCopy(job)}</Text>
               <Text mt="2px" fontFamily="mono" fontSize="9px" color="studio.fgMuted">{job.style.toUpperCase()} · {job.aspectRatio}</Text>
@@ -463,7 +460,7 @@ export function GeneratedImagesPanel() {
         ))}
 
         {reconciliation.map((job) => (
-          <Flex key={job.id} layerStyle="well" p="9px" align="center" justify="space-between" gap="8px" borderLeftWidth="3px" borderLeftColor="studio.accent">
+          <Flex key={job.id} bg="studio.subtle" borderRadius="10px" p="12px" align="center" justify="space-between" gap="8px">
             <Box minW="0">
               <Text fontSize="11px" color="studio.fg">Needs review</Text>
               <Text mt="2px" fontSize="10px" color="studio.fgMuted" lineClamp="2">The provider outcome is uncertain. Usage remains reserved until reconciliation.</Text>
@@ -472,7 +469,7 @@ export function GeneratedImagesPanel() {
         ))}
 
         {terminal.map((job) => (
-          <Flex key={job.id} layerStyle="well" p="9px" align="center" justify="space-between" gap="8px" borderLeftWidth="3px" borderLeftColor={job.status === "rejected" ? "danger.fg" : "studio.borderStrong"}>
+          <Flex key={job.id} bg="studio.subtle" borderRadius="10px" p="12px" align="center" justify="space-between" gap="8px">
             <Box minW="0">
               <Text fontSize="11px" color="studio.fg">{jobStatusCopy(job)}</Text>
               <Text mt="2px" fontSize="10px" color="studio.fgMuted" lineClamp="2">{generatedMediaErrorCopy(job.errorCode, "No image was created or charged.")}</Text>
@@ -484,7 +481,7 @@ export function GeneratedImagesPanel() {
         {completed.length === 0 && pending.length === 0 && reconciliation.length === 0 && terminal.length === 0 && !loading ? (
           <Flex direction="column" align="center" py="28px" px="18px" textAlign="center" color="studio.fgMuted">
             <ImagePlus size={22} />
-            <Text mt="8px" fontSize="11px">Generated frames stay here until you insert, save, download, or delete them.</Text>
+            <Text mt="10px" fontSize="13px" lineHeight="1.5">Generated frames stay here until you insert, save, download or delete them.</Text>
           </Flex>
         ) : null}
 
@@ -498,7 +495,7 @@ export function GeneratedImagesPanel() {
           );
           const usedInDocument = editorDocument.studioEdits.visualBroll.some((placement) => placement.asset.id === asset.id) || editorDocument.sceneBlocks.some((scene) => (scene.content.kind === "image" || scene.content.kind === "video") && scene.content.asset.id === asset.id);
           return (
-            <Box key={job.id} borderWidth="1px" borderColor="studio.border" bg="studio.subtle" overflow="hidden">
+            <Box key={job.id} bg="studio.subtle" borderRadius="10px" overflow="hidden">
               <Box aspectRatio={job.aspectRatio === "9:16" ? "9 / 16" : job.aspectRatio === "16:9" ? "16 / 9" : "1"} maxH="190px" bg="studio.canvas" overflow="hidden">
                 <img src={asset.accessUrl!} alt={asset.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               </Box>
@@ -507,9 +504,9 @@ export function GeneratedImagesPanel() {
                   <Text fontSize="11px" lineClamp="1" color="studio.fg">{asset.title}</Text>
                   <Text fontFamily="mono" fontSize="9px" color="studio.fgMuted">{job.style.toUpperCase()}</Text>
                 </Flex>
-                <Button size="xs" variant="outline" disabled={insertBlocked} title={insertBlocked ? "Move the playhead to a free range or replace the selected B-roll" : "Insert a four-second B-roll placement"} onClick={() => insertBroll(asset)}><ImagePlus size={12} />Insert at playhead</Button>
-                <Button size="xs" variant="outline" disabled={!selectedBroll} title={selectedBroll ? "Replace the B-roll under the playhead" : "Move the playhead over a B-roll placement"} onClick={() => replaceBroll(asset)}><ImagePlus size={12} />Replace selected B-roll</Button>
-                <Button size="xs" variant="outline" onClick={() => insertScene(asset)}><Library size={12} />Insert image scene</Button>
+                <Button size="xs" {...softButtonProps} disabled={insertBlocked} title={insertBlocked ? "Move the playhead to a free range or replace the selected B-roll" : "Insert a four-second B-roll placement"} onClick={() => insertBroll(asset)}><ImagePlus size={12} />Insert at playhead</Button>
+                <Button size="xs" {...softButtonProps} disabled={!selectedBroll} title={selectedBroll ? "Replace the B-roll under the playhead" : "Move the playhead over a B-roll placement"} onClick={() => replaceBroll(asset)}><ImagePlus size={12} />Replace selected B-roll</Button>
+                <Button size="xs" {...softButtonProps} onClick={() => insertScene(asset)}><Library size={12} />Insert image scene</Button>
                 <SimpleGrid columns={3} gap="5px">
                   <Button size="xs" variant="ghost" aria-label="Save to Brand Profile" title="Save to Brand Profile" disabled={!brandProfileId} onClick={() => void saveToBrand(asset)}><BookmarkPlus size={13} /></Button>
                   <Button asChild size="xs" variant="ghost"><a href={asset.accessUrl!} download aria-label="Download generated image" title="Download"><Download size={13} /></a></Button>

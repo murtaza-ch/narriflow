@@ -25,8 +25,9 @@ import {
   Smartphone,
   Square,
   Monitor,
-  RectangleHorizontal,
+  RectangleVertical,
   PanelsTopLeft,
+  Check,
   ChevronDown,
   AlertTriangle,
   RotateCcw,
@@ -146,11 +147,11 @@ function speakerFrameStyle(layer: SpeakerLayerTransform): React.CSSProperties {
 
 // ─── Aspect ratio helpers ─────────────────────────────────────────────────────
 
-const ASPECT_RATIO_CONFIG: Record<AspectRatio, { w: number; h: number; icon: React.ReactNode; label: string }> = {
-  "9:16": { w: 9, h: 16, icon: <Smartphone size={12} />, label: "9:16" },
-  "1:1":  { w: 1, h: 1,  icon: <Square size={12} />,     label: "1:1"  },
-  "16:9": { w: 16, h: 9, icon: <Monitor size={12} />,    label: "16:9" },
-  "4:5":  { w: 4,  h: 5, icon: <RectangleHorizontal size={12} />, label: "4:5" },
+const ASPECT_RATIO_CONFIG: Record<AspectRatio, { w: number; h: number; icon: React.ReactNode; label: string; name: string }> = {
+  "9:16": { w: 9, h: 16, icon: <Smartphone size={15} />, label: "9:16", name: "Vertical" },
+  "1:1":  { w: 1, h: 1,  icon: <Square size={15} />,     label: "1:1", name: "Square" },
+  "16:9": { w: 16, h: 9, icon: <Monitor size={15} />,    label: "16:9", name: "Landscape" },
+  "4:5":  { w: 4,  h: 5, icon: <RectangleVertical size={15} />, label: "4:5", name: "Portrait" },
 };
 
 function explicitCropVideoStyle(
@@ -214,15 +215,14 @@ const SPLIT_TOP_TILE_CX = 0;
 
 const PILL_STYLES = {
   alignItems: "center",
-  gap: "5px",
-  px: "10px",
-  h: "26px",
-  bg: "studio.surface",
-  borderWidth: "1px",
-  borderColor: "studio.border",
+  gap: "8px",
+  px: "12px",
+  h: "36px",
+  bg: "transparent",
+  borderWidth: "0",
   borderRadius: "l2",
-  color: "studio.fgMuted",
-  fontSize: "12px",
+  color: "studio.fg",
+  fontSize: "14px",
   fontWeight: "500",
   cursor: "pointer",
   transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
@@ -1708,9 +1708,12 @@ export function VideoPreview() {
           <Portal>
             <Menu.Positioner>
               <Menu.Content
-                minW="140px"
-                borderWidth="1px"
-                py="1"
+                minW="220px"
+                p="1"
+                bg="studio.surface"
+                borderWidth="0"
+                borderRadius="12px"
+                boxShadow="none"
               >
                 {Object.entries(ASPECT_RATIO_CONFIG).map(([ratio, cfg]) => {
                   const isCurrent = aspectRatio === ratio;
@@ -1718,20 +1721,24 @@ export function VideoPreview() {
                     <Menu.Item
                       key={ratio}
                       value={ratio}
-                      gap="2"
-                      px="3"
-                      py="2"
-                      fontSize="12px"
-                      color={isCurrent ? "studio.accentFg" : "studio.fg"}
-                      bg={isCurrent ? "studio.raised" : "transparent"}
+                      gap="2.5"
+                      h="36px"
+                      px="2.5"
+                      borderRadius="8px"
+                      color="studio.fg"
+                      bg="transparent"
                       _hover={{ bg: "studio.raised" }}
                       _highlighted={{ bg: "studio.raised" }}
                       cursor="pointer"
                     >
-                      {cfg.icon}
-                      <Text fontSize="12px" textStyle="data">
+                      <Box color="studio.fgMuted">{cfg.icon}</Box>
+                      <Text fontSize="14px">{cfg.name}</Text>
+                      <Text fontSize="13px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums">
                         {cfg.label}
                       </Text>
+                      <Box ms="auto" w="16px" color="studio.accentFg">
+                        {isCurrent ? <Check size={16} /> : null}
+                      </Box>
                     </Menu.Item>
                   );
                 })}
@@ -1744,14 +1751,13 @@ export function VideoPreview() {
         <Flex
           as="button"
           {...PILL_STYLES}
-          bg={activeTool === "layout" ? "studio.raised" : "studio.surface"}
-          color={activeTool === "layout" ? "studio.accentFg" : "studio.fgMuted"}
+          bg={activeTool === "layout" ? "studio.raised" : "transparent"}
           _hover={{ bg: "studio.raised", color: "studio.fg" }}
           onClick={() => setActiveTool("layout")}
           title="Open scene layouts"
           aria-label="Open scene layouts"
         >
-          <PanelsTopLeft size={12} />
+          <PanelsTopLeft size={16} />
           Layout
         </Flex>
       </Flex>
@@ -1765,7 +1771,7 @@ export function VideoPreview() {
         alignItems="center"
         justifyContent="center"
         overflow="hidden"
-        bg="black"
+        bg="studio.canvas"
         position="relative"
         onClick={(e) => {
           if (e.target === e.currentTarget) {

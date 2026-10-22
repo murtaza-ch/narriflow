@@ -160,8 +160,8 @@ export function ProjectShareButton({
       positioning={{ placement: "bottom-end", offset: { mainAxis: 8 } }}
     >
       <Popover.Trigger asChild>
-        <Button size="sm" variant="outline">
-          <Share2 size={15} aria-hidden /> Share
+        <Button size="sm" variant="subtle">
+          <Share2 size={16} aria-hidden /> Share
         </Button>
       </Popover.Trigger>
       <Portal>
@@ -172,7 +172,7 @@ export function ProjectShareButton({
             overflow="hidden"
           >
             <Stack gap="0">
-              <Box px="5" pt="5" pb="4" borderBottomWidth="1px" borderColor="border.subtle">
+              <Box px="5" pt="5" pb="4">
                 <Text textStyle="title" fontSize="lg">Share this project</Text>
                 <Text color="fg.muted" fontSize="sm" mt="1">
                   Send one private link for review, comments, and approval.
@@ -199,16 +199,16 @@ export function ProjectShareButton({
                 <Stack gap="0">
                   {activeRound ? (
                     <>
-                      <Flex px="5" py="4" align="center" gap="3" borderBottomWidth="1px" borderColor="border.subtle">
+                      <Flex px="5" py="4" align="center" gap="3">
                         <Flex w="32px" h="32px" align="center" justify="center" borderRadius="full" bg="accent.subtle" color="accent.fg" flexShrink={0}>
-                          <Link2 size={15} aria-hidden />
+                          <Link2 size={16} aria-hidden />
                         </Flex>
                         <Box minW="0" flex="1">
                           <Text fontSize="sm" fontWeight="650">Anyone with the link can review</Text>
                           <Text fontSize="xs" color="fg.muted">Private link · round {activeRound.revision}</Text>
                         </Box>
-                        <Button size="sm" variant="outline" onClick={() => void copyLink()}>
-                          <Copy size={13} aria-hidden /> Copy link
+                        <Button size="sm" variant="subtle" onClick={() => void copyLink()}>
+                          <Copy size={16} aria-hidden /> Copy link
                         </Button>
                       </Flex>
 
@@ -219,9 +219,9 @@ export function ProjectShareButton({
                         </Flex>
                       ) : null}
 
-                      <Stack gap="3" px="5" py="4" borderBottomWidth="1px" borderColor="border.subtle">
+                      <Stack gap="3" px="5" py="4">
                         <Flex align="center" gap="2">
-                          <UserPlus size={15} aria-hidden />
+                          <UserPlus size={16} aria-hidden />
                           <Text fontSize="sm" fontWeight="650">Invite people</Text>
                         </Flex>
                         <Flex gap="2" align="start">
@@ -237,10 +237,9 @@ export function ProjectShareButton({
                             }}
                             placeholder="name@company.com"
                             aria-label="Reviewer email addresses"
-                            borderColor="border.control"
                           />
                           <Button size="sm" onClick={() => void invite()} disabled={busy || recipientEmails.length === 0}>
-                            {busy ? <Spinner size="xs" borderTopColor="accent.contrast" /> : <Send size={14} aria-hidden />}
+                            {busy ? <Spinner size="xs" borderTopColor="accent.contrast" /> : <Send size={16} aria-hidden />}
                             Invite
                           </Button>
                         </Flex>
@@ -253,7 +252,7 @@ export function ProjectShareButton({
                         )}
                       </Stack>
 
-                      <Flex px="5" py="3" gap="3" align="center" borderBottomWidth="1px" borderColor="border.subtle">
+                      <Flex px="5" py="3" gap="3" align="center">
                         <AccountAvatar imageUrl={actor.imageUrl} initials={actor.initials} alt={actor.name} />
                         <Box minW="0" flex="1">
                           <Text fontSize="sm" fontWeight="650" truncate>{actor.name}</Text>
@@ -262,12 +261,12 @@ export function ProjectShareButton({
                         <Text fontSize="xs" color="fg.subtle" textTransform="capitalize">{actor.role}</Text>
                       </Flex>
 
-                      <Flex px="5" py="4" gap="3" align="center" borderBottomWidth="1px" borderColor="border.subtle">
+                      <Flex px="5" py="4" gap="3" align="center">
                         <ShieldCheck size={16} aria-hidden />
                         <Box flex="1">
                           <Flex justify="space-between" gap="3">
                             <Text fontSize="sm" fontWeight="650">Approval</Text>
-                            <Text textStyle="data" fontSize="xs" color="fg.muted">
+                            <Text fontSize="xs" color="fg.muted" fontVariantNumeric="tabular-nums">
                               {activeRound.approvalRequired && approval
                                 ? `${approval.approved}/${approval.required} approved`
                                 : "Optional"}
@@ -282,9 +281,9 @@ export function ProjectShareButton({
                       </Flex>
 
                       <Flex px="5" py="4" gap="2">
-                        <Button asChild size="sm" variant="outline" flex="1">
+                        <Button asChild size="sm" variant="subtle" flex="1">
                           <Link href={activeRound.path ?? "#"} target="_blank" rel="noreferrer">
-                            <ExternalLink size={14} aria-hidden /> Open room
+                            <ExternalLink size={16} aria-hidden /> Open room
                           </Link>
                         </Button>
                         <Button asChild size="sm" variant="ghost" flex="1">
@@ -306,15 +305,14 @@ export function ProjectShareButton({
                         onChange={(event) => setRecipientText(event.target.value)}
                         placeholder="Reviewer email (optional)"
                         aria-label="Reviewer email addresses"
-                        borderColor="border.control"
                       />
                       {quickReviewItems(data).length > 0 ? (
                         <Button onClick={() => void createLink()} disabled={busy}>
-                          {busy ? <Spinner size="xs" borderTopColor="accent.contrast" /> : <Link2 size={15} aria-hidden />}
+                          {busy ? <Spinner size="xs" borderTopColor="accent.contrast" /> : <Link2 size={16} aria-hidden />}
                           Create review link
                         </Button>
                       ) : (
-                        <Button asChild variant="outline">
+                        <Button asChild variant="subtle">
                           <Link href={`/projects/${projectId}?tab=clips`}>Render a clip first</Link>
                         </Button>
                       )}
@@ -325,13 +323,13 @@ export function ProjectShareButton({
                   )}
 
                   {notice ? (
-                    <Flex role="status" aria-live="polite" px="5" py="3" gap="2" align="center" color="success.fg" borderTopWidth="1px" borderColor="border.subtle">
+                    <Flex role="status" aria-live="polite" px="5" py="3" gap="2" align="center" color="success.fg">
                       <Check size={14} aria-hidden />
                       <Text fontSize="xs">{notice}</Text>
                     </Flex>
                   ) : null}
                   {error ? (
-                    <Flex role="alert" px="5" py="3" gap="2" align="center" color="danger.fg" borderTopWidth="1px" borderColor="border.subtle">
+                    <Flex role="alert" px="5" py="3" gap="2" align="center" color="danger.fg">
                       <AlertTriangle size={14} aria-hidden />
                       <Text fontSize="xs">{error}</Text>
                     </Flex>
@@ -340,7 +338,7 @@ export function ProjectShareButton({
               ) : (
                 <Stack gap="3" p="5">
                   <Text color="danger.fg" fontSize="sm">{error ?? "Sharing details could not be loaded."}</Text>
-                  <Button size="sm" variant="outline" onClick={() => void loadRoom()}>Try again</Button>
+                  <Button size="sm" variant="subtle" onClick={() => void loadRoom()}>Try again</Button>
                 </Stack>
               )}
             </Stack>

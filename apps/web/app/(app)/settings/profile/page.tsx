@@ -11,7 +11,7 @@ export default async function ProfileSettingsPage() {
   return (
     <Stack gap="8">
       <PageHeader title="Profile" />
-      <Box borderRadius="l2" bg="bg.panel" p="6">
+      <Box borderRadius="l3" bg="bg.panel" borderWidth="1px" borderColor="border.card" p="6">
         <Flex align="center" gap="4">
           <AccountAvatar
             imageUrl={appUser.imageUrl}
@@ -20,7 +20,7 @@ export default async function ProfileSettingsPage() {
             alt={displayName}
           />
           <Stack gap="0.5">
-            <Text fontWeight="600">{displayName}</Text>
+            <Text fontSize="14px" fontWeight="500">{displayName}</Text>
             <Text fontSize="13px" color="fg.muted">{appUser.primaryEmail ?? "No primary email"}</Text>
           </Stack>
         </Flex>

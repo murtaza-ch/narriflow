@@ -190,10 +190,10 @@ export function PublishingCover({
 				<Dialog.Positioner>
 					<Dialog.Content bg="bg.panel">
 						<Dialog.Header>
-							<Dialog.Title>Choose a cover</Dialog.Title>
+							<Dialog.Title fontSize="18px" fontWeight="500">Choose a cover</Dialog.Title>
 						</Dialog.Header>
 						<Dialog.CloseTrigger asChild>
-							<CloseButton size="sm" />
+							<CloseButton size="sm" borderRadius="full" />
 						</Dialog.CloseTrigger>
 						<Dialog.Body>
 							<Stack gap="4">
@@ -234,8 +234,8 @@ export function PublishingCover({
 								</Button>
 								{platform !== "tiktok" && (
 									<>
-										<Text fontSize="sm" fontWeight="medium">
-											Image library
+										<Text textStyle="eyebrow" color="fg.muted">
+										Image library
 										</Text>
 										{canUpload && (
 											<Field.Root>
@@ -256,7 +256,7 @@ export function PublishingCover({
 											{assets.filter(compatible).map((asset) => (
 												<Button
 													key={asset.id}
-													variant="outline"
+													variant="subtle"
 													h="auto"
 													p="2"
 													disabled={busy}
@@ -288,9 +288,9 @@ export function PublishingCover({
 							</Stack>
 						</Dialog.Body>
 						<Dialog.Footer>
-							<Button variant="ghost" onClick={onClose}>
-								Close
-							</Button>
+							<Dialog.ActionTrigger asChild>
+							<Button variant="ghost">Close</Button>
+							</Dialog.ActionTrigger>
 						</Dialog.Footer>
 					</Dialog.Content>
 				</Dialog.Positioner>

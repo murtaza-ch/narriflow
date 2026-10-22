@@ -1,6 +1,7 @@
 "use client";
 
 import { Box, Button, Flex, Input, NativeSelect, Stack, Text } from "@chakra-ui/react";
+import { chipProps, softButtonProps, softFieldProps } from "./panel-ui";
 import { Copy, Image as ImageIcon, MoveLeft, MoveRight, Play, Trash2, Type, Video } from "lucide-react";
 import { useMemo, useState } from "react";
 import { sourceToEdited, SYSTEM_SCENE_FONT_FAMILIES, type SceneBlock, type SceneContent, type SceneMotion } from "@narriflow/validators";
@@ -74,7 +75,7 @@ export function ScenesPanel() {
   };
 	const selectField = (label: string, value: string, values: readonly string[], onChange: (value: string) => void) => (
 		<Stack gap="1" flex="1" minW="120px">
-			<Text as="label" textStyle="eyebrow" color="studio.fgSubtle">{label}</Text>
+			<Text as="label" fontSize="12px" color="studio.fgSubtle">{label}</Text>
 			<NativeSelect.Root size="xs">
 				<NativeSelect.Field aria-label={label} value={value} onChange={(event) => onChange(event.currentTarget.value)}>
 					{values.map((item) => <option key={item} value={item}>{item.replaceAll("-", " ")}</option>)}
@@ -85,37 +86,37 @@ export function ScenesPanel() {
 	);
 
   return (
-    <Stack gap="5" px="4" py="4">
+    <Stack gap="6" px="5" pt="4" pb="5">
       {Object.values(studio.sceneWriteCapabilities).some(Boolean) && <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="2">Insert at</Text>
-        <Flex borderWidth="1px" borderColor="studio.border" borderRadius="l1" overflow="hidden">
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">Insert at</Text>
+        <Flex gap="6px">
           {(["start", "playhead", "transcript", "end"] as const).map((value) => (
-            <Button key={value} flex="1" size="xs" borderRadius="0" variant="ghost" bg={placement === value ? "studio.raised" : "transparent"} color={placement === value ? "studio.accentFg" : "studio.fgMuted"} onClick={() => setPlacement(value)}>
+            <Button key={value} flex="1" variant="ghost" {...chipProps(placement === value)} px="0" onClick={() => setPlacement(value)}>
               {value === "playhead" ? "Playhead" : value === "transcript" ? "Next word" : value[0]!.toUpperCase() + value.slice(1)}
             </Button>
           ))}
         </Flex>
-        <Text mt="2" fontSize="11px" color="studio.timecode" textStyle="data">{anchorSec.toFixed(2)}s</Text>
+        <Text mt="2" fontSize="12px" color="studio.timecode" fontVariantNumeric="tabular-nums">{anchorSec.toFixed(2)}s</Text>
       </Box>}
 
       {studio.sceneWriteCapabilities.cards && <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="2">Quick scene</Text>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">Quick scene</Text>
         <Flex gap="2">
-          <Input size="sm" value={text} onChange={(event) => setText(event.target.value.slice(0, 500))} aria-label="Scene text" borderColor="studio.border" />
-          <Button size="sm" variant="outline" aria-label={selectedSceneId ? "Replace selected scene with text" : "Insert text scene"} disabled={!text.trim()} onClick={() => insertOrReplace(sceneTextContent(text.trim(), studio.sceneFonts))}><Type size={15} /></Button>
-          <Button size="sm" variant="outline" aria-label={selectedSceneId ? "Replace selected scene with color" : "Insert color scene"} onClick={() => insertOrReplace({ kind: "color", color: "#1D4ED8" })}>Color</Button>
+          <Input size="sm" h="40px" fontSize="14px" placeholder="New chapter" value={text} onChange={(event) => setText(event.target.value.slice(0, 500))} aria-label="Scene text" {...softFieldProps} />
+          <Button h="40px" {...softButtonProps} aria-label={selectedSceneId ? "Replace selected scene with text" : "Insert text scene"} disabled={!text.trim()} onClick={() => insertOrReplace(sceneTextContent(text.trim(), studio.sceneFonts))}><Type size={15} /></Button>
+          <Button h="40px" {...softButtonProps} aria-label={selectedSceneId ? "Replace selected scene with color" : "Insert color scene"} onClick={() => insertOrReplace({ kind: "color", color: "#1D4ED8" })}>Color</Button>
         </Flex>
       </Box>}
 
       {studio.visualAssets.some((asset) => asset.insertable && (asset.kind === "video" ? studio.sceneWriteCapabilities.videos : studio.sceneWriteCapabilities.images)) && (
         <Box>
-          <Text textStyle="eyebrow" color="studio.fgMuted" mb="2">Visual assets</Text>
-          <Stack gap="0" borderTopWidth="1px" borderColor="studio.border">
+          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">Visual assets</Text>
+          <Stack gap="2">
             {studio.visualAssets.filter((asset) => asset.insertable && (asset.kind === "video" ? studio.sceneWriteCapabilities.videos : studio.sceneWriteCapabilities.images)).map((asset) => (
-              <Flex key={asset.id} py="3" gap="3" align="center" borderBottomWidth="1px" borderColor="studio.border">
-                <Flex w="28px" h="28px" align="center" justify="center" bg="studio.raised" color="studio.fgMuted">{asset.kind === "video" ? <Video size={14} /> : <ImageIcon size={14} />}</Flex>
-                <Box minW="0" flex="1"><Text fontSize="12px" color="studio.fg" truncate>{asset.title}</Text><Text fontSize="10px" color="studio.fgSubtle">{asset.kind}</Text></Box>
-                <Button size="xs" variant="outline" onClick={() => insertOrReplace(asset.kind === "video" ? { kind: "video", asset: { kind: "visual_asset", id: asset.id, fingerprint: asset.fingerprint }, sourceStartSec: 0, sourceEndSec: Math.max(0.1, asset.durationSec ?? 3), fit: "cover", backgroundColor: "#000000", muted: false, volume: 100 } : { kind: "image", asset: { kind: "visual_asset", id: asset.id, fingerprint: asset.fingerprint }, fit: "cover", backgroundColor: "#000000" }, asset.kind === "video" ? Math.min(120, Math.max(0.1, asset.durationSec ?? 3)) : 3)}>{selectedSceneId ? "Replace" : "Insert"}</Button>
+              <Flex key={asset.id} p="3" gap="3" align="center" bg="studio.subtle" borderRadius="10px">
+                <Flex w="32px" h="32px" align="center" justify="center" bg="studio.raised" borderRadius="8px" color="studio.fgMuted">{asset.kind === "video" ? <Video size={14} /> : <ImageIcon size={14} />}</Flex>
+                <Box minW="0" flex="1"><Text fontSize="13px" color="studio.fg" truncate>{asset.title}</Text><Text fontSize="11px" color="studio.fgSubtle" textTransform="capitalize">{asset.kind}</Text></Box>
+                <Button size="xs" {...softButtonProps} onClick={() => insertOrReplace(asset.kind === "video" ? { kind: "video", asset: { kind: "visual_asset", id: asset.id, fingerprint: asset.fingerprint }, sourceStartSec: 0, sourceEndSec: Math.max(0.1, asset.durationSec ?? 3), fit: "cover", backgroundColor: "#000000", muted: false, volume: 100 } : { kind: "image", asset: { kind: "visual_asset", id: asset.id, fingerprint: asset.fingerprint }, fit: "cover", backgroundColor: "#000000" }, asset.kind === "video" ? Math.min(120, Math.max(0.1, asset.durationSec ?? 3)) : 3)}>{selectedSceneId ? "Replace" : "Insert"}</Button>
               </Flex>
             ))}
           </Stack>
@@ -124,7 +125,7 @@ export function ScenesPanel() {
 
       {studio.sceneWriteCapabilities.templates && studio.sceneTemplates.length > 0 && (
         <Box>
-          <Text textStyle="eyebrow" color="studio.fgMuted" mb="2">Brand scenes</Text>
+          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">Brand scenes</Text>
           <Stack gap="2">
             {studio.sceneTemplates.map((template) => {
 							const fontAsset = template.definition.content.kind === "text" ? template.definition.content.fontAsset : null;
@@ -134,8 +135,8 @@ export function ScenesPanel() {
 								: null;
 							const unavailableVisual = visualAsset && !studio.visualAssets.some((asset) => asset.insertable && asset.id === visualAsset.id && asset.fingerprint === visualAsset.fingerprint);
 							const unavailable = Boolean(unavailableFont || unavailableVisual);
-							return <Button key={template.id} variant="outline" size="sm" justifyContent="space-between" disabled={unavailable} title={unavailable ? "Restore or replace the missing Scene asset before inserting this template" : undefined} onClick={() => insert(template.definition.content, template.definition.durationSec, { templateId: template.id, templateRevision: template.revision, fingerprint: template.fingerprint, name: template.name }, template.definition.motion)}>
-								<Text truncate>{template.name}</Text><Text textStyle="data" fontSize="10px">{template.definition.durationSec}s</Text>
+							return <Button key={template.id} {...softButtonProps} h="40px" justifyContent="space-between" disabled={unavailable} title={unavailable ? "Restore or replace the missing Scene asset before inserting this template" : undefined} onClick={() => insert(template.definition.content, template.definition.durationSec, { templateId: template.id, templateRevision: template.revision, fingerprint: template.fingerprint, name: template.name }, template.definition.motion)}>
+								<Text truncate>{template.name}</Text><Text fontVariantNumeric="tabular-nums" fontSize="12px">{template.definition.durationSec}s</Text>
 							</Button>;
 						})}
           </Stack>
@@ -143,9 +144,9 @@ export function ScenesPanel() {
       )}
 
       <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="2">Timeline scenes</Text>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">Timeline scenes</Text>
         {studio.sceneBlocks.length === 0 ? (
-          <Box layerStyle="well" p="4"><Text fontSize="12px" color="studio.fgMuted">Add an opening card, visual insert, or reusable brand scene.</Text></Box>
+          <Box bg="studio.subtle" borderRadius="10px" p="4"><Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Add an opening card, visual insert or reusable brand scene.</Text></Box>
         ) : (
           <Stack gap="2">
 						{studio.sceneBlocks.map((scene, index) => {
@@ -154,9 +155,9 @@ export function ScenesPanel() {
 								? studio.visualAssets.find((asset) => asset.id === content.asset.id)?.durationSec ?? content.sourceEndSec
 								: null;
 							return (
-              <Box key={scene.id} textAlign="left" w="full" borderWidth="1px" borderColor={selectedSceneId === scene.id ? "studio.accent" : "studio.border"} borderLeftWidth="3px" borderLeftColor="studio.accent" p="3">
+              <Box key={scene.id} textAlign="left" w="full" bg="studio.subtle" borderRadius="10px" borderWidth="2px" borderColor={selectedSceneId === scene.id ? "studio.accent" : "transparent"} p="3">
 				<Button type="button" variant="ghost" h="auto" minH="0" p="0" w="full" justifyContent="space-between" onClick={() => setSelectedSceneId(scene.id)} aria-pressed={selectedSceneId === scene.id} aria-label={`Select scene ${index + 1}: ${sceneLabel(content)}`}>
-					<Text fontSize="12px" fontWeight="600" color="studio.fg" truncate>{sceneLabel(content)}</Text><Text textStyle="data" fontSize="10px" color="studio.timecode">{scene.anchorSec.toFixed(1)}s</Text>
+					<Text fontSize="13px" fontWeight="500" color="studio.fg" truncate>{sceneLabel(content)}</Text><Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.timecode">{scene.anchorSec.toFixed(1)}s</Text>
                 </Button>
                 <Flex mt="3" gap="1" wrap="wrap">
                   <Button size="xs" variant="ghost" disabled={!canWriteScene(scene)} aria-label="Move scene to start" onClick={() => studio.moveSceneBlock(scene.id, 0)}><MoveLeft size={13} /></Button>
@@ -169,28 +170,28 @@ export function ScenesPanel() {
 						{selectedSceneId === scene.id && canWriteScene(scene) && (
 							<Stack mt="3" pt="3" gap="3" borderTopWidth="1px" borderColor="studio.border">
 								{content.kind === "text" && <>
-									<Stack gap="1"><Text as="label" textStyle="eyebrow" color="studio.fgSubtle">Copy</Text><Input size="xs" aria-label="Scene copy" value={content.text} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, text: event.currentTarget.value || " " })} /></Stack>
-									<Stack gap="1"><Text as="label" textStyle="eyebrow" color="studio.fgSubtle">Brand font family</Text><NativeSelect.Root size="xs"><NativeSelect.Field aria-label="Brand font family" value={content.fontAsset?.id ?? `system:${content.fontFamily}`} onChange={(event) => { const value = event.currentTarget.value; const font = insertableFonts.find((candidate) => candidate.id === value); studio.replaceSceneBlock(scene.id, { ...content, fontFamily: font?.family ?? value.replace(/^system:/, ""), fontAsset: font ? { kind: "brand_font", id: font.id, fingerprint: font.fingerprint } : null }); }}>{SYSTEM_SCENE_FONT_FAMILIES.map((family) => <option key={family} value={`system:${family}`}>{family} · system</option>)}{insertableFonts.map((font) => <option key={font.id} value={font.id}>{font.family} · brand</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Stack>
+									<Stack gap="1"><Text as="label" fontSize="12px" color="studio.fgSubtle">Copy</Text><Input size="xs" aria-label="Scene copy" value={content.text} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, text: event.currentTarget.value || " " })} /></Stack>
+									<Stack gap="1"><Text as="label" fontSize="12px" color="studio.fgSubtle">Brand font family</Text><NativeSelect.Root size="xs"><NativeSelect.Field aria-label="Brand font family" value={content.fontAsset?.id ?? `system:${content.fontFamily}`} onChange={(event) => { const value = event.currentTarget.value; const font = insertableFonts.find((candidate) => candidate.id === value); studio.replaceSceneBlock(scene.id, { ...content, fontFamily: font?.family ?? value.replace(/^system:/, ""), fontAsset: font ? { kind: "brand_font", id: font.id, fingerprint: font.fingerprint } : null }); }}>{SYSTEM_SCENE_FONT_FAMILIES.map((family) => <option key={family} value={`system:${family}`}>{family} · system</option>)}{insertableFonts.map((font) => <option key={font.id} value={font.id}>{font.family} · brand</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Stack>
 									<Flex gap="3">
-										<Stack gap="1" flex="1"><Text as="label" textStyle="eyebrow" color="studio.fgSubtle">Text</Text><Input type="color" p="1" h="32px" aria-label="Scene text color" value={content.color} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, color: event.currentTarget.value.toUpperCase() })} /></Stack>
-										<Stack gap="1" flex="1"><Text as="label" textStyle="eyebrow" color="studio.fgSubtle">Background</Text><Input type="color" p="1" h="32px" aria-label="Scene background color" value={content.backgroundColor} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, backgroundColor: event.currentTarget.value.toUpperCase() })} /></Stack>
+										<Stack gap="1" flex="1"><Text as="label" fontSize="12px" color="studio.fgSubtle">Text</Text><Input type="color" p="1" h="32px" aria-label="Scene text color" value={content.color} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, color: event.currentTarget.value.toUpperCase() })} /></Stack>
+										<Stack gap="1" flex="1"><Text as="label" fontSize="12px" color="studio.fgSubtle">Background</Text><Input type="color" p="1" h="32px" aria-label="Scene background color" value={content.backgroundColor} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, backgroundColor: event.currentTarget.value.toUpperCase() })} /></Stack>
 									</Flex>
 								</>}
-								{content.kind === "color" && <Stack gap="1"><Text as="label" textStyle="eyebrow" color="studio.fgSubtle">Card color</Text><Input type="color" p="1" h="32px" aria-label="Scene card color" value={content.color} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, color: event.currentTarget.value.toUpperCase() })} /></Stack>}
+								{content.kind === "color" && <Stack gap="1"><Text as="label" fontSize="12px" color="studio.fgSubtle">Card color</Text><Input type="color" p="1" h="32px" aria-label="Scene card color" value={content.color} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, color: event.currentTarget.value.toUpperCase() })} /></Stack>}
 								{(content.kind === "image" || content.kind === "video") && <>
 									<Flex gap="2">
-										{(["cover", "contain"] as const).map((fit) => <Button key={fit} flex="1" size="xs" variant="outline" bg={content.fit === fit ? "studio.raised" : "transparent"} onClick={() => studio.replaceSceneBlock(scene.id, { ...content, fit })}>{fit === "cover" ? "Fill frame" : "Fit inside"}</Button>)}
+										{(["cover", "contain"] as const).map((fit) => <Button key={fit} flex="1" variant="ghost" {...chipProps(content.fit === fit)} onClick={() => studio.replaceSceneBlock(scene.id, { ...content, fit })}>{fit === "cover" ? "Fill frame" : "Fit inside"}</Button>)}
 									</Flex>
-									<Stack gap="1"><Text as="label" textStyle="eyebrow" color="studio.fgSubtle">Letterbox color</Text><Input type="color" p="1" h="32px" aria-label="Scene letterbox color" value={content.backgroundColor} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, backgroundColor: event.currentTarget.value.toUpperCase() })} /></Stack>
+									<Stack gap="1"><Text as="label" fontSize="12px" color="studio.fgSubtle">Letterbox color</Text><Input type="color" p="1" h="32px" aria-label="Scene letterbox color" value={content.backgroundColor} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, backgroundColor: event.currentTarget.value.toUpperCase() })} /></Stack>
 								</>}
 								{content.kind === "video" && <>
 									<Flex gap="2">
-										<Stack gap="1" flex="1"><Text as="label" textStyle="eyebrow" color="studio.fgSubtle">Source in</Text><Input size="xs" type="number" min="0" max={Math.max(0, Math.min(content.sourceEndSec - 0.1, sourceDurationSec! - 0.1))} step="0.1" aria-label="Video source in" value={content.sourceStartSec} onChange={(event) => { const sourceStartSec = Math.min(content.sourceEndSec - 0.1, sourceDurationSec! - 0.1, Math.max(0, Number(event.currentTarget.value) || 0)); studio.replaceSceneBlock(scene.id, { ...content, sourceStartSec }); }} /></Stack>
-										<Stack gap="1" flex="1"><Text as="label" textStyle="eyebrow" color="studio.fgSubtle">Source out</Text><Input size="xs" type="number" min={content.sourceStartSec + 0.1} max={sourceDurationSec!} step="0.1" aria-label="Video source out" value={content.sourceEndSec} onChange={(event) => { const sourceEndSec = Math.min(sourceDurationSec!, Math.max(content.sourceStartSec + 0.1, Number(event.currentTarget.value) || content.sourceStartSec + 0.1)); studio.replaceSceneBlock(scene.id, { ...content, sourceEndSec }); }} /></Stack>
+										<Stack gap="1" flex="1"><Text as="label" fontSize="12px" color="studio.fgSubtle">Source in</Text><Input size="xs" type="number" min="0" max={Math.max(0, Math.min(content.sourceEndSec - 0.1, sourceDurationSec! - 0.1))} step="0.1" aria-label="Video source in" value={content.sourceStartSec} onChange={(event) => { const sourceStartSec = Math.min(content.sourceEndSec - 0.1, sourceDurationSec! - 0.1, Math.max(0, Number(event.currentTarget.value) || 0)); studio.replaceSceneBlock(scene.id, { ...content, sourceStartSec }); }} /></Stack>
+										<Stack gap="1" flex="1"><Text as="label" fontSize="12px" color="studio.fgSubtle">Source out</Text><Input size="xs" type="number" min={content.sourceStartSec + 0.1} max={sourceDurationSec!} step="0.1" aria-label="Video source out" value={content.sourceEndSec} onChange={(event) => { const sourceEndSec = Math.min(sourceDurationSec!, Math.max(content.sourceStartSec + 0.1, Number(event.currentTarget.value) || content.sourceStartSec + 0.1)); studio.replaceSceneBlock(scene.id, { ...content, sourceEndSec }); }} /></Stack>
 									</Flex>
 									<Flex gap="2" align="end">
-										<Button size="xs" variant="outline" aria-pressed={content.muted} onClick={() => studio.replaceSceneBlock(scene.id, { ...content, muted: !content.muted })}>{content.muted ? "Muted" : "Audio on"}</Button>
-										<Stack gap="1" flex="1"><Text as="label" textStyle="eyebrow" color="studio.fgSubtle">Volume</Text><Input size="xs" type="number" min="0" max="100" step="1" aria-label="Video scene volume" value={content.volume} disabled={content.muted} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, volume: Math.min(100, Math.max(0, Number(event.currentTarget.value) || 0)) })} /></Stack>
+										<Button size="xs" {...softButtonProps} aria-pressed={content.muted} onClick={() => studio.replaceSceneBlock(scene.id, { ...content, muted: !content.muted })}>{content.muted ? "Muted" : "Audio on"}</Button>
+										<Stack gap="1" flex="1"><Text as="label" fontSize="12px" color="studio.fgSubtle">Volume</Text><Input size="xs" type="number" min="0" max="100" step="1" aria-label="Video scene volume" value={content.volume} disabled={content.muted} onChange={(event) => studio.replaceSceneBlock(scene.id, { ...content, volume: Math.min(100, Math.max(0, Number(event.currentTarget.value) || 0)) })} /></Stack>
 									</Flex>
 								</>}
 								<Flex gap="2" wrap="wrap">
@@ -206,7 +207,7 @@ export function ScenesPanel() {
         )}
       </Box>
       {!Object.values(studio.sceneWriteCapabilities).some(Boolean) && studio.sceneBlocks.length > 0 && (
-        <Box layerStyle="well" p="3"><Text fontSize="12px" color="studio.fgMuted">Scene editing is read-only. Existing scenes remain in preview and exports.</Text></Box>
+        <Box bg="studio.subtle" borderRadius="10px" p="4"><Text fontSize="13px" color="studio.fgMuted">Scene editing is read-only. Existing scenes remain in preview and exports.</Text></Box>
       )}
     </Stack>
   );

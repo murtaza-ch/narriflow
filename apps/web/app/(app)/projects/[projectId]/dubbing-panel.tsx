@@ -15,6 +15,7 @@ import type {
   ClipSnapshot,
 } from "@narriflow/validators";
 import { userErrorMessage } from "@narriflow/validators";
+import { EmptyState } from "@narriflow/ui/components/empty-state";
 
 const languageOptions = [
   { value: "es", label: "Spanish" },
@@ -231,25 +232,17 @@ export function DubbingPanel({
       <Box
         bg="bg.panel"
         borderWidth="1px"
-        borderColor="border.subtle"
+        borderColor="border.card"
         borderRadius="l3"
         overflow="hidden"
       >
-        <Flex
-          align="center"
-          justify="space-between"
-          gap="3"
-          px="5"
-          py="3.5"
-          borderBottomWidth="1px"
-          borderColor="border.subtle"
-        >
-          <Flex align="center" gap="2">
-            <Mic2 size={15} aria-hidden />
-            <Text fontSize="14px" fontWeight="550" color="fg">
-              New dub
-            </Text>
-          </Flex>
+        <Flex align="center" gap="2" px="5" pt="5">
+          <Box color="fg.muted">
+            <Mic2 size={16} aria-hidden />
+          </Box>
+          <Text fontSize="16px" fontWeight="500" color="fg">
+            New dub
+          </Text>
         </Flex>
 
         <Grid
@@ -323,15 +316,12 @@ export function DubbingPanel({
           gap="3"
           wrap="wrap"
           px="5"
-          py="3.5"
-          borderTopWidth="1px"
-          borderColor="border.subtle"
-          bg="bg.subtle"
+          pb="5"
         >
           {selectedClip ? (
             <Flex align="center" gap="2" fontSize="13px" color="fg.muted" minW="0">
               <Text color="fg">Clip {selectedClip.index + 1}</Text>
-              <Text textStyle="data" fontSize="12px">
+              <Text fontSize="12px" fontVariantNumeric="tabular-nums">
                 {aspectRatio}
               </Text>
               <ArrowRight size={13} aria-hidden />
@@ -371,18 +361,13 @@ export function DubbingPanel({
       ) : null}
 
       {dubs.length > 0 ? (
-        <Box borderWidth="1px" borderColor="border.subtle" borderRadius="l3" overflow="hidden">
-          <Flex
-            px="5"
-            py="2.5"
-            bg="bg.subtle"
-            borderBottomWidth="1px"
-            borderColor="border.subtle"
-          >
-            <Text fontSize="12px" color="fg.muted">
-              {dubs.length} dub{dubs.length === 1 ? "" : "s"}
-            </Text>
-          </Flex>
+        <Box
+          bg="bg.panel"
+          borderWidth="1px"
+          borderColor="border.card"
+          borderRadius="l3"
+          overflow="hidden"
+        >
           {dubs.map((dub) => {
             const clipIndex = clips.find((clip) => clip.id === dub.clipId)?.index;
             return (
@@ -404,10 +389,9 @@ export function DubbingPanel({
                   flexShrink={0}
                   align="center"
                   justify="center"
-                  borderRadius="l2"
-                  bg="accent.subtle"
-                  color="accent.fg"
-                  textStyle="data"
+                  borderRadius="full"
+                  bg="bg.soft"
+                  color="fg.muted"
                   fontSize="12px"
                   fontWeight="600"
                   aria-hidden="true"
@@ -420,7 +404,7 @@ export function DubbingPanel({
                   </Text>
                   <Text fontSize="12px" color="fg.subtle" truncate>
                     Clip {clipIndex === undefined ? "?" : clipIndex + 1} ·{" "}
-                    <Text as="span" textStyle="data" fontSize="11px">
+                    <Text as="span" fontVariantNumeric="tabular-nums">
                       {dub.aspectRatio}
                     </Text>
                     {dub.errorCode ? (
@@ -431,12 +415,14 @@ export function DubbingPanel({
                     ) : null}
                   </Text>
                 </Box>
-                <StatusBadge status={dubBadgeStatus[dub.status]} label={dub.status} />
+                {dub.status !== "completed" ? (
+                  <StatusBadge status={dubBadgeStatus[dub.status]} label={dub.status} />
+                ) : null}
                 {dub.status === "completed" ? (
                   <Flex gap="1.5" flexShrink={0}>
                     <Button
                       size="sm"
-                      variant="outline"
+                      variant="subtle"
                       disabled={downloadingAsset !== null}
                       onClick={() => downloadDub(dub, "video")}
                     >
@@ -467,53 +453,11 @@ export function DubbingPanel({
           })}
         </Box>
       ) : (
-        <Stack
-          align="center"
-          textAlign="center"
-          gap="4"
-          py="12"
-          px="6"
-          borderWidth="1px"
-          borderStyle="dashed"
-          borderColor="border"
-          borderRadius="l3"
-        >
-          <Flex
-            boxSize="12"
-            align="center"
-            justify="center"
-            borderRadius="l2"
-            bg="bg.muted"
-            color="fg.muted"
-            aria-hidden="true"
-          >
-            <Mic2 size={20} />
-          </Flex>
-          <Box>
-            <Text fontSize="15px" fontWeight="550" color="fg">
-              No dubs yet
-            </Text>
-            <Text fontSize="13px" color="fg.muted" mt="1" maxW="46ch">
-              Pick a rendered clip, choose a language and a voice, and generate. Each dub
-              comes with a video and a narration-only audio file.
-            </Text>
-          </Box>
-          <Flex gap="1.5" wrap="wrap" justify="center" maxW="520px">
-            {languageOptions.map((option) => (
-              <Text
-                key={option.value}
-                px="2.5"
-                py="1"
-                borderRadius="full"
-                bg="bg.muted"
-                fontSize="12px"
-                color="fg.muted"
-              >
-                {option.label}
-              </Text>
-            ))}
-          </Flex>
-        </Stack>
+        <EmptyState
+          icon={<Mic2 />}
+          title="No dubs yet"
+          description="Pick a rendered clip, choose a language and a voice, and generate. Each dub comes with a video and a narration-only audio file."
+        />
       )}
     </Stack>
   );

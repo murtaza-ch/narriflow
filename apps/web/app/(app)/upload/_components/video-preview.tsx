@@ -4,7 +4,6 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Box, Flex, Text } from "@chakra-ui/react";
 import { Link2, Play, FileVideo } from "lucide-react";
 import { MediaWell } from "@narriflow/ui/components/media-well";
-import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
 import type { LinkProviderId } from "@narriflow/validators";
 import { LINK_PROVIDERS } from "@narriflow/validators";
 import { attachLocalMediaPreview } from "../_lib/local-media-preview";
@@ -104,7 +103,13 @@ function LinkPreview({
   provider: LinkProviderId;
 }) {
   return (
-    <Flex gap="4" p="4" layerStyle="well" align="flex-start">
+    <Flex
+      gap="4"
+      p="4"
+      bg="bg.soft"
+      borderRadius="l2"
+      align="flex-start"
+    >
       <MediaWell ratio={1} w="64px" flexShrink={0}>
         <Flex
           align="center"
@@ -117,7 +122,7 @@ function LinkPreview({
         </Flex>
       </MediaWell>
       <Box minW="0">
-        <Text textStyle="eyebrow" color="fg.subtle" mb="1">
+        <Text fontSize="12px" color="fg.subtle" mb="1">
           {linkProviderLabel(provider)}
         </Text>
         <Text fontSize="13px" color="fg" truncate>
@@ -288,15 +293,20 @@ export function VideoPreview({
 
   if (!source) {
     return (
-      <Flex align="center" justify="center" py="8">
-        <GhostFrame ratio={16 / 9} size="220px">
-          <Flex direction="column" align="center" gap="2">
-            <Play size={18} strokeWidth={1.75} />
-            <Text textStyle="eyebrow" color="fg.subtle">
-              Add a source to preview
-            </Text>
-          </Flex>
-        </GhostFrame>
+      <Flex
+        direction="column"
+        align="center"
+        justify="center"
+        gap="2"
+        py="6"
+        textAlign="center"
+      >
+        <Box color="fg.subtle">
+          <Play size={20} strokeWidth={1.75} />
+        </Box>
+        <Text fontSize="14px" fontWeight="500" color="fg">
+          Add a source to preview
+        </Text>
       </Flex>
     );
   }
@@ -315,7 +325,7 @@ export function VideoPreview({
     const id = extractYoutubeId(source.url);
     if (!id) {
       return (
-        <Box layerStyle="well" p="4">
+        <Box bg="bg.soft" borderRadius="l2" p="4">
           <Text fontSize="13px" color="fg.muted">
             Paste a valid YouTube link to preview the video.
           </Text>
@@ -337,7 +347,13 @@ export function VideoPreview({
 
   if (source.kind === "rss") {
     return (
-      <Flex gap="4" p="4" layerStyle="well" align="flex-start">
+      <Flex
+        gap="4"
+        p="4"
+        bg="bg.soft"
+        borderRadius="l2"
+        align="flex-start"
+      >
         {source.thumbnailUrl ? (
           <MediaWell ratio={1} w="96px" flexShrink={0}>
             <img
@@ -354,9 +370,6 @@ export function VideoPreview({
           </MediaWell>
         ) : null}
         <Box minW="0">
-          <Text textStyle="eyebrow" color="fg.subtle" mb="1">
-            RSS episode
-          </Text>
           <Text fontSize="14px" textStyle="title" color="fg">
             {source.title ?? "Selected episode"}
           </Text>

@@ -52,8 +52,6 @@ function ErrorNotice({ message }: { message: string }) {
       px="3"
       py="2.5"
       bg="danger.subtle"
-      borderWidth="1px"
-      borderColor="danger.muted"
       borderRadius="l2"
       position="relative"
       overflow="hidden"
@@ -61,7 +59,7 @@ function ErrorNotice({ message }: { message: string }) {
       <Box color="danger.fg" flexShrink={0}>
         <AlertTriangle size={14} strokeWidth={2} />
       </Box>
-      <Text fontSize="12.5px" fontWeight="500" color="danger.fg">
+      <Text fontSize="13px" fontWeight="500" color="danger.fg">
         {message}
       </Text>
     </Flex>
@@ -234,12 +232,14 @@ export function CommitStep({
       <Stack
         gap="5"
         bg="bg.panel"
-        rounded="2xl"
+        borderRadius="l3"
+        borderWidth="1px"
+        borderColor="border.card"
         p={{ base: "4", md: "6" }}
       >
         {/* Hidden YouTube IFrame duration probe — existing probe from
           video-preview.tsx, mounted off-screen so it never affects layout;
-          the visible metadata card below draws its own thumbnail/title. */}
+          the visible metadata row below draws its own thumbnail/title. */}
         {youtubeId && (
           <Box
             position="absolute"
@@ -258,8 +258,8 @@ export function CommitStep({
           </Box>
         )}
 
-        {/* Metadata card */}
-        <Box bg="bg.subtle" rounded="xl" p="3">
+        {/* Metadata row */}
+        <Box>
           <Flex gap="3" align="center">
             <MediaWell
               ratio={16 / 9}
@@ -302,14 +302,6 @@ export function CommitStep({
                 size="sm"
                 flex="1"
                 minW="120px"
-                variant="flushed"
-                borderWidth="0"
-                _focusVisible={{
-                  outline: "2px solid",
-                  outlineColor: "accent.solid",
-                  outlineOffset: "2px",
-                  boxShadow: "none",
-                }}
               />
               {youtubeId ? (
                 <Popover.Root positioning={{ placement: "bottom-start" }}>
@@ -321,17 +313,15 @@ export function CommitStep({
                       gap="1.5"
                       flexShrink={0}
                       px="2.5"
-                      py="1"
+                      py="1.5"
                       borderRadius="l1"
-                      borderWidth="1px"
-                      borderColor="border.control"
-                      bg="bg.subtle"
+                      bg="bg.soft"
                       cursor="pointer"
-                      transition="border-color 120ms ease"
-                      _hover={{ borderColor: "border.emphasized" }}
+                      transition="background 120ms ease"
+                      _hover={{ bg: "bg.softHover" }}
                     >
                       <Clock size={12} strokeWidth={1.75} />
-                      <Text textStyle="data" fontSize="11px" color="fg">
+                      <Text textStyle="data" fontSize="12px" color="fg">
                         {hasKnownDuration
                           ? formatTimecode(durationSec as number)
                           : "Detecting…"}
@@ -358,7 +348,7 @@ export function CommitStep({
                   </Portal>
                 </Popover.Root>
               ) : (
-                <Text fontSize="11.5px" color="fg.muted" lineHeight="1.5">
+                <Text fontSize="12px" color="fg.muted" lineHeight="1.5">
                   Details appear after import — the video is fetched and its
                   duration detected during processing.
                 </Text>
@@ -380,8 +370,8 @@ export function CommitStep({
             minH="40px"
             px="3"
             py="2"
-            rounded="l2"
-            bg="bg.panel"
+            borderRadius="l2"
+            bg="bg.soft"
           >
             <Flex align="center" gap="2">
               <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
@@ -390,7 +380,7 @@ export function CommitStep({
           </Switch>
         </Stack>
 
-        <chakra.details borderTopWidth="1px" borderColor="border.subtle" pt="4">
+        <chakra.details>
           <chakra.summary
             display="flex"
             alignItems="center"
@@ -423,13 +413,10 @@ export function CommitStep({
             type="button"
             size="md"
             h="46px"
-            rounded="xl"
-            bg="accent.solid"
-            color="accent.contrast"
           >
             {submitting ? (
               <>
-                <Spinner size="xs" borderTopColor="accent.contrast" />
+                <Spinner size="xs" borderTopColor="brand.contrast" />
                 <Text ms="1.5">Working…</Text>
               </>
             ) : (
@@ -438,7 +425,12 @@ export function CommitStep({
               </>
             )}
           </Button>
-          <Text fontSize="11px" color="fg.subtle" textAlign="center">
+          <Text
+            fontSize="12px"
+            color="fg.subtle"
+            textAlign="center"
+            fontVariantNumeric="tabular-nums"
+          >
             {hasKnownDuration
               ? `Counts ~${estimatedMinutes} min against your plan · ${minutesLeft} of ${usageSummary.limitMinutes} min left`
               : `Usage confirmed after import · ${minutesLeft} of ${usageSummary.limitMinutes} min left`}

@@ -97,7 +97,6 @@ import {
   type StudioAccess,
   type StudioKeys,
 } from "./studio-access";
-import { StudioWriteLeaseOverlay } from "./studio-write-lease-overlay";
 import {
   addSubtitleLineAfter as insertSubtitleLineAfter,
   deleteSubtitleLine as removeSubtitleLine,
@@ -455,6 +454,9 @@ interface StudioState {
 }
 
 interface StudioFields extends StudioState {
+  /** Another tab holds the write lease, so this tab is read-only. */
+  editingElsewhere: boolean;
+  handleTakeOverEditing: () => void;
   /** Current immutable Clip Editor Document projection owned by the session. */
   editorDocument: EditorDocument;
   motionPreview: StudioSessionSnapshot["preview"]["motion"];
@@ -680,10 +682,12 @@ export function useStudio<const Keys extends StudioKeys<StudioFields>>(
 const StudioEditorTree = memo(function StudioEditorTree() {
   return (
     <>
+      {/* Separate rounded panels on the frame, 8px apart: header, transcript,
+          preview, tools and timeline each read as their own surface. */}
       <TopBar />
-      <Flex flex="1" overflow="hidden" position="relative">
+      <Flex flex="1" minH="0" gap="2" position="relative">
         <TranscriptPanel />
-        <Box flex="1" overflow="hidden" position="relative">
+        <Box flex="1" minW="0" overflow="hidden" position="relative" bg="studio.canvas" borderRadius="12px">
           <VideoPreview />
         </Box>
         <ToolSidebar />
@@ -2076,9 +2080,6 @@ export function StudioShell({
           e.preventDefault();
           seekTo(duration);
           break;
-        case "\\":
-          setTimelineZoom(1);
-          break;
         case "+":
         case "=":
           setTimelineZoom((z) => Math.min(8, z + 0.25));
@@ -2168,6 +2169,8 @@ export function StudioShell({
     sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy,
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
     resetState, canUndo, canRedo, canReset,
+    editingElsewhere: draftRecoveryReady && writeOwnershipReady && !hasWriteOwnership,
+    handleTakeOverEditing,
     editorDocument: doc,
     motionPreview: preview.motion,
     setMotionPreview,
@@ -2253,16 +2256,13 @@ export function StudioShell({
       <Flex
         direction="column"
         h="100dvh"
-        bg="studio.canvas"
+        bg="studio.frame"
+        p="2"
+        gap="2"
         overflow="hidden"
         position="relative"
       >
         <StudioEditorTree />
-
-        <StudioWriteLeaseOverlay
-          visible={draftRecoveryReady && writeOwnershipReady && !hasWriteOwnership}
-          onTakeOver={handleTakeOverEditing}
-        />
 
         <DraftRecoveryDialog
           open={sessionDraftConflict}

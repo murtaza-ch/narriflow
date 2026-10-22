@@ -477,10 +477,10 @@ export default async function ProjectDetailPage({
 						</Stack>
 						<Flex gap="2" align="center" flexShrink={0} wrap="wrap">
 							<Collapsible.Trigger asChild>
-								<Button variant="outline" size="sm">
+								<Button variant="subtle" size="sm">
 									Project details{" "}
 									<Collapsible.Indicator>
-										<ChevronDown size={14} />
+										<ChevronDown size={16} />
 									</Collapsible.Indicator>
 								</Button>
 							</Collapsible.Trigger>
@@ -582,7 +582,7 @@ export default async function ProjectDetailPage({
 												"new_upload" && (
 												<Button
 													size="sm"
-													variant="outline"
+													variant="subtle"
 													asChild
 													alignSelf="flex-start"
 												>
@@ -607,10 +607,12 @@ export default async function ProjectDetailPage({
 										gap="4"
 										p="4"
 										bg="bg.panel"
-										borderRadius="l2"
+										borderRadius="l3"
+										borderWidth="1px"
+										borderColor="border.card"
 									>
 										<Stack gap="1">
-											<Text textStyle="eyebrow" color="fg.subtle">
+											<Text textStyle="eyebrow" color="fg.muted">
 												Project identity
 											</Text>
 											<Text fontSize="sm" color="fg.muted">
@@ -638,7 +640,7 @@ export default async function ProjectDetailPage({
 											<ActionSubmitButton
 												type="submit"
 												size="sm"
-												variant="outline"
+												variant="subtle"
 												pendingLabel="Applying…"
 												disabled={!canApplyBrandProfile}
 											>
@@ -704,9 +706,10 @@ export default async function ProjectDetailPage({
 										gap="3"
 										wrap="wrap"
 										p="4"
+										bg="bg.panel"
 										borderWidth="1px"
-										borderColor="border"
-										borderRadius="l2"
+										borderColor="border.card"
+										borderRadius="l3"
 									>
 										<Flex align="center" gap="2">
 											<Info size={14} aria-hidden />
@@ -714,7 +717,7 @@ export default async function ProjectDetailPage({
 												This project's setup isn't finished yet.
 											</Text>
 										</Flex>
-										<Button size="sm" variant="outline" asChild>
+										<Button size="sm" variant="subtle" asChild>
 											<Link href={`/upload?project=${projectId}`}>
 												Finish setup
 											</Link>
@@ -775,10 +778,7 @@ export default async function ProjectDetailPage({
 												wrap="wrap"
 											>
 												<Box>
-													<Text textStyle="eyebrow" color="fg.subtle" mb="1">
-														Step 01
-													</Text>
-													<Text fontSize="md" textStyle="title" color="fg">
+													<Text fontSize="16px" fontWeight="500" color="fg">
 														AI Transcription
 													</Text>
 													<Text fontSize="sm" color="fg.muted" mt="0.5">
@@ -841,10 +841,7 @@ export default async function ProjectDetailPage({
 												wrap="wrap"
 											>
 												<Box>
-													<Text textStyle="eyebrow" color="fg.subtle" mb="1">
-														Step 02
-													</Text>
-													<Text fontSize="md" textStyle="title" color="fg">
+													<Text fontSize="16px" fontWeight="500" color="fg">
 														AI Clip Detection
 													</Text>
 													<Text fontSize="sm" color="fg.muted" mt="0.5">
@@ -877,7 +874,7 @@ export default async function ProjectDetailPage({
                   and zero-clip runs still expose Retry/Re-run detection in
                   the processing panel, and the first detection is Step 02. */}
 										{pricingTier === "free" && hasRenderableClips && (
-											<Text fontSize="xs" color="fg.muted">
+											<Text fontSize="13px" color="fg.muted">
 												Free plan renders are 720p and watermarked.{" "}
 												<Link href="/settings/billing">
 													<Text

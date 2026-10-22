@@ -31,7 +31,7 @@ export function PasswordInput({ startElement, ...props }: Omit<InputProps, "type
           color="fg.muted"
           cursor="pointer"
           transition="color 120ms ease, background 120ms ease"
-          _hover={{ color: "fg", bg: "bg.muted" }}
+          _hover={{ color: "fg", bg: "bg.soft" }}
         >
           {visible ? <EyeOff size={15} /> : <Eye size={15} />}
         </chakra.button>

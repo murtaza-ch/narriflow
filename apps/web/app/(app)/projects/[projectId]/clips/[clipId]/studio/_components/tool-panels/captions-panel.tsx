@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid } from "@chakra-ui/react";
+import { PanelTabs, studioSliderCss } from "./panel-ui";
 import { Droplet, Type, AlignCenter, MoveUp, MoveDown, Zap, Smile, Captions, Quote } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
 import { toaster } from "@narriflow/ui/components/toaster";
@@ -39,7 +40,7 @@ type Position = "top" | "center" | "bottom";
 
 function SectionLabel({ children }: { children: string }) {
   return (
-    <Text textStyle="eyebrow" color="studio.fgMuted" mb="8px">
+    <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="10px">
       {children}
     </Text>
   );
@@ -64,19 +65,19 @@ function ToggleBtn({
       align="center"
       justify="center"
       gap="4px"
-      w="52px"
-      h="44px"
-      borderRadius="l2"
+      w="56px"
+      h="48px"
+      borderRadius="10px"
       bg={active ? "studio.raised" : "studio.subtle"}
-      border="1px solid"
-      borderColor={active ? "studio.accent" : "studio.border"}
-      color={active ? "studio.accentFg" : "studio.fgMuted"}
+      borderWidth="2px"
+      borderColor={active ? "studio.accent" : "transparent"}
+      color={active ? "studio.fg" : "studio.fgMuted"}
       cursor="pointer"
-      fontSize="10px"
-      fontWeight="600"
+      fontSize="11px"
+      fontWeight="500"
       onClick={onClick}
       transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-      _hover={{ borderColor: active ? "studio.accent" : "studio.borderStrong", color: active ? "studio.accentFg" : "studio.fg" }}
+      _hover={{ bg: "studio.raised", color: "studio.fg" }}
     >
       {icon}
       {label}
@@ -95,7 +96,7 @@ function ColorField({
 }) {
   return (
     <Box>
-      <Text fontSize="11px" color="studio.fgMuted" mb="5px">{label}</Text>
+      <Text fontSize="12px" color="studio.fgMuted" mb="6px">{label}</Text>
       <ColorPicker.Root
         value={parseColor(value)}
         onValueChange={(e) => onChange(e.value.toString("hex"))}
@@ -104,13 +105,13 @@ function ColorField({
         <ColorPicker.HiddenInput />
         <ColorPicker.Control>
           <ColorPicker.Trigger
-            w="32px"
-            h="32px"
-            borderRadius="l2"
-            borderWidth="1px"
-            borderColor="studio.borderStrong"
+            w="36px"
+            h="36px"
+            borderRadius="10px"
+            borderWidth="0"
+            bg="studio.subtle"
             cursor="pointer"
-            p="2px"
+            p="4px"
             aria-label={`${label} color`}
           >
             <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="l1" />
@@ -163,19 +164,20 @@ function Chip({
       as="button"
       aria-pressed={active}
       aria-label={label}
-      px="9px"
-      py="6px"
-      borderRadius="l2"
+      px="12px"
+      h="32px"
+      borderRadius="8px"
       bg={active ? "studio.raised" : "studio.subtle"}
-      border="1px solid"
-      borderColor={active ? "studio.accent" : "studio.border"}
-      color={active ? "studio.accentFg" : "studio.fgMuted"}
+      borderWidth="2px"
+      borderColor={active ? "studio.accent" : "transparent"}
+      color={active ? "studio.fg" : "studio.fgMuted"}
       cursor="pointer"
-      fontSize="11px"
+      fontSize="12px"
+      fontWeight="500"
       whiteSpace="nowrap"
       onClick={onClick}
       transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-      _hover={{ borderColor: active ? "studio.accent" : "studio.borderStrong" }}
+      _hover={{ bg: "studio.raised", color: "studio.fg" }}
     >
       {children}
     </Box>
@@ -213,7 +215,7 @@ function ValueSlider({
         onValueChange={(e) => onChange(e.value[0]!, coalesceKey)}
         onValueChangeEnd={endCoalesce}
         size="sm"
-        colorPalette="accent"
+        css={studioSliderCss}
         flex="1"
       >
         <Slider.Control>
@@ -223,7 +225,7 @@ function ValueSlider({
           <Slider.Thumbs />
         </Slider.Control>
       </Slider.Root>
-      <Text textStyle="data" fontSize="12px" color="studio.fgMuted" minW="28px" textAlign="right">
+      <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" minW="28px" textAlign="right">
         {format(value)}
       </Text>
     </Flex>
@@ -306,14 +308,13 @@ function LiveCuePreview() {
   return (
     <Flex
       ref={stageRef}
-      mx="12px"
-      mb="12px"
-      h="96px"
-      borderRadius="l2"
+      mx="20px"
+      mt="16px"
+      mb="20px"
+      h="112px"
+      borderRadius="10px"
       overflow="hidden"
       position="relative"
-      borderWidth="1px"
-      borderColor="studio.border"
       align="center"
       justify="center"
       aria-hidden="true"
@@ -351,11 +352,11 @@ function PresetsGrid() {
   };
 
   return (
-    <Stack gap="14px" px="12px" pb="12px">
+    <Stack gap="20px" px="20px" pb="16px">
       {CAPTION_PRESET_GROUPS.map((group) => (
         <Box key={group}>
           <SectionLabel>{group}</SectionLabel>
-          <Grid templateColumns="repeat(2, minmax(0, 1fr))" gap="10px">
+          <Grid templateColumns="repeat(2, minmax(0, 1fr))" columnGap="12px" rowGap="16px">
             {CAPTION_PRESETS.filter((p) => p.group === group).map((p) => (
               <PresetCard
                 key={p.id}
@@ -380,7 +381,7 @@ function CustomizeControls() {
     setCaptionPreset((p) => ({ ...p, ...patch }), coalesceKey);
 
   return (
-    <Stack gap="16px" p="12px">
+    <Stack gap="20px" px="20px" py="4px">
       {/* Font */}
       <Box>
         <SectionLabel>Font</SectionLabel>
@@ -538,10 +539,10 @@ function CustomizeControls() {
         </Flex>
         {captionPreset.positionX !== undefined && (
           <Flex gap="8px" mt="6px" align="center">
-            <Text textStyle="data" fontSize="11px" color="studio.fgMuted">
+            <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
               X: {captionPreset.positionX.toFixed(1)}%
             </Text>
-            <Text textStyle="data" fontSize="11px" color="studio.fgMuted">
+            <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
               Y: {captionPreset.positionY?.toFixed(1)}%
             </Text>
             <Box
@@ -753,35 +754,15 @@ export function CaptionsPanel() {
   return (
     <Stack gap="0">
       {/* Tabs */}
-      <Flex px="12px" pt="12px" gap="4px" mb="12px" role="tablist" aria-label="Caption editing">
-        {(["presets", "customize"] as const).map((tab) => {
-          const isActive = activeTab === tab;
-          return (
-            <Flex
-              key={tab}
-              as="button"
-              role="tab"
-              aria-selected={isActive}
-              align="center"
-              px="12px"
-              py="6px"
-              borderRadius="l2"
-              bg={isActive ? "studio.raised" : "transparent"}
-              border="1px solid"
-              borderColor={isActive ? "studio.borderStrong" : "transparent"}
-              color={isActive ? "studio.fg" : "studio.fgMuted"}
-              cursor="pointer"
-              fontSize="12px"
-              fontWeight="500"
-              onClick={() => setActiveTab(tab)}
-              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-              textTransform="capitalize"
-            >
-              {tab}
-            </Flex>
-          );
-        })}
-      </Flex>
+      <PanelTabs
+        ariaLabel="Caption editing"
+        items={[
+          { id: "presets", label: "Presets" },
+          { id: "customize", label: "Customize" },
+        ]}
+        value={activeTab}
+        onChange={setActiveTab}
+      />
 
       {/* Live caption preview — the actual current cue, fully styled */}
       <LiveCuePreview />
@@ -790,24 +771,23 @@ export function CaptionsPanel() {
       {activeTab === "customize" && <CustomizeControls />}
 
       {/* Apply to all — secondary action (Export owns the solid button) */}
-      <Box px="12px" pb="12px" pt="4px">
+      <Box px="20px" pb="20px" pt="8px">
         <Flex
           as="button"
           w="100%"
           align="center"
           justify="center"
-          h="36px"
-          borderRadius="l2"
+          h="44px"
+          borderRadius="10px"
           bg="studio.raised"
-          borderWidth="1px"
-          borderColor={applyState === "error" ? "danger.solid" : "studio.borderStrong"}
-          color={applyState === "error" ? "danger.fg" : "studio.fg"}
-          fontSize="13px"
-          fontWeight="600"
+          border="none"
+          color={applyState === "error" ? "studio.danger" : "studio.fg"}
+          fontSize="14px"
+          fontWeight="500"
           cursor={applyState === "applying" ? "default" : "pointer"}
           opacity={applyState === "applying" ? 0.8 : 1}
-          transition="background 120ms ease, border-color 120ms ease"
-          _hover={applyState === "applying" ? {} : { borderColor: applyState === "error" ? "danger.solid" : "studio.fgSubtle" }}
+          transition="background 120ms ease"
+          _hover={applyState === "applying" ? {} : { bg: "studio.borderStrong" }}
           onClick={handleApplyToAll}
         >
           {applyState === "applying"

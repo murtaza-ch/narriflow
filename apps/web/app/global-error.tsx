@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect } from "react";
+import { TriangleAlert } from "lucide-react";
 
 /**
  * Root error boundary — renders with NO providers, so styles stay inline.
- * Blueline graphite ground (#0E1013/#E9EBEE) with the ultramarine signal
- * (#5B6CFF) — note the dark label on the fill: white on #5B6CFF fails AA.
+ * The dark-mode graphite ground and neutral ink primary (#101010/#F2F2F2,
+ * the theme's dark `bg` and `brand.solid`).
  */
 export default function GlobalError({
   error,
@@ -30,27 +31,16 @@ export default function GlobalError({
           padding: "24px",
           fontFamily:
             "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-          background: "#0E1013",
-          color: "#E9EBEE",
+          background: "#101010",
+          color: "#F2F2F2",
         }}
       >
         <div style={{ maxWidth: "420px", textAlign: "center" }}>
           <div
             aria-hidden="true"
-            style={{
-              width: "160px",
-              aspectRatio: "16 / 9",
-              margin: "0 auto 20px",
-              border: "1px dashed #303845",
-              borderRadius: "7px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#828D9C",
-              fontSize: "18px",
-            }}
+            style={{ margin: "0 auto 16px", color: "#999999", display: "flex", justifyContent: "center" }}
           >
-            !
+            <TriangleAlert size={20} />
           </div>
           <h1 style={{ fontSize: "20px", fontWeight: 600, margin: "0 0 12px" }}>
             Something went wrong
@@ -59,7 +49,7 @@ export default function GlobalError({
             style={{
               fontSize: "14px",
               lineHeight: 1.6,
-              color: "#9AA3B0",
+              color: "#AAAAAA",
               margin: "0 0 8px",
             }}
           >
@@ -71,7 +61,7 @@ export default function GlobalError({
               style={{
                 fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
                 fontSize: "12px",
-                color: "#828D9C",
+                color: "#999999",
                 margin: "0 0 20px",
               }}
             >
@@ -87,10 +77,10 @@ export default function GlobalError({
               fontWeight: 600,
               padding: "8px 16px",
               marginTop: error.digest ? 0 : "12px",
-              borderRadius: "7px",
+              borderRadius: "10px",
               border: "none",
-              background: "#5B6CFF",
-              color: "#0E1013",
+              background: "#F2F2F2",
+              color: "#101010",
             }}
           >
             Try again

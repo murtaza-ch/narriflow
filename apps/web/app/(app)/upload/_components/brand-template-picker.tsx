@@ -48,17 +48,14 @@ export function BrandTemplatePicker({
 
   return (
     <Box>
-      <Flex align="center" justify="space-between" mb="2">
-        <Text textStyle="eyebrow" color="fg.subtle">
-          Brand selection
-        </Text>
+      <Flex align="center" justify="flex-end" mb="2">
         <Link href="/brand-kit">
           <Text
             as="span"
             display="inline-flex"
             alignItems="center"
             gap="1"
-            fontSize="11px"
+            fontSize="12px"
             color="fg"
             textDecoration="underline"
             textUnderlineOffset="2px"
@@ -120,10 +117,7 @@ function BrandTemplatePreview({
     <Flex
       align="center"
       gap="2"
-      mt="2"
-      pt="2"
-      borderTopWidth="1px"
-      borderTopColor="border.subtle"
+      mt="3"
       animation="fade-up"
     >
       {/* User-chosen brand color values stay literal by design. */}
@@ -133,7 +127,7 @@ function BrandTemplatePreview({
         borderRadius="l1"
         bg={template.primaryColor}
         borderWidth="1px"
-        borderColor="border"
+        borderColor="border.card"
       />
       <Box
         w="14px"
@@ -141,9 +135,9 @@ function BrandTemplatePreview({
         borderRadius="l1"
         bg={template.secondaryColor}
         borderWidth="1px"
-        borderColor="border"
+        borderColor="border.card"
       />
-      <Text textStyle="data" fontSize="11px" color="fg.muted">
+      <Text fontSize="12px" color="fg.muted">
         {captionPreset.fontName} · {captionPreset.animation}
         {template.logoStorageKey ? " · with logo" : ""}
       </Text>

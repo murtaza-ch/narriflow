@@ -4,6 +4,7 @@ import { Download, Film, Grid2X2, List, RefreshCw } from "lucide-react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Button } from "@narriflow/ui/components/button";
+import { Spinner } from "@narriflow/ui/components/spinner";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { DatePicker } from "@narriflow/ui/components/date-picker";
 import { Select } from "@narriflow/ui/components/select";
@@ -53,6 +54,18 @@ function ratioLabel(value: ClipAspectRatio) {
   return value.replace("ratio_", "").replaceAll("_", ":");
 }
 
+function StatusPill({ status }: { status: ClipExportStatus }) {
+  const inProgress = status === "queued" || status === "rendering";
+  const bg = status === "ready" ? "success.subtle" : status === "failed" ? "danger.subtle" : inProgress ? "accent.subtle" : "bg.muted";
+  const color = status === "ready" ? "success.fg" : status === "failed" ? "danger.fg" : inProgress ? "accent.fg" : "fg.muted";
+  return (
+    <Flex display="inline-flex" align="center" gap="1.5" px="2" py="1" borderRadius="full" bg={bg} color={color} fontSize="11px" lineHeight="1">
+      {inProgress ? <Spinner size="xs" borderColor="accent.muted" borderTopColor="accent.solid" /> : null}
+      <Text as="span">{status.replaceAll("_", " ")}</Text>
+    </Flex>
+  );
+}
+
 export default async function ExportsPage({
   searchParams,
 }: {
@@ -88,7 +101,7 @@ export default async function ExportsPage({
 
   return (
     <Stack gap="8">
-      <PageHeader title="Exports" description="Finished clips and exports in progress, all in one place." />
+      <PageHeader title="Exports" />
       <form method="get" style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end",
         }}>
         <Stack gap="1" flex={{ base: "1 1 100%", md: "1 1 220px" }}>
@@ -110,19 +123,19 @@ export default async function ExportsPage({
         <Box flex={{ base: "1 1 140px", md: "0 1 180px" }}><DatePicker name="to" label="To date" defaultValue={params.to} width="100%" /></Box>
         {status ? <input type="hidden" name="status" value={status} /> : null}
         <input type="hidden" name="view" value={view} />
-        <Button type="submit" size="sm" variant="outline">Apply</Button>
+        <Button type="submit" size="sm" variant="subtle">Apply</Button>
       </form>
       <Flex gap="2" wrap="wrap">
         {FILTERS.map((filter) => (
-          <Button key={filter.value} size="sm" variant={(params.status ?? "all") === filter.value ? "outline" : "ghost"} asChild>
+          <Button key={filter.value} size="sm" variant={(params.status ?? "all") === filter.value ? "subtle" : "ghost"} asChild>
             <Link href={exportHref(params, "status", filter.value)}>{filter.label}</Link>
           </Button>
         ))}
         <Box flex="1" />
-        <Button size="sm" variant={view === "list" ? "outline" : "ghost"} asChild>
+        <Button size="sm" variant={view === "list" ? "subtle" : "ghost"} asChild>
           <Link href={exportHref(params, "view", "list")} aria-label="List view"><List size={13} />List</Link>
         </Button>
-        <Button size="sm" variant={view === "grid" ? "outline" : "ghost"} asChild>
+        <Button size="sm" variant={view === "grid" ? "subtle" : "ghost"} asChild>
           <Link href={exportHref(params, "view", "grid")} aria-label="Grid view"><Grid2X2 size={13} />Grid</Link>
         </Button>
       </Flex>
@@ -131,14 +144,14 @@ export default async function ExportsPage({
       ) : view === "list" ? (
         <Stack gap="3">
           {exports.map((item) => (
-            <Flex key={item.id} align={{ base: "flex-start", md: "center" }} direction={{ base: "column", md: "row" }} gap="4" p="4" borderRadius="l2" bg="bg.panel">
+            <Flex key={item.id} align={{ base: "flex-start", md: "center" }} direction={{ base: "column", md: "row" }} gap="4" p="4" borderRadius="l3" bg="bg.panel" borderWidth="1px" borderColor="border.card">
 
               <Stack gap="0.5" flex="1" minW="0" w={{ base: "full", md: "auto" }}>
-                <Text fontSize="13px" fontWeight="600" truncate>{item.clip.title?.trim() || item.clip.hookText}</Text>
-                <Text fontSize="11px" color="fg.subtle" truncate>{item.project.title} · {formatDateTime(item.createdAt)}</Text>
+                <Text fontSize="14px" fontWeight="500" truncate>{item.clip.title?.trim() || item.clip.hookText}</Text>
+                <Text fontSize="12px" color="fg.subtle" truncate>{item.project.title} · {formatDateTime(item.createdAt)}</Text>
               </Stack>
               <Flex align="center" gap="3" wrap="wrap">
-                <Text fontSize="11px" px="2" py="1" borderRadius="full" bg={item.status === "ready" ? "success.subtle" : item.status === "failed" ? "danger.subtle" : "bg.muted"} color={item.status === "ready" ? "success.fg" : item.status === "failed" ? "danger.fg" : "fg.muted"}>{item.status.replaceAll("_", " ")}</Text>
+                <StatusPill status={item.status} />
                 <Flex gap="1">
                   {item.variants.filter((variant) => variant.status === "completed" && variant.storageKey,
                     ).map((variant) => (
@@ -152,7 +165,7 @@ export default async function ExportsPage({
                     <ActionSubmitButton pendingLabel="Retrying…" size="sm" variant="ghost"><RefreshCw size={12} />Retry</ActionSubmitButton>
                   </AuthenticatedActionForm>
                 ) : null}
-                <Button size="sm" variant="outline" asChild>
+                <Button size="sm" variant="subtle" asChild>
                   <Link href={`/projects/${item.projectId}/clips/${item.clipId}/exports/${item.id}`}>Open</Link>
                 </Button>
               </Flex>
@@ -163,13 +176,13 @@ export default async function ExportsPage({
         <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))", xl: "repeat(3, minmax(0, 1fr))",
           }} gap="4">
           {exports.map((item) => (
-            <Stack key={item.id} gap="4" borderRadius="l3" bg="bg.panel" p="5">
-              <Stack gap="1" flex="1"><Text fontSize="14px" fontWeight="600" lineClamp={2}>{item.clip.title?.trim() || item.clip.hookText}</Text><Text fontSize="11px" color="fg.subtle">{item.project.title}</Text></Stack>
-              <Flex align="center" justify="space-between" gap="3"><Text fontSize="11px" px="2" py="1" borderRadius="full" bg={item.status === "ready" ? "success.subtle" : item.status === "failed" ? "danger.subtle" : "bg.muted"} color={item.status === "ready" ? "success.fg" : item.status === "failed" ? "danger.fg" : "fg.muted"}>{item.status.replaceAll("_", " ")}</Text><Text textStyle="data" fontSize="11px" color="fg.subtle">{formatDateTime(item.createdAt)}</Text></Flex>
+            <Stack key={item.id} gap="4" borderRadius="l3" bg="bg.panel" borderWidth="1px" borderColor="border.card" p="5">
+              <Stack gap="1" flex="1"><Text fontSize="14px" fontWeight="500" lineClamp={2}>{item.clip.title?.trim() || item.clip.hookText}</Text><Text fontSize="12px" color="fg.subtle">{item.project.title}</Text></Stack>
+              <Flex align="center" justify="space-between" gap="3"><StatusPill status={item.status} /><Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">{formatDateTime(item.createdAt)}</Text></Flex>
               <Flex gap="1" wrap="wrap">
                 {item.variants.filter((variant) => variant.status === "completed" && variant.storageKey,
                   ).map((variant) => (
-                  <Button key={variant.id} size="sm" variant="outline" asChild>
+                  <Button key={variant.id} size="sm" variant="subtle" asChild>
                     <a href={`/api/workspace/exports/${item.id}/download?variant=${variant.id}`}><Download size={12} />{ratioLabel(variant.aspectRatio)}</a>
                   </Button>
                 ))}
@@ -181,8 +194,8 @@ export default async function ExportsPage({
       )}
 			{(params.cursor || exportPage.nextCursor) && (
 				<Flex gap="2" justify="end">
-					{params.cursor && <Button size="sm" variant="outline" asChild><Link href={exportHref({ ...params, cursor: undefined }, "view", view)}>Newest exports</Link></Button>}
-					{exportPage.nextCursor && <Button size="sm" variant="outline" asChild><Link href={exportHref({ ...params, cursor: exportPage.nextCursor }, "view", view)}>Next</Link></Button>}
+					{params.cursor && <Button size="sm" variant="subtle" asChild><Link href={exportHref({ ...params, cursor: undefined }, "view", view)}>Newest exports</Link></Button>}
+					{exportPage.nextCursor && <Button size="sm" variant="subtle" asChild><Link href={exportHref({ ...params, cursor: exportPage.nextCursor }, "view", view)}>Next</Link></Button>}
 				</Flex>
 			)}
     </Stack>

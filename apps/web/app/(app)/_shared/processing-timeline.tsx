@@ -41,20 +41,20 @@ export function ProcessingTimeline({
     <Box opacity={disabled ? 0.5 : 1}>
       <Flex justify="space-between" align="center" mb="10px">
         <Flex align="center" gap="8px">
-          <Text textStyle="eyebrow" color="fg.subtle">
+          <Text textStyle="eyebrow" color="fg.muted">
             Processing timeframe
           </Text>
           {showDetecting && (
             <Flex align="center" gap="6px">
               <Box w="6px" h="6px" borderRadius="1px" bg="accent.solid" />
-              <Text fontSize="11px" fontFamily="mono" color="fg.subtle">
+              <Text fontSize="12px" color="fg.subtle">
                 Detecting duration…
               </Text>
             </Flex>
           )}
         </Flex>
       </Flex>
-      <Text fontSize="11px" color="fg.muted" mb="10px" lineHeight="1.5">
+      <Text fontSize="12px" color="fg.muted" mb="10px" lineHeight="1.5">
         Narrows what we analyze for clips. Your plan is charged for the full
         source length.
       </Text>
@@ -113,26 +113,22 @@ export function ProcessingTimeline({
           <Box
             px="10px"
             py="4px"
-            fontSize="11px"
+            fontSize="12px"
             textStyle="data"
             color="fg"
-            bg="bg.subtle"
+            bg="bg.soft"
             borderRadius="l1"
-            borderWidth="1px"
-            borderColor="border"
           >
             {formatTimecode(startSec)}
           </Box>
           <Box
             px="10px"
             py="4px"
-            fontSize="11px"
+            fontSize="12px"
             textStyle="data"
             color="fg"
-            bg="bg.subtle"
+            bg="bg.soft"
             borderRadius="l1"
-            borderWidth="1px"
-            borderColor="border"
           >
             {formatTimecode(endSec)}
           </Box>

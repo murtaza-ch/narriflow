@@ -31,7 +31,7 @@ export function CaptionPresetSelect({
 }: CaptionPresetSelectProps) {
   return (
     <Box>
-      <Text textStyle="eyebrow" color="fg.subtle" mb="8px">
+      <Text textStyle="eyebrow" color="fg.muted" mb="8px">
         Caption preset
       </Text>
       <Select.Root
@@ -59,7 +59,7 @@ export function CaptionPresetSelect({
               {captionPresetCollection.items.map((item) => (
                 <Select.Item item={item} key={item.value}>
                   {item.label}
-                  <Select.ItemIndicator />
+                  <Select.ItemIndicator color="accent.fg" />
                 </Select.Item>
               ))}
             </Select.Content>

@@ -16,110 +16,86 @@ function Ghost(props: BoxProps) {
 }
 
 /**
- * Route skeleton mirroring the studio shell: top bar, transcript column,
- * center canvas with a 9:16 stage, fixed-width inspector, timeline strip.
+ * Route skeleton mirroring the studio shell: separate panels on the frame —
+ * header, transcript, canvas with a 9:16 stage, tool rail, timeline. Keep it
+ * in step with studio-shell.tsx so the editor appears without a layout jump.
  */
 export default function StudioLoading() {
   return (
-    <Flex direction="column" h="100dvh" bg="studio.canvas" overflow="hidden">
-      {/* Top bar */}
-      <Flex
-        h="48px"
-        align="center"
-        px="3"
-        gap="2"
-        bg="studio.surface"
-        borderBottomWidth="1px"
-        borderColor="studio.border"
-        flexShrink={0}
-      >
-        <Ghost w="32px" h="32px" />
-        <Ghost w="220px" h="14px" />
+    <Flex direction="column" h="100dvh" bg="studio.frame" p="2" gap="2" overflow="hidden">
+      {/* Header panel */}
+      <Flex h="56px" align="center" px="3" gap="2" bg="studio.canvas" borderRadius="12px" flexShrink={0}>
+        <Ghost w="36px" h="36px" borderRadius="l2" />
+        <Ghost w="240px" h="18px" />
         <Box flex="1" />
-        <Ghost w="120px" h="14px" />
-        <Ghost w="32px" h="32px" />
-        <Ghost w="32px" h="32px" />
-        <Ghost w="110px" h="32px" borderRadius="l2" />
+        {[0, 1, 2, 3].map((i) => (
+          <Ghost key={i} w="36px" h="36px" borderRadius="l2" />
+        ))}
+        <Ghost w="56px" h="12px" mx="3" />
+        <Ghost w="104px" h="36px" borderRadius="l2" />
       </Flex>
 
-      {/* Main area */}
-      <Flex flex="1" overflow="hidden">
-        {/* Transcript column */}
+      <Flex flex="1" minH="0" gap="2">
+        {/* Transcript panel */}
         <Stack
-          w={{ base: "240px", md: "280px", xl: "300px" }}
-          h="100%"
-          bg="studio.surface"
-          borderRightWidth="1px"
-          borderColor="studio.border"
-          display={{ base: "none", lg: "flex" }}
+          w="clamp(320px, 26vw, 480px)"
           flexShrink={0}
-          p="4"
-          gap="3"
+          bg="studio.canvas"
+          borderRadius="12px"
+          px="5"
+          py="4"
+          gap="7"
+          display={{ base: "none", lg: "flex" }}
         >
-          <Ghost w="120px" h="12px" />
-          {[0, 1, 2, 3, 4].map((i) => (
-            <Stack key={i} gap="2" pt="2">
+          <Flex justify="space-between" gap="4">
+            <Ghost w="120px" h="14px" />
+            <Ghost w="190px" h="14px" />
+          </Flex>
+          {[0, 1, 2].map((i) => (
+            <Stack key={i} gap="3">
               <Ghost w="64px" h="10px" />
-              <Ghost w="100%" h="12px" />
-              <Ghost w="86%" h="12px" />
+              <Ghost w="100%" h="14px" />
+              <Ghost w="92%" h="14px" />
+              <Ghost w="58%" h="14px" />
             </Stack>
           ))}
         </Stack>
 
-        {/* Canvas — 9:16 stage */}
-        <Flex flex="1" align="center" justify="center" p="6" overflow="hidden">
-          <Box
-            h="min(100%, 62vh)"
-            aspectRatio={9 / 16}
-            borderRadius="l2"
-            bg="studio.subtle"
-            borderWidth="1px"
-            borderColor="studio.border"
-          />
+        {/* Canvas panel — aspect and layout controls over a 9:16 stage */}
+        <Flex flex="1" minW="0" direction="column" align="center" pt="3" pb="4" gap="4" bg="studio.canvas" borderRadius="12px">
+          <HStack gap="3">
+            <Ghost w="72px" h="28px" borderRadius="l2" />
+            <Ghost w="84px" h="28px" borderRadius="l2" />
+          </HStack>
+          <Box flex="1" minH="0" aspectRatio={9 / 16} borderRadius="l2" bg="studio.subtle" />
         </Flex>
 
-        {/* Inspector */}
-        <Stack
-          w="300px"
-          h="100%"
-          bg="studio.surface"
-          borderLeftWidth="1px"
-          borderColor="studio.border"
-          display={{ base: "none", md: "flex" }}
-          flexShrink={0}
-          p="3"
-          gap="3"
-        >
-          <HStack gap="2">
-            {[0, 1, 2, 3, 4, 5].map((i) => (
-              <Ghost key={i} w="36px" h="36px" borderRadius="l2" />
-            ))}
-          </HStack>
-          <Ghost w="100%" h="80px" borderRadius="l2" />
-          <Ghost w="100%" h="44px" borderRadius="l2" />
-          <Ghost w="70%" h="12px" />
-          <Ghost w="100%" h="44px" borderRadius="l2" />
+        {/* Tool rail panel */}
+        <Stack w="92px" flexShrink={0} align="center" py="2" gap="0" bg="studio.canvas" borderRadius="12px">
+          {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+            <Stack key={i} h="64px" align="center" justify="center" gap="2">
+              <Ghost w="22px" h="22px" borderRadius="6px" />
+              <Ghost w="40px" h="9px" />
+            </Stack>
+          ))}
         </Stack>
       </Flex>
 
-      {/* Timeline strip */}
-      <Box
-        flexShrink={0}
-        bg="studio.canvas"
-        borderTopWidth="1px"
-        borderColor="studio.border"
-      >
-        <Flex h="40px" align="center" px="3" gap="2" borderBottomWidth="1px" borderColor="studio.border">
-          <Ghost w="90px" h="20px" />
+      {/* Timeline panel — control bar, then segment, word and waveform lanes */}
+      <Box flexShrink={0} bg="studio.canvas" borderRadius="12px" px="6" pb="3">
+        <Flex h="52px" align="center" gap="3">
+          <Ghost w="110px" h="16px" />
           <Box flex="1" />
-          <Ghost w="32px" h="32px" borderRadius="full" />
-          <Ghost w="140px" h="14px" />
+          <Ghost w="40px" h="40px" borderRadius="full" />
+          <Ghost w="150px" h="16px" />
           <Box flex="1" />
-          <Ghost w="120px" h="14px" />
+          <Ghost w="200px" h="16px" />
         </Flex>
-        <Flex h="132px" align="center" px="10" gap="2">
-          <Ghost w="100%" h="64px" borderRadius="l1" />
-        </Flex>
+        <Stack gap="2" pt="6">
+          <Ghost w="100%" h="64px" borderRadius="8px" />
+          <Ghost w="100%" h="24px" borderRadius="6px" />
+          <Ghost w="100%" h="40px" borderRadius="8px" />
+        </Stack>
       </Box>
     </Flex>
   );

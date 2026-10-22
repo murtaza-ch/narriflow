@@ -5,7 +5,6 @@ import Link from "next/link";
 import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { TriangleAlert } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
-import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
 
 export default function AppError({
   error,
@@ -32,15 +31,10 @@ export default function AppError({
         pointerEvents="none"
       />
       <Stack gap="5" maxW="420px" align="center" textAlign="center" position="relative" animation="fade-up">
-        <GhostFrame ratio={16 / 9} size="240px">
-          <Box color="danger.fg">
-            <TriangleAlert size={24} />
-          </Box>
-        </GhostFrame>
+        <Box color="danger.fg">
+          <TriangleAlert size={20} />
+        </Box>
         <Stack gap="1.5" align="center">
-          <Text textStyle="eyebrow" color="danger.fg">
-            Error
-          </Text>
           <Heading as="h1" textStyle="title" fontSize="22px">
             Something went wrong
           </Heading>

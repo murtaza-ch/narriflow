@@ -20,7 +20,7 @@ export function MediaWell({ ratio = 16 / 9, timecode, children, ...rest }: Media
       aspectRatio={ratio}
       bg="studio.subtle"
       borderWidth="1px"
-      borderColor="border"
+      borderColor="border.card"
       borderRadius="l2"
       overflow="hidden"
       {...rest}

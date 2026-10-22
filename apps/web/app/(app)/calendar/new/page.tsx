@@ -1,10 +1,12 @@
 import Link from "next/link";
+import { Film } from "lucide-react";
 import { Stack, Text, Box, Flex } from "@chakra-ui/react";
 import { Input } from "@narriflow/ui/components/input";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Button } from "@narriflow/ui/components/button";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { workspaceLibraryService } from "@narriflow/services";
+import { EmptyState } from "@narriflow/ui/components/empty-state";
 export default async function NewCalendarPostPage({ searchParams }: { searchParams: Promise<{ q?: string; cursor?: string }> }) {
 	const actor = await admitWorkspacePage("publishing.manage");
 	const params = await searchParams;
@@ -18,7 +20,7 @@ export default async function NewCalendarPostPage({ searchParams }: { searchPara
 				title="Choose a clip"
 				description="Open the publishing drawer to choose accounts, write a description, and schedule delivery."
 				actions={
-					<Button variant="outline" asChild>
+					<Button variant="subtle" asChild>
 						<Link href="/calendar">Back to Calendar</Link>
 					</Button>
 				}
@@ -29,9 +31,10 @@ export default async function NewCalendarPostPage({ searchParams }: { searchPara
 					<Box
 						key={clip.id}
 						p="4"
+						bg="bg.panel"
 						borderWidth="1px"
-						borderColor="border"
-						borderRadius="l2"
+						borderColor="border.card"
+						borderRadius="l3"
 					>
 						<Link href={`/projects/${clip.projectId}?publishClip=${clip.id}`}>
 							<Text fontWeight="medium">{clip.title}</Text>
@@ -42,11 +45,13 @@ export default async function NewCalendarPostPage({ searchParams }: { searchPara
 					</Box>
 				))
 			) : (
-				<Text color="fg.muted">
-					{params.q ? "No clips match your search." : "Create a project and a clip to schedule your first post."}
-				</Text>
+				<EmptyState
+					icon={<Film />}
+					title={params.q ? "No clips match your search" : "No clips to schedule yet"}
+					description={params.q ? undefined : "Create a project and a clip to schedule your first post."}
+				/>
 			)}
-			{(params.cursor || nextCursor) && <Flex gap="2">{params.cursor && <Button size="sm" variant="outline" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}`}>Newest clips</Link></Button>}{nextCursor && <Button size="sm" variant="outline" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}&cursor=${encodeURIComponent(nextCursor)}`}>Next</Link></Button>}</Flex>}
+			{(params.cursor || nextCursor) && <Flex gap="2">{params.cursor && <Button size="sm" variant="subtle" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}`}>Newest clips</Link></Button>}{nextCursor && <Button size="sm" variant="subtle" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}&cursor=${encodeURIComponent(nextCursor)}`}>Next</Link></Button>}</Flex>}
 		</Stack>
 	);
 }

@@ -59,8 +59,8 @@ export function ProjectsHeaderActions({
           positioning={{ placement: "bottom-end" }}
         >
           <Popover.Trigger asChild>
-            <Button size="sm" variant="outline">
-              <FolderPlus size={14} />
+            <Button size="sm" variant="subtle">
+              <FolderPlus size={16} />
               New folder
             </Button>
           </Popover.Trigger>
@@ -75,9 +75,6 @@ export function ProjectsHeaderActions({
                     save();
                   }}
                 >
-                  <Text textStyle="eyebrow" color="fg.subtle">
-                    Create folder
-                  </Text>
                   <Input
                     autoFocus
                     value={name}
@@ -88,7 +85,7 @@ export function ProjectsHeaderActions({
                     disabled={pending}
                   />
                   {error ? (
-                    <Text role="alert" fontSize="11px" color="danger.fg">
+                    <Text role="alert" fontSize="12px" color="danger.fg">
                       {error}
                     </Text>
                   ) : null}
@@ -104,7 +101,7 @@ export function ProjectsHeaderActions({
       {canCreate ? (
         <Button size="sm" asChild>
           <Link href="/upload">
-            <Plus size={14} aria-hidden="true" />
+            <Plus size={16} aria-hidden="true" />
             New Project
           </Link>
         </Button>

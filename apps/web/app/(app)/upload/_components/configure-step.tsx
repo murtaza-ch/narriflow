@@ -259,13 +259,11 @@ export function ConfigureStep({
                 px="3"
                 py="2.5"
                 bg="danger.subtle"
-                borderWidth="1px"
-                borderColor="danger.muted"
                 borderRadius="l2"
                 position="relative"
                 overflow="hidden"
               >
-                <Text fontSize="12.5px" fontWeight="500" color="danger.fg">
+                <Text fontSize="13px" fontWeight="500" color="danger.fg">
                   {finalizeError}
                 </Text>
               </Flex>
@@ -279,18 +277,15 @@ export function ConfigureStep({
               w="full"
               maxW="400px"
               mx="auto"
-              rounded="xl"
-              bg="accent.solid"
-              color="accent.contrast"
             >
               {ctaPhase === "waiting" ? (
                 <>
-                  <Spinner size="xs" borderTopColor="accent.contrast" />
+                  <Spinner size="xs" borderTopColor="brand.contrast" />
                   <Text ms="1.5">Waiting for import…</Text>
                 </>
               ) : ctaPhase === "submitting" ? (
                 <>
-                  <Spinner size="xs" borderTopColor="accent.contrast" />
+                  <Spinner size="xs" borderTopColor="brand.contrast" />
                   <Text ms="1.5">Working…</Text>
                 </>
               ) : (
@@ -301,7 +296,7 @@ export function ConfigureStep({
                 </>
               )}
             </Button>
-            <Text fontSize="11px" color="fg.subtle" textAlign="center">
+            <Text fontSize="12px" color="fg.subtle" textAlign="center">
               Need more time?{" "}
               <chakra.button
                 type="button"
@@ -319,7 +314,7 @@ export function ConfigureStep({
               .
             </Text>
             {saveDraftError && (
-              <Text fontSize="11px" color="danger.fg" textAlign="center">
+              <Text fontSize="12px" color="danger.fg" textAlign="center">
                 {saveDraftError}
               </Text>
             )}

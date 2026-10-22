@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Box, Flex, NativeSelect, Slider, Stack, Text } from "@chakra-ui/react";
+import { PanelButton, PanelTabs, tileProps, studioSliderCss } from "./panel-ui";
 import { Layers, Move, Sparkles, Zap } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
 import type { MediaMotion, SceneMotion } from "@narriflow/validators";
@@ -25,7 +26,7 @@ const EXITS = MOTION_EXIT_OPTIONS.map((option) => ({ id: option.value, label: op
 
 function PresetPreview({ family }: { family: (typeof TRANSITIONS)[number]["family"] }) {
   return (
-    <Box position="relative" w="full" h="34px" overflow="hidden" bg="studio.canvas" borderBottomWidth="1px" borderColor="studio.border">
+    <Box position="relative" w="full" h="40px" overflow="hidden" bg="studio.canvas" borderRadius="6px">
       <Box
         position="absolute"
         inset="5px"
@@ -37,7 +38,7 @@ function PresetPreview({ family }: { family: (typeof TRANSITIONS)[number]["famil
         clipPath={family === "wipe" ? "inset(0 42% 0 0)" : undefined}
         transition="transform 180ms ease, clip-path 180ms ease, opacity 180ms ease"
       />
-      {family !== "cut" ? <Box position="absolute" left="50%" top="0" bottom="0" w="1px" bg="studio.accent" opacity="0.72" /> : null}
+      {family !== "cut" ? <Box position="absolute" left="50%" top="0" bottom="0" w="1px" bg="studio.fgSubtle" /> : null}
     </Box>
   );
 }
@@ -46,15 +47,15 @@ function DurationControl({ value, max, onChange, label }: { value: number; max: 
   return (
     <Box>
       <Flex align="center" justify="space-between" mb="8px">
-        <Text textStyle="eyebrow" color="studio.fgMuted">{label}</Text>
-        <Text textStyle="data" fontSize="11px" color="studio.timecode">{value.toFixed(2)}s</Text>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">{label}</Text>
+        <Text fontSize="13px" color="studio.fg" fontVariantNumeric="tabular-nums">{value.toFixed(2)}s</Text>
       </Flex>
-      <Slider.Root aria-label={[label]} value={[value]} min={0.1} max={max} step={0.05} onValueChange={(event) => onChange(event.value[0]!)} size="sm" colorPalette="accent">
+      <Slider.Root aria-label={[label]} value={[value]} min={0.1} max={max} step={0.05} onValueChange={(event) => onChange(event.value[0]!)} size="sm" css={studioSliderCss}>
         <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
       </Slider.Root>
       <Flex justify="space-between" mt="4px">
-        <Text textStyle="data" fontSize="10px" color="studio.fgSubtle">0.10s</Text>
-        <Text textStyle="data" fontSize="10px" color="studio.fgSubtle">{max.toFixed(2)}s</Text>
+        <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums">0.10s</Text>
+        <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums">{max.toFixed(2)}s</Text>
       </Flex>
     </Box>
   );
@@ -62,27 +63,9 @@ function DurationControl({ value, max, onChange, label }: { value: number; max: 
 
 function SecondaryButton({ children, disabled = false, onClick }: { children: React.ReactNode; disabled?: boolean; onClick: () => void }) {
   return (
-    <Flex
-      as="button"
-      align="center"
-      justify="center"
-      h="34px"
-      borderRadius="l2"
-      bg="studio.raised"
-      borderWidth="1px"
-      borderColor="studio.borderStrong"
-      color={disabled ? "studio.fgDisabled" : "studio.fg"}
-      fontSize="12px"
-      fontWeight="600"
-      cursor={disabled ? "not-allowed" : "pointer"}
-      opacity={disabled ? 0.58 : 1}
-      gap="6px"
-      _hover={disabled ? {} : { borderColor: "studio.fgSubtle" }}
-      onClick={disabled ? undefined : onClick}
-      aria-disabled={disabled}
-    >
+    <PanelButton disabled={disabled} onClick={onClick}>
       {children}
-    </Flex>
+    </PanelButton>
   );
 }
 
@@ -211,26 +194,29 @@ export function TransitionsPanel() {
   }
 
   return (
-    <Stack gap="16px" p="12px">
-      <Flex p="3px" bg="studio.subtle" borderWidth="1px" borderColor="studio.border" borderRadius="l2">
-        {([["transition", "Clip transition", Zap], ["media", "Selected media", Move]] as const).map(([id, label, Icon]) => (
-          <Flex key={id} as="button" flex="1" h="30px" align="center" justify="center" gap="5px" borderRadius="l1" bg={tab === id ? "studio.raised" : "transparent"} color={tab === id ? "studio.fg" : "studio.fgMuted"} borderWidth="1px" borderColor={tab === id ? "studio.borderStrong" : "transparent"} fontSize="11px" fontWeight="600" aria-pressed={tab === id} onClick={() => setTab(id)}>
-            <Icon size={12} /> {label}
-          </Flex>
-        ))}
-      </Flex>
+    <Stack gap="0">
+      <PanelTabs
+        ariaLabel="Motion"
+        items={[
+          { id: "transition", label: "Clip transition", icon: <Zap size={14} /> },
+          { id: "media", label: "Selected media", icon: <Move size={14} /> },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+    <Stack gap="20px" px="20px" pt="16px" pb="20px">
 
       {tab === "transition" ? (
         <>
           <Box>
-            <Flex align="baseline" justify="space-between" mb="9px"><Text textStyle="eyebrow" color="studio.fgMuted">Preset</Text><Text fontSize="10px" color="studio.fgSubtle">Linear timing</Text></Flex>
-            <Box display="grid" gridTemplateColumns="repeat(3, minmax(0, 1fr))" gap="6px">
+            <Flex align="baseline" justify="space-between" mb="10px"><Text fontSize="13px" fontWeight="500" color="studio.fgMuted">Preset</Text><Text fontSize="11px" color="studio.fgSubtle">Linear timing</Text></Flex>
+            <Box display="grid" gridTemplateColumns="repeat(3, minmax(0, 1fr))" gap="8px">
               {TRANSITIONS.map((transition) => {
                 const active = selected === transition.id;
                 return (
-                  <Box key={transition.id} as="button" overflow="hidden" borderRadius="l2" bg={active ? "studio.raised" : "studio.subtle"} borderWidth="1px" borderColor={active ? "studio.accent" : "studio.border"} cursor="pointer" aria-label={`${transition.label} transition`} aria-pressed={active} onClick={() => setSelected(transition.id)} _hover={{ borderColor: active ? "studio.accent" : "studio.borderStrong" }}>
+                  <Box key={transition.id} as="button" overflow="hidden" p="6px" {...tileProps(active)} aria-label={`${transition.label} transition`} aria-pressed={active} onClick={() => setSelected(transition.id)}>
                     <PresetPreview family={transition.family} />
-                    <Text px="4px" py="6px" fontSize="9.5px" lineHeight="1.1" color={active ? "studio.accentFg" : "studio.fgMuted"} fontWeight="600">{transition.label}</Text>
+                    <Text pt="6px" fontSize="12px" lineHeight="1.2" color={active ? "studio.fg" : "studio.fgMuted"} fontWeight="500">{transition.label}</Text>
                   </Box>
                 );
               })}
@@ -241,31 +227,32 @@ export function TransitionsPanel() {
           <SecondaryButton disabled={!canPersist || applyState === "applying"} onClick={handleApplyToAll}>
             <Layers size={13} />{applyState === "applying" ? "Applying…" : applyState === "applied" ? "Applied to all clips" : applyState === "error" ? "Try apply to all again" : "Apply to all clips"}
           </SecondaryButton>
-          <Text fontSize="10.5px" color="studio.fgSubtle" lineHeight="1.45">Need a subset? Use <Text as="span" color="studio.accentFg" textDecoration="underline"><Link href={`/projects/${clipInfo.projectId}`}>campaign selection</Link></Text> from the Clips view.</Text>
+          <Text fontSize="12px" color="studio.fgSubtle" lineHeight="1.5">Need a subset? Use <Text as="span" color="studio.accentFg" textDecoration="underline"><Link href={`/projects/${clipInfo.projectId}`}>campaign selection</Link></Text> from the Clips view.</Text>
         </>
       ) : target ? (
             <>
               <Box>
-                <Text textStyle="eyebrow" color="studio.fgMuted" mb="7px">Target</Text>
-                <NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Motion target" value={target.id} onChange={(event) => chooseTarget(event.currentTarget.value)} bg="studio.subtle" borderColor="studio.borderStrong">{mediaTargets.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root>
+                <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="7px">Target</Text>
+                <NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Motion target" value={target.id} onChange={(event) => chooseTarget(event.currentTarget.value)} bg="studio.subtle" borderWidth="0" borderRadius="10px" h="40px">{mediaTargets.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root>
               </Box>
               <Flex gap="8px">
-                <Box flex="1"><Text textStyle="eyebrow" color="studio.fgMuted" mb="7px">Entrance</Text><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Entrance motion" value={mediaEntrance} onChange={(event) => setMediaEntrance(event.currentTarget.value as SceneMotion["entrance"])} bg="studio.subtle" borderColor="studio.borderStrong">{ENTRANCES.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
-                <Box flex="1"><Text textStyle="eyebrow" color="studio.fgMuted" mb="7px">Exit</Text><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Exit motion" value={mediaExit} onChange={(event) => setMediaExit(event.currentTarget.value as SceneMotion["exit"])} bg="studio.subtle" borderColor="studio.borderStrong">{EXITS.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
+                <Box flex="1"><Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="7px">Entrance</Text><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Entrance motion" value={mediaEntrance} onChange={(event) => setMediaEntrance(event.currentTarget.value as SceneMotion["entrance"])} bg="studio.subtle" borderWidth="0" borderRadius="10px" h="40px">{ENTRANCES.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
+                <Box flex="1"><Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="7px">Exit</Text><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Exit motion" value={mediaExit} onChange={(event) => setMediaExit(event.currentTarget.value as SceneMotion["exit"])} bg="studio.subtle" borderWidth="0" borderRadius="10px" h="40px">{EXITS.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
               </Flex>
               <DurationControl value={mediaDuration} max={2} onChange={setMediaDuration} label="Motion duration" />
               <SecondaryButton onClick={applyMediaMotion}><Sparkles size={13} /> {canPersist ? "Apply media motion" : "Preview media motion"}</SecondaryButton>
             </>
       ) : (
-            <Box layerStyle="well" p="14px"><Text fontSize="12px" color="studio.fg" fontWeight="600">No media target yet</Text><Text mt="4px" fontSize="10.5px" color="studio.fgMuted" lineHeight="1.45">Add manual B-roll or a Scene Block, then return here to animate it.</Text></Box>
+            <Box bg="studio.subtle" borderRadius="10px" p="16px"><Text fontSize="14px" color="studio.fg" fontWeight="500">No media target yet</Text><Text mt="4px" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Add manual B-roll or a Scene Block, then return here to animate it.</Text></Box>
       )}
 
       {!canPersist ? (
-        <Box borderLeftWidth="3px" borderColor="studio.accent" bg="studio.subtle" p="10px">
-          <Text fontSize="11px" color="studio.fg" fontWeight="600">Motion preview is available</Text>
-          <Text mt="3px" fontSize="10px" color="studio.fgMuted" lineHeight="1.4">Creator and higher plans can save motion and include it in exports. <Text as="span" color="studio.accentFg" textDecoration="underline"><Link href="/settings/billing">View plans</Link></Text></Text>
+        <Box bg="studio.subtle" borderRadius="10px" p="16px">
+          <Text fontSize="14px" color="studio.fg" fontWeight="500">Motion preview is available</Text>
+          <Text mt="4px" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Creator and higher plans can save motion and include it in exports. <Text as="span" color="studio.accentFg" textDecoration="underline"><Link href="/settings/billing">View plans</Link></Text></Text>
         </Box>
       ) : null}
+    </Stack>
     </Stack>
   );
 }

@@ -80,7 +80,7 @@ export function WorkspaceSwitcher({
             borderRadius="l2"
             textAlign="left"
             cursor="pointer"
-            _hover={{ bg: "bg.subtle" }}
+            _hover={{ bg: "bg.soft" }}
           >
             <Flex
               w="8"
@@ -88,7 +88,7 @@ export function WorkspaceSwitcher({
               align="center"
               justify="center"
               borderRadius="l2"
-              bg="bg.muted"
+              bg="bg.soft"
               color="fg.muted"
               flexShrink={0}
               overflow="hidden"
@@ -96,10 +96,10 @@ export function WorkspaceSwitcher({
               {active?.avatarUrl ? <Image src={active.avatarUrl} alt="" w="full" h="full" objectFit="cover" /> : <Building2 size={15} />}
             </Flex>
             <Stack gap="0" minW="0" flex="1">
-              <Text fontSize="13px" fontWeight="600" truncate>
+              <Text fontSize="14px" fontWeight="500" truncate>
                 {active?.name ?? "Workspace"}
               </Text>
-              <Text fontSize="11px" color="fg.subtle" textTransform="capitalize">
+              <Text fontSize="12px" color="fg.subtle" textTransform="capitalize">
                 {active?.role ?? "member"}
               </Text>
             </Stack>
@@ -116,56 +116,54 @@ export function WorkspaceSwitcher({
               </Text>
             ) : null}
             <Stack align="center" textAlign="center" gap="2" px="4" py="5">
-              <Flex boxSize="14" align="center" justify="center" borderRadius="l2" bg="bg.muted" overflow="hidden">
+              <Flex boxSize="14" align="center" justify="center" borderRadius="l2" bg="bg.soft" color="fg.muted" overflow="hidden">
                 {active?.avatarUrl ? <Image src={active.avatarUrl} alt="" boxSize="full" objectFit="cover" /> : <Building2 size={26} />}
               </Flex>
-              <Text fontSize="16px" fontWeight="600" overflowWrap="anywhere">{active?.name ?? "Workspace"}</Text>
+              <Text fontSize="16px" fontWeight="500" overflowWrap="anywhere">{active?.name ?? "Workspace"}</Text>
               <Text fontSize="12px" color="fg.muted" textTransform="capitalize">{presentation.tier} · {active?.role ?? "Member"}</Text>
             </Stack>
-            {presentation.planAction ? <Menu.Item value="plan" asChild gap="2" borderRadius="l1" bg="accent.subtle" color="accent.fg" mb="2">
+            {presentation.planAction ? <Menu.Item value="plan" asChild bg="bg.soft" mb="2">
               <Link href="/settings/billing"><Gem size={16} />{presentation.planAction}</Link>
             </Menu.Item> : null}
-            <Menu.Item value="members" asChild gap="2" borderRadius="l1">
+            <Menu.Item value="members" asChild>
               <Link href="/settings/members"><Users size={16} />{presentation.canInvite ? "Invite members" : "Members"}</Link>
             </Menu.Item>
-            <Menu.Item value="workspace-settings" asChild gap="2" borderRadius="l1">
+            <Menu.Item value="workspace-settings" asChild>
               <Link href="/settings/workspace"><Settings size={16} />Workspace settings</Link>
             </Menu.Item>
-            <Menu.Item value="social-accounts" asChild gap="2" borderRadius="l1">
+            <Menu.Item value="social-accounts" asChild>
               <Link href="/settings/social-accounts"><Share2 size={16} />Social accounts</Link>
             </Menu.Item>
-            {presentation.canManageApi ? <Menu.Item value="developer-access" asChild gap="2" borderRadius="l1">
+            {presentation.canManageApi ? <Menu.Item value="developer-access" asChild>
               <Link href="/settings/api"><Braces size={16} />Developer access</Link>
             </Menu.Item> : null}
             <Menu.Separator />
             <Box px="3" py="2">
-              <Text textStyle="eyebrow" color="fg.subtle">Workspaces</Text>
+              <Text textStyle="eyebrow" color="fg.muted">Workspaces</Text>
             </Box>
             {items.map((item) => (
               <Menu.Item
                 key={item.id}
                 value={item.id}
                 closeOnSelect={false}
-                gap="2.5"
-                borderRadius="l1"
                 onClick={() => selectWorkspace(item.id)}
                 disabled={isPending}
               >
-                <Flex w="6" h="6" align="center" justify="center" borderRadius="l1" bg="bg.muted">
+                <Flex w="6" h="6" align="center" justify="center" borderRadius="l1" bg="bg.soft" color="fg.muted" overflow="hidden">
                   {switchingTo === item.id ? <Spinner size="xs" /> : item.avatarUrl ? <Image src={item.avatarUrl} alt="" w="full" h="full" objectFit="cover" /> : <Building2 size={13} />}
                 </Flex>
                 <Stack gap="0" minW="0" flex="1">
                   <Text fontSize="13px" truncate>{item.name}</Text>
-                  <Text fontSize="11px" color="fg.subtle" textTransform="capitalize">
+                  <Text fontSize="12px" color="fg.subtle" textTransform="capitalize">
                     {item.isPersonal ? "Personal" : item.role}
                   </Text>
                 </Stack>
-                {item.id === activeWorkspaceId ? <Check size={14} /> : null}
+                {item.id === activeWorkspaceId ? <Box color="accent.fg" display="flex"><Check size={14} /></Box> : null}
               </Menu.Item>
             ))}
             <Menu.Separator />
             {canCreateWorkspace ? (
-              <Menu.Item value="new-workspace" asChild gap="2" borderRadius="l1">
+              <Menu.Item value="new-workspace" asChild>
                 <Link href="/workspaces/new"><Plus size={14} />New Business workspace</Link>
               </Menu.Item>
             ) : null}

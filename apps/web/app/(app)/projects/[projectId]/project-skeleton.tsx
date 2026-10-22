@@ -120,7 +120,7 @@ function SkeletonClipCard({ isGallery }: { isGallery: boolean }) {
 	);
 
 	return (
-		<Box data-clip-card position="relative" borderRadius="l3" mb="4" p="5" bg="bg.panel">
+		<Box data-clip-card position="relative" borderRadius="l3" borderWidth="1px" borderColor="border.card" mb="4" p="5" bg="bg.panel">
 			{isGallery && corners}
 			<Flex
 				data-clip-body

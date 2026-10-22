@@ -100,13 +100,11 @@ export function SignInMethods({ pending, disabled, passkey, onSelect }: SignInMe
                 alignItems="center"
                 justifyContent="center"
                 borderRadius="l2"
-                borderWidth="1px"
-                borderColor="border"
-                bg="bg.subtle"
+                bg="bg.soft"
                 color="fg"
                 cursor="pointer"
-                transition="background 120ms ease, border-color 120ms ease, transform 160ms ease, opacity 160ms ease"
-                _hover={{ bg: "bg.muted", borderColor: "border.emphasized", transform: "translateY(-1px)" }}
+                transition="background 120ms ease, transform 160ms ease, opacity 160ms ease"
+                _hover={{ bg: "bg.softHover", transform: "translateY(-1px)" }}
                 _active={{ transform: "translateY(0)" }}
                 _disabled={{ cursor: "default", transform: "none", opacity: busy ? 1 : 0.4 }}
               >

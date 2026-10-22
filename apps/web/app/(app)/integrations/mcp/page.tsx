@@ -58,13 +58,12 @@ const TOOLS = [
   },
 ] as const;
 
-function SectionHeading({ eyebrow, title, description,
-}: { eyebrow: string; title: string; description?: string;
+function SectionHeading({ title, description,
+}: { title: string; description?: string;
 }) {
   return (
     <Stack gap="1.5">
-      <Text textStyle="eyebrow" color="fg.subtle">{eyebrow}</Text>
-      <Text as="h2" textStyle="title" fontSize={{ base: "19px", md: "21px" }}>{title}</Text>
+      <Text as="h2" fontSize="16px" fontWeight="500">{title}</Text>
       {description ? (
         <Text fontSize="13px" lineHeight="1.65" color="fg.muted" maxW="76ch">{description}</Text>
       ) : null}
@@ -84,10 +83,10 @@ function ClientCard({
   snippet?: string;
 }) {
   return (
-    <Stack as="article" gap="3" p="5" bg="bg.panel" borderRadius="l2" minW="0">
+    <Stack as="article" gap="3" p="5" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" minW="0">
       <Flex align="center" justify="space-between" gap="3">
-        <Text as="h3" fontSize="14px" fontWeight="650">{title}</Text>
-        <Text textStyle="eyebrow" color="fg.subtle">{label}</Text>
+        <Text as="h3" fontSize="14px" fontWeight="500">{title}</Text>
+        <Text fontSize="12px" color="fg.subtle">{label}</Text>
       </Flex>
       <Stack as="ol" gap="2" ps="5">
         {steps.map((step) => (
@@ -104,8 +103,8 @@ function InfoColumn({ icon: Icon, title, children,
 }: { icon: typeof ShieldCheck; title: string; children: React.ReactNode;
 }) {
   return (
-    <Stack gap="2.5" p="5" bg="bg.panel" borderRadius="l2">
-      <Flex align="center" gap="2"><Icon size={16} /><Text as="h3" fontSize="14px" fontWeight="650">{title}</Text></Flex>
+    <Stack gap="2.5" p="5" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card">
+      <Flex align="center" gap="2"><Flex color="fg.muted"><Icon size={16} /></Flex><Text as="h3" fontSize="14px" fontWeight="500">{title}</Text></Flex>
       <Text as="div" fontSize="13px" lineHeight="1.65" color="fg.muted">{children}</Text>
     </Stack>
   );
@@ -133,7 +132,7 @@ export default async function McpIntegrationPage() {
         title="Connect Narriflow to AI assistants"
         description="Import a video, review generated clips, export a revision and confirm a social publication from your assistant."
         actions={
-          <Button asChild size="sm" variant="outline">
+          <Button asChild size="sm" variant="subtle">
             <Link href="/integrations"><ArrowLeft size={14} />All integrations</Link>
           </Button>
         }
@@ -152,14 +151,13 @@ export default async function McpIntegrationPage() {
           justify="space-between"
           direction={{ base: "column", md: "row" }}
           gap="4"
-          borderInlineStartWidth="3px"
-          borderColor="accent.solid"
           bg="bg.subtle"
+          borderRadius="l3"
           px="5"
           py="4"
         >
           <Stack gap="1">
-            <Flex align="center" gap="2"><CircleAlert size={16} /><Text fontSize="14px" fontWeight="650">Active Business access is required for API &amp; MCP integrations</Text></Flex>
+            <Flex align="center" gap="2"><CircleAlert size={16} /><Text fontSize="14px" fontWeight="500">Active Business access is required for API &amp; MCP integrations</Text></Flex>
             <Text fontSize="13px" color="fg.muted">
               {appUser.workspace.pricingTier !== "business"
                 ? appUser.workspace.role === "owner"
@@ -176,7 +174,6 @@ export default async function McpIntegrationPage() {
 
       <Stack as="section" gap="5" id="endpoint" scrollMarginTop="24">
         <SectionHeading
-          eyebrow="01 / Remote endpoint"
           title="Use one URL in every supported client"
           description="Confirm the connection in your AI client."
         />
@@ -192,7 +189,6 @@ export default async function McpIntegrationPage() {
 
       <Stack as="section" gap="5" id="authentication" scrollMarginTop="24">
         <SectionHeading
-          eyebrow="02 / Authentication"
           title="Choose identity for people; keys for automation"
           description="Personal connections do not share workspace credentials."
         />
@@ -209,8 +205,8 @@ export default async function McpIntegrationPage() {
             )}
           </InfoColumn>
         </Grid>
-        <Stack gap="3" p="5" bg="bg.panel" borderRadius="l2">
-          <Text as="h3" fontSize="14px" fontWeight="650">Upload from Codex or Claude Code</Text>
+        <Stack gap="3" p="5" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card">
+          <Text as="h3" fontSize="14px" fontWeight="500">Upload from Codex or Claude Code</Text>
           <Text fontSize="13px" color="fg.muted">Set NARRIFLOW_API_KEY and NARRIFLOW_URL in your environment, then run the local helper from this checkout. Keep the same key when retrying an interrupted upload. File bytes travel directly to storage.</Text>
           <CopyControl label="Copy upload command" value={`bun run --cwd apps/mcp upload --file /path/to/video.mp4 --workspace ${appUser.workspaceId} --key <request-UUID>`} multiline />
         </Stack>
@@ -218,7 +214,6 @@ export default async function McpIntegrationPage() {
 
       <Stack as="section" gap="5" id="client-setup" scrollMarginTop="24">
         <SectionHeading
-          eyebrow="03 / Client setup"
           title="Add Narriflow to your preferred AI client"
           description="Choose a remote or Streamable HTTP server with the endpoint above."
         />
@@ -277,11 +272,10 @@ export default async function McpIntegrationPage() {
 
       <Stack as="section" gap="5" id="available-tools" scrollMarginTop="24">
         <SectionHeading
-          eyebrow="04 / Available tools"
           title="Read by default; write only on clear intent"
           description="Write tools can start processing or change publication state. Use them only when requested."
         />
-        <Stack gap="0" borderTopWidth="1.5px" borderColor="border.strong">
+        <Stack gap="0">
           {TOOLS.map((tool) => (
             <Grid
               key={tool.name}
@@ -294,7 +288,7 @@ export default async function McpIntegrationPage() {
               borderColor="border.subtle"
             >
               <Text fontFamily="mono" fontSize="12.5px" overflowWrap="anywhere">{tool.name}</Text>
-              <Text textStyle="eyebrow" color={tool.behavior === "Write" ? "accent.fg" : "fg.subtle"}>{tool.behavior}</Text>
+              <Text fontSize="13px" fontWeight="500" color={tool.behavior === "Write" ? "fg" : "fg.subtle"}>{tool.behavior}</Text>
               <Text gridColumn={{ base: "1 / -1", md: "auto" }} fontSize="13px" color="fg.muted">{tool.description}</Text>
             </Grid>
           ))}
@@ -303,7 +297,6 @@ export default async function McpIntegrationPage() {
 
       <Stack as="section" gap="5" id="workspace-keys" scrollMarginTop="24">
         <SectionHeading
-          eyebrow="05 / Access & billing"
           title="Workspace rules still apply outside the dashboard"
         />
         <Grid templateColumns={{ base: "1fr", md: "repeat(3, minmax(0, 1fr))" }} gap="6">
@@ -320,7 +313,7 @@ export default async function McpIntegrationPage() {
       </Stack>
 
       <Stack as="section" gap="5" id="security" scrollMarginTop="24">
-        <SectionHeading eyebrow="06 / Security & troubleshooting" title="Keep access narrow and recoverable" />
+        <SectionHeading title="Keep access narrow and recoverable" />
         <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))" }} gap="6">
           <InfoColumn icon={ShieldCheck} title="Revoke and rotate">
             Disconnect Narriflow in the AI client to end that client&apos;s OAuth use. Revoke a compromised workspace key from Developer access and replace it in the unattended client. Never paste an API key into prompts or shared configuration.

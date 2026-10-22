@@ -43,7 +43,7 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
             <>
               <ToolArtwork kind={tool.art} />
               <Stack gap="1" flex="1" minW="0">
-                <Heading as="h2" fontSize={{ base: "xs", md: "sm" }}>
+                <Heading as="h2" fontSize={{ base: "xs", md: "sm" }} fontWeight="500">
                   {tool.title}
                 </Heading>
               </Stack>
@@ -61,10 +61,12 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
             p: { base: "4", md: "5" },
             minH: "176px",
             bg: "bg.panel",
-            borderRadius: "l2",
+            borderWidth: "1px",
+            borderColor: "border.card",
+            borderRadius: "l3",
             textAlign: "left",
             transition: "background 150ms",
-            _hover: { bg: "bg.muted" },
+            _hover: { bg: "bg.subtle" },
           } as const;
           return (
             <Tooltip.Root key={tool.title} openDelay={250} closeDelay={0} positioning={{ placement: "top" }}>
@@ -106,7 +108,7 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
           <Dialog.Positioner>
             <Dialog.Content>
               <Dialog.Header flexDirection="column" gap="2" pe="12">
-                <Dialog.Title>
+                <Dialog.Title fontSize="18px" fontWeight="500">
                   {selected === "dubbing" ? "Dub a video" : "Repurpose a video"}
                 </Dialog.Title>
                 <Dialog.Description>Choose a recent project to continue.</Dialog.Description>
@@ -132,7 +134,7 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
                     ))
                   ) : (
                     <EmptyState
-                      icon={<Clapperboard size={24} />}
+                      icon={<Clapperboard size={20} />}
                       title="Start with a video"
                       description="Import a video, then use its transcript and clips to create more content."
                       action={
@@ -146,13 +148,13 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
               </Dialog.Body>
               {items.length > 0 && (
                 <Dialog.Footer>
-                  <Button asChild variant="outline">
+                  <Button asChild variant="subtle">
                     <Link href="/projects">Browse all projects</Link>
                   </Button>
                 </Dialog.Footer>
               )}
               <Dialog.CloseTrigger asChild>
-                <IconButton variant="ghost" size="sm" aria-label="Close project picker">
+                <IconButton variant="ghost" size="sm" borderRadius="full" aria-label="Close project picker">
                   <X size={16} />
                 </IconButton>
               </Dialog.CloseTrigger>

@@ -232,10 +232,8 @@ function MotionSelectionPreview({
         w="58%"
         h="66px"
         position="relative"
-        borderWidth="1px"
-        borderColor="border.emphasized"
         borderRadius="l2"
-        bg="bg"
+        bg="bg.panel"
         opacity={
           change.scope === "clip_transition" &&
           ["fade", "fade-black", "dip-white"].includes(
@@ -252,12 +250,12 @@ function MotionSelectionPreview({
           top="0"
           bottom="0"
           w={change.scope === "manual_broll" ? "3px" : "1px"}
-          bg={change.scope === "manual_broll" ? "accent.solid" : "border"}
+          bg={change.scope === "manual_broll" ? "accent.solid" : "bg.softHover"}
         />
         <Flex h="full" direction="column" align="center" justify="center" gap="1">
           <WandSparkles size={16} />
-          <Text textStyle="eyebrow" color="fg.subtle">
-            {change.scope === "clip_transition"
+          <Text textStyle="eyebrow" color="fg.muted">
+          {change.scope === "clip_transition"
               ? transitionLabel(change.transition.type)
               : `${motionLabel(change.motion.entrance)} · ${motionLabel(change.motion.exit)}`}
           </Text>
@@ -267,8 +265,8 @@ function MotionSelectionPreview({
         position="absolute"
         insetInlineStart="10px"
         bottom="7px"
-        textStyle="data"
-        fontSize="10px"
+        fontSize="12px"
+        fontVariantNumeric="tabular-nums"
         color="fg.muted"
       >
         {change.scope === "clip_transition"
@@ -1015,7 +1013,7 @@ export function CampaignCommandBar({
           ariaLabel="More campaign actions"
           items={menuItems}
           trigger={
-            <Button size="sm" variant="outline" aria-label="More campaign actions">
+            <Button size="sm" variant="subtle" aria-label="More campaign actions">
               <MoreHorizontal size={14} />
               <Text display={{ base: "none", md: "inline" }} ms="1">
                 More
@@ -1035,12 +1033,9 @@ export function CampaignCommandBar({
           <Drawer.Backdrop />
           <Drawer.Positioner>
             <Drawer.Content>
-              <Drawer.Header borderBottomWidth="1px" borderColor="border.subtle">
-                <Stack gap="1">
-                  <Text textStyle="eyebrow" color="fg.subtle">
-                    Campaign operation
-                  </Text>
-                  <Drawer.Title textStyle="title" fontSize="lg">
+              <Drawer.Header>
+              <Stack gap="1">
+              <Drawer.Title textStyle="title" fontSize="18px" fontWeight="500">
                     {previewingBundle
                       ? "Review bundle"
                       : previewingRender
@@ -1077,7 +1072,7 @@ export function CampaignCommandBar({
                         Choose any supported aspect ratio and resolution. Existing ready exports remain immutable.
                       </Text>
                     </Box>
-                    <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+                    <Stack gap="0">
                       {state.selectedItems.map((item, index) => (
                         <Flex
                           key={item.clipId}
@@ -1088,7 +1083,7 @@ export function CampaignCommandBar({
                           borderColor="border.subtle"
                         >
                           <Text fontSize="sm">Clip {index + 1}</Text>
-                          <Text textStyle="data" fontSize="11px" color="fg.muted">
+                          <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
                             revision {item.expectedEditorRevision}
                           </Text>
                         </Flex>
@@ -1133,7 +1128,7 @@ export function CampaignCommandBar({
                         </Text>
                       </Flex>
                     ) : null}
-                    <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+                    <Stack gap="0">
                       {bundlePreflight?.items.map((item) => (
                         <Flex
                           key={item.clipId}
@@ -1145,7 +1140,9 @@ export function CampaignCommandBar({
                         >
                           <Flex align="center" gap="2">
                             {item.status === "eligible" ? (
-                              <Check size={13} color="var(--chakra-colors-success-fg)" />
+                              <Box color="success.fg" display="flex">
+                              <Check size={13} />
+                              </Box>
                             ) : (
                               <AlertTriangle size={13} />
                             )}
@@ -1160,7 +1157,7 @@ export function CampaignCommandBar({
                               </Text>
                             </Box>
                           </Flex>
-                          <Text textStyle="data" fontSize="11px" color="fg.muted">
+                          <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
                             {item.status === "stale" && item.currentEditorRevision !== null
                               ? `${item.expectedEditorRevision} → ${item.currentEditorRevision}`
                               : `revision ${item.expectedEditorRevision}`}
@@ -1181,13 +1178,7 @@ export function CampaignCommandBar({
                       </Text>
                     </Box>
 
-                    <Flex
-                      p="2px"
-                      bg="bg.subtle"
-                      borderWidth="1px"
-                      borderColor="border.control"
-                      borderRadius="l1"
-                    >
+                    <Flex gap="1">
                       {([
                         ["clip_transition", "Clip transition"],
                         ["manual_broll", "Manual B-roll"],
@@ -1196,9 +1187,8 @@ export function CampaignCommandBar({
                           key={value}
                           flex="1"
                           size="sm"
-                          variant="ghost"
-                          bg={motionScope === value ? "bg" : "transparent"}
-                          color={motionScope === value ? "accent.fg" : "fg.muted"}
+                          variant={motionScope === value ? "subtle" : "ghost"}
+                          color={motionScope === value ? "fg" : "fg.muted"}
                           aria-pressed={motionScope === value}
                           onClick={() => setMotionScope(value)}
                         >
@@ -1212,7 +1202,7 @@ export function CampaignCommandBar({
                     {motionScope === "clip_transition" ? (
                       <Stack gap="4">
                         <Box>
-                          <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+                          <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
                             Transition
                           </Text>
                           <NativeSelect.Root size="sm">
@@ -1223,9 +1213,8 @@ export function CampaignCommandBar({
                                   event.currentTarget.value as StudioTransition["type"],
                                 )
                               }
-                              bg="bg"
-                              borderColor="border.control"
-                            >
+                              
+                              >
                               {TRANSITION_OPTIONS.map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
@@ -1237,11 +1226,11 @@ export function CampaignCommandBar({
                         </Box>
                         <Box>
                           <Flex align="center" justify="space-between" mb="2">
-                            <Text textStyle="eyebrow" color="fg.subtle">
-                              Duration
+                            <Text textStyle="eyebrow" color="fg.muted">
+                            Duration
                             </Text>
-                            <Text textStyle="data" fontSize="11px" color="fg.timecode">
-                              {transitionDurationSec.toFixed(2)}s
+                            <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
+                            {transitionDurationSec.toFixed(2)}s
                             </Text>
                           </Flex>
                           <Slider.Root
@@ -1268,7 +1257,7 @@ export function CampaignCommandBar({
                       <Stack gap="3">
                       <Flex gap="3" direction={{ base: "column", sm: "row" }}>
                         <Box flex="1">
-                          <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+                          <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
                             Entrance
                           </Text>
                           <NativeSelect.Root size="sm">
@@ -1279,9 +1268,8 @@ export function CampaignCommandBar({
                                   event.currentTarget.value as ManualBrollMotion["entrance"],
                                 )
                               }
-                              bg="bg"
-                              borderColor="border.control"
-                            >
+                              
+                              >
                               {ENTRANCE_OPTIONS.map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
@@ -1292,7 +1280,7 @@ export function CampaignCommandBar({
                           </NativeSelect.Root>
                         </Box>
                         <Box flex="1">
-                          <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+                          <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
                             Exit
                           </Text>
                           <NativeSelect.Root size="sm">
@@ -1303,9 +1291,8 @@ export function CampaignCommandBar({
                                   event.currentTarget.value as ManualBrollMotion["exit"],
                                 )
                               }
-                              bg="bg"
-                              borderColor="border.control"
-                            >
+                              
+                              >
                               {EXIT_OPTIONS.map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
@@ -1318,8 +1305,8 @@ export function CampaignCommandBar({
                       </Flex>
                       <Box>
                         <Flex align="center" justify="space-between" mb="2">
-                          <Text textStyle="eyebrow" color="fg.subtle">Duration</Text>
-                          <Text textStyle="data" fontSize="11px" color="fg.timecode">{motionDurationSec.toFixed(2)}s</Text>
+                          <Text textStyle="eyebrow" color="fg.muted">Duration</Text>
+                          <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">{motionDurationSec.toFixed(2)}s</Text>
                         </Flex>
                         <Slider.Root value={[motionDurationSec]} min={0.1} max={2} step={0.05} size="sm" colorPalette="accent" onValueChange={(details) => setMotionDurationSec(details.value[0] ?? 0.5)}>
                           <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
@@ -1330,16 +1317,16 @@ export function CampaignCommandBar({
 
                     <Box>
                       <Flex align="baseline" justify="space-between" mb="2">
-                        <Text textStyle="eyebrow" color="fg.subtle">
-                          Revision check
+                        <Text textStyle="eyebrow" color="fg.muted">
+                        Revision check
                         </Text>
-                        <Text textStyle="data" fontSize="11px" color="fg.muted">
+                        <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
                           {motionPreflightState === "loading"
                             ? "Checking current revisions…"
                             : `${motionPreflight?.counts.eligible ?? 0} eligible · ${motionAttentionCount} attention`}
                         </Text>
                       </Flex>
-                      <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+                      <Stack gap="0">
                         {motionPreflightState === "loading" ? (
                           <Flex align="center" gap="2" py="3">
                             <Spinner size="xs" />
@@ -1363,7 +1350,9 @@ export function CampaignCommandBar({
                                 {attention ? (
                                   <AlertTriangle size={13} />
                                 ) : (
-                                  <Check size={13} color="var(--chakra-colors-success-fg)" />
+                                  <Box color="success.fg" display="flex">
+                                  <Check size={13} />
+                                  </Box>
                                 )}
                                 <Box>
                                   <Text fontSize="sm">Clip {index + 1}</Text>
@@ -1374,7 +1363,7 @@ export function CampaignCommandBar({
                                   ) : null}
                                 </Box>
                               </Flex>
-                              <Text textStyle="data" fontSize="11px" color="fg.muted">
+                              <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
                                 {item.status} · revision {item.currentEditorRevision ?? "—"}
                               </Text>
                             </Flex>
@@ -1440,16 +1429,13 @@ export function CampaignCommandBar({
                           {operation.status.replaceAll("_", " ")}
                         </Text>
                       </Flex>
-                      <Text textStyle="data" fontSize="11px" color="fg.subtle">
-                        {operation.items.length || operation.requestedCount} items
+                      <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">
+                      {operation.items.length || operation.requestedCount} items
                       </Text>
                     </Flex>
                     <Flex
-                      borderTopWidth="1px"
-                      borderBottomWidth="1px"
-                      borderColor="border.subtle"
-                      py="3"
-                      gap="4"
+                    py="3"
+                    gap="4"
                       justify="space-between"
                       flexWrap="wrap"
                     >
@@ -1461,16 +1447,16 @@ export function CampaignCommandBar({
                         ["Failed", operation.failedCount],
                       ] as const).map(([label, count]) => (
                         <Box key={label} minW="50px">
-                          <Text textStyle="data" fontSize="sm" color="fg">
-                            {count}
+                          <Text fontSize="sm" fontVariantNumeric="tabular-nums" color="fg">
+                          {count}
                           </Text>
-                          <Text textStyle="eyebrow" fontSize="9px" color="fg.muted">
+                          <Text textStyle="eyebrow" fontSize="12px" color="fg.muted">
                             {label}
                           </Text>
                         </Box>
                       ))}
                     </Flex>
-                    <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+                    <Stack gap="0">
                       {operation.items.map((item) => (
                         <Flex
                           key={item.id}
@@ -1501,8 +1487,8 @@ export function CampaignCommandBar({
                               </Text>
                             ) : null}
                           </Box>
-                          <Text textStyle="eyebrow" color="fg.subtle">
-                            {item.status.replaceAll("_", " ")}
+                          <Text textStyle="eyebrow" color="fg.muted">
+                          {item.status.replaceAll("_", " ")}
                           </Text>
                         </Flex>
                       ))}
@@ -1552,10 +1538,12 @@ export function CampaignCommandBar({
                   </Flex>
                 ) : null}
               </Drawer.Body>
-              <Drawer.Footer borderTopWidth="1px" borderColor="border.subtle">
-                <Button variant="ghost" size="sm" onClick={() => setDrawerOpen(false)}>
-                  Close
-                </Button>
+              <Drawer.Footer>
+              <Drawer.ActionTrigger asChild>
+              <Button variant="ghost" size="sm">
+              Close
+              </Button>
+              </Drawer.ActionTrigger>
                 {editorActionKind ? null : previewingRender ? (
                   <RenderClipsButton
                     projectId={projectId}

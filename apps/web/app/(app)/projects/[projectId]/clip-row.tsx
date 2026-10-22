@@ -93,7 +93,7 @@ function isRenderQueueResponse(payload: unknown): boolean {
 
 function SubScoreBar({ label, value }: { label: string; value: number }) {
 	return (
-		<Flex align="center" gap="2" fontSize="11px">
+		<Flex align="center" gap="2" fontSize="12px">
 			<Text color="fg.muted" w="60px" flexShrink={0}>
 				{label}
 			</Text>
@@ -106,7 +106,7 @@ function SubScoreBar({ label, value }: { label: string; value: number }) {
 					animation="meter-fill"
 				/>
 			</Box>
-			<Text textStyle="data" color="fg.subtle" w="24px" textAlign="right">
+			<Text color="fg.subtle" w="24px" textAlign="right" fontVariantNumeric="tabular-nums">
 				{value}
 			</Text>
 		</Flex>
@@ -262,8 +262,7 @@ function WellPlaceholder({
 				)}
 			</Box>
 			<Text
-				textStyle="data"
-				fontSize="10px"
+				fontSize="12px"
 				color="studio.fgSubtle"
 				textAlign="center"
 			>
@@ -588,10 +587,10 @@ export function ClipRow({
 				: { px: "1.5", py: "1", borderRadius: "l1", bg: "rgba(14, 16, 19, 0.72)" })}
 		>
 			<Text
-				textStyle="data"
 				fontSize="20px"
 				fontWeight="600"
 				lineHeight="1"
+				fontVariantNumeric="tabular-nums"
 				color={isGallery ? "accent.fg" : "studio.accentFg"}
 			>
 				{clip.viralityScore}
@@ -612,6 +611,8 @@ export function ClipRow({
 			data-clip-card
 			position="relative"
 			borderRadius="l3"
+			borderWidth="1px"
+			borderColor="border.card"
 			mb="4"
 			p={compact ? "3" : "5"}
 			transition="background 120ms ease"
@@ -692,9 +693,7 @@ export function ClipRow({
 						p="0.5"
 						gap="0.5"
 						borderRadius="l2"
-						borderWidth="1px"
-						borderColor="border.subtle"
-						bg="bg"
+						bg="bg.soft"
 						role="radiogroup"
 						aria-label="Preview format"
 					>
@@ -729,11 +728,11 @@ export function ClipRow({
 									h="6"
 									px="1.5"
 									borderRadius="l1"
-									bg={isSelected ? "bg.muted" : "transparent"}
+									bg={isSelected ? "accent.subtle" : "transparent"}
 									color={isSelected || isAvailable ? "fg" : "fg.subtle"}
 									cursor="pointer"
 									transition="background 120ms ease, color 120ms ease"
-									_hover={{ color: "fg", bg: isSelected ? "bg.muted" : "bg.subtle" }}
+									_hover={{ color: "fg", bg: isSelected ? "accent.subtle" : "bg.softHover" }}
 									onClick={() => setSelectedAspectRatio(option.value)}
 								>
 									{isInFlight ? (
@@ -794,7 +793,7 @@ export function ClipRow({
 										: (clip.title ?? clip.hookText)}
 								</Text>
 							</Link>
-							<Text mt="1" textStyle="data" fontSize="11px" color="fg.timecode">
+							<Text mt="1" textStyle="data" fontSize="12px" color="fg.timecode">
 								{formatTimecode(clip.startSec)} – {formatTimecode(clip.endSec)}
 								<Box as="span" color="fg.subtle">
 									{" · "}
@@ -857,13 +856,13 @@ export function ClipRow({
 										<HStack gap="3" wrap="wrap">
 											{platformLabels.map(({ key, label }) => (
 												<HStack key={key} gap="1">
-													<Text fontSize="11px" color="fg.muted">
+													<Text fontSize="12px" color="fg.muted">
 														{label}
 													</Text>
 													<Text
-														textStyle="data"
-														fontSize="11px"
+														fontSize="12px"
 														fontWeight="600"
+														fontVariantNumeric="tabular-nums"
 														color="fg"
 													>
 														{clip[key]}
@@ -890,7 +889,7 @@ export function ClipRow({
 											<Flex gap="1.5" align="baseline" maxW={measure} pb="3">
 												<Text
 													textStyle="data"
-													fontSize="10px"
+													fontSize="12px"
 													color="fg.timecode"
 													flexShrink={0}
 												>
@@ -919,12 +918,12 @@ export function ClipRow({
 												borderColor="border.subtle"
 											>
 												<Flex gap="1.5" align="center" mb="0.5">
-													<Text fontSize="11px" fontWeight="500" color="fg">
+													<Text fontSize="12px" fontWeight="500" color="fg">
 														{utterance.speakerLabel}
 													</Text>
 													<Text
 														textStyle="data"
-														fontSize="10px"
+														fontSize="12px"
 														color="fg.timecode"
 													>
 														{formatTimecode(utterance.startSec)}
@@ -949,7 +948,7 @@ export function ClipRow({
 					{renderBusy && (
 						<Flex align="center" gap="2">
 							<Spinner size="xs" />
-							<Text fontSize="11px" color="fg.muted">
+							<Text fontSize="12px" color="fg.muted">
 								{selectedStatus === "pending"
 									? `${selectedAspectRatio} render is queued`
 									: `${selectedAspectRatio} render is processing`}
@@ -959,7 +958,7 @@ export function ClipRow({
 					{selectedStatus === "failed" && selectedVariant?.errorCode ? (
 						<Flex align="center" gap="1.5" color="danger.fg">
 							<AlertTriangle size={12} aria-hidden />
-							<Text fontSize="11px">
+							<Text fontSize="12px">
 								Render failed: {userErrorMessage(selectedVariant.errorCode)}
 							</Text>
 						</Flex>
@@ -976,14 +975,14 @@ export function ClipRow({
 							>
 								Publish
 							</Button>
-							<Button size="sm" variant="outline" asChild>
+							<Button size="sm" variant="subtle" asChild>
 								<Link href={studioHref}>
-									<Pencil size={13} />
+									<Pencil size={16} />
 									Edit
 								</Link>
 							</Button>
 							{selectedVariantHasAsset ? (
-								<Button size="sm" variant="outline" asChild>
+								<Button size="sm" variant="subtle" asChild>
 									<a
 										href={clipFileDownloadPath(
 											clip.projectId,
@@ -992,18 +991,18 @@ export function ClipRow({
 										)}
 										download
 									>
-										<Download size={13} />
+										<Download size={16} />
 										Download
 									</a>
 								</Button>
 							) : (
 								<Button
 									size="sm"
-									variant="outline"
+									variant="subtle"
 									disabled={renderBusy}
 									onClick={() => handleRenderWithConfirm(selectedAspectRatio)}
 								>
-									{renderBusy ? <Spinner size="xs" /> : <Clapperboard size={13} />}
+									{renderBusy ? <Spinner size="xs" /> : <Clapperboard size={16} />}
 									{selectedStatus === "failed" ? "Retry render" : "Render"}
 								</Button>
 							)}
@@ -1015,7 +1014,7 @@ export function ClipRow({
 								title="Trim / Extend"
 								onClick={() => setEditingBoundaries(true)}
 							>
-								<Scissors size={14} />
+								<Scissors size={16} />
 							</IconButton>
 						</Flex>
 						{clipPosts.length > 0 && (

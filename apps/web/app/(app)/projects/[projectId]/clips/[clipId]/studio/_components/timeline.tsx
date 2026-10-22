@@ -5,8 +5,8 @@ import { Box, Flex, Text, Slider, Popover, Portal, Stack } from "@chakra-ui/reac
 import { Button } from "@narriflow/ui/components/button";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
-  Eye,
-  EyeOff,
+  PanelBottomClose,
+  PanelBottomOpen,
   Scissors,
   Trash2,
   SkipBack,
@@ -63,6 +63,7 @@ import {
 } from "./word-chips";
 import { labelForTimelineSegment } from "./subtitle-lines";
 import { manualBrollPreviewWindow } from "./broll-preview";
+import { studioSliderCss } from "./tool-panels/panel-ui";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -500,9 +501,6 @@ const WordChipsRow = memo(function WordChipsRow({
     if (!id) return;
     const el = elementsRef.current.get(id);
     if (!el) return;
-    el.style.borderColor = active
-      ? "var(--chakra-colors-studio-accent)"
-      : "var(--chakra-colors-studio-borderStrong)";
     el.style.color = active
       ? "var(--chakra-colors-studio-canvas)"
       : "var(--chakra-colors-studio-fg)";
@@ -555,18 +553,18 @@ const WordChipsRow = memo(function WordChipsRow({
             justifyContent="center"
             overflow="hidden"
             px="4px"
-            borderRadius="l1"
-            borderWidth="1px"
-            borderColor="studio.borderStrong"
+            borderRadius="6px"
+            borderWidth="0"
             bg="studio.raised"
             color="studio.fg"
-            fontSize="10.5px"
-            fontWeight="600"
+            fontSize="11px"
+            fontWeight="500"
             whiteSpace="nowrap"
             textOverflow="ellipsis"
             cursor="pointer"
-            transition="background 100ms ease, border-color 100ms ease, color 100ms ease"
-            _hover={{ borderColor: "studio.accent", bg: "studio.surface" }}
+            transition="background 100ms ease, color 100ms ease, filter 100ms ease"
+            // Hover can't set bg: paintActive writes it inline.
+            _hover={{ filter: "brightness(1.3)" }}
             _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
             title={chip.text}
             aria-label={`Word "${chip.text}" at ${formatTimecode(chip.editedStartSec)}`}
@@ -617,14 +615,13 @@ const CaptionChipsRow = memo(function CaptionChipsRow({
             display="flex"
             alignItems="center"
             overflow="hidden"
-            px="6px"
-            borderRadius="l1"
-            borderWidth="1px"
-            borderColor="studio.accent/38"
-            bg="studio.accent/12"
-            color="studio.accentFg"
-            fontSize="10px"
-            fontWeight="600"
+            px="8px"
+            borderRadius="6px"
+            borderWidth="0"
+            bg="studio.raised"
+            color="studio.fg"
+            fontSize="11px"
+            fontWeight="500"
             whiteSpace="nowrap"
             textOverflow="ellipsis"
             cursor="pointer"
@@ -634,8 +631,8 @@ const CaptionChipsRow = memo(function CaptionChipsRow({
               event.stopPropagation();
               onSeek(chip.editedStartSec);
             }}
-            transition="background 100ms ease, border-color 100ms ease, color 100ms ease"
-            _hover={{ borderColor: "studio.accent", color: "studio.fg", bg: "studio.accent/18" }}
+            transition="background 100ms ease"
+            _hover={{ bg: "studio.borderStrong" }}
             _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
           >
             {chip.text}
@@ -645,42 +642,6 @@ const CaptionChipsRow = memo(function CaptionChipsRow({
     </>
   );
 });
-
-function TimelineLaneLabel({
-  label,
-  top,
-  height,
-}: {
-  label: string;
-  top: number;
-  height: number;
-}) {
-  return (
-    <Flex
-      position="absolute"
-      top={`${CONTROL_BAR_HEIGHT + top}px`}
-      left="0"
-      w={`${LEFT_GUTTER}px`}
-      h={`${height}px`}
-      align="center"
-      justify="center"
-      bg="studio.canvas"
-      borderRightWidth="1px"
-      borderColor="studio.border"
-      zIndex={18}
-      pointerEvents="none"
-    >
-      <Text
-        textStyle="eyebrow"
-        fontSize="8px"
-        color="studio.fgSubtle"
-        style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
-      >
-        {label}
-      </Text>
-    </Flex>
-  );
-}
 
 function SceneGapMasks({ scenes, pxPerSec }: { scenes: readonly { id: string; anchorSec: number; durationSec: number }[]; pxPerSec: number }) {
   return scenes.map((scene) => (
@@ -692,7 +653,7 @@ function SceneGapMasks({ scenes, pxPerSec }: { scenes: readonly { id: string; an
       bg="studio.canvas"
       borderLeftWidth="1px"
       borderRightWidth="1px"
-      borderColor="studio.accent/38"
+      borderColor="studio.border"
       pointerEvents="none"
       zIndex={8}
       style={{ left: `${scene.anchorSec * pxPerSec}px`, width: `${Math.max(2, scene.durationSec * pxPerSec)}px` }}
@@ -723,15 +684,14 @@ function CtrlBtn({
       as="button"
       align="center"
       gap="5px"
-      px={label ? "8px" : "6px"}
-      h="30px"
-      borderRadius="l1"
-      bg={active ? "studio.surface" : "transparent"}
-      borderWidth="1px"
-      borderColor={active ? "studio.borderStrong" : "transparent"}
-      color={active ? "studio.fg" : "studio.fgMuted"}
+      px={label ? "10px" : "8px"}
+      h="34px"
+      borderRadius="l2"
+      bg={active ? "studio.raised" : "transparent"}
+      borderWidth="0"
+      color={active ? "studio.accentFg" : "studio.fgMuted"}
       cursor={disabled ? "not-allowed" : "pointer"}
-      fontSize="12px"
+      fontSize="13px"
       fontWeight="500"
       title={title ?? label}
       aria-label={title ?? label}
@@ -814,8 +774,13 @@ function RemoveSilencePopover() {
       <Portal>
         <Popover.Positioner>
           <Popover.Content
-            minW="260px"
-            p="3"
+            w="300px"
+            p="5"
+            bg="studio.surface"
+            color="studio.fg"
+            borderWidth="0"
+            borderRadius="14px"
+            boxShadow="none"
             aria-label="Remove silence settings"
             onKeyDown={(event) => {
               if (event.key === "Escape") {
@@ -824,17 +789,17 @@ function RemoveSilencePopover() {
               }
             }}
           >
-            <Stack gap="3">
-              <Text textStyle="eyebrow" color="fg.subtle">
+            <Stack gap="4">
+              <Text fontSize="16px" fontWeight="500">
                 Remove silence
               </Text>
 
               <Stack gap="1.5">
                 <Flex justify="space-between" align="baseline">
-                  <Text fontSize="12px" color="fg.muted">
+                  <Text fontSize="13px" color="studio.fgMuted">
                     Min silence
                   </Text>
-                  <Text fontSize="12px" fontFamily="mono" color="fg.timecode">
+                  <Text fontSize="13px" color="studio.fg" fontVariantNumeric="tabular-nums">
                     {minSilenceSec.toFixed(1)}s
                   </Text>
                 </Flex>
@@ -845,7 +810,7 @@ function RemoveSilencePopover() {
                   step={SILENCE_MIN_SEC_RANGE.step}
                   onValueChange={(e) => setMinSilenceSec(e.value[0]!)}
                   size="sm"
-                  colorPalette="accent"
+                  css={studioSliderCss}
                   aria-label={["Minimum silence duration"]}
                   getAriaValueText={({ value }) => `${value.toFixed(1)} seconds`}
                 >
@@ -860,10 +825,10 @@ function RemoveSilencePopover() {
 
               <Stack gap="1.5">
                 <Flex justify="space-between" align="baseline">
-                  <Text fontSize="12px" color="fg.muted">
+                  <Text fontSize="13px" color="studio.fgMuted">
                     Keep padding
                   </Text>
-                  <Text fontSize="12px" fontFamily="mono" color="fg.timecode">
+                  <Text fontSize="13px" color="studio.fg" fontVariantNumeric="tabular-nums">
                     {padSec.toFixed(2)}s
                   </Text>
                 </Flex>
@@ -874,7 +839,7 @@ function RemoveSilencePopover() {
                   step={SILENCE_PAD_SEC_RANGE.step}
                   onValueChange={(e) => setPadSec(e.value[0]!)}
                   size="sm"
-                  colorPalette="accent"
+                  css={studioSliderCss}
                   aria-label={["Silence padding"]}
                   getAriaValueText={({ value }) => `${value.toFixed(2)} seconds`}
                 >
@@ -887,20 +852,33 @@ function RemoveSilencePopover() {
                 </Slider.Root>
               </Stack>
 
-              <Text fontSize="12px" color="fg.muted">
+              <Text fontSize="13px" color="studio.fgMuted">
                 {detected.length === 0
                   ? `No silences ≥ ${minSilenceSec.toFixed(1)}s`
                   : `${detected.length} silence${detected.length === 1 ? "" : "s"} · −${totalRemovedSec.toFixed(1)}s`}
               </Text>
 
-              <Flex justify="flex-end" gap="2">
-                <Button size="sm" variant="ghost" onClick={() => handleOpenChange(false)}>
+              <Flex justify="flex-end" gap="2" pt="1">
+                <Button
+                  h="36px"
+                  px="3.5"
+                  borderRadius="8px"
+                  variant="ghost"
+                  color="studio.fgMuted"
+                  fontSize="13px"
+                  _hover={{ bg: "studio.raised", color: "studio.fg" }}
+                  onClick={() => handleOpenChange(false)}
+                >
                   Cancel
                 </Button>
                 <Button
-                  size="sm"
-                  variant="outline"
-                  colorPalette="brand"
+                  h="36px"
+                  px="3.5"
+                  borderRadius="8px"
+                  bg="studio.fg"
+                  color="studio.canvas"
+                  fontSize="13px"
+                  _hover={{ opacity: 0.9 }}
                   disabled={detected.length === 0}
                   onClick={handleApply}
                 >
@@ -923,8 +901,9 @@ const BROLL_TRACK_HEIGHT = 28;
 const WORD_CHIPS_HEIGHT = 24;
 const WAVEFORM_HEIGHT = 40;
 const RULER_HEIGHT = 24;
-const LEFT_GUTTER = 40;
-const CONTROL_BAR_HEIGHT = 44;
+// Lead-in before edited-time 0 — room for the start trim grip, no lane names.
+const LEFT_GUTTER = 24;
+const CONTROL_BAR_HEIGHT = 52;
 const TIMELINE_OVERSCAN_PX = 900;
 const PAUSE_MARKER_THRESHOLD_SEC = 0.4;
 const TEXT_TRACK_HEIGHT = 26;
@@ -1043,16 +1022,15 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
       style={{ left: `${x}px`, width: `${Math.max(w - 1, 4)}px` }}
       top="0"
       bottom="0"
-      borderRadius="l1"
+      borderRadius="8px"
       overflow="hidden"
       border="2px solid"
-      borderColor={isSelected ? "studio.accent" : "studio.border"}
+      borderColor={isSelected ? "studio.accent" : "transparent"}
       bg="studio.surface"
-      boxShadow={isSelected ? "inset 0 0 0 1px var(--chakra-colors-studio-accent)" : undefined}
       cursor="pointer"
-      transition="border-color 120ms ease, box-shadow 120ms ease"
+      transition="border-color 120ms ease"
       _hover={{
-        borderColor: isSelected ? "studio.accentFg" : "studio.borderStrong",
+        borderColor: isSelected ? "studio.accent" : "studio.borderStrong",
       }}
       _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
       onClick={handleClick}
@@ -1209,8 +1187,8 @@ const TimelineTimecode = memo(function TimelineTimecode({
   return (
     <Text
       textStyle="data"
-      fontSize="12px"
-      color="studio.timecode"
+      fontSize="15px"
+      color="studio.fg"
       ml="2"
       whiteSpace="nowrap"
     >
@@ -1286,18 +1264,18 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
       }}
       zIndex={10}
     >
+      {/* Pill grip at the ruler */}
       <Box
         position="absolute"
-        top="0"
+        top="1px"
         left="50%"
         transform="translateX(-50%)"
-        w="0"
-        h="0"
-        style={{
-          borderLeft: "5px solid transparent",
-          borderRight: "5px solid transparent",
-          borderTop: "7px solid var(--chakra-colors-studio-accent)",
-        }}
+        w="12px"
+        h="20px"
+        borderRadius="6px"
+        bg="studio.accent"
+        borderWidth="2px"
+        borderColor="studio.canvas"
       />
       <Box
         position="absolute"
@@ -1307,7 +1285,7 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
         w="5px"
         h="5px"
         borderRadius="full"
-        bg="studio.accent"
+        bg="studio.fg"
       />
     </Box>
   );
@@ -1745,25 +1723,25 @@ const TextLayerChip = memo(function TextLayerChip({
       top="0"
       style={{ left: `${x}px`, width: `${w}px`, touchAction: "none" }}
       h={`${TEXT_TRACK_HEIGHT}px`}
-      borderRadius="l1"
-      border="1.5px solid"
-      borderColor={isSelected ? "studio.accent" : "studio.border"}
-      bg="studio.surface"
+      borderRadius="6px"
+      border="2px solid"
+      borderColor={isSelected ? "studio.accent" : "transparent"}
+      bg="studio.raised"
       cursor="grab"
       overflow="hidden"
       onPointerDown={handlePointerDown("move")}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
-      transition="border-color 120ms"
-      _hover={{ borderColor: isSelected ? "studio.accentFg" : "studio.borderStrong" }}
+      transition="border-color 120ms, background 120ms"
+      _hover={{ bg: "studio.borderStrong" }}
     >
       <Text
-        fontSize="10px"
-        fontWeight="600"
-        color={isSelected ? "studio.accentFg" : "studio.fgMuted"}
+        fontSize="11px"
+        fontWeight="500"
+        color={isSelected ? "studio.fg" : "studio.fgMuted"}
         px="6px"
-        lineHeight={`${TEXT_TRACK_HEIGHT}px`}
+        lineHeight={`${TEXT_TRACK_HEIGHT - 4}px`}
         whiteSpace="nowrap"
         overflow="hidden"
         textOverflow="ellipsis"
@@ -2122,6 +2100,35 @@ export function Timeline() {
     stripRef.current?.scrollTo({ left: 0, behavior: "smooth" });
   }, [safeDuration, setTimelineZoom]);
 
+  // "\\" fits the whole clip, the same as the Fit · Clip button. It lives here,
+  // not in the shell's shortcut handler, because the fit needs the strip's
+  // measured width.
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "\\" || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.tagName === "SELECT" ||
+        target?.isContentEditable
+      ) return;
+      handleFitToSentence();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [handleFitToSentence]);
+
+  // Open with the whole clip filling the timeline, once the strip has a
+  // width; after that the zoom is the user's.
+  const autoFitDone = useRef(false);
+  useEffect(() => {
+    if (autoFitDone.current || safeDuration <= 0 || viewport.clientWidth <= 0) return;
+    autoFitDone.current = true;
+    const viewportPx = Math.max(1, viewport.clientWidth - LEFT_GUTTER - 60);
+    setTimelineZoom(zoomForFitToSentence(safeDuration, viewportPx));
+  }, [safeDuration, viewport.clientWidth, setTimelineZoom]);
+
   const timeToX = useCallback(
     (t: number) => LEFT_GUTTER + t * TIMELINE_PX_PER_SEC,
     [TIMELINE_PX_PER_SEC],
@@ -2175,8 +2182,7 @@ export function Timeline() {
     <Box
       flexShrink={0}
       bg="studio.canvas"
-      borderTopWidth="1px"
-      borderColor="studio.border"
+      borderRadius="12px"
       style={{
         height: showTimeline
           ? `${CONTROL_BAR_HEIGHT + trackAreaHeight}px`
@@ -2212,43 +2218,38 @@ export function Timeline() {
       <Flex
         h={`${CONTROL_BAR_HEIGHT}px`}
         align="center"
-        px="3"
-        bg="studio.surface"
-        borderBottomWidth="1px"
-        borderColor="studio.border"
+        px="4"
+        bg="studio.canvas"
         flexShrink={0}
         gap="2px"
       >
         {/* Left group */}
-        <Flex align="center" gap="2px" flex="1" pl="32px">
+        <Flex align="center" gap="2px" flex="1" pl="1">
           <CtrlBtn
-            icon={showTimeline ? <Eye size={14} /> : <EyeOff size={14} />}
+            icon={showTimeline ? <PanelBottomClose size={17} /> : <PanelBottomOpen size={17} />}
             onClick={() => setShowTimeline(!showTimeline)}
-            label="Timeline"
-            title={showTimeline ? "Hide timeline" : "Show timeline"}
+            label={showTimeline ? "Hide timeline" : "Show timeline"}
           />
-          <Box w="1px" h="16px" bg="studio.border" mx="1" />
           <CtrlBtn
-            icon={<Scissors size={14} />}
+            icon={<Scissors size={17} />}
             onClick={splitAtPlayhead}
             title="Split clips (D)"
             disabled={!showTimeline}
           />
           <CtrlBtn
-            icon={<Trash2 size={14} />}
+            icon={<Trash2 size={17} />}
             onClick={deleteSelectedSegment}
             active={!!selectedSegmentId}
             title="Delete selected clip (Backspace)"
             disabled={!showTimeline}
           />
-          <Box w="1px" h="16px" bg="studio.border" mx="1" />
           {showTimeline && <RemoveSilencePopover />}
         </Flex>
 
         {/* Center: Playback controls */}
-        <Flex align="center" gap="6px" flex="0">
+        <Flex align="center" gap="2" flex="0">
           <CtrlBtn
-            icon={<SkipBack size={15} />}
+            icon={<SkipBack size={18} />}
             onClick={() => seekTo(0)}
             title="Back to start (1)"
           />
@@ -2256,23 +2257,22 @@ export function Timeline() {
             as="button"
             align="center"
             justify="center"
-            w="32px"
-            h="32px"
-            borderRadius="full"
-            bg="studio.raised"
-            borderWidth="1px"
-            borderColor="studio.borderStrong"
+            w="40px"
+            h="40px"
+            borderRadius="l2"
+            bg="transparent"
+            borderWidth="0"
             cursor="pointer"
             color="studio.fg"
             aria-label={isPlaying ? "Pause" : "Play"}
             onClick={togglePlay}
-            transition="background 120ms ease, border-color 120ms ease"
-            _hover={{ borderColor: "studio.fgSubtle" }}
+            transition="background 120ms ease"
+            _hover={{ bg: "studio.raised" }}
           >
-            {isPlaying ? <Pause size={15} /> : <Play size={15} />}
+            {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
           </Flex>
           <CtrlBtn
-            icon={<SkipForward size={15} />}
+            icon={<SkipForward size={18} />}
             onClick={() => seekTo(safeDuration)}
             title="Go to end"
           />
@@ -2282,22 +2282,20 @@ export function Timeline() {
         {/* Right: Zoom */}
         <Flex align="center" gap="4px" flex="1" justify="flex-end">
           <CtrlBtn
-            icon={<Magnet size={13} />}
+            icon={<Magnet size={16} />}
             onClick={() => setTimelineSnapping(!timelineSnapping)}
             active={timelineSnapping}
             label="Snap"
             title={`${timelineSnapping ? "Turn off" : "Turn on"} snapping (N)`}
           />
           <CtrlBtn label={`${playbackRate}x`} onClick={cyclePlaybackRate} title="Playback speed" />
-          <Box w="1px" h="16px" bg="studio.border" mx="1" />
-          <Text textStyle="eyebrow" fontSize="8px" color="studio.fgSubtle" ml="1">
+          <Text fontSize="11px" color="studio.fgSubtle" ms="1">
             Fit
           </Text>
           <CtrlBtn label="Word" onClick={handleFitToWord} title="Fit to word" disabled={!showTimeline} />
           <CtrlBtn label="Clip" onClick={handleFitToSentence} title="Fit to sentence" disabled={!showTimeline} />
-          <Box w="1px" h="16px" bg="studio.border" mx="1" />
           <CtrlBtn
-            icon={<ZoomOut size={13} />}
+            icon={<ZoomOut size={16} />}
             onClick={() =>
               setTimelineZoom(Math.max(TIMELINE_ZOOM_MIN, timelineZoom - 0.25))
             }
@@ -2311,7 +2309,7 @@ export function Timeline() {
             step={0.05}
             onValueChange={(e) => setTimelineZoom(e.value[0]!)}
             size="sm"
-            colorPalette="accent"
+            css={studioSliderCss}
             w="72px"
             disabled={!showTimeline}
             aria-label={["Timeline zoom"]}
@@ -2325,7 +2323,7 @@ export function Timeline() {
             </Slider.Control>
           </Slider.Root>
           <CtrlBtn
-            icon={<ZoomIn size={13} />}
+            icon={<ZoomIn size={16} />}
             onClick={() =>
               setTimelineZoom(Math.min(TIMELINE_ZOOM_MAX, timelineZoom + 0.25))
             }
@@ -2346,7 +2344,6 @@ export function Timeline() {
 
       {/* ── Track area ────────────────────────────────────────────────── */}
       {showTimeline && (
-        <>
           <Box
             ref={stripRef}
             data-timeline-scroll-root
@@ -2505,10 +2502,8 @@ export function Timeline() {
                 top={`${sceneTrackTop}px`}
                 left={`${LEFT_GUTTER}px`}
                 style={{ width: `${totalWidth}px`, height: `${SCENE_TRACK_HEIGHT}px` }}
-                bg="studio.surface"
-                borderRadius="l1"
-                borderWidth="1px"
-                borderColor="studio.borderStrong"
+                bg="studio.subtle"
+                borderRadius="8px"
                 overflow="hidden"
                 onClick={handleStripClick}
               >
@@ -2522,18 +2517,19 @@ export function Timeline() {
                       left: `${scene.anchorSec * TIMELINE_PX_PER_SEC}px`,
                       width: `${Math.max(3, scene.durationSec * TIMELINE_PX_PER_SEC)}px`,
                     }}
-                    bg="studio.accentMuted"
-                    borderLeftWidth="3px"
-                    borderLeftColor="studio.accent"
+                    bg="studio.raised"
+                    borderRadius="6px"
                     px="2"
                     cursor="pointer"
+                    transition="background 100ms ease"
+                    _hover={{ bg: "studio.borderStrong" }}
                     onClick={(event) => {
                       event.stopPropagation();
                       seekTo(scene.anchorSec);
                     }}
                     title={`${scene.content.kind} scene · ${scene.durationSec.toFixed(1)}s`}
                   >
-                    <Text fontSize="10px" color="studio.fg" truncate lineHeight="22px">
+                    <Text fontSize="11px" fontWeight="500" color="studio.fg" truncate lineHeight="22px">
                       {scene.content.kind === "text" ? scene.content.text : `${scene.content.kind} scene`}
                     </Text>
                   </Box>
@@ -2550,10 +2546,8 @@ export function Timeline() {
                   width: `${totalWidth}px`,
                   height: `${BROLL_TRACK_HEIGHT}px`,
                 }}
-                bg="studio.surface"
-                borderRadius="l1"
-                borderWidth="1px"
-                borderColor="studio.borderStrong"
+                bg="studio.subtle"
+                borderRadius="8px"
                 overflow="hidden"
                 onClick={handleStripClick}
                 cursor="pointer"
@@ -2576,31 +2570,29 @@ export function Timeline() {
                       bottom="2px"
                       style={{ left: `${left}px`, width: `${width}px` }}
                       align="center"
-                      gap="6px"
-                      px="7px"
+                      gap="8px"
+                      px="8px"
                       minW="0"
                       overflow="hidden"
-                      borderRadius="l1"
-                      bg={cutaway.manual ? "studio.accent/18" : "studio.raised"}
-                      borderWidth="1px"
-                      borderStyle={cutaway.manual ? "solid" : "dashed"}
-                      borderColor={cutaway.manual ? "studio.accent" : "studio.borderStrong"}
-                      color={cutaway.manual ? "studio.accentFg" : "studio.fgMuted"}
+                      borderRadius="6px"
+                      bg="studio.raised"
+                      border="none"
+                      color="studio.fg"
                       cursor="pointer"
-                      _hover={{ borderColor: "studio.accent", color: "studio.accentFg" }}
-                      transition="border-color 120ms ease, color 120ms ease"
+                      _hover={{ bg: "studio.borderStrong" }}
+                      transition="background 120ms ease"
                       onClick={(event) => {
                         event.stopPropagation();
 								seekTo(cutaway.compositeStartSec);
                       }}
                     >
-                      <Text textStyle="eyebrow" fontSize="9px" flexShrink={0}>
+                      <Text fontSize="11px" fontWeight="500" color="studio.fgSubtle" flexShrink={0}>
                         {cutaway.manual ? "B-roll" : `Auto ${index + 1}`}
                       </Text>
-                      <Text fontSize="10px" truncate minW="0" flex="1">
+                      <Text fontSize="11px" fontWeight="500" truncate minW="0" flex="1">
                         {cutaway.query}
                       </Text>
-                      <Text textStyle="data" fontSize="9px" flexShrink={0}>
+                      <Text fontSize="11px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums" flexShrink={0}>
                         {durationLabel}
                       </Text>
                     </Flex>
@@ -2672,11 +2664,9 @@ export function Timeline() {
                 width: `${totalWidth}px`,
                 height: `${WAVEFORM_HEIGHT}px`,
               }}
-              bg="studio.surface"
-              borderRadius="l1"
+              bg="studio.subtle"
+              borderRadius="8px"
               overflow="hidden"
-              borderWidth="1px"
-              borderColor="studio.borderStrong"
               onClick={handleStripClick}
               cursor="pointer"
             >
@@ -2779,31 +2769,6 @@ export function Timeline() {
             />
             </Box>
           </Box>
-          <TimelineLaneLabel label="VIDEO" top={RULER_HEIGHT} height={TRACK_HEIGHT} />
-          {hasSceneBlocks ? (
-            <TimelineLaneLabel label="SCENES" top={sceneTrackTop} height={SCENE_TRACK_HEIGHT} />
-          ) : null}
-          {hasBrollLane ? (
-            <TimelineLaneLabel
-              label={brollUrl ? "B-ROLL" : "AUTO"}
-              top={brollTrackTop}
-              height={BROLL_TRACK_HEIGHT}
-            />
-          ) : null}
-          <TimelineLaneLabel
-            label={showWordChips ? "WORDS" : "LINES"}
-            top={wordTrackTop}
-            height={WORD_CHIPS_HEIGHT}
-          />
-          <TimelineLaneLabel
-            label="AUDIO"
-            top={waveformTrackTop}
-            height={WAVEFORM_HEIGHT}
-          />
-          {hasTextLayers && (
-            <TimelineLaneLabel label="TEXT" top={textTrackTop} height={TEXT_TRACK_HEIGHT} />
-          )}
-        </>
       )}
     </Box>
   );

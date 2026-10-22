@@ -8,7 +8,6 @@ import {
   Input,
   InputGroup,
   Stack,
-  Text,
   VisuallyHidden,
 } from "@chakra-ui/react";
 import { Filter, LayoutGrid, Rows3, Search, X } from "lucide-react";
@@ -81,11 +80,8 @@ export function FilterToolbar({
   return (
     <Collapsible.Root defaultOpen={activeFilterCount > 0}>
       <Stack gap="0" minW="0" w="full">
-        <Flex gap="3" align="center" justify="space-between" wrap="wrap">
-          <Text fontSize="13px" fontWeight="600" color="fg">
-            Projects
-          </Text>
-          <Flex gap="2" w={{ base: "full", md: "auto" }} minW="0">
+        <Flex gap="3" align="center" justify="flex-end" wrap="wrap">
+          <Flex gap="2" w={{ base: "full", md: "auto" }} minW="0" justify="flex-end">
             {selectedCount > 0 ? (
               <>
                 <IconButton
@@ -94,7 +90,7 @@ export function FilterToolbar({
                   aria-label="Clear project selection"
                   onClick={onClearSelection}
                 >
-                  <X size={13} />
+                  <X size={16} />
                 </IconButton>
                 {selectionAction}
               </>
@@ -103,15 +99,22 @@ export function FilterToolbar({
                 <Collapsible.Trigger asChild>
                   <IconButton
                     size="sm"
-                    variant={activeFilterCount > 0 ? "solid" : "outline"}
+                    variant="subtle"
                     flexShrink={0}
+                    {...(activeFilterCount > 0
+                      ? {
+                          bg: "accent.subtle",
+                          color: "accent.fg",
+                          _hover: { bg: "accent.muted" },
+                        }
+                      : {})}
                     aria-label={
                       activeFilterCount > 0
                         ? `Filters, ${activeFilterCount} active`
                         : "Filters"
                     }
                   >
-                    <Filter size={13} aria-hidden="true" />
+                    <Filter size={16} aria-hidden="true" />
                   </IconButton>
                 </Collapsible.Trigger>
                 <SegmentedControl
@@ -126,7 +129,7 @@ export function FilterToolbar({
                       value: "grid",
                       label: (
                         <>
-                          <LayoutGrid size={13} aria-hidden="true" />
+                          <LayoutGrid size={16} aria-hidden="true" />
                           <VisuallyHidden>Grid view</VisuallyHidden>
                         </>
                       ),
@@ -135,7 +138,7 @@ export function FilterToolbar({
                       value: "list",
                       label: (
                         <>
-                          <Rows3 size={13} aria-hidden="true" />
+                          <Rows3 size={16} aria-hidden="true" />
                           <VisuallyHidden>List view</VisuallyHidden>
                         </>
                       ),
@@ -158,7 +161,7 @@ export function FilterToolbar({
               lg: "minmax(240px, 1fr) 132px 144px 152px",
             }}
           >
-          <InputGroup color="fg.subtle" startElement={<Search size={13} />}>
+          <InputGroup color="fg.subtle" startElement={<Search size={16} />}>
             <Input
               value={query}
               onChange={(event) => onQueryChange(event.currentTarget.value)}

@@ -18,6 +18,7 @@ export const RadioGroup = React.forwardRef<HTMLDivElement, RadioGroupProps>(
     return (
       <ChakraRadioGroup.Root
         ref={ref}
+        colorPalette="accent"
         onValueChange={(details) => {
           if (details.value != null) onValueChange?.(details.value)
         }}

@@ -12,11 +12,7 @@ export default async function NewWorkspacePage() {
   return (
     <Box minH="100dvh" bg="bg" color="fg" px={{ base: "6", md: "10" }} py="10">
       <Stack gap="8" maxW="880px" mx="auto">
-        <PageHeader
-          eyebrow="Workspaces"
-          title="Create a Business workspace"
-          description="Separate projects, members, and billing."
-        />
+        <PageHeader title="Create a Business workspace" />
         <CreateWorkspaceForm />
       </Stack>
     </Box>

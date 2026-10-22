@@ -12,7 +12,7 @@ export default async function MembersSettingsPage() {
   ]);
   return (
     <Stack gap="8">
-      <PageHeader eyebrow={appUser.workspace.workspaceName} title="Members" />
+      <PageHeader title="Members" />
       <MembersPanel
         actorRole={appUser.workspace.role}
         isBusiness={billingView.plan === "business"}

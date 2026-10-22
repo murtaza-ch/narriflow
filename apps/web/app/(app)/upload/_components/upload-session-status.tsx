@@ -53,10 +53,11 @@ function UploadStages({
               ) : state === "active" ? (
                 <Spinner size="xs" />
               ) : (
-                <Box w="6px" h="6px" borderRadius="1px" bg="border.emphasized" />
+                <Box w="6px" h="6px" borderRadius="full" bg="fg.subtle" />
               )}
               <Text
-                textStyle="eyebrow"
+                fontSize="13px"
+                fontWeight="500"
                 color={state === "pending" ? "fg.subtle" : "fg"}
               >
                 {candidate.label}
@@ -68,7 +69,11 @@ function UploadStages({
       {stage === "upload" && (
         <>
           <Meter value={progress} />
-          <Text textStyle="data" fontSize="11px" color="fg.muted">
+          <Text
+            fontSize="12px"
+            color="fg.muted"
+            fontVariantNumeric="tabular-nums"
+          >
             {progress}%
             {throughput
               ? ` · ${formatTransferRate(throughput.bytesPerSecond)}`
@@ -126,7 +131,9 @@ export function UploadSessionStatusPanel({
       role={snapshot.phase === "failed" ? "alert" : undefined}
       aria-atomic={snapshot.phase === "failed" ? "true" : undefined}
       bg="bg.panel"
-      borderRadius="l2"
+      borderRadius="l3"
+      borderWidth="1px"
+      borderColor="border.card"
       py="3"
       ps="4"
       pe="3"
@@ -138,11 +145,15 @@ export function UploadSessionStatusPanel({
     >
       <Stack gap="2.5">
         <Flex align="center" justify="space-between" gap="3">
-          <Text textStyle="eyebrow" color="fg">
+          <Text fontSize="14px" fontWeight="500" color="fg">
             {phaseLabel}
           </Text>
           {snapshot.phase === "uploading" && (
-            <Text textStyle="data" fontSize="11px" color="fg.muted">
+            <Text
+              fontSize="12px"
+              color="fg.muted"
+              fontVariantNumeric="tabular-nums"
+            >
               {snapshot.progressPercent}%
             </Text>
           )}
@@ -154,11 +165,11 @@ export function UploadSessionStatusPanel({
             throughput={throughput}
           />
         )}
-        <Text fontSize="12.5px" color="fg.muted" lineHeight="1.5">
+        <Text fontSize="13px" color="fg.muted" lineHeight="1.5">
           {snapshot.message}
         </Text>
         {snapshot.phase === "paused" && (
-          <Text textStyle="data" fontSize="11px" color="fg.subtle">
+          <Text fontSize="12px" color="fg.subtle">
             Your saved title, brand, language, and generation settings remain
             attached to this Upload Session.
           </Text>
@@ -194,14 +205,14 @@ export function UploadSessionSecondaryActions({
   return (
     <HStack gap="2">
       {snapshot.canPause && (
-        <Button type="button" variant="outline" size="sm" onClick={onPause}>
+        <Button type="button" variant="subtle" size="sm" onClick={onPause}>
           Pause
         </Button>
       )}
       {snapshot.canDiscard && (
         <Button
           type="button"
-          variant="outline"
+          variant="subtle"
           size="sm"
           color="danger.fg"
           aria-label="Discard this upload"

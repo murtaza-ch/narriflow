@@ -46,6 +46,7 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 - Zod schemas live in `packages/validators`.
 - Caption preview, burn-in, and subtitle files share one cue model: the composition plan's cue derivation (`deriveCaptionCues` in `packages/composition-plan/src/clip-composition-plan.ts`, grouped by each preset's `wordsPerCue`) and `CAPTION_POSITION_Y_DEFAULTS` in `packages/validators/src/caption-preset.ts` — never fork it.
 - Structured logs use `console.warn(JSON.stringify({ level, message, ...ctx }))`.
+- Color roles live on the `accent` semantic token in `packages/ui/src/theme.ts`: blue `accent` marks interactive state (focus, checked, selected, current, progress); neutral `brand` is for primary buttons, text and surfaces. The Studio follows the same roles through its `studio.*` tokens.
 
 ## Agent skills
 

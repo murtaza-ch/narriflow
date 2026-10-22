@@ -36,20 +36,14 @@ export function ReviewApprovalCheckpoint({
   inputId: string;
 }) {
   return (
-    <Box
-      layerStyle="well"
-      borderStartWidth="3px"
-      borderStartColor="warning.solid"
-      px="4"
-      py="3.5"
-    >
+    <Box bg="warning.subtle" borderRadius="l2" px="4" py="3.5">
       <Flex align="start" gap="3">
         <Box color="warning.fg" mt="0.5">
           <ShieldAlert size={17} aria-hidden />
         </Box>
         <Stack gap="2.5" flex="1" minW="0">
           <Box>
-            <Text textStyle="eyebrow" color="warning.fg">
+            <Text fontSize="14px" fontWeight="500" color="fg">
               Approval checkpoint
             </Text>
             <Text fontSize="sm" color="fg" mt="1">
@@ -65,7 +59,7 @@ export function ReviewApprovalCheckpoint({
             align={{ base: "stretch", md: "end" }}
             direction={{ base: "column", md: "row" }}
           >
-            <Button size="sm" variant="outline" asChild>
+            <Button size="sm" variant="subtle" asChild>
               <Link href={`/projects/${projectId}?tab=review`}>Open review</Link>
             </Button>
             {canOverride ? (
@@ -73,7 +67,7 @@ export function ReviewApprovalCheckpoint({
                 <chakra.label
                   htmlFor={inputId}
                   textStyle="eyebrow"
-                  color="fg.subtle"
+                  color="fg.muted"
                 >
                   Owner or Admin override reason
                 </chakra.label>
@@ -86,8 +80,8 @@ export function ReviewApprovalCheckpoint({
                   onChange={(event) => onReasonChange(event.target.value)}
                 />
                 <Text
-                  textStyle="data"
-                  fontSize="10px"
+                  fontSize="12px"
+                  fontVariantNumeric="tabular-nums"
                   color="fg.subtle"
                   textAlign="end"
                 >

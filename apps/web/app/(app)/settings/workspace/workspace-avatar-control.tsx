@@ -59,16 +59,16 @@ export function WorkspaceAvatarControl({
   }
 
   return (
-    <Stack gap="3" bg="bg.panel" borderRadius="l2" p={{ base: "5", md: "6" }}>
-      <Text fontSize="13px" fontWeight="600">Workspace avatar</Text>
+    <Stack gap="3" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p={{ base: "5", md: "6" }}>
+      <Text fontSize="16px" fontWeight="500">Workspace avatar</Text>
       <Flex align="center" gap="4" wrap="wrap">
-        <Flex w="16" h="16" align="center" justify="center" overflow="hidden" borderRadius="l2" bg="bg.muted" color="fg.muted" borderWidth="1px" borderColor="border">
+        <Flex w="16" h="16" align="center" justify="center" overflow="hidden" borderRadius="l2" bg="bg.soft" color="fg.muted">
           {avatarUrl ? <Image src={avatarUrl} alt={`${workspaceName} avatar`} w="full" h="full" objectFit="cover" /> : <Building2 size={24} />}
         </Flex>
-        {canManage ? <Stack gap="2" flex="1" minW="0" w={{ base: "full", md: "auto" }}><Input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><Flex gap="2"><Button type="button" size="sm" variant="outline" onClick={upload} disabled={!file || pending}>{pending ? <Spinner size="xs" /> : <Upload size={13} />}Upload</Button>{avatarUrl ? <Button type="button" size="sm" variant="ghost" onClick={remove} disabled={pending}><Trash2 size={13} />Remove</Button> : null}</Flex></Stack> : null}
+        {canManage ? <Stack gap="2" flex="1" minW="0" w={{ base: "full", md: "auto" }}><Input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><Flex gap="2"><Button type="button" size="sm" variant="subtle" onClick={upload} disabled={!file || pending}>{pending ? <Spinner size="xs" /> : <Upload size={13} />}Upload</Button>{avatarUrl ? <Button type="button" size="sm" variant="ghost" onClick={remove} disabled={pending}><Trash2 size={13} />Remove</Button> : null}</Flex></Stack> : null}
       </Flex>
-      <Text fontSize="11px" color="fg.subtle">JPG, PNG, or WebP · maximum 5 MB.</Text>
-      {feedback ? <Text fontSize="12px" color="fg.muted">{feedback}</Text> : null}
+      <Text fontSize="12px" color="fg.subtle">JPG, PNG, or WebP · maximum 5 MB.</Text>
+      {feedback ? <Text fontSize="13px" color="fg.muted">{feedback}</Text> : null}
     </Stack>
   );
 }

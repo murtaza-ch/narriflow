@@ -10,9 +10,10 @@ import {
   RotateCw,
   Rss,
   Trash2,
+  X,
 } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
-import { CloseButton, Dialog, Portal } from "@narriflow/ui/components/dialog";
+import { Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Input } from "@narriflow/ui/components/input";
@@ -55,7 +56,7 @@ function intervalLabel(minutes: number): string {
   );
 }
 
-/** Status voice: 3px stripe + eyebrow label — never hue alone. */
+/** Status voice: 3px stripe + text label — never hue alone. */
 const STATUS_META: Record<
   AutopilotStatus,
   { stripe: string; label: string; color: string }
@@ -115,10 +116,9 @@ async function request(
 function FieldGroup({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Box>
-      <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+      <Text textStyle="eyebrow" color="fg.muted" mb="2.5">
         {label}
       </Text>
-      <Box h="1px" bg="border" mb="3" />
       <Stack gap="3">{children}</Stack>
     </Box>
   );
@@ -357,52 +357,27 @@ export function AutopilotPanel({
         animationDelay="80ms"
         animationFillMode="backwards"
       >
-        <Flex align="center" gap="2.5" mb="2">
-          <Text textStyle="eyebrow" color="fg.subtle">
-            Rules
-          </Text>
-          {/* Count rides next to the eyebrow as a quiet mono chip; omitted at zero. */}
-          {initialRules.length > 0 ? (
-            <Text
-              textStyle="data"
-              fontSize="11px"
-              lineHeight="1"
-              color="fg.muted"
-              px="1.5"
-              py="1"
-              bg="bg.subtle"
-              borderWidth="1px"
-              borderColor="border"
-              borderRadius="l1"
-            >
-              {initialRules.length}
-            </Text>
-          ) : null}
-        </Flex>
-
         {initialRules.length === 0 ? (
-          <Box layerStyle="band">
-            <EmptyState
-              icon={<Rss size={20} strokeWidth={1.75} />}
-              title="No autopilot rules yet"
-              description="Add an RSS feed to clip new episodes automatically."
-              action={
-                /* Header owns the solid CTA — this is a quiet accent link. */
-                <Button
-                  variant="plain"
-                  size="sm"
-                  color="fg.accent"
-                  fontWeight="600"
-                  textDecoration="underline"
-                  textUnderlineOffset="3px"
-                  _hover={{ color: "fg" }}
-                  onClick={() => setDialogOpen(true)}
-                >
-                  Create your first rule
-                </Button>
-              }
-            />
-          </Box>
+          <EmptyState
+            icon={<Rss size={20} strokeWidth={1.75} />}
+            title="No autopilot rules yet"
+            description="Add an RSS feed to clip new episodes automatically."
+            action={
+              /* Header owns the solid CTA — this is a quiet accent link. */
+              <Button
+                variant="plain"
+                size="sm"
+                color="fg.accent"
+                fontWeight="600"
+                textDecoration="underline"
+                textUnderlineOffset="3px"
+                _hover={{ color: "fg" }}
+                onClick={() => setDialogOpen(true)}
+              >
+                Create your first rule
+              </Button>
+            }
+          />
         ) : (
           <Box display="grid" gap="3">
             {initialRules.map((rule) => {
@@ -415,7 +390,9 @@ export function AutopilotPanel({
                 <Box
                   key={rule.id}
                   position="relative"
-                  borderRadius="l2"
+                  borderRadius="l3"
+                  borderWidth="1px"
+                  borderColor="border.card"
                   bg="bg.panel"
                   px="4"
                   transition="background 120ms ease"
@@ -443,28 +420,23 @@ export function AutopilotPanel({
                           {rule.name}
                         </Text>
                         <Text
-                          textStyle="eyebrow"
+                          fontSize="12px"
+                          fontWeight="500"
                           color={meta.color}
                           flexShrink={0}
                         >
                           {meta.label}
                         </Text>
                       </Flex>
-                      <Text
-                        textStyle="data"
-                        fontSize="12px"
-                        color="fg.muted"
-                        truncate
-                        mt="1"
-                      >
+                      <Text fontSize="13px" color="fg.muted" truncate mt="1">
                         {rule.feedTitle ? `${rule.feedTitle} · ` : ""}
                         {rule.rssUrl}
                       </Text>
                       <Text
                         mt="1.5"
-                        textStyle="data"
                         fontSize="12px"
                         color="fg.subtle"
+                        fontVariantNumeric="tabular-nums"
                       >
                         {intervalLabel(rule.intervalMinutes)} ·{" "}
                         {rule.importedEpisodeCount} imported · last{" "}
@@ -525,12 +497,9 @@ export function AutopilotPanel({
                               me="4"
                               p="3"
                               bg="danger.subtle"
-                              borderWidth="1px"
-                              borderColor="danger.emphasized"
                               borderRadius="l2"
                             >
                               <Text
-                                textStyle="data"
                                 fontSize="12px"
                                 color="danger.fg"
                                 whiteSpace="pre-wrap"
@@ -560,7 +529,7 @@ export function AutopilotPanel({
                       />
                       <Button
                         size="sm"
-                        variant="outline"
+                        variant="subtle"
                         loading={pending === "run"}
                         disabled={pending !== undefined && pending !== "run"}
                         onClick={() => void runNow(rule)}
@@ -613,20 +582,22 @@ export function AutopilotPanel({
                 alignItems="stretch"
                 gap="1"
               >
-                <Text textStyle="eyebrow" color="fg.subtle">
-                  Automation
-                </Text>
-                <Dialog.Title textStyle="title" fontSize="17px" color="fg">
+                <Dialog.Title textStyle="title" fontSize="18px" color="fg">
                   New autopilot rule
                 </Dialog.Title>
               </Dialog.Header>
               <Dialog.CloseTrigger asChild>
-                <CloseButton
+                <IconButton
+                  aria-label="Close"
                   size="sm"
+                  variant="ghost"
+                  borderRadius="full"
                   position="absolute"
                   top="3"
                   insetInlineEnd="3"
-                />
+                >
+                  <X size={16} />
+                </IconButton>
               </Dialog.CloseTrigger>
 
               <Dialog.Body px="6" py="0">
@@ -647,7 +618,6 @@ export function AutopilotPanel({
                         value={rssUrl}
                         onChange={(event) => setRssUrl(event.target.value)}
                         placeholder="https://feeds.example.com/podcast.xml"
-                        textStyle="data"
                         fontSize="13px"
                         size="sm"
                       />
@@ -756,15 +726,11 @@ export function AutopilotPanel({
               </Dialog.Body>
 
               <Dialog.Footer px="6" py="4" gap="2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  colorPalette="gray"
-                  disabled={creating}
-                  onClick={() => setDialogOpen(false)}
-                >
-                  Cancel
-                </Button>
+                <Dialog.ActionTrigger asChild>
+                  <Button variant="subtle" size="sm" disabled={creating}>
+                    Cancel
+                  </Button>
+                </Dialog.ActionTrigger>
                 <Button
                   size="sm"
                   loading={creating}

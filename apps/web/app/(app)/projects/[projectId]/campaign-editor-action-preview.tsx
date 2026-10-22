@@ -91,7 +91,6 @@ type CampaignEditorActionPreflight = {
 function actionCopy(kind: CampaignEditorActionKind) {
   if (kind === "brand_profile") {
     return {
-      eyebrow: "Project identity",
       title: "Apply project Brand Profile",
       description:
         "Restores the Project’s frozen caption style and makes each clip inherit its frozen logo presentation.",
@@ -100,7 +99,6 @@ function actionCopy(kind: CampaignEditorActionKind) {
   }
   if (kind === "style") {
     return {
-      eyebrow: "Caption system",
       title: "Apply style preset",
       description:
         "Applies one member style through the same caption reducer as Studio. Clip-specific size and position stay intact.",
@@ -108,7 +106,6 @@ function actionCopy(kind: CampaignEditorActionKind) {
     };
   }
   return {
-    eyebrow: "Scene system",
     title: "Add intro or outro",
     description:
       "Copies a frozen Scene Template into every selected editor document. Later template edits cannot change these clips.",
@@ -133,10 +130,10 @@ function SelectionRevisionPreview({
   return (
     <Box>
       <Flex align="baseline" justify="space-between" mb="2">
-        <Text textStyle="eyebrow" color="fg.subtle">
-          Revision check
+        <Text textStyle="eyebrow" color="fg.muted">
+        Revision check
         </Text>
-        <Text textStyle="data" fontSize="11px" color="fg.muted">
+        <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
           {loading
             ? "Checking…"
             : preflight
@@ -144,8 +141,8 @@ function SelectionRevisionPreview({
               : `${state.selectedCount} selected`}
         </Text>
       </Flex>
-      <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
-        {state.selectedItems.map((item, index) => {
+      <Stack gap="0">
+      {state.selectedItems.map((item, index) => {
           const result = itemById.get(item.clipId);
           const attention = result?.status === "stale" || result?.status === "ineligible";
           return (
@@ -165,7 +162,9 @@ function SelectionRevisionPreview({
                 ) : attention ? (
                   <AlertTriangle size={13} />
                 ) : (
-                  <Check size={13} color="var(--chakra-colors-success-fg)" />
+                  <Box color="success.fg" display="flex">
+                  <Check size={13} />
+                  </Box>
                 )}
                 <Box>
                   <Text fontSize="sm">Clip {index + 1}</Text>
@@ -181,11 +180,11 @@ function SelectionRevisionPreview({
                 </Box>
               </Flex>
               <Box textAlign="end">
-                <Text textStyle="data" fontSize="11px" color="fg.muted">
-                  revision {item.expectedEditorRevision}
+                <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
+                revision {item.expectedEditorRevision}
                 </Text>
                 {result?.status ? (
-                  <Text textStyle="eyebrow" fontSize="9px" color={attention ? "warning.fg" : "fg.subtle"}>
+                <Text textStyle="eyebrow" fontSize="12px" color={attention ? "warning.fg" : "fg.muted"}>
                     {result.status}
                   </Text>
                 ) : null}
@@ -503,22 +502,19 @@ export function CampaignEditorActionPreview({
     <Stack gap="5">
       <Flex align="flex-start" gap="3">
         <Flex
-          flexShrink={0}
-          w="32px"
-          h="32px"
-          align="center"
-          justify="center"
-          borderRadius="l2"
-          bg="accent.subtle"
-          color="accent.fg"
+        flexShrink={0}
+        w="32px"
+        h="32px"
+        align="center"
+        justify="center"
+        borderRadius="full"
+        bg="bg.soft"
+        color="fg.muted"
         >
-          {copy.icon}
+        {copy.icon}
         </Flex>
         <Box>
-          <Text textStyle="eyebrow" color="fg.subtle">
-            {copy.eyebrow}
-          </Text>
-          <Text textStyle="title" fontSize="md" mt="0.5">
+        <Text textStyle="title" fontSize="md">
             {copy.title}
           </Text>
           <Text fontSize="xs" color="fg.muted" mt="1">
@@ -529,9 +525,9 @@ export function CampaignEditorActionPreview({
 
       {kind === "brand_profile" ? (
         catalog?.profile ? (
-          <Flex layerStyle="well" p="4" align="center" justify="space-between" gap="4">
+          <Flex bg="bg.soft" borderRadius="l2" p="4" align="center" justify="space-between" gap="4">
             <Box minW="0">
-              <Text textStyle="eyebrow" color="fg.subtle">Project profile</Text>
+              <Text textStyle="eyebrow" color="fg.muted">Project profile</Text>
               <Text textStyle="title" fontSize="sm" mt="1" truncate>
                 {catalog.profile.name}
               </Text>
@@ -560,14 +556,13 @@ export function CampaignEditorActionPreview({
       {kind === "style" ? (
         <Stack gap="3">
           <Box>
-            <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">Member style</Text>
+            <Text textStyle="eyebrow" color="fg.muted" mb="1.5">Member style</Text>
             <NativeSelect.Root size="sm" disabled={(catalog?.styles.length ?? 0) === 0}>
               <NativeSelect.Field
                 value={selectedStyleId}
                 onChange={(event) => setSelectedStyleId(event.currentTarget.value)}
-                bg="bg"
-                borderColor="border.control"
-              >
+                
+                >
                 {catalog?.styles.length ? null : <option value="">No member styles</option>}
                 {catalog?.styles.map((style) => (
                   <option key={style.id} value={style.id}>
@@ -579,7 +574,7 @@ export function CampaignEditorActionPreview({
             </NativeSelect.Root>
           </Box>
           {selectedStyle ? (
-            <Flex layerStyle="well" p="4" align="center" justify="space-between" gap="4">
+            <Flex bg="bg.soft" borderRadius="l2" p="4" align="center" justify="space-between" gap="4">
               <Box>
                 <Text textStyle="title" fontSize="sm">{selectedStyle.name}</Text>
                 <Text fontSize="xs" color="fg.muted" mt="0.5">
@@ -599,15 +594,14 @@ export function CampaignEditorActionPreview({
 
       {kind === "scene" ? (
         <Stack gap="3">
-          <Flex p="2px" bg="bg.subtle" borderWidth="1px" borderColor="border.control" borderRadius="l1">
+          <Flex gap="1">
             {([['start', 'Intro'], ['end', 'Outro']] as const).map(([value, label]) => (
               <Button
                 key={value}
                 flex="1"
                 size="sm"
-                variant="ghost"
-                bg={placement === value ? "bg" : "transparent"}
-                color={placement === value ? "accent.fg" : "fg.muted"}
+                variant={placement === value ? "subtle" : "ghost"}
+                color={placement === value ? "fg" : "fg.muted"}
                 aria-pressed={placement === value}
                 onClick={() => setPlacement(value)}
               >
@@ -616,14 +610,13 @@ export function CampaignEditorActionPreview({
             ))}
           </Flex>
           <Box>
-            <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">Scene Template</Text>
+            <Text textStyle="eyebrow" color="fg.muted" mb="1.5">Scene Template</Text>
             <NativeSelect.Root size="sm" disabled={scenes.length === 0}>
               <NativeSelect.Field
                 value={selectedSceneId}
                 onChange={(event) => setSelectedSceneId(event.currentTarget.value)}
-                bg="bg"
-                borderColor="border.control"
-              >
+                
+                >
                 {scenes.length ? null : <option value="">No {placement === "start" ? "intro" : "outro"} scenes</option>}
                 {scenes.map((scene) => (
                   <option key={scene.id} value={scene.id}>
@@ -635,15 +628,15 @@ export function CampaignEditorActionPreview({
             </NativeSelect.Root>
           </Box>
           {selectedScene ? (
-            <Flex layerStyle="well" p="4" align="center" justify="space-between" gap="4">
+            <Flex bg="bg.soft" borderRadius="l2" p="4" align="center" justify="space-between" gap="4">
               <Box>
                 <Text textStyle="title" fontSize="sm">{selectedScene.name}</Text>
                 <Text fontSize="xs" color="fg.muted" mt="0.5">
                   {selectedScene.contentKind} · {selectedScene.durationSec.toFixed(1)}s per clip
                 </Text>
               </Box>
-              <Text textStyle="data" color="fg.timecode">
-                +{(selectedScene.durationSec * state.selectedCount).toFixed(1)}s
+              <Text fontVariantNumeric="tabular-nums">
+              +{(selectedScene.durationSec * state.selectedCount).toFixed(1)}s
               </Text>
             </Flex>
           ) : (
@@ -673,18 +666,18 @@ export function CampaignEditorActionPreview({
         </Flex>
       ) : null}
 
-      <Flex borderTopWidth="1px" borderBottomWidth="1px" borderColor="border.subtle" py="3" justify="space-between" gap="3">
+      <Flex py="3" justify="space-between" gap="3">
         <Box>
-          <Text textStyle="data" fontSize="sm">{state.selectedCount}</Text>
-          <Text textStyle="eyebrow" fontSize="9px" color="fg.muted">Selected</Text>
+          <Text fontSize="sm" fontVariantNumeric="tabular-nums">{state.selectedCount}</Text>
+          <Text textStyle="eyebrow" fontSize="12px" color="fg.muted">Selected</Text>
         </Box>
         <Box textAlign="center">
-          <Text textStyle="data" fontSize="sm">0 min</Text>
-          <Text textStyle="eyebrow" fontSize="9px" color="fg.muted">Processing usage</Text>
+          <Text fontSize="sm" fontVariantNumeric="tabular-nums">0 min</Text>
+          <Text textStyle="eyebrow" fontSize="12px" color="fg.muted">Processing usage</Text>
         </Box>
         <Box textAlign="end">
-          <Text textStyle="data" fontSize="sm">1 max</Text>
-          <Text textStyle="eyebrow" fontSize="9px" color="fg.muted">Revision / changed clip</Text>
+          <Text fontSize="sm" fontVariantNumeric="tabular-nums">1 max</Text>
+          <Text textStyle="eyebrow" fontSize="12px" color="fg.muted">Revision / changed clip</Text>
         </Box>
       </Flex>
 

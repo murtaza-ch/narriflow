@@ -17,41 +17,9 @@ function StatBandRoot({ columns = 4, children, ...rest }: StatBandProps) {
         sm: "repeat(2, minmax(0, 1fr))",
         md: `repeat(${columns}, minmax(0, 1fr))`,
       }}
-      columnGap="0"
-      rowGap={{ base: "0", sm: "6" }}
-      css={{
-        // Hairline column dividers; row-start items carry no divider.
-        "& > [data-stat-item]": {
-          borderColor: "border",
-          borderStyle: "solid",
-          borderWidth: "0",
-          borderInlineStartWidth: { sm: "1px" },
-          paddingInlineStart: { sm: "5" },
-          paddingInlineEnd: { sm: "5" },
-        },
-        // Stacked (1-col) layout: hairline row dividers instead.
-        "& > [data-stat-item] + [data-stat-item]": {
-          borderTopWidth: { base: "1px", sm: "0" },
-          paddingTop: { base: "4", sm: "0" },
-          marginTop: { base: "4", sm: "0" },
-        },
-        // 2-col rows start on odd items.
-        "& > [data-stat-item]:nth-of-type(2n + 1)": {
-          borderInlineStartWidth:
-            columns === 2 ? { sm: "0" } : { sm: "0", md: "1px" },
-          paddingInlineStart:
-            columns === 2 ? { sm: "0" } : { sm: "0", md: "5" },
-        },
-        // md rows start every `columns` items.
-        ...(columns !== 2
-          ? {
-              [`& > [data-stat-item]:nth-of-type(${columns}n + 1)`]: {
-                borderInlineStartWidth: { md: "0" },
-                paddingInlineStart: { md: "0" },
-              },
-            }
-          : {}),
-      }}
+      // Spacing separates the stats; no divider rules.
+      columnGap="8"
+      rowGap="6"
       {...rest}
     >
       {children}
@@ -60,9 +28,9 @@ function StatBandRoot({ columns = 4, children, ...rest }: StatBandProps) {
 }
 
 export interface StatBandItemProps {
-  /** Eyebrow label above the numeral. */
+  /** Label above the numeral. */
   label: string
-  /** The stat — set numerals in mono via the item itself. */
+  /** The stat, set in tabular figures. */
   value: ReactNode
   /** Optional 0–100 meter rendered as a 3px track under the value. */
   meter?: number
@@ -75,7 +43,7 @@ export interface StatBandItemProps {
 function StatBandItem({ label, value, meter, meterPalette, suffix }: StatBandItemProps) {
   return (
     <Stack data-stat-item gap="1" minW="0">
-      <Text textStyle="eyebrow" color="fg.subtle">
+      <Text textStyle="eyebrow" color="fg.muted">
         {label}
       </Text>
       <HStack align="baseline" gap="1.5">

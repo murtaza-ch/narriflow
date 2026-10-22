@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Text, Stack, Input, SimpleGrid } from "@chakra-ui/react";
+import { PanelTabs, softFocusWithin } from "./panel-ui";
 import { Search, Film, Check, X, AlertTriangle, Play, Sparkles } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { brollQueryForClip, planBrollCutaways } from "@narriflow/validators";
@@ -151,56 +152,29 @@ export function BRollPanel() {
 
   return (
     <Stack gap="0" h="100%">
-      <Flex gap="6px" p="12px" pb="8px">
-        {([
-          { id: "stock", label: "Stock library", icon: <Film size={12} /> },
-          { id: "generate", label: "Generate", icon: <Sparkles size={12} /> },
-        ] as const).map((source) => {
-          const active = sourceMode === source.id;
-          return (
-            <Flex
-              key={source.id}
-              as="button"
-              aria-pressed={active}
-              align="center"
-              justify="center"
-              gap="5px"
-              flex="1"
-              h="30px"
-              borderRadius="l2"
-              bg={active ? "studio.raised" : "studio.subtle"}
-              borderWidth="1px"
-              borderColor={active ? "studio.accent" : "studio.border"}
-              color={active ? "studio.accentFg" : "studio.fgMuted"}
-              fontSize="11px"
-              fontWeight="600"
-              cursor="pointer"
-              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-              onClick={() => setSourceMode(source.id)}
-            >
-              {source.icon}
-              {source.label}
-            </Flex>
-          );
-        })}
-      </Flex>
+      <PanelTabs
+        ariaLabel="B-roll source"
+        items={[
+          { id: "stock", label: "Stock library", icon: <Film size={14} /> },
+          { id: "generate", label: "Generate", icon: <Sparkles size={14} /> },
+        ]}
+        value={sourceMode}
+        onChange={setSourceMode}
+      />
 
       {sourceMode === "generate" ? (
         <GeneratedImagesPanel />
       ) : (
       <>
-      <Box px="12px" pb="8px">
+      <Box px="20px" pt="16px" pb="12px">
         <Flex
           align="center"
-          gap="8px"
-          px="10px"
-          h="34px"
-          borderRadius="l2"
+          gap="10px"
+          px="12px"
+          h="40px"
+          borderRadius="10px"
           bg="studio.subtle"
-          borderWidth="1px"
-          borderColor="studio.borderControl"
-          _focusWithin={{ borderColor: "studio.ring" }}
-          transition="border-color 120ms ease"
+          _focusWithin={softFocusWithin}
         >
           <Box color="studio.fgSubtle" flexShrink={0}>
             <Search size={13} />
@@ -213,9 +187,9 @@ export function BRollPanel() {
             onKeyDown={(e) => {
               if (e.key === "Enter") void runSearch(query);
             }}
-            size="xs"
+            size="sm"
             flex="1"
-            fontSize="12px"
+            fontSize="14px"
             color="studio.fg"
             css={INPUT_RESET}
             _placeholder={{ color: "studio.fgSubtle" }}
@@ -223,7 +197,7 @@ export function BRollPanel() {
           {loading ? (
             <Spinner size="xs" />
           ) : (
-            <Text textStyle="eyebrow" fontSize="8px" color="studio.fgSubtle">
+            <Text fontSize="11px" color="studio.fgSubtle">
               Pexels
             </Text>
           )}
@@ -233,28 +207,23 @@ export function BRollPanel() {
       {/* Selected indicator — success stripe + label, never hue alone */}
       {brollUrl ? (
         <Flex
-          mx="12px"
-          mb="8px"
-          pl="10px"
-          pr="10px"
-          py="8px"
-          borderRadius="l2"
-          bg="success.950"
-          borderWidth="1px"
-          borderColor="success.800"
-          borderLeftWidth="3px"
-          borderLeftColor="success.400"
+          mx="20px"
+          mb="12px"
+          px="14px"
+          py="12px"
+          borderRadius="10px"
+          bg="studio.subtle"
           align="center"
           justify="space-between"
         >
-          <Flex align="center" gap="6px" color="success.400" minW="0">
-            <Check size={13} />
+          <Flex align="center" gap="10px" color="studio.fg" minW="0">
+            <Check size={15} />
             <Stack gap="0" minW="0">
-              <Text fontSize="11px" color="success.400" fontWeight="600">
+              <Text fontSize="13px" color="studio.fg" fontWeight="500">
                 B-roll applied
               </Text>
               {selectedWindow ? (
-                <Text textStyle="data" fontSize="10px" color="studio.timecode">
+                <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.timecode">
                   {formatDuration(selectedWindow.startSec)}–{formatDuration(selectedWindow.endSec)} · {(selectedWindow.endSec - selectedWindow.startSec).toFixed(1)}s
                 </Text>
               ) : null}
@@ -279,11 +248,11 @@ export function BRollPanel() {
           </Box>
         </Flex>
       ) : plannedCutaways.length > 0 ? (
-        <Box mx="12px" mb="8px" px="10px" py="8px" borderRadius="l2" bg="studio.subtle" borderWidth="1px" borderColor="studio.border">
-          <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
+        <Box mx="20px" mb="12px" px="14px" py="12px" borderRadius="10px" bg="studio.subtle">
+          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="8px">
             Planned automatic cutaways
           </Text>
-          <Stack gap="4px">
+          <Stack gap="6px">
             {plannedCutaways.map((cutaway, index) => (
               <Flex
                 key={`${cutaway.startSec}-${index}`}
@@ -299,18 +268,18 @@ export function BRollPanel() {
                 _hover={{ bg: "studio.raised" }}
                 onClick={() => seekTo(cutaway.startSec)}
               >
-                <Text fontSize="11px" color="studio.fgSubtle" flexShrink={0}>
+                <Text fontSize="12px" color="studio.fgSubtle" flexShrink={0}>
                   Cutaway {index + 1}
                 </Text>
                 <Text
-                  textStyle="data"
-                  fontSize="11px"
+                  fontVariantNumeric="tabular-nums"
+                  fontSize="12px"
                   color="studio.timecode"
                   flexShrink={0}
                 >
                   {formatDuration(cutaway.startSec)}–{formatDuration(cutaway.endSec)}
                 </Text>
-                <Text fontSize="11px" color="studio.fgMuted" truncate flex="1" textAlign="right">
+                <Text fontSize="12px" color="studio.fgMuted" truncate flex="1" textAlign="right">
                   {cutaway.query}
                 </Text>
               </Flex>
@@ -320,7 +289,7 @@ export function BRollPanel() {
       ) : null}
 
       {error ? (
-        <Flex role="alert" px="12px" pb="8px" align="center" gap="6px" color="danger.400">
+        <Flex role="alert" px="20px" pb="12px" align="center" gap="6px" color="danger.400">
           <AlertTriangle size={12} />
           <Text fontSize="11px" color="danger.400">
             {error}
@@ -329,13 +298,13 @@ export function BRollPanel() {
       ) : null}
 
       {/* Results */}
-      <Box flex="1" overflowY="auto" px="12px" pb="12px">
+      <Box flex="1" overflowY="auto" px="20px" pb="20px">
         {!configured ? (
           <EmptyHint text="Stock B-roll search isn't available on your workspace yet." />
         ) : results.length === 0 && !loading ? (
           <EmptyHint text="No results. Try a different keyword." />
         ) : (
-          <SimpleGrid columns={2} gap="8px">
+          <SimpleGrid columns={2} gap="10px">
             {results.map((result) => {
               const isSelected = brollUrl === result.downloadUrl;
               const isPreviewing = previewId === result.id;
@@ -343,13 +312,13 @@ export function BRollPanel() {
                 <Box
                   key={result.id}
                   position="relative"
-                  borderRadius="l2"
+                  borderRadius="10px"
                   overflow="hidden"
                   borderWidth="2px"
-                  borderColor={isSelected ? "success.400" : "transparent"}
+                  borderColor={isSelected ? "studio.accent" : "transparent"}
                   onMouseEnter={() => setPreviewId(result.id)}
                   onMouseLeave={() => setPreviewId((current) => (current === result.id ? null : current))}
-                  _hover={{ borderColor: isSelected ? "success.400" : "studio.accent" }}
+                  _hover={{ borderColor: isSelected ? "studio.accent" : "studio.borderStrong" }}
                   transition="border-color 120ms ease"
                 >
                   <Box
@@ -373,7 +342,7 @@ export function BRollPanel() {
                         preload="none"
                         style={{
                           width: "100%",
-                          height: "84px",
+                          height: "96px",
                           objectFit: "cover",
                           display: "block",
                           background: "black",
@@ -386,7 +355,7 @@ export function BRollPanel() {
                         alt=""
                         style={{
                           width: "100%",
-                          height: "84px",
+                          height: "96px",
                           objectFit: "cover",
                           display: "block",
                         }}
@@ -428,7 +397,7 @@ export function BRollPanel() {
                     bg="rgba(0,0,0,0.6)"
                   >
                     <Stack gap="0" minW="0">
-                      <Text textStyle="data" fontSize="10px" color="studio.fg">
+                      <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fg">
                         {result.durationSec}s
                       </Text>
                       {result.authorName ? (
@@ -438,8 +407,8 @@ export function BRollPanel() {
                       ) : null}
                     </Stack>
                     {isSelected ? (
-                      <Box color="success.400" flexShrink={0}>
-                        <Check size={11} />
+                      <Box color="studio.fg" flexShrink={0}>
+                        <Check size={12} />
                       </Box>
                     ) : null}
                   </Flex>
@@ -472,14 +441,12 @@ function EmptyHint({ text }: { text: string }) {
         aspectRatio={16 / 9}
         align="center"
         justify="center"
-        borderWidth="1px"
-        borderStyle="dashed"
-        borderColor="studio.borderStrong"
-        borderRadius="l1"
+        bg="studio.subtle"
+        borderRadius="10px"
       >
         <Film size={18} strokeWidth={1.5} />
       </Flex>
-      <Text fontSize="12px" color="studio.fgMuted" textAlign="center" lineHeight="1.5">
+      <Text fontSize="13px" color="studio.fgMuted" textAlign="center" lineHeight="1.5">
         {text}
       </Text>
     </Flex>

@@ -12,7 +12,7 @@ export default function NewBrandTemplatePage() {
           title="New style"
           description="Styles apply when you import a video."
           actions={
-            <Button variant="outline" colorPalette="gray" asChild>
+            <Button variant="subtle" asChild>
               <Link href="/brand-kit">Cancel</Link>
             </Button>
           }

@@ -1,9 +1,10 @@
 "use client";
 
 import { Box, Button, Flex, Grid, Input, Stack, Text } from "@chakra-ui/react";
-import { Check, Plus, Trash2 } from "lucide-react";
+import { Check, Plus, Trash2, Type } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { EmptyState } from "@narriflow/ui/components/empty-state";
 import type { SceneTemplateDefinition, SceneTemplateRole } from "@narriflow/validators";
 
 export interface SceneTemplateCard {
@@ -56,28 +57,28 @@ export function SceneTemplateManager({ profileId, scenes, fonts, canManageDefaul
   return (
     <Stack gap="7">
       <Grid templateColumns={{ base: "1fr", xl: "360px 1fr" }} gap="8" alignItems="start">
-        <Stack gap="4" borderTopWidth="3px" borderColor="accent.solid" pt="5">
-          <Box><Text textStyle="eyebrow" color="accent.fg">New frozen scene</Text><Text mt="1" fontSize="13px" color="fg.muted">Create a bounded title card that editors can insert without linking future changes.</Text></Box>
+        <Stack gap="4" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="5">
+          <Box><Text fontSize="16px" fontWeight="500">New frozen scene</Text><Text mt="1" fontSize="13px" color="fg.muted">Create a bounded title card that editors can insert without linking future changes.</Text></Box>
           <Input aria-label="Template name" placeholder="Launch opener" value={name} onChange={(event) => setName(event.target.value.slice(0, 120))} />
           <Input aria-label="Card text" placeholder="Opening title" value={text} onChange={(event) => setText(event.target.value.slice(0, 500))} />
-					<Text textStyle="eyebrow" color="fg.subtle">Typography · {activeFont?.family ?? "Archivo system fallback"}</Text>
+					<Text fontSize="12px" color="fg.subtle">Typography · {activeFont?.family ?? "Archivo system fallback"}</Text>
           <Flex gap="2">
-            {(["intro", "inline", "outro"] as const).map((value) => <Button key={value} flex="1" size="sm" variant="outline" colorPalette={role === value ? "accent" : undefined} onClick={() => setRole(value)}>{value}</Button>)}
+            {(["intro", "inline", "outro"] as const).map((value) => <Button key={value} flex="1" size="sm" variant={role === value ? "subtle" : "ghost"} {...(role === value ? { bg: "accent.subtle", color: "accent.fg", _hover: { bg: "accent.subtle" } } : {})} onClick={() => setRole(value)}>{value}</Button>)}
           </Flex>
-          <Flex gap="3" align="center"><Text textStyle="eyebrow" color="fg.subtle">Duration</Text><Input type="number" min="1" max="30" step="0.5" value={durationSec} onChange={(event) => setDurationSec(Math.min(30, Math.max(1, Number(event.target.value) || 1)))} /></Flex>
+          <Flex gap="3" align="center"><Text fontSize="13px" color="fg.muted">Duration</Text><Input type="number" min="1" max="30" step="0.5" value={durationSec} onChange={(event) => setDurationSec(Math.min(30, Math.max(1, Number(event.target.value) || 1)))} /></Flex>
           <Button colorPalette="brand" disabled={!name.trim() || !text.trim() || busy !== null} onClick={create}><Plus size={15} />Save scene</Button>
           {error ? <Text color="danger.fg" fontSize="12px">{error}</Text> : null}
         </Stack>
 
         {scenes.length === 0 ? (
-          <Box bg="bg.panel" borderRadius="l2" p="8"><Text textStyle="title" fontSize="20px">No reusable scenes yet</Text><Text mt="2" fontSize="13px" color="fg.muted">Start with an intro, transition card, or closing call to action.</Text></Box>
+          <EmptyState icon={<Type size={20} />} title="No reusable scenes yet" description="Start with an intro, transition card, or closing call to action." />
         ) : (
           <Grid templateColumns={{ base: "1fr", md: "repeat(2, 1fr)" }} gap="4">
             {scenes.map((scene, index) => (
-              <Stack key={scene.id} gap="4" bg="bg.panel" borderRadius="l2" p="4">
-                <Flex align="center" gap="2"><Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text><Box h="1px" bg="border" flex="1" /><Text textStyle="eyebrow" color={scene.isDefault ? "accent.fg" : "fg.subtle"}>{scene.isDefault ? `Default ${scene.role}` : scene.role}</Text></Flex>
+              <Stack key={scene.id} gap="4" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="4">
+                <Flex align="center" justify="space-between" gap="2"><Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">{String(index + 1).padStart(2, "0")}</Text><Text fontSize="12px" fontWeight="500" color={scene.isDefault ? "accent.fg" : "fg.subtle"}>{scene.isDefault ? `Default ${scene.role}` : scene.role}</Text></Flex>
                 <Box minH="120px" borderRadius="l1" display="grid" placeItems="center" px="5" textAlign="center" style={{ background: scene.definition.content.kind === "text" ? scene.definition.content.backgroundColor : scene.definition.content.kind === "color" ? scene.definition.content.color : undefined }}><Text color={scene.definition.content.kind === "text" ? scene.definition.content.color : "fg.muted"} fontFamily={scene.definition.content.kind === "text" ? scene.definition.content.fontFamily : "display"} fontWeight="650">{scene.definition.content.kind === "text" ? scene.definition.content.text : scene.name}</Text></Box>
-                <Flex justify="space-between" align="center"><Box><Text fontSize="13px" fontWeight="650">{scene.name}</Text><Text textStyle="data" color="fg.timecode" fontSize="10px">{scene.definition.durationSec.toFixed(1)}s · r{scene.revision}</Text></Box><Flex gap="1">{canManageDefaults && scene.role !== "inline" && !scene.isDefault ? <Button size="sm" variant="ghost" aria-label={`Make ${scene.name} default`} disabled={busy !== null} onClick={() => request(scene.id, `/api/brand-profiles/${profileId}/scene-templates/${scene.id}`, { method: "PATCH", body: JSON.stringify({ expectedRevision: scene.revision, makeDefault: true }) })}><Check size={13} /></Button> : null}<Button size="sm" variant="ghost" color="danger.fg" aria-label={`Delete ${scene.name}`} disabled={busy !== null} onClick={() => request(scene.id, `/api/brand-profiles/${profileId}/scene-templates/${scene.id}`, { method: "DELETE", body: JSON.stringify({ expectedRevision: scene.revision }) })}><Trash2 size={13} /></Button></Flex></Flex>
+                <Flex justify="space-between" align="center"><Box><Text fontSize="13px" fontWeight="500">{scene.name}</Text><Text color="fg.subtle" fontSize="12px" fontVariantNumeric="tabular-nums">{scene.definition.durationSec.toFixed(1)}s · r{scene.revision}</Text></Box><Flex gap="1">{canManageDefaults && scene.role !== "inline" && !scene.isDefault ? <Button size="sm" variant="ghost" aria-label={`Make ${scene.name} default`} disabled={busy !== null} onClick={() => request(scene.id, `/api/brand-profiles/${profileId}/scene-templates/${scene.id}`, { method: "PATCH", body: JSON.stringify({ expectedRevision: scene.revision, makeDefault: true }) })}><Check size={13} /></Button> : null}<Button size="sm" variant="ghost" color="danger.fg" aria-label={`Delete ${scene.name}`} disabled={busy !== null} onClick={() => request(scene.id, `/api/brand-profiles/${profileId}/scene-templates/${scene.id}`, { method: "DELETE", body: JSON.stringify({ expectedRevision: scene.revision }) })}><Trash2 size={13} /></Button></Flex></Flex>
               </Stack>
             ))}
           </Grid>

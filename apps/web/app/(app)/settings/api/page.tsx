@@ -17,10 +17,9 @@ export default async function ApiSettingsPage() {
   return (
     <Stack gap="8">
       <PageHeader
-        eyebrow={appUser.workspace.workspaceName}
         title="Developer access"
         actions={
-          <Button asChild size="sm" variant="outline">
+          <Button asChild size="sm" variant="subtle">
             <Link href="/integrations/mcp">MCP setup guide<ArrowRight size={14} /></Link>
           </Button>
         }

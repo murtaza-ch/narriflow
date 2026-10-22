@@ -11,7 +11,7 @@ export default function HomeLoading() {
       </Stack>
       <SimpleGrid columns={{ base: 2, xl: 4 }} gap="3">
         {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} h="20" borderRadius="l2" />
+          <Skeleton key={i} h="20" borderRadius="l3" />
         ))}
       </SimpleGrid>
       <Flex justify="space-between">
@@ -28,7 +28,7 @@ export default function HomeLoading() {
         ))}
       </SimpleGrid>
       <Box>
-        <Skeleton h="24" borderRadius="l2" />
+        <Skeleton h="24" borderRadius="l3" />
       </Box>
     </Stack>
   );

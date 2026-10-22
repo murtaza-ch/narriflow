@@ -8,7 +8,6 @@ import { StatBand } from "@narriflow/ui/components/stat-band";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 
 function IntegrationRow({
-  eyebrow,
   title,
   description,
   href,
@@ -16,28 +15,24 @@ function IntegrationRow({
   icon: Icon,
   status,
 }: {
-  eyebrow: string;
   title: string;
   description: string;
   href: string;
   action: string;
   icon: typeof Braces;
-  status: string;
+  status?: string;
 }) {
   return (
-    <Card.Root as="article"><Card.Body gap="4">
-      <Flex align="center" justify="space-between" gap="3">
-        <Flex align="center" gap="2.5">
-          <Icon size={17} />
-          <Text textStyle="eyebrow" color="fg.subtle">{eyebrow}</Text>
-        </Flex>
-        <Text textStyle="data" fontSize="11px" color="fg.subtle">{status}</Text>
+    <Card.Root as="article" borderRadius="l3" borderWidth="1px"><Card.Body gap="4">
+      <Flex align="center" justify="space-between" gap="3" color="fg.muted">
+        <Icon size={20} />
+        {status ? <Text fontSize="12px" color="fg.subtle">{status}</Text> : null}
       </Flex>
       <Stack gap="1.5" flex="1">
-        <Text as="h2" textStyle="title" fontSize="18px">{title}</Text>
+        <Text as="h2" fontSize="16px" fontWeight="500">{title}</Text>
         <Text fontSize="13px" lineHeight="1.65" color="fg.muted">{description}</Text>
       </Stack>
-      <Button asChild size="sm" variant="outline" alignSelf="flex-start">
+      <Button asChild size="sm" variant="subtle" alignSelf="flex-start">
         <Link href={href}>{action}<ArrowRight size={14} /></Link>
       </Button>
     </Card.Body></Card.Root>
@@ -58,10 +53,7 @@ export default async function IntegrationsPage() {
 
   return (
     <Stack gap="8" maxW="1120px" mx="auto">
-      <PageHeader
-        eyebrow={appUser.workspace.workspaceName}
-        title="Integrations"
-      />
+      <PageHeader title="Integrations" />
 
       <StatBand columns={3}>
         <StatBand.Item label="AI assistant access" value={mcpAccessLabel} />
@@ -71,25 +63,21 @@ export default async function IntegrationsPage() {
 
       <Grid templateColumns={{ base: "1fr", md: "repeat(3, minmax(0, 1fr))" }} gap={{ base: "8", md: "6" }}>
         <IntegrationRow
-          eyebrow="AI clients / MCP"
           title="Work with Narriflow from your assistant"
           description="Use personal OAuth for interactive clients or a scoped workspace key for unattended automation."
           href="/integrations/mcp"
           action="Open setup guide"
           icon={Braces}
-          status={isMcpEligible ? "ELIGIBLE" : appUser.workspace.pricingTier === "business" ? "WORKSPACE INACTIVE" : "BUSINESS REQUIRED"}
+          status={isMcpEligible ? "Eligible" : appUser.workspace.pricingTier === "business" ? "Workspace inactive" : "Business required"}
         />
         <IntegrationRow
-          eyebrow="Social publishing"
           title="Connect publishing accounts"
           description="Authorize TikTok, YouTube, Instagram, LinkedIn, and X accounts for scheduled workspace publishing."
           href="/settings/social-accounts"
           action="Manage social accounts"
           icon={Share2}
-          status="OAUTH"
         />
         <IntegrationRow
-          eyebrow="Developer access"
           title="Manage workspace API keys"
           description={canManageApi
             ? "Create least-privilege credentials, inspect recent use, and revoke keys without affecting personal OAuth connections."
@@ -97,7 +85,7 @@ export default async function IntegrationsPage() {
           href={canManageApi ? "/settings/api" : "/integrations/mcp#workspace-keys"}
           action={canManageApi ? "Manage API keys" : "Learn about API keys"}
           icon={KeyRound}
-          status={canManageApi ? "MANAGE ACCESS" : "ROLE PROTECTED"}
+          status={canManageApi ? undefined : "Role protected"}
         />
       </Grid>
     </Stack>

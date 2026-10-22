@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Box, Button, Checkbox, Flex, Input, NativeSelect, Stack, Text } from "@chakra-ui/react";
-import { Check, Plus, Search, ShieldCheck, X } from "lucide-react";
+import { Check, Plus, Search, X } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
   AUTO_CENSOR_POLICY_VERSION,
@@ -21,6 +21,7 @@ import {
   buildReviewedCensorSegments,
   type AutoCensorReviewDecision,
 } from "./auto-censor-review-model";
+import { PanelButton, SectionLabel, chipProps, softButtonProps, softFieldProps, softFocusWithin } from "./tool-panels/panel-ui";
 
 const TREATMENT_LABEL: Record<AutoCensorTreatment, string> = {
   caption_mask: "Mask captions",
@@ -64,15 +65,19 @@ function TreatmentSelect({
   disabled?: boolean;
 }) {
   return (
-    <NativeSelect.Root size="xs" w="auto" disabled={disabled}>
+    <NativeSelect.Root w="auto" flexShrink={0} disabled={disabled}>
       <NativeSelect.Field
         aria-label="Censor treatment"
         value={value}
         onChange={(event) => onChange(event.currentTarget.value as AutoCensorTreatment)}
-        bg="studio.subtle"
-        borderColor="studio.borderStrong"
+        h="32px"
+        ps="3"
+        pe="8"
+        bg="studio.raised"
+        borderWidth="0"
+        borderRadius="8px"
         color="studio.fg"
-        fontSize="11px"
+        fontSize="13px"
       >
         {(Object.keys(TREATMENT_LABEL) as AutoCensorTreatment[]).map((treatment) => (
           <option key={treatment} value={treatment} disabled={!availability[treatment]}>
@@ -80,8 +85,60 @@ function TreatmentSelect({
           </option>
         ))}
       </NativeSelect.Field>
-      <NativeSelect.Indicator />
+      <NativeSelect.Indicator color="studio.fgMuted" />
     </NativeSelect.Root>
+  );
+}
+
+/** Quiet text action, e.g. "Select all". */
+function TextAction({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <Box
+      as="button"
+      bg="transparent"
+      border="none"
+      p="0"
+      color="studio.fgMuted"
+      fontSize="13px"
+      fontWeight="500"
+      cursor="pointer"
+      _hover={{ color: "studio.fg" }}
+      onClick={onClick}
+    >
+      {children}
+    </Box>
+  );
+}
+
+function RoundIconButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Flex
+      as="button"
+      aria-label={label}
+      align="center"
+      justify="center"
+      w="32px"
+      h="32px"
+      flexShrink={0}
+      borderRadius="full"
+      bg="transparent"
+      border="none"
+      color="studio.fgMuted"
+      cursor="pointer"
+      transition="background 120ms ease, color 120ms ease"
+      _hover={{ color: "studio.fg", bg: "studio.raised" }}
+      onClick={onClick}
+    >
+      {children}
+    </Flex>
   );
 }
 
@@ -314,150 +371,221 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
         right="0"
         w={{ base: "100vw", md: "460px" }}
         bg="studio.surface"
-        borderLeftWidth="1px"
-        borderColor="studio.borderStrong"
+        color="studio.fg"
         zIndex={200}
         direction="column"
         layerStyle="panel"
       >
-        <Flex px="20px" py="16px" borderBottomWidth="1px" borderColor="studio.border" align="center" gap="12px">
-          <Flex w="34px" h="34px" align="center" justify="center" borderWidth="1px" borderColor="studio.accent" color="studio.accentFg" borderRadius="l1">
-            <ShieldCheck size={17} />
+        <Box px="6" pt="5" pb="4" flexShrink={0}>
+          <Flex align="center" justify="space-between" gap="3">
+            <Text id="auto-censor-title" fontSize="18px" fontWeight="500">
+              Review sensitive words
+            </Text>
+            <RoundIconButton label="Close Auto Censor" onClick={onClose}>
+              <X size={17} />
+            </RoundIconButton>
           </Flex>
-          <Box flex="1">
-            <Text id="auto-censor-title" textStyle="title" fontSize="16px">Review sensitive words</Text>
-            <Text fontSize="11px" color="studio.fgMuted">Suggestions first. Nothing changes until you apply.</Text>
-          </Box>
-          <Button aria-label="Close Auto Censor" size="xs" variant="ghost" onClick={onClose}><X size={16} /></Button>
-        </Flex>
+          <Text mt="1" fontSize="13px" color="studio.fgMuted" fontVariantNumeric="tabular-nums">
+            {suggestions.length} found · {selectedCount} selected ·{" "}
+            {editorDocument.censorSegments.length} applied
+          </Text>
 
-        <Flex px="20px" py="10px" borderBottomWidth="1px" borderColor="studio.border" gap="18px">
-          <Box><Text textStyle="data" fontSize="16px" color="studio.fg">{suggestions.length}</Text><Text textStyle="eyebrow" color="studio.fgSubtle">Found</Text></Box>
-          <Box><Text textStyle="data" fontSize="16px" color="studio.fg">{selectedCount}</Text><Text textStyle="eyebrow" color="studio.fgSubtle">Selected</Text></Box>
-          <Box><Text textStyle="data" fontSize="16px" color="studio.fg">{editorDocument.censorSegments.length}</Text><Text textStyle="eyebrow" color="studio.fgSubtle">Applied</Text></Box>
-        </Flex>
-
-        <Box px="20px" py="14px" borderBottomWidth="1px" borderColor="studio.border">
-          <Flex gap="8px" mb="10px">
-            <Flex flex="1" align="center" gap="7px" px="9px" borderWidth="1px" borderColor="studio.borderStrong" borderRadius="l1" bg="studio.subtle">
-              <Search size={13} />
-              <Input aria-label="Filter sensitive word matches" value={query} onChange={(event) => setQuery(event.target.value)} border="0" p="0" h="32px" fontSize="12px" placeholder="Filter matches" />
+          <Flex gap="2" mt="5">
+            <Flex flex="1" align="center" gap="2" px="3" h="40px" {...softFieldProps} color="studio.fgMuted" _focusWithin={softFocusWithin}>
+              <Search size={15} />
+              <Input
+                aria-label="Filter sensitive word matches"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                border="0"
+                p="0"
+                h="full"
+                bg="transparent"
+                color="studio.fg"
+                fontSize="14px"
+                _placeholder={{ color: "studio.fgSubtle" }}
+                _focusVisible={{ outline: "none", boxShadow: "none" }}
+                placeholder="Filter matches"
+              />
             </Flex>
-            <TreatmentSelect disabled={!hasWritableTreatment} value={defaultTreatment} availability={autoCensorPolicy.treatments} onChange={(value) => {
-              setDefaultTreatment(value);
-              setDecisions((current) => current.map((decision) => ({
-                ...decision,
-                treatment: suggestionByFingerprint.get(decision.fingerprint)?.timingLimitation
-                  ? "caption_mask"
-                  : value,
-              })));
-            }} />
+            <Flex align="center">
+              <TreatmentSelect disabled={!hasWritableTreatment} value={defaultTreatment} availability={autoCensorPolicy.treatments} onChange={(value) => {
+                setDefaultTreatment(value);
+                setDecisions((current) => current.map((decision) => ({
+                  ...decision,
+                  treatment: suggestionByFingerprint.get(decision.fingerprint)?.timingLimitation
+                    ? "caption_mask"
+                    : value,
+                })));
+              }} />
+            </Flex>
           </Flex>
-          <Flex gap="5px" flexWrap="wrap">
+          <Flex gap="2" mt="3" flexWrap="wrap">
             {(["all", "built_in", "brand_profile", "project"] as const).map((source) => (
-              <Button key={source} size="xs" variant={sourceFilter === source ? "subtle" : "ghost"} onClick={() => setSourceFilter(source)}>
+              <Box
+                key={source}
+                as="button"
+                aria-pressed={sourceFilter === source}
+                cursor="pointer"
+                {...chipProps(sourceFilter === source)}
+                onClick={() => setSourceFilter(source)}
+              >
                 {source === "all" ? "All sources" : sourceLabel(source)}
-              </Button>
+              </Box>
             ))}
           </Flex>
         </Box>
 
-        <Box flex="1" overflowY="auto">
-          <Box px="20px" py="14px" borderBottomWidth="1px" borderColor="studio.border">
-            <Flex align="center" justify="space-between" mb="8px">
-              <Text textStyle="eyebrow" color="studio.fgMuted">Project words</Text>
-              <Text fontSize="10px" color="studio.fgSubtle">{projectTerms.length}/50</Text>
-            </Flex>
-            <Flex gap="6px">
-              <Input value={termDraft} onChange={(event) => setTermDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addProjectTerm(); }} h="32px" fontSize="12px" borderColor="studio.borderStrong" placeholder="Add a word or phrase" />
-              <Button aria-label="Add project word" size="sm" variant="outline" loading={savingTerms} onClick={addProjectTerm}><Plus size={14} /></Button>
+        <Box flex="1" overflowY="auto" px="6" pb="6">
+          <Box pt="2" pb="6">
+            <SectionLabel
+              action={
+                <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums">
+                  {projectTerms.length}/50
+                </Text>
+              }
+            >
+              Project words
+            </SectionLabel>
+            <Flex gap="2">
+              <Input
+                value={termDraft}
+                onChange={(event) => setTermDraft(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") addProjectTerm(); }}
+                h="40px"
+                px="3"
+                fontSize="14px"
+                {...softFieldProps}
+                placeholder="Add a word or phrase"
+              />
+              <Button
+                aria-label="Add project word"
+                {...softButtonProps}
+                w="40px"
+                minW="40px"
+                h="40px"
+                p="0"
+                loading={savingTerms}
+                onClick={addProjectTerm}
+              >
+                <Plus size={16} />
+              </Button>
             </Flex>
             {projectTerms.length > 0 && (
-              <Flex mt="8px" gap="5px" flexWrap="wrap">
+              <Flex mt="3" gap="2" flexWrap="wrap">
                 {projectTerms.map((term) => (
-                  <Button key={term} size="xs" variant="subtle" onClick={() => void saveTerms(projectTerms.filter((candidate) => candidate !== term))}>
-                    {term} <X size={10} />
-                  </Button>
+                  <Flex
+                    key={term}
+                    as="button"
+                    aria-label={`Remove ${term}`}
+                    align="center"
+                    gap="1.5"
+                    h="30px"
+                    px="2.5"
+                    borderRadius="8px"
+                    bg="studio.raised"
+                    border="none"
+                    color="studio.fg"
+                    fontSize="13px"
+                    cursor="pointer"
+                    _hover={{ bg: "studio.borderStrong" }}
+                    onClick={() => void saveTerms(projectTerms.filter((candidate) => candidate !== term))}
+                  >
+                    {term}
+                    <X size={12} />
+                  </Flex>
                 ))}
               </Flex>
             )}
           </Box>
 
-          <Flex px="20px" py="9px" align="center" justify="space-between" borderBottomWidth="1px" borderColor="studio.border">
-            <Text textStyle="eyebrow" color="studio.fgMuted">Suggestions</Text>
-            <Flex gap="4px">
-              <Button size="xs" variant="ghost" onClick={() => setDecisions((current) => current.map((decision) => ({
-                ...decision,
-                selected: suggestionByFingerprint.get(decision.fingerprint)?.timingLimitation === null &&
-                  autoCensorPolicy.treatments[decision.treatment] &&
-                  !appliedSourceSpans.has(autoCensorSourceSpanKey(
-                    suggestionByFingerprint.get(decision.fingerprint)?.sourceWordIds ?? [],
-                  )),
-              })))}>Select all</Button>
-              <Button size="xs" variant="ghost" onClick={() => setDecisions((current) => current.map((decision) => ({ ...decision, selected: false })))}>Clear</Button>
-            </Flex>
-          </Flex>
+          <SectionLabel
+            action={
+              <Flex gap="4">
+                <TextAction onClick={() => setDecisions((current) => current.map((decision) => ({
+                  ...decision,
+                  selected: suggestionByFingerprint.get(decision.fingerprint)?.timingLimitation === null &&
+                    autoCensorPolicy.treatments[decision.treatment] &&
+                    !appliedSourceSpans.has(autoCensorSourceSpanKey(
+                      suggestionByFingerprint.get(decision.fingerprint)?.sourceWordIds ?? [],
+                    )),
+                })))}>Select all</TextAction>
+                <TextAction onClick={() => setDecisions((current) => current.map((decision) => ({ ...decision, selected: false })))}>Clear</TextAction>
+              </Flex>
+            }
+          >
+            Suggestions
+          </SectionLabel>
 
           {visibleSuggestions.length === 0 ? (
-            <Stack px="20px" py="32px" align="center" textAlign="center" gap="7px">
-              <Flex w="38px" h="38px" borderWidth="1px" borderColor="studio.borderStrong" borderRadius="l1" align="center" justify="center" color="studio.fgSubtle"><Check size={17} /></Flex>
-              <Text fontSize="13px" fontWeight="600">No matching suggestions</Text>
-              <Text fontSize="11px" color="studio.fgMuted">The scan completed successfully.</Text>
+            <Stack py="10" align="center" textAlign="center" gap="1.5">
+              <Box color="studio.fgSubtle" mb="1"><Check size={20} /></Box>
+              <Text fontSize="14px" fontWeight="500">No matching suggestions</Text>
+              <Text fontSize="13px" color="studio.fgMuted">The scan completed successfully.</Text>
             </Stack>
-          ) : visibleSuggestions.map((suggestion) => {
-            const decision = decisionByFingerprint.get(suggestion.fingerprint)!;
-            const alreadyApplied = appliedSourceSpans.has(
-              autoCensorSourceSpanKey(suggestion.sourceWordIds),
-            );
-            const treatmentUnavailable = !autoCensorPolicy.treatments[decision.treatment];
-            return (
-              <Flex key={suggestion.fingerprint} px="20px" py="12px" gap="10px" borderBottomWidth="1px" borderColor="studio.border" borderLeftWidth="3px" borderLeftColor={decision.selected ? "studio.accent" : "studio.border"}>
-                <Checkbox.Root disabled={alreadyApplied || treatmentUnavailable || suggestion.timingLimitation !== null} checked={decision.selected} onCheckedChange={(event) => updateDecision(suggestion.fingerprint, { selected: Boolean(event.checked) })} mt="2px">
-                  <Checkbox.HiddenInput /><Checkbox.Control />
-                </Checkbox.Root>
-                <Box minW="0" flex="1">
-                  <Flex align="center" justify="space-between" gap="8px">
-                    <Text fontSize="13px" fontWeight="700" truncate>{suggestion.matchedText}</Text>
-                    <Text textStyle="data" fontSize="10px" color="studio.timecode">{suggestion.sourceStartSec === null ? "UNTIMED" : formatTimecode(suggestion.sourceStartSec)}</Text>
-                  </Flex>
-                  <Text fontSize="11px" color="studio.fgMuted" lineClamp="2">{suggestion.contextBefore} <Text as="span" color="studio.fg" fontWeight="700">{suggestion.matchedText}</Text> {suggestion.contextAfter}</Text>
-                  <Flex mt="7px" align="center" justify="space-between" gap="8px">
-                    <Text textStyle="eyebrow" color="studio.fgSubtle">{alreadyApplied ? "Applied · " : ""}{sourceLabel(suggestion.policySource)} · {suggestion.confidence === null ? "No confidence" : `${Math.round(suggestion.confidence * 100)}%`}</Text>
-                    <TreatmentSelect disabled={alreadyApplied || !hasWritableTreatment || suggestion.timingLimitation !== null} value={decision.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateDecision(suggestion.fingerprint, { treatment: value, selected: true })} />
-                  </Flex>
-                  {suggestion.timingLimitation && <Text mt="5px" fontSize="10px" color="studio.accentFg">Audio unavailable — caption mask only</Text>}
-                </Box>
-              </Flex>
-            );
-          })}
-
-          {editorDocument.censorSegments.length > 0 && (
-            <Box>
-              <Text px="20px" py="9px" textStyle="eyebrow" color="studio.fgMuted" borderBottomWidth="1px" borderColor="studio.border">Applied segments</Text>
-              {editorDocument.censorSegments.map((segment) => {
-                const stale = isCensorSegmentStale(segment, utterances);
+          ) : (
+            <Stack gap="2">
+              {visibleSuggestions.map((suggestion) => {
+                const decision = decisionByFingerprint.get(suggestion.fingerprint)!;
+                const alreadyApplied = appliedSourceSpans.has(
+                  autoCensorSourceSpanKey(suggestion.sourceWordIds),
+                );
+                const treatmentUnavailable = !autoCensorPolicy.treatments[decision.treatment];
                 return (
-                  <Flex key={segment.id} px="20px" py="11px" gap="9px" align="center" borderBottomWidth="1px" borderColor="studio.border" borderLeftWidth="3px" borderLeftColor={stale ? "studio.dangerBorder" : segment.enabled ? "studio.accent" : "studio.border"}>
-                    <Checkbox.Root checked={segment.enabled} onCheckedChange={(event) => updateApplied(segment.id, (current) => ({ ...current, enabled: Boolean(event.checked) }))}><Checkbox.HiddenInput /><Checkbox.Control /></Checkbox.Root>
-                    <Box flex="1">
-                      <Flex gap="7px" align="center"><Text textStyle="data" fontSize="10px" color="studio.timecode">{formatTimecode(segment.sourceStartSec)}</Text>{stale && <Text textStyle="eyebrow" color="studio.danger">Stale</Text>}</Flex>
-                      <TreatmentSelect value={segment.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateApplied(segment.id, (current) => treatmentSettings(current, value))} />
+                  <Flex key={suggestion.fingerprint} p="3" gap="3" bg="studio.subtle" borderRadius="10px">
+                    <Checkbox.Root size="sm" colorPalette="accent" disabled={alreadyApplied || treatmentUnavailable || suggestion.timingLimitation !== null} checked={decision.selected} onCheckedChange={(event) => updateDecision(suggestion.fingerprint, { selected: Boolean(event.checked) })} mt="3px">
+                      <Checkbox.HiddenInput /><Checkbox.Control />
+                    </Checkbox.Root>
+                    <Box minW="0" flex="1">
+                      <Flex align="baseline" justify="space-between" gap="2">
+                        <Text fontSize="14px" fontWeight="600" truncate>{suggestion.matchedText}</Text>
+                        <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums" flexShrink={0}>{suggestion.sourceStartSec === null ? "No timing" : formatTimecode(suggestion.sourceStartSec)}</Text>
+                      </Flex>
+                      <Text mt="0.5" fontSize="13px" color="studio.fgMuted" lineHeight="1.5" lineClamp="2">{suggestion.contextBefore} <Text as="span" color="studio.fg" fontWeight="600">{suggestion.matchedText}</Text> {suggestion.contextAfter}</Text>
+                      <Flex mt="2.5" align="center" justify="space-between" gap="2">
+                        <Text fontSize="12px" color="studio.fgSubtle">{alreadyApplied ? "Applied · " : ""}{sourceLabel(suggestion.policySource)} · {suggestion.confidence === null ? "No confidence" : `${Math.round(suggestion.confidence * 100)}%`}</Text>
+                        <TreatmentSelect disabled={alreadyApplied || !hasWritableTreatment || suggestion.timingLimitation !== null} value={decision.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateDecision(suggestion.fingerprint, { treatment: value, selected: true })} />
+                      </Flex>
+                      {suggestion.timingLimitation && <Text mt="2" fontSize="12px" color="studio.fgMuted">Audio unavailable — caption mask only</Text>}
                     </Box>
-                    {stale && <Button size="xs" variant="outline" onClick={() => reviewStale(segment)}>Review</Button>}
-                    <Button aria-label="Delete censor segment" size="xs" variant="ghost" onClick={() => setCensorSegments(editorDocument.censorSegments.filter((candidate) => candidate.id !== segment.id))}><X size={13} /></Button>
                   </Flex>
                 );
               })}
+            </Stack>
+          )}
+
+          {editorDocument.censorSegments.length > 0 && (
+            <Box pt="6">
+              <SectionLabel>Applied segments</SectionLabel>
+              <Stack gap="2">
+                {editorDocument.censorSegments.map((segment) => {
+                  const stale = isCensorSegmentStale(segment, utterances);
+                  return (
+                    <Flex key={segment.id} p="3" gap="3" align="center" bg="studio.subtle" borderRadius="10px">
+                      <Checkbox.Root size="sm" colorPalette="accent" checked={segment.enabled} onCheckedChange={(event) => updateApplied(segment.id, (current) => ({ ...current, enabled: Boolean(event.checked) }))}><Checkbox.HiddenInput /><Checkbox.Control /></Checkbox.Root>
+                      <Flex flex="1" minW="0" align="center" gap="2">
+                        <Text fontSize="13px" color="studio.fgMuted" fontVariantNumeric="tabular-nums">{formatTimecode(segment.sourceStartSec)}</Text>
+                        {stale && <Text fontSize="12px" fontWeight="500" color="studio.danger">Stale</Text>}
+                      </Flex>
+                      <TreatmentSelect value={segment.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateApplied(segment.id, (current) => treatmentSettings(current, value))} />
+                      {stale && <Button size="sm" h="32px" {...softButtonProps} fontSize="13px" onClick={() => reviewStale(segment)}>Review</Button>}
+                      <RoundIconButton label="Delete censor segment" onClick={() => setCensorSegments(editorDocument.censorSegments.filter((candidate) => candidate.id !== segment.id))}>
+                        <X size={15} />
+                      </RoundIconButton>
+                    </Flex>
+                  );
+                })}
+              </Stack>
             </Box>
           )}
         </Box>
 
-        <Box px="20px" py="14px" borderTopWidth="1px" borderColor="studio.borderStrong" bg="studio.raised">
-          {!autoCensorPolicy.canApply && <Text mb="8px" fontSize="11px" color="studio.fgMuted">Preview is free. Upgrade to Creator to save censor edits.</Text>}
-          {autoCensorPolicy.canApply && !hasWritableTreatment && <Text mb="8px" fontSize="11px" color="studio.fgMuted">Scanning is available. Applying censor edits is temporarily unavailable.</Text>}
-          <Button w="100%" colorPalette="brand" disabled={!autoCensorPolicy.canApply || !hasWritableTreatment || selectedCount === 0} onClick={apply}>
+        <Box px="6" py="5" borderTopWidth="1px" borderColor="studio.border" flexShrink={0}>
+          {!autoCensorPolicy.canApply && <Text mb="3" fontSize="13px" color="studio.fgMuted">Preview is free. Upgrade to Creator to save censor edits.</Text>}
+          {autoCensorPolicy.canApply && !hasWritableTreatment && <Text mb="3" fontSize="13px" color="studio.fgMuted">Scanning is available. Applying censor edits is temporarily unavailable.</Text>}
+          <PanelButton disabled={!autoCensorPolicy.canApply || !hasWritableTreatment || selectedCount === 0} onClick={apply}>
             Apply {selectedCount > 0 ? selectedCount : "selected"} {selectedCount === 1 ? "edit" : "edits"}
-          </Button>
+          </PanelButton>
         </Box>
       </Flex>
     </>

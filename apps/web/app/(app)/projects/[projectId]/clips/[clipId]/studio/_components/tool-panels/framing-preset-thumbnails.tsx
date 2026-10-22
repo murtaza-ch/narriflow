@@ -153,12 +153,13 @@ function LayoutCard({
       minH="108px"
       minW="0"
       p="6px"
-      gap="6px"
-      borderWidth="1px"
-      borderColor={active ? "studio.ring" : "studio.border"}
-      borderRadius="l2"
-      bg={active ? "studio.raised" : "studio.subtle"}
+      gap="8px"
+      borderWidth="2px"
+      borderColor={active ? "studio.accent" : "transparent"}
+      borderRadius="10px"
+      bg="studio.subtle"
       color={active ? "studio.fg" : "studio.fgSubtle"}
+      transition="background 120ms ease, border-color 120ms ease"
       cursor={disabled ? "not-allowed" : "pointer"}
       opacity={disabled ? 0.5 : 1}
       aria-disabled={disabled}
@@ -167,7 +168,7 @@ function LayoutCard({
       onClick={() => {
         if (!disabled) onSelect(choice);
       }}
-      _hover={disabled ? undefined : { borderColor: active ? "studio.ring" : "studio.borderStrong" }}
+      _hover={disabled ? undefined : { bg: "studio.raised" }}
     >
       <Box position="relative">
         <LayoutArt preset={preset} />
@@ -179,7 +180,7 @@ function LayoutCard({
           </Text>
         ) : null}
       </Box>
-      <Text color={active ? "studio.accentFg" : "studio.fgMuted"} fontSize="10.5px" fontWeight={active ? "600" : "500"} textAlign="left" lineHeight="1.25" lineClamp="2">
+      <Text px="2px" pb="2px" color={active ? "studio.fg" : "studio.fgMuted"} fontSize="12px" fontWeight="500" textAlign="left" lineHeight="1.3" lineClamp="2">
         {label}
       </Text>
     </Flex>
@@ -204,7 +205,7 @@ export function SceneLayoutPresetGrid({
     SceneLayoutPresetDefinition["category"]
   >;
   return (
-    <Stack gap="14px">
+    <Stack gap="20px">
       {categories.map((category) => {
         const presets = SCENE_LAYOUT_PRESET_CATALOG.filter(
           (preset) => preset.category === category,
@@ -212,10 +213,10 @@ export function SceneLayoutPresetGrid({
         if (presets.length === 0) return null;
         return (
           <Box key={category}>
-            <Text mb="6px" fontSize="9.5px" fontWeight="600" color="studio.fgSubtle">
+            <Text mb="10px" fontSize="13px" fontWeight="500" color="studio.fgMuted">
               {CATEGORY_LABELS[category]}
             </Text>
-            <Box display="grid" gridTemplateColumns="repeat(2, minmax(0, 1fr))" gap="8px">
+            <Box display="grid" gridTemplateColumns="repeat(2, minmax(0, 1fr))" gap="10px">
               {category === "automatic" ? (
                 <LayoutCard
                   choice="clip-default"

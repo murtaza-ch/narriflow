@@ -33,10 +33,12 @@ export function ImportPill({
     <Flex
       align="center"
       gap="3"
-      bg="bg.subtle"
+      bg="bg.panel"
+      borderWidth="1px"
+      borderColor="border.card"
       px="3"
       py="2.5"
-      borderRadius="xl"
+      borderRadius="l3"
     >
       <MediaWell
         ratio={16 / 9}
@@ -77,21 +79,12 @@ export function ImportPill({
         align="center"
         gap="1.5"
         flexShrink={0}
-        px="2.5"
-        py="1"
-        rounded="full"
-        bg="bg.panel"
       >
         {!isTerminal && <Spinner size="xs" />}
         <Text
-          textStyle="eyebrow"
-          color={
-            ingestStatus === "failed"
-              ? "danger.fg"
-              : ingestStatus === "ready"
-                ? "success.fg"
-                : "fg.subtle"
-          }
+          fontSize="13px"
+          fontWeight="500"
+          color={ingestStatus === "failed" ? "danger.fg" : "accent.fg"}
         >
           {stageWord}
         </Text>

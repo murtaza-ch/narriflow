@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Dialog, Flex, Input, Portal, Stack, Text } from "@chakra-ui/react";
 import { Captions, Folder, Search, Video, X } from "lucide-react";
+import { IconButton } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   matchNavigationActions,
@@ -145,21 +146,24 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
           px="3"
           minW={{ lg: "240px" }}
           borderRadius="l1"
+          bg="bg.soft"
           color="fg.muted"
           cursor="pointer"
-          _hover={{ borderColor: "border.emphasized", color: "fg" }}
+          transition="background 120ms ease, color 120ms ease"
+          _hover={{ bg: "bg.softHover", color: "fg" }}
         >
           <Search size={14} />
           <Text fontSize="12px" flex="1" textAlign="left">Search workspace</Text>
-          <Text as="kbd" fontSize="11px" color="fg.subtle" borderWidth="1px" borderColor="border" borderRadius="4px" px="1">⌘K</Text>
+          <Text as="kbd" fontSize="11px" color="fg.subtle" bg="bg.soft" borderRadius="4px" px="1">⌘K</Text>
         </Flex>
       </Dialog.Trigger>
       <Portal>
         <Dialog.Backdrop />
         <Dialog.Positioner pt="12vh">
           <Dialog.Content maxW="620px" overflow="hidden" aria-label="Search workspace">
-            <Dialog.Header p="0">
-              <Flex w="full" align="center" gap="3" borderBottomWidth="1px" borderColor="border.subtle" px="4" pe="12">
+            <Dialog.Header p="3" pb="1">
+              {/* The row is the soft field; the input inside stays transparent. */}
+              <Flex w="full" h="10" align="center" gap="3" bg="bg.soft" borderRadius="10px" px="3" pe="12" _focusWithin={{ boxShadow: "inset 0 0 0 1px var(--chakra-colors-border-focus)" }}>
                 <Search size={17} />
                 <Input
                   flex="1"
@@ -174,12 +178,13 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                   placeholder="Search projects, clips, integrations, and help…"
                   border="0"
                   boxShadow="none"
-                  h="14"
+                  h="10"
                   _focus={{ boxShadow: "none" }}
+                  _focusVisible={{ boxShadow: "none", outline: "none" }}
                 />
                 {loading ? <Spinner size="xs" /> : null}
-                <Dialog.CloseTrigger asChild>
-                  <Flex as="button" aria-label="Close search" p="2" color="fg.muted"><X size={15} /></Flex>
+                <Dialog.CloseTrigger asChild top="4" insetEnd="4">
+                  <IconButton variant="ghost" size="sm" borderRadius="full" aria-label="Close search"><X size={16} /></IconButton>
                 </Dialog.CloseTrigger>
               </Flex>
             </Dialog.Header>
@@ -187,7 +192,7 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
               {query.trim().length < 2 ? (
                 <Stack gap="2">
                   <Box>
-                    <Text textStyle="eyebrow" color="fg.subtle" px="3" py="2">Go to</Text>
+                    <Text textStyle="eyebrow" color="fg.muted" px="3" py="2">Go to</Text>
                     {actionResults.map((action, index) => {
                       const Icon = action.icon;
                       return (
@@ -200,14 +205,14 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                           px="3"
                           py="2.5"
                           borderRadius="l2"
-                          bg={index === activeIndex ? "bg.subtle" : "transparent"}
+                          bg={index === activeIndex ? "bg.soft" : "transparent"}
                           textAlign="left"
                           onMouseEnter={() => setActiveIndex(index)}
                           onClick={() => chooseAction(action)}
                         >
                           <Icon size={15} />
                           <Stack gap="0" minW="0">
-                            <Text fontSize="13px" fontWeight="550">{action.title}</Text>
+                            <Text fontSize="13px" fontWeight="500">{action.title}</Text>
                             <Text fontSize="12px" color="fg.subtle" truncate>{action.subtitle}</Text>
                           </Stack>
                         </Flex>
@@ -216,7 +221,7 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                   </Box>
                   {recentSearches.length > 0 ? (
                     <Box>
-                      <Text textStyle="eyebrow" color="fg.subtle" px="3" py="2">Recent searches</Text>
+                      <Text textStyle="eyebrow" color="fg.muted" px="3" py="2">Recent searches</Text>
                     {recentSearches.map((recent) => (
                       <Flex
                         as="button"
@@ -228,7 +233,7 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                         py="2.5"
                         borderRadius="l2"
                         textAlign="left"
-                        _hover={{ bg: "bg.subtle" }}
+                        _hover={{ bg: "bg.soft" }}
                         onClick={() => setQuery(recent)}
                       >
                         <Search size={14} />
@@ -239,14 +244,17 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                   ) : null}
                 </Stack>
               ) : !loading && results.length === 0 && actionResults.length === 0 ? (
-                <Text px="3" py="8" textAlign="center" color="fg.muted" fontSize="13px">
-                  No matching workspace content or destinations.
-                </Text>
+                <Stack align="center" gap="2" px="3" py="8">
+                  <Box color="fg.subtle"><Search size={20} /></Box>
+                  <Text textAlign="center" color="fg.muted" fontSize="13px">
+                    No matching workspace content or destinations.
+                  </Text>
+                </Stack>
               ) : (
                 <Stack gap="2">
                   {actionResults.length > 0 ? (
                     <Box>
-                      <Text textStyle="eyebrow" color="fg.subtle" px="3" py="2">Actions &amp; guides</Text>
+                      <Text textStyle="eyebrow" color="fg.muted" px="3" py="2">Actions &amp; guides</Text>
                       {actionResults.map((action, index) => {
                         const Icon = action.icon;
                         return (
@@ -259,14 +267,14 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                             px="3"
                             py="2.5"
                             borderRadius="l2"
-                            bg={index === activeIndex ? "bg.subtle" : "transparent"}
+                            bg={index === activeIndex ? "bg.soft" : "transparent"}
                             textAlign="left"
                             onMouseEnter={() => setActiveIndex(index)}
                             onClick={() => chooseAction(action)}
                           >
                             <Icon size={15} />
                             <Stack gap="0" minW="0">
-                              <Text fontSize="13px" fontWeight="550">{action.title}</Text>
+                              <Text fontSize="13px" fontWeight="500">{action.title}</Text>
                               <Text fontSize="12px" color="fg.subtle" truncate>{action.subtitle}</Text>
                             </Stack>
                           </Flex>
@@ -276,7 +284,7 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                   ) : null}
                   {grouped.map((group) => (
                     <Box key={group.type}>
-                      <Text textStyle="eyebrow" color="fg.subtle" px="3" py="2">
+                      <Text textStyle="eyebrow" color="fg.muted" px="3" py="2">
                         {TYPE_META[group.type].label}
                       </Text>
                       {group.items.map((result) => {
@@ -292,15 +300,15 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                             px="3"
                             py="2.5"
                             borderRadius="l2"
-                            bg={index === activeIndex ? "bg.subtle" : "transparent"}
+                            bg={index === activeIndex ? "bg.soft" : "transparent"}
                             textAlign="left"
                             onMouseEnter={() => setActiveIndex(index)}
                             onClick={() => choose(result)}
                           >
                             <Icon size={15} />
                             <Stack gap="0" minW="0">
-                              <Text fontSize="13px" fontWeight="550" truncate>{result.title}</Text>
-                              {result.subtitle ? <Text fontSize="11px" color="fg.subtle" truncate>{result.subtitle}</Text> : null}
+                              <Text fontSize="13px" fontWeight="500" truncate>{result.title}</Text>
+                              {result.subtitle ? <Text fontSize="12px" color="fg.subtle" truncate>{result.subtitle}</Text> : null}
                             </Stack>
                           </Flex>
                         );

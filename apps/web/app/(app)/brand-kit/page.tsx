@@ -43,7 +43,12 @@ export default async function BrandKitPage() {
 
       <Box animation="fade-up" animationFillMode="backwards" style={{ animationDelay: "90ms" }}>
         {profiles.length === 0 ? (
-          <EmptyState icon={<ImageIcon size={20} />} title="No Brand Profiles yet" description="Save your brand colors, styles, and assets." />
+          <EmptyState
+            icon={<ImageIcon size={20} />}
+            title="No Brand Profiles yet"
+            description="Save your brand colors, styles, and assets."
+            action={canManage ? <Button size="sm" variant="subtle" asChild><Link href="/brand-kit/new">New profile</Link></Button> : undefined}
+          />
         ) : (
           <Grid templateColumns={{ base: "1fr", lg: "repeat(2, minmax(0, 1fr))" }} gap="5">
             {profiles.map((profile) => {
@@ -56,7 +61,7 @@ export default async function BrandKitPage() {
               );
               const isDefault = profile.id === defaultProfileId;
               return (
-                <Box key={profile.id} as="article" position="relative" borderRadius="l3" bg="bg.panel" py="5" ps="5" pe="4">
+                <Box key={profile.id} as="article" position="relative" borderRadius="l3" borderWidth="1px" borderColor="border.card" bg="bg.panel" py="5" ps="5" pe="4">
                   <Flex align="flex-start" justify="space-between" gap="5">
                     <Stack gap="5" minW="0" flex="1">
                       <Flex align="center" gap="3">
@@ -64,13 +69,15 @@ export default async function BrandKitPage() {
                       </Flex>
                       <Flex gap="3" align="center">
                         <Flex
-                          layerStyle="well"
                           w="12"
                           h="12"
                           flexShrink="0"
                           align="center"
                           justify="center"
                           overflow="hidden"
+                          borderRadius="l2"
+                          bg="bg.soft"
+                          color="fg.muted"
                         >
                           {logo?.accessUrl ? (
                             <Image
@@ -90,17 +97,17 @@ export default async function BrandKitPage() {
                         </Stack>
                       </Flex>
                       <Flex gap="2" flexWrap="wrap">
-                        {[profile.identity.primaryColor, profile.identity.secondaryColor, profile.identity.accentColor].filter((color): color is string => Boolean(color)).map((color) => <Box key={color} w="30px" h="8px" borderRadius="l1" borderWidth="1px" borderColor="border" style={{ background: color }} />)}
+                        {[profile.identity.primaryColor, profile.identity.secondaryColor, profile.identity.accentColor].filter((color): color is string => Boolean(color)).map((color) => <Box key={color} w="30px" h="8px" borderRadius="l1" borderWidth="1px" borderColor="border.card" style={{ background: color }} />)}
                       </Flex>
                       <Flex gap="5" color="fg.muted" flexWrap="wrap">
-                        <Flex align="center" gap="1.5"><ImageIcon size={13} /><Text textStyle="data" fontSize="11px">{profile.assets.length} assets</Text></Flex>
-                        <Flex align="center" gap="1.5"><Type size={13} /><Text textStyle="data" fontSize="11px">{profile.fonts.length} fonts</Text></Flex>
-                        <Flex align="center" gap="1.5"><AudioLines size={13} /><Text textStyle="data" fontSize="11px">{profile.audio.length} audio</Text></Flex>
+                        <Flex align="center" gap="1.5"><ImageIcon size={13} /><Text fontSize="12px" fontVariantNumeric="tabular-nums">{profile.assets.length} assets</Text></Flex>
+                        <Flex align="center" gap="1.5"><Type size={13} /><Text fontSize="12px" fontVariantNumeric="tabular-nums">{profile.fonts.length} fonts</Text></Flex>
+                        <Flex align="center" gap="1.5"><AudioLines size={13} /><Text fontSize="12px" fontVariantNumeric="tabular-nums">{profile.audio.length} audio</Text></Flex>
                       </Flex>
                     </Stack>
                     <Stack align="flex-end" justify="space-between" minH="176px">
-                      <Text textStyle="eyebrow" color={profile.approvalRule === "approval_required" ? "accent.fg" : "fg.subtle"}>{profile.approvalRule === "approval_required" ? "Approval required" : "Direct publish"}</Text>
-                      <Button size="sm" variant="outline" asChild><Link href={`/brand-kit/${profile.id}`}>Open <ArrowRight size={13} /></Link></Button>
+                      <Text textStyle="eyebrow" color={profile.approvalRule === "approval_required" ? "accent.fg" : "fg.muted"}>{profile.approvalRule === "approval_required" ? "Approval required" : "Direct publish"}</Text>
+                      <Button size="sm" variant="subtle" asChild><Link href={`/brand-kit/${profile.id}`}>Open <ArrowRight size={13} /></Link></Button>
                       {canManage && !isDefault && <BrandProfileDefaultButton profileId={profile.id} />}
                     </Stack>
                   </Flex>
@@ -111,11 +118,8 @@ export default async function BrandKitPage() {
         )}
       </Box>
 
-      <Box as="section" borderTopWidth="1px" borderColor="border" pt="7">
-        <Stack gap="1" mb="5">
-          <Flex justify="space-between" align="center"><Text textStyle="eyebrow" color="fg.subtle">Style library</Text><Button size="sm" variant="outline" asChild><Link href="/brand-kit/styles/new">New style</Link></Button></Flex>
-          <Text fontSize="13px" color="fg.muted">Start with a built-in style or customize a saved preset.</Text>
-        </Stack>
+      <Box as="section">
+        <Flex justify="space-between" align="center" mb="5"><Text fontSize="16px" fontWeight="500">Style library</Text><Button size="sm" variant="subtle" asChild><Link href="/brand-kit/styles/new">New style</Link></Button></Flex>
         <TemplateGallery builtIns={templates.builtIns} mine={templates.mine.filter((template) => !profiles.some((profile) => profile.templates.some((style) => style.id === template.id)))} defaultId={templates.defaultId} />
       </Box>
     </Stack>

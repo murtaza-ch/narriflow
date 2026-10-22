@@ -95,7 +95,6 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
           <ChakraSelect.Trigger
             aria-label={ariaLabel}
             justifyContent="flex-start"
-            _hover={{ borderColor: "border.emphasized" }}
             _disabled={{ cursor: "not-allowed", color: "fg.disabled" }}
           >
             {startElement ? (
@@ -119,14 +118,11 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
         </ChakraSelect.Control>
         <Portal>
           <ChakraSelect.Positioner>
-            <ChakraSelect.Content p="1">
+            <ChakraSelect.Content>
               {items.map((item) => (
                 <ChakraSelect.Item
                   key={item.value}
                   item={item}
-                  px="2"
-                  py="1.5"
-                  _highlighted={{ bg: "bg.subtle" }}
                   _disabled={{ color: "fg.disabled", cursor: "not-allowed" }}
                 >
                   <ChakraSelect.ItemText>

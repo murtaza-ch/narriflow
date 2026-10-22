@@ -88,13 +88,13 @@ export const ColorSwatchField = React.forwardRef<
           gap="2"
           h="9"
           px="2.5"
-          bg="bg.panel"
+          bg="bg.soft"
           borderWidth="1px"
-          borderColor="border.control"
-          borderRadius="l2"
+          borderColor="transparent"
+          borderRadius="control"
           cursor="pointer"
-          transition="border-color 120ms ease"
-          _hover={{ borderColor: "border.emphasized" }}
+          transition="background 120ms ease"
+          _hover={{ bg: "bg.softHover" }}
           _disabled={{ cursor: "not-allowed", opacity: 1, color: "fg.disabled" }}
         >
           <Box
@@ -113,11 +113,11 @@ export const ColorSwatchField = React.forwardRef<
           <Popover.Positioner>
             <Popover.Content
               w="220px"
-              bg="bg.panel"
+              bg="bg.raised"
               borderWidth="1px"
-              borderColor="border"
-              borderRadius="l3"
-              boxShadow="card"
+              borderColor="border.card"
+              borderRadius="l2"
+              boxShadow="none"
               p="3"
             >
               <Stack gap="2.5">
@@ -125,9 +125,6 @@ export const ColorSwatchField = React.forwardRef<
                   size="sm"
                   textStyle="data"
                   fontSize="12.5px"
-                  bg="bg.panel"
-                  borderColor="border.control"
-                  borderRadius="l2"
                   value={draft}
                   aria-label="Hex color"
                   spellCheck={false}

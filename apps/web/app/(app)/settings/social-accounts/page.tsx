@@ -34,7 +34,7 @@ export default async function SocialAccountsPage({
 					title="Social accounts"
 					actions={
 						returnTo ? (
-							<Button variant="outline" asChild>
+							<Button variant="subtle" asChild>
 								<Link href={returnTo}>Back to publishing draft</Link>
 							</Button>
 						) : undefined

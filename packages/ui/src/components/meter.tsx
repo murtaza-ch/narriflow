@@ -35,12 +35,12 @@ export function Meter({
       {(label || showValueText) && (
         <Flex align="baseline" justify="space-between" gap="3" mb="1.5">
           {label && (
-            <Text textStyle="eyebrow" color="fg.subtle">
+            <Text textStyle="eyebrow" color="fg.muted">
               {label}
             </Text>
           )}
           {showValueText && (
-            <Text textStyle="data" fontSize="12px" color="fg.muted" ms="auto">
+            <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted" ms="auto">
               {Math.round(clamped)}%
             </Text>
           )}

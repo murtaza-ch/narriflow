@@ -213,10 +213,10 @@ async function ProjectsData({
           }))} canEdit={canEdit} />
         {retentionBanner}
         <EmptyState
-          icon={<FolderOpen size={22} strokeWidth={1.5} />}
+          icon={<FolderOpen size={20} strokeWidth={1.5} />}
           title="No projects yet"
           action={canCreate ? (
-            <Button size="sm" variant="outline" asChild>
+            <Button size="sm" variant="subtle" asChild>
               <Link href="/upload">Start upload</Link>
             </Button>
           ) : undefined}

@@ -44,7 +44,8 @@ export function CopyControl({
     >
       <Box
         as={multiline ? "pre" : "code"}
-        layerStyle="well"
+        bg="bg.soft"
+        borderRadius="l2"
         flex="1"
         minW="0"
         w="full"
@@ -61,7 +62,7 @@ export function CopyControl({
       </Box>
       <Button
         type="button"
-        variant="outline"
+        variant="subtle"
         size="sm"
         flexShrink={0}
         onClick={() => void copy()}

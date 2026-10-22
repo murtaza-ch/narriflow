@@ -103,7 +103,6 @@ type RssEpisode = {
   mimeType?: string | null;
 };
 
-/** Section band: eyebrow above a 1.5px ink top-rule, content below. */
 /** Failure notice: Labeled danger panel with an icon — never muted small text. */
 function ErrorNotice({ message }: { message: string }) {
   return (
@@ -114,8 +113,6 @@ function ErrorNotice({ message }: { message: string }) {
       px="3"
       py="2.5"
       bg="danger.subtle"
-      borderWidth="1px"
-      borderColor="danger.muted"
       borderRadius="l2"
       position="relative"
       overflow="hidden"
@@ -123,7 +120,7 @@ function ErrorNotice({ message }: { message: string }) {
       <Box color="danger.fg" flexShrink={0}>
         <AlertTriangle size={14} strokeWidth={2} />
       </Box>
-      <Text fontSize="12.5px" fontWeight="500" color="danger.fg">
+      <Text fontSize="13px" fontWeight="500" color="danger.fg">
         {message}
       </Text>
     </Flex>
@@ -724,7 +721,7 @@ export function UploadShell({
             <Text textStyle="title" fontSize="18px" color="fg">
               Drop to upload
             </Text>
-            <Text textStyle="eyebrow" color="fg.subtle">
+            <Text fontSize="13px" color="fg.muted">
               Anywhere on this page
             </Text>
           </Flex>
@@ -736,71 +733,59 @@ export function UploadShell({
           <Stack
             gap="4"
             bg="bg.panel"
-            rounded="2xl"
+            borderRadius="l3"
+            borderWidth="1px"
+            borderColor="border.card"
             p={{ base: "4", md: "6" }}
-            boxShadow="0 8px 32px rgba(0,0,0,0.03)"
           >
             <Stack gap="2">
               <chakra.label
                 htmlFor="import-source-url"
-                fontSize="13px"
-                fontWeight="550"
+                textStyle="eyebrow"
+                color="fg.muted"
               >
                 Import from a link
               </chakra.label>
-              <Flex
-                gap="2"
-                align="center"
-                bg="bg.subtle"
-                borderWidth="1px"
-                borderColor="border.control"
-                rounded="xl"
-                p="1.5"
-                _focusWithin={{
-                  borderColor: "accent.solid",
-                  outline: "1px solid",
-                  outlineColor: "accent.solid",
-                }}
-              >
-                <Box pl="2" color="fg.muted">
-                  <Link2 size={18} />
-                </Box>
-                <Input
-                  id="import-source-url"
-                  value={pasteValue}
-                  onChange={(event) => setPasteValue(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      commitPastedLink();
+              <Flex gap="2" align="center">
+                <Box position="relative" flex="1" minW="0">
+                  <Box
+                    position="absolute"
+                    insetStart="3"
+                    top="50%"
+                    transform="translateY(-50%)"
+                    color="fg.muted"
+                    pointerEvents="none"
+                  >
+                    <Link2 size={16} />
+                  </Box>
+                  <Input
+                    id="import-source-url"
+                    value={pasteValue}
+                    onChange={(event) => setPasteValue(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        commitPastedLink();
+                      }
+                    }}
+                    placeholder={
+                      pasteOverride === "rss"
+                        ? "Paste a podcast RSS feed"
+                        : "Paste a video link or RSS feed"
                     }
-                  }}
-                  placeholder={
-                    pasteOverride === "rss"
-                      ? "Paste a podcast RSS feed"
-                      : "Paste a video link or RSS feed"
-                  }
-                  type="url"
-                  aria-label="Video link or RSS URL"
-                  flex="1"
-                  minW="0"
-                  variant="flushed"
-                  borderWidth="0"
-                  px="1"
-                  fontSize="13px"
-                  _focusVisible={{ outline: "none", boxShadow: "none" }}
-                />
+                    type="url"
+                    aria-label="Video link or RSS URL"
+                    size="md"
+                    ps="9"
+                  />
+                </Box>
                 <Button
                   onClick={commitPastedLink}
                   disabled={!detectedKind || busy}
                   type="button"
-                  bg="accent.solid"
-                  color="accent.contrast"
-                  rounded="lg"
-                  px="4"
-                  h="40px"
+                  size="md"
                 >
-                  Continue <ArrowRight size={15} />
+                  Continue <ArrowRight size={16} />
                 </Button>
               </Flex>
               {trimmedPaste && (
@@ -819,18 +804,17 @@ export function UploadShell({
             </Stack>
             <Flex align="center" gap="3" color="fg.subtle">
               <Box flex="1" h="1px" bg="border.subtle" />
-              <Text fontSize="11px">or upload a file</Text>
+              <Text fontSize="12px">or upload a file</Text>
               <Box flex="1" h="1px" bg="border.subtle" />
             </Flex>
             <Box
               position="relative"
-              rounded="xl"
-              borderWidth="1px"
-              borderStyle="dashed"
-              borderColor={dropzoneDragOver ? "accent.solid" : "border.control"}
-              bg={dropzoneDragOver ? "accent.subtle" : "bg.subtle"}
+              borderRadius="l3"
+              borderWidth="2px"
+              borderColor={dropzoneDragOver ? "accent.solid" : "transparent"}
+              bg={dropzoneDragOver ? "accent.subtle" : "bg.soft"}
               transition="background 150ms ease, border-color 150ms ease"
-              _hover={{ bg: "accent.subtle", borderColor: "accent.solid" }}
+              _hover={{ bg: dropzoneDragOver ? "accent.subtle" : "bg.softHover" }}
               css={{
                 "&:has(input:focus-visible)": {
                   outline: "2px solid var(--chakra-colors-accent-solid)",
@@ -869,25 +853,15 @@ export function UploadShell({
                 pointerEvents="none"
                 p="5"
               >
-                <Flex
-                  boxSize="56px"
-                  rounded="2xl"
-                  bg="bg.panel"
-                  borderWidth="1px"
-                  borderColor="border"
-                  boxShadow="0 4px 10px rgba(0,0,0,0.04)"
-                  align="center"
-                  justify="center"
-                  color="accent.fg"
-                >
-                  <Upload size={25} strokeWidth={1.5} />
-                </Flex>
+                <Box color="fg.subtle">
+                  <Upload size={20} strokeWidth={1.75} />
+                </Box>
                 <Stack gap="1.5" align="center">
-                  <Text fontSize="14px" fontWeight="550">
+                  <Text fontSize="14px" fontWeight="500">
                     Drop your video here, or{" "}
                     <chakra.span color="accent.fg">browse files</chakra.span>
                   </Text>
-                  <Text fontSize="12px" color="fg.muted">
+                  <Text fontSize="13px" color="fg.muted">
                     Video or audio · Up to 5 GB
                   </Text>
                 </Stack>
@@ -913,8 +887,8 @@ export function UploadShell({
             </Box>
             <Flex align="center" justify="space-between" gap="3" wrap="wrap">
               <Flex align="center" gap="2" color="fg.muted">
-                <AudioLines size={15} />
-                <Text fontSize="12px">Have a podcast?</Text>
+                <AudioLines size={16} />
+                <Text fontSize="13px">Have a podcast?</Text>
               </Flex>
               <Button
                 variant="ghost"
@@ -928,7 +902,7 @@ export function UploadShell({
                 Import an RSS feed <ArrowRight size={13} />
               </Button>
             </Flex>
-            <chakra.details fontSize="12px" color="fg.muted">
+            <chakra.details fontSize="13px" color="fg.muted">
               <chakra.summary
                 cursor="pointer"
                 display="flex"
@@ -950,16 +924,13 @@ export function UploadShell({
                     setPasteOverride(next as PasteOverride)
                   }
                 />
-                <Text fontSize="11px">
+                <Text fontSize="12px" color="fg.subtle">
                   Supported: {LINK_PROVIDER_LABELS_JOINED}
                 </Text>
               </Stack>
             </chakra.details>
             {errorMessage && <ErrorNotice message={errorMessage} />}
           </Stack>
-          <Text textAlign="center" fontSize="12px" color="fg.muted">
-            Choose your captions and clip preferences in the next steps.
-          </Text>
         </Stack>
       ) : activeTab === "link" ? (
         /* Link path: its own Commit → Configure state machine — see
@@ -999,14 +970,18 @@ export function UploadShell({
                 {rssPreviewLoading && (
                   <Flex align="center" gap="2">
                     <Spinner size="xs" />
-                    <Text fontSize="12.5px" color="fg.muted">
+                    <Text fontSize="13px" color="fg.muted">
                       Loading episodes…
                     </Text>
                   </Flex>
                 )}
                 {rssError && <ErrorNotice message={rssError} />}
                 {!rssPreviewLoading && rssNotice && (
-                  <Text textStyle="data" fontSize="11px" color="fg.muted">
+                  <Text
+                    fontSize="12px"
+                    color="fg.subtle"
+                    fontVariantNumeric="tabular-nums"
+                  >
                     {rssNotice}
                   </Text>
                 )}
@@ -1024,9 +999,9 @@ export function UploadShell({
                     />
                     <Flex align="center" justify="space-between" gap="2">
                       <Text
-                        textStyle="data"
-                        fontSize="10.5px"
+                        fontSize="12px"
                         color="fg.subtle"
+                        fontVariantNumeric="tabular-nums"
                       >
                         Showing {visibleRssEpisodes.length} of{" "}
                         {filteredRssEpisodes.length}
@@ -1039,7 +1014,7 @@ export function UploadShell({
                               setRssEpisodeQuery("");
                               setRssEpisodeLimit(RSS_EPISODE_PAGE_SIZE);
                             }}
-                            fontSize="11px"
+                            fontSize="12px"
                             color="fg.muted"
                             textDecoration="underline"
                             textUnderlineOffset="2px"
@@ -1052,24 +1027,25 @@ export function UploadShell({
                       value={selectedEpisodeIds[0] ?? ""}
                       onValueChange={(next) => toggleEpisode(next, true)}
                     >
-                      <Stack
-                        gap="0"
-                        maxH="60"
-                        overflowY="auto"
-                        borderTopWidth="1px"
-                        borderTopColor="border"
-                      >
+                      <Stack gap="0.5" maxH="60" overflowY="auto">
                         {visibleRssEpisodes.map((episode) => (
                           <Box
                             key={episode.id}
-                            py="2.5"
-                            px="1"
-                            borderBottomWidth="1px"
-                            borderBottomColor="border.subtle"
+                            borderRadius="l2"
+                            bg={
+                              selectedEpisodeIds[0] === episode.id
+                                ? "accent.subtle"
+                                : undefined
+                            }
                             transition="background 120ms ease"
-                            _hover={{ bg: "bg.subtle" }}
+                            _hover={{
+                              bg:
+                                selectedEpisodeIds[0] === episode.id
+                                  ? "accent.subtle"
+                                  : "bg.soft",
+                            }}
                           >
-                            <Radio value={episode.id} w="full">
+                            <Radio value={episode.id} w="full" py="2.5" px="2.5">
                               <Box overflow="hidden" minW="0">
                                 <Text
                                   fontSize="13px"
@@ -1080,10 +1056,10 @@ export function UploadShell({
                                   {episode.title}
                                 </Text>
                                 <Text
-                                  textStyle="data"
-                                  fontSize="11px"
+                                  fontSize="12px"
                                   color="fg.subtle"
                                   mt="0.5"
+                                  fontVariantNumeric="tabular-nums"
                                 >
                                   {episode.publishedAt
                                     ? formatDate(episode.publishedAt) ||
@@ -1095,7 +1071,7 @@ export function UploadShell({
                           </Box>
                         ))}
                         {visibleRssEpisodes.length === 0 && (
-                          <Text py="4" px="1" fontSize="12px" color="fg.muted">
+                          <Text py="4" px="2.5" fontSize="13px" color="fg.muted">
                             No episodes match this search.
                           </Text>
                         )}
@@ -1104,7 +1080,7 @@ export function UploadShell({
                     {visibleRssEpisodes.length < filteredRssEpisodes.length && (
                       <Button
                         type="button"
-                        variant="outline"
+                        variant="subtle"
                         size="sm"
                         onClick={() =>
                           setRssEpisodeLimit((current) =>
@@ -1133,7 +1109,7 @@ export function UploadShell({
             <Stack gap="4">
               <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="4">
                 <Box>
-                  <Text fontSize="12px" color="fg.muted" mb="2">
+                  <Text textStyle="eyebrow" color="fg.muted" mb="2">
                     Speech language
                   </Text>
                   <LanguageSelect
@@ -1142,24 +1118,20 @@ export function UploadShell({
                   />
                 </Box>
                 <Box>
-                  <Text fontSize="12px" color="fg.muted" mb="2">
+                  <Text textStyle="eyebrow" color="fg.muted" mb="2">
                     Mode
                   </Text>
                   <ModeTabs value={mode} onChange={setMode} />
                 </Box>
               </Grid>
               {durationSec ? (
-                <chakra.details
-                  borderTopWidth="1px"
-                  borderColor="border.subtle"
-                  pt="3"
-                >
+                <chakra.details>
                   <chakra.summary
                     display="flex"
                     justifyContent="space-between"
                     alignItems="center"
                     cursor="pointer"
-                    fontSize="12px"
+                    fontSize="13px"
                     color="fg.muted"
                   >
                     <Flex align="center" gap="2">
@@ -1183,15 +1155,11 @@ export function UploadShell({
                   </Box>
                 </chakra.details>
               ) : (
-                <Text fontSize="11px" color="fg.muted">
+                <Text fontSize="12px" color="fg.subtle">
                   Duration and processing usage will be confirmed after upload.
                 </Text>
               )}
-              <chakra.details
-                borderTopWidth="1px"
-                borderColor="border.subtle"
-                pt="3"
-              >
+              <chakra.details>
                 <chakra.summary
                   display="flex"
                   justifyContent="space-between"
@@ -1249,7 +1217,7 @@ export function UploadShell({
               {activeTab === "rss" && submitting && statusMessage && (
                 <Flex align="center" gap="2">
                   <Spinner size="xs" />
-                  <Text fontSize="12.5px" color="fg.muted">
+                  <Text fontSize="13px" color="fg.muted">
                     {statusMessage}
                   </Text>
                 </Flex>
@@ -1269,9 +1237,6 @@ export function UploadShell({
                   size="md"
                   flex="1"
                   h="46px"
-                  rounded="xl"
-                  bg="accent.solid"
-                  color="accent.contrast"
                 >
                   {activeTab === "file"
                     ? uploadSnapshot.phase === "paused"
