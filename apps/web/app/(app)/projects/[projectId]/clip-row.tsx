@@ -2,13 +2,13 @@
 import { SOCIAL_POST_STATUS_LABELS } from "@/lib/social-post-status";
 import { usePublishing } from "./publishing-provider";
 
-import type { SyntheticEvent } from "react";
+import type { ReactNode, SyntheticEvent } from "react";
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { EditClipLengthDialog } from "./edit-clip-length-dialog";
-import { Button } from "@narriflow/ui/components/button";
+import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
@@ -21,9 +21,8 @@ import {
 import { Box, Flex, HStack, Stack, Text } from "@chakra-ui/react";
 import {
 	AlertTriangle,
-	Check,
 	ChevronDown,
-	ChevronUp,
+	Clapperboard,
 	Download,
 	Pencil,
 	Scissors,
@@ -36,6 +35,11 @@ import {
 	loadClipPreview,
 } from "@/lib/clip-media";
 import { ClipActionsMenu } from "./clip-actions-menu";
+
+/** Width/height of the tallest preview format — the media stage's shape. */
+const PREVIEW_STAGE_RATIO = Math.min(
+	...clipAspectRatioOptions.map((option) => option.width / option.height),
+);
 
 const platformLabels = [
 	{ key: "tiktokScore" as const, label: "TikTok" },
@@ -97,13 +101,7 @@ function SubScoreBar({ label, value }: { label: string; value: number }) {
 				<Box
 					h="full"
 					borderRadius="full"
-					bg={
-						value >= 70
-							? "success.solid"
-							: value >= 40
-								? "warning.solid"
-								: "fg.subtle"
-					}
+					bg="accent.solid"
 					w={`${value}%`}
 					animation="meter-fill"
 				/>
@@ -311,8 +309,7 @@ export function ClipRow({
 	const [reasoningExpanded, setReasoningExpanded] = useState(false);
 	const [transcriptExpanded, setTranscriptExpanded] = useState(false);
 	const searchParams = useSearchParams();
-	const collapseTranscript = searchParams.get("view") !== "desk";
-	const [scoresExpanded, setScoresExpanded] = useState(false);
+	const isGallery = searchParams.get("view") !== "desk";
 	const [editingBoundaries, setEditingBoundaries] = useState(false);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [selectedAspectRatio, setSelectedAspectRatio] =
@@ -549,6 +546,67 @@ export function ClipRow({
 	// 45–75 the eye tracks comfortably.
 	const measure = "68ch";
 
+	const postStatuses = [
+		...new Set(clipPosts.map((post) => SOCIAL_POST_STATUS_LABELS[post.status])),
+	].join(" · ");
+	const renderBusy =
+		selectedStatus === "pending" || selectedStatus === "rendering";
+
+	// Gallery cards pin selection and score to the card's top corners, either
+	// side of the centred preview. Desk rows put the preview at the card's
+	// left edge, so there they ride on the footage instead.
+	const selectBox = !isCaptionOnly && (
+		<Box
+			position="absolute"
+			top={isGallery ? "4" : "2"}
+			insetStart={isGallery ? "4" : "2"}
+			zIndex="1"
+			lineHeight="0"
+			{...(isGallery
+				? {}
+				: // Graphite chip — the checkbox sits on footage of any brightness.
+					{ p: "1", borderRadius: "l1", bg: "rgba(14, 16, 19, 0.72)" })}
+		>
+			<Checkbox
+				checked={selected}
+				onCheckedChange={(checked) => onToggleSelect(clip.id, checked)}
+				aria-label={`Select clip ${rank}`}
+			/>
+		</Box>
+	);
+	const scoreBadge = !isCaptionOnly && (
+		<Stack
+			position="absolute"
+			top={isGallery ? "4" : "2"}
+			insetEnd={isGallery ? "4" : "2"}
+			zIndex="1"
+			gap="1"
+			align="flex-end"
+			pointerEvents="none"
+			{...(isGallery
+				? {}
+				: { px: "1.5", py: "1", borderRadius: "l1", bg: "rgba(14, 16, 19, 0.72)" })}
+		>
+			<Text
+				textStyle="data"
+				fontSize="20px"
+				fontWeight="600"
+				lineHeight="1"
+				color={isGallery ? "accent.fg" : "studio.accentFg"}
+			>
+				{clip.viralityScore}
+			</Text>
+			<Text
+				fontSize="10px"
+				fontWeight="500"
+				lineHeight="1"
+				color={isGallery ? "fg.subtle" : "studio.fgMuted"}
+			>
+				Virality
+			</Text>
+		</Stack>
+	);
+
 	return (
 		<Box
 			data-clip-card
@@ -560,77 +618,83 @@ export function ClipRow({
 			bg={selected ? "accent.subtle" : "bg.panel"}
 			_hover={{ bg: selected ? "accent.subtle" : "bg.subtle" }}
 		>
+			{isGallery && selectBox}
+			{isGallery && scoreBadge}
 			<Flex
 				data-clip-body
 				gap={{ base: "4", md: "6" }}
 				align="stretch"
 				direction={{ base: "column", md: "row" }}
 			>
-				{!isCaptionOnly && (
-					<Box
-						pt="1"
-						flexShrink={0}
-						position="absolute"
-						top="7"
-						left="7"
-						zIndex="1"
-					>
-						<Checkbox
-							checked={selected}
-							onCheckedChange={(checked) => onToggleSelect(clip.id, checked)}
-							aria-label={`Select clip ${rank}`}
-						/>
-					</Box>
-				)}
-
-				{/* Left — media well */}
 				<Box
 					data-clip-media
 					flexShrink={0}
 					w={mediaW}
 					alignSelf={{ base: "center", md: "flex-start" }}
 				>
-					<MediaWell
-						ratio={selectedOption.width / selectedOption.height}
-						timecode={formatDuration(clip.durationSec)}
-						borderWidth="0"
-					>
-						{previewUrl ? (
-							<ClipVideo
-								src={previewUrl}
-								startSec={
-									previewIsProxy
-										? Math.max(0, clip.startSec - previewOffsetSec)
-										: 0
-								}
-								endSec={
-									previewIsProxy
-										? Math.max(0, clip.endSec - previewOffsetSec)
-										: clip.durationSec
-								}
-							/>
-						) : (
-							<WellPlaceholder
-								loading={previewLoading}
-								aspectCss={selectedOption.css}
-								caption={
-									previewLoading
-										? "Loading…"
-										: previewPending
-											? selectedStatus === "failed"
-												? "Render failed"
-												: "Preparing preview…"
-											: "Unavailable"
-								}
-							/>
-						)}
-					</MediaWell>
-
-					{/* Format pills */}
+					{/* Stage sized for the tallest format, so switching formats reframes
+					    the preview in place instead of moving everything below it. */}
 					<Flex
-						gap="1"
-						wrap="wrap"
-						mt="1.5"
+						w="full"
+						aspectRatio={PREVIEW_STAGE_RATIO}
+						align="center"
+						justify="center"
+					>
+						<MediaWell
+							ratio={selectedOption.width / selectedOption.height}
+							w="full"
+							maxH="full"
+							// A playing preview's controls sit where the chip would; the
+							// duration moves to the copy column's timecode line instead.
+							timecode={previewUrl ? undefined : formatDuration(clip.durationSec)}
+							borderWidth="0"
+						>
+							{previewUrl ? (
+								<ClipVideo
+									src={previewUrl}
+									startSec={
+										previewIsProxy
+											? Math.max(0, clip.startSec - previewOffsetSec)
+											: 0
+									}
+									endSec={
+										previewIsProxy
+											? Math.max(0, clip.endSec - previewOffsetSec)
+											: clip.durationSec
+									}
+								/>
+							) : (
+								<WellPlaceholder
+									loading={previewLoading}
+									aspectCss={selectedOption.css}
+									caption={
+										previewLoading
+											? "Loading…"
+											: previewPending
+												? selectedStatus === "failed"
+													? "Render failed"
+													: "Preparing preview…"
+												: "Unavailable"
+									}
+								/>
+							)}
+							{!isGallery && selectBox}
+							{!isGallery && scoreBadge}
+						</MediaWell>
+					</Flex>
+
+					{/* Format picker — a recessed track of frames drawn to each ratio;
+					    the frame's stroke says whether that format is rendered. */}
+					<Flex
+						w="fit-content"
+						mx="auto"
+						mt="2.5"
+						p="0.5"
+						gap="0.5"
+						borderRadius="l2"
+						borderWidth="1px"
+						borderColor="border.subtle"
+						bg="bg"
 						role="radiogroup"
 						aria-label="Preview format"
 					>
@@ -643,51 +707,57 @@ export function ClipRow({
 								: (variant?.status ?? "missing");
 							const isAvailable = Boolean(variant?.hasAsset) && !isQueued;
 							const isInFlight = status === "pending" || status === "rendering";
+							const isFailed = status === "failed" && !isAvailable && !isInFlight;
+							const statusLabel = isInFlight
+								? "rendering"
+								: isAvailable
+									? "rendered"
+									: isFailed
+										? "render failed"
+										: "not rendered";
 
 							return (
-								<Box
+								<Flex
 									key={option.value}
 									as="button"
 									role="radio"
 									aria-checked={isSelected}
-									aria-label={`${option.value}`}
+									aria-label={`${option.label}, ${statusLabel}`}
+									title={`${option.value} · ${statusLabel}`}
+									align="center"
+									gap="1"
+									h="6"
 									px="1.5"
-									py="0.5"
 									borderRadius="l1"
-									borderWidth="1px"
-									borderStyle={isAvailable || isSelected ? "solid" : "dashed"}
-									borderColor={
-										isSelected
-											? "accent.solid"
-											: isAvailable
-												? "border.emphasized"
-												: "border"
-									}
+									bg={isSelected ? "bg.muted" : "transparent"}
+									color={isSelected || isAvailable ? "fg" : "fg.subtle"}
 									cursor="pointer"
-									transition="border-color 120ms ease"
+									transition="background 120ms ease, color 120ms ease"
+									_hover={{ color: "fg", bg: isSelected ? "bg.muted" : "bg.subtle" }}
 									onClick={() => setSelectedAspectRatio(option.value)}
 								>
-									<Flex align="center" gap="1">
-										<Text
-											textStyle="data"
-											fontSize="10px"
-											color={isAvailable || isSelected ? "fg" : "fg.subtle"}
-										>
-											{option.value}
-										</Text>
-										{isAvailable && (
-											<Box asChild color="success.fg" aria-hidden="true">
-												<Check size={9} strokeWidth={3} />
-											</Box>
-										)}
-										{isInFlight && <Spinner size="xs" />}
-										{status === "failed" && !isAvailable && !isInFlight && (
-											<Box asChild color="danger.fg" aria-hidden="true">
-												<AlertTriangle size={9} />
-											</Box>
-										)}
-									</Flex>
-								</Box>
+									{isInFlight ? (
+										<Spinner size="xs" />
+									) : (
+										<RatioFrame
+											ratioW={option.iconW}
+											ratioH={option.iconH}
+											tone={
+												isFailed
+													? "danger"
+													: isSelected
+														? "accent"
+														: isAvailable
+															? "neutral"
+															: "missing"
+											}
+											filled={isAvailable}
+										/>
+									)}
+									<Text textStyle="data" fontSize="10px" lineHeight="1">
+										{option.value}
+									</Text>
+								</Flex>
 							);
 						})}
 					</Flex>
@@ -695,38 +765,23 @@ export function ClipRow({
 
 				{/* Right — content */}
 				<Stack data-clip-copy flex="1" minW="0" w="full" gap="4">
-					{/* Capped to the prose measure plus a meta allowance so the score
-              sits with the title it grades. Left unbounded, space-between
-              threw it to the container's right edge, ~560px clear of the text.
-              Only the header is capped — capping the whole column wrapped the
-              action row and pushed rows from 269px to 472px. */}
-					<Flex
-						align="flex-start"
-						justify="space-between"
-						gap="3"
-						wrap="wrap"
-						maxW={`calc(${measure} + 200px)`}
-					>
+					<Flex align="flex-start" gap="2" maxW={`calc(${measure} + 200px)`}>
 						<Box minW="0" flex="1">
-							<Flex align="center" gap="2" mb="0.5">
-								{!isCaptionOnly && (
-									<Text fontSize="10px" color="fg.subtle">
-										Clip {String(rank).padStart(2, "0")}
-									</Text>
-								)}
-								<Text
-									textStyle="eyebrow"
-									color={clip.category === "hook" ? "accent.fg" : "fg.subtle"}
+							<Text textStyle="eyebrow" color="fg.subtle" mb="1">
+								{!isCaptionOnly && `Clip ${String(rank).padStart(2, "0")} · `}
+								<Box
+									as="span"
+									color={clip.category === "hook" ? "accent.fg" : undefined}
 								>
 									{clip.category}
-								</Text>
-							</Flex>
+								</Box>
+							</Text>
 							<Link href={studioHref}>
 								<Text
-									fontSize={compact ? "sm" : "20px"}
-									fontWeight="500"
+									fontSize={compact ? "sm" : "18px"}
+									fontWeight="550"
 									color="fg"
-									lineHeight="1.4"
+									lineHeight="1.35"
 									lineClamp={compact ? 1 : 2}
 									textDecoration="underline"
 									textDecorationColor="transparent"
@@ -739,13 +794,12 @@ export function ClipRow({
 										: (clip.title ?? clip.hookText)}
 								</Text>
 							</Link>
-							<Text
-								mt="0.5"
-								textStyle="data"
-								fontSize="11px"
-								color="fg.timecode"
-							>
+							<Text mt="1" textStyle="data" fontSize="11px" color="fg.timecode">
 								{formatTimecode(clip.startSec)} – {formatTimecode(clip.endSec)}
+								<Box as="span" color="fg.subtle">
+									{" · "}
+									{formatDuration(clip.durationSec)}
+								</Box>
 							</Text>
 							{/* No out-of-preferred-range warning here: detection now sizes
                   each clip to its story arc on purpose (durations outside
@@ -754,215 +808,145 @@ export function ClipRow({
                   The 30-60s duration FILTER in clips-panel.tsx remains. */}
 						</Box>
 
-						<Flex align="flex-start" gap="1" flexShrink={0}>
-							{!isCaptionOnly && (
-								<Stack gap="0.5" align="flex-end">
-									<Text
-										textStyle="data"
-										fontWeight="600"
-										fontSize="20px"
-										lineHeight="1"
-										color={
-											clip.viralityScore >= 70
-												? "success.fg"
-												: clip.viralityScore >= 40
-													? "warning.fg"
-													: "fg.muted"
-										}
-									>
-										{clip.viralityScore}
-									</Text>
-									<Button
-										variant="ghost"
-										size="2xs"
-										onClick={() => setScoresExpanded((v) => !v)}
-										aria-expanded={scoresExpanded}
-									>
-										{scoresExpanded ? "Hide scores" : "Scores"}
-										{scoresExpanded ? (
-											<ChevronUp size={11} />
-										) : (
-											<ChevronDown size={11} />
-										)}
-									</Button>
-								</Stack>
-							)}
-
-							{/* Overflow actions — rename (manual + AI), duplicate, delete.
+						{/* Overflow actions — rename (manual + AI), duplicate, delete.
                   Offered on the caption-only row too: it is a real clip with a
                   real title and a real rendered file, so it renames, duplicates
                   and deletes exactly like any other. */}
-							<ClipActionsMenu
-								projectId={clip.projectId}
-								clipId={clip.id}
-								title={clip.title}
-								fallbackTitle={
-									isCaptionOnly ? "Captioned video" : clip.hookText
-								}
-							/>
-						</Flex>
+						<ClipActionsMenu
+							projectId={clip.projectId}
+							clipId={clip.id}
+							title={clip.title}
+							fallbackTitle={isCaptionOnly ? "Captioned video" : clip.hookText}
+						/>
 					</Flex>
 
-					{scoresExpanded && !isCaptionOnly && (
-						<Stack gap="1" pt="1">
-							<SubScoreBar label="Hook" value={clip.hookStrengthScore} />
-							<SubScoreBar
-								label="Emotion"
-								value={clip.emotionalIntensityScore}
-							/>
-							<SubScoreBar label="Story" value={clip.storyCompletenessScore} />
-							<SubScoreBar label="Pacing" value={clip.pacingScore} />
-							<SubScoreBar
-								label="Duration"
-								value={clip.durationOptimalityScore}
-							/>
-							<HStack gap="3" wrap="wrap" pt="1">
-								{platformLabels.map(({ key, label }) => (
-									<HStack key={key} gap="1">
-										<Text fontSize="11px" color="fg.muted">
-											{label}
-										</Text>
+					{(!isCaptionOnly || clip.transcriptSlice.length > 0) && (
+						<Box>
+							{!isCaptionOnly && (
+								<DetailDisclosure
+									label="Why this clip works"
+									expanded={reasoningExpanded}
+									onToggle={() => setReasoningExpanded((v) => !v)}
+								>
+									<Stack gap="4" pb="4">
 										<Text
-											textStyle="data"
-											fontSize="11px"
-											fontWeight="600"
-											color={
-												clip[key] >= 70
-													? "success.fg"
-													: clip[key] >= 40
-														? "warning.fg"
-														: "fg.muted"
-											}
+											fontSize="sm"
+											color="fg.muted"
+											lineHeight="1.7"
+											maxW={measure}
 										>
-											{clip[key]}
+											{clip.reasoning}
+											{clip.payoffText ? ` Payoff: ${clip.payoffText}` : ""}
 										</Text>
-									</HStack>
-								))}
-								{clip.platformFit.map((platform) => (
-									<Text key={platform} textStyle="eyebrow" color="fg.subtle">
-										{platformFitLabels[platform] ?? platform}
-									</Text>
-								))}
-							</HStack>
-						</Stack>
-					)}
-
-					{!isCaptionOnly && (
-						<Box>
-							<Button
-								variant="plain"
-								size="sm"
-								w="full"
-								justifyContent="space-between"
-								onClick={() => setReasoningExpanded((v) => !v)}
-								aria-expanded={reasoningExpanded}
-							>
-								Why this clip works
-								{reasoningExpanded ? (
-									<ChevronUp size={13} />
-								) : (
-									<ChevronDown size={13} />
-								)}
-							</Button>
-							{reasoningExpanded && (
-								<Text
-									mt="3"
-									fontSize="sm"
-									color="fg.muted"
-									lineHeight="1.7"
-									maxW={measure}
-								>
-									{clip.reasoning}
-									{clip.payoffText ? ` Payoff: ${clip.payoffText}` : ""}
-								</Text>
-							)}
-						</Box>
-					)}
-
-					{clip.transcriptSlice.length > 0 && (
-						<Box>
-							<Flex align="center" justify="space-between" mb="0.5">
-								<Text fontSize="xs" color="fg.subtle">
-									Transcript
-								</Text>
-								<Button
-									variant="ghost"
-									size="2xs"
-									onClick={() => setTranscriptExpanded((v) => !v)}
-									aria-expanded={transcriptExpanded}
-								>
-									{transcriptExpanded ? "Collapse" : "Expand"}
-									{transcriptExpanded ? (
-										<ChevronUp size={11} />
-									) : (
-										<ChevronDown size={11} />
-									)}
-								</Button>
-							</Flex>
-							{transcriptExpanded ? (
-								<Stack
-									maxH="9rem"
-									gap="0"
-									overflowY="auto"
-									borderTopWidth="1px"
-									borderColor="border.subtle"
-								>
-									{clip.transcriptSlice.map((utterance, index) => (
-										<Box
-											key={`${utterance.index}-${utterance.startSec}`}
-											py="1.5"
-											borderTopWidth={index > 0 ? "1px" : "0"}
-											borderColor="border.subtle"
-										>
-											<Flex gap="1.5" align="center" mb="0.5">
-												<Text fontSize="11px" fontWeight="500" color="fg">
-													{utterance.speakerLabel}
+										<Stack gap="1.5" maxW={measure}>
+											<SubScoreBar label="Hook" value={clip.hookStrengthScore} />
+											<SubScoreBar
+												label="Emotion"
+												value={clip.emotionalIntensityScore}
+											/>
+											<SubScoreBar
+												label="Story"
+												value={clip.storyCompletenessScore}
+											/>
+											<SubScoreBar label="Pacing" value={clip.pacingScore} />
+											<SubScoreBar
+												label="Duration"
+												value={clip.durationOptimalityScore}
+											/>
+										</Stack>
+										<HStack gap="3" wrap="wrap">
+											{platformLabels.map(({ key, label }) => (
+												<HStack key={key} gap="1">
+													<Text fontSize="11px" color="fg.muted">
+														{label}
+													</Text>
+													<Text
+														textStyle="data"
+														fontSize="11px"
+														fontWeight="600"
+														color="fg"
+													>
+														{clip[key]}
+													</Text>
+												</HStack>
+											))}
+											{clip.platformFit.map((platform) => (
+												<Text key={platform} textStyle="eyebrow" color="fg.subtle">
+													{platformFitLabels[platform] ?? platform}
 												</Text>
+											))}
+										</HStack>
+									</Stack>
+								</DetailDisclosure>
+							)}
+
+							{clip.transcriptSlice.length > 0 && (
+								<DetailDisclosure
+									label="Transcript"
+									expanded={transcriptExpanded}
+									onToggle={() => setTranscriptExpanded((v) => !v)}
+									collapsedPreview={
+										isGallery ? null : (
+											<Flex gap="1.5" align="baseline" maxW={measure} pb="3">
 												<Text
 													textStyle="data"
 													fontSize="10px"
 													color="fg.timecode"
+													flexShrink={0}
 												>
-													{formatTimecode(utterance.startSec)}
+													{formatTimecode(clip.transcriptSlice[0]!.startSec)}
+												</Text>
+												<Text
+													fontSize="sm"
+													color="fg.muted"
+													lineHeight="1.8"
+													lineClamp={compact ? 2 : 4}
+												>
+													{clip.transcriptSlice
+														.map((utterance) => utterance.text)
+														.join(" ")}
 												</Text>
 											</Flex>
-											<Text
-												fontSize="xs"
-												lineHeight="1.5"
-												color="fg"
-												maxW={measure}
+										)
+									}
+								>
+									<Stack maxH="9rem" gap="0" overflowY="auto" pb="2">
+										{clip.transcriptSlice.map((utterance, index) => (
+											<Box
+												key={`${utterance.index}-${utterance.startSec}`}
+												py="1.5"
+												borderTopWidth={index > 0 ? "1px" : "0"}
+												borderColor="border.subtle"
 											>
-												{utterance.text}
-											</Text>
-										</Box>
-									))}
-								</Stack>
-							) : !collapseTranscript ? (
-								<Flex gap="1.5" align="baseline" maxW={measure}>
-									<Text
-										textStyle="data"
-										fontSize="10px"
-										color="fg.timecode"
-										flexShrink={0}
-									>
-										{formatTimecode(clip.transcriptSlice[0]!.startSec)}
-									</Text>
-									<Text
-										fontSize="sm"
-										color="fg.muted"
-										lineHeight="1.8"
-										lineClamp={compact ? 2 : 4}
-									>
-										{clip.transcriptSlice
-											.map((utterance) => utterance.text)
-											.join(" ")}
-									</Text>
-								</Flex>
-							) : null}
+												<Flex gap="1.5" align="center" mb="0.5">
+													<Text fontSize="11px" fontWeight="500" color="fg">
+														{utterance.speakerLabel}
+													</Text>
+													<Text
+														textStyle="data"
+														fontSize="10px"
+														color="fg.timecode"
+													>
+														{formatTimecode(utterance.startSec)}
+													</Text>
+												</Flex>
+												<Text
+													fontSize="xs"
+													lineHeight="1.5"
+													color="fg"
+													maxW={measure}
+												>
+													{utterance.text}
+												</Text>
+											</Box>
+										))}
+									</Stack>
+								</DetailDisclosure>
+							)}
 						</Box>
 					)}
 
-					{(selectedStatus === "pending" || selectedStatus === "rendering") && (
+					{renderBusy && (
 						<Flex align="center" gap="2">
 							<Spinner size="xs" />
 							<Text fontSize="11px" color="fg.muted">
@@ -981,103 +965,75 @@ export function ClipRow({
 						</Flex>
 					) : null}
 
-					{/* Action row — all outline/ghost, never solid (the view's one
-              solid button lives in the toolbar as "Render selected"). */}
-					<Flex
-						data-clip-actions
-						gap="2"
-						align="center"
-						wrap="wrap"
-						pt="4"
-						mt="auto"
-					>
-						<Button
-							size="sm"
-							disabled={!publishing.config.canPublish}
-							onClick={() => publishing.compose([clip.id])}
-						>
-							Publish
-						</Button>
-						{clipPosts.length > 0 && (
-							<Text fontSize="xs" color="fg.muted" width="full">
-								{[
-									...new Set(
-										clipPosts.map(
-											(post) => SOCIAL_POST_STATUS_LABELS[post.status],
-										),
-									),
-								].join(" · ")}
-							</Text>
-						)}
-						{clipPosts.length > 0 && (
+					{/* Action row — Publish leads, file and editor actions follow,
+              Trim/Extend closes the row as an icon. */}
+					<Stack gap="2" pt="4" mt="auto" data-clip-actions>
+						<Flex gap="2" align="center">
 							<Button
 								size="sm"
-								variant="outline"
-								onClick={() => publishing.viewPosts([clip.id])}
-								title={[
-									...new Set(
-										clipPosts.map(
-											(post) => SOCIAL_POST_STATUS_LABELS[post.status],
-										),
-									),
-								].join(" · ")}
+								disabled={!publishing.config.canPublish}
+								onClick={() => publishing.compose([clip.id])}
 							>
-								View posts ({clipPosts.length})
+								Publish
 							</Button>
-						)}
-
-						{selectedVariantHasAsset ? (
 							<Button size="sm" variant="outline" asChild>
-								<a
-									href={clipFileDownloadPath(
-										clip.projectId,
-										clip.id,
-										selectedAspectRatio,
-									)}
-									download
+								<Link href={studioHref}>
+									<Pencil size={13} />
+									Edit
+								</Link>
+							</Button>
+							{selectedVariantHasAsset ? (
+								<Button size="sm" variant="outline" asChild>
+									<a
+										href={clipFileDownloadPath(
+											clip.projectId,
+											clip.id,
+											selectedAspectRatio,
+										)}
+										download
+									>
+										<Download size={13} />
+										Download
+									</a>
+								</Button>
+							) : (
+								<Button
+									size="sm"
+									variant="outline"
+									disabled={renderBusy}
+									onClick={() => handleRenderWithConfirm(selectedAspectRatio)}
 								>
-									<Download size={12} />
-									<Text ms="1">Download</Text>
-								</a>
-							</Button>
-						) : (
-							<Button
-								size="sm"
-								variant="outline"
-								disabled={
-									selectedStatus === "pending" || selectedStatus === "rendering"
-								}
-								onClick={() => handleRenderWithConfirm(selectedAspectRatio)}
-							>
-								{selectedStatus === "pending" ||
-								selectedStatus === "rendering" ? (
-									<Spinner size="xs" />
-								) : (
-									<Check size={12} />
-								)}
-								<Text ms="1">
+									{renderBusy ? <Spinner size="xs" /> : <Clapperboard size={13} />}
 									{selectedStatus === "failed" ? "Retry render" : "Render"}
+								</Button>
+							)}
+							<IconButton
+								size="sm"
+								variant="ghost"
+								ms="auto"
+								aria-label="Trim or extend clip"
+								title="Trim / Extend"
+								onClick={() => setEditingBoundaries(true)}
+							>
+								<Scissors size={14} />
+							</IconButton>
+						</Flex>
+						{clipPosts.length > 0 && (
+							<Flex align="center" gap="2" minW="0">
+								<Text fontSize="xs" color="fg.muted" truncate>
+									{postStatuses}
 								</Text>
-							</Button>
+								<Button
+									size="2xs"
+									variant="ghost"
+									flexShrink={0}
+									onClick={() => publishing.viewPosts([clip.id])}
+								>
+									View posts ({clipPosts.length})
+								</Button>
+							</Flex>
 						)}
-
-						<Button size="sm" variant="outline" asChild>
-							<Link href={studioHref}>
-								<Pencil size={12} />
-								<Text ms="1">Preview &amp; edit</Text>
-							</Link>
-						</Button>
-
-						<Button
-							size="sm"
-							variant="ghost"
-							ms="auto"
-							onClick={() => setEditingBoundaries(true)}
-						>
-							<Scissors size={12} />
-							<Text ms="1">Trim / Extend</Text>
-						</Button>
-					</Flex>
+					</Stack>
 
 					<EditClipLengthDialog
 						projectId={clip.projectId}
@@ -1113,5 +1069,86 @@ export function ClipRow({
 			</Flex>
 			{dialog}
 		</Box>
+	);
+}
+
+/** One hairline-ruled, full-width expandable row in the card's detail list. */
+function DetailDisclosure({
+	label,
+	expanded,
+	onToggle,
+	collapsedPreview,
+	children,
+}: {
+	label: string;
+	expanded: boolean;
+	onToggle: () => void;
+	collapsedPreview?: ReactNode;
+	children: ReactNode;
+}) {
+	return (
+		<Box borderTopWidth="1px" borderColor="border.subtle">
+			<Flex
+				as="button"
+				w="full"
+				align="center"
+				justify="space-between"
+				py="2.5"
+				fontSize="13px"
+				fontWeight="500"
+				color="fg.muted"
+				cursor="pointer"
+				transition="color 120ms ease"
+				_hover={{ color: "fg" }}
+				aria-expanded={expanded}
+				onClick={onToggle}
+			>
+				{label}
+				<Box
+					asChild
+					color="fg.subtle"
+					transition="transform 150ms ease"
+					transform={expanded ? "rotate(180deg)" : undefined}
+				>
+					<ChevronDown size={14} />
+				</Box>
+			</Flex>
+			{expanded ? children : collapsedPreview}
+		</Box>
+	);
+}
+
+/** A tiny frame drawn to an aspect ratio — the format picker's glyph. */
+function RatioFrame({
+	ratioW,
+	ratioH,
+	tone,
+	filled,
+}: {
+	ratioW: number;
+	ratioH: number;
+	tone: "accent" | "neutral" | "missing" | "danger";
+	filled: boolean;
+}) {
+	const scale = 11 / Math.max(ratioW, ratioH);
+	const stroke = {
+		accent: "accent.solid",
+		neutral: "fg.muted",
+		missing: "fg.subtle",
+		danger: "danger.fg",
+	}[tone];
+	return (
+		<Box
+			aria-hidden="true"
+			flexShrink={0}
+			w={`${Math.round(ratioW * scale)}px`}
+			h={`${Math.round(ratioH * scale)}px`}
+			borderRadius="2px"
+			borderWidth="1.5px"
+			// Dashed always means "not rendered yet", selected or not.
+			borderStyle={filled || tone === "danger" ? "solid" : "dashed"}
+			borderColor={stroke}
+			bg={filled ? `${stroke}/25` : "transparent"}
+		/>
 	);
 }
