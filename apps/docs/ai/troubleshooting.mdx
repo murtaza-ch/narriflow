@@ -1,0 +1,65 @@
+---
+title: Troubleshooting
+description: Fix connection, permission and limit problems with the Narriflow connector, and revoke access when you need to.
+---
+
+## Confirm a connection
+
+Trust two things: your AI client's connection status, and a successful tool call. Ask the assistant to run `narriflow_list_workspaces`. A working connection returns your Workspaces. Narriflow does not keep a list of connected AI clients, so there is no connection list to check in the app.
+
+## The consent window does not complete
+
+Narriflow uses a hosted sign-in and consent screen, and the client opens it in your browser.
+
+1. Allow the browser window or redirect that the client opens.
+2. Sign in to Narriflow once, then start the connection again from the client.
+3. Check that the URL is exactly `https://app.narriflow.com/mcp`.
+
+If the client reports an issuer or redirect mismatch, email support@narriflow.com with the client name and its error text.
+
+## Connected, but tools are denied
+
+Run `narriflow_list_workspaces` first, then check each of these.
+
+- The Workspace is on an active Business plan. The list shows `mcpEnabled` for each Workspace.
+- You pass the `workspaceId` that the list returned.
+- Your role allows the action. Viewers can read but cannot start work.
+- The connection has the scope the tool needs. [Tools](/ai/tools) lists the scope for each one.
+
+| Error | Meaning |
+| --- | --- |
+| `integration_access_unavailable` | The Workspace needs active Business access. |
+| `workspace_access_denied` | You are not a member of that Workspace, or your role does not allow the action. |
+| `scope_required` | The connection lacks a scope. The error names it. |
+| `workspace_boundary_violation` | An API key was used for a different Workspace than its own. |
+
+## A write tool is refused
+
+Your connection has read scopes only. Disconnect, then connect again and approve the write scopes you need. An existing API key cannot gain scopes, so create a new key with the write permissions, switch the client to it, and revoke the old one.
+
+## Work stops or is refused
+
+| Error | What to do |
+| --- | --- |
+| `processing_quota_exhausted` | The Workspace used its processing minutes for the month. Wait for the next UTC month or change the plan. |
+| `workspace_processing_capacity_reached` | The Workspace has too many videos processing. Retry in a minute. |
+| `upload_too_long` | The video is longer than the plan allows. Trim it and try again. |
+
+## Tools or cards look out of date
+
+After Narriflow updates its tools, refresh the connector's tool list in your AI client. Cards you opened earlier keep their original version.
+
+## Too many requests
+
+Each credential may send 300 requests a minute. Wait a minute and retry.
+
+## Revoke and rotate
+
+<Tabs>
+  <Tab title="OAuth connection">
+    Disconnect Narriflow in your AI client. In Claude Code and Codex, run `claude mcp logout narriflow` or `codex mcp logout narriflow`. To stop access to a Workspace at once, remove the member in **Settings → Members**. Narriflow checks membership on every call.
+  </Tab>
+  <Tab title="Workspace API key">
+    In **Settings → Developer access**, create a replacement key and update the client. Then revoke the old key. Narriflow checks the key on every request, so a revoked key stops working immediately.
+  </Tab>
+</Tabs>

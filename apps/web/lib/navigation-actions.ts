@@ -22,15 +22,15 @@ export const NAVIGATION_ACTIONS: NavigationAction[] = [
   {
     id: "mcp",
     title: "Connect an AI assistant",
-    subtitle: "Set up Narriflow MCP with Codex, Claude, ChatGPT, or another client",
+    subtitle: "Use Narriflow from Claude, ChatGPT, Cursor, Codex, or another client",
     href: "/integrations/mcp",
-    keywords: ["mcp", "codex", "claude", "chatgpt", "inspector", "oauth"],
+    keywords: ["mcp", "codex", "claude", "chatgpt", "cursor", "inspector", "oauth"],
     icon: Braces,
   },
   {
     id: "developer-access",
     title: "Developer access",
-    subtitle: "Create and revoke scoped workspace API keys",
+    subtitle: "API keys, a first request, and webhook signing",
     href: "/settings/api",
     keywords: ["api", "key", "token", "credential", "revoke"],
     icon: KeyRound,
@@ -38,7 +38,7 @@ export const NAVIGATION_ACTIONS: NavigationAction[] = [
   {
     id: "help",
     title: "Tutorials & help",
-    subtitle: "Guides for projects, publishing, and AI assistants",
+    subtitle: "Docs for projects, AI assistants, and the API",
     href: "/help",
     keywords: ["guide", "tutorial", "support", "setup"],
     icon: CircleHelp,

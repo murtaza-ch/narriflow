@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Image, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { Trash2 } from "lucide-react";
@@ -422,9 +421,8 @@ export function SocialAccountsPanel({
 								</Box>
 								{canManage && account.status !== "active" ? (
 									<Button variant="subtle" size="sm" asChild>
-										<Link href={connectHref(account.platform, returnTo)}>
-											Reconnect
-										</Link>
+										{/* A plain anchor: starting OAuth writes state, so it must not be prefetched. */}
+										<a href={connectHref(account.platform, returnTo)}>Reconnect</a>
 									</Button>
 								) : null}
 								{canManage ? (
@@ -498,12 +496,12 @@ export function SocialAccountsPanel({
 								outlineOffset: "3px",
 							}}
 						>
-							<Link
+							<a
 								href={connectHref(platform, returnTo)}
 								aria-label={`Connect ${platformLabels[platform]} account`}
 							>
 								{content}
-							</Link>
+							</a>
 						</Box>
 					) : (
 						<Box

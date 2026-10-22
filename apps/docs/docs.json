@@ -1,0 +1,100 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Narriflow",
+  "description": "Documentation for Narriflow: clips from long videos, the AI assistant connector, and the REST API.",
+  "colors": {
+    "primary": "#2438E8",
+    "light": "#8EAEEC",
+    "dark": "#4A5AF0"
+  },
+  "appearance": {
+    "default": "dark"
+  },
+  "background": {
+    "color": {
+      "light": "#FBFBFC",
+      "dark": "#101010"
+    }
+  },
+  "fonts": {
+    "family": "Geist"
+  },
+  "icons": {
+    "library": "lucide"
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg",
+    "href": "/"
+  },
+  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "button",
+      "label": "Dashboard",
+      "href": "https://app.narriflow.com"
+    }
+  },
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude"]
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": ["index", "quickstart"]
+          }
+        ]
+      },
+      {
+        "tab": "AI assistants",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": ["ai/overview", "ai/permissions"]
+          },
+          {
+            "group": "Connect",
+            "pages": [
+              "ai/claude",
+              "ai/chatgpt",
+              "ai/claude-code",
+              "ai/codex",
+              "ai/cursor",
+              "ai/other-clients"
+            ]
+          },
+          {
+            "group": "Use it",
+            "pages": ["ai/example-prompts", "ai/upload-local-files"]
+          },
+          {
+            "group": "Reference",
+            "pages": ["ai/tools", "ai/troubleshooting"]
+          }
+        ]
+      },
+      {
+        "tab": "API",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": ["api/introduction", "api/quickstart"]
+          },
+          {
+            "group": "Guides",
+            "pages": ["api/uploads", "api/callbacks", "api/n8n"]
+          },
+          {
+            "group": "API reference",
+            "openapi": "api-reference/openapi.json"
+          }
+        ]
+      }
+    ]
+  }
+}

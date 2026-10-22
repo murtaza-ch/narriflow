@@ -1,112 +1,30 @@
 import Link from "next/link";
 import { Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import {
-  ArrowLeft,
-  ArrowRight,
-  Bot,
-  Braces,
-  CheckCircle2,
-  CircleAlert,
-  KeyRound,
-  LockKeyhole,
-  ShieldCheck,
-  TerminalSquare,
-  UserRound,
-} from "lucide-react";
+import { ArrowLeft, ArrowRight, ArrowUpRight, CalendarClock, CircleAlert, Download, Rss, ScanEye, Scissors, Upload } from "lucide-react";
 import { workspaceAllowsCapability } from "@narriflow/services";
 import { Button } from "@narriflow/ui/components/button";
-import { PageHeader } from "@narriflow/ui/components/page-header";
-import { StatBand } from "@narriflow/ui/components/stat-band";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
+import { docsUrl } from "@/lib/docs-url";
 import { inspectMcpConfiguration } from "@/lib/mcp-configuration";
-import { CopyControl } from "../_components/copy-control";
+import { AssistantSetup, PromptCards } from "./assistant-setup";
 
-const TOOLS = [
-  { name: "narriflow_submit_video", behavior: "Write", description: "Import a supported video link with committed clip generation settings." },
-  { name: "narriflow_upload_video", behavior: "Write", description: "Choose a local video through an assistant picker or authenticated web handoff." },
-  { name: "narriflow_generate_clips", behavior: "Write", description: "Generate clips from an existing project using its workspace quota." },
-  { name: "narriflow_list_clips", behavior: "Read", description: "Browse clip scores, timing and review links with pagination." },
-  { name: "narriflow_get_clip", behavior: "Read", description: "Inspect a clip's reviewed revision and optional transcript excerpt." },
-  { name: "narriflow_create_clip_export", behavior: "Write", description: "Export an exact reviewed editor revision in selected output formats." },
-  { name: "narriflow_get_clip_export", behavior: "Read", description: "Check export progress and open Narriflow to download." },
-  { name: "narriflow_list_social_accounts", behavior: "Read", description: "List connected destinations without credentials." },
-  { name: "narriflow_get_publishing_options", behavior: "Read", description: "Inspect destination account publishing requirements." },
-  { name: "narriflow_prepare_social_post", behavior: "Write", description: "Review the exact clip revision, export, account, caption, settings and time." },
-  { name: "narriflow_schedule_social_post", behavior: "Write", description: "Schedule the exact confirmed publication after review approval is checked." },
-  { name: "narriflow_list_social_publications", behavior: "Read", description: "Browse publication status and scheduled delivery." },
-  { name: "narriflow_list_workspaces", behavior: "Read", description: "List memberships and MCP eligibility.",
-  },
-  { name: "narriflow_list_projects", behavior: "Read", description: "Browse workspace projects and processing statistics.",
-  },
-  { name: "narriflow_get_project", behavior: "Read", description: "Fetch a compact project and processing progress summary.",
-  },
-  { name: "narriflow_get_workspace_usage", behavior: "Read", description: "Check plan limits and monthly processing-minute usage.",
-  },
-  { name: "narriflow_list_autopilot_rules", behavior: "Read", description: "Inspect RSS autopilot rules.",
-  },
-  { name: "narriflow_create_rss_autopilot_rule", behavior: "Write", description: "Create a rule that can import and process new episodes.",
-  },
-  { name: "narriflow_run_autopilot_rule_now", behavior: "Write", description: "Mark an existing rule due for the worker.",
-  },
-  { name: "narriflow_get_social_publication", behavior: "Read", description: "Inspect a social publication's status and recovery options.",
-  },
-  { name: "narriflow_recheck_social_publication", behavior: "Write", description: "Check the existing provider operation without submitting another post.",
-  },
-  { name: "narriflow_confirm_social_publication", behavior: "Write", description: "Confirm an existing publication using operator evidence.",
-  },
-  { name: "narriflow_publish_social_publication_again", behavior: "Write", description: "Create another publication attempt after explicit duplicate-risk acknowledgement.",
-  },
+const CAPABILITIES = [
+  { icon: Upload, title: "Import", description: "Video links or files from your computer" },
+  { icon: Scissors, title: "Clip", description: "Scored, captioned and on brand" },
+  { icon: ScanEye, title: "Review", description: "Scores, timing and transcripts" },
+  { icon: Download, title: "Export", description: "The exact version you approved" },
+  { icon: CalendarClock, title: "Schedule", description: "To your connected social accounts" },
+  { icon: Rss, title: "Autopilot", description: "Clip new podcast episodes as they land" },
 ] as const;
 
-function SectionHeading({ title, description,
-}: { title: string; description?: string;
-}) {
+function SectionTitle({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   return (
-    <Stack gap="1.5">
-      <Text as="h2" fontSize="16px" fontWeight="500">{title}</Text>
-      {description ? (
-        <Text fontSize="13px" lineHeight="1.65" color="fg.muted" maxW="76ch">{description}</Text>
-      ) : null}
-    </Stack>
-  );
-}
-
-function ClientCard({
-  title,
-  label,
-  steps,
-  snippet,
-}: {
-  title: string;
-  label: string;
-  steps: string[];
-  snippet?: string;
-}) {
-  return (
-    <Stack as="article" gap="3" p="5" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" minW="0">
-      <Flex align="center" justify="space-between" gap="3">
-        <Text as="h3" fontSize="14px" fontWeight="500">{title}</Text>
-        <Text fontSize="12px" color="fg.subtle">{label}</Text>
-      </Flex>
-      <Stack as="ol" gap="2" ps="5">
-        {steps.map((step) => (
-          <Text as="li" key={step} fontSize="13px" lineHeight="1.55" color="fg.muted">{step}</Text>))}
-      </Stack>
-      {snippet ? (
-        <CopyControl value={snippet} label="Copy setup" multiline />
-      ) : null}
-    </Stack>
-  );
-}
-
-function InfoColumn({ icon: Icon, title, children,
-}: { icon: typeof ShieldCheck; title: string; children: React.ReactNode;
-}) {
-  return (
-    <Stack gap="2.5" p="5" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card">
-      <Flex align="center" gap="2"><Flex color="fg.muted"><Icon size={16} /></Flex><Text as="h3" fontSize="14px" fontWeight="500">{title}</Text></Flex>
-      <Text as="div" fontSize="13px" lineHeight="1.65" color="fg.muted">{children}</Text>
-    </Stack>
+    <Flex align="center" justify="space-between" gap="3" mb="3">
+      <Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted">
+        {children}
+      </Text>
+      {action}
+    </Flex>
   );
 }
 
@@ -114,221 +32,123 @@ export default async function McpIntegrationPage() {
   const appUser = await admitWorkspacePage("content.view");
   const mcpUrl = `${process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000"}/mcp`;
   const configuration = await inspectMcpConfiguration({ resourceUrl: process.env.NEXT_PUBLIC_APP_URL ? mcpUrl : undefined, issuerUrl: process.env.CLERK_OAUTH_ISSUER, hasVerificationSecret: Boolean(process.env.CLERK_SECRET_KEY), hasConfirmationSecret: Buffer.byteLength(process.env.MCP_CONTINUATION_SECRET ?? "") >= 32 });
-  const isEligible =
-    appUser.workspace.status === "active" && appUser.workspace.pricingTier === "business";
-  const accessLabel = isEligible
-    ? "Eligible"
-    : appUser.workspace.pricingTier === "business"
-      ? "Inactive"
-      : "Upgrade";
-  const canManageApi = workspaceAllowsCapability(appUser.workspace, "api.manage",
-  );
-  const codexConfig = `[mcp_servers.narriflow]\nurl = "${mcpUrl}"`;
-  const genericConfig = `Transport: Streamable HTTP\nURL: ${mcpUrl}\nAuthentication: OAuth 2.1 or Authorization: Bearer nf_…`;
+  const { workspace } = appUser;
+  const isBusiness = workspace.pricingTier === "business";
+  const isEligible = isBusiness && workspace.status === "active";
+  const canManageApi = workspaceAllowsCapability(workspace, "api.manage");
+
+  const status = !isBusiness
+    ? { ready: false, label: "Needs the Business plan" }
+    : !isEligible
+      ? { ready: false, label: "Workspace inactive" }
+      : configuration.verified
+        ? { ready: true, label: "Business plan · Ready to connect" }
+        : { ready: false, label: configuration.label };
+
+  const blocker = !isBusiness
+    ? workspace.role === "owner"
+      ? "Upgrade to Business to connect an assistant. You can read the setup now."
+      : "Ask the workspace owner to upgrade to Business to connect an assistant."
+    : !isEligible
+      ? `This workspace is ${workspace.status.replace("_", " ")}. Tools stay off until it's active.`
+      : !configuration.verified
+        ? configuration.description
+        : null;
+
+  const notice = blocker ? (
+    <Flex
+      align={{ base: "flex-start", md: "center" }}
+      justify="space-between"
+      direction={{ base: "column", md: "row" }}
+      gap="3"
+      bg="bg.subtle"
+      borderRadius="12px"
+      px="4"
+      py="3"
+    >
+      <Flex align="flex-start" gap="2.5" color="fg.muted">
+        <CircleAlert size={16} style={{ marginTop: 2, flexShrink: 0 }} />
+        <Text fontSize="13px">{blocker}</Text>
+      </Flex>
+      {!isEligible ? (
+        <Button asChild size="sm" variant="subtle" flexShrink={0}>
+          <Link href="/settings/billing">
+            {isBusiness ? "Open billing" : "View plans"}
+            <ArrowRight size={16} />
+          </Link>
+        </Button>
+      ) : null}
+    </Flex>
+  ) : undefined;
 
   return (
-    <Stack gap={{ base: "8", md: "10" }} maxW="1120px" mx="auto">
-      <PageHeader
-        title="Connect Narriflow to AI assistants"
-        description="Import a video, review generated clips, export a revision and confirm a social publication from your assistant."
-        actions={
-          <Button asChild size="sm" variant="subtle">
-            <Link href="/integrations"><ArrowLeft size={14} />All integrations</Link>
-          </Button>
-        }
-      />
+    <Stack gap="10" maxW="880px" mx="auto" w="full" pt={{ base: "2", md: "4" }}>
+      {/* The breadcrumb leads back on desktop; small screens get a link. */}
+      <Button asChild size="sm" variant="ghost" color="fg.muted" alignSelf="flex-start" mb="-8" display={{ base: "inline-flex", lg: "none" }}>
+        <Link href="/integrations">
+          <ArrowLeft size={16} />
+          Integrations
+        </Link>
+      </Button>
+      <AssistantSetup mcpUrl={mcpUrl} status={status} notice={notice} />
 
-      <StatBand columns={3}>
-        <StatBand.Item label="OAuth configuration" value={configuration.label} />
-        <StatBand.Item label="Workspace access" value={accessLabel} />
-        <StatBand.Item label="Live connection status" value="Client-side" />
-      </StatBand>
-      <Text fontSize="13px" color="fg.muted" role="status">{configuration.description}</Text>
+      <section>
+        <SectionTitle>Try a prompt</SectionTitle>
+        <PromptCards />
+      </section>
 
-      {!isEligible ? (
-        <Flex
-          align={{ base: "flex-start", md: "center" }}
-          justify="space-between"
-          direction={{ base: "column", md: "row" }}
-          gap="4"
-          bg="bg.subtle"
-          borderRadius="l3"
-          px="5"
-          py="4"
+      <section>
+        <SectionTitle
+          action={
+            <Button asChild size="xs" variant="ghost" color="fg.muted">
+              <a href={docsUrl("ai/tools")} target="_blank" rel="noreferrer">
+                All tools
+                <ArrowUpRight size={14} />
+              </a>
+            </Button>
+          }
         >
-          <Stack gap="1">
-            <Flex align="center" gap="2"><CircleAlert size={16} /><Text fontSize="14px" fontWeight="500">Active Business access is required for API &amp; MCP integrations</Text></Flex>
-            <Text fontSize="13px" color="fg.muted">
-              {appUser.workspace.pricingTier !== "business"
-                ? appUser.workspace.role === "owner"
-                  ? "Setup is visible now. Upgrade this workspace to Business before connecting a client."
-                  : "Setup is visible now. Ask the workspace owner to upgrade to Business before connecting a client."
-                : `This Business workspace is ${appUser.workspace.status.replace("_", " ")}; tools remain unavailable until it is active.`}
-            </Text>
-          </Stack>
-          <Button asChild size="sm" flexShrink={0}>
-            <Link href="/settings/billing">View Business plan<ArrowRight size={14} /></Link>
-          </Button>
-        </Flex>
-      ) : null}
-
-      <Stack as="section" gap="5" id="endpoint" scrollMarginTop="24">
-        <SectionHeading
-          title="Use one URL in every supported client"
-          description="Confirm the connection in your AI client."
-        />
-        <Text fontSize="13px" color="fg.muted">
-          The <Link href="/connector">public connector page</Link> explains what assistants can do, the data they reach, and how to disconnect.
-        </Text>
-        <CopyControl value={mcpUrl} label="Copy URL" />
-        <Flex align="flex-start" gap="2" color="fg.muted">
-          <CheckCircle2 size={15} style={{ marginTop: 3, flexShrink: 0 }} />
-          <Text fontSize="13px" lineHeight="1.6">The endpoint publishes OAuth discovery metadata and also accepts a workspace API key as a bearer token.</Text>
-        </Flex>
-      </Stack>
-
-      <Stack as="section" gap="5" id="authentication" scrollMarginTop="24">
-        <SectionHeading
-          title="Choose identity for people; keys for automation"
-          description="Personal connections do not share workspace credentials."
-        />
-        <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))" }} gap="6">
-          <InfoColumn icon={UserRound} title="Personal OAuth connection">
-            Start the connection from your AI client. Narriflow sends you to Clerk&apos;s hosted authorization and consent flow, then the client acts as your Narriflow user. It can only reach workspaces where you remain an active member, and every tool still enforces your workspace role.
-          </InfoColumn>
-          <InfoColumn icon={KeyRound} title="Workspace API key">
-            Use a scoped, workspace-bound key for unattended or non-OAuth clients. Grant processing, export, autopilot and publishing writes explicitly. Secrets are shown once and keys can be revoked independently of personal connections.{" "}
-            {canManageApi ? (
-              <Link href="/settings/api" style={{ textDecoration: "underline" }}>Manage workspace keys</Link>
-            ) : (
-              "A workspace member with developer-access permission must manage keys."
-            )}
-          </InfoColumn>
-        </Grid>
-        <Stack gap="3" p="5" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card">
-          <Text as="h3" fontSize="14px" fontWeight="500">Upload from Codex or Claude Code</Text>
-          <Text fontSize="13px" color="fg.muted">Set NARRIFLOW_API_KEY and NARRIFLOW_URL in your environment, then run the local helper from this checkout. Keep the same key when retrying an interrupted upload. File bytes travel directly to storage.</Text>
-          <CopyControl label="Copy upload command" value={`bun run --cwd apps/mcp upload --file /path/to/video.mp4 --workspace ${appUser.workspaceId} --key <request-UUID>`} multiline />
-        </Stack>
-      </Stack>
-
-      <Stack as="section" gap="5" id="client-setup" scrollMarginTop="24">
-        <SectionHeading
-          title="Add Narriflow to your preferred AI client"
-          description="Choose a remote or Streamable HTTP server with the endpoint above."
-        />
-        <Grid templateColumns={{ base: "1fr", lg: "repeat(2, minmax(0, 1fr))" }} gap={{ base: "7", lg: "6" }}>
-          <ClientCard
-            title="Codex"
-            label="OAUTH"
-            steps={[
-              "Add the server block to your Codex config.toml.",
-              "Run codex mcp login narriflow and complete the Clerk-hosted consent flow.",
-              "Ask Codex to call narriflow_list_workspaces to verify access.",
-            ]}
-            snippet={`${codexConfig}\n\n# Then run\ncodex mcp login narriflow`}
-          />
-          <ClientCard
-            title="Claude / Claude Code"
-            label="OAUTH"
-            steps={[
-              "In Claude, add a custom remote connector; in Claude Code, run the command below.",
-              "Open the connection and follow the browser authorization prompt.",
-              "Use the client MCP status view to confirm Narriflow is available.",
-            ]}
-            snippet={`claude mcp add --transport http narriflow ${mcpUrl}`}
-          />
-          <ClientCard
-            title="ChatGPT"
-            label="OAUTH"
-            steps={[
-              "Open Settings → Apps & Connectors and enable developer mode if your workspace requires it.",
-              "Create a custom app/connector and enter the Narriflow MCP URL.",
-              "Complete the hosted OAuth prompt, then enable Narriflow in a conversation.",
-            ]}
-          />
-          <ClientCard
-            title="MCP Inspector"
-            label="TEST"
-            steps={[
-              "Launch MCP Inspector and select Streamable HTTP.",
-              "Paste the remote endpoint, connect, and complete OAuth when prompted.",
-              "Open Tools and run narriflow_list_workspaces before testing workspace tools.",
-            ]}
-            snippet="npx @modelcontextprotocol/inspector"
-          />
-          <ClientCard
-            title="Generic Streamable HTTP"
-            label="OAUTH / KEY"
-            steps={[
-              "Use MCP Streamable HTTP.",
-              "Prefer OAuth discovery for an interactive user; otherwise send a scoped nf_ key in the Authorization header.",
-              "Start with narriflow_list_workspaces and pass workspaceId explicitly when needed.",
-            ]}
-            snippet={genericConfig}
-          />
-        </Grid>
-      </Stack>
-
-      <Stack as="section" gap="5" id="available-tools" scrollMarginTop="24">
-        <SectionHeading
-          title="Read by default; write only on clear intent"
-          description="Write tools can start processing or change publication state. Use them only when requested."
-        />
-        <Stack gap="0">
-          {TOOLS.map((tool) => (
-            <Grid
-              key={tool.name}
-              templateColumns={{ base: "1fr auto", md: "minmax(280px, .9fr) 80px 1.4fr",
-              }}
-              gap={{ base: "2", md: "4" }}
-              alignItems="baseline"
-              py="3.5"
-              borderBottomWidth="1px"
-              borderColor="border.subtle"
-            >
-              <Text fontFamily="mono" fontSize="12.5px" overflowWrap="anywhere">{tool.name}</Text>
-              <Text fontSize="13px" fontWeight="500" color={tool.behavior === "Write" ? "fg" : "fg.subtle"}>{tool.behavior}</Text>
-              <Text gridColumn={{ base: "1 / -1", md: "auto" }} fontSize="13px" color="fg.muted">{tool.description}</Text>
-            </Grid>
+          What your assistant can do
+        </SectionTitle>
+        <Grid templateColumns={{ base: "1fr", sm: "repeat(2, minmax(0, 1fr))", md: "repeat(3, minmax(0, 1fr))" }} gap="2">
+          {CAPABILITIES.map(({ icon: Icon, title, description }) => (
+            <Stack key={title} gap="3" bg="bg.subtle" borderRadius="12px" p="4">
+              <Flex boxSize="8" borderRadius="full" bg="bg.soft" align="center" justify="center" color="fg">
+                <Icon size={16} />
+              </Flex>
+              <Stack gap="0.5">
+                <Text fontSize="14px" fontWeight="500">
+                  {title}
+                </Text>
+                <Text fontSize="13px" color="fg.muted">
+                  {description}
+                </Text>
+              </Stack>
+            </Stack>
           ))}
-        </Stack>
-      </Stack>
-
-      <Stack as="section" gap="5" id="workspace-keys" scrollMarginTop="24">
-        <SectionHeading
-          title="Workspace rules still apply outside the dashboard"
-        />
-        <Grid templateColumns={{ base: "1fr", md: "repeat(3, minmax(0, 1fr))" }} gap="6">
-          <InfoColumn icon={LockKeyhole} title="Membership and roles">
-            OAuth tools re-check active membership and the required capability on every call. Viewers can read but cannot run write tools; removing a member ends their workspace access.
-          </InfoColumn>
-          <InfoColumn icon={Braces} title="Business entitlement">
-            MCP and workspace API keys require an active Business workspace. A personal OAuth grant can remain valid while an ineligible workspace is rejected at tool execution.
-          </InfoColumn>
-          <InfoColumn icon={Bot} title="Processing minutes">
-            MCP does not bypass plan limits. RSS imports and media processing consume the same shared monthly processing-minute quota as dashboard actions, and stop when quota is exhausted.
-          </InfoColumn>
         </Grid>
-      </Stack>
+      </section>
 
-      <Stack as="section" gap="5" id="security" scrollMarginTop="24">
-        <SectionHeading title="Keep access narrow and recoverable" />
-        <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))" }} gap="6">
-          <InfoColumn icon={ShieldCheck} title="Revoke and rotate">
-            Disconnect Narriflow in the AI client to end that client&apos;s OAuth use. Revoke a compromised workspace key from Developer access and replace it in the unattended client. Never paste an API key into prompts or shared configuration.
-          </InfoColumn>
-          <InfoColumn icon={TerminalSquare} title="Consent window does not complete">
-            Narriflow intentionally uses Clerk-hosted consent—there is no custom Narriflow consent page. Allow the browser window or redirect, sign in to Narriflow once, then retry from the client. If the client reports an issuer or redirect mismatch, copy the endpoint exactly and ask the workspace owner to verify the deployed OAuth configuration.
-          </InfoColumn>
-          <InfoColumn icon={CircleAlert} title="Connected, but tools are denied">
-            Run narriflow_list_workspaces first. Confirm the target workspace is active Business, use its returned workspace ID, and check that your membership role allows the operation. For keys, confirm the required project, usage, autopilot or publishing scope is present.
-          </InfoColumn>
-          <InfoColumn icon={CheckCircle2} title="How to confirm a connection">
-            Trust the client&apos;s MCP status and a successful tool call. Narriflow does not currently keep a dashboard list of OAuth client sessions, so this page reports endpoint readiness and workspace eligibility only.
-          </InfoColumn>
-        </Grid>
-      </Stack>
+      <Flex gap={{ base: "2", md: "6" }} direction={{ base: "column", md: "row" }} fontSize="13px" color="fg.muted" pb="4">
+        <Text>
+          Automating without a person?{" "}
+          {canManageApi ? (
+            <Link href="/settings/api" style={{ color: "var(--chakra-colors-fg)" }}>
+              Create an API key →
+            </Link>
+          ) : (
+            <a href={docsUrl("ai/permissions")} target="_blank" rel="noreferrer" style={{ color: "var(--chakra-colors-fg)" }}>
+              Use a workspace API key →
+            </a>
+          )}
+        </Text>
+        <Text>
+          Not working?{" "}
+          <a href={docsUrl("ai/troubleshooting")} target="_blank" rel="noreferrer" style={{ color: "var(--chakra-colors-fg)" }}>
+            Troubleshooting →
+          </a>
+        </Text>
+      </Flex>
     </Stack>
   );
 }

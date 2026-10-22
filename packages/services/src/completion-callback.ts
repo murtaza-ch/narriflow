@@ -231,7 +231,7 @@ export class CallbackSecretRequiredError extends ExpectedDomainFailureError<"cal
     super({
       code: "callback_secret_required",
       kind: "conflict",
-      message: "Create a callback signing secret in Settings → API before requesting callbacks",
+      message: "Create a callback signing secret in Settings → Developer access before requesting callbacks",
     });
     this.name = "CallbackSecretRequiredError";
   }

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="112" height="20" viewBox="0 0 112 20" fill="none" role="img" aria-label="narriflow">
+  <rect x="1" y="6.5" width="4" height="7" rx="2" fill="#F2F2F2"/>
+  <rect x="8" y="1" width="4" height="18" rx="2" fill="#8EAEEC"/>
+  <rect x="15" y="4.5" width="4" height="11" rx="2" fill="#F2F2F2"/>
+  <text x="29" y="14.6" fill="#F2F2F2" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="17" font-weight="650" letter-spacing="-0.34" textLength="82" lengthAdjust="spacingAndGlyphs">narriflow</text>
+</svg>

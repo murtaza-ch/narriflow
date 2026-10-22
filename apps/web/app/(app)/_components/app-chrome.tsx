@@ -110,7 +110,7 @@ function DesktopTopBar({
   const title = ({ home: "Home", projects: "Projects", exports: "Exports", calendar: "Calendar", autopilot: "Autopilot", "brand-kit": "Brand kit", integrations: "Integrations", settings: "Settings", help: "Help", "whats-new": "What's new" } as Record<string, string>)[section] ?? "Workspace";
   const canInvite = workspaceStatus === "active" && workspaceTier === "business" && (workspaceRole === "owner" || workspaceRole === "admin");
   return (
-    <ShellHeader crumbs={[workspaceName, title]} display={{ base: "none", lg: "flex" }}>
+    <ShellHeader crumbs={pathname.startsWith("/integrations/mcp") ? [workspaceName, title, "AI assistants"] : [workspaceName, title]} display={{ base: "none", lg: "flex" }}>
       <GlobalSearch workspaceId={activeWorkspaceId} />
       <Button variant="ghost" size="sm" asChild>
         <Link href="/settings/usage"><Gauge size={14} />{Math.round(usedMinutes)}/{Math.round(limitMinutes)} min</Link>

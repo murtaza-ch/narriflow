@@ -126,7 +126,7 @@ export function createRestApi(dependencies: RestApiDependencies) {
   }).basePath("/api/v1");
 
   app.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
-    type: "http", scheme: "bearer", description: "A Workspace API key (nf_…) from Settings → API",
+    type: "http", scheme: "bearer", description: "A Workspace API key (nf_…) from Settings → Developer access",
   });
 
   app.use("*", async (c, next) => {

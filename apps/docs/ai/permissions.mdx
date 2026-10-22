@@ -1,0 +1,61 @@
+---
+title: Permissions
+description: How Narriflow decides what an assistant or integration can see and change.
+---
+
+## Sign-in methods
+
+| | Personal OAuth connection | Workspace API key |
+| --- | --- | --- |
+| Use it for | Assistants you use yourself | Unattended or non-OAuth clients |
+| Acts as | You | The person who created the key |
+| Workspaces | Every Workspace where you are an active member | The one Workspace the key belongs to |
+| Created in | Your AI client, through Narriflow's sign-in and consent screen | **Settings → Developer access** |
+| Stops working when | You disconnect it in the client | Someone revokes the key, or its creator loses access to the Workspace |
+
+Personal connections never share Workspace credentials. A key is shown once when you create it.
+
+## Scopes
+
+Each connection carries scopes. Read scopes are granted by default. Each write scope needs your explicit approval.
+
+| Scope | Allows |
+| --- | --- |
+| `projects:read` | Projects, clips, Brand Profiles, and the status of imports and generations |
+| `usage:read` | Plan and processing minutes |
+| `exports:read` | Exports, download links, and client review rounds |
+| `autopilot:read` | RSS Autopilot rules |
+| `publishing:read` | Connected accounts, publishing options and posts |
+| `processing:write` | Submit links, upload files, generate clips |
+| `exports:write` | Request clip exports |
+| `autopilot:write` | Create and run RSS Autopilot rules |
+| `publishing:write` | Prepare, schedule and recover posts |
+
+A new API key gets the five read scopes. Choose each write scope when you create the key. The [tools list](/ai/tools) shows the scope each tool needs.
+
+## Roles
+
+Narriflow checks your current role on every tool call. Removing a member ends their access right away.
+
+| Role | Can do |
+| --- | --- |
+| Viewer | Every read tool, including download links |
+| Editor, Admin, Owner | Everything a Viewer can, plus every write tool |
+
+Creating and revoking API keys needs the Owner, Admin or Editor role.
+
+## Business plan
+
+The Workspace must be on an active Business plan. A connection can stay valid after a Workspace leaves Business, but every tool call for that Workspace is refused until the plan is active again.
+
+## Processing minutes
+
+Assistants use the same monthly allowance as the app. Narriflow reserves minutes when it accepts a video and settles them from the video's real length. Intake stops when the allowance is used up or when the Workspace reaches its limit of videos processing at once. Ask for `narriflow_get_workspace_usage` to see minutes used, reserved and remaining, the videos in flight, and the per-video length limit.
+
+## Time limits
+
+| Item | Lasts |
+| --- | --- |
+| Exact-post confirmation | 10 minutes after the post is prepared |
+| Upload link from `narriflow_upload_video` | 10 minutes |
+| Download links | 15 minutes |

@@ -1,0 +1,55 @@
+---
+title: Upload local files
+description: Send a video from your computer to Narriflow through an assistant, without the file passing through the chat.
+---
+
+An assistant cannot read files from your computer, and file bytes never travel through the connector. `narriflow_upload_video` opens an Upload Session instead. The file then goes from you straight to Narriflow's storage, and Narriflow starts processing it when the transfer finishes.
+
+Ask your assistant to upload a video. It calls `narriflow_upload_video` and you finish in one of three ways.
+
+## In the assistant
+
+If your client shows Narriflow cards, the upload card opens a file picker inside the assistant. Choose the file there. The card shows the generation settings that will be committed with the upload.
+
+## With the web link
+
+The tool also returns a Narriflow link. Open it while signed in to Narriflow, choose the file, and the upload starts. The link works for 10 minutes. After that it can only resume an upload you already started.
+
+## With the local helper
+
+Codex and Claude Code can run a command on your machine. The helper handles any supported file size, resumes interrupted uploads, and needs a Workspace API key with the `processing:write` scope.
+
+<Steps>
+  <Step title="Set your key and URL">
+    ```bash
+    export NARRIFLOW_API_KEY=nf_…
+    export NARRIFLOW_URL=https://app.narriflow.com
+    ```
+  </Step>
+  <Step title="Run the helper">
+    ```bash
+    bun run mcp:upload \
+      --file /absolute/path/video.mp4 \
+      --workspace <workspaceId> \
+      --key <UUID>
+    ```
+
+    Use the `workspaceId` from `narriflow_list_workspaces` and any UUID for `--key`. The helper prints the key before it starts. To use a Brand Profile, add `--brand <brandProfileId>`. To set generation settings, add `--settings settings.json`, a JSON file with the same fields as the [API's `generation` object](/api/uploads#generation-settings).
+  </Step>
+  <Step title="Follow the intake">
+    When the upload finishes, the helper prints the intake operation. Ask your assistant to follow it with `narriflow_get_operation`.
+  </Step>
+</Steps>
+
+To resume an interrupted upload, run the same command with the same `--key` and the unchanged file. The helper never sends your Narriflow credential to storage.
+
+<Note>
+  The helper is a script in the Narriflow repository, so run it from a checkout with Bun installed. Without one, use the card or the web link.
+</Note>
+
+## Limits
+
+- File types are MP4, MOV, WebM, MKV, MP3, WAV, M4A and AAC.
+- Files must be under 5 GiB.
+- Each plan limits the length of one video. `narriflow_get_workspace_usage` reports it.
+- Uploads use processing minutes, like imports in the app.

@@ -1,0 +1,44 @@
+---
+title: Connect Claude Code
+description: Add Narriflow to Claude Code as a remote HTTP MCP server.
+---
+
+<Steps>
+  <Step title="Add the server">
+    ```bash
+    claude mcp add --transport http narriflow https://app.narriflow.com/mcp
+    ```
+  </Step>
+  <Step title="Sign in">
+    ```bash
+    claude mcp login narriflow
+    ```
+
+    Your browser opens. Sign in to Narriflow and approve the access Claude Code asks for. You can also run `/mcp` inside Claude Code and follow the prompts.
+  </Step>
+  <Step title="Confirm it works">
+    ```bash
+    claude mcp list
+    ```
+
+    Narriflow should show as connected. Then ask Claude Code to list your Narriflow Workspaces.
+  </Step>
+</Steps>
+
+## Use a Workspace API key
+
+For unattended runs, send a Workspace API key instead of signing in. Create the key in **Settings → Developer access** and keep it in an environment variable.
+
+```bash
+claude mcp add --transport http narriflow https://app.narriflow.com/mcp \
+  --header "Authorization: Bearer $NARRIFLOW_API_KEY"
+```
+
+## Disconnect
+
+```bash
+claude mcp logout narriflow   # clear the stored sign-in
+claude mcp remove narriflow   # remove the server
+```
+
+To upload a local file from Claude Code, see [Upload local files](/ai/upload-local-files). If sign-in fails, see [Troubleshooting](/ai/troubleshooting).

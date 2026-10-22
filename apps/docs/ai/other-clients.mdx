@@ -1,0 +1,53 @@
+---
+title: Other MCP clients
+description: Connect any client that supports remote Streamable HTTP MCP servers, and test the connection with MCP Inspector.
+---
+
+## Connection details
+
+| Setting | Value |
+| --- | --- |
+| Transport | Streamable HTTP |
+| URL | `https://app.narriflow.com/mcp` |
+| Sign-in | OAuth 2.1 with PKCE (S256), or `Authorization: Bearer nf_…` with a Workspace API key |
+| Rate limit | 300 authenticated requests per minute per credential |
+
+## OAuth
+
+Use OAuth when a person signs in. The client discovers everything from the server's metadata.
+
+| Document | URL |
+| --- | --- |
+| Protected resource metadata | `https://app.narriflow.com/.well-known/oauth-protected-resource/mcp` |
+
+The client must send the resource indicator (RFC 8707) with the exact MCP URL, `https://app.narriflow.com/mcp`. Narriflow rejects tokens issued for any other audience. Read scopes are granted by default. Each write scope needs explicit approval. See [Permissions](/ai/permissions) for the scope list.
+
+## API key
+
+Use an API key for unattended clients. Create one in **Settings → Developer access**, and choose its write scopes when you create it. Send it on every request.
+
+```text
+Authorization: Bearer nf_…
+```
+
+A key works in one Workspace. Do not paste it into prompts or share it in configuration files.
+
+## Test with MCP Inspector
+
+[MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) calls tools directly, which helps when a client behaves unexpectedly. It needs Node 22.19 or newer.
+
+<Steps>
+  <Step title="Start the Inspector">
+    ```bash
+    npx @modelcontextprotocol/inspector --server-url https://app.narriflow.com/mcp --transport http
+    ```
+  </Step>
+  <Step title="Connect">
+    Select **Connect** and complete the Narriflow sign-in when prompted. To use an API key instead, add an `Authorization: Bearer nf_…` header in the server's settings.
+  </Step>
+  <Step title="List your Workspaces">
+    Open **Tools** and run `narriflow_list_workspaces`. Use the returned `workspaceId` for every other tool.
+  </Step>
+</Steps>
+
+Rejected credentials and missing scopes return standard Bearer challenges. See [Troubleshooting](/ai/troubleshooting).

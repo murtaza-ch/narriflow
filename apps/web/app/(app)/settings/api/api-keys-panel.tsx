@@ -2,117 +2,158 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Field, Flex, Input, Stack, Text } from "@chakra-ui/react";
-import { Copy, KeyRound, Plus, Trash2 } from "lucide-react";
-import { Button } from "@narriflow/ui/components/button";
-import { Checkbox } from "@narriflow/ui/components/checkbox";
-import { Spinner } from "@narriflow/ui/components/spinner";
-import { createApiKeyAction, revokeApiKeyAction } from "../actions";
-import { WORKSPACE_API_KEY_READ_SCOPES } from "@narriflow/validators";
-import {
-  authenticatedActionResultMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
+import { IconButton, Table, Text } from "@chakra-ui/react";
+import { KeyRound, MoreHorizontal, Trash2 } from "lucide-react";
+import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
+import { EmptyState } from "@narriflow/ui/components/empty-state";
+import { ActionMenu } from "@narriflow/ui/components/menu";
+import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { revokeApiKeyAction } from "../actions";
+
+// A fixed locale and zone keep server and client renders identical.
+const formatDate = (iso: string) => new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(iso));
+
+const WRITE_LABELS: Record<string, string> = {
+  "processing:write": "Clip",
+  "exports:write": "Export",
+  "autopilot:write": "Autopilot",
+  "publishing:write": "Publish",
+};
+
+function Access({ scopes }: { scopes: string[] }) {
+  const writes = scopes.filter((scope) => scope.endsWith(":write")).map((scope) => WRITE_LABELS[scope] ?? scope);
+  return (
+    <Text
+      as="span"
+      display="inline-flex"
+      alignItems="center"
+      h="22px"
+      px="2"
+      borderRadius="6px"
+      fontSize="12px"
+      whiteSpace="nowrap"
+      bg={writes.length ? "accent.subtle" : "bg.soft"}
+      color={writes.length ? "accent.fg" : "fg.muted"}
+    >
+      {writes.length === Object.keys(WRITE_LABELS).length ? "Full access" : writes.length ? `Read + ${writes.join(", ")}` : "Read only"}
+    </Text>
+  );
+}
 
 export function ApiKeysPanel({
   keys,
-  isBusiness,
 }: {
   keys: Array<{ id: string; name: string; prefix: string; scopes: string[]; lastUsedAt: string | null; createdAt: string }>;
-  isBusiness: boolean;
 }) {
   const router = useRouter();
-  const [name, setName] = useState("");
-  const [secret, setSecret] = useState<string | null>(null);
-  const [allowAutopilotWrites, setAllowAutopilotWrites] = useState(false);
-  const [allowProcessingWrites, setAllowProcessingWrites] = useState(false);
-  const [allowExportWrites, setAllowExportWrites] = useState(false);
-  const [allowPublishingWrites, setAllowPublishingWrites] = useState(false);
+  const { confirm, dialog } = useConfirm();
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
-  function create(event: React.FormEvent) {
-    event.preventDefault();
+  async function revoke(key: { id: string; name: string }) {
+    const confirmed = await confirm({
+      title: `Revoke ${key.name}?`,
+      description: "Anything using this key stops working right away.",
+      confirmLabel: "Revoke key",
+      destructive: true,
+    });
+    if (!confirmed) return;
     setError(null);
     startTransition(async () => {
-      const result = await createApiKeyAction({
-        name,
-        scopes: [
-          ...WORKSPACE_API_KEY_READ_SCOPES,
-          ...(allowProcessingWrites ? ["processing:write"] : []),
-          ...(allowExportWrites ? ["exports:write"] : []),
-          ...(allowAutopilotWrites ? ["autopilot:write"] : []),
-          ...(allowPublishingWrites ? ["publishing:write"] : []),
-        ],
-      });
-      if (!result.ok) {
-        return setError(authenticatedActionResultMessage(result, "The API key could not be created."));
-      }
-      setName("");
-      setSecret(result.key.secret);
-      router.refresh();
-    });
-  }
-
-  function revoke(keyId: string) {
-    startTransition(async () => {
-      const result = await revokeApiKeyAction(keyId);
+      const result = await revokeApiKeyAction(key.id);
       if (isAuthenticatedActionFailure(result)) {
-        setError(
-          authenticatedActionResultMessage(
-            result,
-            "The API key could not be revoked.",
-          ),
-        );
+        setError(authenticatedActionResultMessage(result, "The API key could not be revoked."));
         return;
       }
       router.refresh();
     });
   }
 
+  if (!keys.length) {
+    return (
+      <EmptyState
+        icon={<KeyRound />}
+        title="No API keys yet"
+        description="Keys let scripts and tools like n8n work in this workspace."
+      />
+    );
+  }
+
+  const cell = { border: "0", py: "3", px: "3", fontSize: "13px" } as const;
+  const head = { border: "0", px: "3", pt: "0", pb: "1", fontSize: "12px", fontWeight: "400", color: "fg.subtle" } as const;
+
   return (
-    <Stack gap="8">
-      <Box as="form" onSubmit={create} bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="6">
-        <Stack gap="3">
-          <Flex align="center" gap="2"><Box color="fg.muted" display="flex"><KeyRound size={16} /></Box><Text fontSize="16px" fontWeight="500">Create workspace API key</Text></Flex>
-          <Text fontSize="13px" lineHeight="1.6" color="fg.muted">
-            Workspace keys include project, export, usage, autopilot and publishing reads. Choose each write permission separately.
-          </Text>
-          {!isBusiness ? <Text fontSize="13px" color="fg.muted">API keys require an active Business workspace.</Text> : (
-            <Stack gap="3">
-              <Flex gap="3" align="end" direction={{ base: "column", md: "row" }}><Field.Root required><Field.Label>Key name</Field.Label><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Claude Desktop" maxLength={80} required /></Field.Root><Button type="submit" size="sm" disabled={pending}>{pending ? <Spinner size="xs" /> : <Plus size={14} />}Create key</Button></Flex>
-              <Checkbox checked={allowProcessingWrites} onCheckedChange={setAllowProcessingWrites}>
-                Allow this key to import, upload and generate clips
-              </Checkbox>
-              <Checkbox checked={allowExportWrites} onCheckedChange={setAllowExportWrites}>
-                Allow this key to request clip exports
-              </Checkbox>
-              <Checkbox checked={allowAutopilotWrites} onCheckedChange={setAllowAutopilotWrites}>
-                Allow this key to create and run RSS autopilot rules
-              </Checkbox>
-              <Checkbox checked={allowPublishingWrites} onCheckedChange={setAllowPublishingWrites}>
-                Allow this key to prepare, schedule and recover social publications
-              </Checkbox>
-            </Stack>
-          )}
-          {error ? <Text fontSize="12px" color="danger.fg">{error}</Text> : null}
-          {secret ? (
-            <Box bg="bg.soft" borderRadius="l2" p="4">
-              <Text fontSize="13px" fontWeight="500" mb="2">Copy this secret now. It will not be shown again.</Text>
-              <Flex gap="2"><Input value={secret} readOnly fontFamily="mono" aria-label="New workspace API key secret" /><Button type="button" variant="subtle" size="sm" onClick={() => navigator.clipboard.writeText(secret)}><Copy size={14} />Copy</Button></Flex>
-            </Box>
-          ) : null}
-        </Stack>
-      </Box>
-      <Stack gap="0" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="6">
-        <Text fontSize="16px" fontWeight="500" pb="3">Active keys</Text>
-        {keys.length === 0 ? <Text py="6" fontSize="13px" color="fg.muted">No API keys in this workspace.</Text> : keys.map((key) => (
-          <Flex key={key.id} align="center" gap="3" py="4" borderTopWidth="1px" borderColor="border.subtle">
-            <Stack gap="1" flex="1"><Text fontSize="14px" fontWeight="500">{key.name}</Text><Text fontSize="12px" color="fg.subtle"><Text as="span" fontFamily="mono">{key.prefix}••••</Text> · {key.lastUsedAt ? `last used ${new Date(key.lastUsedAt).toLocaleDateString()}` : "no recorded use"}</Text><Text fontSize="12px" color="fg.subtle" lineHeight="1.5">{key.scopes.join(" · ")}</Text></Stack>
-            <Button size="sm" variant="ghost" aria-label={`Revoke ${key.name}`} onClick={() => revoke(key.id)} disabled={pending}><Trash2 size={14} /></Button>
-          </Flex>
-        ))}
-      </Stack>
-    </Stack>
+    <>
+      <Table.Root size="sm" css={{ borderCollapse: "separate", borderSpacing: "0 4px", marginTop: "-4px" }}>
+        <Table.Header>
+          <Table.Row bg="transparent">
+            <Table.ColumnHeader {...head}>Name</Table.ColumnHeader>
+            <Table.ColumnHeader {...head} display={{ base: "none", md: "table-cell" }}>
+              Key
+            </Table.ColumnHeader>
+            <Table.ColumnHeader {...head}>Access</Table.ColumnHeader>
+            <Table.ColumnHeader {...head} display={{ base: "none", sm: "table-cell" }}>
+              Last used
+            </Table.ColumnHeader>
+            <Table.ColumnHeader {...head} display={{ base: "none", lg: "table-cell" }}>
+              Created
+            </Table.ColumnHeader>
+            <Table.ColumnHeader {...head} w="12">
+              <Text srOnly>Actions</Text>
+            </Table.ColumnHeader>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
+          {keys.map((key) => (
+            <Table.Row
+              key={key.id}
+              bg="bg.subtle"
+              css={{ "& > td:first-of-type": { borderStartRadius: "10px" }, "& > td:last-of-type": { borderEndRadius: "10px" } }}
+            >
+              <Table.Cell {...cell} fontWeight="500">
+                {key.name}
+              </Table.Cell>
+              <Table.Cell {...cell} display={{ base: "none", md: "table-cell" }} fontFamily="mono" fontSize="12px" color="fg.muted">
+                {key.prefix}••••
+              </Table.Cell>
+              <Table.Cell {...cell}>
+                <Access scopes={key.scopes} />
+              </Table.Cell>
+              <Table.Cell {...cell} display={{ base: "none", sm: "table-cell" }} color="fg.muted">
+                {key.lastUsedAt ? formatDate(key.lastUsedAt) : "Never"}
+              </Table.Cell>
+              <Table.Cell {...cell} display={{ base: "none", lg: "table-cell" }} color="fg.muted">
+                {formatDate(key.createdAt)}
+              </Table.Cell>
+              <Table.Cell {...cell} py="1.5" textAlign="end">
+                <ActionMenu
+                  ariaLabel={`${key.name} actions`}
+                  trigger={
+                    <IconButton size="sm" variant="ghost" color="fg.muted" aria-label={`${key.name} actions`} disabled={pending}>
+                      <MoreHorizontal size={16} />
+                    </IconButton>
+                  }
+                  items={[
+                    {
+                      value: "revoke",
+                      label: "Revoke key",
+                      icon: <Trash2 size={14} />,
+                      destructive: true,
+                      onSelect: () => void revoke(key),
+                    },
+                  ]}
+                />
+              </Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Root>
+      {error ? (
+        <Text fontSize="13px" color="danger.fg">
+          {error}
+        </Text>
+      ) : null}
+      {dialog}
+    </>
   );
 }

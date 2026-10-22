@@ -1981,7 +1981,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
     },
     "securitySchemes": {
       "bearerAuth": {
-        "description": "A Workspace API key (nf_…) from Settings → API",
+        "description": "A Workspace API key (nf_…) from Settings → Developer access",
         "scheme": "bearer",
         "type": "http",
       },

@@ -1,0 +1,193 @@
+---
+title: Upload a file
+sidebarTitle: Upload a file
+description: Upload a video file with an Upload Session, from opening it to following the intake it starts.
+---
+
+A file reaches Narriflow in three calls. You open an Upload Session, send the bytes to signed storage URLs, then finalize. Narriflow checks the stored file and starts processing it. The bytes never pass through the API.
+
+Your API key needs the `processing:write` scope.
+
+<Steps>
+  <Step title="Open an Upload Session">
+    `POST /uploads` describes the file and returns signed transfer URLs. Send an `Idempotency-Key`. Retrying with the same key returns the same session.
+
+    The body takes the file's `name`, `sizeBytes` and `contentType`. It also takes an optional `title`, a `brandProfileId` from `GET /brand-profiles`, and [generation settings](#generation-settings). Omit `brandProfileId` to use the Workspace's default Brand Profile.
+
+    Set `"transfer": "single"` to get one signed PUT URL at any supported size. With the default `auto`, files over 100 MiB use resumable multipart parts.
+  </Step>
+  <Step title="Send the bytes">
+    Look at `upload.transfer.kind` in the response.
+
+    - **`single`.** Send one `PUT` to `transfer.url` with the headers in `transfer.headers`.
+    - **`multipart`.** Send each part to its URL in `transfer.parts`, in pieces of `partSizeBytes` (the last part is shorter). Keep the `ETag` header from every response. Ask for more part URLs with `POST /uploads/{id}/grants` and up to 16 `partNumbers` at a time.
+
+    <Warning>
+      Signed storage URLs are private. Never log or share them, and never send your Narriflow API key to them.
+    </Warning>
+  </Step>
+  <Step title="Finalize">
+    `POST /uploads/{id}/finalize` checks the stored file and starts the intake. Send `{}` for a single PUT. For multipart, send every part with its ETag. You can add a [completion callback](/api/callbacks) here. Repeating finalize returns the session's current state.
+  </Step>
+  <Step title="Follow the intake">
+    The finalize response carries `upload.operation`. Read it with `GET /operations/{id}` until `state` is no longer `working`, or wait for the callback. The intake runs through the import and the clip generation that follows it.
+  </Step>
+</Steps>
+
+## Example: single PUT
+
+<CodeGroup>
+
+```bash cURL
+# 1. Open the upload
+curl -X POST "$BASE/uploads" \
+  -H "Authorization: Bearer $NARRIFLOW_API_KEY" \
+  -H "Idempotency-Key: talk-2026-10-08:open" \
+  -H "Content-Type: application/json" \
+  -d '{"file": {"name": "talk.mp4", "sizeBytes": 734003200, "contentType": "video/mp4"},
+       "transfer": "single", "generation": {"clipCountTarget": 8}}'
+
+# 2. PUT the bytes to upload.transfer.url, without the Narriflow key
+curl -X PUT "$UPLOAD_URL" -H "Content-Type: video/mp4" --upload-file talk.mp4
+
+# 3. Finalize
+curl -X POST "$BASE/uploads/$UPLOAD_ID/finalize" \
+  -H "Authorization: Bearer $NARRIFLOW_API_KEY" \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+```javascript JavaScript
+// Uses the api() helper from the quickstart.
+import { readFile, stat } from "node:fs/promises";
+
+const path = "talk.mp4";
+const { upload } = await api("/uploads", {
+  method: "POST",
+  idempotencyKey: "talk-2026-10-08:open",
+  body: {
+    file: { name: path, sizeBytes: (await stat(path)).size, contentType: "video/mp4" },
+    transfer: "single",
+    generation: { clipCountTarget: 8 },
+  },
+});
+
+const stored = await fetch(upload.transfer.url, {
+  method: "PUT",
+  headers: upload.transfer.headers,
+  body: await readFile(path),
+});
+if (!stored.ok) throw new Error(`Storage returned ${stored.status}`);
+
+const finalized = await api(`/uploads/${upload.uploadId}/finalize`, { method: "POST", body: {} });
+const operationId = finalized.upload.operation.operationId;
+```
+
+```python Python
+# Uses the api() helper from the quickstart.
+import os
+
+import requests
+
+path = "talk.mp4"
+upload = api(
+    "POST",
+    "/uploads",
+    idempotency_key="talk-2026-10-08:open",
+    json={
+        "file": {"name": path, "sizeBytes": os.path.getsize(path), "contentType": "video/mp4"},
+        "transfer": "single",
+        "generation": {"clipCountTarget": 8},
+    },
+)["upload"]
+
+with open(path, "rb") as file:
+    # requests.put, not session.put, so the Narriflow key stays out of the request.
+    stored = requests.put(upload["transfer"]["url"], data=file, headers=upload["transfer"]["headers"], timeout=3600)
+    stored.raise_for_status()
+
+finalized = api("POST", f"/uploads/{upload['uploadId']}/finalize", json={})
+operation_id = finalized["upload"]["operation"]["operationId"]
+```
+
+</CodeGroup>
+
+## Example: multipart
+
+This JavaScript sends the parts one at a time. Send up to `transfer.concurrency` parts in parallel to go faster.
+
+```javascript
+import { open, stat } from "node:fs/promises";
+
+// Uses the api() helper from the quickstart.
+const path = "talk.mov";
+const { size } = await stat(path);
+const { upload } = await api("/uploads", {
+  method: "POST",
+  idempotencyKey: "talk-2026-10-08:open",
+  body: { file: { name: path, sizeBytes: size, contentType: "video/quicktime" } },
+});
+
+const { partSizeBytes, partCount } = upload.transfer;
+const urls = new Map(upload.transfer.parts.map((part) => [part.partNumber, part.url]));
+const etags = new Map(upload.transfer.completedParts.map((part) => [part.partNumber, part.etag]));
+const file = await open(path, "r");
+
+for (let partNumber = 1; partNumber <= partCount; partNumber++) {
+  if (etags.has(partNumber)) continue;
+  if (!urls.has(partNumber)) {
+    const wanted = [];
+    for (let n = partNumber; n <= partCount && wanted.length < 16; n++) if (!etags.has(n)) wanted.push(n);
+    const granted = await api(`/uploads/${upload.uploadId}/grants`, { method: "POST", body: { partNumbers: wanted } });
+    for (const part of granted.parts) urls.set(part.partNumber, part.url);
+  }
+  const offset = (partNumber - 1) * partSizeBytes;
+  const bytes = Buffer.alloc(Math.min(partSizeBytes, size - offset));
+  await file.read(bytes, 0, bytes.length, offset);
+  const stored = await fetch(urls.get(partNumber), { method: "PUT", body: bytes });
+  if (!stored.ok) throw new Error(`Storage returned ${stored.status}`);
+  etags.set(partNumber, stored.headers.get("etag"));
+}
+await file.close();
+
+const parts = [...etags]
+  .map(([partNumber, etag]) => ({ partNumber, etag }))
+  .sort((a, b) => a.partNumber - b.partNumber);
+const finalized = await api(`/uploads/${upload.uploadId}/finalize`, { method: "POST", body: { parts } });
+```
+
+## Resume or discard
+
+`GET /uploads/{id}` returns the session's state, and for multipart uploads the `completedParts` already stored. To resume after an interruption, read it, skip those parts, and finalize when every part is stored. `DELETE /uploads/{id}` discards an upload you have not finalized.
+
+## Upload states
+
+| State | Meaning |
+| --- | --- |
+| `uploading` | The session is open and waiting for bytes. `expiresAt` says when it expires. |
+| `reconciling` | Narriflow is verifying the stored file. Check again after `retryAfterSeconds`. |
+| `queued_for_ingest` | Accepted. `operation` follows the intake. |
+| `terminal` | The upload ended without an intake. `failureCode` says why. Start again with a new upload. |
+| `discarded` | You discarded the upload. |
+| `compensating` | A discard is finishing. Check again after `retryAfterSeconds`. |
+
+## Generation settings
+
+The same `generation` object works on `POST /uploads`, `POST /projects` and `POST /projects/{id}/generations`. Every field is optional.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `clipCountTarget` | `10` | How many clips to aim for, from 3 to 30. |
+| `clipLengthPreset` | `auto` | `auto`, `under_30s`, `30_to_60s`, `60_to_120s` or `120_to_180s`. |
+| `defaultAspectRatio` | `9:16` | `9:16`, `1:1`, `16:9` or `4:5`. |
+| `captionPreset` | `brand_default` | A caption style ID, or `brand_default` for the Brand Profile's style. |
+| `mode` | `clip` | `clip` finds short clips. `caption_only` captions the whole video. |
+| `autoHook` | `true` | Add a generated hook to each clip. |
+| `specificMoments` | `""` | Up to 500 characters describing moments to find. |
+| `processingStartSec`, `processingEndSec` | `null` | Process only this part of the video, in seconds. |
+| `languageCode` | `null` | The spoken language, or `null` to detect it. |
+
+## Limits
+
+- Files are MP4, MOV, WebM, MKV, MP3, WAV, M4A or AAC, and just under 5 GiB at most.
+- Each plan limits the length of one video. `GET /workspace` returns it as `usage.maxUploadSeconds`.
+- Uploads use processing minutes. A video over the length limit is refused with `upload_too_long`.

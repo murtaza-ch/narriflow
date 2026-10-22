@@ -2,12 +2,13 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Flex, Input, Stack, Text } from "@chakra-ui/react";
-import { Copy, RefreshCw, Webhook } from "lucide-react";
+import { Flex, Stack, Text } from "@chakra-ui/react";
+import { RefreshCw, Webhook } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
+import { CodeBlock } from "@narriflow/ui/components/code-block";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { rotateCallbackSigningSecretAction } from "../actions";
 import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { rotateCallbackSigningSecretAction } from "../actions";
 
 // A fixed locale and zone keep server and client renders identical.
 const formatTime = (iso: string) =>
@@ -15,10 +16,8 @@ const formatTime = (iso: string) =>
 
 export function CallbackSecretPanel({
   status,
-  isBusiness,
 }: {
   status: { current: { createdAt: string } | null; previousRetiresAt: string | null };
-  isBusiness: boolean;
 }) {
   const router = useRouter();
   const [secret, setSecret] = useState<string | null>(null);
@@ -39,31 +38,40 @@ export function CallbackSecretPanel({
   }
 
   return (
-    <Box bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="6">
-      <Stack gap="3">
-        <Flex align="center" gap="2"><Box color="fg.muted" display="flex"><Webhook size={16} /></Box><Text fontSize="16px" fontWeight="500">Completion callback signing secret</Text></Flex>
-        <Text fontSize="13px" lineHeight="1.6" color="fg.muted">
-          API requests can include a callback URL. Narriflow signs each completion event with this secret using the Standard Webhooks format. Anyone holding it can verify, and forge, events for this workspace, so give it only to receivers you trust.
-        </Text>
-        {!isBusiness ? <Text fontSize="13px" color="fg.muted">Completion callbacks require an active Business workspace.</Text> : (
-          <Flex gap="3" align={{ base: "start", md: "center" }} direction={{ base: "column", md: "row" }}>
-            <Text fontSize="13px" color="fg.subtle" flex="1">
-              {status.current ? `Current secret created ${formatTime(status.current.createdAt)}.` : "No signing secret yet. Callback requests are refused until one exists."}
-              {status.previousRetiresAt ? ` The previous secret keeps signing until ${formatTime(status.previousRetiresAt)}.` : ""}
-            </Text>
-            <Button type="button" size="sm" variant="subtle" onClick={rotate} disabled={pending}>
-              {pending ? <Spinner size="xs" /> : <RefreshCw size={14} />}{status.current ? "Rotate secret" : "Create secret"}
-            </Button>
+    <Stack gap="3" bg="bg.subtle" borderRadius="12px" p="4">
+      <Flex align={{ base: "flex-start", sm: "center" }} gap="3" direction={{ base: "column", sm: "row" }}>
+        <Flex gap="3" align="center" flex="1" minW="0">
+          <Flex boxSize="9" borderRadius="10px" bg="bg.soft" color="fg" align="center" justify="center" flexShrink={0}>
+            <Webhook size={18} />
           </Flex>
-        )}
-        {error ? <Text fontSize="12px" color="danger.fg">{error}</Text> : null}
-        {secret ? (
-          <Box bg="bg.soft" borderRadius="l2" p="4">
-            <Text fontSize="13px" fontWeight="500" mb="2">Copy this secret now. It will not be shown again.</Text>
-            <Flex gap="2"><Input value={secret} readOnly fontFamily="mono" aria-label="New callback signing secret" /><Button type="button" variant="subtle" size="sm" onClick={() => navigator.clipboard.writeText(secret)}><Copy size={14} />Copy</Button></Flex>
-          </Box>
-        ) : null}
-      </Stack>
-    </Box>
+          <Stack gap="0" minW="0">
+            <Text fontSize="14px" fontWeight="500">
+              Callback signing secret
+            </Text>
+            <Text fontSize="13px" color="fg.muted">
+              {status.current ? `Created ${formatTime(status.current.createdAt)}` : "Not created. Requests with a callback URL are refused until it exists."}
+              {status.previousRetiresAt ? `. The previous secret signs until ${formatTime(status.previousRetiresAt)}.` : ""}
+            </Text>
+          </Stack>
+        </Flex>
+        <Button type="button" size="sm" variant="subtle" onClick={rotate} disabled={pending} flexShrink={0}>
+          {pending ? <Spinner size="xs" /> : <RefreshCw size={16} />}
+          {status.current ? "Rotate secret" : "Create secret"}
+        </Button>
+      </Flex>
+      {secret ? (
+        <Stack gap="2">
+          <Text fontSize="13px" color="fg.muted">
+            Copy it now. You won't see it again.
+          </Text>
+          <CodeBlock code={secret} copyLabel="Copy secret" />
+        </Stack>
+      ) : null}
+      {error ? (
+        <Text fontSize="13px" color="danger.fg">
+          {error}
+        </Text>
+      ) : null}
+    </Stack>
   );
 }

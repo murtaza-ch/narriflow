@@ -13,6 +13,9 @@
         "typescript": "5.9.3",
       },
     },
+    "apps/docs": {
+      "name": "@narriflow/docs",
+    },
     "apps/mcp": {
       "name": "@narriflow/mcp-server",
       "version": "0.0.0",
@@ -625,6 +628,8 @@
     "@narriflow/config": ["@narriflow/config@workspace:packages/config"],
 
     "@narriflow/db": ["@narriflow/db@workspace:packages/db"],
+
+    "@narriflow/docs": ["@narriflow/docs@workspace:apps/docs"],
 
     "@narriflow/email": ["@narriflow/email@workspace:packages/email"],
 
