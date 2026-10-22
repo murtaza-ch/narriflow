@@ -741,6 +741,9 @@ const config = defineConfig({
             px: "1",
             py: "3",
             _selected: { color: "fg" },
+            // Inset ring: tab lists scroll horizontally (overflow clips both
+            // axes), so the global outside ring loses its top and bottom.
+            _focusVisible: { outlineOffset: "-2px", borderRadius: "l2" },
           },
         },
       }),
