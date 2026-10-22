@@ -1,11 +1,11 @@
-import { Box, Flex, Grid, SimpleGrid, Skeleton, Stack } from "@chakra-ui/react";
+import { Box, Flex, SimpleGrid, Skeleton, Stack } from "@chakra-ui/react";
 
 /** Shared loading layouts use the same panels and spacing as their destination. */
 export function PageLoading({
   layout = "rows",
   label = "Loading page",
 }: {
-  layout?: "rows" | "library" | "project" | "import" | "settings";
+  layout?: "rows" | "library" | "import" | "settings";
   label?: string;
 }) {
   return (
@@ -44,55 +44,6 @@ export function PageLoading({
             </Stack>
           ))}
         </SimpleGrid>
-      ) : layout === "project" ? (
-        <>
-          <Flex gap="6" overflow="hidden">
-            {[0, 1, 2, 3, 4, 5].map((i) => (
-              <Skeleton key={i} h="4" minW="16" />
-            ))}
-          </Flex>
-          <Grid templateColumns={{ base: "1fr", xl: "210px minmax(0, 1fr)" }} gap="6">
-            <Stack display={{ base: "none", xl: "flex" }} gap="3">
-              {[0, 1, 2, 3].map((i) => (
-                <Skeleton key={i} h="16" borderRadius="l2" />
-              ))}
-            </Stack>
-            <Stack gap="4">
-              {[0, 1, 2].map((i) => (
-                <Flex
-                  key={i}
-                  gap="6"
-                  p="5"
-                  bg="bg.panel"
-                  borderWidth="1px"
-                  borderColor="border"
-                  borderRadius="l3"
-                  direction={{ base: "column", md: "row" }}
-                >
-                  <Skeleton
-                    w="200px"
-                    maxW="full"
-                    aspectRatio={9 / 16}
-                    borderRadius="l2"
-                    alignSelf="center"
-                    flexShrink={0}
-                  />
-                  <Stack gap="5" flex="1">
-                    <Skeleton h="6" w="85%" />
-                    <Skeleton h="5" w="20" />
-                    <Skeleton h="3" w="full" />
-                    <Skeleton h="3" w="90%" />
-                    <Skeleton h="3" w="70%" />
-                    <Flex mt="auto" gap="2">
-                      <Skeleton h="8" w="28" borderRadius="full" />
-                      <Skeleton h="8" w="20" borderRadius="full" />
-                    </Flex>
-                  </Stack>
-                </Flex>
-              ))}
-            </Stack>
-          </Grid>
-        </>
       ) : (
         <Stack gap="3">
           {[0, 1, 2].map((i) => (

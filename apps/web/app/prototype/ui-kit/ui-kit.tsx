@@ -237,7 +237,6 @@ export function UIKIT() {
               <Tabs.Trigger value="empty">Empty</Tabs.Trigger>
               <Tabs.Trigger value="status">Status</Tabs.Trigger>
               <Tabs.Trigger value="library">Library loading</Tabs.Trigger>
-              <Tabs.Trigger value="project">Project loading</Tabs.Trigger>
               <Tabs.Trigger value="import">Import loading</Tabs.Trigger>
               <Tabs.Trigger value="rows">Settings loading</Tabs.Trigger>
             </Tabs.List>
@@ -260,7 +259,7 @@ export function UIKIT() {
                 ))}
               </Flex>
             </Tabs.Content>
-            {(["library", "project", "import", "rows"] as const).map((layout) => (
+            {(["library", "import", "rows"] as const).map((layout) => (
               <Tabs.Content key={layout} value={layout}>
                 <PageLoading layout={layout} />
               </Tabs.Content>

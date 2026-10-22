@@ -1,3 +1,5 @@
-import { PageLoading } from "@narriflow/ui/components/page-loading";
+import { ProjectSkeleton } from "./project-skeleton";
 
-export default function Loading() { return <PageLoading layout="project" label="Loading project" />; }
+export default function Loading() {
+	return <ProjectSkeleton />;
+}
