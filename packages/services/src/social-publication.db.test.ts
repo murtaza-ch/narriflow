@@ -1010,6 +1010,60 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		).resolves.toBeUndefined();
 	});
 
+	test("an attempt interrupted before submission is claimed again on the next poll", async () => {
+		const f = await fixture();
+		const now = new Date("2026-08-28T10:00:00.000Z");
+		const id = randomUUID();
+		const candidate = frozenCandidate(f, {
+			id,
+			key: randomUUID(),
+			hash: "interrupted-hash",
+			accountId: f.firstAccount.id,
+			scheduledFor: new Date(now.getTime() - 1_000),
+		});
+		await prismaPublicationSchedulingStore.open({
+			workspaceId: f.workspace.id,
+			clientIdempotencyKey: candidate.clientIdempotencyKey,
+			immutableRequestHash: candidate.immutableRequestHash,
+			create: async () => candidate,
+		});
+		const attemptFor = async () =>
+			prisma.socialPublicationAttempt.findFirstOrThrow({
+				where: { socialPostId: id },
+			});
+		const firstClaims = await claimDueSocialPublicationAttempts({
+			claimantId: "interrupted-worker-a",
+			now,
+			config: claimConfig,
+		});
+		const claimed = await attemptFor();
+		const first = firstClaims.find((claim) => claim.attemptId === claimed.id);
+		if (!first) throw new Error("expected first claim");
+
+		const releasedAt = new Date(now.getTime() + 1_000);
+		await expect(
+			prismaSocialPublicationAttemptStore.releaseInterrupted({
+				owned: first,
+				now: releasedAt,
+			}),
+		).resolves.toMatchObject({ kind: "interrupted" });
+
+		const resumed = await claimDueSocialPublicationAttempts({
+			claimantId: "interrupted-worker-b",
+			now: new Date(now.getTime() + 2_000),
+			config: claimConfig,
+		});
+		const attempt = await attemptFor();
+		expect(resumed.some((claim) => claim.attemptId === attempt.id)).toBe(true);
+		expect(attempt.phase).toBe("claimed");
+		expect(
+			await prisma.socialPost.findUniqueOrThrow({
+				where: { id },
+				select: { status: true },
+			}),
+		).toEqual({ status: "publishing" });
+	});
+
 	test("cancellation and claim admission cannot resurrect a cancelled Social Post", async () => {
 		const f = await fixture();
 		const now = new Date();

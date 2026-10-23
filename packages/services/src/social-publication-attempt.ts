@@ -1868,18 +1868,14 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 				await requireCurrentClaim(tx, input.owned, input.now);
 				const row = await tx.socialPublicationAttempt.findUniqueOrThrow({
 					where: { id: input.owned.attemptId },
-					select: { id: true, socialPostId: true, phase: true },
+					select: { id: true, socialPostId: true },
 				});
+				// The post stays publishing: a claimed attempt is only reclaimed
+				// while its post is publishing, so the next poll resumes it.
 				await tx.socialPublicationAttempt.update({
 					where: { id: row.id },
 					data: { nextActionAt: input.now },
 				});
-				if (row.phase === "claimed") {
-					await tx.socialPost.update({
-						where: { id: row.socialPostId },
-						data: { status: "scheduled", nextAttemptAt: input.now },
-					});
-				}
 				await releaseCurrentClaim(tx, input.owned, input.now);
 				return {
 					kind: "interrupted",
