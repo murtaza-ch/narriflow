@@ -1652,6 +1652,80 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ).toMatchObject({ status: "pending", workflowRunId: null });
   });
 
+  test("Clip Export status follows bulk requeue and terminal reaping", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const clipExport = await prisma.clipExport.create({
+      data: {
+        projectId: project.id,
+        clipId: clip.id,
+        editorRevision: 0,
+        fingerprint: randomUUID(),
+        resolution: "1080p",
+        watermark: false,
+      },
+    });
+    const exportVariant = await prisma.clipExportVariant.create({
+      data: {
+        exportId: clipExport.id,
+        aspectRatio: "ratio_9_16",
+        resolution: "1080p",
+        watermark: false,
+      },
+    });
+    const render = await prisma.clipRender.create({
+      data: {
+        clipId: clip.id,
+        aspectRatio: "ratio_9_16",
+        exportVariantId: exportVariant.id,
+      },
+    });
+    const readExport = () =>
+      prisma.clipExport.findUniqueOrThrow({
+        where: { id: clipExport.id },
+        select: { status: true, completedAt: true },
+      });
+
+    const first = await claimRenderAttempt();
+    await first.lifecycle.beginRenderWorkSet(first.attempt);
+    await first.lifecycle.markClipRenderVariantRendering(first.attempt, render.id);
+    await first.lifecycle.failClipRenderVariant(
+      first.attempt,
+      render.id,
+      "render_upload_failed",
+      "retryable",
+    );
+    await first.lifecycle.settleRenderWorkSet(first.attempt);
+    expect(
+      await prisma.workflowRun.findUniqueOrThrow({
+        where: { id: run.id },
+        select: { status: true },
+      }),
+    ).toEqual({ status: "queued" });
+    expect(await readExport()).toEqual({ status: "queued", completedAt: null });
+
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: { nextAttemptAt: new Date(Date.now() - 1_000) },
+    });
+    const last = await claimRenderAttempt();
+    await last.lifecycle.beginRenderWorkSet(last.attempt);
+    await last.lifecycle.markClipRenderVariantRendering(last.attempt, render.id);
+    expect((await readExport()).status).toBe("rendering");
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: { attemptCount: 3 },
+    });
+    await last.lifecycle.failAttempt(
+      last.attempt,
+      new WorkflowFailure("worker_stalled", "retryable", "lease expired"),
+    );
+
+    const settled = await readExport();
+    expect(settled.status).toBe("failed");
+    expect(settled.completedAt).not.toBeNull();
+  });
+
   test("terminal render reaping completes an all-superseded lineage silently", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);

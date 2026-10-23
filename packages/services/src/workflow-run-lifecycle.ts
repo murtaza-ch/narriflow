@@ -1316,41 +1316,49 @@ export class WorkflowRunLifecycle {
     if (!ownedVariant) throw new WorkflowAttemptLost(attempt);
   }
 
-  private async syncClipExportAggregate(
+  /** Recompute each Clip Export that owns one of these variants. Every
+   * variant write must end here, or the export keeps a stale status. */
+  private async syncClipExportAggregates(
     tx: TransactionClient,
-    exportVariantId: string,
+    exportVariantIds: string[],
   ): Promise<void> {
-    const variant = await tx.clipExportVariant.findUniqueOrThrow({
-      where: { id: exportVariantId },
+    if (exportVariantIds.length === 0) return;
+    const owners = await tx.clipExportVariant.findMany({
+      where: { id: { in: exportVariantIds } },
       select: { exportId: true },
+      distinct: ["exportId"],
+      orderBy: { exportId: "asc" },
     });
-    // Serialize aggregate recomputation for siblings. Without locking the
-    // parent first, two child completions can each observe the other child as
-    // non-terminal and leave the export stuck below 100%.
-    await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT "id"
-      FROM "ClipExport"
-      WHERE "id" = ${variant.exportId}::uuid
-      FOR UPDATE
-    `;
-    const variants = await tx.clipExportVariant.findMany({
-      where: { exportId: variant.exportId },
-      select: { status: true, errorCode: true },
-    });
-    const aggregate = deriveClipExportAggregate(
-      variants.map((item) => item.status),
-    );
-    const firstError =
-      variants.find((item) => item.errorCode)?.errorCode ?? null;
-    await tx.clipExport.update({
-      where: { id: variant.exportId },
-      data: {
-        status: aggregate.status,
-        progress: aggregate.progress,
-        errorCode: aggregate.status === "failed" ? firstError : null,
-        completedAt: aggregate.terminal ? new Date() : null,
-      },
-    });
+    for (const { exportId } of owners) {
+      // Serialize aggregate recomputation for siblings. Without locking the
+      // parent first, two child completions can each observe the other child
+      // as non-terminal and leave the export stuck below 100%. Locks are
+      // taken in id order so bulk settlements cannot deadlock each other.
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "ClipExport"
+        WHERE "id" = ${exportId}::uuid
+        FOR UPDATE
+      `;
+      const variants = await tx.clipExportVariant.findMany({
+        where: { exportId },
+        select: { status: true, errorCode: true },
+      });
+      const aggregate = deriveClipExportAggregate(
+        variants.map((item) => item.status),
+      );
+      const firstError =
+        variants.find((item) => item.errorCode)?.errorCode ?? null;
+      await tx.clipExport.update({
+        where: { id: exportId },
+        data: {
+          status: aggregate.status,
+          progress: aggregate.progress,
+          errorCode: aggregate.status === "failed" ? firstError : null,
+          completedAt: aggregate.terminal ? new Date() : null,
+        },
+      });
+    }
   }
 
   private findAttemptRender(
@@ -1374,7 +1382,7 @@ export class WorkflowRunLifecycle {
       where: { id: exportVariantId },
       data,
     });
-    await this.syncClipExportAggregate(tx, exportVariantId);
+    await this.syncClipExportAggregates(tx, [exportVariantId]);
   }
 
   async replaceDetectedClips(
@@ -2250,6 +2258,7 @@ export class WorkflowRunLifecycle {
               completedAt: null,
             },
           });
+          await this.syncClipExportAggregates(tx, exportVariantIds);
         }
         await tx.workflowRun.update({
           where: { id: attempt.workflowRunId },
@@ -2593,6 +2602,7 @@ export class WorkflowRunLifecycle {
           completedAt: new Date(),
         },
       });
+      await this.syncClipExportAggregates(tx, failedExportVariantIds);
     }
     await tx.workflowRun.update({
       where: { id: attempt.workflowRunId },
@@ -2736,6 +2746,7 @@ export class WorkflowRunLifecycle {
                 completedAt: new Date(),
               },
         });
+        await this.syncClipExportAggregates(tx, exportVariantIds);
       }
     }
     if (attempt.stage === "dubbing") {
