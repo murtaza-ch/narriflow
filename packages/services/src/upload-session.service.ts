@@ -355,6 +355,7 @@ export interface UploadSessionPersistence {
     failureCode: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
+  /** A compensating session keeps the failure code it is compensating for. */
   deferReconciliation(input: {
     sessionId: string;
     reconciliationAttemptId: string;
@@ -2784,14 +2785,27 @@ export function createUploadSessionModule(
             session.completionParts
           ) {
             providerOperation = "complete";
-            await runProviderOperation((signal) =>
-              dependencies.storage.completeMultipart({
-                storageKey: session.storageKey,
-                providerUploadId: session.providerUploadId!,
-                parts: session.completionParts!,
-                signal,
-              }),
-            );
+            try {
+              await runProviderOperation((signal) =>
+                dependencies.storage.completeMultipart({
+                  storageKey: session.storageKey,
+                  providerUploadId: session.providerUploadId!,
+                  parts: session.completionParts!,
+                  signal,
+                }),
+              );
+            } catch (error) {
+              // The inline finalize can complete the upload after the probe
+              // above. Adopt its object, as the inline path does.
+              if (!isMissingMultipartUpload(error)) throw error;
+              const completedElsewhere = await runProviderOperation((signal) =>
+                dependencies.storage.headExactObjectIfExists(
+                  session.storageKey,
+                  signal,
+                ),
+              );
+              if (!completedElsewhere) throw error;
+            }
             const object = await runProviderOperation((signal) =>
               dependencies.storage.headExactObject(session.storageKey, signal),
             );
@@ -4008,21 +4022,35 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     reconcileAt,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
-      where: { id: sessionId, reconciliationAttemptId },
-      data: {
-        failureCode,
-        reconcileAt,
-        reconciliationAttemptId: null,
-        reconciliationLeaseExpiresAt: null,
-        updatedAt,
-      },
-    });
+    const release = {
+      reconcileAt,
+      reconciliationAttemptId: null,
+      reconciliationLeaseExpiresAt: null,
+      updatedAt,
+    };
+    // The claim fence holds the status still, so at most one update matches.
+    const updated =
+      (
+        await requiredPrisma().uploadSession.updateMany({
+          where: {
+            id: sessionId,
+            reconciliationAttemptId,
+            status: { not: "compensating" },
+          },
+          data: { failureCode, ...release },
+        })
+      ).count ||
+      (
+        await requiredPrisma().uploadSession.updateMany({
+          where: { id: sessionId, reconciliationAttemptId, status: "compensating" },
+          data: release,
+        })
+      ).count;
     const row = await requiredPrisma().uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
-    if (updated.count !== 1) {
+    if (updated !== 1) {
       throw new UploadSessionReconciliationClaimLostError();
     }
     return fromPrismaUploadSession(row);

@@ -569,6 +569,71 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       }),
     ).toEqual({ status: "failed", failureCode: "takeover_settlement" });
 
+    const deferredSessionId = randomUUID();
+    await prisma.uploadSession.create({
+      data: {
+        id: deferredSessionId,
+        workspaceId: workspace.id,
+        actorUserId: user.id,
+        clientIdempotencyKey: randomUUID(),
+        immutableInputFingerprint: "compensation-deferral",
+        preallocatedProjectId: randomUUID(),
+        title: "Compensation deferral",
+        fileName: "deferral.mp4",
+        fileSizeBytes: 2_048n,
+        contentType: "video/mp4",
+        browserFingerprint: "compensation-deferral",
+        generationSettings: { languageCode: "en", contentPack: CONTENT_PACK },
+        transferKind: "single",
+        partCount: 1,
+        storageKey: `workspaces/${workspace.id}/upload-sessions/${deferredSessionId}/deferral.mp4`,
+        completionParts: { version: 1, parts: [] },
+        status: "reconciling",
+        reconcileAt: new Date(leaseNow.getTime() - 1_000),
+        expiresAt: new Date(leaseNow.getTime() + 60_000),
+        hardExpiresAt: new Date(leaseNow.getTime() + 120_000),
+      },
+    });
+    const deferralAttemptId = randomUUID();
+    await prismaUploadSessionPersistence.claimReconciliation({
+      sessionId: deferredSessionId,
+      reconciliationAttemptId: deferralAttemptId,
+      leaseExpiresAt: new Date(leaseNow.getTime() + 30_000),
+      updatedAt: leaseNow,
+    });
+    await prismaUploadSessionPersistence.beginCompensation({
+      sessionId: deferredSessionId,
+      reconciliationAttemptId: deferralAttemptId,
+      failureCode: "upload_session_expired",
+      updatedAt: leaseNow,
+    });
+    await expect(
+      prismaUploadSessionPersistence.deferReconciliation({
+        sessionId: deferredSessionId,
+        reconciliationAttemptId: randomUUID(),
+        failureCode: "upload_reconciliation_deferred",
+        reconcileAt: new Date(leaseNow.getTime() + 5_000),
+        updatedAt: leaseNow,
+      }),
+    ).rejects.toBeInstanceOf(UploadSessionReconciliationClaimLostError);
+    await prismaUploadSessionPersistence.deferReconciliation({
+      sessionId: deferredSessionId,
+      reconciliationAttemptId: deferralAttemptId,
+      failureCode: "upload_reconciliation_deferred",
+      reconcileAt: new Date(leaseNow.getTime() + 5_000),
+      updatedAt: leaseNow,
+    });
+    expect(
+      await prisma.uploadSession.findUniqueOrThrow({
+        where: { id: deferredSessionId },
+        select: { status: true, failureCode: true, reconciliationAttemptId: true },
+      }),
+    ).toEqual({
+      status: "compensating",
+      failureCode: "upload_session_expired",
+      reconciliationAttemptId: null,
+    });
+
     const fairnessNow = new Date(Date.now() + 5 * 60_000);
     await prisma.uploadSession.updateMany({
       where: {

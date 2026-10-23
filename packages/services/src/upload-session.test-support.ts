@@ -580,7 +580,7 @@ export function createInMemoryUploadSessionHarness() {
       if (session.reconciliationAttemptId !== reconciliationAttemptId) {
         throw new UploadSessionReconciliationClaimLostError();
       }
-      session.failureCode = failureCode;
+      if (session.status !== "compensating") session.failureCode = failureCode;
       session.reconcileAt = reconcileAt;
       session.reconciliationAttemptId = null;
       session.reconciliationLeaseExpiresAt = null;

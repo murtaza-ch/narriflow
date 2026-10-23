@@ -1549,6 +1549,50 @@ describe("Upload Session", () => {
     expect(harness.facts.unfinishedProviderUploads).toHaveLength(0);
   });
 
+  test("a transient cleanup failure keeps an expiring session's reason", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      now: () => now,
+    });
+    await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000016",
+      title: "Idle upload with a storage blip",
+      source: {
+        fileName: "idle-blip.mp4",
+        sizeBytes: 32 * 1024 * 1024,
+        contentType: "video/mp4",
+        browserFingerprint: '["idle-blip.mp4",33554432,"video/mp4",16]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const timeout = new Error("storage timed out");
+    timeout.name = "TimeoutError";
+    harness.failNextProviderAbort(timeout);
+    now = new Date("2026-08-28T00:00:00.001Z");
+
+    expect(await module.reconcileDueSessions()).toEqual({
+      claimed: 1,
+      settled: 0,
+      deferred: 1,
+    });
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "compensating",
+      failureCode: "upload_session_expired",
+    });
+    now = new Date("2026-08-28T01:00:00.000Z");
+    await module.reconcileDueSessions();
+
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "expired",
+      failureCode: "upload_session_expired",
+    });
+  });
+
   test("maintenance compensates an idle multipart session before expiring it", async () => {
     const harness = createInMemoryUploadSessionHarness();
     let now = new Date("2026-08-27T00:00:00.000Z");
@@ -2696,6 +2740,78 @@ describe("Upload Session", () => {
         sizeBytes: 2,
         contentType: "video/mp4",
         browserFingerprint: '["inline-fencing.mp4",2,"video/mp4",1]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const parts = [{ partNumber: 1, etag: "etag-1" }];
+    harness.uploadMultipartParts(opened.sessionId, parts);
+
+    const inline = module.finalize({
+      actorUserId: ACTOR.actorUserId,
+      workspaceId: ACTOR.workspaceId,
+      sessionId: opened.sessionId,
+      parts,
+    });
+    await inlineEntered;
+    now = new Date("2026-08-27T00:00:06.000Z");
+    expect(await module.reconcileDueSessions()).toEqual({
+      claimed: 1,
+      settled: 1,
+      deferred: 0,
+    });
+    releaseInline();
+
+    await expect(inline).resolves.toMatchObject({ outcome: "queued_for_ingest" });
+    expect(harness.facts.sessions[0]?.status).toBe("queued_for_ingest");
+    expect(harness.facts.projects).toHaveLength(1);
+    expect(harness.facts.ingestJobs).toHaveLength(1);
+  });
+
+  test("the reconciler adopts an upload the inline finalize completed first", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const baseStorage = harness.adapters.storage;
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    let releaseInline!: () => void;
+    let signalInlineEntered!: () => void;
+    const inlineEntered = new Promise<void>((resolve) => {
+      signalInlineEntered = resolve;
+    });
+    const inlineReleased = new Promise<void>((resolve) => {
+      releaseInline = resolve;
+    });
+    let completionCalls = 0;
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      now: () => now,
+      storage: {
+        ...baseStorage,
+        async completeMultipart(input) {
+          completionCalls += 1;
+          if (completionCalls === 1) {
+            signalInlineEntered();
+            await inlineReleased;
+            return;
+          }
+          // The inline completion lands at the provider first, which retires
+          // the upload ID before the reconciler's own completion arrives.
+          await baseStorage.completeMultipart(input);
+          const missingUpload = new Error("provider upload no longer exists");
+          missingUpload.name = "NoSuchUpload";
+          throw missingUpload;
+        },
+      },
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "96969696-9696-4696-8696-969696969696",
+      title: "Completed elsewhere",
+      source: {
+        fileName: "completed-elsewhere.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["completed-elsewhere.mp4",2,"video/mp4",1]',
       },
       brandTemplateId: null,
       generation: { languageCode: "en", contentPack: CONTENT_PACK },
