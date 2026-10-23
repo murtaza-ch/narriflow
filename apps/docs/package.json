@@ -1,8 +1,0 @@
-{
-  "name": "@narriflow/docs",
-  "private": true,
-  "scripts": {
-    "docs:dev": "bunx mint@latest dev --port 3333",
-    "openapi": "bun scripts/sync-openapi.ts"
-  }
-}

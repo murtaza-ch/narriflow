@@ -108,6 +108,15 @@ class RestFailure extends Error {
   }
 }
 
+/** The OpenAPI document's header; `origin` becomes its only server. */
+export function openApiDocumentConfig(origin: string) {
+  return {
+    openapi: "3.1.0",
+    info: { title: "Narriflow API", version: "1.0.0", description: "Turn long videos into short, captioned clips. Changes within v1 are additive." },
+    servers: [{ url: origin }],
+  };
+}
+
 export function createRestApi(dependencies: RestApiDependencies) {
   const admission = new IntegrationAdmission(workspaceService);
   const uploads = integrationUploadSessions(uploadSessionService);
@@ -142,11 +151,7 @@ export function createRestApi(dependencies: RestApiDependencies) {
       ...(principal?.kind === "api_key" ? { apiKeyId: principal.apiKeyId, workspaceId: principal.workspaceId } : {}) });
   });
 
-  app.doc31("/openapi.json", (c) => ({
-    openapi: "3.1.0",
-    info: { title: "Narriflow API", version: "1.0.0", description: "Turn long videos into short, captioned clips. Changes within v1 are additive." },
-    servers: [{ url: new URL(c.req.url).origin }],
-  }));
+  app.doc31("/openapi.json", (c) => openApiDocumentConfig(new URL(c.req.url).origin));
 
   // Authentication: the key is the Workspace. Membership, role, and plan are
   // rechecked by admission on every request.

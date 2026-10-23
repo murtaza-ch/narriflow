@@ -6,6 +6,7 @@
   "exports": {
     "./provider": "./src/provider.tsx",
     "./theme": "./src/theme.ts",
+    "./code-theme": "./src/code-theme.ts",
     "./components/*": "./src/components/*.tsx",
     "./hooks/*": "./src/hooks/*.ts"
   },

@@ -3,6 +3,7 @@
 import { Box, Flex, IconButton, Text, chakra } from "@chakra-ui/react"
 import { Check, Copy } from "lucide-react"
 import * as React from "react"
+import { CODE_PALETTE } from "../code-theme"
 
 export type CodeLanguage = "shell" | "javascript" | "python" | "text"
 
@@ -29,12 +30,24 @@ type Token = "plain" | "muted" | "keyword" | "string" | "variable" | "command"
 
 // Syntax colours for both modes, restrained around the accent. Plain code
 // inherits `fg`, so blocks sit on the theme's soft fill like any control.
+// Written as CSS values so the docs' Shiki theme can read the same palette.
+const mode = (role: keyof typeof CODE_PALETTE.light) => ({ base: CODE_PALETTE.light[role], _dark: CODE_PALETTE.dark[role] })
+
+/** The kit tokenizer's roles on the shared code palette (`../code-theme`). */
+export const CODE_TOKEN_COLORS = {
+  muted: mode("comment"),
+  keyword: mode("keyword"),
+  string: mode("string"),
+  variable: mode("constant"),
+  command: mode("function"),
+} as const
+
 const TOKEN_STYLES = {
-  "& .tk-muted": { color: "fg.subtle" },
-  "& .tk-keyword": { color: "accent.fg" },
-  "& .tk-string": { color: "#9A5A06", _dark: { color: "#E9C08C" } },
-  "& .tk-variable": { color: "#8E3DAE", _dark: { color: "#D6A4E0" } },
-  "& .tk-command": { color: "#0E7480", _dark: { color: "#7FD3DC" } },
+  "& .tk-muted": { color: CODE_TOKEN_COLORS.muted },
+  "& .tk-keyword": { color: CODE_TOKEN_COLORS.keyword },
+  "& .tk-string": { color: CODE_TOKEN_COLORS.string },
+  "& .tk-variable": { color: CODE_TOKEN_COLORS.variable },
+  "& .tk-command": { color: CODE_TOKEN_COLORS.command },
 } as const
 
 const KEYWORDS: Record<CodeLanguage, Set<string>> = {
@@ -91,7 +104,7 @@ function highlight(code: string, language: CodeLanguage): React.ReactNode[] {
   return nodes
 }
 
-function CopyButton({ value, label }: { value: string; label: string }) {
+export function CopyButton({ value, label }: { value: string; label: string }) {
   const [status, setStatus] = React.useState<"idle" | "copied" | "error">("idle")
   return (
     <>

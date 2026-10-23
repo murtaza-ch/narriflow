@@ -1,0 +1,70 @@
+---
+title: Tools
+description: All 29 tools the Narriflow connector exposes, grouped by job, with the access each one needs.
+---
+
+Read tools never change anything. Write tools start processing or change publishing state, and each needs a write scope. Each tool below lists its access and the scope it needs. See [Permissions](/docs/ai/permissions) for how scopes and roles combine.
+
+## How the tools fit together
+
+- Call `narriflow_list_workspaces` first. Pass the returned `workspaceId` on every other call.
+- Every write tool also takes a `clientIdempotencyKey`, a UUID. After a lost response, retry the unchanged request with the same key to get the original result. The same key with different input returns a conflict.
+- A write tool that starts work returns an `operation` with a `kind` and an `id`. Pass it to `narriflow_get_operation` to follow the work. `narriflow_get_project` is a snapshot and does not track accepted work.
+- List tools return a `nextCursor`. Pass it back to read the next page.
+
+## Workspaces and usage
+
+- `narriflow_list_workspaces` (Read, no scope). Lists the Workspaces you belong to, with your role and whether the connector is enabled.
+- `narriflow_get_workspace_usage` (Read, `usage:read`). Reports the plan, processing minutes used, reserved and remaining this UTC month, videos processing against the limit, and the per-video length limit.
+
+## Projects and import
+
+- `narriflow_list_projects` (Read, `projects:read`). Pages through Projects, up to 100 per page, with progress and clip counts.
+- `narriflow_get_project` (Read, `projects:read`). Reads one Project's current facts and latest activity.
+- `narriflow_list_brand_profiles` (Read, `projects:read`). Lists the Workspace's Brand Profiles by name and marks the default. Pass a `brandProfileId` when you submit or upload.
+- `narriflow_submit_video` (Write, `processing:write`). Imports a supported video link and starts clip generation with the settings you choose. Uses processing minutes.
+- `narriflow_upload_video` (Write, `processing:write`). Opens an upload for a local file, through a picker in the assistant or a Narriflow link. The file goes straight to storage. See [Upload local files](/docs/ai/upload-local-files).
+- `narriflow_generate_clips` (Write, `processing:write`). Generates clips for a ready Project. A forced regeneration cannot overlap generation that is still running.
+
+Omit `brandProfileId` on `narriflow_submit_video` and `narriflow_upload_video` to use the Workspace's default Brand Profile.
+
+## Clips
+
+- `narriflow_list_clips` (Read, `projects:read`). Lists a Project's clips ranked by virality, 20 per page by default and 50 at most. Transcript excerpts are off unless you ask.
+- `narriflow_get_clip` (Read, `projects:read`). Reads one clip's timing, scores and editor revision, with a link to review it in Narriflow.
+
+## Exports and downloads
+
+- `narriflow_create_clip_export` (Write, `exports:write`). Exports the exact editor revision you reviewed, in one to four aspect ratios (9:16, 1:1, 16:9 or 4:5) at 720p or 1080p. The result states the resolution and watermark your plan grants.
+- `narriflow_get_clip_export` (Read, `exports:read`). Reads an export's progress and its Narriflow page.
+- `narriflow_get_export_download` (Read, `exports:read`). Issues fresh private download links for a finished export's video files, plus SRT and VTT subtitles. Links last 15 minutes. Call again for new ones.
+
+## Review handoffs
+
+- `narriflow_create_review_handoff` (Read, `exports:read`). Checks up to 20 finished exports against client review rules and returns a Narriflow link that opens the review composer with them selected. It creates and sends nothing. A signed-in member chooses recipients and sends the round.
+- `narriflow_list_review_rounds` (Read, `exports:read`). Lists recent client review rounds with status and per-clip decisions.
+- `narriflow_get_review_round` (Read, `exports:read`). Reports whether the client approved or asked for changes on each clip, with comment counts. It never returns access tokens, passcodes or emails.
+
+## Publishing
+
+- `narriflow_list_social_accounts` (Read, `publishing:read`). Lists connected accounts and their status, without credentials.
+- `narriflow_get_publishing_options` (Read, `publishing:read`). Reads the platform limits and account-specific choices for one account.
+- `narriflow_prepare_social_post` (Write, `publishing:write`). Shows the exact export, revision, account, caption, settings and time. Preparing a post does not approve or schedule it.
+- `narriflow_schedule_social_post` (Write, `publishing:write`). Schedules only the exact prepared post, after you confirm it. Rechecks review approval first.
+- `narriflow_list_social_publications` (Read, `publishing:read`). Lists a Project's scheduled and published posts.
+- `narriflow_get_social_publication` (Read, `publishing:read`). Reads one post's attempts and the recovery actions available.
+- `narriflow_recheck_social_publication` (Write, `publishing:write`). Checks the existing provider operation without submitting again.
+- `narriflow_confirm_social_publication` (Write, `publishing:write`). Records evidence that a post went live, such as its platform URL, without a new submission.
+- `narriflow_publish_social_publication_again` (Write, `publishing:write`). Creates a new attempt. It requires you to acknowledge the risk of a duplicate post.
+
+You confirm a scheduled post in Narriflow or in the assistant's confirmation card. The confirmation expires 10 minutes after the post is prepared. After it expires, prepare the post again.
+
+## Autopilot
+
+- `narriflow_list_autopilot_rules` (Read, `autopilot:read`). Lists RSS Autopilot rules with their schedule and status.
+- `narriflow_create_rss_autopilot_rule` (Write, `autopilot:write`). Creates a rule from a feed URL, a check interval (60 minutes to 7 days, daily by default), up to 10 episodes per run (3 by default) and generation settings. Imported episodes use processing minutes.
+- `narriflow_run_autopilot_rule_now` (Write, `autopilot:write`). Marks a rule due so the worker checks it on its next poll. Normal processing limits apply.
+
+## Operations
+
+- `narriflow_get_operation` (Read, `projects:read` or `exports:read`). Follows the work one accepted request started. It needs `projects:read` for imports and generations and `exports:read` for exports. The state is `working`, `completed`, `partial`, `failed` or `cancelled`, with progress, per-clip or per-format outcomes and the IDs produced.

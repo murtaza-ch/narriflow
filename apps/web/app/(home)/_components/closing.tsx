@@ -22,7 +22,8 @@ const FOOTER_LINKS = [
   {
     title: "Developers",
     links: [
-      { label: "REST API", href: "/developers/api" },
+      { label: "Docs", href: "/docs" },
+      { label: "REST API", href: "/docs/api/introduction" },
       { label: "Connector", href: "/connector" },
     ],
   },

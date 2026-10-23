@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createMDX } from "fumadocs-mdx/next";
 import type { NextConfig } from "next";
 
 const reviewScriptSource = process.env.NODE_ENV === "development"
@@ -38,6 +39,20 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       { source: "/settings", destination: "/settings/profile", permanent: true },
+      { source: "/developers/api", destination: "/docs/api/introduction", permanent: true },
+    ];
+  },
+  async rewrites() {
+    return [
+      // Every docs page is also served as Markdown: at its URL plus ".md",
+      // and at its own URL for agents that ask for text/markdown.
+      { source: "/docs.md", destination: "/docs-markdown" },
+      { source: "/docs/:path*.md", destination: "/docs-markdown/:path*" },
+      {
+        source: "/docs/:path*",
+        has: [{ type: "header", key: "accept", value: ".*text/markdown.*" }],
+        destination: "/docs-markdown/:path*",
+      },
     ];
   },
   async headers() {
@@ -112,6 +127,11 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        // A docs URL serves HTML or Markdown depending on Accept (see rewrites).
+        source: "/docs/:path*",
+        headers: [{ key: "Vary", value: "Accept" }],
+      },
+      {
         source: "/api/review/:path*",
         headers: [
           { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
@@ -123,4 +143,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default createMDX()(nextConfig);

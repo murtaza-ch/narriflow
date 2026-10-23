@@ -1,0 +1,49 @@
+---
+title: n8n template
+description: Import a ready-made n8n workflow that turns each new video in a Google Drive folder into exported clips.
+---
+
+The template watches a Google Drive folder. For each new video it uploads the file to Narriflow, waits for the clips, exports the top ones as 9:16 at 1080p, saves the MP4 and SRT files to another Drive folder, and posts a summary with the Narriflow review link to Slack. It uses only HTTP Request, Wait, Code, Google Drive and Slack nodes, and the [Narriflow API](/docs/api/introduction).
+
+<a href="/docs/downloads/drive-to-clips.json" download="drive-to-clips.json">Download drive-to-clips.json</a>, then import it in n8n with **Import from file**.
+
+## Set up
+
+<Steps>
+  <Step title="Create an API key and signing secret">
+    In Narriflow, open **Settings → Developer access**. Create an API key with **Allow this key to import, upload and generate clips** and **Allow this key to request clip exports** turned on. Then create the completion callback signing secret. See [Completion callbacks](/docs/api/callbacks).
+  </Step>
+  <Step title="Add the credential in n8n">
+    Create a **Header Auth** credential named `Narriflow API key`. Set the name to `Authorization` and the value to `Bearer nf_…`. Select it on every Narriflow HTTP Request node. The key never goes in the workflow JSON.
+  </Step>
+  <Step title="Set the variables">
+    Define these as n8n Variables, or as environment variables on self-hosted n8n.
+
+    | Variable | Value |
+    | --- | --- |
+    | `NARRIFLOW_URL` | `https://app.narriflow.com` |
+    | `NARRIFLOW_CALLBACK_SECRET` | The `whsec_…` signing secret. |
+    | `NARRIFLOW_TOP_CLIPS` | Optional. How many clips to export. Defaults to 3. |
+  </Step>
+  <Step title="Allow the Code node's crypto module">
+    On self-hosted n8n, set `NODE_FUNCTION_ALLOW_BUILTIN=crypto`. Your n8n must also be reachable over public HTTPS on port 443, because Narriflow only calls public HTTPS callback URLs.
+  </Step>
+  <Step title="Fill in the placeholders">
+    Replace `REPLACE_WITH_INPUT_FOLDER_ID`, `REPLACE_WITH_OUTPUT_FOLDER_ID` and `REPLACE_WITH_SLACK_CHANNEL`, then connect your Google Drive and Slack credentials.
+  </Step>
+</Steps>
+
+## How the workflow runs
+
+1. **New video in Drive** polls the input folder. **Download video** fetches each file, and the flow runs once per file.
+2. **Open upload** calls `POST /uploads` with `transfer: "single"`, and **PUT file to storage** sends the bytes.
+3. **Finalize with callback** calls `POST /uploads/{id}/finalize` with a callback to n8n's resume URL.
+4. **Wait for intake** pauses until Narriflow calls back. **Verify intake event** checks the signature, the timestamp, the operation ID and the event ID, then reads Operation Status to decide whether the intake finished.
+5. **List top clips** and **Export clip** request 9:16 1080p exports of the top clips, each with its own callback and wait.
+6. **Download grants** fetches fresh download links and subtitles. **Save MP4** and **Save SRT** store them in Drive, and **Post to Slack** sends the summary.
+
+Delivery is at least once, so the template treats a callback only as a wake-up and reads Operation Status for the truth.
+
+<Note>
+  A recorded run on a real n8n instance with Google Drive and Slack is still pending. The workflow passes its offline checks, including signature verification, but treat your first run as a test.
+</Note>

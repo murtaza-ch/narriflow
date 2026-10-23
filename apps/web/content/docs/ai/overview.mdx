@@ -1,0 +1,53 @@
+---
+title: AI assistants overview
+sidebarTitle: Overview
+description: Connect Claude, ChatGPT, Codex, Cursor or any MCP client to a Narriflow Workspace so the assistant can import videos, review clips, export files and schedule posts for you.
+---
+
+## What the assistant can do
+
+<CardGroup cols={2}>
+  <Card title="Find your work" icon="folder-search">
+    List your Workspaces, Projects, Brand Profiles and clips ranked by virality. Read a clip's timing, scores and edit version. Check your processing minutes.
+  </Card>
+  <Card title="Create clips" icon="scissors">
+    Submit a video link or upload a file, pick a Brand Profile and generation settings, generate clips again for a ready Project, and follow the work until it finishes.
+  </Card>
+  <Card title="Deliver" icon="package-check">
+    Export a reviewed clip in the formats you choose, get download links and subtitles on request, and prepare a client review link.
+  </Card>
+  <Card title="Publish" icon="send">
+    List connected accounts, prepare an exact post, schedule it after you confirm, recover a failed post, and manage RSS Autopilot rules.
+  </Card>
+</CardGroup>
+
+See [Tools](/docs/ai/tools) for all 29 tools.
+
+## Who can use it
+
+- **Business Workspaces.** The Workspace must be on an active Business plan. Other plans cannot use the connector.
+- **Your role applies.** The assistant acts as you, in any Workspace where your role allows the action. Viewers can read but cannot start work. See [Permissions](/docs/ai/permissions).
+- **Processing minutes.** Importing, uploading and generating clips use the Workspace's processing minutes, the same as in the app.
+
+## How it works
+
+The assistant reads by default and writes only on clear intent. Write tools start processing or change publishing, so each needs a write permission that you approve when you connect. Scheduling a post adds a second check. Narriflow shows the exact post, and nothing is scheduled until you confirm it.
+
+Tool results contain product facts and Narriflow links, not media URLs or transcripts. Download links are issued only when you ask for files, and they expire after 15 minutes.
+
+## Connect
+
+Every client uses the same URL.
+
+```text
+https://app.narriflow.com/mcp
+```
+
+<CardGroup cols={3}>
+  <Card title="Claude" icon="claude" href="/docs/ai/claude" />
+  <Card title="ChatGPT" icon="chatgpt" href="/docs/ai/chatgpt" />
+  <Card title="Claude Code" icon="claude-code" href="/docs/ai/claude-code" />
+  <Card title="Codex" icon="codex" href="/docs/ai/codex" />
+  <Card title="Cursor" icon="cursor" href="/docs/ai/cursor" />
+  <Card title="Other clients" icon="plug" href="/docs/ai/other-clients" />
+</CardGroup>

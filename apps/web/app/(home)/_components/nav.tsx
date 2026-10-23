@@ -10,7 +10,7 @@ const LINKS = [
   { label: "How it works", href: "#how" },
   { label: "Captions", href: "#captions" },
   { label: "Pricing", href: "#pricing" },
-  { label: "API", href: "/developers/api" },
+  { label: "Docs", href: "/docs" },
 ];
 
 const SECTIONS = LINKS.flatMap((item) => (item.href.startsWith("#") ? [item.href] : []));

@@ -12,9 +12,9 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 ## Monorepo layout (Bun + Turborepo)
 
 - `apps/web` — Next.js 16 App Router + Hono API (`app/api/[[...route]]/route.ts`) + Clerk auth.
+  Public docs live at `/docs`: pages in `content/docs/**.mdx` (Mintlify component names), navigation in `lib/docs/navigation.ts`, UI in `app/(docs)`. The API reference renders from the REST API's own OpenAPI document. In-app links go through `lib/docs-url.ts`.
 - `apps/worker` — independent Bun loops for ingest, workflow stages, previews/layout, publishing, and maintenance. Uses FFmpeg/ffprobe/yt-dlp.
 - `apps/mcp` — stdio MCP server (project + autopilot tools).
-- `apps/docs` — public Mintlify docs (`docs.narriflow.com`); preview with `bun run --cwd apps/docs docs:dev`. In-app pages link to it through `apps/web/lib/docs-url.ts`. After a REST API change, run `bun run --cwd apps/docs openapi` (a drift test fails until you do).
 - `packages/`:
   - `db` — Prisma/Postgres.
   - `services` — shared service layer; the real business logic lives here.

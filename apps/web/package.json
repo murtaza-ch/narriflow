@@ -30,6 +30,8 @@
     "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "^7.4.2",
     "framer-motion": "^12.34.3",
+    "fumadocs-core": "16.17.8",
+    "fumadocs-mdx": "15.4.10",
     "geist": "^1.7.0",
     "gsap": "^3.14.2",
     "hono": "^4.12.28",
@@ -47,6 +49,7 @@
   "devDependencies": {
     "@prisma/adapter-pg": "7.7.0",
     "@seriousme/openapi-schema-validator": "^2.11.0",
+    "@types/mdx": "^2.0.13",
     "@types/node": "26.2.0",
     "@types/pg": "8.15.5",
     "@types/react": "19.2.18",

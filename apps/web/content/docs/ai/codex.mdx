@@ -1,0 +1,60 @@
+---
+title: Connect Codex
+description: Add Narriflow to Codex in the CLI, the desktop app or the IDE extension.
+---
+
+Codex stores MCP servers in one `config.toml`, so the CLI, the desktop app and the IDE extension share the setup.
+
+<Steps>
+  <Step title="Add the server">
+    <Tabs>
+      <Tab title="CLI">
+        ```bash
+        codex mcp add narriflow \
+          --url https://app.narriflow.com/mcp \
+          --oauth-resource https://app.narriflow.com/mcp
+        ```
+      </Tab>
+      <Tab title="config.toml">
+        Add this to `~/.codex/config.toml`.
+
+        ```toml
+        [mcp_servers.narriflow]
+        url = "https://app.narriflow.com/mcp"
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+  <Step title="Sign in">
+    ```bash
+    codex mcp login narriflow
+    ```
+
+    Your browser opens. Sign in to Narriflow and approve the access Codex asks for. To request read access only, pass the read scopes.
+
+    ```bash
+    codex mcp login narriflow --scopes projects:read,exports:read,usage:read,autopilot:read,publishing:read
+    ```
+  </Step>
+  <Step title="Confirm it works">
+    Run `codex mcp list`, or open `/mcp` in the Codex terminal UI. Then ask Codex to list your Narriflow Workspaces.
+  </Step>
+</Steps>
+
+## Use a Workspace API key
+
+For unattended runs, read a Workspace API key from an environment variable. Create the key in **Settings → Developer access**.
+
+```toml
+[mcp_servers.narriflow]
+url = "https://app.narriflow.com/mcp"
+bearer_token_env_var = "NARRIFLOW_API_KEY"
+```
+
+## Disconnect
+
+```bash
+codex mcp logout narriflow
+```
+
+To upload a local file from Codex, see [Upload local files](/docs/ai/upload-local-files). If sign-in fails, see [Troubleshooting](/docs/ai/troubleshooting).

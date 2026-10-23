@@ -1,0 +1,60 @@
+---
+title: Connect Cursor
+description: Add Narriflow to Cursor as a remote MCP server with an install link or mcp.json.
+---
+
+<Note>
+  Cursor has not been verified end to end with Narriflow yet. The setup below follows Cursor's documented remote MCP and OAuth support. If you hit a problem, tell us at support@narriflow.com.
+</Note>
+
+## Install with one click
+
+<Steps>
+  <Step title="Open the install link">
+    <Card title="Add Narriflow to Cursor" icon="cursor" href="cursor://anysphere.cursor-deeplink/mcp/install?name=narriflow&config=eyJ1cmwiOiJodHRwczovL2FwcC5uYXJyaWZsb3cuY29tL21jcCJ9" />
+  </Step>
+  <Step title="Confirm the install">
+    Cursor asks you to install the server. Confirm it.
+  </Step>
+  <Step title="Sign in">
+    Sign in to Narriflow when Cursor opens the browser, and approve the access it asks for. Read access is granted by default. Approve write access only for what you want Cursor to do.
+  </Step>
+  <Step title="Confirm it works">
+    Ask Cursor to list your Narriflow Workspaces.
+  </Step>
+</Steps>
+
+## Install with mcp.json
+
+Add the server to `~/.cursor/mcp.json`, or to `.cursor/mcp.json` in one project.
+
+```json
+{
+  "mcpServers": {
+    "narriflow": {
+      "url": "https://app.narriflow.com/mcp"
+    }
+  }
+}
+```
+
+Cursor starts the sign-in the first time it connects.
+
+## Use a Workspace API key
+
+For unattended runs, send a Workspace API key instead of signing in. Create the key in **Settings → Developer access** and keep it in an environment variable.
+
+```json
+{
+  "mcpServers": {
+    "narriflow": {
+      "url": "https://app.narriflow.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:NARRIFLOW_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+If sign-in fails, see [Troubleshooting](/docs/ai/troubleshooting).
