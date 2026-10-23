@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import { AutopilotService } from "./autopilot.service";
+import { ProcessingUsageError } from "./processing-usage";
+import { projectService } from "./project.service";
 import { analyticsService } from "./analytics.service";
 import { clipExportService } from "./clip-export.service";
 import { contentSuiteService } from "./content-suite.service";
@@ -263,6 +265,49 @@ describeDb("Autopilot database concurrency and recovery", () => {
       else process.env.LINKEDIN_CLIENT_SECRET = previousClientSecret;
       if (previousClientId === undefined) delete process.env.LINKEDIN_CLIENT_ID;
       else process.env.LINKEDIN_CLIENT_ID = previousClientId;
+    }
+  });
+
+  test("an episode deferred for capacity is retried on the next poll", async () => {
+    const rule = await prisma.autopilotRule.create({
+      data: {
+        workspaceId,
+        createdByUserId: userId,
+        name: "Deferred capacity",
+        rssUrl: "https://feeds.example.test/deferred.xml",
+        contentPack: CONTENT_PACK,
+        initializedAt: new Date(),
+        lastSeenEpisodeId: "seen-episode",
+        lastSeenPublishedAt: new Date("2026-10-01T00:00:00.000Z"),
+      },
+    });
+    const dueOnlyThisRule = async () => {
+      await prisma.autopilotRule.updateMany({ where: { workspaceId }, data: { nextRunAt: new Date(Date.now() + 86_400_000) } });
+      await prisma.autopilotRule.update({ where: { id: rule.id }, data: { nextRunAt: new Date(Date.now() - 60_000) } });
+    };
+    const episodeInput = (id: string, publishedAt: string) => ({ id, title: id, enclosureUrl: `https://cdn.example.test/${id}.mp3`, publishedAt, durationSeconds: 60, mimeType: "audio/mpeg" });
+    const requestedEtags: Array<string | null | undefined> = [];
+    const worker = new AutopilotService({
+      fetchFeed: async (_url, validators) => {
+        requestedEtags.push(validators?.etag);
+        if (validators?.etag === "feed-v1") return { title: "Deferred feed", finalUrl: "https://feeds.example.test/deferred.xml", episodes: [], etag: "feed-v1", lastModified: null, notModified: true };
+        return { title: "Deferred feed", finalUrl: "https://feeds.example.test/deferred.xml", episodes: [episodeInput("new-episode", "2026-10-02T00:00:00.000Z"), episodeInput("seen-episode", "2026-10-01T00:00:00.000Z")], etag: "feed-v1", lastModified: null, notModified: false };
+      },
+    });
+    const importEpisodes = spyOn(projectService, "importResolvedRssEpisodes").mockImplementation(async () => {
+      throw new ProcessingUsageError({ code: "workspace_processing_capacity_reached", message: "At capacity", details: { tier: "free", inFlight: 1, inFlightLimit: 1 } });
+    });
+    try {
+      await dueOnlyThisRule();
+      await worker.processDueRules();
+      expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ etag: null, lastSeenEpisodeId: "seen-episode" });
+
+      await dueOnlyThisRule();
+      await worker.processDueRules();
+      expect(requestedEtags).toEqual([null, null]);
+      expect(importEpisodes).toHaveBeenCalledTimes(2);
+    } finally {
+      importEpisodes.mockRestore();
     }
   });
 

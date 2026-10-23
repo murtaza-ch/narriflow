@@ -665,11 +665,12 @@ export class AutopilotService {
           ? new Date(head.publishedAt)
           : rule.lastSeenPublishedAt,
       }),
-      // A backlog larger than maxEpisodesPerRun must force another full
-      // response. Saving the new validators early would yield 304 and strand
-      // the remaining unseen episodes behind the old cursor.
-      etag: selection.shouldAdvanceCursor ? feed.etag : null,
-      lastModified: selection.shouldAdvanceCursor ? feed.lastModified : null,
+      // A backlog larger than maxEpisodesPerRun, or a deferred episode, must
+      // force another full response. Saving the new validators early would
+      // yield 304 and strand those episodes behind the old cursor.
+      etag: selection.shouldAdvanceCursor && !deferred ? feed.etag : null,
+      lastModified:
+        selection.shouldAdvanceCursor && !deferred ? feed.lastModified : null,
       feedTitle: feed.title,
       lastCheckedAt: now,
       lastSuccessAt: now,
