@@ -3883,7 +3883,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 			expect(boundaryFrameHashes.every(Boolean)).toBe(true);
 			expect(new Set(boundaryFrameHashes).size).toBeGreaterThanOrEqual(6);
 			const graph = harness.commands[0]?.args.join(" ") ?? "";
-			expect(graph).toContain("drawtext=font='Arial':text='Plan first'");
+			expect(graph).toContain("drawtext=font=Arial:text=Plan first:expansion=none");
 			expect(graph).toContain("ass='");
 			expect(graph).toContain("colorchannelmixer=aa=0.800");
 			expect(graph).toContain("fade=t=in:st=0.000:d=0.200:color=white");
@@ -3969,7 +3969,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 			expect(graph).toContain("showwaves=");
 			expect(graph).toContain("color=c=0x0F172A");
 			expect(graph).not.toContain("color=c=0x123456");
-			expect(graph).toContain("text='Listen closely'");
+			expect(graph).toContain("text=Listen closely:expansion=none");
 			expect(graph).toContain("colorchannelmixer=aa=0.800");
 			expect(graph).toContain("fade=t=in:st=0.000:d=0.200:color=white");
 			expect(graph).toContain("drawtext=text=Made with Narriflow");

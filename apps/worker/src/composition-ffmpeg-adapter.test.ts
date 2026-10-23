@@ -32,7 +32,7 @@ import {
 	compileCompositionPlanVisualLayers,
 	bindCompositionPlanAudioInputs,
 } from "./composition-ffmpeg-adapter";
-import { escapeDrawtextText } from "./ffmpeg-text";
+import { drawtextLiteralText } from "./ffmpeg-text";
 import { productionWorkerProcessModule } from "./worker-process";
 
 function planCenter() {
@@ -1372,15 +1372,63 @@ describe("composition FFmpeg adapter", () => {
 			}),
 		).toEqual({
 			filterParts: [
-				"[composition_base]drawtext=font='Arial':text='It\\'s 50\\%':fontsize=44:fontcolor=0xFFFFFF:x=w*0.5000-text_w/2:y=h*0.1800-text_h/2:enable='between(t\\,1.000\\,4.000)':shadowcolor=black@0.45:shadowx=0:shadowy=2:borderw=2:bordercolor=0x000000[composition_visual_0]",
+				"[composition_base]drawtext=font=Arial:text=It\\\\\\'s 50%:expansion=none:fontsize=44:fontcolor=0xFFFFFF:x=w*0.5000-text_w/2:y=h*0.1800-text_h/2:enable='between(t\\,1.000\\,4.000)':shadowcolor=black@0.45:shadowx=0:shadowy=2:borderw=2:bordercolor=0x000000[composition_visual_0]",
 				"[1:v]scale=130:-1,format=rgba,colorchannelmixer=aa=0.800[composition_logo_1]",
 				"[composition_visual_0][composition_logo_1]overlay=W-w-24:24[composition_visual_1]",
 				"[composition_visual_1]fade=t=in:st=0.000:d=0.500:color=white,fade=t=out:st=4.500:d=0.500:color=white[composition_visual_2]",
-				"[composition_visual_2]scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2,drawtext=text=Made with Narriflow:font='Arial Bold':fontcolor=0xFFFFFF@0.85:borderw=2:bordercolor=0x000000@0.60:fontsize=46:x=w-tw-32:y=32[outv]",
+				"[composition_visual_2]scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2,drawtext=text=Made with Narriflow:expansion=none:font=Arial Bold:fontcolor=0xFFFFFF@0.85:borderw=2:bordercolor=0x000000@0.60:fontsize=46:x=w-tw-32:y=32[outv]",
 			],
 			logoInput: { sourceRef: "logo:brand", inputIndex: 1 },
 		});
 	});
+
+	test("draws text layers with quotes, percents, and filter syntax in real FFmpeg", async () => {
+		const plan = planVisualStack();
+		const text = "Don't miss: 50% off [today], \\o/; %{pts}";
+		const visual = compileCompositionPlanVisualLayers({
+			plan: {
+				...plan,
+				targets: plan.targets.map((target) => ({
+					...target,
+					visualLayers: target.visualLayers.map((layer) =>
+						layer.kind === "text"
+							? { ...layer, value: { ...layer.value, text } }
+							: layer,
+					),
+				})),
+			},
+			targetId: "variant-1",
+			inputLabel: "[0:v]",
+			outputLabel: "[outv]",
+			logoInputIndex: 1,
+		});
+		const process = Bun.spawn(
+			[
+				"ffmpeg",
+				"-v",
+				"error",
+				"-f",
+				"lavfi",
+				"-i",
+				"testsrc2=size=1080x1920:rate=24:duration=5",
+				"-f",
+				"lavfi",
+				"-i",
+				"color=c=red:size=64x64:duration=5",
+				"-filter_complex",
+				visual.filterParts.join(";"),
+				"-map",
+				"[outv]",
+				"-f",
+				"null",
+				"-",
+			],
+			{ stdout: "ignore", stderr: "pipe" },
+		);
+		const stderr = await new Response(process.stderr).text();
+		expect(await process.exited, stderr).toBe(0);
+		expect(stderr).not.toMatch(/drawtext/i);
+	}, 30_000);
 
 	test("rejects missing resolved inputs for planned optional visual assets", () => {
 		expect(() =>
@@ -2000,6 +2048,104 @@ describe("composition FFmpeg adapter", () => {
 		);
 	});
 
+	test("reads an inserted Scene from its own input when one B-roll asset is placed twice", () => {
+		const imageId = "141b738e-f106-4da1-b670-8b71ff7f0a58";
+		const fingerprint = "a".repeat(64);
+		const result = planClipComposition({
+			document: editorDocumentSchema.parse({
+				version: 1,
+				clipStartSec: 0,
+				clipEndSec: 6,
+				captionPreset: captionPresetSchema.parse({ visible: false }),
+				transcriptSlice: [],
+				studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+				brollUrl: "https://example.com/cutaway.mp4",
+				deletedRanges: [],
+				sceneBlocks: [
+					{
+						id: "a3196d76-b71d-4b93-8812-7435b9e17faf",
+						schemaVersion: 1,
+						anchorSec: 0,
+						durationSec: 1,
+						content: {
+							kind: "image",
+							asset: { kind: "visual_asset", id: imageId, fingerprint },
+							fit: "contain",
+							backgroundColor: "#223344",
+						},
+						motion: { entrance: "none", exit: "none" },
+						templateSnapshot: null,
+					},
+				],
+			}),
+			source: { identity: "source:key", kind: "video", width: 1920, height: 1080 },
+			evidence: { automaticLayout: { state: "missing" } },
+			assets: {
+				backgroundImage: { state: "missing" },
+				broll: {
+					state: "available",
+					placements: [
+						{ id: "first", ref: "broll:cutaway", startSec: 1, endSec: 2 },
+						{ id: "second", ref: "broll:cutaway", startSec: 3, endSec: 4 },
+					],
+				},
+			},
+			capabilities: {
+				automaticSpeakerLayout: true,
+				automaticSpeakerEngineVersion: "shot-layout-v1",
+			},
+			targets: [
+				{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 },
+			],
+		});
+		if (result.status === "invalid") throw new Error(result.error.code);
+		const imageRef = compositionAssetRef(
+			"visual_asset",
+			`${imageId}:${fingerprint}`,
+		);
+		const args = compileClipCompositionCommand({
+			sourcePath: "/tmp/source.mp4",
+			outputPath: "/tmp/output.mp4",
+			startSec: 0,
+			endSec: 6,
+			audio: bindCompositionPlanAudioInputs(
+				compileCompositionPlanAudioSchedule(result.plan),
+				{},
+			),
+			source: {
+				hasVideo: true,
+				hasAudio: true,
+				hasVisualStream: true,
+				width: 1920,
+				height: 1080,
+				durationSec: 10,
+				fps: 30,
+			},
+			plan: result.plan,
+			targetId: "variant-1",
+			encoder: { preset: "veryfast", crf: "21" },
+			assets: {
+				subtitlePath: null,
+				broll: { "broll:cutaway": "/tmp/cutaway.mp4" },
+				scenes: {
+					[imageRef]: { path: "/tmp/scene.png", kind: "image", hasAudio: false },
+				},
+			},
+		});
+		const inputs = args.flatMap((arg, index) =>
+			arg === "-i" ? [args[index + 1]] : [],
+		);
+		expect(inputs).toEqual([
+			"/tmp/source.mp4",
+			"/tmp/cutaway.mp4",
+			"/tmp/cutaway.mp4",
+			"/tmp/scene.png",
+		]);
+		const graph = args[args.indexOf("-filter_complex") + 1]!;
+		expect(graph).toContain("[3:v]");
+		expect(graph).not.toContain("[4:v]");
+	});
+
 	test("compiles every shared media-motion fixture on the FFmpeg B-roll path", () => {
 		for (const fixture of MOTION_ADAPTER_FIXTURES.media) {
 			const base = planBroll();
@@ -2501,7 +2647,7 @@ describe("composition FFmpeg adapter", () => {
 				`s=${target.canvas.width}x${target.canvas.height}`,
 			);
 			expect(graph).toContain(
-				`drawtext=fontfile='/tmp/brand.ttf':text=${escapeDrawtextText("Opening: 100%")}`,
+				`drawtext=fontfile=/tmp/brand.ttf:${drawtextLiteralText("Opening: 100%")}`,
 			);
 			expect(graph).toContain("force_original_aspect_ratio=decrease,pad=");
 			expect(graph).toContain("force_original_aspect_ratio=increase,crop=");
@@ -2574,7 +2720,7 @@ describe("composition FFmpeg adapter", () => {
 				graph.match(new RegExp(`fontsize=${fixture.render.fontSizePx}`, "g")),
 				fixture.id,
 			).toHaveLength(fixture.render.lines.length);
-			const expectedEscapedLines = fixture.render.lines.map(escapeDrawtextText);
+			const expectedEscapedLines = fixture.render.lines.map(drawtextLiteralText);
 			for (const line of expectedEscapedLines) {
 				expect(graph, fixture.id).toContain(line);
 			}
@@ -2674,6 +2820,8 @@ describe("composition FFmpeg adapter", () => {
 		);
 		const stderr = await new Response(process.stderr).text();
 		expect(await process.exited, stderr).toBe(0);
+		// Drawtext logs a bad text value and draws nothing instead of failing.
+		expect(stderr).not.toMatch(/drawtext/i);
 	}, 30_000);
 
 	test("fails closed when a required inserted-scene asset is missing", () => {

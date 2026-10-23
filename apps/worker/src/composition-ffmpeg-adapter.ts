@@ -30,7 +30,7 @@ import {
 	type CompositionTargetPlan,
 	type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
-import { escapeDrawtextText } from "./ffmpeg-text";
+import { drawtextLiteralText, escapeFilterOptionValue } from "./ffmpeg-text";
 
 export function compileOptionalMediaValidationCommand(
 	filePath: string,
@@ -543,16 +543,6 @@ function compositionMotionFilters(input: {
 	return filters.length ? `,${filters.join(",")},setsar=1` : "";
 }
 
-function escapeDrawtextValue(value: string): string {
-	return value
-		.replace(/\\/g, "\\\\")
-		.replace(/:/g, "\\:")
-		.replace(/'/g, "\\'")
-		.replace(/\[/g, "\\[")
-		.replace(/\]/g, "\\]")
-		.replace(/%/g, "\\%");
-}
-
 function escapeSubtitlePath(filePath: string): string {
 	return filePath.replace(/\\/g, "\\\\").replace(/:/g, "\\:");
 }
@@ -586,8 +576,8 @@ function textLayerFilter(
 		? `:box=1:boxcolor=0x${value.backgroundColor.slice(1)}@${value.backgroundOpacity.toFixed(3)}:boxborderw=10`
 		: "";
 	return (
-		`drawtext=font='${escapeDrawtextValue(value.fontName)}'` +
-		`:text='${escapeDrawtextValue(value.text)}'` +
+		`drawtext=font=${escapeFilterOptionValue(value.fontName)}` +
+		`:${drawtextLiteralText(value.text)}` +
 		`:fontsize=${Math.round(value.fontSize)}` +
 		`:fontcolor=0x${value.color.slice(1)}` +
 		`:x=w*${(layer.anchor.xPct / 100).toFixed(4)}-text_w/2` +
@@ -721,8 +711,8 @@ export function compileCompositionPlanVisualLayers(input: {
 						? "scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2"
 						: "",
 					layer.watermark.enabled
-						? `drawtext=text=${escapeDrawtextValue(layer.watermark.text)}` +
-							`:font='${escapeDrawtextValue(`${layer.watermark.fontFamily} Bold`)}'` +
+						? `drawtext=${drawtextLiteralText(layer.watermark.text)}` +
+							`:font=${escapeFilterOptionValue(`${layer.watermark.fontFamily} Bold`)}` +
 							`:fontcolor=0x${layer.watermark.color.slice(1)}@${layer.watermark.opacity.toFixed(2)}` +
 							`:borderw=${layer.watermark.outline.widthPx}` +
 							`:bordercolor=0x${layer.watermark.outline.color.slice(1)}@${layer.watermark.outline.opacity.toFixed(2)}` +
@@ -1172,15 +1162,15 @@ function compileInsertedSceneSequence(input: {
 							];
 						if (!fontPath)
 							throw new Error("clip_composition_scene_font_missing");
-						return `fontfile='${escapeDrawtextValue(fontPath)}'`;
+						return `fontfile=${escapeFilterOptionValue(fontPath)}`;
 					})()
-				: `font='${escapeDrawtextValue(textContent.fontFamily)}'`;
+				: `font=${escapeFilterOptionValue(textContent.fontFamily)}`;
 			const textBlockHeightPx =
 				textRender.lines.length * textRender.lineHeightPx;
 			const drawTextFilters = textRender.lines
 				.map(
 					(line, index) =>
-						`drawtext=${fontSelector}:text=${escapeDrawtextText(line)}` +
+						`drawtext=${fontSelector}:${drawtextLiteralText(line)}` +
 						`:fontcolor=0x${textContent.color.slice(1)}` +
 						`:fontsize=${textRender.fontSizePx}` +
 						":x=(w-text_w)/2" +
@@ -2722,6 +2712,12 @@ function buildBrollVideoArgs(params: {
 			: null;
 
 	const parts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
+	// One input per planned placement, so a reused asset takes two slots and
+	// resolved assets outside the plan take none.
+	const cutawayCount = plannedCompositionBrollPlacements(
+		params.composition.plan,
+		params.composition.targetId,
+	).length;
 	const compiledComposition = compileCompositionPlanVideo({
 		plan: params.composition.plan,
 		targetId: params.composition.targetId,
@@ -2734,11 +2730,8 @@ function buildBrollVideoArgs(params: {
 		resolvedSceneAssets: params.resolvedSceneAssets,
 		resolvedSceneFonts: params.resolvedSceneFonts,
 		sceneInputStartIndex:
-			sceneAssetRefs.length > 0
-				? 1 + bgOffset + Object.keys(params.resolvedBrollAssets).length
-				: undefined,
+			sceneAssetRefs.length > 0 ? 1 + bgOffset + cutawayCount : undefined,
 	});
-	const cutawayCount = compiledComposition.brollInputs.length;
 	const plannedTarget = params.composition.plan.targets.find(
 		(target) => target.id === params.composition.targetId,
 	);
