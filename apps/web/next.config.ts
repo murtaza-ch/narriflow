@@ -143,4 +143,7 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default createMDX()(nextConfig);
+// fumadocs-mdx types its argument with whichever copy of `next` the install
+// linked as its optional peer. Vercel's restored cache once linked an older
+// patch release, whose NextConfig type doesn't match ours; it only uses the type.
+export default createMDX()(nextConfig as never);
