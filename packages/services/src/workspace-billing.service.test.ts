@@ -877,6 +877,110 @@ describe("Workspace Billing", () => {
     expect(reactivated.view.cancelAtPeriodEnd).toBe(false);
   });
 
+  test("a returning customer's new subscription replaces the canceled canonical one", async () => {
+    const oldSubscription = {
+      id: "sub_old",
+      status: "active",
+      items: [{ priceId: "price_creator_annual", quantity: 1 }],
+      createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      effectiveAt: new Date("2026-07-01T00:00:00.000Z"),
+      currentPeriodEnd: new Date("2027-07-01T00:00:00.000Z"),
+      trialEnd: null,
+      cancelAtPeriodEnd: false,
+    };
+    let subscriptions = [oldSubscription];
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-return",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: "cus_return",
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: "cus_return",
+          ownership: { kind: "verified", workspaceId: "workspace-return" },
+          subscriptions,
+        }),
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+
+    expect((await billing.reconcileCurrentState("workspace-return")).view.plan).toBe(
+      "creator",
+    );
+    subscriptions = [{ ...oldSubscription, status: "canceled" }];
+    expect((await billing.reconcileCurrentState("workspace-return")).view.plan).toBe(
+      "free",
+    );
+    subscriptions = [
+      {
+        ...oldSubscription,
+        id: "sub_new",
+        createdAt: new Date("2026-08-20T00:00:00.000Z"),
+        effectiveAt: new Date("2026-08-20T00:00:00.000Z"),
+      },
+      { ...oldSubscription, status: "canceled" },
+    ];
+    const resubscribed = await billing.reconcileCurrentState("workspace-return");
+    expect(resubscribed.view).toMatchObject({ plan: "creator", status: "active" });
+  });
+
+  test("an incomplete upgrade leaves an existing Free Workspace usable", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-upgrading",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: "cus_upgrading",
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: "cus_upgrading",
+          ownership: { kind: "verified", workspaceId: "workspace-upgrading" },
+          subscriptions: [
+            {
+              id: "sub_upgrading",
+              status: "incomplete",
+              items: [{ priceId: "price_creator_annual", quantity: 1 }],
+              createdAt: new Date("2026-08-28T09:00:00.000Z"),
+              effectiveAt: new Date("2026-08-28T09:00:00.000Z"),
+              currentPeriodEnd: null,
+              trialEnd: null,
+              cancelAtPeriodEnd: false,
+            },
+          ],
+        }),
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+
+    await billing.reconcileCurrentState("workspace-upgrading");
+    expect((await store.readProjection("workspace-upgrading"))?.status).toBe(
+      "active",
+    );
+  });
+
   test("unknown catalog state and provider outages preserve verified access", async () => {
     const metricEvents: Array<{
       name: string;

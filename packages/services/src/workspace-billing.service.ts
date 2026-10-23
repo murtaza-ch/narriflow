@@ -2141,10 +2141,10 @@ export function createWorkspaceBillingModule(dependencies: {
           tierRank[right.mappings[0]!.tier] - tierRank[left.mappings[0]!.tier],
       );
     const hasSubscriptionConflict = entitlementCandidates.length > 1;
+    // An entitled subscription outranks the stored canonical one, which may be
+    // the canceled subscription a returning customer has since replaced.
     const subscription =
-      (hasSubscriptionConflict
-        ? entitlementCandidates[0]?.subscription
-        : undefined) ??
+      entitlementCandidates[0]?.subscription ??
       providerState.subscriptions.find(
         (candidate) => candidate.id === current.canonicalSubscriptionId,
       ) ??
@@ -2178,7 +2178,14 @@ export function createWorkspaceBillingModule(dependencies: {
         break;
       case "incomplete":
         tier = "free";
-        workspaceStatus = "pending_payment";
+        // Only a Workspace awaiting its first payment is held. An existing
+        // Free Workspace keeps working while its upgrade payment completes.
+        workspaceStatus =
+          current.status === "pending_payment"
+            ? "pending_payment"
+            : !current.personal && current.hasNonOwnerMembers
+              ? "restricted"
+              : "active";
         health = "activating";
         break;
       case "past_due": {
