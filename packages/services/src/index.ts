@@ -611,3 +611,6 @@ export { chunkUtterances, PASSAGE_MAX_MS, PASSAGE_MIN_MS, type TranscriptPassage
 export { LibrarySearch, LibrarySearchError, lexicalQueryText, type LibrarySearchDependencies, type LibrarySearchInput } from "./library-search";
 export { getLibrarySearch, librarySearchService } from "./library-search-runtime";
 export { createOpenAiEmbeddingProvider, EmbeddingProviderError, LIBRARY_EMBEDDING_DIMENSIONS, LIBRARY_EMBEDDING_MODEL, type EmbeddingProvider } from "./openai-embedding-provider";
+
+export { zoomService, ZoomService } from "./zoom.service";
+export { zoomConfigured, ZoomError, ZOOM_WEBHOOK_MAX_BYTES } from "./zoom";

@@ -1,3 +1,5 @@
+import { zoomService } from "@narriflow/services";
+import { createZoomHttpRoutes } from "./zoom-http";
 import {
 	socialPublishingOptions,
 	refreshTikTokInbox,
@@ -232,6 +234,8 @@ function getOAuthOrigin(requestUrl: string) {
 }
 
 app.get("/health", (c) => c.json({ ok: true, service: "narriflow-web-api" }));
+
+app.route("/", createZoomHttpRoutes({ zoom: zoomService, getActor: authenticatedHonoActor, getOrigin: getOAuthOrigin }));
 
 // --- Autopilot rules ---
 

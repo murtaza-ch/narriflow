@@ -12,7 +12,7 @@ export interface ProjectSnapshot {
 	folderId?: string | null;
 	title: string;
 	sourceMediaUrl: string;
-	sourceType: "upload" | "youtube" | "rss" | "link";
+	sourceType: "upload" | "youtube" | "rss" | "link" | "zoom";
 	sourceProvider: string | null;
 	sourceInput: string | null;
 	sourceStorageKey: string | null;

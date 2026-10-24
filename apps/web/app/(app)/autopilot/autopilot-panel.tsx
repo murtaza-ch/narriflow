@@ -29,9 +29,11 @@ import {
   type AutopilotRuleSnapshot,
   type AutopilotStatus,
   type RecipeSnapshot,
+  type ZoomConnectionSnapshot,
 } from "@narriflow/validators";
 import { formatDateTime } from "@/lib/format";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
+import { ZoomConnections } from "./zoom-connections";
 import { describeFinishing } from "../recipes/finishing-form";
 
 const INTERVAL_OPTIONS = [
@@ -206,7 +208,15 @@ export function AutopilotPanel({
   canTakeOver,
   finishingAvailable = true,
   grants = [],
+  zoomEnabled = false,
+  zoomConnections = [],
+  canConnectZoom = false,
+  zoomNotice,
 }: {
+  zoomEnabled?: boolean;
+  zoomConnections?: ZoomConnectionSnapshot[];
+  canConnectZoom?: boolean;
+  zoomNotice?: string;
   initialRules: AutopilotRuleSnapshot[];
   recipes: RecipeSnapshot[];
   /** Workspace Owners and Admins can take over a paused rule. */
@@ -226,6 +236,9 @@ export function AutopilotPanel({
   const [formError, setFormError] = useState<string | null>(null);
   const [name, setName] = useState("Podcast autopilot");
   const [rssUrl, setRssUrl] = useState("");
+  const [sourceKind, setSourceKind] = useState<"rss" | "zoom">("rss");
+  const [zoomConnectionId, setZoomConnectionId] = useState("");
+  const [zoomTopicFilter, setZoomTopicFilter] = useState("");
   const [titlePrefix, setTitlePrefix] = useState("");
   const [intervalMinutes, setIntervalMinutes] = useState("1440");
   const [maxEpisodesPerRun, setMaxEpisodesPerRun] = useState("3");
@@ -253,6 +266,9 @@ export function AutopilotPanel({
   function resetForm() {
     setName("Podcast autopilot");
     setRssUrl("");
+    setSourceKind("rss");
+    setZoomConnectionId("");
+    setZoomTopicFilter("");
     setTitlePrefix("");
     setIntervalMinutes("1440");
     setMaxEpisodesPerRun("3");
@@ -267,7 +283,7 @@ export function AutopilotPanel({
       setFormError("Rule name is required.");
       return;
     }
-    if (!rssUrl.trim()) {
+    if (sourceKind === "rss" && !rssUrl.trim()) {
       setFormError("RSS feed URL is required.");
       return;
     }
@@ -275,6 +291,7 @@ export function AutopilotPanel({
       setFormError("Choose a Recipe for this rule.");
       return;
     }
+    if (sourceKind === "zoom" && !zoomConnectionId) { setFormError("Choose a Zoom connection."); return; }
     const maxEpisodes = Number(maxEpisodesPerRun);
     const initialCount = Number(initialImportCount);
     if (!Number.isInteger(maxEpisodes) || maxEpisodes < 1 || maxEpisodes > 10) {
@@ -293,12 +310,13 @@ export function AutopilotPanel({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: name.trim(),
-        rssUrl: rssUrl.trim(),
+        sourceKind,
+        ...(sourceKind === "rss" ? { rssUrl: rssUrl.trim() } : { zoomConnectionId, zoomTopicFilter: zoomTopicFilter.trim() || null }),
         titlePrefix: titlePrefix.trim() || null,
         recipeId,
         intervalMinutes: Number(intervalMinutes),
         maxEpisodesPerRun: maxEpisodes,
-        initialImportMode,
+        initialImportMode: sourceKind === "zoom" ? "future_only" : initialImportMode,
         initialImportCount: initialCount,
       }),
     });
@@ -314,7 +332,7 @@ export function AutopilotPanel({
       type: "success",
       title: "Rule created",
       description:
-        initialImportMode === "future_only"
+        sourceKind === "zoom" ? "Future cloud recordings will be clipped when Zoom finishes processing them." : initialImportMode === "future_only"
           ? "The feed baseline is saved; only future episodes will be clipped."
           : `The latest ${initialCount} episode${initialCount === 1 ? "" : "s"} will be queued first.`,
     });
@@ -434,6 +452,8 @@ export function AutopilotPanel({
         />
       </Box>
 
+      {zoomEnabled ? <ZoomConnections connections={zoomConnections} canConnect={canConnectZoom} notice={zoomNotice} /> : null}
+
       <Box
         as="section"
         animation="fade-up"
@@ -444,7 +464,7 @@ export function AutopilotPanel({
           <EmptyState
             icon={<Rss size={20} strokeWidth={1.75} />}
             title="No autopilot rules yet"
-            description="Add an RSS feed to clip new episodes automatically."
+            description={zoomEnabled ? "Add an RSS feed or Zoom connection to clip new recordings automatically." : "Add an RSS feed to clip new episodes automatically."}
             action={
               /* Header owns the solid CTA — this is a quiet accent link. */
               <Button
@@ -517,8 +537,7 @@ export function AutopilotPanel({
                         </Text>
                       </Flex>
                       <Text fontSize="13px" color="fg.muted" truncate mt="1">
-                        {rule.feedTitle ? `${rule.feedTitle} · ` : ""}
-                        {rule.rssUrl}
+                        {rule.sourceKind === "zoom" ? `Zoom: ${zoomConnections.find((entry) => entry.id === rule.zoomConnectionId)?.displayName ?? "connected member"}${rule.zoomTopicFilter ? ` • Topics containing “${rule.zoomTopicFilter}”` : ""}` : `${rule.feedTitle ? `${rule.feedTitle} · ` : ""}${rule.rssUrl}`}
                       </Text>
                       <Text
                         mt="1.5"
@@ -526,14 +545,14 @@ export function AutopilotPanel({
                         color="fg.subtle"
                         fontVariantNumeric="tabular-nums"
                       >
-                        {intervalLabel(rule.intervalMinutes)} ·{" "}
+                        {rule.sourceKind === "zoom" ? "When a recording completes" : intervalLabel(rule.intervalMinutes)} ·{" "}
                         {rule.importedEpisodeCount} imported · last{" "}
                         {rule.lastSuccessAt
                           ? `healthy ${formatDateTime(rule.lastSuccessAt)}`
                           : rule.lastCheckedAt
                           ? formatDateTime(rule.lastCheckedAt)
                           : "never"}{" "}
-                        · next {formatDateTime(rule.nextRunAt)}
+                        {rule.sourceKind === "rss" ? ` · next ${formatDateTime(rule.nextRunAt)}` : ""}
                         {` · Recipe: ${rule.recipeName}`}
                       </Text>
 
@@ -650,7 +669,7 @@ export function AutopilotPanel({
                           }`,
                         }}
                       />
-                      <Button
+                      {rule.sourceKind === "rss" ? <Button
                         size="sm"
                         variant="subtle"
                         loading={pending === "run"}
@@ -659,7 +678,7 @@ export function AutopilotPanel({
                       >
                         <RotateCw size={12} strokeWidth={2} aria-hidden />
                         Run now
-                      </Button>
+                      </Button> : null}
                       <IconButton
                         size="xs"
                         variant="ghost"
@@ -734,7 +753,8 @@ export function AutopilotPanel({
 
               <Dialog.Body px="6" py="0">
                 <Stack gap="5">
-                  <FieldGroup label="Feed">
+                  <FieldGroup label="Source">
+                    {zoomEnabled ? <Select label="Import from" items={[{ label: "RSS feed", value: "rss" }, { label: "Zoom cloud recordings", value: "zoom" }]} value={sourceKind} onValueChange={(value) => { setSourceKind(value as "rss" | "zoom"); if (name === "Podcast autopilot" || name === "Zoom autopilot") setName(value === "zoom" ? "Zoom autopilot" : "Podcast autopilot"); }} size="sm" /> : null}
                     <Field label="Rule name" htmlFor="autopilot-rule-name">
                       <Input
                         id="autopilot-rule-name"
@@ -744,7 +764,7 @@ export function AutopilotPanel({
                         size="sm"
                       />
                     </Field>
-                    <Field label="RSS feed URL" htmlFor="autopilot-rss-url">
+                    {sourceKind === "rss" ? <Field label="RSS feed URL" htmlFor="autopilot-rss-url">
                       <Input
                         id="autopilot-rss-url"
                         value={rssUrl}
@@ -753,7 +773,11 @@ export function AutopilotPanel({
                         fontSize="13px"
                         size="sm"
                       />
-                    </Field>
+                    </Field> : <Stack gap="3">
+                      <Select label="Zoom connection" items={zoomConnections.filter((entry) => !entry.revoked).map((entry) => ({ label: entry.displayName, value: entry.id }))} value={zoomConnectionId || undefined} onValueChange={setZoomConnectionId} placeholder="Choose a connected member" size="sm" />
+                      <Field label="Topic contains (optional)" htmlFor="autopilot-zoom-topic"><Input id="autopilot-zoom-topic" value={zoomTopicFilter} onChange={(event) => setZoomTopicFilter(event.target.value)} maxLength={200} size="sm" /></Field>
+                      <Text fontSize="12px" color="fg.muted">Watches future cloud recordings hosted by this Zoom user. Topic matching ignores letter case. Shared screen with speaker view is preferred.</Text>
+                    </Stack>}
                     <Field
                       label="Title prefix (optional)"
                       htmlFor="autopilot-title-prefix"
@@ -769,7 +793,7 @@ export function AutopilotPanel({
                     </Field>
                   </FieldGroup>
 
-                  <FieldGroup label="Schedule">
+                  {sourceKind === "rss" ? <FieldGroup label="Schedule">
                     <SimpleGrid columns={{ base: 1, sm: 2 }} gap="3">
                       <Select
                         label="Check interval"
@@ -826,7 +850,7 @@ export function AutopilotPanel({
                         </Flex>
                       )}
                     </SimpleGrid>
-                  </FieldGroup>
+                  </FieldGroup> : null}
 
                   <FieldGroup label="Output">
                     <RecipeSelect recipes={recipes} value={recipeId} onChange={setRecipeId} />
@@ -867,6 +891,7 @@ export function AutopilotPanel({
         key={editingRule?.id ?? "closed"}
         rule={editingRule}
         recipes={recipes}
+        zoomConnections={zoomConnections}
         onClose={() => setEditingRule(null)}
         onSaved={() => {
           setEditingRule(null);
@@ -882,17 +907,21 @@ export function AutopilotPanel({
 function EditRuleDialog({
   rule,
   recipes,
+  zoomConnections,
   onClose,
   onSaved,
 }: {
   rule: AutopilotRuleSnapshot | null;
   recipes: RecipeSnapshot[];
+  zoomConnections: ZoomConnectionSnapshot[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   // The parent keys this dialog by rule, so every open starts a fresh draft.
   const [name, setName] = useState(rule?.name ?? "");
   const [recipeId, setRecipeId] = useState<string | null>(rule?.recipeId ?? null);
+  const [connectionId, setConnectionId] = useState(rule?.zoomConnectionId ?? "");
+  const [topicFilter, setTopicFilter] = useState(rule?.zoomTopicFilter ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -907,6 +936,8 @@ function EditRuleDialog({
     const changes = {
       ...(name.trim() !== rule.name && { name: name.trim() }),
       ...(recipeId && recipeId !== rule.recipeId && { recipeId }),
+      ...(rule.sourceKind === "zoom" && connectionId && connectionId !== rule.zoomConnectionId && { zoomConnectionId: connectionId }),
+      ...(rule.sourceKind === "zoom" && (topicFilter.trim() || null) !== rule.zoomTopicFilter && { zoomTopicFilter: topicFilter.trim() || null }),
     };
     if (Object.keys(changes).length === 0) {
       onClose();
@@ -971,6 +1002,10 @@ function EditRuleDialog({
                   />
                 </Field>
                 <RecipeSelect recipes={recipes} value={recipeId} onChange={setRecipeId} />
+                {rule?.sourceKind === "zoom" ? <Stack gap="3">
+                  <Select label="Zoom connection" items={zoomConnections.filter((entry) => !entry.revoked).map((entry) => ({ label: entry.displayName, value: entry.id }))} value={connectionId || undefined} onValueChange={setConnectionId} size="sm" />
+                  <Field label="Topic contains (optional)" htmlFor="autopilot-edit-zoom-topic"><Input id="autopilot-edit-zoom-topic" value={topicFilter} onChange={(event) => setTopicFilter(event.target.value)} maxLength={200} size="sm" /></Field>
+                </Stack> : null}
                 {error ? (
                   <Flex align="center" gap="2" color="danger.fg">
                     <AlertTriangle size={13} strokeWidth={2} aria-hidden />

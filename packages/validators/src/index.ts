@@ -64,3 +64,5 @@ export * from "./workflow";
 export * from "./workspace-access";
 export * from "./workspace-administration";
 export * from "./workspace-event";
+
+export * from "./zoom";

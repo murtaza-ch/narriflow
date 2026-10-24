@@ -34,6 +34,42 @@ const unlimitedUsage = {
   }),
 };
 
+describe("Zoom recording download", () => {
+  test("resolves credentials at download time and keeps them out of storage and logs", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "zoom-import-"));
+    const output: string[] = [];
+    const log = spyOn(console, "log").mockImplementation((...args) => { output.push(args.map(String).join(" ")); });
+    const warn = spyOn(console, "warn").mockImplementation((...args) => { output.push(args.map(String).join(" ")); });
+    const completed: unknown[] = [], uploads: unknown[] = [], downloads: unknown[] = [];
+    const workerProcess = processModuleWithExecute(async () => ({ exitCode: 0, stdout: Buffer.from("") }));
+    workerProcess.withScratchDirectory = async (_prefix, work) => work(scratch);
+    try {
+      await processIngestJob({ id: "job", projectId: "project", jobType: "zoom_import", claimId: "claim", attemptCount: 1, payload: { connectionId: "00000000-0000-4000-8000-0000000000d1", meetingUuid: "/meeting//", recordingId: "file" } }, {
+        workerProcess, usage: unlimitedUsage,
+        lifecycle: { progress: async () => {}, pinSource: async () => {}, complete: async (...args: unknown[]) => { completed.push(args); }, fail: async () => { throw new Error("Zoom download failed unexpectedly"); } } as never,
+        zoomDownload: async (input) => { downloads.push(input); return { downloadUrl: "https://us02web.zoom.us/rec/download/signed-private-url", accessToken: "private-zoom-token" }; },
+        fetchSource: (async (url: string, options: { headers: HeadersInit }) => {
+          expect(url).toBe("https://us02web.zoom.us/rec/download/signed-private-url");
+          expect(new Headers(options.headers).get("authorization")).toBe("Bearer private-zoom-token");
+          return new Response("zoom recording bytes", { headers: { "content-type": "video/mp4" } });
+        }) as never,
+        putSource: async (input) => { uploads.push(input); },
+      });
+      expect(downloads).toEqual([{ connectionId: "00000000-0000-4000-8000-0000000000d1", projectId: "project", meetingUuid: "/meeting//", recordingId: "file" }]);
+      expect(completed).toHaveLength(1);
+      expect(uploads).toHaveLength(1);
+      const durable = JSON.stringify([completed, uploads, output]);
+      expect(durable).not.toContain("private-zoom-token");
+      expect(durable).not.toContain("signed-private-url");
+      expect(durable).toContain('"source":"zoom"');
+      expect(durable).toContain('"sourceDurationSeconds":30');
+    } finally {
+      log.mockRestore(); warn.mockRestore();
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("readVerifiedUploadPayload", () => {
   test("uses the Upload Session's verified object facts", () => {
     expect(

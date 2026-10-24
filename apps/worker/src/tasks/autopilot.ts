@@ -1,4 +1,4 @@
-import { autopilotService } from "@narriflow/services";
+import { autopilotService, zoomService, zoomConfigured } from "@narriflow/services";
 
 function log(
   level: "info" | "error",
@@ -17,13 +17,14 @@ function log(
 
 export async function processDueAutopilotRules() {
   try {
+    const zoomChecked = zoomConfigured() ? await zoomService.processDueNotifications() : 0;
     const result = await autopilotService.processDueRules(
       Number(process.env.AUTOPILOT_BATCH_SIZE ?? "3"),
     );
     if (result.checked > 0 || result.imported > 0) {
       log("info", "autopilot_rules_processed", result);
     }
-    return result.checked;
+    return result.checked + zoomChecked;
   } catch (error) {
     log("error", "autopilot_processing_failed", {
       error: error instanceof Error ? error.message : "Unknown error",

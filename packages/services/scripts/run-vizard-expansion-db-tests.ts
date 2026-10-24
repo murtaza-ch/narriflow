@@ -33,7 +33,7 @@ try {
   } finally {
     client.release();
   }
-  const child = Bun.spawn([process.execPath, "test", "packages/services/src/vizard-expansion.db.test.ts", "packages/services/src/autopilot.db.test.ts"], {
+  const child = Bun.spawn([process.execPath, "test", "packages/services/src/vizard-expansion.db.test.ts", "packages/services/src/autopilot.db.test.ts", "packages/services/src/zoom.db.test.ts"], {
     cwd: root,
     env: {
       ...process.env,
@@ -50,6 +50,9 @@ try {
       NARRIFLOW_WRITES_BRAND_KIT_PROJECTION: "1",
       NARRIFLOW_WRITES_SCENE_TEMPLATES: "1",
       SOCIAL_TOKEN_ENCRYPTION_KEY: "vizard-expansion-test-encryption-key-not-a-secret",
+      ZOOM_CLIENT_ID: "zoom-test-client",
+      ZOOM_CLIENT_SECRET: "zoom-test-secret",
+      ZOOM_WEBHOOK_SECRET_TOKEN: "zoom-test-webhook",
       META_CLIENT_ID: "vizard-meta-client",
       META_CLIENT_SECRET: "vizard-meta-secret",
     },

@@ -1,3 +1,5 @@
+import { type ZoomRecordingNotification } from "@narriflow/validators";
+import { ZoomError, zoomRecordingIdentity } from "./zoom";
 import type { ActorScope } from "./actor-scope";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { receiptCallback } from "./completion-callback";
@@ -1710,6 +1712,24 @@ export class ProjectService {
 		);
 	}
 
+	async importZoomRecording(scope: ActorScope, input: {
+		ruleId: string; ruleUpdatedAt: Date; connectionId: string;
+		notification: ZoomRecordingNotification; titlePrefix: string | null;
+		recipe: ResolvedRecipe;
+	}) {
+		const item = input.notification;
+		return this.importResolvedMediaEpisodes(scope, {
+			sourceInput: zoomRecordingIdentity(item.meetingUuid, item.recordingId),
+			episodes: [{ id: zoomRecordingIdentity(item.meetingUuid, item.recordingId), title: item.topic, enclosureUrl: zoomRecordingIdentity(item.meetingUuid, item.recordingId), durationSeconds: item.durationSeconds, mimeType: "video/mp4" }],
+			titlePrefix: input.titlePrefix ?? undefined,
+			brandProfileId: input.recipe.brandProfileId,
+		}, {
+			autopilotRuleId: input.ruleId,
+			generationContext: { contentPack: input.recipe.contentPack, languageCode: input.recipe.languageCode, finishing: input.recipe.finishing, recipe: acceptedRecipe(input.recipe) },
+			zoom: { connectionId: input.connectionId, meetingUuid: item.meetingUuid, recordingId: item.recordingId, ruleUpdatedAt: input.ruleUpdatedAt },
+		});
+	}
+
 	/**
 	 * Internal authoritative RSS admission path. The caller must supply episodes
 	 * returned by fetchRssFeed; public/UI callers go through importFromRss,
@@ -1734,6 +1754,32 @@ export class ProjectService {
 		options: {
 			generationContext?: IntakeGenerationContext;
 			autopilotRuleId?: string;
+		} = {},
+	) {
+		const { rssUrl, ...media } = input;
+		return this.importResolvedMediaEpisodes(scope, { ...media, sourceInput: rssUrl }, options);
+	}
+
+	private async importResolvedMediaEpisodes(
+		scope: ActorScope,
+		input: {
+			sourceInput: string;
+			episodes: Array<{
+				id: string;
+				title: string;
+				enclosureUrl: string;
+				publishedAt?: string | null;
+				durationSeconds?: number | null;
+				mimeType?: string | null;
+			}>;
+			titlePrefix?: string;
+			brandProfileId?: string | null;
+			commitToken?: string;
+		},
+		options: {
+			generationContext?: IntakeGenerationContext;
+			autopilotRuleId?: string;
+			zoom?: { connectionId: string; meetingUuid: string; recordingId: string; ruleUpdatedAt: Date };
 		} = {},
 	) {
 		if (input.episodes.length < 1 || input.episodes.length > 10) {
@@ -1761,7 +1807,7 @@ export class ProjectService {
 					},
 				},
 			});
-			if (existing?.projectId) return { count: 0, projects: [] };
+			if (existing) return { count: 0, projects: [] };
 		}
 		if (input.commitToken) {
 			const existing = await prisma.project.findUnique({
@@ -1813,12 +1859,18 @@ export class ProjectService {
 			let jobId: string;
 			try {
 				const created = await prisma.$transaction(async (tx) => {
+					if (options.zoom) {
+						await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${options.autopilotRuleId!}::uuid FOR UPDATE`;
+						await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${options.zoom.connectionId}::uuid FOR UPDATE`;
+						const live = await tx.autopilotRule.findFirst({ where: { id: options.autopilotRuleId, workspaceId: actor.workspaceId, sourceKind: "zoom", status: "active", updatedAt: options.zoom.ruleUpdatedAt, zoomConnectionId: options.zoom.connectionId, zoomConnection: { revokedAt: null } } });
+						if (!live) throw new ZoomError("zoom_rule_changed");
+					}
 					const projectId = randomUUID();
 					await getProcessingUsage().reserve(tx, {
 						workspaceId: actor.workspaceId,
 						projectId,
 						actorUserId: actor.actorUserId,
-						intakeKind: "rss",
+						intakeKind: options.zoom ? "link" : "rss",
 						declaredSeconds: episode.durationSeconds ?? null,
 					});
 					if (options.autopilotRuleId) {
@@ -1842,8 +1894,8 @@ export class ProjectService {
 								? `${input.titlePrefix} - ${episode.title}`
 								: episode.title,
 							sourceMediaUrl: episode.enclosureUrl,
-							sourceType: "rss",
-							sourceInput: redactUrlForDisplay(input.rssUrl),
+							sourceType: options.zoom ? "zoom" : "rss",
+							sourceInput: options.zoom ? input.sourceInput : redactUrlForDisplay(input.sourceInput),
 							ingestStatus: "queued",
 							sourceMimeType: episode.mimeType ?? null,
 							sourceDurationSeconds: episode.durationSeconds ?? null,
@@ -1859,8 +1911,8 @@ export class ProjectService {
 
 					const createdJob = await getIngestJobLifecycle().enqueue(tx, {
 						projectId: createdProject.id,
-						jobType: "rss_import",
-						payload: { rssUrl: input.rssUrl, episode },
+						jobType: options.zoom ? "zoom_import" : "rss_import",
+						payload: options.zoom ? { connectionId: options.zoom.connectionId, meetingUuid: options.zoom.meetingUuid, recordingId: options.zoom.recordingId } : { rssUrl: input.sourceInput, episode },
 					});
 
 					if (options.generationContext) {
@@ -1923,7 +1975,7 @@ export class ProjectService {
 							},
 							include: { project: { include: { ingestJobs: { take: 1 } } } },
 						});
-						if (winner?.project) continue;
+						if (winner) continue;
 					}
 					if (input.commitToken) {
 						const winner = await prisma.project.findUnique({

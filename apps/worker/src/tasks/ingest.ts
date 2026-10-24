@@ -23,6 +23,7 @@ import {
   RemoteFetchError,
   UnsafeUrlError,
   WorkflowFailure,
+  zoomService,
 } from "@narriflow/services";
 import {
   classifyR2StorageError,
@@ -40,6 +41,7 @@ import {
   MAX_UPLOAD_SIZE_BYTES,
   type LinkProviderId,
   type SourceProbe,
+  zoomIngestPayloadSchema,
 } from "@narriflow/validators";
 import { youtubeProxyRotates, ytdlpCommonArgs } from "../youtube-import";
 import {
@@ -78,7 +80,7 @@ function getYtdlpConcurrentFragments(): number {
 interface IngestJob {
   id: string;
   projectId: string;
-  jobType: "upload_finalize" | "rss_import" | "link_import" | "drive_import";
+  jobType: "upload_finalize" | "rss_import" | "link_import" | "drive_import" | "zoom_import";
   payload: unknown;
   /** Sealed Google Drive access token of a drive_import job. */
   sourceCredential?: string | null;
@@ -92,6 +94,7 @@ interface IngestRuntime {
   putSource: typeof putFileFromPath;
   sourceStorage: SourceStorage;
   fetchSource: typeof guardedFetch;
+  zoomDownload: typeof zoomService.recordingDownload;
 }
 
 interface SourceStorage {
@@ -798,12 +801,26 @@ async function runDriveImport(
   );
 }
 
+async function runZoomImport(job: IngestJob, workerProcess: WorkerProcessModule, signal: AbortSignal, runtime: IngestRuntime) {
+  const parsed = zoomIngestPayloadSchema.safeParse(job.payload);
+  if (!parsed.success) throw new IngestWorkerError("worker_invalid_payload", "The Zoom recording is invalid.");
+  await runtime.lifecycle.progress(job, "downloading");
+  const source = await runtime.zoomDownload({ ...parsed.data, projectId: job.projectId });
+  return downloadDirectSource(job, {
+    downloadUrl: source.downloadUrl, fileName: "recording.mp4", provider: "zoom",
+    sourceInput: `zoom:${JSON.stringify([parsed.data.meetingUuid, parsed.data.recordingId])}`,
+    headers: { authorization: `Bearer ${source.accessToken}` },
+    refusal: async (response) => [401, 403, 404].includes(response.status)
+      ? new IngestWorkerError("zoom_recording_unavailable", "This Zoom recording is unavailable. Reconnect Zoom if access was revoked.") : null,
+  }, workerProcess, signal, runtime);
+}
+
 interface DirectSource {
   downloadUrl: string;
   /** Names the stored object and its extension; a URL path or a file name. */
   fileName: string;
   sourceInput: string;
-  provider: LinkProviderId;
+  provider: LinkProviderId | "zoom";
   headers?: Record<string, string>;
   /** Classifies a refused response before retry classification: a definitive
    *  failure, "transient" to retry it, or null to leave it to the status. */
@@ -1095,6 +1112,7 @@ export async function processIngestJob(
     putSource?: IngestRuntime["putSource"];
     sourceStorage?: IngestRuntime["sourceStorage"];
     fetchSource?: IngestRuntime["fetchSource"];
+    zoomDownload?: IngestRuntime["zoomDownload"];
   } = {},
 ) {
   const signal = options.signal ?? new AbortController().signal;
@@ -1106,6 +1124,7 @@ export async function processIngestJob(
     putSource: options.putSource ?? putFileFromPath,
     sourceStorage: options.sourceStorage ?? r2SourceStorage,
     fetchSource: options.fetchSource ?? guardedFetch,
+    zoomDownload: options.zoomDownload ?? ((input) => zoomService.recordingDownload(input)),
   };
   const jobStartedAtMs = Date.now();
   log("info", "ingest_job_started", {
@@ -1121,6 +1140,8 @@ export async function processIngestJob(
       await runLinkImport(job, workerProcess, signal, runtime);
     } else if (job.jobType === "rss_import") {
       await runRssImport(job, workerProcess, signal, runtime);
+    } else if (job.jobType === "zoom_import") {
+      await runZoomImport(job, workerProcess, signal, runtime);
     } else if (job.jobType === "drive_import") {
       await runDriveImport(job, workerProcess, signal, runtime);
     } else {

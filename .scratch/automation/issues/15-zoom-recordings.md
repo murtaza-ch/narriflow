@@ -4,7 +4,7 @@
 
 **Blocked by:** [12 - Recipes](12-recipes.md).
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Behavior
 
@@ -20,7 +20,15 @@
 
 ## Acceptance criteria
 
-- [ ] Signature verification and the validation challenge match Zoom's documented algorithm (unit tests with doc examples).
-- [ ] One recording imports once per rule even when Zoom retries (DB test).
-- [ ] Tokens never logged; revoked connection pauses its rules with a reason.
-- [ ] lint, typecheck, test, Autopilot gate pass on the local Postgres.
+- [x] Signature verification and the validation challenge match Zoom's documented algorithm (unit tests with doc examples).
+- [x] One recording imports once per rule even when Zoom retries (DB test).
+- [x] Tokens never logged; revoked connection pauses its rules with a reason.
+- [x] lint, typecheck, test, Autopilot gate pass on the local Postgres.
+
+## Comments
+
+2026-10-24: implemented on dev. User-managed Zoom OAuth is bound to the browser member, Workspace, and callback URI; state is hashed and consumed once. Tokens use AES-GCM with a Zoom-specific authentication context and the shared Social Account encryption key. The worker serializes refresh-token rotation. The public endpoint implements Zoom's URL challenge and raw-body HMAC with a five-minute timestamp tolerance, bounds body size, and stores only recording IDs and selected metadata. Durable, leased notification jobs retry capacity and quota refusals. Project, Ingest Job, Recipe snapshot, processing reservation, Workspace Event, and per-rule meeting UUID/recording ID dedup commit together. Workers resolve a fresh download URL, authenticate with the connected user's token, and run the normal media, admission, Brand Profile and generation handoff path. Disconnection, signed deauthorization, and rejected refresh credentials pause rules and covering grants; rule source edits pause grants, renames do not. Reconnecting does not resume rules automatically. There is no recording-library backfill.
+
+Verified: repository lint passes with existing warnings; typecheck passes all 13 tasks; `bun run test` passes all 8 tasks, including 697 worker tests and 914 web tests. Local disposable-schema PostgreSQL gates pass: vizard-expansion/Autopilot/Zoom (65), integration-api, social-publication (110), workflow (154), processing-usage (21), and upload-session. Signature, challenge, API and HTTP-boundary tests pass. The production Autopilot component was checked in Chrome through a temporary fixture at desktop and 390px mobile widths, including conditional fields and the submitted connection, topic filter and Recipe. Next.js reported no compilation or runtime errors. The fixture was removed.
+
+Owner rollout remains: configure a user-managed Zoom app and the shared credentials, apply the pending migration history including `20261024220000_zoom_autopilot`, deploy in the documented order, and run a live authorization/cloud-recording test. No credentials were requested or installed, no shared migration was applied, and nothing was pushed. Setup and Marketplace review steps: [Zoom runbook](../../../docs/runbooks/zoom-autopilot.md).

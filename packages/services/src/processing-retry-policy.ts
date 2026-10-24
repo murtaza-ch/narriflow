@@ -8,6 +8,8 @@ export const PERMANENT_FAILURE_CODES: ReadonlySet<string> = new Set([
   "link_missing_url",
   "link_download_missing_file",
   "rss_missing_enclosure",
+  "zoom_connection_unavailable",
+  "zoom_recording_unavailable",
   "drive_token_expired",
   "drive_token_invalid",
   "drive_file_unavailable",

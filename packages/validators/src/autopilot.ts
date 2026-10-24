@@ -12,13 +12,17 @@ export const autopilotInitialImportModeSchema = z.enum([
   "latest",
 ]);
 
-export const autopilotPauseKindSchema = z.enum(["acting_member", "brand_profile"]);
+export const autopilotPauseKindSchema = z.enum(["acting_member", "brand_profile", "zoom_connection"]);
+export const autopilotSourceKindSchema = z.enum(["rss", "zoom"]);
 
 // Create and update share these fields. Defaults live only on the create
 // schema: a partial update must not reset fields it did not send.
 const autopilotRuleFields = z.object({
   name: z.string().trim().min(1).max(120),
-  rssUrl: z.string().url(),
+  rssUrl: z.string().url().nullable().optional(),
+  zoomConnectionId: z.string().uuid().nullable().optional(),
+  // Case-insensitive topic substring. Empty means every recording by this host.
+  zoomTopicFilter: z.string().trim().min(1).max(200).nullable().optional(),
   titlePrefix: z.string().trim().min(1).max(100).nullable().optional(),
   // The Brand Profile, language, Content Pack, and finishing every import uses.
   recipeId: z.string().uuid(),
@@ -30,12 +34,19 @@ const autopilotRuleFields = z.object({
 
 export const autopilotRuleInputSchema = autopilotRuleFields
   .extend({
+    sourceKind: autopilotSourceKindSchema.default("rss"),
     intervalMinutes: autopilotRuleFields.shape.intervalMinutes.default(1440),
     maxEpisodesPerRun: autopilotRuleFields.shape.maxEpisodesPerRun.default(3),
     initialImportMode: autopilotRuleFields.shape.initialImportMode.default("future_only"),
     initialImportCount: autopilotRuleFields.shape.initialImportCount.default(3),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.sourceKind === "rss" && (!value.rssUrl || value.zoomConnectionId || value.zoomTopicFilter))
+      ctx.addIssue({ code: "custom", path: ["rssUrl"], message: "An RSS rule needs a feed URL and cannot use Zoom fields." });
+    if (value.sourceKind === "zoom" && (!value.zoomConnectionId || value.rssUrl || value.initialImportMode !== "future_only"))
+      ctx.addIssue({ code: "custom", path: ["zoomConnectionId"], message: "A Zoom rule needs a connection and watches future recordings only." });
+  });
 
 export const autopilotRuleUpdateSchema = autopilotRuleFields
   .partial()
@@ -49,7 +60,10 @@ export const autopilotRuleSnapshotSchema = z.object({
   workspaceId: z.string().uuid(),
   createdByUserId: z.string().uuid().nullable(),
   name: z.string(),
-  rssUrl: z.string(),
+  sourceKind: autopilotSourceKindSchema,
+  rssUrl: z.string().nullable(),
+  zoomConnectionId: z.string().uuid().nullable(),
+  zoomTopicFilter: z.string().nullable(),
   titlePrefix: z.string().nullable(),
   recipeId: z.string().uuid(),
   recipeName: z.string(),
@@ -78,3 +92,12 @@ export type AutopilotInitialImportMode = z.infer<
 export type AutopilotRuleInput = z.input<typeof autopilotRuleInputSchema>;
 export type AutopilotRuleUpdate = z.infer<typeof autopilotRuleUpdateSchema>;
 export type AutopilotRuleSnapshot = z.infer<typeof autopilotRuleSnapshotSchema>;
+
+export const zoomConnectionSnapshotSchema = z.object({
+  id: z.string().uuid(),
+  userId: z.string().uuid(),
+  displayName: z.string(),
+  revoked: z.boolean(),
+  canDisconnect: z.boolean(),
+});
+export type ZoomConnectionSnapshot = z.infer<typeof zoomConnectionSnapshotSchema>;

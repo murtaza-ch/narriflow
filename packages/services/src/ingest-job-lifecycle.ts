@@ -260,7 +260,7 @@ export class IngestJobLifecycle {
             ? [
                 {
                   OR: [
-                    { jobType: { in: ["upload_finalize", "rss_import", "drive_import"] } },
+                    { jobType: { in: ["upload_finalize", "rss_import", "drive_import", "zoom_import"] } },
                     {
                       jobType: "link_import",
                       NOT: {

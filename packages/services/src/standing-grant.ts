@@ -105,7 +105,11 @@ export async function ruleFingerprint(db: Pick<Tx, "autopilotRule">, ruleId: str
   const rule = await db.autopilotRule.findUnique({
     where: { id: ruleId },
     select: {
+      sourceKind: true,
       rssUrl: true,
+      zoomConnectionId: true,
+      zoomTopicFilter: true,
+      zoomConnection: { select: { revokedAt: true } },
       titlePrefix: true,
       recipeId: true,
       recipe: {
@@ -119,7 +123,11 @@ export async function ruleFingerprint(db: Pick<Tx, "autopilotRule">, ruleId: str
   });
   if (!rule) return null;
   return createHash("sha256").update(canonicalJson({
-    contract: "standing-grant-rule-v2",
+    contract: "standing-grant-rule-v3",
+    sourceKind: rule.sourceKind,
+    zoomConnectionId: rule.zoomConnectionId,
+    zoomTopicFilter: rule.zoomTopicFilter,
+    zoomRevoked: Boolean(rule.zoomConnection?.revokedAt),
     rssUrl: rule.rssUrl,
     titlePrefix: rule.titlePrefix,
     recipeId: rule.recipeId,

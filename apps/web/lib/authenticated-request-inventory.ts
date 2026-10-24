@@ -152,6 +152,10 @@ const workspaceRate = (
 });
 
 export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
+  { method: "GET", path: "/zoom/connections", capability: "content.view" },
+  { method: "DELETE", path: "/zoom/connections/:connectionId", capability: "content.edit", input: paramsInput("connectionId") },
+  { method: "GET", path: "/zoom/oauth/start", capability: "content.edit", rateLimit: actorRate("zoom-connect", 10, 3600) },
+  { method: "GET", path: "/zoom/oauth/callback", capability: "content.edit" },
 	{ method: "GET", path: "/autopilot/rules", capability: "content.view" },
 	{
 		method: "POST",
@@ -911,6 +915,7 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 ] as const;
 
 export const independentTrustHonoSurfaces = [
+  { method: "POST", path: "/webhooks/zoom", trustModel: "zoom_signature" },
 	{ method: "GET", path: "/health", trustModel: "public_health" },
 	{ method: "POST", path: "/webhooks/stripe", trustModel: "stripe_signature" },
 	{

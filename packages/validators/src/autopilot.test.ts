@@ -35,4 +35,14 @@ describe("Autopilot rule schemas", () => {
     expect(autopilotRuleUpdateSchema.safeParse({ intervalMinutes: 10 }).success).toBe(false);
     expect(autopilotRuleUpdateSchema.safeParse({ unknown: true }).success).toBe(false);
   });
+
+  test("Zoom rules require a connection, reject RSS fields, and watch future recordings", () => {
+    const zoom = { name: "Webinars", sourceKind: "zoom", zoomConnectionId: RECIPE_ID, recipeId: RECIPE_ID };
+    expect(autopilotRuleInputSchema.parse(zoom)).toMatchObject({ sourceKind: "zoom", initialImportMode: "future_only" });
+    for (const change of [{ zoomConnectionId: undefined }, { rssUrl: "https://feeds.example.test/rss" }, { initialImportMode: "latest" }])
+      expect(autopilotRuleInputSchema.safeParse({ ...zoom, ...change }).success).toBe(false);
+    expect(autopilotRuleInputSchema.safeParse({ name: "RSS", recipeId: RECIPE_ID, rssUrl: "https://feeds.example.test/rss", zoomConnectionId: RECIPE_ID }).success).toBe(false);
+    expect(autopilotRuleUpdateSchema.parse({ zoomTopicFilter: null })).toEqual({ zoomTopicFilter: null });
+    expect(autopilotRuleUpdateSchema.safeParse({ sourceKind: "rss" }).success).toBe(false);
+  });
 });

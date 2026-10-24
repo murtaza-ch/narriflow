@@ -32,3 +32,11 @@ Saving a Recipe, and choosing one for a rule, checks the same things saving the 
 Rules run as the member who created them. If a Recipe proposes posts to a queue and a rule's member can't manage publishing, that rule still exports clips and writes copy but proposes nothing, and its finishing reports `actor_lacks_publishing`. Saving the Recipe tells you which rules that affects. Generating clips for an existing Project with a Recipe uses its language, clip settings and finishing; the Project keeps its own Brand Profile. Choosing a Recipe on the import form doesn't apply its finishing; Autopilot, the API and assistants do.
 
 API keys and assistants only read Recipes. Create and edit them in Narriflow.
+
+## Zoom cloud recordings
+
+If Zoom is enabled, open **Autopilot** and select **Connect Zoom**. Authorize the Zoom user who hosts your recordings. Create a rule, choose **Zoom cloud recordings**, select the connection and a Recipe, and optionally enter text the meeting topic must contain. Topic matching ignores letter case.
+
+The rule imports future cloud recordings when Zoom finishes processing them. It chooses a completed MP4 and prefers shared screen with speaker view. Each matching rule imports a recording once, including when Zoom resends the notification. Recordings completed before the rule was created are not imported.
+
+Disconnecting Zoom pauses its rules and automation grants. After reconnecting, resume the rules you want to use. Your existing Projects keep their content and Recipe settings.

@@ -40,6 +40,9 @@ function rule(overrides: Partial<AutopilotRuleSnapshot>): AutopilotRuleSnapshot 
     createdByUserId: null,
     name: "Weekly show",
     rssUrl: "https://feeds.example.test/show.xml",
+    sourceKind: "rss",
+    zoomConnectionId: null,
+    zoomTopicFilter: null,
     titlePrefix: null,
     recipeId: RECIPE_ID,
     recipeName: "Weekly show",
@@ -79,6 +82,14 @@ const PAUSE_REASON =
   "Dana Lee can no longer run this rule. A Workspace Owner or Admin can take it over to resume it.";
 
 describe("Autopilot panel ownership and Recipe", () => {
+  test("Zoom rules describe their host and topic and have no RSS polling action", () => {
+    const html = render([rule({ sourceKind: "zoom", rssUrl: null, zoomConnectionId: "00000000-0000-4000-8000-0000000000d1", zoomTopicFilter: "webinar" })], true);
+    expect(html).toContain("Zoom: connected member");
+    expect(html).toContain("webinar");
+    expect(html).toContain("When a recording completes");
+    expect(html).not.toContain("Run now");
+    expect(html).not.toContain("Zoom recordings</");
+  });
   test("a paused rule shows its reason, and only Owners and Admins get Take over", () => {
     const paused = rule({ status: "paused", pauseKind: "acting_member", lastError: PAUSE_REASON });
     const asAdmin = render([paused], true);

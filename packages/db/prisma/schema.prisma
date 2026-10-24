@@ -31,6 +31,7 @@ enum SourceType {
   youtube
   rss
   link
+  zoom
 }
 
 enum IngestStatus {
@@ -65,6 +66,7 @@ enum IngestJobType {
   rss_import
   link_import
   drive_import
+  zoom_import
 }
 
 enum IngestJobStatus {
@@ -274,6 +276,12 @@ enum AutopilotStatus {
 enum AutopilotPauseKind {
   acting_member
   brand_profile
+  zoom_connection
+}
+
+enum AutopilotSourceKind {
+  rss
+  zoom
 }
 
 enum AutopilotInitialImportMode {
@@ -881,6 +889,8 @@ model User {
   grantedStandingGrants           StandingGrant[]                  @relation("StandingGrantGrantedBy")
   socialAccounts                  SocialAccount[]
   socialOAuthStates               SocialOAuthState[]
+  zoomConnections                 ZoomConnection[]
+  zoomOAuthStates                 ZoomOAuthState[]
   workspaceMemberships            WorkspaceMember[]
   brandTemplates                  BrandTemplate[]                  @relation("UserBrandTemplates")
   defaultBrandTemplate            BrandTemplate?                   @relation("UserDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
@@ -935,6 +945,8 @@ model Workspace {
   apiKeys                    ApiKey[]
   socialAccounts             SocialAccount[]
   socialOAuthStates          SocialOAuthState[]
+  zoomConnections            ZoomConnection[]
+  zoomOAuthStates            ZoomOAuthState[]
   brandTemplates             BrandTemplate[]
   brandProfiles              BrandProfile[]                   @relation("WorkspaceBrandProfiles")
   visualAssets               VisualAsset[]
@@ -1106,7 +1118,10 @@ model AutopilotRule {
   createdByUserId     String?                    @db.Uuid
   updatedByUserId     String?                    @db.Uuid
   name                String
-  rssUrl              String
+  sourceKind          AutopilotSourceKind        @default(rss)
+  rssUrl              String?
+  zoomConnectionId    String?                    @db.Uuid
+  zoomTopicFilter     String?
   titlePrefix         String?
   /// The Brand Profile, language, Content Pack, and finishing every import uses.
   recipeId            String                     @db.Uuid
@@ -1138,10 +1153,69 @@ model AutopilotRule {
   recipe    Recipe             @relation(fields: [recipeId], references: [id], onDelete: NoAction)
   episodes  AutopilotEpisode[]
   standingGrants StandingGrant[]
+  zoomConnection ZoomConnection? @relation(fields: [zoomConnectionId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, status, createdAt])
   @@index([status, nextRunAt, leaseExpiresAt])
   @@index([recipeId])
+  @@index([zoomConnectionId, status])
+}
+
+/// One member's user-managed Zoom authorization in a Workspace. Disconnection
+/// erases credentials but retains the identity referenced by paused rules.
+model ZoomConnection {
+  id                    String   @id @default(uuid()) @db.Uuid
+  workspaceId           String   @db.Uuid
+  userId                String   @db.Uuid
+  zoomUserId            String
+  zoomAccountId         String
+  displayName           String
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  expiresAt             DateTime?
+  scopes                String[]
+  revokedAt             DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rules AutopilotRule[]
+
+  @@unique([workspaceId, userId, zoomUserId])
+  @@index([zoomAccountId, zoomUserId, revokedAt])
+}
+
+model ZoomOAuthState {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  userId      String   @db.Uuid
+  stateHash   String   @unique
+  redirectUri String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+/// A verified notification, reduced to recording IDs and public metadata.
+/// Leases fence acknowledgements; admission deduplicates each recording per rule.
+model ZoomWebhookJob {
+  id             String   @id @default(uuid()) @db.Uuid
+  eventKey       String   @unique
+  payload        Json
+  status         String   @default("queued")
+  claimToken     String?  @db.Uuid
+  leaseExpiresAt DateTime?
+  availableAt    DateTime @default(now())
+  attempts       Int      @default(0)
+  lastError      String?
+  createdAt      DateTime @default(now())
+  completedAt    DateTime?
+
+  @@index([status, availableAt, leaseExpiresAt])
 }
 
 /// Named, revisioned Workspace settings that Autopilot rules and integration

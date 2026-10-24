@@ -1,3 +1,5 @@
+import { zoomService } from "./zoom.service";
+import { ZoomError } from "./zoom";
 import { workspaceService, WorkspaceOperationError } from "./workspace.service";
 import { BrandProfileMembershipError, BrandProfileMissingAssetError, BrandProfileNotFoundError } from "./brand-profile.service";
 import { BrandAccessError } from "./brand-ownership";
@@ -157,7 +159,10 @@ function toSnapshot(row: {
   workspaceId: string;
   createdByUserId: string | null;
   name: string;
-  rssUrl: string;
+  rssUrl: string | null;
+  sourceKind: "rss" | "zoom";
+  zoomConnectionId: string | null;
+  zoomTopicFilter: string | null;
   titlePrefix: string | null;
   recipeId: string;
   recipe: { name: string };
@@ -181,7 +186,10 @@ function toSnapshot(row: {
     workspaceId: row.workspaceId,
     createdByUserId: row.createdByUserId,
     name: row.name,
-    rssUrl: redactUrlForDisplay(row.rssUrl),
+    rssUrl: row.rssUrl ? redactUrlForDisplay(row.rssUrl) : null,
+    sourceKind: row.sourceKind,
+    zoomConnectionId: row.zoomConnectionId,
+    zoomTopicFilter: row.zoomTopicFilter,
     titlePrefix: row.titlePrefix,
     recipeId: row.recipeId,
     recipeName: row.recipe.name,
@@ -241,9 +249,10 @@ export class AutopilotService {
   ): Promise<AutopilotRuleSnapshot> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const parsed = autopilotRuleInputSchema.parse(input);
-    let feed: Awaited<ReturnType<typeof fetchRssFeed>>;
+    let feed: Awaited<ReturnType<typeof fetchRssFeed>> | null = null;
     const prepare = async () => {
-      feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl);
+      if (parsed.sourceKind === "rss") feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl!);
+      else await zoomService.requireConnection(scope, parsed.zoomConnectionId!);
       // The Recipe's settings must be ones this saver could have chosen: its
       // Brand Profile applies now, and finishing fits the plan and queue rights.
       await recipeService.resolveForRule(scope, parsed.recipeId, credential);
@@ -259,9 +268,13 @@ export class AutopilotService {
         })) >= MAX_AUTOPILOT_RULES_PER_WORKSPACE
       )
         throw new AutopilotError("autopilot_rule_limit_reached");
+      if (parsed.zoomConnectionId) {
+        await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${parsed.zoomConnectionId}::uuid FOR UPDATE`;
+        if (!await tx.zoomConnection.findFirst({ where: { id: parsed.zoomConnectionId, workspaceId: scope.workspaceId, revokedAt: null } })) throw new ZoomError("zoom_connection_unavailable");
+      }
       await lockLiveRecipe(tx, scope.workspaceId, parsed.recipeId);
       const now = new Date();
-      const head = feed.episodes[0] ?? null;
+      const head = feed?.episodes[0] ?? null;
       const futureOnly = parsed.initialImportMode === "future_only";
       const row = await tx.autopilotRule.create({
         data: {
@@ -269,8 +282,11 @@ export class AutopilotService {
           createdByUserId: scope.actorUserId,
           updatedByUserId: scope.actorUserId,
           name: parsed.name,
-          rssUrl: feed.finalUrl,
-          feedTitle: feed.title,
+          sourceKind: parsed.sourceKind,
+          rssUrl: feed?.finalUrl ?? null,
+          zoomConnectionId: parsed.zoomConnectionId ?? null,
+          zoomTopicFilter: parsed.zoomTopicFilter ?? null,
+          feedTitle: feed?.title ?? null,
           titlePrefix: parsed.titlePrefix ?? null,
           recipeId: parsed.recipeId,
           intervalMinutes: parsed.intervalMinutes,
@@ -280,8 +296,8 @@ export class AutopilotService {
           initializedAt: futureOnly ? now : null,
           lastSeenEpisodeId: futureOnly ? (head?.id ?? null) : null,
           lastSeenPublishedAt: futureOnly && head?.publishedAt ? new Date(head.publishedAt) : null,
-          etag: futureOnly ? feed.etag : null,
-          lastModified: futureOnly ? feed.lastModified : null,
+          etag: futureOnly ? feed?.etag ?? null : null,
+          lastModified: futureOnly ? feed?.lastModified ?? null : null,
           status: "active",
           nextRunAt: futureOnly ? nextRunFrom(parsed.intervalMinutes, now.getTime()) : now,
         },
@@ -334,6 +350,12 @@ export class AutopilotService {
       },
     });
     if (!existing) throw new AutopilotError("autopilot_rule_not_found");
+    if (existing.sourceKind === "rss" && (parsed.zoomConnectionId !== undefined || parsed.zoomTopicFilter !== undefined || parsed.rssUrl === null)) throw new ZoomError("zoom_payload_invalid");
+    if (existing.sourceKind === "zoom") {
+      if (parsed.rssUrl !== undefined || (parsed.initialImportMode !== undefined && parsed.initialImportMode !== "future_only") || parsed.zoomConnectionId === null) throw new ZoomError("zoom_payload_invalid");
+      if (parsed.zoomConnectionId !== undefined || parsed.status === "active") await zoomService.requireConnection(scope, parsed.zoomConnectionId ?? existing.zoomConnectionId!);
+    }
+
     // Pointing a rule at a Recipe is a save of that Recipe's settings for it.
     if (parsed.recipeId !== undefined) await recipeService.resolveForRule(scope, parsed.recipeId, credential);
 
@@ -349,8 +371,14 @@ export class AutopilotService {
       const current = await tx.autopilotRule.update({
         where: { id: ruleId },
         data: { claimToken: null, leaseExpiresAt: null },
-        select: { status: true, pauseKind: true },
+        select: { status: true, pauseKind: true, zoomConnectionId: true },
       });
+      if (existing.sourceKind === "zoom" && (parsed.zoomConnectionId !== undefined || parsed.status === "active")) {
+        const connectionId = parsed.zoomConnectionId ?? current.zoomConnectionId;
+        if (!connectionId) throw new ZoomError("zoom_connection_unavailable");
+        await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${connectionId}::uuid FOR UPDATE`;
+        if (!await tx.zoomConnection.findFirst({ where: { id: connectionId, workspaceId: scope.workspaceId, revokedAt: null } })) throw new ZoomError("zoom_connection_unavailable");
+      }
       // Autopilot paused this rule itself; choosing a Brand Profile resumes it.
       // If the acting member is still unavailable, the next run pauses it again.
       const systemPaused = current.status === "paused" && current.pauseKind !== null;
@@ -359,6 +387,8 @@ export class AutopilotService {
         data: {
           ...(current.status === "running" && { status: "active", nextRunAt: now }),
           ...(parsed.name !== undefined && { name: parsed.name }),
+          ...(parsed.zoomConnectionId !== undefined && { zoomConnectionId: parsed.zoomConnectionId }),
+          ...(parsed.zoomTopicFilter !== undefined && { zoomTopicFilter: parsed.zoomTopicFilter }),
           ...(feed && {
             rssUrl: feed.finalUrl,
             feedTitle: feed.title,
@@ -391,7 +421,7 @@ export class AutopilotService {
             consecutiveFailures: 0,
             ...(!systemPaused && { lastError: null }),
           }),
-          ...(systemPaused && parsed.recipeId !== undefined && {
+          ...(systemPaused && current.pauseKind === "brand_profile" && parsed.recipeId !== undefined && {
             status: "active",
             nextRunAt: now,
             lastError: null,
@@ -455,6 +485,7 @@ export class AutopilotService {
         include: ruleInclude,
       });
       if (!existing) throw new AutopilotError("autopilot_rule_not_found");
+      if (existing.sourceKind === "zoom") await zoomService.requireConnection(scope, existing.zoomConnectionId!);
       if (
         existing.status === "running" &&
         existing.leaseExpiresAt &&
@@ -520,9 +551,10 @@ export class AutopilotService {
       await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid FOR UPDATE`;
       const existing = await tx.autopilotRule.findFirst({
         where: { id: ruleId, workspaceId: scope.workspaceId },
-        select: { id: true },
+        select: { id: true, sourceKind: true, zoomConnectionId: true },
       });
       if (!existing) throw new AutopilotError("autopilot_rule_not_found");
+      if (existing.sourceKind === "zoom") await zoomService.requireConnection(scope, existing.zoomConnectionId!);
       // Revoke any live claim as updateRule does: a run that already judged
       // the previous member unavailable must not pause the rule on the new one.
       const row = await tx.autopilotRule.update({
@@ -566,6 +598,7 @@ export class AutopilotService {
     const due = await prisma.autopilotRule.findMany({
       where: {
         status: "active",
+        sourceKind: "rss",
         nextRunAt: { lte: now },
         workspace: { status: "active" },
       },
@@ -717,7 +750,7 @@ export class AutopilotService {
       await this.pauseClaim(claim, "acting_member", await this.actingMemberLostReason(rule));
       return { imported: 0 };
     }
-    const feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(rule.rssUrl, {
+    const feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(rule.rssUrl!, {
       etag: rule.initializedAt ? rule.etag : null,
       lastModified: rule.initializedAt ? rule.lastModified : null,
     });

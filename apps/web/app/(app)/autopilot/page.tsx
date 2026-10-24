@@ -1,20 +1,27 @@
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
-import { autopilotService, hasFeature, recipeService, standingGrants } from "@narriflow/services";
+import { autopilotService, hasFeature, recipeService, standingGrants, zoomConfigured, zoomService } from "@narriflow/services";
 import { workspaceAllowsCapability } from "@narriflow/validators";
 import { AutopilotPanel } from "./autopilot-panel";
 
-export default async function AutopilotPage() {
+export default async function AutopilotPage({ searchParams }: { searchParams: Promise<{ zoom?: string }> }) {
   const appUser = await admitWorkspacePage("content.view");
-  const [rules, recipes, grants] = await Promise.all([
+  const zoomEnabled = zoomConfigured();
+  const [rules, recipes, grants, connections, query] = await Promise.all([
     autopilotService.listRules(appUser),
     recipeService.list(appUser),
     standingGrants.list(appUser),
+    zoomEnabled ? zoomService.listConnections(appUser) : [],
+    searchParams,
   ]);
 
   return (
     <AutopilotPanel
       initialRules={rules}
       recipes={recipes}
+      zoomEnabled={zoomEnabled}
+      zoomConnections={connections}
+      zoomNotice={query.zoom}
+      canConnectZoom={workspaceAllowsCapability({ role: appUser.role, status: appUser.status }, "content.edit")}
       canTakeOver={workspaceAllowsCapability(
         { role: appUser.role, status: appUser.status },
         "workspace.manage",

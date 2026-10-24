@@ -1,6 +1,6 @@
 # Automation and integrations map
 
-**Status:** decision map, in implementation (owner direction 2026-10-24). Code audit, independent review, and market research complete.
+**Status:** implementation complete on dev (2026-10-24). All 16 implementation tickets are done. Provider credentials, live provider tests, Marketplace submissions, and deployment remain owner rollout steps.
 
 **Tracker:** local Markdown
 
