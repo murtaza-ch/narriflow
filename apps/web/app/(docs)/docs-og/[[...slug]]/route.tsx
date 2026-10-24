@@ -27,11 +27,12 @@ const ACCENT = "#2438E8";
 let fonts: Promise<Array<{ name: string; data: Buffer; weight: 400 | 600 }>> | undefined;
 
 function loadFonts() {
+  // App-owned assets keep static image rendering independent of the install layout.
   fonts ??= Promise.all(
     ([["Geist-Regular.ttf", 400], ["Geist-SemiBold.ttf", 600]] as const).map(async ([file, weight]) => ({
       name: "Geist",
       weight,
-      data: await readFile(path.join(process.cwd(), "node_modules/geist/dist/fonts/geist-sans", file)),
+      data: await readFile(path.join(process.cwd(), "assets/fonts/geist", file)),
     })),
   );
   return fonts;
