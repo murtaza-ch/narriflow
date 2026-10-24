@@ -17,6 +17,14 @@ mock.module("next/navigation", () => ({
 	useRouter: () => router,
 	useSearchParams: () => params,
 }));
+// The server action is a plain function here; the real one is a server reference.
+const proposed: unknown[] = [];
+mock.module("../../calendar/queue/actions", () => ({
+	proposeToQueueAction: async (input: unknown) => {
+		proposed.push(input);
+		return { proposalId: "00000000-0000-4000-8000-0000000000aa" };
+	},
+}));
 const id = (n: number) =>
 	`00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const projectId = id(1);
@@ -277,6 +285,20 @@ test("opens the exact clip, auto-selects the sole account and generates missing 
 	expect(router.replace).not.toHaveBeenCalled();
 });
 
+test("proposes the draft's export and caption to the account's queue once, and says where to accept it", async () => {
+	await render();
+	await click("Exact clip");
+	const caption = browser.document.querySelector('textarea[aria-label="Description"]')!;
+	await edit(caption, "A caption for the queue");
+	await click("Propose to queue");
+	expect(proposed).toHaveLength(1);
+	expect(proposed[0]).toMatchObject({ clipId: clips[1]!.id, exportId: exports[1]!.id, socialAccountId: accounts[0]!.id, caption: "A caption for the queue" });
+	expect((proposed[0] as { idempotencyKey: string }).idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+	expect(browser.document.querySelector('[role="dialog"]')?.textContent).toContain("Accept it in the queue");
+	// Proposing again from the same draft is not offered.
+	expect(button("Propose to queue").hasAttribute("disabled")).toBe(true);
+	expect(requests.filter((r) => r.url.endsWith("/schedule"))).toHaveLength(0);
+});
 test("keeps every loaded history row when a bounded live refresh displaces tracked posts", () => {
 	const post = (n: number, status: "scheduled" | "posted") => ({
 		id: id(1000 + n),

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
-import { brandProfileService, clipExportService, ExpectedDomainFailureError, operationStatusService, projectService, reviewService, workspaceService,
+import { brandProfileService, clipExportService, clipTimelineService, ExpectedDomainFailureError, operationStatusService, projectService, reviewService, workspaceService,
   type WorkspaceActorContext } from "@narriflow/services";
 import type { ClipExportSnapshot } from "@narriflow/validators";
 import { buildNarriflowMcpServer, MCP_WORKSPACE_ACCESS_MESSAGE, mcpFailureMessage, verifyMcpUploadHandoff, type NarriflowMcpPrincipal } from "./index";
@@ -46,10 +46,12 @@ function snapshot(): ClipExportSnapshot {
 describe("Operation Status tool", () => {
   test("intake and generation need projects:read while export operations need exports:read", async () => {
     const read = track(spyOn(operationStatusService, "read").mockResolvedValue({ kind: "intake", id: KEY, state: "partial", stage: "rendering", progress: 1,
-      items: [{ kind: "clip", id: CLIP, state: "failed", failureCode: "render_failed" }], results: { projectId: PROJECT, clipIds: [CLIP], exportId: null }, failureCode: "render_failed" }));
+      items: [{ kind: "clip", id: CLIP, state: "failed", failureCode: "render_failed" }], results: { projectId: PROJECT, clipIds: [CLIP], exportId: null },
+      notices: [{ code: "framing_degraded", aspectRatio: "9:16", croppedPercent: 68 }], failureCode: "render_failed" }));
     const projectsOnly = await connect(oauth(["projects:read"]));
     const intake = await projectsOnly.callTool({ name: "narriflow_get_operation", arguments: { workspaceId: WORKSPACE, operation: { kind: "intake", id: KEY } } });
-    expect(data(intake)).toMatchObject({ operation: { kind: "intake", id: KEY }, state: "partial", items: [{ id: CLIP, state: "failed" }], reviewUrl: `https://app.narriflow.test/projects/${PROJECT}` });
+    expect(data(intake)).toMatchObject({ operation: { kind: "intake", id: KEY }, state: "partial", items: [{ id: CLIP, state: "failed" }],
+      notices: [{ code: "framing_degraded", aspectRatio: "9:16", croppedPercent: 68 }], reviewUrl: `https://app.narriflow.test/projects/${PROJECT}` });
     expect(read).toHaveBeenCalledWith(actor, { kind: "intake", id: KEY });
     const exported = await projectsOnly.callTool({ name: "narriflow_get_operation", arguments: { workspaceId: WORKSPACE, operation: { kind: "export", id: EXPORT } } });
     expect(data(exported)).toMatchObject({ error: "scope_required", message: "This credential requires the exports:read scope" });
@@ -63,6 +65,31 @@ describe("Operation Status tool", () => {
     const client = await connect(oauth());
     const result = await client.callTool({ name: "narriflow_submit_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: KEY, url: "https://example.test/talk.mp4" } });
     expect(data(result)).toEqual({ projectId: PROJECT, operation: { kind: "intake", id: KEY }, status: "accepted", statusTool: "narriflow_get_operation", reviewUrl: `https://app.narriflow.test/projects/${PROJECT}` });
+  });
+});
+
+describe("Captioned video tool", () => {
+  test("captions a link through the captioned-video command and points at its intake operation", async () => {
+    const queue = track(spyOn(projectService, "queueLinkIngest").mockResolvedValue({ project: { id: PROJECT } as never, queuedJobId: KEY }));
+    const client = await connect(oauth());
+    const result = await client.callTool({ name: "narriflow_create_captioned_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: KEY, url: "https://example.test/short.mp4",
+      framing: "center", aspectRatios: ["9:16", "1:1"], captions: { source: "supplied", text: "1\n00:00:00,000 --> 00:00:02,000\nHello there" } } });
+    expect(data(result)).toEqual({ projectId: PROJECT, operation: { kind: "intake", id: KEY }, status: "accepted", statusTool: "narriflow_get_operation", reviewUrl: `https://app.narriflow.test/projects/${PROJECT}` });
+    const [, link, options] = queue.mock.calls[0]!;
+    expect(link).toMatchObject({ url: "https://example.test/short.mp4" });
+    expect(options).toMatchObject({ command: "create_captioned_video" });
+    const pack = options!.generationContext!.contentPack;
+    expect(pack).toMatchObject({ mode: "caption_only", defaultAspectRatio: "9:16", captionedVideo: { framing: "center", aspectRatios: ["9:16", "1:1"], resolution: "1080p",
+      captions: { source: "supplied", utterances: [{ text: "Hello there", startSec: 0, endSec: 2, words: [{ word: "Hello" }, { word: "there" }] }] } } });
+  });
+
+  test("refuses malformed supplied captions with a typed error before accepting work", async () => {
+    const queue = track(spyOn(projectService, "queueLinkIngest").mockResolvedValue({ project: { id: PROJECT } as never, queuedJobId: KEY }));
+    const client = await connect(oauth());
+    const result = await client.callTool({ name: "narriflow_create_captioned_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: KEY, url: "https://example.test/short.mp4",
+      captions: { source: "supplied", text: "not captions at all" } } });
+    expect(data(result)).toMatchObject({ error: "supplied_captions_malformed" });
+    expect(queue).not.toHaveBeenCalled();
   });
 });
 
@@ -129,6 +156,24 @@ describe("export delivery", () => {
     const result = await client.callTool({ name: "narriflow_get_export_download", arguments: { workspaceId: WORKSPACE, exportId: EXPORT, variantId: VARIANT } });
     expect(data(result)).toMatchObject({ variants: [{ downloadUrl: "https://storage.test/download?X-Amz-Signature=fresh", expiresAt: "2026-10-07T00:16:00.000Z" }], subtitles: [{ format: "srt" }, { format: "vtt" }] });
     expect(grants).toHaveBeenCalledWith(actor, EXPORT, { variantId: VARIANT, credentialKind: "oauth" });
+  });
+});
+
+describe("editor timelines", () => {
+  test("return the timeline text with a source grant only to a credential that may download", async () => {
+    const timeline = { projectId: PROJECT, clipId: CLIP, editorRevision: 2, format: "xmeml",
+      timeline: { fileName: "hook-v2.xml", content: '<xmeml version="5"/>' }, subtitles: { format: "srt", fileName: "hook-v2.srt", content: "" },
+      source: { fileName: "talk-source.mp4", sizeBytes: 10, downloadUrl: "https://storage.test/source?X-Amz-Signature=fresh", expiresAt: "2026-10-24T00:15:00.000Z" } };
+    const exported = track(spyOn(clipTimelineService, "export").mockResolvedValue(timeline as never));
+    const client = await connect(oauth(["exports:read"]));
+    const result = await client.callTool({ name: "narriflow_get_clip_timeline", arguments: { workspaceId: WORKSPACE, projectId: PROJECT, clipId: CLIP, format: "xmeml" } });
+    expect(data(result)).toEqual(timeline);
+    expect(exported).toHaveBeenCalledWith(actor, PROJECT, CLIP, "xmeml", { credentialKind: "oauth" });
+
+    const refused = await (await connect(oauth(["projects:read"]))).callTool({ name: "narriflow_get_clip_timeline", arguments: { workspaceId: WORKSPACE, projectId: PROJECT, clipId: CLIP, format: "edl" } });
+    expect(data(refused)).toMatchObject({ error: "scope_required" });
+    const unknown = await client.callTool({ name: "narriflow_get_clip_timeline", arguments: { workspaceId: WORKSPACE, projectId: PROJECT, clipId: CLIP, format: "aaf" } });
+    expect(unknown.isError).toBe(true);
   });
 });
 

@@ -48,6 +48,8 @@ export function reviewNotification(input: {
   projectTitle: string;
   roundTitle: string;
   reviewUrl: string;
+  /** A round a Standing Grant sent says so, and offers the reviewer a way out. */
+  optOut?: { url: string; workspaceName: string };
 }): NotificationEmailTemplate {
   const copy = COPY[input.kind];
   const subject = `${copy.subject}: ${input.projectTitle}`;
@@ -57,10 +59,14 @@ export function reviewNotification(input: {
     html: emailShell({
       eyebrow: copy.eyebrow,
       heading: copy.heading,
-      bodyHtml: `<p style="margin:0">${body}</p>`,
+      bodyHtml: `<p style="margin:0">${body}</p>${input.optOut
+        ? `<p style="margin:20px 0 0;font-size:13px;color:#6b7080">Narriflow sent this automatically for ${escapeHtml(input.optOut.workspaceName)}. <a href="${escapeHtml(input.optOut.url)}" style="color:#6b7080">Stop automated review requests from ${escapeHtml(input.optOut.workspaceName)}</a>.</p>`
+        : ""}`,
       actionLabel: copy.action,
       actionUrl: input.reviewUrl,
     }),
-    text: `${subject}\n\n${body.replace(/<[^>]*>/g, "")}\n\n${copy.action}: ${input.reviewUrl}`,
+    text: `${subject}\n\n${body.replace(/<[^>]*>/g, "")}\n\n${copy.action}: ${input.reviewUrl}${input.optOut
+      ? `\n\nNarriflow sent this automatically for ${input.optOut.workspaceName}. Stop automated review requests from ${input.optOut.workspaceName}: ${input.optOut.url}`
+      : ""}`,
   };
 }

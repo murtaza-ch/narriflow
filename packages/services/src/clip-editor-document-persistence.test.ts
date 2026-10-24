@@ -12,6 +12,7 @@ import {
   createClipEditorDocumentPersistence,
   createInMemoryClipEditorDocumentStore,
   decodeClipEditorDocumentFromStorage,
+  decodeFrozenClipEditorDocument,
   encodeClipEditorDocumentForStorage,
   type ClipEditorDocumentDiagnostics,
   type ClipEditorDocumentStoredState,
@@ -127,7 +128,7 @@ describe("Clip Editor Document Persistence", () => {
   });
 
   test("the storage codec round-trips canonical creation values and owns null defaults", () => {
-    const encoded = encodeClipEditorDocumentForStorage(document(), 300);
+    const encoded = encodeClipEditorDocumentForStorage(document(), { durationSec: 300, wholeSource: false });
     expect(
       decodeClipEditorDocumentFromStorage(
         {
@@ -136,14 +137,45 @@ describe("Clip Editor Document Persistence", () => {
           studioEdits: null,
           deletedRanges: null,
         },
-        300,
+        { durationSec: 300, wholeSource: false },
       ),
     ).toEqual(document());
   });
 
+  test("a whole-source clip runs to the exact end of its source, not the rounded second", () => {
+    const whole = (endSec: number) => document({ clipStartSec: 0, clipEndSec: endSec, transcriptSlice: [] });
+    // An 8.4 second source is stored as 8 seconds; its probe says 8.4, and the clip keeps all of it.
+    const encoded = encodeClipEditorDocumentForStorage(whole(8.4), { durationSec: 8.4, wholeSource: true });
+    expect(encoded).toMatchObject({ startSec: 0, endSec: 8.4, wholeSource: true });
+    expect(decodeClipEditorDocumentFromStorage(encoded, { durationSec: 8.4, wholeSource: true }).clipEndSec).toBe(8.4);
+    // The rounded duration is no edge for it: this is the 0.4 s the clip used to lose.
+    expect(() => encodeClipEditorDocumentForStorage(whole(8.4), { durationSec: 8, wholeSource: true })).toThrow(
+      expect.objectContaining({ code: "editor_boundaries_invalid" }),
+    );
+  });
+
+  test("a 180.4 second source is a 3 minute source: its whole-source clip is valid, and 180.5 is not", () => {
+    const whole = (endSec: number) => document({ clipStartSec: 0, clipEndSec: endSec, transcriptSlice: [] });
+    expect(encodeClipEditorDocumentForStorage(whole(180.4), { durationSec: 180.4, wholeSource: true }).endSec).toBe(180.4);
+    expect(() => encodeClipEditorDocumentForStorage(whole(180.5), { durationSec: 180.5, wholeSource: true })).toThrow(
+      expect.objectContaining({ code: "editor_boundaries_invalid" }),
+    );
+    // A detected clip gets no slack: 120.4 seconds is over its 120 second limit.
+    expect(() => encodeClipEditorDocumentForStorage(document({ clipStartSec: 0, clipEndSec: 120.4, transcriptSlice: [] }), { durationSec: 300, wholeSource: false })).toThrow(
+      expect.objectContaining({ code: "editor_boundaries_invalid" }),
+    );
+  });
+
+  test("a frozen snapshot without a wholeSource flag is corrupt, not a detected clip", () => {
+    const frozen = encodeClipEditorDocumentForStorage(document({ clipStartSec: 0, clipEndSec: 8.4, transcriptSlice: [] }), { durationSec: 8.4, wholeSource: true });
+    expect(decodeFrozenClipEditorDocument(frozen, 8.4).clipEndSec).toBe(8.4);
+    const { wholeSource: _omitted, ...narrow } = frozen;
+    expect(() => decodeFrozenClipEditorDocument(narrow, 8.4)).toThrow(expect.objectContaining({ code: "corrupt_stored_document" }));
+  });
+
   test("fails closed when storage contains an unknown future document version", () => {
-    const encoded = encodeClipEditorDocumentForStorage(document(), 300);
-    expect(() => decodeClipEditorDocumentFromStorage({ ...encoded, editorDocumentVersion: 99 }, 300)).toThrow(
+    const encoded = encodeClipEditorDocumentForStorage(document(), { durationSec: 300, wholeSource: false });
+    expect(() => decodeClipEditorDocumentFromStorage({ ...encoded, editorDocumentVersion: 99 }, { durationSec: 300, wholeSource: false })).toThrow(
       expect.objectContaining({ code: "unsupported_editor_document_version" }),
     );
   });

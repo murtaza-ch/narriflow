@@ -1,0 +1,27 @@
+{
+  "name": "narriflow-zapier",
+  "version": "1.0.0",
+  "description": "Narriflow for Zapier: triggers, actions and searches over the public REST API v1.",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "_zapier-build": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "NODE_ENV=test node --import tsx --test --test-reporter=spec \"test/**/*.test.ts\"",
+    "validate": "npm run build && zapier-platform validate --without-style --skip-build"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "zapier-platform-core": "19.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "nock": "^15.0.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "zapier-platform-cli": "19.2.1"
+  }
+}

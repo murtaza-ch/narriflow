@@ -59,6 +59,26 @@ const assemblyAiFixture = {
   ],
 };
 
+describe("normalizeAssemblyAiTranscript with no speech", () => {
+  const silent = { id: "aai-silent", status: "completed", language_code: "en", audio_duration: 7.6, speech_model_used: "universal-3-5-pro", text: "", utterances: [] };
+
+  test("is refused unless the generation can finish without speech", () => {
+    expect(() => normalizeAssemblyAiTranscript(silent)).toThrow("did not include diarized utterances");
+    expect(() => normalizeAssemblyAiTranscript({ ...silent, utterances: [{ text: "", words: [] }] })).toThrow();
+  });
+
+  test("a caption-only generation gets a finished transcript with no utterances", () => {
+    const normalized = normalizeAssemblyAiTranscript(silent, { allowEmpty: true });
+    expect(normalized).toMatchObject({ provider: "assemblyai", providerModel: "universal-3-5-pro", providerJobId: "aai-silent", languageCode: "en",
+      text: "", utterances: [], speakerCount: 0, durationSeconds: 8 });
+    expect(normalizeAssemblyAiTranscript({ ...silent, utterances: [{ text: "", words: [] }] }, { allowEmpty: true }).utterances).toEqual([]);
+  });
+
+  test("speech is normalized the same way whatever the option", () => {
+    expect(normalizeAssemblyAiTranscript(assemblyAiFixture, { allowEmpty: true })).toEqual(normalizeAssemblyAiTranscript(assemblyAiFixture));
+  });
+});
+
 describe("normalizeAssemblyAiTranscript", () => {
   test("normalizes utterances, speakers, model metadata, and language", () => {
     const normalized = normalizeAssemblyAiTranscript(assemblyAiFixture);

@@ -1,0 +1,98 @@
+---
+title: Zapier
+description: Start Zaps when Narriflow finishes clips, and submit videos, export clips and queue social posts from any Zap.
+---
+
+The Narriflow app for Zapier covers the same ground as the [REST API](/docs/api/introduction). Triggers start a Zap when clips are ready, an export finishes, Narriflow finishes a project on its own, an Autopilot episode arrives, or a social post is published or needs attention. Actions submit a video link, generate clips, export a clip and propose a social post. Searches find a project and issue fresh download links.
+
+<Note>
+  The app is private for now. You install it from an invite link that Narriflow shares with you, and it is not in Zapier's app directory yet.
+</Note>
+
+## Connect
+
+<Steps>
+  <Step title="Create an API key">
+    In Narriflow, open **Settings → Developer access** and create a key. Turn on the permissions your Zaps need, from the table below. The Workspace must be on an active Business plan.
+  </Step>
+  <Step title="Accept the invite">
+    Open the invite link while signed in to Zapier and select **Accept Invite & Build a Zap**.
+  </Step>
+  <Step title="Connect Narriflow">
+    Add a Narriflow step to a Zap, select **Sign in** and paste the API key. Leave **Narriflow URL** as `https://app.narriflow.com`. Zapier names the connection after your Workspace.
+  </Step>
+</Steps>
+
+| You want | Turn on |
+| --- | --- |
+| To connect, and every trigger, search and dropdown | The read permissions a new key has by default: `usage:read`, `projects:read`, `exports:read` |
+| Post Published, Post Needs Attention and the Social Account dropdown | `publishing:read`, also on by default |
+| Submit Video Link and Generate Clips | **Allow this key to import, upload and generate clips** (`processing:write`) |
+| Export Clip | **Allow this key to request clip exports** (`exports:write`) |
+| Propose Social Post | **Publishing** (`publishing:write`) |
+
+A step that lacks a permission fails with a message that names it.
+
+## Triggers
+
+Zapier checks for new events every few minutes, depending on your Zapier plan. Each check asks Narriflow for the newest 100 events of the trigger's kind in one request. Each item's ID is the event's ID, so a Zap runs once for each event, however many times Zapier looks.
+
+Fields under **Details** (the project title, the clips, the export) are read from Narriflow only for an event Zapier has not delivered yet. **Details Available** is false when the project, clip or export was deleted before the Zap ran.
+
+| Trigger | Fires when | Fields |
+| --- | --- | --- |
+| Clips Ready | Clip generation for a project completes, or partly completes. | Project ID, Operation ID, State, and under Details: Project Title, Review URL, Top Clip ID, Top Clip Title, Clip Titles (a numbered list), and Clips: the top 10 with title, hook, virality score, duration and review URL. |
+| Export Finished | A clip export has at least one file ready. | Operation ID, State, and under Details: Export ID, Clip ID, Project ID, Formats Requested, Formats Ready. |
+| Finishing Ready | [Finishing](/docs/api/uploads#finishing) exported a project's best clips and wrote their copy, or finished with only some of them. | Project ID, State, Reason, Export Count, First Export ID, Export IDs, and under Details: Project Title, Review URL. |
+| Autopilot Episode Imported | An Autopilot rule imported a new episode as a project. | Autopilot Rule ID, Episode ID, Project ID, and under Details: Project Title, Duration, Review URL. |
+| Post Published | A scheduled post was published. | Social Post ID, Platform, Clip ID, Project ID, and under Details: Clip Title, Clip Review URL. |
+| Post Needs Attention | A scheduled post failed or needs a person to check it. | The same fields, with State `failed` or `needs_attention`. |
+
+Pass Export IDs to Get Export Download to get the files.
+
+## Actions
+
+| Action | What it does |
+| --- | --- |
+| Submit Video Link | Imports a video from a link and generates clips. Optional: project title, Brand Profile, number of clips, clip length, specific moments, and **Finish Automatically** (export the best clips and write copy). Returns the Project ID, Operation ID and Review URL. Uses processing minutes. |
+| Generate Clips | Generates clips for a Project ID, with the same settings. **Generate Again** replaces clips the project already has. |
+| Export Clip | Exports a Clip ID in the formats and resolution you choose, as the clip looks when the step runs. Returns the Export ID. Use Export Finished to know when the files are ready. |
+| Propose Social Post | Adds an export to a social account's Publishing Queue as a draft, with your caption or the latest copy Narriflow wrote. Nothing is published until a person accepts it in Narriflow. Returns the Proposal ID and the queue link. |
+
+The Brand Profile and Social Account fields are dropdowns filled from your Workspace.
+
+## Searches
+
+| Search | What it does |
+| --- | --- |
+| Find Project | Finds a project by ID, or the newest projects whose title contains your text (ignoring case, among the newest 1,000). |
+| Get Export Download | Issues fresh download links for a finished export: the first format as **Download URL**, every format under **Files**, and the subtitles as SRT and WebVTT text. |
+
+<Note>
+  Download links from Get Export Download expire 15 minutes after the step runs. Pass them to a file field in a later step, such as Google Drive or Slack, in the same Zap.
+</Note>
+
+## Retries and repeats
+
+Each action sends an `Idempotency-Key` made from the step's inputs. If Zapier retries a step, or replays a Zap, Narriflow returns the first result instead of starting the work twice, and **Replay of an Earlier Identical Request** is true.
+
+Narriflow remembers a request for good, so the same inputs are the same request forever, even from another Zap: submitting the same link with the same settings twice gives one project, and repeating identical Generate Clips settings is a permanent replay. Every action has an optional **Run Key** for the cases where you want one run per trigger event. Map the trigger's **Event ID** to it: the same event never runs twice, and a new event runs again with the same inputs. Without a Run Key, change an input to start the work again. See [Idempotency](/docs/api/introduction#idempotency).
+
+## Example: post new clips to Slack
+
+1. Trigger: **Finishing Ready**.
+2. **Looping by Zapier**, over Export IDs.
+3. **Get Export Download** with the loop's Export ID.
+4. **Slack**, upload file from Download URL.
+
+Turn on **Finish Automatically** in Submit Video Link or an Autopilot rule so that Finishing Ready fires. For a flow that runs outside Zapier, see the [n8n template](/docs/api/n8n#autopilot-clips-to-slack).
+
+## Troubleshooting
+
+| Message or symptom | Cause |
+| --- | --- |
+| `scope_required` | The key lacks the permission the message names. Turn it on for the key, or create a new key, then reconnect. |
+| The connection says it needs to be reconnected | Narriflow refused the key as missing, invalid or revoked. Create a key and reconnect. |
+| `integration_access_unavailable` | The Workspace needs an active Business plan. |
+| Post Published and Post Needs Attention fail, naming `publishing:read` | The key lacks that permission, so Narriflow hides events about posts from it. |
+| The connection test fails with a URL message | **Narriflow URL** must be an `https://` address. Leave it as `https://app.narriflow.com` unless Narriflow gave you a development address. |

@@ -1,0 +1,67 @@
+[
+  {
+    "name": "auto hook, plain",
+    "args": {
+      "title": "Title",
+      "transcript": "TRANSCRIPT BODY",
+      "candidates": 12,
+      "finalClips": 6,
+      "clipDurationSec": 45,
+      "durationPolicy": {
+        "minDurationSec": 15,
+        "preferredMinDurationSec": 30,
+        "preferredMaxDurationSec": 60,
+        "maxDurationSec": 90
+      },
+      "platformTargets": [
+        "tiktok"
+      ],
+      "toneConstraints": [],
+      "speakerCount": 1,
+      "durationMinutes": 2,
+      "options": {
+        "autoHook": true,
+        "specificMoments": "",
+        "processingStartSec": null,
+        "processingEndSec": null,
+        "sourceLanguageCode": "en"
+      }
+    },
+    "prompt": "Identify candidate clip-worthy moments in the transcript below. The system keeps the best subset after scoring.\n\nSelection guidance:\n- Return distinct moments from different story beats or phases of the video.\n- Prefer a complete mini-story: setup, escalation, payoff, and clean ending.\n- Avoid near-duplicates and avoid clips that only make sense after watching earlier clips.\n- For each clip, platform_fit must include every target platform this moment fits naturally.\n- No target language is supplied. Keep title, hook_text, payoff_text, and reasoning in the transcript's source language.\n- Preserve the source script, proper and product names, numbers, quotations, and intentional code-switching exactly where meaning requires it.\n- When the source language is unknown, infer it from the transcript and use it consistently across every user-facing field.\n- The first 3 seconds must work as a hook without extra context.\n\nReturn 12 candidates; the system keeps the best 6.\n\nContent title: \"Title\"\nSource language: provider language code en\nDuration: ~2 minutes\nSpeakers: 1\nTarget clip duration: ~45 seconds\nRequired duration window: 15-90 seconds\nPreferred duration window: 30-60 seconds\nPlatform targets: tiktok\n\nTRANSCRIPT:\nTRANSCRIPT BODY\n\nRespond with a JSON object: { \"clips\": [...] }"
+  },
+  {
+    "name": "manual hook, window, tone, priorities, unknown language",
+    "args": {
+      "title": "A \"quoted\" title",
+      "transcript": "[0.000-4.500] Speaker A: Hello there.\n[4.500-9.000] Speaker B: General Kenobi.",
+      "candidates": 30,
+      "finalClips": 10,
+      "clipDurationSec": 30,
+      "durationPolicy": {
+        "minDurationSec": 20,
+        "preferredMinDurationSec": 25,
+        "preferredMaxDurationSec": 50,
+        "maxDurationSec": 70
+      },
+      "platformTargets": [
+        "tiktok",
+        "youtube_shorts",
+        "instagram_reels"
+      ],
+      "toneConstraints": [
+        "warm",
+        "funny"
+      ],
+      "speakerCount": 3,
+      "durationMinutes": 47,
+      "options": {
+        "autoHook": false,
+        "specificMoments": "  the pricing story  ",
+        "processingStartSec": 120,
+        "processingEndSec": null,
+        "sourceLanguageCode": null
+      }
+    },
+    "prompt": "Identify candidate clip-worthy moments in the transcript below. The system keeps the best subset after scoring.\n\nSelection guidance:\n- Return distinct moments from different story beats or phases of the video.\n- Prefer a complete mini-story: setup, escalation, payoff, and clean ending.\n- Avoid near-duplicates and avoid clips that only make sense after watching earlier clips.\n- For each clip, platform_fit must include every target platform this moment fits naturally.\n- No target language is supplied. Keep title, hook_text, payoff_text, and reasoning in the transcript's source language.\n- Preserve the source script, proper and product names, numbers, quotations, and intentional code-switching exactly where meaning requires it.\n- When the source language is unknown, infer it from the transcript and use it consistently across every user-facing field.\n- A strong opening hook is preferred but NOT required. Favor clips with high story_completeness_score (full setup/escalation/payoff arc) over clips with the strongest hook.\n\nReturn 30 candidates; the system keeps the best 10.\n\nContent title: \"A \"quoted\" title\"\nSource language: unknown; infer the source language from the transcript\nDuration: ~47 minutes\nSpeakers: 3\nTarget clip duration: ~30 seconds\nRequired duration window: 20-70 seconds\nPreferred duration window: 25-50 seconds\nPlatform targets: tiktok, youtube_shorts, instagram_reels\nTone preferences: warm, funny\nProcessing window: 120s to ends. Only return clips inside this window.\n\nUSER-SPECIFIED PRIORITIES (boost moments matching this guidance):\nthe pricing story\n\nTRANSCRIPT:\n[0.000-4.500] Speaker A: Hello there.\n[4.500-9.000] Speaker B: General Kenobi.\n\nRespond with a JSON object: { \"clips\": [...] }"
+  }
+]

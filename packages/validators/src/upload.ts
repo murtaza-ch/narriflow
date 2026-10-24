@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { contentPackSchema } from "./content-pack";
+import { finishingSettingsSchema } from "./finishing";
 import { sourceLanguageCodeSchema } from "./language";
 
 // Uploaded sources are pinned with one conditional server-side copy before
@@ -24,6 +25,7 @@ const uploadGenerationContextSchema = z
   .object({
     contentPack: contentPackSchema,
     languageCode: sourceLanguageCodeSchema,
+    finishing: finishingSettingsSchema.optional(),
   })
   .strict();
 
@@ -41,7 +43,10 @@ export const openUploadSessionSchema = z
       .strict(),
     brandTemplateId: z.string().uuid().nullable().optional(),
     brandProfileId: z.string().uuid().nullable().optional(),
-    generationContext: uploadGenerationContextSchema,
+    /** Explicit settings, which browser intake always sends. */
+    generationContext: uploadGenerationContextSchema.optional(),
+    /** Integrations may name a Recipe instead; admission reads it once. */
+    recipeId: z.string().uuid().optional(),
     /** `single` asks for one signed PUT at any supported size, for machine
      * callers that can't orchestrate multipart parts. Browsers keep `auto`. */
     transfer: z.enum(["auto", "single"]).optional(),
@@ -53,7 +58,20 @@ export const openUploadSessionSchema = z
       .nullable()
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    if (input.recipeId === undefined) {
+      if (input.generationContext === undefined) {
+        context.addIssue({ code: "custom", path: ["generationContext"], message: "Send generationContext or a recipeId" });
+      }
+      return;
+    }
+    for (const field of ["generationContext", "brandProfileId", "brandTemplateId"] as const) {
+      if (input[field] !== undefined) {
+        context.addIssue({ code: "custom", path: [field], message: "A Recipe replaces the Brand Profile and generation settings. Send recipeId or those, not both" });
+      }
+    }
+  });
 
 export const finalizeUploadSessionSchema = z
   .object({

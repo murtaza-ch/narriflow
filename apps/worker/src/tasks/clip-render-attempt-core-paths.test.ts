@@ -103,6 +103,7 @@ function clipFixture(input: {
 		studioEdits: input.hasStudioEdit
 			? { sourceAudio: { volume: 100, muted: true } }
 			: null,
+		wholeSource: false,
 		editorDocumentVersion: 1,
 		sceneBlocks: [],
 		censorSegments: [],

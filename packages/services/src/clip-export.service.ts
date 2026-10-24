@@ -18,6 +18,7 @@ import {
   type ClipRenderResolution,
   type EditorDocument,
   type PricingTier,
+  clipSourceEdgeSec,
   resolvePricingTier,
 } from "@narriflow/validators";
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
@@ -26,7 +27,9 @@ import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-access";
 import { headObject, presignDownloadUrl } from "./r2-storage";
 import { clipExportSubtitleFiles } from "./clip-export-subtitles";
+import { emitExportFinished } from "./operation-finished";
 import { workspaceService } from "./workspace.service";
+import type { WorkflowAttemptRef } from "./workflow-run-lifecycle";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -34,6 +37,7 @@ import {
 } from "./expected-domain-failure";
 import {
   decodeClipEditorDocumentFromStorage,
+  decodeFrozenClipEditorDocument,
   encodeClipEditorDocumentForStorage,
 } from "./clip-editor-document-persistence";
 
@@ -101,7 +105,7 @@ function normalizeAspectRatios(values: ClipAspectRatio[]): ClipAspectRatio[] {
     .filter((value) => requested.has(value));
 }
 
-function clipTitleSlug(clipTitle: string) {
+export function clipTitleSlug(clipTitle: string) {
   return clipTitle
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -188,6 +192,7 @@ function frozenClipSnapshot(clip: {
   index: number;
   startSec: number;
   endSec: number;
+  wholeSource: boolean;
   title: string | null;
   hookText: string;
   category: string;
@@ -205,8 +210,8 @@ function frozenClipSnapshot(clip: {
   llmModel: string;
 }, sourceDurationSec: number | null): Prisma.InputJsonValue {
   const document = encodeClipEditorDocumentForStorage(
-    decodeClipEditorDocumentFromStorage(clip, sourceDurationSec),
-    sourceDurationSec,
+    decodeClipEditorDocumentFromStorage(clip, { durationSec: sourceDurationSec, wholeSource: clip.wholeSource }),
+    { durationSec: sourceDurationSec, wholeSource: clip.wholeSource },
   );
   return {
     id: clip.id,
@@ -214,6 +219,7 @@ function frozenClipSnapshot(clip: {
     index: clip.index,
     startSec: document.startSec,
     endSec: document.endSec,
+    wholeSource: document.wholeSource,
     title: clip.title,
     hookText: clip.hookText,
     category: clip.category,
@@ -234,6 +240,65 @@ function frozenClipSnapshot(clip: {
     editorRevision: clip.editorRevision,
     llmModel: clip.llmModel,
   } as Prisma.InputJsonValue;
+}
+
+/** Inserts the Clip Export for one exact revision and output configuration,
+ * or finds the identical one: the output fingerprint also reuses matching
+ * exports requested under distinct keys. ClipRender rows are the durable work queue; the
+ * poller attaches a one-live-per-project WorkflowRun, avoiding several
+ * high-latency DB and Redis round trips on the caller's path. */
+async function upsertClipExport(
+  tx: Prisma.TransactionClient,
+  input: {
+    workspaceId: string;
+    createdByUserId: string | null;
+    projectId: string;
+    clipId: string;
+    clip: Parameters<typeof frozenClipSnapshot>[0];
+    sourceDurationSec: number | null;
+    fingerprint: string;
+    resolution: ClipRenderResolution;
+    watermark: boolean;
+    aspectRatios: ClipAspectRatio[];
+  },
+) {
+  const { clip, clipId, resolution, watermark } = input;
+  const exportId = randomUUID();
+  const snapshot = frozenClipSnapshot(clip, input.sourceDurationSec);
+  const row = await tx.clipExport.upsert({
+    where: { clipId_fingerprint: { clipId, fingerprint: input.fingerprint } },
+    create: {
+      id: exportId,
+      workspaceId: input.workspaceId,
+      createdByUserId: input.createdByUserId,
+      projectId: input.projectId,
+      clipId,
+      editorRevision: clip.editorRevision,
+      fingerprint: input.fingerprint,
+      resolution,
+      watermark,
+      variants: {
+        create: input.aspectRatios.map((aspectRatio) => ({
+          id: randomUUID(),
+          aspectRatio: clipAspectRatioToDb[aspectRatio],
+          resolution,
+          watermark,
+          render: {
+            create: {
+              clipId,
+              aspectRatio: clipAspectRatioToDb[aspectRatio],
+              resolution,
+              editorRevision: clip.editorRevision,
+              clipSnapshot: snapshot,
+            },
+          },
+        })),
+      },
+    },
+    update: {},
+    include: exportInclude,
+  });
+  return { row, reused: row.id !== exportId };
 }
 
 async function toExportSnapshot(
@@ -434,7 +499,7 @@ async function loadDeliverableExport(scope: ActorScope, where: { id: string; pro
     where: { ...where, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
     include: {
       clip: { select: { title: true, hookText: true } },
-      project: { select: { sourceDurationSeconds: true } },
+      project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
       variants: { orderBy: { createdAt: "asc" }, include: { render: { select: { clipSnapshot: true } } } },
     },
   });
@@ -447,7 +512,7 @@ async function loadDeliverableExport(scope: ActorScope, where: { id: string; pro
 function exportSubtitles(row: Awaited<ReturnType<typeof loadDeliverableExport>>) {
   const snapshot = row.variants.find((variant) => variant.render?.clipSnapshot)?.render?.clipSnapshot;
   if (!snapshot) throw new ClipExportError("export_snapshot_missing", "Export snapshot is missing");
-  return clipExportSubtitleFiles(snapshot, row.project.sourceDurationSeconds,
+  return clipExportSubtitleFiles(snapshot, clipSourceEdgeSec(row.project),
     clipExportSubtitleBaseName(row.clip.title?.trim() || row.clip.hookText, row.editorRevision));
 }
 
@@ -487,6 +552,7 @@ export class ClipExportService {
             select: {
               workspaceId: true,
               sourceDurationSeconds: true,
+              sourceProbe: true,
               workspace: {
                 select: { personalOwnerUserId: true, pricingTier: true },
               },
@@ -502,10 +568,10 @@ export class ClipExportService {
       if (clip.editorRevision !== input.expectedRevision) {
         throw new ClipExportRevisionConflictError(clip.editorRevision);
       }
-      const document = decodeClipEditorDocumentFromStorage(
-        clip,
-        clip.project.sourceDurationSeconds,
-      );
+      const document = decodeClipEditorDocumentFromStorage(clip, {
+        durationSec: clipSourceEdgeSec(clip.project),
+        wholeSource: clip.wholeSource,
+      });
       await assertSceneExportAvailability(
         document,
         sceneExportOwnerWhere({
@@ -565,46 +631,18 @@ export class ClipExportService {
         if (!current) throw new ClipExportError("clip_not_found", "Clip not found");
         if (current.editorRevision !== input.expectedRevision)
           throw new ClipExportRevisionConflictError(current.editorRevision);
-        const exportId = randomUUID();
-        const snapshot = frozenClipSnapshot(clip, clip.project.sourceDurationSeconds);
-        // The output fingerprint also reuses matching exports requested under
-        // distinct keys. ClipRender rows are the durable work queue; the poller attaches
-        // a one-live-per-project WorkflowRun, avoiding several high-latency DB and
-        // Redis round trips on the user's click path.
-        const row = await tx.clipExport.upsert({
-          where: { clipId_fingerprint: { clipId, fingerprint } },
-          create: {
-            id: exportId,
-            workspaceId: scope.workspaceId,
-            createdByUserId: scope.actorUserId,
-            projectId,
-            clipId,
-            editorRevision: clip.editorRevision,
-            fingerprint,
-            resolution,
-            watermark,
-            variants: {
-              create: aspectRatios.map((aspectRatio) => ({
-                id: randomUUID(),
-                aspectRatio: clipAspectRatioToDb[aspectRatio],
-                resolution,
-                watermark,
-                render: {
-                  create: {
-                    clipId,
-                    aspectRatio: clipAspectRatioToDb[aspectRatio],
-                    resolution,
-                    editorRevision: clip.editorRevision,
-                    clipSnapshot: snapshot,
-                  },
-                },
-              })),
-            },
-          },
-          update: {},
-          include: exportInclude,
+        const { row, reused } = await upsertClipExport(tx, {
+          workspaceId: scope.workspaceId,
+          createdByUserId: scope.actorUserId,
+          projectId,
+          clipId,
+          clip,
+          sourceDurationSec: clipSourceEdgeSec(clip.project),
+          fingerprint,
+          resolution,
+          watermark,
+          aspectRatios,
         });
-        const reused = row.id !== exportId;
         return {
           resourceType: "clip_export",
           resourceId: row.id,
@@ -615,6 +653,53 @@ export class ClipExportService {
       },
     });
     return { ...accepted.value, replayed: accepted.replayed, receiptId: accepted.receiptId };
+  }
+
+  /**
+   * The write that admits a captioned video's export, for the transaction that
+   * completes its moment detection (`completeMomentDetection`'s `admit`): the
+   * whole-source clip at the formats frozen when the video was accepted. The
+   * acceptance already authorized the work for an actor, so no actor is checked
+   * here (the poller renders it like any export). The detection attempt that
+   * owns the clip is the only one whose completion commits, and the export
+   * exists only with that completion.
+   */
+  captionedExportWrite(
+    attempt: WorkflowAttemptRef,
+    settings: { aspectRatios: ClipAspectRatio[]; resolution: ClipRenderResolution },
+  ): (tx: Prisma.TransactionClient) => Promise<{ exportId: string; clipId: string }> {
+    return async (tx) => {
+      const clip = await tx.clip.findFirst({
+        where: { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId },
+        include: {
+          project: {
+            select: {
+              workspaceId: true,
+              createdByUserId: true,
+              sourceDurationSeconds: true,
+              sourceProbe: true,
+              workspace: { select: { pricingTier: true } },
+            },
+          },
+        },
+      });
+      if (!clip) throw new ClipExportError("clip_not_found", "Clip not found");
+      const { granted } = resolveClipExportOutput(resolvePricingTier(clip.project.workspace.pricingTier), settings.resolution);
+      const aspectRatios = normalizeAspectRatios(settings.aspectRatios);
+      const { row } = await upsertClipExport(tx, {
+        workspaceId: clip.project.workspaceId,
+        createdByUserId: clip.project.createdByUserId,
+        projectId: attempt.projectId,
+        clipId: clip.id,
+        clip,
+        sourceDurationSec: clipSourceEdgeSec(clip.project),
+        fingerprint: buildClipExportFingerprint({ editorRevision: clip.editorRevision, aspectRatios, ...granted }),
+        resolution: granted.resolution,
+        watermark: granted.watermark,
+        aspectRatios,
+      });
+      return { exportId: row.id, clipId: clip.id };
+    };
   }
 
   async getOwned(
@@ -739,6 +824,7 @@ export class ClipExportService {
           select: {
             workspaceId: true,
             sourceDurationSeconds: true,
+            sourceProbe: true,
             workspace: { select: { personalOwnerUserId: true, pricingTier: true } },
           },
         },
@@ -754,9 +840,9 @@ export class ClipExportService {
     if (!frozenSnapshot) {
       throw new ClipExportError("export_snapshot_missing", "Export snapshot is missing");
     }
-    const frozenDocument = decodeClipEditorDocumentFromStorage(
+    const frozenDocument = decodeFrozenClipEditorDocument(
       frozenSnapshot,
-      owned.project.sourceDurationSeconds,
+      clipSourceEdgeSec(owned.project),
     );
     assertMotionExportEntitlement(
       resolvePricingTier(owned.project.workspace?.pricingTier),
@@ -793,7 +879,7 @@ export class ClipExportService {
       }
       await tx.clipExport.update({
         where: { id: exportId },
-        data: { status: "queued", progress: 0, errorCode: null, completedAt: null },
+        data: { status: "queued", progress: 0, errorCode: null, completedAt: null, retryCount: { increment: 1 } },
       });
     });
 
@@ -930,28 +1016,33 @@ export class ClipExportService {
           completedAt: aggregate.terminal ? completedAt : null,
         },
       });
+      if (aggregate.terminal) await emitExportFinished(tx, exportId);
       return true;
     });
   }
 
   async syncAggregate(exportId: string) {
-    const prisma = requirePrisma();
-    const variants = await prisma.clipExportVariant.findMany({
-      where: { exportId },
-      select: { status: true, errorCode: true },
+    return requirePrisma().$transaction(async (tx) => {
+      // The export row serializes sibling settlements, as in the lifecycle.
+      await tx.$queryRaw`SELECT "id" FROM "ClipExport" WHERE "id" = ${exportId}::uuid FOR UPDATE`;
+      const variants = await tx.clipExportVariant.findMany({
+        where: { exportId },
+        select: { status: true, errorCode: true },
+      });
+      const aggregate = deriveClipExportAggregate(variants.map((variant) => variant.status));
+      const firstError = variants.find((variant) => variant.errorCode)?.errorCode ?? null;
+      await tx.clipExport.update({
+        where: { id: exportId },
+        data: {
+          status: aggregate.status,
+          progress: aggregate.progress,
+          errorCode: aggregate.status === "failed" ? firstError : null,
+          completedAt: aggregate.terminal ? new Date() : null,
+        },
+      });
+      if (aggregate.terminal) await emitExportFinished(tx, exportId);
+      return aggregate;
     });
-    const aggregate = deriveClipExportAggregate(variants.map((variant) => variant.status));
-    const firstError = variants.find((variant) => variant.errorCode)?.errorCode ?? null;
-    await prisma.clipExport.update({
-      where: { id: exportId },
-      data: {
-        status: aggregate.status,
-        progress: aggregate.progress,
-        errorCode: aggregate.status === "failed" ? firstError : null,
-        completedAt: aggregate.terminal ? new Date() : null,
-      },
-    });
-    return aggregate;
   }
 }
 

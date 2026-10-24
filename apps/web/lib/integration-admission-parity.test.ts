@@ -15,6 +15,12 @@ const browserPeers = {
   list_projects: { method: "GET", path: "/projects" },
   get_project: { module: "app/(app)/projects/[projectId]/page.tsx" },
   get_workspace_usage: { module: "app/(app)/settings/usage/page.tsx" },
+  // Events report what finished across the Workspace's projects, so they take the project list's role.
+  list_events: { method: "GET", path: "/projects" },
+  // Webhooks deliver those same events, so reading them takes the project list's role.
+  list_webhooks: { method: "GET", path: "/projects" },
+  // Creating, deleting, re-enabling, or testing an endpoint spends processing the way starting work does.
+  manage_webhooks: { method: "POST", path: "/projects/:id/generate" },
   list_autopilot_rules: { method: "GET", path: "/autopilot/rules" },
   create_rss_autopilot_rule: { method: "POST", path: "/autopilot/rules" },
   run_autopilot_rule_now: { method: "POST", path: "/autopilot/rules/:ruleId/run-now" },
@@ -23,8 +29,10 @@ const browserPeers = {
   confirm_social_publication: { method: "POST", path: "/projects/:id/social-posts/:postId/confirm" },
   publish_social_publication_again: { method: "POST", path: "/projects/:id/social-posts/:postId/publish-again" },
   submit_video: { method: "POST", path: "/ingest/link" },
+  create_captioned_video: { method: "POST", path: "/ingest/link" },
   open_upload: { method: "POST", path: "/upload-sessions/open" },
   generate_clips: { method: "POST", path: "/projects/:id/generate" },
+  search_library: { method: "GET", path: "/library/search" },
   list_clips: { method: "GET", path: "/projects/:id/clips" },
   get_clip: { method: "GET", path: "/projects/:id/clips" },
   create_clip_export: { method: "POST", path: "/projects/:id/clips/:clipId/exports" },
@@ -32,13 +40,17 @@ const browserPeers = {
   list_social_accounts: { module: "app/(app)/projects/[projectId]/page.tsx" },
   get_publishing_options: { method: "GET", path: "/projects/:id/social-accounts/:accountId/publishing-options" },
   prepare_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule/preview" },
+  // Proposing queues a post for acceptance; accepting it schedules it, which takes the same role.
+  propose_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule" },
   schedule_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule" },
   list_social_publications: { method: "GET", path: "/projects/:id/social-posts" },
   get_operation: { module: "app/(app)/projects/[projectId]/page.tsx" },
   // Starting work and asking for its completion notice again need the same role.
   redeliver_callback: { method: "POST", path: "/projects/:id/generate" },
   get_export_download: { method: "GET", path: "/projects/:id/clips/:clipId/exports/:exportId" },
+  get_clip_timeline: { method: "GET", path: "/projects/:id/clips/:clipId/timeline/:format" },
   list_brand_profiles: { method: "GET", path: "/brand-profiles" },
+  list_recipes: { method: "GET", path: "/recipes" },
   create_review_handoff: { method: "GET", path: "/projects/:id/review-rounds" },
   list_review_rounds: { method: "GET", path: "/projects/:id/review-rounds" },
   get_review_round: { method: "GET", path: "/projects/:id/review-rounds" },

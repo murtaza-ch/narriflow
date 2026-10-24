@@ -19,6 +19,16 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	workspace_api_name_required: "Enter a name for this API key.",
 	workspace_api_scope_invalid:
 		"One or more requested API key permissions are unsupported.",
+	callback_url_invalid:
+		"Use a public HTTPS URL on port 443, such as https://hooks.example.com/narriflow.",
+	callback_secret_required:
+		"Create a callback signing secret first. Webhooks are signed with it.",
+	webhook_exists:
+		"This workspace already has a webhook for that URL. Delete it first to change its events.",
+	webhook_limit_reached: "A workspace can have 10 webhooks. Delete one first.",
+	webhook_not_found: "This webhook no longer exists.",
+	webhook_test_throttled:
+		"A test event was just sent to this webhook. Wait a few seconds and try again.",
 	workspace_paid_members_unavailable:
 		"This Workspace cannot add paid members right now.",
 	workspace_billing_action_required:
@@ -78,6 +88,12 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"That link didn't return a supported audio or video file. Choose another source.",
 	media_duration_unavailable:
 		"We couldn't verify the media duration. Check the file and try again.",
+	source_has_no_speech:
+		"We couldn't find any speech in this video, so there is nothing to pick clips from. Try Caption only, or upload a video with audio.",
+	whole_source_too_long:
+		"Caption-only videos can be up to 3 minutes. Trim the video and try again.",
+	whole_source_too_short:
+		"Caption-only videos must be at least 1 second long.",
 	rss_feed_too_large:
 		"That RSS feed is too large to import. Choose a feed with fewer entries.",
 	rss_download_failed:
@@ -149,6 +165,44 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"We couldn't schedule that post. Check the account connection and try again.",
 	review_approval_required:
 		"This exact clip export needs approval before it can be scheduled.",
+	posting_schedule_missing:
+		"Add posting slots to this account before accepting posts into its queue.",
+	posting_schedule_exhausted:
+		"This account's posting slots are all taken for the next year. Add slots, or clear some posts.",
+	campaign_schedule_posting_schedule_missing:
+		"Add posting slots to every selected account, or choose a date and time instead.",
+	social_proposal_not_found: "This proposal was already accepted or rejected.",
+	social_proposal_unavailable: "This proposal was already accepted or rejected.",
+	social_proposal_tiktok_options_required:
+		"Choose how this post goes to TikTok, and its visibility, before accepting it.",
+	social_proposal_caption_required:
+		"Write a caption for this post before accepting it.",
+	social_proposal_caption_too_long:
+		"This caption is longer than the platform allows. Shorten it.",
+	social_proposal_variant_unavailable:
+		"This export has no finished format that the platform accepts. Export another format, then propose it again.",
+	social_proposal_limit_reached:
+		"A Workspace can hold 200 proposals. Accept or reject some first.",
+	standing_grant_not_found: "This grant no longer exists.",
+	standing_grant_rule_not_found:
+		"Choose one of this Workspace's Autopilot rules.",
+	standing_grant_account_unavailable:
+		"Choose a connected account of this Workspace. Reconnect it first if it needs attention.",
+	standing_grant_tiktok_excluded:
+		"TikTok needs the creator's choices on every post, so it can't hold a standing grant. Accept its proposals yourself.",
+	standing_grant_plan_required:
+		"Sending review rounds needs the Business plan.",
+	standing_grant_duplicate:
+		"This rule already has a grant for that destination. Renew or revoke it instead.",
+	standing_grant_closed:
+		"This grant was revoked. Create a new one.",
+	standing_grant_not_active: "Only an active grant can be paused.",
+	standing_grant_unavailable:
+		"The grant that covered this post is no longer active.",
+	standing_grant_rule_changed:
+		"The Autopilot rule changed after this was granted. Renew the grant to approve the new settings.",
+	standing_grant_cap_reached:
+		"The grant's daily or weekly cap is reached, so this stays a proposal for you to accept.",
 	review_override_forbidden:
 		"Only a Workspace Owner or Admin can override review approval.",
 	review_override_reason_invalid:
@@ -164,6 +218,14 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	link_missing_url: "No video link was provided. Paste a link and try again.",
 	link_unsupported_source:
 		"We couldn't recognize that link. Supported: YouTube, Google Drive, StreamYard, Loom, Twitch, X, TikTok, LinkedIn, Facebook, Vimeo, Dropbox.",
+	drive_token_expired:
+		"Your Google Drive access expired. Choose the file again.",
+	drive_token_invalid:
+		"That Google Drive sign-in can't be used here. Choose the file again.",
+	drive_file_unavailable:
+		"We couldn't read that file from Google Drive. Choose the file again.",
+	drive_file_not_video:
+		"That Google Drive file isn't a video. Choose a video file.",
 	worker_command_timeout:
 		"That step took too long and timed out. Please try again.",
 	worker_command_failed:
@@ -264,6 +326,11 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"That selection is too close to the edge of the transcript to create a clip. Select a bit more and try again.",
 	clip_create_from_selection_failed:
 		"We couldn't create a clip from that selection. Please try again.",
+	clip_source_missing:
+		"Generate clips for this project first, then you can create clips from its transcript.",
+	library_search_unavailable:
+		"Library search is temporarily unavailable. Please try again in a moment.",
+	library_search_query_invalid: "Search for 2 to 300 characters.",
 	clip_has_scheduled_posts:
 		"This clip has scheduled or publishing social posts. Cancel them in Publish, then delete the clip.",
 	campaign_motion_target_missing:

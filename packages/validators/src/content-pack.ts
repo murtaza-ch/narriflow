@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { BRAND_DEFAULT_CAPTION_PRESET_ID, captionPresetIdSchema } from "./caption-preset";
+import { captionedVideoSettingsSchema } from "./captioned-video";
 import { outputTypeSchema } from "./output-type";
 
 export const clipGenerationModeSchema = z.enum(["best"]);
@@ -54,7 +55,17 @@ export const contentPackSchema = z.object({
   processingEndSec: z.number().int().min(0).nullable().default(null),
   clipLengthPreset: clipLengthPresetSchema.default("auto"),
   defaultAspectRatio: defaultAspectRatioSchema.default("9:16"),
+  /** Set for a captioned video; stored null reads as absent. */
+  captionedVideo: z.preprocess((value) => value ?? undefined, captionedVideoSettingsSchema.optional()),
 }).superRefine((data, ctx) => {
+  if (data.captionedVideo && data.mode !== "caption_only") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["captionedVideo"],
+      message: "captionedVideo requires mode caption_only",
+    });
+  }
+
   if (data.minDurationSec > data.preferredMinDurationSec) {
     ctx.addIssue({
       code: "custom",

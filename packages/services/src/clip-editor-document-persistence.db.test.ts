@@ -63,8 +63,9 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     fixtureState: Awaited<ReturnType<typeof fixture>>,
     index: number,
     document: ReturnType<typeof editorDocument>,
+    options: { wholeSource?: boolean } = {},
   ) {
-    return addClipPersistenceFixtureClip(prisma, fixtureState, index, document);
+    return addClipPersistenceFixtureClip(prisma, fixtureState, index, document, options);
   }
 
   function fixtureActorScope(f: Awaited<ReturnType<typeof fixture>>) {
@@ -244,6 +245,74 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     expect(obligations.map((item) => item.origin)).toEqual([
       "clip_editor_document_persistence",
     ]);
+  });
+
+  describe("the boundary policy follows the clip", () => {
+    function persistenceFor() {
+      return createClipEditorDocumentPersistence({ authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
+        store: prismaClipEditorDocumentStore });
+    }
+    const window = (clipEndSec: number, clipStartSec = 0) => editorDocument({ clipStartSec, clipEndSec });
+
+    test("a whole-source clip stores, reads, saves, and trims within 1 to 180 seconds; the flag survives edits", async () => {
+      const f = await fixture();
+      const persistence = persistenceFor();
+      const scope = fixtureActorScope(f);
+      for (const [index, endSec] of [[1, 8], [2, 180], [3, 1]] as const) {
+        const clip = await addClip(f, index, window(endSec), { wholeSource: true });
+        expect(clip).toMatchObject({ wholeSource: true, startSec: 0, endSec });
+        const read = await persistence.readDocument({ ...scope, projectId: f.project.id, clipId: clip.id });
+        expect(read.document).toMatchObject({ clipStartSec: 0, clipEndSec: endSec });
+        const saved = await persistence.mutateDocument({ ...scope, projectId: f.project.id, clipId: clip.id,
+          intent: { kind: "replace", baseRevision: 0, document: { ...read.document, brollUrl: null, captionPreset: { ...read.document.captionPreset, wordsPerCue: 2 } } } });
+        expect(saved.revision).toBe(1);
+        expect(await prisma.clip.findUniqueOrThrow({ where: { id: clip.id } })).toMatchObject({ wholeSource: true, endSec });
+      }
+      const long = await addClip(f, 4, window(180), { wholeSource: true });
+      const trimmed = await persistence.mutateDocument({ ...scope, projectId: f.project.id, clipId: long.id, intent: { kind: "set_boundaries", startSec: 20, endSec: 24 } });
+      expect(trimmed.document).toMatchObject({ clipStartSec: 20, clipEndSec: 24 });
+      expect(await prisma.clip.findUniqueOrThrow({ where: { id: long.id } })).toMatchObject({ wholeSource: true, startSec: 20, endSec: 24 });
+    });
+
+    test("a whole-source clip is still bounded: under a second, over 3 minutes, and past the source", async () => {
+      const f = await fixture();
+      const persistence = persistenceFor();
+      const scope = fixtureActorScope(f);
+      const clip = await addClip(f, 1, window(180), { wholeSource: true });
+      for (const [startSec, endSec] of [[0, 0.5], [0, 181], [100, 301]] as const) {
+        await expect(persistence.mutateDocument({ ...scope, projectId: f.project.id, clipId: clip.id, intent: { kind: "set_boundaries", startSec, endSec } }),
+          `${startSec}-${endSec}`).rejects.toMatchObject({ code: "editor_boundaries_invalid" });
+      }
+      await expect(addClip(f, 2, window(181), { wholeSource: true })).rejects.toMatchObject({ code: "editor_boundaries_invalid" });
+      expect(await prisma.clip.findUniqueOrThrow({ where: { id: clip.id } })).toMatchObject({ startSec: 0, endSec: 180, editorRevision: 0 });
+    });
+
+    test("detected clips keep 10 to 120 seconds on every path", async () => {
+      const f = await fixture();
+      const persistence = persistenceFor();
+      const scope = fixtureActorScope(f);
+      for (const endSec of [8, 130, 180]) {
+        await expect(addClip(f, endSec, window(endSec)), `${endSec}s`).rejects.toMatchObject({ code: "editor_boundaries_invalid" });
+      }
+      for (const [startSec, endSec] of [[0, 8], [0, 130], [10, 19.5]] as const) {
+        await expect(persistence.mutateDocument({ ...scope, projectId: f.project.id, clipId: f.clip.id, intent: { kind: "set_boundaries", startSec, endSec } }),
+          `${startSec}-${endSec}`).rejects.toMatchObject({ code: "editor_boundaries_invalid" });
+      }
+      const accepted = await persistence.mutateDocument({ ...scope, projectId: f.project.id, clipId: f.clip.id, intent: { kind: "set_boundaries", startSec: 0, endSec: 120 } });
+      expect(accepted.document.clipEndSec).toBe(120);
+      expect(await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).toMatchObject({ wholeSource: false });
+    });
+
+    test("a whole-source clip trimmed to 4 seconds resets to its 8-second original under the same policy", async () => {
+      const f = await fixture();
+      const persistence = persistenceFor();
+      const scope = fixtureActorScope(f);
+      const clip = await addClip(f, 1, window(8), { wholeSource: true });
+      await persistence.mutateDocument({ ...scope, projectId: f.project.id, clipId: clip.id, intent: { kind: "set_boundaries", startSec: 1, endSec: 5 } });
+      const reset = await persistence.mutateDocument({ ...scope, projectId: f.project.id, clipId: clip.id, intent: { kind: "reset", baseRevision: 1 } });
+      expect(reset.document).toMatchObject({ clipStartSec: 0, clipEndSec: 8 });
+      expect(await prisma.clip.findUniqueOrThrow({ where: { id: clip.id } })).toMatchObject({ wholeSource: true, endSec: 8 });
+    });
   });
 
   test("a Workspace editor can save a Clip Editor Document owned by the Workspace owner", async () => {

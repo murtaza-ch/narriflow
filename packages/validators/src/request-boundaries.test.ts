@@ -3,7 +3,7 @@ import { finalizeAudioUploadSchema, presignAudioUploadSchema } from "./audio-ass
 import { autopilotRuleInputSchema } from "./autopilot";
 import { rssPreviewSchema } from "./ingest";
 import { linkIngestSchema } from "./link-providers";
-import { scheduleSocialPostSchema, socialPostMetricsSchema } from "./social";
+import { scheduleSocialPostSchema } from "./social";
 
 const forged = { workspaceId: "forged", ownerUserId: "forged", storageKey: "forged" };
 const linkInput = { url: "https://youtube.com/watch?v=abc" };
@@ -17,12 +17,7 @@ const audioFinalizeInput = {
 const autopilotInput = {
   name: "Show",
   rssUrl: "https://feeds.example/show.xml",
-  contentPack: {
-    outputTypes: ["short_clip"],
-    clipCountTarget: 3,
-    clipDurationSecTarget: 45,
-    platformPlaybookVersion: "platform-playbook-v1",
-  },
+  recipeId: "00000000-0000-4000-8000-0000000000e1",
 };
 const socialScheduleInput = {
   clientIdempotencyKey: "4ac4e6ad-9f29-4cb2-a9ea-35ec85efc332",
@@ -61,15 +56,11 @@ describe("browser request schemas", () => {
   test("rejects unknown fields at automation and publication boundaries", () => {
     expect(autopilotRuleInputSchema.safeParse(autopilotInput).success).toBe(true);
     expect(scheduleSocialPostSchema.safeParse(socialScheduleInput).success).toBe(true);
-    expect(socialPostMetricsSchema.safeParse({ views: 1 }).success).toBe(true);
     expect(
       autopilotRuleInputSchema.safeParse({ ...autopilotInput, ...forged }).success,
     ).toBe(false);
     expect(
       scheduleSocialPostSchema.safeParse({ ...socialScheduleInput, ...forged }).success,
-    ).toBe(false);
-    expect(
-      socialPostMetricsSchema.safeParse({ views: 1, ...forged }).success,
     ).toBe(false);
   });
 

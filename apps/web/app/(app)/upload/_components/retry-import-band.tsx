@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Box, chakra, Flex, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle } from "lucide-react";
@@ -9,6 +10,7 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { userErrorMessage } from "@narriflow/validators";
 import { retryIngestFormAction } from "../../projects/actions";
 import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
+import { ingestRecoveryLabel } from "@/lib/project-state";
 
 type RetryState = { ok: boolean; error: string | null };
 const initialState: RetryState = { ok: true, error: null };
@@ -22,12 +24,15 @@ const initialState: RetryState = { ok: true, error: null };
 export function RetryImportBand({
   projectId,
   errorCode,
+  fromDrivePicker,
   onSaveAndFinishLater,
   savingDraft,
   saveDraftError,
 }: {
   projectId: string;
   errorCode: string | null;
+  /** A Google Drive Picker import can't be retried; only a new pick recovers. */
+  fromDrivePicker: boolean;
   /** Persists the current Step-2 form values as a draft ContentPack (never
    *  triggers generation) before navigating away — a bare
    *  `<Link href="/projects/...">` here would silently discard whatever the
@@ -77,10 +82,17 @@ export function RetryImportBand({
         <form action={formAction}>
           <input type="hidden" name="projectId" value={projectId} />
           <Flex align="center" gap="3" wrap="wrap">
-            <Button type="submit" size="sm" variant="subtle" disabled={isPending}>
-              {isPending ? <Spinner size="xs" borderTopColor="accent.fg" /> : null}
-              <Text ms={isPending ? "1" : "0"}>Retry import</Text>
-            </Button>
+            {fromDrivePicker ? (
+              // The token ended with the job; only a new pick helps.
+              <Button asChild size="sm" variant="subtle">
+                <Link href="/upload">{ingestRecoveryLabel(fromDrivePicker)}</Link>
+              </Button>
+            ) : (
+              <Button type="submit" size="sm" variant="subtle" disabled={isPending}>
+                {isPending ? <Spinner size="xs" borderTopColor="accent.fg" /> : null}
+                <Text ms={isPending ? "1" : "0"}>Retry import</Text>
+              </Button>
+            )}
             <chakra.button
               type="button"
               onClick={onSaveAndFinishLater}

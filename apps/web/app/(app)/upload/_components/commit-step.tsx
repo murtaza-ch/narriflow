@@ -27,6 +27,7 @@ import {
   type BrandTemplateSummary,
   type GenerationMode,
   type LinkProviderId,
+  type RecipeSnapshot,
 } from "@narriflow/validators";
 import { formatTimecode } from "@/lib/format";
 import {
@@ -36,10 +37,17 @@ import {
 import { ProcessingTimeline } from "../../_shared/processing-timeline";
 import { BrandTemplatePicker } from "./brand-template-picker";
 import { LanguageSelect } from "./language-select";
+import { RecipePicker } from "./recipe-picker";
+import type { RecipeFormSettings } from "../_lib/recipe-settings";
 import { Switch } from "@narriflow/ui/components/switch";
 import { VideoPreview } from "./video-preview";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
-import { fetchYoutubeMetadataAction, commitLinkImportAction } from "../actions";
+import {
+  fetchYoutubeMetadataAction,
+  commitDriveImportAction,
+  commitLinkImportAction,
+} from "../actions";
+import type { DrivePick } from "../_lib/google-drive-picker";
 import { isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
 
 /** Failure notice: Labeled danger panel with an icon. */
@@ -85,6 +93,10 @@ export interface CommitStepResult {
 interface CommitStepProps {
   linkUrl: string;
   linkProvider: LinkProviderId;
+  /** Saved Recipes this form can be filled from. */
+  recipes: RecipeSnapshot[];
+  /** The Recipe's clip settings, which the Configure step starts from. */
+  onRecipeApplied: (clip: RecipeFormSettings["clip"]) => void;
   brandTemplates: {
     builtIns: BrandTemplateSummary[];
     mine: BrandTemplateSummary[];
@@ -100,21 +112,36 @@ interface CommitStepProps {
     defaultId: string | null;
   };
   usageSummary: UsageSummary;
+  /** A Google Drive Picker file; imported through its token instead of `linkUrl`. */
+  driveFile: DrivePick | null;
   commitToken: string;
   onCommitted: (result: CommitStepResult) => void;
+}
+
+/** A picked Drive file's name, without its extension, as the project title. */
+function driveTitle(driveFile: DrivePick | null) {
+  return driveFile?.name.replace(/\.[^/.]+$/, "").trim() ?? "";
 }
 
 export function CommitStep({
   linkUrl,
   linkProvider,
+  recipes,
+  onRecipeApplied,
   brandTemplates,
   brandProfiles,
   usageSummary,
+  driveFile,
   commitToken,
   onCommitted,
 }: CommitStepProps) {
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(() => driveTitle(driveFile));
   const titleTouchedRef = useRef(false);
+
+  // A different picked file replaces a title the person hasn't edited.
+  useEffect(() => {
+    if (driveFile && !titleTouchedRef.current) setTitle(driveTitle(driveFile));
+  }, [driveFile]);
   const [languageCode, setLanguageCode] = useState("auto");
   const [mode, setMode] = useState<GenerationMode>("clip");
   const defaultBrandProfile = brandProfiles.items.find(
@@ -128,6 +155,19 @@ export function CommitStep({
   const [brandProfileId, setBrandProfileId] = useState<string | null>(
     brandProfiles.defaultId,
   );
+
+  /** A Recipe only fills the form in; the form's own values are what is submitted. */
+  function applyRecipe(settings: RecipeFormSettings) {
+    setLanguageCode(settings.languageCode);
+    setMode(settings.clip.mode);
+    // A profile that is no longer there leaves the current choice alone.
+    const profile = brandProfiles.items.find((candidate) => candidate.id === settings.brandProfileId);
+    if (settings.brandProfileId === null || profile) {
+      setBrandProfileId(settings.brandProfileId);
+      setBrandTemplateId(profile?.defaultTemplateId ?? null);
+    }
+    onRecipeApplied(settings.clip);
+  }
 
   const [durationSec, setDurationSec] = useState<number | null>(null);
   const [startSec, setStartSec] = useState(0);
@@ -201,8 +241,7 @@ export function CommitStep({
     setErrorMessage(null);
     const processingStartSec = hasCustomWindow ? Math.floor(startSec) : null;
     const processingEndSec = hasCustomWindow ? Math.floor(endSec) : null;
-    const result = await commitLinkImportAction({
-      url: linkUrl,
+    const settings = {
       title: title.trim() || null,
       brandTemplateId,
       brandProfileId,
@@ -211,7 +250,14 @@ export function CommitStep({
       mode,
       processingStartSec,
       processingEndSec,
-    });
+    };
+    const result = driveFile
+      ? await commitDriveImportAction({
+          ...settings,
+          fileId: driveFile.fileId,
+          accessToken: driveFile.accessToken,
+        })
+      : await commitLinkImportAction({ ...settings, url: linkUrl });
     if (!result.ok) {
       setErrorMessage(result.message);
       setSubmitting(false);
@@ -358,6 +404,7 @@ export function CommitStep({
         </Box>
 
         <Stack gap="3">
+          <RecipePicker recipes={recipes} onApply={applyRecipe} />
           <LanguageSelect value={languageCode} onChange={setLanguageCode} />
           <Switch
             checked={mode === "clip"}

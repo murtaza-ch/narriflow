@@ -38,7 +38,7 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 - `bun run lint` (repository-wide Biome check)
 - `bun run typecheck`
 - `bun run test` (fast deterministic suites, including active web tests; PostgreSQL suites report as skipped).
-- Disposable-schema PostgreSQL gates: `bun run test:workflow:db`, `bun run test:upload-session:db`, `bun run test:processing-usage:db`, `bun run test:workspace-billing:db`, `bun run test:social-publication:db`, `bun run test:clip-editor-persistence:db`, `bun run test:authenticated-request-policy:db`, `bun run test:brand-profiles:db`, `bun run test:vizard-expansion:db`, and `bun run test:integration-api:db`.
+- Disposable-schema PostgreSQL gates: `bun run test:workflow:db`, `bun run test:upload-session:db`, `bun run test:processing-usage:db`, `bun run test:workspace-billing:db`, `bun run test:social-publication:db`, `bun run test:clip-editor-persistence:db`, `bun run test:authenticated-request-policy:db`, `bun run test:brand-profiles:db`, `bun run test:vizard-expansion:db`, `bun run test:integration-api:db`, and `bun run test:library-search:db` (needs pgvector).
 
 ## Conventions
 

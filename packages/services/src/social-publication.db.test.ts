@@ -17,6 +17,7 @@ import {
 	PublicationClaimLostError,
 	ProviderReceiptConflictError,
 	publicationOperationLookupHash,
+	synchronizePreparedSocialPosts,
 } from "./social-publication-attempt";
 import { PublicationIntentConflictError, PublicationIntentStateError } from "./social-publication-scheduling";
 import { createProductionSocialPublicationScheduling, prismaPublicationSchedulingStore } from "./social-publication-scheduling-runtime";
@@ -27,6 +28,7 @@ import {
 } from "./social-publication-recovery";
 import { acceptTikTokPublicationWebhook } from "./social-publication-tiktok-webhook";
 import { createProductionReviewApprovalGate } from "./review-approval-gate.prisma";
+import { listWorkspaceEvents } from "./workspace-event";
 
 const databaseUrl = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_URL;
 const databaseSchema = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA;
@@ -210,6 +212,14 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			secondAccount,
 		};
 	}
+
+	/** The Social Post outcomes in a Workspace's event feed, oldest first. */
+	async function postEvents(workspaceId: string) {
+		const page = await listWorkspaceEvents(prisma, { workspaceId }, { limit: 200, types: ["social_post.finished"] });
+		return page.data.map((event) => event.subject);
+	}
+	const finishedPost = (f: Awaited<ReturnType<typeof fixture>>, socialPostId: string, platform: string, state: string) =>
+		({ socialPostId, projectId: f.project.id, clipId: f.clip.id, platform, state });
 
 	function frozenCandidate(
 		fixture: Awaited<ReturnType<typeof fixture>>,
@@ -453,7 +463,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect(await prisma.socialAccount.findUniqueOrThrow({ where: { id: f.firstAccount.id }, select: { status: true } })).toEqual({ status: "active" });
 	});
 
-	test("cancel, list and metrics snapshots preserve the latest provider receipt fields", async () => {
+	test("cancel and list snapshots preserve the latest provider receipt fields", async () => {
 		const f = await fixture();
 		const candidate = frozenCandidate(f, { id: randomUUID(), key: randomUUID(), hash: "cancel-receipt", accountId: f.firstAccount.id, scheduledFor: new Date(Date.now() + 3_600_000) });
 		const post = await prismaPublicationSchedulingStore.open({ workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey, immutableRequestHash: candidate.immutableRequestHash, create: async () => candidate });
@@ -466,7 +476,6 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		const expectedReceipt = { providerProcessingStatus: "failed", providerProcessingFailureCode: "video_processing_failed", providerVisibility: "unlisted" };
 		const list = await socialService.listProjectPosts({ actorUserId: f.user.id, workspaceId: f.workspace.id }, f.project.id);
 		expect(list.items.find((item) => item.id === post.id)).toMatchObject(expectedReceipt);
-		expect(await socialService.recordMetricsForPostId(post.id, { views: 10, likes: 1, comments: 0, shares: 0, saves: 0 })).toMatchObject(expectedReceipt);
 		expect(await socialService.cancelPost({ workspaceId: f.workspace.id, actorUserId: f.user.id }, f.project.id, post.id)).toMatchObject({ status: "cancelled", ...expectedReceipt });
 	});
 
@@ -646,6 +655,69 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		);
 	});
 
+	test("a native receipt's verified post IDs become Published Social Videos, and none otherwise", async () => {
+		async function settle(receipt: {
+			platformPostId: string | null;
+			platformPostIds?: string[];
+		}) {
+			const f = await fixture();
+			const now = new Date();
+			const id = randomUUID();
+			const candidate = frozenCandidate(f, {
+				id,
+				key: randomUUID(),
+				hash: `verified-${id}`,
+				accountId: f.firstAccount.id,
+				scheduledFor: new Date(now.getTime() - 1_000),
+			});
+			await prismaPublicationSchedulingStore.open({
+				workspaceId: f.workspace.id,
+				clientIdempotencyKey: candidate.clientIdempotencyKey,
+				immutableRequestHash: candidate.immutableRequestHash,
+				create: async () => candidate,
+			});
+			const claims = await claimDueSocialPublicationAttempts({
+				claimantId: `verified-${id}`,
+				now,
+				config: claimConfig,
+			});
+			const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({
+				where: { socialPostId: id },
+			});
+			const owned = claims.find((claim) => claim.attemptId === attempt.id);
+			if (!owned) throw new Error("expected claim");
+			await prismaSocialPublicationAttemptStore.settleAccepted({
+				owned,
+				result: {
+					kind: "accepted",
+					receipt: {
+						receiptId: `receipt-${id}`,
+						externalUrl: "https://www.youtube.com/shorts/native-1",
+						...receipt,
+					},
+				},
+				now,
+			});
+			return prisma.publishedSocialVideo.findMany({
+				where: { socialPostId: id },
+				select: { platformPostId: true, externalUrl: true },
+			});
+		}
+
+		// What youtubeReceipt returns for an uploaded video.
+		expect(
+			await settle({ platformPostId: "native-1", platformPostIds: ["native-1"] }),
+		).toEqual([
+			{
+				platformPostId: "native-1",
+				externalUrl: "https://www.youtube.com/shorts/native-1",
+			},
+		]);
+		// A video YouTube failed to process, and a webhook receiver's own ID.
+		expect(await settle({ platformPostId: "native-2", platformPostIds: [] })).toEqual([]);
+		expect(await settle({ platformPostId: "receiver-claimed-3" })).toEqual([]);
+	});
+
 	test("receipt settlement is atomic, replayable, conflict-safe, and fences stale claims", async () => {
 		const f = await fixture();
 		const now = new Date();
@@ -675,14 +747,6 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				receiptId: "provider-operation-1",
 				platformPostId: "provider-post-1",
 				externalUrl: "https://provider.example/posts/1",
-				metrics: {
-					views: 10,
-					likes: 2,
-					comments: 1,
-					shares: 0,
-					saves: 3,
-					watchTimeSeconds: 42,
-				},
 			},
 		};
 
@@ -710,9 +774,11 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				where: { projectId: f.project.id, type: "social_posted" },
 			}),
 		).toBe(1);
-		expect(await prisma.socialPostMetric.count({ where: { postId: id } })).toBe(
-			1,
-		);
+		// This receipt has the shape a webhook receiver returns: its self-reported
+		// post ID is not a platform-verified video.
+		expect(
+			await prisma.publishedSocialVideo.count({ where: { socialPostId: id } }),
+		).toBe(0);
 		await expect(
 			prismaSocialPublicationAttemptStore.settleAccepted({
 				owned,
@@ -730,6 +796,10 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				now,
 			}),
 		).rejects.toBeInstanceOf(ProviderReceiptConflictError);
+
+		// The settlement, its replay, and the conflicting retry wrote one outcome.
+		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "posted")]);
+		expect((await prisma.workspaceEventCounter.findUniqueOrThrow({ where: { workspaceId: f.workspace.id } })).lastSeq).toBe(1n);
 		await expect(
 			prismaSocialPublicationAttemptStore.checkpoint({
 				owned,
@@ -885,6 +955,8 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		});
 		expect(result.kind).toBe("retry_scheduled");
 		if (result.kind !== "retry_scheduled") throw new Error("expected retry");
+		// A scheduled retry is not an outcome.
+		expect(await postEvents(f.workspace.id)).toEqual([]);
 		const retry = await prisma.socialPublicationAttempt.findUniqueOrThrow({
 			where: { id: result.nextAttemptId },
 		});
@@ -940,6 +1012,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				where: { socialPostId: id },
 			}),
 		).toBe(2);
+		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "failed")]);
 	});
 
 	test("heartbeat extension fences takeover until expiry and stale owners stay fenced", async () => {
@@ -1318,7 +1391,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		});
 	});
 
-	test("manual confirmation records labeled evidence without fabricating metrics", async () => {
+	test("manual confirmation records labeled evidence without a verified published video", async () => {
 		const f = await fixture();
 		const target = await attentionPublication(f, "confirm");
 		const result = await socialPublicationRecovery.confirmPublished({
@@ -1333,14 +1406,10 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		});
 
 		expect(result).toMatchObject({ status: "posted", evidence: "manual" });
+		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, target.socialPostId, "youtube_shorts", "posted")]);
 		expect(
-			await prisma.providerReceipt.findUniqueOrThrow({
-				where: { attemptId: target.attemptId },
-			}),
-		).toMatchObject({ metrics: null });
-		expect(
-			await prisma.socialPostMetric.count({
-				where: { postId: target.socialPostId },
+			await prisma.publishedSocialVideo.count({
+				where: { socialPostId: target.socialPostId },
 			}),
 		).toBe(0);
 		expect(
@@ -1593,5 +1662,179 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				}),
 			).toBe(1);
 		}
+		// Replays and late webhooks write nothing beyond each real transition.
+		expect((await postEvents(f.workspace.id)).map((event) => (event as { state: string }).state)).toEqual(
+			deliveryMode === "tiktok_inbox" ? ["sent_to_inbox", "posted"] : ["posted"],
+		);
+	});
+
+	test("a redelivered TikTok failure, or one after the post already failed, finishes it failed once", async () => {
+		const f = await fixture();
+		const now = new Date("2026-08-28T10:00:00.000Z");
+		const publishId = `publish-${randomUUID()}`;
+		const account = await prisma.socialAccount.create({
+			data: {
+				userId: f.user.id,
+				workspaceId: f.workspace.id,
+				createdByUserId: f.user.id,
+				platform: "tiktok",
+				providerAccountId: `tiktok:${randomUUID()}`,
+				displayName: "TikTok fixture",
+				handle: "@fixture",
+				accessTokenEncrypted: "encrypted-test-token",
+			},
+		});
+		const socialPostId = randomUUID();
+		const base = frozenCandidate(f, {
+			id: socialPostId,
+			key: randomUUID(),
+			hash: "tiktok-failed-replay",
+			accountId: account.id,
+			scheduledFor: new Date(now.getTime() - 1_000),
+		});
+		const candidate = {
+			...base,
+			frozen: { ...base.frozen, socialAccountId: account.id, platform: "tiktok" as const, capabilityVersion: "tiktok-v2" },
+		};
+		await prismaPublicationSchedulingStore.open({
+			workspaceId: f.workspace.id,
+			clientIdempotencyKey: candidate.clientIdempotencyKey,
+			immutableRequestHash: candidate.immutableRequestHash,
+			create: async () => candidate,
+		});
+		const claims = await claimDueSocialPublicationAttempts({ claimantId: "tiktok-failed-worker", now, config: claimConfig });
+		const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({ where: { socialPostId } });
+		const claim = claims.find((row) => row.attemptId === attempt.id);
+		if (!claim) throw new Error("expected TikTok claim");
+		await prisma.$transaction([
+			prisma.publicationClaim.update({ where: { id: claim.claimId }, data: { releasedAt: now, accountSlotKey: null } }),
+			prisma.socialPublicationAttempt.update({
+				where: { id: attempt.id },
+				data: {
+					phase: "needs_attention",
+					outcome: "unknown",
+					failureCode: "tiktok_publication_outcome_unknown",
+					failureDisposition: "attention",
+					operationKind: "tiktok_processing",
+					operationLookupHash: publicationOperationLookupHash(`tiktok:${publishId}`),
+					currentClaimId: null,
+				},
+			}),
+			prisma.socialPost.update({
+				where: { id: socialPostId },
+				data: { status: "needs_attention", errorCode: "tiktok_publication_outcome_unknown", errorDisposition: "attention" },
+			}),
+		]);
+		const clientSecret = "tiktok-webhook-test-secret";
+		const failed = (at: Date) => {
+			const timestamp = String(Math.floor(at.getTime() / 1000));
+			const rawBody = JSON.stringify({
+				client_key: "test-client",
+				event: "post.publish.failed",
+				create_time: Number(timestamp),
+				user_openid: account.providerAccountId,
+				content: JSON.stringify({ publish_id: publishId, publish_type: "DIRECT_POST", reason: "spam_risk" }),
+			});
+			const digest = createHmac("sha256", clientSecret).update(`${timestamp}.${rawBody}`).digest("hex");
+			return acceptTikTokPublicationWebhook({ rawBody, signature: `t=${timestamp},s=${digest}`, clientKey: "test-client", clientSecret, now: at });
+		};
+
+		expect(await failed(now)).toMatchObject({ kind: "failed", attemptId: attempt.id });
+		// The redelivery arrives later, so a rewritten terminalAt would name a new event.
+		expect(await failed(new Date(now.getTime() + 5_000))).toMatchObject({ kind: "already_settled", attemptId: attempt.id });
+		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id: socialPostId } })).toMatchObject({ status: "failed", errorCode: "tiktok_spam_risk" });
+		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, socialPostId, "tiktok", "failed")]);
+	});
+
+	test("an uncertain publication finishes needs_attention once, and manual confirmation is a second, distinct outcome", async () => {
+		const f = await fixture();
+		const now = new Date();
+		const id = randomUUID();
+		const candidate = frozenCandidate(f, { id, key: randomUUID(), hash: "unknown-hash", accountId: f.firstAccount.id, scheduledFor: new Date(now.getTime() - 1_000) });
+		await prismaPublicationSchedulingStore.open({
+			workspaceId: f.workspace.id,
+			clientIdempotencyKey: candidate.clientIdempotencyKey,
+			immutableRequestHash: candidate.immutableRequestHash,
+			create: async () => candidate,
+		});
+		const claims = await claimDueSocialPublicationAttempts({ claimantId: "unknown-worker", now, config: claimConfig });
+		const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({ where: { socialPostId: id } });
+		const owned = claims.find((claim) => claim.attemptId === attempt.id);
+		if (!owned) throw new Error("expected claim");
+		await prismaSocialPublicationAttemptStore.settleUnknown({
+			owned, code: "publication_outcome_unknown", operation: null, sealedState: null, canReconcile: false, nextActionAt: null, now,
+		});
+		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "needs_attention")]);
+		await socialPublicationRecovery.confirmPublished({
+			workspaceId: f.workspace.id, projectId: f.project.id, actorUserId: f.user.id, socialPostId: id,
+			reason: "Editor found the exact Short on the selected channel", evidenceKind: "manual_unvalidated",
+			externalUrl: "https://youtube.com/shorts/manual-proof", now,
+		});
+		expect((await postEvents(f.workspace.id)).map((event) => (event as { state: string }).state)).toEqual(["needs_attention", "posted"]);
+	});
+
+	test("a claim that finds the account revoked finishes the post failed once", async () => {
+		const f = await fixture();
+		const now = new Date();
+		const id = randomUUID();
+		const candidate = frozenCandidate(f, { id, key: randomUUID(), hash: "revoked-hash", accountId: f.secondAccount.id, scheduledFor: new Date(now.getTime() - 1_000) });
+		await prismaPublicationSchedulingStore.open({
+			workspaceId: f.workspace.id,
+			clientIdempotencyKey: candidate.clientIdempotencyKey,
+			immutableRequestHash: candidate.immutableRequestHash,
+			create: async () => candidate,
+		});
+		await prisma.socialAccount.update({ where: { id: f.secondAccount.id }, data: { status: "revoked" } });
+		await claimDueSocialPublicationAttempts({ claimantId: "revoked-worker", now, config: claimConfig });
+		await claimDueSocialPublicationAttempts({ claimantId: "revoked-worker-again", now, config: claimConfig });
+		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: "social_account_reconnect_required" });
+		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "failed")]);
+	});
+
+	test("an uncertain publication that is rechecked and settles needs_attention again emits again", async () => {
+		const f = await fixture();
+		const now = new Date();
+		const id = randomUUID();
+		const candidate = frozenCandidate(f, { id, key: randomUUID(), hash: "recheck-again-hash", accountId: f.firstAccount.id, scheduledFor: new Date(now.getTime() - 1_000) });
+		await prismaPublicationSchedulingStore.open({
+			workspaceId: f.workspace.id,
+			clientIdempotencyKey: candidate.clientIdempotencyKey,
+			immutableRequestHash: candidate.immutableRequestHash,
+			create: async () => candidate,
+		});
+		const firstClaims = await claimDueSocialPublicationAttempts({ claimantId: "again-worker", now, config: claimConfig });
+		const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({ where: { socialPostId: id } });
+		const first = firstClaims.find((claim) => claim.attemptId === attempt.id);
+		if (!first) throw new Error("expected claim");
+		await prismaSocialPublicationAttemptStore.settleUnknown({ owned: first, code: "publication_outcome_unknown", operation: null, sealedState: null, canReconcile: false, nextActionAt: null, now });
+		await prisma.socialPublicationAttempt.update({ where: { id: first.attemptId }, data: { operationLookupHash: publicationOperationLookupHash(`again:${id}`) } });
+		await socialPublicationRecovery.recheck({ workspaceId: f.workspace.id, projectId: f.project.id, actorUserId: f.user.id, socialPostId: id, reason: "Check the provider again", now });
+		const later = new Date(now.getTime() + 60_000);
+		const secondClaims = await claimDueSocialPublicationAttempts({ claimantId: "again-worker-2", now: later, config: claimConfig });
+		const second = secondClaims.find((claim) => claim.attemptId === attempt.id);
+		if (!second) throw new Error("expected the recheck to be claimed");
+		await prismaSocialPublicationAttemptStore.settleUnknown({ owned: second, code: "publication_outcome_unknown", operation: null, sealedState: null, canReconcile: false, nextActionAt: null, now: later });
+		expect((await postEvents(f.workspace.id)).map((event) => (event as { state: string }).state)).toEqual(["needs_attention", "needs_attention"]);
+		// The same settlement replayed is still one transition.
+		await prismaSocialPublicationAttemptStore.settleUnknown({ owned: second, code: "publication_outcome_unknown", operation: null, sealedState: null, canReconcile: false, nextActionAt: null, now: later }).catch(() => undefined);
+		expect(await postEvents(f.workspace.id)).toHaveLength(2);
+	});
+
+	test("a Social Post whose export failed finishes failed without an attempt", async () => {
+		const f = await fixture();
+		const now = new Date();
+		const id = randomUUID();
+		const candidate = frozenCandidate(f, { id, key: randomUUID(), hash: "preparing-hash", accountId: f.firstAccount.id, scheduledFor: new Date(now.getTime() + 60_000) });
+		await prismaPublicationSchedulingStore.open({
+			workspaceId: f.workspace.id,
+			clientIdempotencyKey: candidate.clientIdempotencyKey,
+			immutableRequestHash: candidate.immutableRequestHash,
+			create: async () => ({ ...candidate, status: "preparing_video" as never, frozen: { ...candidate.frozen, storageKey: null } }),
+		});
+		await prisma.clipExportVariant.update({ where: { id: f.variant.id }, data: { status: "failed", errorCode: "render_failed" } });
+		await synchronizePreparedSocialPosts(now);
+		await synchronizePreparedSocialPosts(now);
+		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: "render_failed" });
+		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "failed")]);
 	});
 });

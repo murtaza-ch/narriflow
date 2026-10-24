@@ -1,13 +1,13 @@
 import { SocialPostLinks } from "@/lib/social-post-links";
 import Link from "next/link";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { CalendarDays, ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Inbox, Plus, X } from "lucide-react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Button } from "@narriflow/ui/components/button";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Select } from "@narriflow/ui/components/select";
-import { workspaceLibraryService, workspaceService } from "@narriflow/services";
+import { publishingQueue, workspaceLibraryService, workspaceService } from "@narriflow/services";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import type { SocialPlatform, SocialPostStatus } from "@prisma/client";
 import {
@@ -167,7 +167,7 @@ export default async function CalendarPage({
 	const platform = platforms.includes(params.platform as SocialPlatform)
 		? (params.platform as SocialPlatform)
 		: undefined;
-	const [posts, workspace, filters] = await Promise.all([
+	const [posts, workspace, filters, proposalCount] = await Promise.all([
 		workspaceLibraryService.listCalendarPosts(
 			appUser,
 			{
@@ -183,6 +183,7 @@ export default async function CalendarPage({
 		workspaceLibraryService.getCalendarFilters(
 			appUser,
 		),
+		publishingQueue.countProposals(appUser),
 	]);
 	const timezone = workspace?.timezone ?? "UTC";
 	const todayKey = dateKey(new Date(), timezone);
@@ -221,14 +222,22 @@ export default async function CalendarPage({
 			<PageHeader
 				title="Calendar"
 				actions={
-					canPublish ? (
-						<Button asChild>
-							<Link href="/calendar/new">
-								<Plus size={14} />
-								Schedule post
+					<>
+						<Button asChild variant="subtle">
+							<Link href="/calendar/queue">
+								<Inbox size={14} />
+								{proposalCount > 0 ? `Queue · ${proposalCount} to review` : "Queue"}
 							</Link>
 						</Button>
-					) : undefined
+						{canPublish ? (
+							<Button asChild>
+								<Link href="/calendar/new">
+									<Plus size={14} />
+									Schedule post
+								</Link>
+							</Button>
+						) : null}
+					</>
 				}
 			/>
 			<Flex align="center" justify="space-between" gap="3" wrap="wrap">

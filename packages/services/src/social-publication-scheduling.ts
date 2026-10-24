@@ -43,6 +43,20 @@ export type PublicationIntent = {
 	updatedAt: Date;
 };
 
+/** Queue admission: the Social Account's posting schedule picks the slot, under
+ * the account's lock and in the transaction that writes the post, so two
+ * admissions for one account never take the same slot. */
+export type PublicationSlotQueue = {
+	accountId: string;
+	/** The first slot after `after` that none of the account's active posts occupies, or null when none is left. */
+	pick(occupied: ReadonlySet<number>, after: Date): Date | null;
+	/** A Standing Grant accepting this post unattended. The store runs `admit` in the
+	 * admission transaction, right after the account lock: it checks the grant and its
+	 * caps and returns the revision it ran under, which the post records as its approval
+	 * evidence. A refusal throws, and the post stays a proposal. */
+	grant?: { id: string; admit(tx: Prisma.TransactionClient): Promise<{ revision: number }> };
+};
+
 export type SchedulePublicationInput = {
 	actorUserId: string;
 	workspaceId: string;
@@ -64,6 +78,10 @@ export type SchedulePublicationInput = {
 	assistedCopyVariantId?: string | null;
 	thumbnail?: ThumbnailSelection | null;
 	reviewOverrideReason?: string | null;
+	/** When set, `scheduledFor` is only a placeholder: the queue picks the real slot. */
+	slotQueue?: PublicationSlotQueue;
+	/** The proposal this admission accepts. Its draft Social Post is converted in place, in the transaction that writes the frozen state. */
+	proposalId?: string;
 	beforeAccept?: () => Promise<void>;
 };
 
@@ -131,6 +149,8 @@ export interface PublicationSchedulingStore {
 		workspaceId: string;
 		clientIdempotencyKey: string;
 		immutableRequestHash: string;
+		slotQueue?: PublicationSlotQueue;
+		proposalId?: string;
 		create(): Promise<PublicationIntent>;
 	}): Promise<PublicationIntent>;
 	readByKey(
@@ -162,11 +182,14 @@ const publicationIntentFailureCatalog = {
 	publication_intent_conflict: "conflict",
 	publication_intent_incomplete: "unprocessable",
 	publication_media_preparation_failed: "unavailable",
+	posting_schedule_exhausted: "unprocessable",
 	publication_schedule_in_past: "invalid",
 	review_approval_result_incomplete: "unavailable",
 	social_account_expired: "unprocessable",
 	social_account_unavailable: "missing",
 	social_post_not_found: "missing",
+	social_proposal_changed: "conflict",
+	social_proposal_unavailable: "conflict",
 	social_provider_publishing_disabled: "unavailable",
 	social_account_scope_missing: "unavailable",
 	tiktok_creator_settings_changed: "invalid",
@@ -238,12 +261,14 @@ export function publicationIntentHash(input: SchedulePublicationInput): string {
 				caption: input.caption,
 				aspectRatio: input.aspectRatio,
 				resolution: input.resolution,
-				scheduledFor: input.scheduledFor.toISOString(),
+				// A queued post has no time yet; a retry is the same request however the queue has moved.
+				scheduledFor: input.slotQueue ? "next_free_slot" : input.scheduledFor.toISOString(),
 				providerSettings: input.providerSettings,
 				deliveryMode: input.deliveryMode ?? "direct",
 				assistedCopyVariantId: input.assistedCopyVariantId ?? null,
 				thumbnail: input.thumbnail ?? null,
 				reviewOverrideReason: input.reviewOverrideReason?.trim() || null,
+				...(input.proposalId ? { proposalId: input.proposalId } : {}),
 			}),
 		)
 		.digest("hex");
@@ -420,8 +445,10 @@ export function createSocialPublicationScheduling(dependencies: {
 				workspaceId: input.workspaceId,
 				clientIdempotencyKey: input.clientIdempotencyKey,
 				immutableRequestHash,
+				slotQueue: input.slotQueue,
+				proposalId: input.proposalId,
 				create: async () => {
-					if (!input.immediate && input.scheduledFor <= dependencies.now()) {
+					if (!input.immediate && !input.slotQueue && input.scheduledFor <= dependencies.now()) {
 						throw new PublicationIntentStateError(
 							"publication_schedule_in_past",
 							"Choose a future publish time",
@@ -455,7 +482,8 @@ export function createSocialPublicationScheduling(dependencies: {
 						frozen.state.storageKey !== null &&
 						frozen.state.sizeBytes !== null;
 					return {
-						id: dependencies.createId(),
+						// Accepting a proposal converts that same Social Post.
+						id: input.proposalId ?? dependencies.createId(),
 						createdByUserId: input.actorUserId,
 						workspaceId: input.workspaceId,
 						projectId: input.projectId,
@@ -550,7 +578,7 @@ export function createInMemoryPublicationSchedulingStore(): PublicationSchedulin
 	return {
 		async open(input) {
 			const key = `${input.workspaceId}:${input.clientIdempotencyKey}`;
-			return locked(key, async () => {
+			const admit = () => locked(key, async () => {
 				const existing = intents.get(key);
 				if (existing) {
 					if (existing.immutableRequestHash !== input.immutableRequestHash) {
@@ -559,9 +587,19 @@ export function createInMemoryPublicationSchedulingStore(): PublicationSchedulin
 					return cloneIntent(existing);
 				}
 				const created = await input.create();
+				if (input.slotQueue) {
+					const { accountId } = input.slotQueue;
+					const occupied = new Set([...intents.values()]
+						.filter((intent) => intent.frozen.socialAccountId === accountId && !["draft", "cancelled", "failed"].includes(intent.status))
+						.map((intent) => intent.frozen.scheduledFor.getTime()));
+					const slot = input.slotQueue.pick(occupied, new Date());
+					if (!slot) throw new PublicationIntentStateError("posting_schedule_exhausted", "The posting schedule has no free slot left");
+					created.frozen.scheduledFor = slot;
+				}
 				intents.set(key, cloneIntent(created));
 				return cloneIntent(created);
 			});
+			return input.slotQueue ? locked(`account:${input.slotQueue.accountId}`, admit) : admit();
 		},
 
 		async read(workspaceId, postId) {

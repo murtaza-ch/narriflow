@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { parseArgs } from "node:util";
-import { buildGenerationContentPack, generationSettingsSchema, openUploadSessionSchema, type OpenUploadSessionInput, type UploadMimeType } from "@narriflow/validators";
+import { buildGenerationContentPack, buildGenerationContext, finishingSettingsSchema, generationSettingsSchema, openUploadSessionSchema, type OpenUploadSessionInput, type UploadMimeType } from "@narriflow/validators";
 import type { FinalizeUploadSessionOutcome, GrantUploadPartsOutcome, OpenUploadSessionOutcome, ReadUploadSessionOutcome } from "@narriflow/services/upload-session.service";
 
 export interface UploadVideoOptions {
@@ -15,6 +15,8 @@ export interface UploadVideoOptions {
   title?: string;
   /** Omit to use the Workspace's default Brand Profile. */
   brandProfileId?: string;
+  /** A Recipe supplies the Brand Profile and settings; send it instead of them. */
+  recipeId?: string;
   contentType?: UploadMimeType;
   generationContext?: OpenUploadSessionInput["generationContext"];
   fetch?: typeof fetch;
@@ -26,7 +28,7 @@ const mimeTypes: Record<string, UploadMimeType> = { ".mp4": "video/mp4", ".mov":
 
 /** Resumability belongs to Upload Sessions. Re-running this command with the
  * same key and unchanged file resumes its verified storage inventory. */
-export async function uploadVideo(options: UploadVideoOptions): Promise<FinalizeUploadSessionOutcome> {
+export async function uploadVideo(options: UploadVideoOptions): Promise<FinalizeUploadSessionOutcome & { recipe?: { id: string; revision: number } }> {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname)) throw new Error("Narriflow endpoint must use HTTPS");
   if (endpoint.username || endpoint.password) throw new Error("Keep Narriflow credentials in NARRIFLOW_API_KEY");
@@ -39,19 +41,22 @@ export async function uploadVideo(options: UploadVideoOptions): Promise<Finalize
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(options.filePath, { signal: options.signal })) digest.update(chunk);
   const fingerprint = `sha256:${digest.digest("hex")}`;
-  const input = openUploadSessionSchema.parse({ clientIdempotencyKey: options.clientIdempotencyKey, title: options.title ?? basename(options.filePath), source: { fileName: basename(options.filePath), sizeBytes: file.size, contentType, browserFingerprint: fingerprint }, ...(options.brandProfileId ? { brandProfileId: options.brandProfileId } : {}), generationContext: options.generationContext ?? { contentPack: buildGenerationContentPack(), languageCode: null } });
+  const input = openUploadSessionSchema.parse({ clientIdempotencyKey: options.clientIdempotencyKey, title: options.title ?? basename(options.filePath), source: { fileName: basename(options.filePath), sizeBytes: file.size, contentType, browserFingerprint: fingerprint }, ...(options.recipeId ? { recipeId: options.recipeId } : { ...(options.brandProfileId ? { brandProfileId: options.brandProfileId } : {}), generationContext: options.generationContext ?? { contentPack: buildGenerationContentPack(), languageCode: null } }) });
   const transport = options.fetch ?? fetch;
   async function request<T>(action: string, body: unknown): Promise<T> {
     const response = await transport(new URL(`/mcp/integrations/${encodeURIComponent(options.workspaceId)}/upload-sessions/${action}`, endpoint), { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}` }, body: JSON.stringify(body), signal: options.signal, redirect: "error" });
     if (!response.ok) throw new Error(`Narriflow upload ${action} returned HTTP ${response.status}; retry with the same idempotency key`);
     return await response.json() as T;
   }
-  let state: ReadUploadSessionOutcome = await request<OpenUploadSessionOutcome>("open", input);
+  const opened = await request<OpenUploadSessionOutcome & { recipe?: { id: string; revision: number } }>("open", input);
+  // A session opened with a Recipe says which Recipe and revision it froze.
+  const recipe = opened.recipe ? { recipe: opened.recipe } : {};
+  let state: ReadUploadSessionOutcome = opened;
   for (let attempt = 0; state.outcome === "reconciling" && attempt < 12; attempt++) {
     await abortableDelay(Math.min(state.retryAfterSeconds, 5) * 1000, options.signal);
     state = await request<ReadUploadSessionOutcome>("status", { clientIdempotencyKey: options.clientIdempotencyKey, sessionId: state.sessionId, browserFingerprint: fingerprint });
   }
-  if (state.outcome === "queued_for_ingest") return state;
+  if (state.outcome === "queued_for_ingest") return { ...state, ...recipe };
   if (state.outcome !== "uploading") throw new Error(`Upload is ${state.outcome}; retry with the same key after reconciliation completes`);
   const sessionId = state.sessionId;
   const parts: Array<{ partNumber: number; etag: string }> = [];
@@ -101,7 +106,7 @@ export async function uploadVideo(options: UploadVideoOptions): Promise<Finalize
   } finally { await handle.close(); }
   const current = await stat(options.filePath);
   if (current.size !== file.size || current.mtimeMs !== file.mtimeMs) throw new Error("Source changed during upload. Retry with the original unchanged file.");
-  return request<FinalizeUploadSessionOutcome>("finalize", { sessionId, parts: parts.sort((a, b) => a.partNumber - b.partNumber) });
+  return { ...await request<FinalizeUploadSessionOutcome>("finalize", { sessionId, parts: parts.sort((a, b) => a.partNumber - b.partNumber) }), ...recipe };
 
   async function put(url: string, bytes: Uint8Array, type?: string): Promise<string | null> {
     const response = await transport(url, { method: "PUT", body: new Uint8Array(bytes).buffer, headers: type ? { "Content-Type": type } : undefined, signal: options.signal, redirect: "error" });
@@ -120,13 +125,15 @@ function abortableDelay(ms: number, signal?: AbortSignal) {
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { file: { type: "string" }, workspace: { type: "string" }, key: { type: "string" }, title: { type: "string" }, brand: { type: "string" }, "content-type": { type: "string" }, settings: { type: "string" } }, strict: true });
-  if (!values.file || !values.workspace) throw new Error("Usage: bun run apps/mcp/src/upload.ts --file <path> --workspace <UUID> --key <UUID> [--title <title>] [--brand <Brand Profile UUID>]. Set NARRIFLOW_API_KEY and NARRIFLOW_URL in the environment.");
+  const { values } = parseArgs({ options: { file: { type: "string" }, workspace: { type: "string" }, key: { type: "string" }, title: { type: "string" }, brand: { type: "string" }, recipe: { type: "string" }, "content-type": { type: "string" }, settings: { type: "string" }, finishing: { type: "string" } }, strict: true });
+  if (!values.file || !values.workspace) throw new Error("Usage: bun run apps/mcp/src/upload.ts --file <path> --workspace <UUID> --key <UUID> [--title <title>] [--brand <Brand Profile UUID>] [--settings <file>] [--finishing <file>] or [--recipe <Recipe UUID>] instead of those three. Set NARRIFLOW_API_KEY and NARRIFLOW_URL in the environment.");
   const clientIdempotencyKey = values.key ?? randomUUID();
   // Print the replay key before networking, so an interrupted upload can resume.
   process.stderr.write(`Upload idempotency key: ${clientIdempotencyKey}\n`);
+  if (values.recipe && (values.brand || values.settings || values.finishing)) throw new Error("A Recipe replaces --brand, --settings, and --finishing. Send --recipe or those, not both.");
   const settings = generationSettingsSchema.parse(values.settings ? JSON.parse(await readFile(values.settings, "utf8")) : {});
-  const result = await uploadVideo({ endpoint: process.env.NARRIFLOW_URL ?? "http://localhost:3000", apiKey: process.env.NARRIFLOW_API_KEY ?? "", workspaceId: values.workspace, filePath: values.file, clientIdempotencyKey, title: values.title, brandProfileId: values.brand, contentType: values["content-type"] as UploadMimeType | undefined, generationContext: { contentPack: buildGenerationContentPack(settings), languageCode: settings.languageCode } });
+  const finishing = values.finishing ? finishingSettingsSchema.parse(JSON.parse(await readFile(values.finishing, "utf8"))) : undefined;
+  const result = await uploadVideo({ endpoint: process.env.NARRIFLOW_URL ?? "http://localhost:3000", apiKey: process.env.NARRIFLOW_API_KEY ?? "", workspaceId: values.workspace, filePath: values.file, clientIdempotencyKey, title: values.title, brandProfileId: values.brand, recipeId: values.recipe, contentType: values["content-type"] as UploadMimeType | undefined, generationContext: buildGenerationContext(settings, finishing) });
   // The Upload Session is the intake operation to follow with narriflow_get_operation.
   process.stdout.write(`${JSON.stringify({ ...result, operation: { kind: "intake", id: result.sessionId }, statusTool: "narriflow_get_operation" })}\n`);
 }

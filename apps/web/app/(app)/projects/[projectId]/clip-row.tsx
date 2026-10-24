@@ -1,5 +1,6 @@
 "use client";
 import { SOCIAL_POST_STATUS_LABELS } from "@/lib/social-post-status";
+import { describeCounts, sumLatestCounts } from "@/lib/performance-format";
 import { usePublishing } from "./publishing-provider";
 
 import type { ReactNode, SyntheticEvent } from "react";
@@ -545,8 +546,10 @@ export function ClipRow({
 	// 45–75 the eye tracks comfortably.
 	const measure = "68ch";
 
+	const postCounts = sumLatestCounts(clipPosts);
 	const postStatuses = [
 		...new Set(clipPosts.map((post) => SOCIAL_POST_STATUS_LABELS[post.status])),
+		...(postCounts ? [describeCounts(postCounts)] : []),
 	].join(" · ");
 	const renderBusy =
 		selectedStatus === "pending" || selectedStatus === "rendering";
@@ -1040,6 +1043,7 @@ export function ClipRow({
 						clipTitle={clip.title}
 						initialStartSec={clip.startSec}
 						initialEndSec={clip.endSec}
+						wholeSource={clip.wholeSource}
 						sourceVideoUrl={sourceVideoUrl}
 						// Auto-reframe re-renders what the clip already had; a clip with
 						// no renders yet reframes into the row's selected format.

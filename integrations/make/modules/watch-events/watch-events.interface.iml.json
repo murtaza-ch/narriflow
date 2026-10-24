@@ -1,0 +1,81 @@
+[
+    {
+        "name": "id",
+        "type": "text",
+        "label": "Event ID"
+    },
+    {
+        "name": "seq",
+        "type": "uinteger",
+        "label": "Sequence number"
+    },
+    {
+        "name": "type",
+        "type": "text",
+        "label": "Event type"
+    },
+    {
+        "name": "occurredAt",
+        "type": "date",
+        "label": "Occurred at"
+    },
+    {
+        "name": "projectId",
+        "type": "text",
+        "label": "Project ID"
+    },
+    {
+        "name": "operationId",
+        "type": "text",
+        "label": "Operation ID"
+    },
+    {
+        "name": "operationKind",
+        "type": "text",
+        "label": "Operation kind (intake, generation or export)"
+    },
+    {
+        "name": "state",
+        "type": "text",
+        "label": "State"
+    },
+    {
+        "name": "reason",
+        "type": "text",
+        "label": "Reason (finishing that did not complete)"
+    },
+    {
+        "name": "exportIds",
+        "type": "array",
+        "label": "Export IDs (finishing)",
+        "spec": {
+            "type": "text",
+            "label": "Export ID"
+        }
+    },
+    {
+        "name": "ruleId",
+        "type": "text",
+        "label": "Autopilot rule ID"
+    },
+    {
+        "name": "episodeId",
+        "type": "text",
+        "label": "Episode ID"
+    },
+    {
+        "name": "socialPostId",
+        "type": "text",
+        "label": "Social post ID"
+    },
+    {
+        "name": "clipId",
+        "type": "text",
+        "label": "Clip ID"
+    },
+    {
+        "name": "platform",
+        "type": "text",
+        "label": "Platform"
+    }
+]

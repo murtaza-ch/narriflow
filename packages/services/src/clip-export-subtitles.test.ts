@@ -12,7 +12,7 @@ function frozen(preset: Record<string, unknown>, llmModel = "gpt-test") {
     studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
     brollUrl: null, deletedRanges: [],
   });
-  return { ...encodeClipEditorDocumentForStorage(document, 600), llmModel };
+  return { ...encodeClipEditorDocumentForStorage(document, { durationSec: 600, wholeSource: false }), llmModel };
 }
 
 describe("export subtitle files", () => {

@@ -1,4 +1,6 @@
 import { workspaceService } from "./workspace.service";
+import { parsePostingSchedule } from "./posting-schedule";
+import { returnGrantPosts, revokeGrantsInTransaction } from "./standing-grant";
 import type { ActorScope } from "./actor-scope";
 import {
 	createCipheriv,
@@ -24,10 +26,13 @@ const META_GRAPH_VERSION =
 
 export class SocialOAuthError extends Error {
 	code: string;
+	/** The provider's HTTP status when the failure was an HTTP response. */
+	status?: number;
 
-	constructor(code: string, message: string) {
+	constructor(code: string, message: string, status?: number) {
 		super(message);
 		this.code = code;
+		this.status = status;
 	}
 }
 
@@ -161,6 +166,7 @@ export async function readSocialProviderJson(response: Response) {
 		throw new SocialOAuthError(
 			"social_oauth_http_failed",
 			`Social provider request failed with status ${response.status}`,
+			response.status,
 		);
 	}
 
@@ -287,6 +293,7 @@ function toSnapshot(row: {
 	scopes: string[];
 	expiresAt: Date | null;
 	status: string;
+	postingSchedule: Prisma.JsonValue | null;
 	createdAt: Date;
 	updatedAt: Date;
 }): SocialAccountSnapshot {
@@ -300,6 +307,7 @@ function toSnapshot(row: {
 		scopes: row.scopes,
 		expiresAt: row.expiresAt?.toISOString() ?? null,
 		status: row.status as SocialAccountSnapshot["status"],
+		postingSchedule: parsePostingSchedule(row.postingSchedule),
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 	};
@@ -327,14 +335,19 @@ export class SocialOAuthService {
 	) {
 		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "social.manage");
 		const prisma = requirePrisma();
-		await prisma.socialAccount.updateMany({
-			where: { id: accountId, workspaceId: scope.workspaceId },
-			data: {
-				status: "revoked",
-				refreshTokenEncrypted: null,
-				accessTokenEncrypted: encryptToken(`revoked:${randomBase64Url(16)}`),
-			},
+		await prisma.$transaction(async (tx) => {
+			const disconnected = await tx.socialAccount.updateMany({
+				where: { id: accountId, workspaceId: scope.workspaceId },
+				data: {
+					status: "revoked",
+					refreshTokenEncrypted: null,
+					accessTokenEncrypted: encryptToken(`revoked:${randomBase64Url(16)}`),
+				},
+			});
+			// Nothing can be accepted into a disconnected account, so a grant for it ends, kept as the audit trail.
+			if (disconnected.count > 0) await revokeGrantsInTransaction(tx, { socialAccountId: accountId }, "account_disconnected");
 		});
+		await returnGrantPosts(prisma);
 	}
 
 	async createAuthorizationUrl(scope: ActorScope, params: {
@@ -1306,22 +1319,43 @@ export class SocialOAuthService {
 			);
 		}
 
+		// Workers refresh the same account at once, and a provider may rotate the
+		// refresh token. The stored refresh token is the version: the first write
+		// wins, and every other caller takes the winner's row instead of its own.
+		const winner = () =>
+			prisma.socialAccount.findUniqueOrThrow({ where: { id: row.id } });
 		const refreshToken = decryptToken(row.refreshTokenEncrypted);
-		const refreshed =
-			row.platform === "tiktok"
-				? await this.refreshTikTok(refreshToken)
-				: row.platform === "youtube_shorts"
-					? await this.refreshGoogle(refreshToken)
-					: row.platform === "linkedin"
-						? await this.refreshLinkedIn(refreshToken)
-						: row.platform === "x"
-							? await this.refreshX(refreshToken)
-							: null;
+		let refreshed: OAuthToken | null;
+		try {
+			refreshed =
+				row.platform === "tiktok"
+					? await this.refreshTikTok(refreshToken)
+					: row.platform === "youtube_shorts"
+						? await this.refreshGoogle(refreshToken)
+						: row.platform === "linkedin"
+							? await this.refreshLinkedIn(refreshToken)
+							: row.platform === "x"
+								? await this.refreshX(refreshToken)
+								: null;
+		} catch (error) {
+			// A rotated refresh token is rejected for the loser of the race.
+			const current = await winner();
+			if (current.refreshTokenEncrypted !== row.refreshTokenEncrypted) {
+				return current;
+			}
+			throw error;
+		}
 
 		if (!refreshed) return row;
+		if (!refreshed.accessToken) {
+			throw new SocialOAuthError(
+				"social_oauth_refresh_invalid",
+				"The provider refresh response had no access token",
+			);
+		}
 
-		return prisma.socialAccount.update({
-			where: { id: row.id },
+		await prisma.socialAccount.updateMany({
+			where: { id: row.id, refreshTokenEncrypted: row.refreshTokenEncrypted },
 			data: {
 				accessTokenEncrypted: encryptToken(refreshed.accessToken),
 				refreshTokenEncrypted:
@@ -1335,6 +1369,8 @@ export class SocialOAuthService {
 				status: "active",
 			},
 		});
+		// Whether this call or a concurrent one wrote, the stored row is the truth.
+		return winner();
 	}
 
 	private async refreshTikTok(refreshToken: string): Promise<OAuthToken> {

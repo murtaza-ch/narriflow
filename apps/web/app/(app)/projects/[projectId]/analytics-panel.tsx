@@ -11,7 +11,13 @@ import {
 	Send,
 } from "lucide-react";
 import { Meter } from "@narriflow/ui/components/meter";
-import type { AnalyticsSnapshot, ClipSnapshot } from "@narriflow/validators";
+import {
+	performanceSyncAvailable,
+	type AnalyticsSnapshot,
+	type ClipSnapshot,
+} from "@narriflow/validators";
+import { describeCounts, formatCount } from "@/lib/performance-format";
+import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 import { PanelHeader } from "./panel-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 
@@ -67,6 +73,95 @@ const CLIP_COLUMNS = [
 	["socialFailed", "Failed"],
 	["dubsCompleted", "Dubs"],
 ] as const;
+
+const POST_COUNT_COLUMNS = [
+	["views", "Views"],
+	["likes", "Likes"],
+	["comments", "Comments"],
+	["shares", "Shares"],
+] as const;
+
+/**
+ * The latest public counts of each published post, read back from its
+ * platform. The totals come from the whole Project; the list shows its newest
+ * posts.
+ */
+function PostPerformance({
+	performance,
+	titles,
+}: {
+	performance: AnalyticsSnapshot["postPerformance"];
+	titles: Map<string, string>;
+}) {
+	const published = performance.posts;
+	if (published.length === 0) return null;
+	return (
+		<Stack gap="3">
+			<Text fontSize="14px" fontWeight="550">
+				Post performance
+			</Text>
+			{performance.measuredVideos > 0 ? (
+				<Text fontSize="13px" color="fg.muted">
+					{describeCounts(performance.totals)} across {performance.measuredVideos}{" "}
+					{performance.measuredVideos === 1 ? "measured video" : "measured videos"}
+				</Text>
+			) : null}
+			<Box overflowX="auto">
+				<Stack gap="1.5" minW="640px">
+					{published.map((post) => {
+						const counts = post.latestMetrics;
+						return (
+							<Grid
+								key={post.socialPostId}
+								templateColumns={`minmax(180px, 1fr) 120px repeat(${POST_COUNT_COLUMNS.length}, 84px)`}
+								alignItems="center"
+								bg="bg.subtle"
+								borderRadius="l2"
+								px="4"
+								py="3"
+							>
+								<Text fontSize="13px" truncate>
+									{(post.clipId && titles.get(post.clipId)) ?? "Removed clip"}
+								</Text>
+								<Text fontSize="13px" color="fg.muted" truncate>
+									{SOCIAL_PLATFORM_LABELS[post.platform]}
+								</Text>
+								{counts ? (
+									POST_COUNT_COLUMNS.map(([key]) => (
+										<Text
+											key={key}
+											fontSize="13px"
+											fontVariantNumeric="tabular-nums"
+											textAlign="right"
+											color={counts[key] === null ? "fg.subtle" : "fg"}
+										>
+											{counts[key] === null ? "–" : formatCount(counts[key])}
+										</Text>
+									))
+								) : (
+									<Text
+										gridColumn={`3 / span ${POST_COUNT_COLUMNS.length}`}
+										fontSize="12px"
+										color="fg.subtle"
+										textAlign="right"
+									>
+										{performanceSyncAvailable(post.platform)
+											? "First reading about an hour after posting"
+											: "Not measured on this platform"}
+									</Text>
+								)}
+							</Grid>
+						);
+					})}
+				</Stack>
+			</Box>
+			<Text fontSize="12px" color="fg.subtle">
+				Counts come from YouTube Shorts and TikTok at about 1 hour, 24 hours, 3 days, 7 days and 28 days
+				after posting.
+			</Text>
+		</Stack>
+	);
+}
 
 export function AnalyticsPanel({
 	analytics,
@@ -166,6 +261,8 @@ export function AnalyticsPanel({
 					</MetricCard>
 				</Grid>
 			</Stack>
+
+			<PostPerformance performance={analytics.postPerformance} titles={titles} />
 
 			{clipRows.length > 0 ? (
 				<Box overflowX="auto">

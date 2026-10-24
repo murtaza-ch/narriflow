@@ -1,0 +1,147 @@
+{
+    "fileVersion": 1,
+    "generalCodeFiles": {
+        "base": "general/base.iml.json",
+        "common": "general/common.json",
+        "readme": "README.md",
+        "groups": "modules/groups.json"
+    },
+    "components": {
+        "connection": {
+            "narriflow": {
+                "label": "Narriflow",
+                "connectionType": "basic",
+                "codeFiles": {
+                    "communication": "connections/narriflow/narriflow.communication.iml.json",
+                    "params": "connections/narriflow/narriflow.params.iml.json",
+                    "common": "connections/narriflow/narriflow.common.json"
+                }
+            }
+        },
+        "rpc": {
+            "listBrandProfiles": {
+                "label": "List Brand Profiles",
+                "connection": "narriflow",
+                "codeFiles": {
+                    "communication": "rpcs/list-brand-profiles/list-brand-profiles.communication.iml.json",
+                    "params": "rpcs/list-brand-profiles/list-brand-profiles.params.iml.json"
+                }
+            },
+            "listSocialAccounts": {
+                "label": "List Social Accounts",
+                "connection": "narriflow",
+                "codeFiles": {
+                    "communication": "rpcs/list-social-accounts/list-social-accounts.communication.iml.json",
+                    "params": "rpcs/list-social-accounts/list-social-accounts.params.iml.json"
+                }
+            }
+        },
+        "module": {
+            "watchEvents": {
+                "label": "Watch events",
+                "description": "Triggers when an event occurs in the Workspace, such as clips ready, an export finished, or a social post published.",
+                "moduleType": "trigger",
+                "connection": "narriflow",
+                "codeFiles": {
+                    "communication": "modules/watch-events/watch-events.communication.iml.json",
+                    "epoch": "modules/watch-events/watch-events.epoch.iml.json",
+                    "staticParams": "modules/watch-events/watch-events.static-params.iml.json",
+                    "mappableParams": "modules/watch-events/watch-events.mappable-params.iml.json",
+                    "interface": "modules/watch-events/watch-events.interface.iml.json",
+                    "samples": "modules/watch-events/watch-events.samples.iml.json"
+                }
+            },
+            "submitVideoLink": {
+                "label": "Submit a video link",
+                "description": "Imports a video from a link and generates clips. Uses processing minutes from the Workspace.",
+                "moduleType": "action",
+                "actionCrud": "create",
+                "connection": "narriflow",
+                "codeFiles": {
+                    "communication": "modules/submit-video-link/submit-video-link.communication.iml.json",
+                    "staticParams": "modules/submit-video-link/submit-video-link.static-params.iml.json",
+                    "mappableParams": "modules/submit-video-link/submit-video-link.mappable-params.iml.json",
+                    "interface": "modules/submit-video-link/submit-video-link.interface.iml.json",
+                    "samples": "modules/submit-video-link/submit-video-link.samples.iml.json"
+                }
+            },
+            "generateClips": {
+                "label": "Generate clips",
+                "description": "Generates clips for an imported project. Uses processing minutes from the Workspace.",
+                "moduleType": "action",
+                "actionCrud": "create",
+                "connection": "narriflow",
+                "codeFiles": {
+                    "communication": "modules/generate-clips/generate-clips.communication.iml.json",
+                    "staticParams": "modules/generate-clips/generate-clips.static-params.iml.json",
+                    "mappableParams": "modules/generate-clips/generate-clips.mappable-params.iml.json",
+                    "interface": "modules/generate-clips/generate-clips.interface.iml.json",
+                    "samples": "modules/generate-clips/generate-clips.samples.iml.json"
+                }
+            },
+            "exportClip": {
+                "label": "Export a clip",
+                "description": "Exports a clip as it is now, in the formats you choose. Watch events for the export to finish.",
+                "moduleType": "action",
+                "actionCrud": "create",
+                "connection": "narriflow",
+                "codeFiles": {
+                    "communication": "modules/export-clip/export-clip.communication.iml.json",
+                    "staticParams": "modules/export-clip/export-clip.static-params.iml.json",
+                    "mappableParams": "modules/export-clip/export-clip.mappable-params.iml.json",
+                    "interface": "modules/export-clip/export-clip.interface.iml.json",
+                    "samples": "modules/export-clip/export-clip.samples.iml.json"
+                }
+            },
+            "proposeSocialPost": {
+                "label": "Propose a social post",
+                "description": "Adds a clip to a social account's Publishing Queue as a draft. Nothing is published until a person accepts it in Narriflow.",
+                "moduleType": "action",
+                "actionCrud": "create",
+                "connection": "narriflow",
+                "codeFiles": {
+                    "communication": "modules/propose-social-post/propose-social-post.communication.iml.json",
+                    "staticParams": "modules/propose-social-post/propose-social-post.static-params.iml.json",
+                    "mappableParams": "modules/propose-social-post/propose-social-post.mappable-params.iml.json",
+                    "interface": "modules/propose-social-post/propose-social-post.interface.iml.json",
+                    "samples": "modules/propose-social-post/propose-social-post.samples.iml.json"
+                }
+            },
+            "getExportDownload": {
+                "label": "Get export download",
+                "description": "Returns fresh download links and subtitles for a finished export, one bundle for each ready format. The links expire after 15 minutes.",
+                "moduleType": "search",
+                "connection": "narriflow",
+                "codeFiles": {
+                    "communication": "modules/get-export-download/get-export-download.communication.iml.json",
+                    "staticParams": "modules/get-export-download/get-export-download.static-params.iml.json",
+                    "mappableParams": "modules/get-export-download/get-export-download.mappable-params.iml.json",
+                    "interface": "modules/get-export-download/get-export-download.interface.iml.json",
+                    "samples": "modules/get-export-download/get-export-download.samples.iml.json"
+                }
+            },
+            "makeAnApiCall": {
+                "label": "Make an API call",
+                "description": "Performs an arbitrary authorized API call.",
+                "moduleType": "universal",
+                "connection": "narriflow",
+                "codeFiles": {
+                    "communication": "modules/make-an-api-call/make-an-api-call.communication.iml.json",
+                    "staticParams": "modules/make-an-api-call/make-an-api-call.static-params.iml.json",
+                    "mappableParams": "modules/make-an-api-call/make-an-api-call.mappable-params.iml.json",
+                    "interface": "modules/make-an-api-call/make-an-api-call.interface.iml.json",
+                    "samples": "modules/make-an-api-call/make-an-api-call.samples.iml.json"
+                }
+            }
+        }
+    },
+    "origins": [
+        {
+            "label": "Narriflow (set appId after creating the app in Make)",
+            "baseUrl": "https://eu1.make.com/api",
+            "appId": "narriflow-CHANGE-ME",
+            "appVersion": 1,
+            "apikeyFile": ".secrets/apikey"
+        }
+    ]
+}

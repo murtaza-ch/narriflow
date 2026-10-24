@@ -269,6 +269,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			activeRun: null,
 			lastSeq: 0,
 			ingestAttemptCount: 0,
+			ingestJobType: null,
 		};
 		expect(
 			await projectService.getProjectAccess(foreignScope, created.id),

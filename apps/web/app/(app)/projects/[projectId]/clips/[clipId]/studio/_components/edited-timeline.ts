@@ -17,7 +17,7 @@ import {
 // `buildEditedTimeMap` helper (packages/validators/src/edit-ranges.ts)
 // rather than reimplementing range math. The sliver-drop policy now comes
 // from the SAME shared `MIN_KEPT_SEGMENT_SEC` export the worker's
-// `buildClipCutPlan` (apps/worker/src/tasks/cut-plan.ts) uses, instead of a
+// `buildClipCutPlan` (packages/validators/src/edit-ranges.ts) uses, instead of a
 // hand-duplicated local constant — the two could drift out of lockstep
 // before (e.g. counting a sub-100ms sliver the worker would drop), which
 // would silently desync the preview's displayed/played duration from what
@@ -56,7 +56,7 @@ function roundMs(value: number): number {
  * source segments and edited-timeline duration implied by `deletedRanges`
  * within the clip's own `[startSec, endSec)` window, after dropping any
  * sub-50ms sliver segments — mirrors
- * apps/worker/src/tasks/cut-plan.ts's `buildClipCutPlan`.
+ * packages/validators/src/edit-ranges.ts's `buildClipCutPlan`.
  */
 export function buildStudioCutPlan(
   deletedRanges: SourceRange[],
@@ -77,7 +77,7 @@ export function buildStudioCutPlan(
   }
 
   const rawMap = buildEditedTimeMap(deletedRanges, window);
-  // Slack-tolerant comparison — mirrors apps/worker/src/tasks/cut-plan.ts's
+  // Slack-tolerant comparison — mirrors packages/validators/src/edit-ranges.ts's
   // own `MIN_KEPT_SEGMENT_SEC - FLOAT_SLACK` expression exactly. A plain
   // `>= MIN_KEPT_SEGMENT_SEC` fails at the exact threshold (10.1 - 10 ===
   // 0.09999999999999964 in IEEE-754, not 0.1), which would silently drop a

@@ -22,6 +22,8 @@ interface BrandTemplatePickerProps {
   }>;
   profileValue?: string | null;
   onProfileChange?: (id: string | null) => void;
+  /** Hides the style preset: the intake applies the profile's default style. */
+  profileOnly?: boolean;
 }
 
 export function BrandTemplatePicker({
@@ -32,6 +34,7 @@ export function BrandTemplatePicker({
   profiles = [],
   profileValue = null,
   onProfileChange = () => undefined,
+  profileOnly = false,
 }: BrandTemplatePickerProps) {
   const activeProfile = profiles.find((profile) => profile.id === profileValue) ?? null;
   const profileTemplateIds = new Set(activeProfile?.templates.map((template) => template.id) ?? []);
@@ -85,19 +88,21 @@ export function BrandTemplatePicker({
           placeholder="Select Brand Profile"
           size="sm"
         />
-        <Select
-          items={items}
-          value={value ?? SYSTEM_DEFAULT_VALUE}
-          onValueChange={(next) =>
-            onChange(next && next !== SYSTEM_DEFAULT_VALUE ? next : null)
-          }
-          ariaLabel="Brand template"
-          placeholder="Select style preset"
-          size="sm"
-        />
+        {!profileOnly && (
+          <Select
+            items={items}
+            value={value ?? SYSTEM_DEFAULT_VALUE}
+            onValueChange={(next) =>
+              onChange(next && next !== SYSTEM_DEFAULT_VALUE ? next : null)
+            }
+            ariaLabel="Brand template"
+            placeholder="Select style preset"
+            size="sm"
+          />
+        )}
       </Flex>
 
-      {value && (
+      {value && !profileOnly && (
         <BrandTemplatePreview
           template={allOptions.find((t) => t.id === value) ?? null}
         />

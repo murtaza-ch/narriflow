@@ -1,0 +1,166 @@
+---
+title: Webhooks
+description: Have Narriflow send each event in your Workspace to a URL as a signed POST, in order, using the Standard Webhooks format.
+---
+
+A webhook delivers the [event feed](/docs/api/events) to a URL you choose. Narriflow sends every matching event as one signed `POST`, in the order the feed lists them, and keeps trying until your server answers `2xx`. Events carry IDs only. When one arrives, call the API for the project, clips or files.
+
+Use a webhook for work no request of yours started, such as an Autopilot import. For the result of one request, a [completion callback](/docs/api/callbacks) is simpler.
+
+<Steps>
+  <Step title="Create the signing secret">
+    Webhooks use the same signing secret as callbacks. In **Settings → Developer access**, select **Create secret** and copy the `whsec_…` value. Without a secret, creating a webhook returns `409 callback_secret_required`.
+  </Step>
+  <Step title="Add the webhook">
+    Select **Add webhook** in **Settings → Developer access**, or call `POST /webhooks`. The URL must be public HTTPS on port 443 and at most 2,048 characters. A Workspace can have 10 webhooks, one per URL.
+
+    <CodeGroup>
+
+    ```typescript TypeScript
+    const response = await fetch("https://app.narriflow.com/api/v1/webhooks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.NARRIFLOW_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://hooks.example.com/narriflow",
+        types: ["operation.finished", "autopilot.episode_imported"],
+      }),
+    });
+    const { webhook } = (await response.json()) as { webhook: { webhookId: string } };
+    ```
+
+    ```bash curl
+    curl -X POST https://app.narriflow.com/api/v1/webhooks \
+      -H "Authorization: Bearer $NARRIFLOW_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"url":"https://hooks.example.com/narriflow","types":["operation.finished"]}'
+    ```
+
+    </CodeGroup>
+
+    The key needs the `processing:write` scope. `social_post.proposed` and `social_post.finished` also need `publishing:read`.
+  </Step>
+  <Step title="Send a test event">
+    `POST /webhooks/{id}/test` sends one `webhook.test` event now and returns your server's HTTP status. Test events are not part of the feed and don't move the webhook forward. A webhook takes one test every 5 seconds; a second one sooner returns `429 webhook_test_throttled`.
+  </Step>
+</Steps>
+
+A new webhook starts at the newest event. To read earlier ones, use `GET /events`.
+
+## The event
+
+The body is the feed's event plus the Workspace ID.
+
+```json
+{
+  "id": "5b1c3a52-9f0e-4d6a-8c1b-2e7d4f9a0b13",
+  "seq": 42,
+  "type": "operation.finished",
+  "version": 1,
+  "occurredAt": "2026-10-24T12:00:00.000Z",
+  "workspaceId": "00000000-0000-4000-8000-000000000002",
+  "subject": {
+    "operation": { "kind": "generation", "id": "op_…" },
+    "projectId": "00000000-0000-4000-8000-000000000004",
+    "state": "completed"
+  }
+}
+```
+
+The `type` values, and the `subject` of each, are listed under [Event types](/docs/api/events#event-types). `webhook.test` has `seq` `0` and an empty `subject`.
+
+## Verify a webhook
+
+Each delivery carries `webhook-id` (the event `id`), `webhook-timestamp` and `webhook-signature` headers, signed with your Workspace's signing secret. Verification is the same as for callbacks. Use a [Standard Webhooks library or the Node.js example](/docs/api/callbacks#verify-a-callback) with the raw request body.
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Webhook } from "standardwebhooks"; // npm install standardwebhooks
+
+interface NarriflowEvent {
+  id: string;
+  seq: number;
+  type: string;
+  subject: Record<string, unknown>;
+}
+
+const webhook = new Webhook(process.env.NARRIFLOW_CALLBACK_SECRET!); // whsec_…
+const handled = new Set<string>(); // Use a database in production.
+
+export async function POST(request: Request): Promise<Response> {
+  const body = await request.text();
+  let event: NarriflowEvent;
+  try {
+    event = webhook.verify(body, {
+      "webhook-id": request.headers.get("webhook-id") ?? "",
+      "webhook-timestamp": request.headers.get("webhook-timestamp") ?? "",
+      "webhook-signature": request.headers.get("webhook-signature") ?? "",
+    }) as NarriflowEvent;
+  } catch {
+    return new Response("Invalid signature", { status: 400 });
+  }
+  if (event.type !== "webhook.test" && !handled.has(event.id)) {
+    handled.add(event.id);
+    // Call the API for the project, clips or files named in event.subject.
+  }
+  return new Response(null, { status: 204 });
+}
+```
+
+```python Python
+import os
+
+from flask import Flask, request
+from standardwebhooks import Webhook, WebhookVerificationError  # pip install standardwebhooks
+
+webhook = Webhook(os.environ["NARRIFLOW_CALLBACK_SECRET"])  # whsec_…
+app = Flask(__name__)
+handled: set[str] = set()  # Use a database in production.
+
+
+@app.post("/narriflow")
+def narriflow():
+    try:
+        event = webhook.verify(request.get_data(), dict(request.headers))
+    except WebhookVerificationError:
+        return "Invalid signature", 400
+    if event["type"] != "webhook.test" and event["id"] not in handled:
+        handled.add(event["id"])
+        # Call the API for the project, clips or files named in event["subject"].
+    return "", 204
+```
+
+</CodeGroup>
+
+Answer quickly and do the real work afterwards. Narriflow waits 10 seconds for an answer.
+
+## Ordering and duplicates
+
+- **In order.** Narriflow sends a webhook's events one at a time in `seq` order. It sends the next one only after your server answers `2xx` for the current one. A slow or failing endpoint delays the events behind it, and never reorders them.
+- **At least once.** If your server answers `2xx` and the answer is lost, Narriflow sends that event again with the same `id`. Keep the IDs you have handled and skip repeats.
+- **One webhook, one stream.** Each webhook has its own position in the feed. Two webhooks never affect each other.
+
+## Retries and disabling
+
+Any answer other than `2xx`, including a timeout, counts as a failure. Narriflow retries the same event after about 30 seconds, 2 minutes, 10 minutes, 30 minutes, 1 hour, 3 hours, 6 hours, 12 hours and then every 24 hours, each varied by up to 20 percent, and signs every attempt with a fresh timestamp. Redirects are not followed.
+
+A webhook is disabled, and Narriflow emails the person who created it, when:
+
+| `disabledReason` | When |
+| --- | --- |
+| `consecutive_failures` | 20 deliveries in a row failed. A success resets the count. |
+| `endpoint_gone` | Your server answered `410 Gone`. |
+| `cursor_expired` | Delivery fell more than 30 days behind, so events expired before they were sent. |
+
+`GET /webhooks` shows each webhook's `status`, `disabledReason`, `lastDeliveredSeq`, `consecutiveFailures`, `lastAttemptAt`, `lastResponseStatus` and `lastDeliveredAt`. It never returns the URL, only its host.
+
+To resume, fix the endpoint and select **Re-enable** in Settings, or call `POST /webhooks/{id}/enable`. Delivery continues from the last event you acknowledged. Events older than 30 days are gone, so if the webhook was disabled that long, it continues from the oldest event Narriflow still keeps. To find what you missed, re-sync from the list endpoints.
+
+To change a webhook's URL or event types, delete it and create a new one with `DELETE /webhooks/{id}`.
+
+<Warning>
+  Anyone who holds the signing secret can verify, and forge, events for the whole Workspace. Rotating it works as it does for [callbacks](/docs/api/callbacks#rotate-the-secret): for 24 hours each delivery carries both signatures.
+</Warning>

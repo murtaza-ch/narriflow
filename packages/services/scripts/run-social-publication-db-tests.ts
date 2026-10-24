@@ -78,7 +78,12 @@ try {
 			"bun",
 			"test",
 			"packages/services/src/social-publication.db.test.ts",
+			"packages/services/src/publishing-queue.db.test.ts",
+			"packages/services/src/standing-grant.db.test.ts",
 			"packages/services/src/social-post-history.db.test.ts",
+			"packages/services/src/performance-sync.db.test.ts",
+			"packages/services/src/performance-guidance.db.test.ts",
+			"packages/services/src/social-oauth-refresh.db.test.ts",
 			...process.argv.slice(2),
 		],
 		{

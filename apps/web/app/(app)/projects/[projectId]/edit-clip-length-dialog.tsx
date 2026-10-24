@@ -29,14 +29,14 @@ import { Crop, Play, Search, X } from "lucide-react";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { Switch } from "@narriflow/ui/components/switch";
 import {
+  clipDurationBounds,
+  clipDurationWithinBounds,
   splitUtterancesIntoSentences,
   userErrorMessage,
   type ClipAspectRatio,
   type TranscriptUtterance,
 } from "@narriflow/validators";
 
-const MIN_DURATION_SEC = 10;
-const MAX_DURATION_SEC = 120;
 /** Word gaps at or above this render as an inline silence chip, mirroring the
  *  transcript's real pauses so users can end a clip on a natural break. */
 const SILENCE_CHIP_MIN_SEC = 0.5;
@@ -237,6 +237,8 @@ export function EditClipLengthDialog(props: {
   clipTitle: string | null;
   initialStartSec: number;
   initialEndSec: number;
+  /** The clip is its whole source, so its length bounds are `clipDurationBounds(true)`. */
+  wholeSource: boolean;
   /** Presigned source video; null once the source is purged — the player
    *  pane hides and the dialog stays transcript-only. */
   sourceVideoUrl: string | null;
@@ -307,8 +309,8 @@ export function EditClipLengthDialog(props: {
         }
       : null;
   const durationSec = selection ? selection.endSec - selection.startSec : 0;
-  const durationValid =
-    durationSec >= MIN_DURATION_SEC && durationSec <= MAX_DURATION_SEC;
+  const { minSec: MIN_DURATION_SEC, maxSec: MAX_DURATION_SEC } = clipDurationBounds(props.wholeSource);
+  const durationValid = clipDurationWithinBounds(durationSec, props.wholeSource, 0);
 
   // Editable timecode fields — track selection except while being edited.
   const [startInput, setStartInput] = useState("");

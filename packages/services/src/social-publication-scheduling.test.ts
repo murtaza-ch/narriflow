@@ -12,6 +12,7 @@ import {
 	publicationIntentHash,
 } from "./social-publication-scheduling";
 import { AssistedSocialCopyError } from "./assisted-social-copy";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
 
 const readyState: FrozenPublicationState = {
 	clipExportId: "export-1",
@@ -367,13 +368,13 @@ test("immediate admission survives elapsed queue time while scheduled admission 
 	expect(await scheduling.schedule(immediate)).toEqual(admitted);
 });
 
-function policyHarness(ports: Partial<PublicationFreezePorts> = {}) {
+function policyHarness(ports: Partial<PublicationFreezePorts> = {}, review: typeof authorizeReview = authorizeReview) {
 	let authorizations = 0;
 	const store = createInMemoryPublicationSchedulingStore();
 	const module = createSocialPublicationScheduling({
 		store,
 		authorize: async () => { authorizations += 1; return actor; },
-		authorizeReview,
+		authorizeReview: review,
 		freezePorts: makePorts(ports),
 		createId: () => "social-post-1",
 		now: () => new Date("2026-08-28T10:00:00.000Z"),
@@ -512,5 +513,62 @@ describe("publication freeze policy through admission", () => {
 	test("hashes raw selections and canonical settings without enrichment reads", () => {
 		expect(publicationIntentHash({ ...baseInput, providerSettings: { a: 1, b: 2 } })).toBe(publicationIntentHash({ ...baseInput, providerSettings: { b: 2, a: 1 } }));
 		expect(publicationIntentHash(baseInput)).not.toBe(publicationIntentHash({ ...baseInput, assistedCopyVariantId: "copy" }));
+	});
+});
+
+describe("Publishing Queue admission", () => {
+	const weekdayNine = (occupied: ReadonlySet<number>, after: Date) => {
+		// Every UTC day at 09:00 stands in for the account's schedule.
+		for (let day = 0; day < 30; day += 1) {
+			const slot = new Date(Date.UTC(after.getUTCFullYear(), after.getUTCMonth(), after.getUTCDate() + day, 9));
+			if (slot > after && !occupied.has(slot.getTime())) return slot;
+		}
+		return null;
+	};
+
+	test("a queued request hashes the same whatever time its placeholder carries", () => {
+		const queued = { ...baseInput, slotQueue: { accountId: "account-1", pick: weekdayNine } };
+		expect(publicationIntentHash(queued)).toBe(publicationIntentHash({ ...queued, scheduledFor: new Date("2031-01-01T00:00:00.000Z") }));
+		expect(publicationIntentHash(queued)).not.toBe(publicationIntentHash(baseInput));
+		expect(publicationIntentHash({ ...queued, proposalId: "proposal-1" })).not.toBe(publicationIntentHash(queued));
+	});
+
+	test("two admissions on one account take different slots, and a retry keeps its own", async () => {
+		const store = createInMemoryPublicationSchedulingStore();
+		let ids = 0;
+		const module = createSocialPublicationScheduling({
+			store,
+			authorize: async () => actor,
+			authorizeReview,
+			freezePorts: makePorts(),
+			createId: () => `post-${++ids}`,
+			now: () => new Date("2026-08-28T10:00:00.000Z"),
+		});
+		const queued = (key: string) => ({ ...baseInput, clientIdempotencyKey: key, scheduledFor: new Date(), slotQueue: { accountId: "account-1", pick: weekdayNine } });
+		const [first, second] = await Promise.all([module.schedule(queued("accept-1")), module.schedule(queued("accept-2"))]);
+		expect(new Set([first.frozen.scheduledFor.toISOString(), second.frozen.scheduledFor.toISOString()]).size).toBe(2);
+		for (const post of [first, second]) expect(post.frozen.scheduledFor.getUTCHours()).toBe(9);
+		// A retry after a lost response finds the post it made, not a third slot.
+		expect((await module.schedule(queued("accept-1"))).frozen.scheduledFor).toEqual(first.frozen.scheduledFor);
+		expect(await store.count()).toBe(2);
+	});
+
+	test("a queued admission is not refused for a placeholder time in the past", async () => {
+		const h = policyHarness();
+		const post = await h.module.schedule({ ...baseInput, scheduledFor: new Date("2020-01-01T00:00:00.000Z"), slotQueue: { accountId: "account-1", pick: weekdayNine } });
+		expect(post.status).toBe("scheduled");
+		await expect(h.module.schedule({ ...baseInput, clientIdempotencyKey: "plain", scheduledFor: new Date("2020-01-01T00:00:00.000Z") })).rejects.toMatchObject({ code: "publication_schedule_in_past" });
+	});
+
+	test("an account with no slot left refuses the admission", async () => {
+		const h = policyHarness();
+		await expect(h.module.schedule({ ...baseInput, slotQueue: { accountId: "account-1", pick: () => null } })).rejects.toMatchObject({ code: "posting_schedule_exhausted" });
+		expect(await h.store.count()).toBe(0);
+	});
+
+	test("the Brand Profile approval gate still decides, and refusal leaves nothing behind", async () => {
+		const h = policyHarness({}, async () => { throw new ExpectedDomainFailureError({ code: "review_approval_required", kind: "conflict", message: "Client approval is required" }); });
+		await expect(h.module.schedule({ ...baseInput, slotQueue: { accountId: "account-1", pick: weekdayNine } })).rejects.toMatchObject({ code: "review_approval_required" });
+		expect(await h.store.count()).toBe(0);
 	});
 });

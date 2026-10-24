@@ -99,10 +99,36 @@ async function readIntentByKey(
 	});
 }
 
+/** The rows the Social Post store writes when it freezes an intent. */
+function frozenStateData(candidate: PublicationIntent) {
+	return {
+		clipExportId: candidate.frozen.clipExportId,
+		clipExportVariantId: candidate.frozen.clipExportVariantId,
+		socialAccountId: candidate.frozen.socialAccountId,
+		platform: candidate.frozen.platform,
+		editorRevision: candidate.frozen.editorRevision,
+		exportFingerprint: candidate.frozen.exportFingerprint,
+		storageKey: candidate.frozen.storageKey,
+		sizeBytes: candidate.frozen.sizeBytes,
+		durationSec: candidate.frozen.durationSec,
+		aspectRatio: clipAspectRatioToDb[candidate.frozen.aspectRatio],
+		caption: candidate.frozen.caption,
+		deliveryMode: candidate.frozen.deliveryMode ?? "direct",
+		providerSettings: candidate.frozen.providerSettings,
+		capabilityVersion: candidate.frozen.capabilityVersion,
+		scheduledFor: candidate.frozen.scheduledFor,
+		mediaReadyAt: candidate.submissionEligible ? candidate.createdAt : null,
+	};
+}
+
+/** A draft is a Proposal waiting for acceptance, not an admitted intent. Its
+ * key belongs to the proposal, so only that proposal's acceptance may use it. */
+const isAdmitted = (row: { status: string }) => row.status !== "draft";
+
 export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 	async readByKey(workspaceId, clientIdempotencyKey) {
 		const row = await readIntentByKey(workspaceId, clientIdempotencyKey);
-		return row ? toPublicationIntent(row) : null;
+		return row && isAdmitted(row) ? toPublicationIntent(row) : null;
 	},
 
 	async open(input) {
@@ -110,11 +136,14 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 			input.workspaceId,
 			input.clientIdempotencyKey,
 		);
-		if (existing) {
+		if (existing && isAdmitted(existing)) {
 			if (existing.immutableRequestHash !== input.immutableRequestHash) {
 				throw new PublicationIntentConflictError();
 			}
 			return toPublicationIntent(existing);
+		}
+		if (existing && existing.id !== input.proposalId) {
+			throw new PublicationIntentConflictError();
 		}
 
 		try {
@@ -130,57 +159,104 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 						},
 						include: publicationIntentInclude,
 					});
-					if (replay) {
+					if (replay && isAdmitted(replay)) {
 						if (replay.immutableRequestHash !== input.immutableRequestHash) {
 							throw new PublicationIntentConflictError();
 						}
 						return replay;
 					}
+					if (replay && replay.id !== input.proposalId) {
+						throw new PublicationIntentConflictError();
+					}
 
-					const row = await tx.socialPost.create({
-						data: {
-							id: candidate.id,
-							workspaceId: candidate.workspaceId,
-							createdByUserId: candidate.createdByUserId,
-							projectId: candidate.projectId,
-							clipId: candidate.clipId,
-							socialAccountId: candidate.frozen.socialAccountId,
-							platform: candidate.frozen.platform,
-							status: candidate.status,
-							clientIdempotencyKey: candidate.clientIdempotencyKey,
-							immutableRequestHash: candidate.immutableRequestHash,
-							caption: candidate.frozen.caption,
-							deliveryMode: candidate.frozen.deliveryMode ?? "direct",
-							aspectRatio: clipAspectRatioToDb[candidate.frozen.aspectRatio],
-							scheduledFor: candidate.frozen.scheduledFor,
-							metadata: candidate.frozen.providerSettings,
-							reviewApprovalOverrideId: candidate.reviewApprovalOverrideId,
-							frozenState: {
-								create: {
-									clipExportId: candidate.frozen.clipExportId,
-									clipExportVariantId: candidate.frozen.clipExportVariantId,
-									socialAccountId: candidate.frozen.socialAccountId,
-									platform: candidate.frozen.platform,
-									editorRevision: candidate.frozen.editorRevision,
-									exportFingerprint: candidate.frozen.exportFingerprint,
-									storageKey: candidate.frozen.storageKey,
-									sizeBytes: candidate.frozen.sizeBytes,
-									durationSec: candidate.frozen.durationSec,
-									aspectRatio:
-										clipAspectRatioToDb[candidate.frozen.aspectRatio],
-									caption: candidate.frozen.caption,
-									deliveryMode: candidate.frozen.deliveryMode ?? "direct",
-									providerSettings: candidate.frozen.providerSettings,
-									capabilityVersion: candidate.frozen.capabilityVersion,
-									scheduledFor: candidate.frozen.scheduledFor,
-									mediaReadyAt: candidate.submissionEligible
-										? candidate.createdAt
-										: null,
-								},
+					let granted: { revision: number } | null = null;
+					if (input.slotQueue) {
+						// Lock the account, then read what it occupies and choose the slot, so
+						// a second admission waits here and sees this post once it commits.
+						// NO KEY UPDATE still lets this transaction's own foreign keys to the
+						// account row (KEY SHARE) through.
+						await tx.$queryRaw`SELECT "id" FROM "SocialAccount" WHERE "id" = ${input.slotQueue.accountId}::uuid FOR NO KEY UPDATE`;
+						// A grant's caps are counted under this same lock, so two admissions can't both take the last place.
+						if (input.slotQueue.grant) granted = await input.slotQueue.grant.admit(tx);
+						const taken = await tx.socialPost.findMany({
+							where: {
+								socialAccountId: input.slotQueue.accountId,
+								scheduledFor: { gt: new Date() },
+								status: { notIn: ["draft", "cancelled", "failed"] },
 							},
-						},
-						include: publicationIntentInclude,
-					});
+							select: { scheduledFor: true },
+						});
+						const slot = input.slotQueue.pick(
+							new Set(taken.flatMap((post) => (post.scheduledFor ? [post.scheduledFor.getTime()] : []))),
+							new Date(),
+						);
+						if (!slot) {
+							throw new PublicationIntentStateError(
+								"posting_schedule_exhausted",
+								"The posting schedule has no free slot left",
+							);
+						}
+						candidate.frozen.scheduledFor = slot;
+					}
+
+					let row: PublicationIntentRow;
+					if (input.proposalId) {
+						// Accepting converts the proposal's own Social Post, so its ID stays the
+						// identity everyone was given. The caption read before the lock must still
+						// be the draft's, or a person's edit made meanwhile would be lost.
+						const converted = await tx.socialPost.updateMany({
+							where: { id: input.proposalId, workspaceId: input.workspaceId, status: "draft", caption: candidate.frozen.caption },
+							data: {
+								status: candidate.status,
+								clientIdempotencyKey: candidate.clientIdempotencyKey,
+								immutableRequestHash: candidate.immutableRequestHash,
+								deliveryMode: candidate.frozen.deliveryMode ?? "direct",
+								aspectRatio: clipAspectRatioToDb[candidate.frozen.aspectRatio],
+								scheduledFor: candidate.frozen.scheduledFor,
+								metadata: candidate.frozen.providerSettings,
+								reviewApprovalOverrideId: candidate.reviewApprovalOverrideId,
+								...(granted && input.slotQueue?.grant ? { standingGrantId: input.slotQueue.grant.id, standingGrantRevision: granted.revision } : {}),
+							},
+						});
+						if (converted.count === 0) {
+							const current = await tx.socialPost.findFirst({
+								where: { id: input.proposalId, workspaceId: input.workspaceId },
+								select: { status: true },
+							});
+							throw current?.status === "draft"
+								? new PublicationIntentStateError("social_proposal_changed", "The caption changed while it was being accepted. Review it and accept again")
+								: new PublicationIntentStateError("social_proposal_unavailable", "This proposal was already accepted or rejected");
+						}
+						await tx.frozenPublicationState.create({ data: { socialPostId: input.proposalId, ...frozenStateData(candidate) } });
+						await tx.socialPostProposal.update({
+							where: { socialPostId: input.proposalId },
+							data: { acceptedAt: new Date(), acceptedByUserId: candidate.createdByUserId },
+						});
+						row = await tx.socialPost.findUniqueOrThrow({ where: { id: input.proposalId }, include: publicationIntentInclude });
+					} else {
+						row = await tx.socialPost.create({
+							data: {
+								id: candidate.id,
+								workspaceId: candidate.workspaceId,
+								createdByUserId: candidate.createdByUserId,
+								projectId: candidate.projectId,
+								clipId: candidate.clipId,
+								socialAccountId: candidate.frozen.socialAccountId,
+								platform: candidate.frozen.platform,
+								status: candidate.status,
+								clientIdempotencyKey: candidate.clientIdempotencyKey,
+								immutableRequestHash: candidate.immutableRequestHash,
+								caption: candidate.frozen.caption,
+								deliveryMode: candidate.frozen.deliveryMode ?? "direct",
+								aspectRatio: clipAspectRatioToDb[candidate.frozen.aspectRatio],
+								scheduledFor: candidate.frozen.scheduledFor,
+								metadata: candidate.frozen.providerSettings,
+								reviewApprovalOverrideId: candidate.reviewApprovalOverrideId,
+								frozenState: { create: frozenStateData(candidate) },
+							},
+							include: publicationIntentInclude,
+						});
+					}
 					await tx.projectAnalyticsEvent.create({
 						data: {
 							projectId: candidate.projectId,
@@ -210,14 +286,21 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 					}
 					return row;
 				},
-				{ isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+				// A queued admission waits on the account lock and must then see the
+				// post that held it. A serializable snapshot, taken before the wait,
+				// would not, so it reads committed rows instead.
+				{
+					isolationLevel: input.slotQueue
+						? Prisma.TransactionIsolationLevel.ReadCommitted
+						: Prisma.TransactionIsolationLevel.Serializable,
+				},
 			);
 			return toPublicationIntent(created);
 		} catch (error) {
 			// Another admission can commit while this request reads mutable facts.
 			// Resolve its durable identity before reporting any rejection or loss.
 			const replay = await readIntentByKey(input.workspaceId, input.clientIdempotencyKey);
-			if (replay) {
+			if (replay && isAdmitted(replay)) {
 				if (replay.immutableRequestHash !== input.immutableRequestHash) throw new PublicationIntentConflictError();
 				return toPublicationIntent(replay);
 			}
@@ -230,7 +313,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 			where: { id: postId, workspaceId },
 			include: publicationIntentInclude,
 		});
-		return row ? toPublicationIntent(row) : null;
+		return row && isAdmitted(row) ? toPublicationIntent(row) : null;
 	},
 
 	async cancel(input) {

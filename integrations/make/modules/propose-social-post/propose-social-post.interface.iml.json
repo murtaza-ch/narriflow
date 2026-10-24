@@ -1,0 +1,57 @@
+[
+    {
+        "name": "proposalId",
+        "type": "text",
+        "label": "Proposal ID"
+    },
+    {
+        "name": "projectId",
+        "type": "text",
+        "label": "Project ID"
+    },
+    {
+        "name": "clipId",
+        "type": "text",
+        "label": "Clip ID"
+    },
+    {
+        "name": "socialAccountId",
+        "type": "text",
+        "label": "Social account ID"
+    },
+    {
+        "name": "platform",
+        "type": "text",
+        "label": "Platform"
+    },
+    {
+        "name": "caption",
+        "type": "text",
+        "label": "Caption"
+    },
+    {
+        "name": "source",
+        "type": "text",
+        "label": "Source"
+    },
+    {
+        "name": "exportId",
+        "type": "text",
+        "label": "Export ID"
+    },
+    {
+        "name": "aspectRatio",
+        "type": "text",
+        "label": "Format"
+    },
+    {
+        "name": "queueUrl",
+        "type": "url",
+        "label": "Publishing Queue URL"
+    },
+    {
+        "name": "replayed",
+        "type": "boolean",
+        "label": "Replay of an earlier identical request"
+    }
+]

@@ -20,9 +20,12 @@ import {
 	brandTemplateUpdateSchema,
 	createClipExportSchema,
 	createClipShareLinkSchema,
+	timelineFormatSchema,
 	clipDownloadQuerySchema,
 	autopilotRuleInputSchema,
 	autopilotRuleUpdateSchema,
+	recipeInputSchema,
+	recipeUpdateSchema,
 	duplicateBrandTemplateSchema,
 	dubDownloadQuerySchema,
 	finalizeAudioUploadSchema,
@@ -55,6 +58,7 @@ import {
 	type ApplyStyleSelectedInput,
 	type PreviewCampaignEditorActionInput,
 	type CensorSegment,
+	type CreateClipFromSelection,
 } from "@narriflow/validators";
 import {
 	audioAssetService,
@@ -62,15 +66,18 @@ import {
 	billingService,
 	analyticsService,
 	autopilotService,
+	recipeService,
 	searchBrollVideos,
 	isPexelsConfigured,
 	brandTemplateService,
 	clipService,
 	clipEditorDocumentPersistence,
 	clipExportService,
+	clipTimelineService,
 	ClipExportError,
 	contentSuiteService,
 	dubbingService,
+	librarySearchService,
 	projectService,
 	socialOAuthService,
 	SocialOAuthError,
@@ -268,11 +275,68 @@ app.delete("/autopilot/rules/:ruleId", async (c) => {
 	return c.json({ ok: true }, 200);
 });
 
+app.post("/autopilot/rules/:ruleId/take-over", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+
+	const rule = await autopilotService.takeOver(appUser, c.req.param("ruleId"));
+	return c.json(rule, 200);
+});
+
 app.post("/autopilot/rules/:ruleId/run-now", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
 	const rule = await autopilotService.triggerRuleNow(appUser, c.req.param("ruleId"));
 	return c.json(rule, 200);
+});
+
+// --- Recipes ---
+
+app.get("/recipes", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+
+	const recipes = await recipeService.list(appUser);
+	return c.json({ recipes }, 200);
+});
+
+app.post("/recipes", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+
+	const payload = await c.req.json().catch(() => ({}));
+	const parsed = recipeInputSchema.safeParse(payload);
+	if (!parsed.success) {
+		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+	}
+
+	const recipe = await recipeService.create(appUser, parsed.data);
+	return c.json(recipe, 201);
+});
+
+app.patch("/recipes/:recipeId", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+
+	const payload = await c.req.json().catch(() => ({}));
+	const parsed = recipeUpdateSchema.safeParse(payload);
+	if (!parsed.success) {
+		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+	}
+
+	// The saved Recipe, with any warnings the save raised (they never block it).
+	const recipe = await recipeService.update(appUser, c.req.param("recipeId"), parsed.data);
+	return c.json(recipe, 200);
+});
+
+app.post("/recipes/:recipeId/duplicate", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+
+	const recipe = await recipeService.duplicate(appUser, c.req.param("recipeId"));
+	return c.json(recipe, 201);
+});
+
+app.delete("/recipes/:recipeId", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+
+	await recipeService.delete(appUser, c.req.param("recipeId"));
+	return c.json({ ok: true }, 200);
 });
 
 app.get("/projects", async (c) => {
@@ -312,6 +376,21 @@ app.get("/workspace/search", async (c) => {
 		appUser,
 		c.req.query("q") ?? "",
 	);
+	return c.json({ results }, 200);
+});
+
+app.get("/library/search", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+	const { q, limit, projectId } = authenticatedHonoInput<{
+		q: string;
+		limit?: number;
+		projectId?: string;
+	}>(c);
+	const results = await librarySearchService.search(appUser, {
+		query: q,
+		limit,
+		projectIds: projectId ? [projectId] : undefined,
+	});
 	return c.json({ results }, 200);
 });
 
@@ -640,6 +719,21 @@ app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
  * posts — see ClipService.deleteClip for why cancelling those first is the only
  * safe order.
  */
+/**
+ * "Make a clip" from a library search result: a clip over a transcript range,
+ * created through the same path as create-from-selection with the project's
+ * best clip as its source. A project without clips yet is refused with
+ * `clip_source_missing` (409).
+ */
+app.post("/projects/:id/clips/create-from-range", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+	const { id, body } = authenticatedHonoInput<{
+		id: string;
+		body: CreateClipFromSelection;
+	}>(c);
+	return c.json(await clipService.createClipFromRange(appUser, id, body), 201);
+});
+
 app.delete("/projects/:id/clips/:clipId", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
@@ -1251,6 +1345,30 @@ app.get("/projects/:id/clips/:clipId/exports/:exportId/subtitles/:format", async
 		"Content-Disposition": `attachment; filename="${file.fileName}"`,
 		"Cache-Control": "private, no-store",
 	});
+});
+
+/** The clip's current edit as an editor timeline plus its SRT, in one ZIP. The
+ * original source is too large to zip; `timeline-source` grants it. The ZIP's
+ * editor revision travels in a header, for the page to show what it fetched. */
+app.get("/projects/:id/clips/:clipId/timeline/:format", async (c) => {
+	const format = timelineFormatSchema.safeParse(c.req.param("format"));
+	if (!format.success) return c.json({ error: "timeline_format_invalid" }, 400);
+	const appUser = authenticatedHonoActor(c);
+	const archive = await clipTimelineService.archive(appUser, c.req.param("id"), c.req.param("clipId"), format.data);
+	return c.body(archive.bytes, 200, {
+		"Content-Type": "application/zip",
+		"Content-Disposition": `attachment; filename="${archive.fileName}"`,
+		"X-Editor-Revision": String(archive.editorRevision),
+		"Cache-Control": "private, no-store",
+	});
+});
+
+/** A Download Grant for the original source, under the file name its
+ * timelines refer to. JSON, so the page can show a refusal. */
+app.get("/projects/:id/clips/:clipId/timeline-source", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+	const source = await clipTimelineService.issueSourceGrant(appUser, c.req.param("id"), c.req.param("clipId"), { credentialKind: "session" });
+	return c.json(source, 200, { "Cache-Control": "private, no-store" });
 });
 
 app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {

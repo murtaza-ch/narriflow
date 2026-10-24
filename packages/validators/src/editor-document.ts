@@ -939,3 +939,25 @@ export function redoEditor(history: EditorHistory): EditorHistory {
     lastCoalesceKey: null,
   };
 }
+
+/**
+ * A clip's length as it is exported: its source window minus the ranges cut
+ * from it, plus its scene blocks. This is what the export snapshot records as
+ * `durationSec`, so anything that needs a clip's length before it is exported
+ * (Finishing ranking) uses this to agree with the length measured afterwards.
+ * Stored JSON that no longer parses counts as no cuts and no scenes.
+ */
+export function clipExportDurationSec(clip: {
+  startSec: number;
+  endSec: number;
+  deletedRanges: unknown;
+  sceneBlocks: unknown;
+}): number {
+  const ranges = deletedRangesSchema.safeParse(clip.deletedRanges ?? []);
+  const scenes = z.array(sceneBlockSchema).safeParse(clip.sceneBlocks ?? []);
+  const sourceDurationSec = buildEditedTimeMap(ranges.success ? ranges.data : [], {
+    startSec: clip.startSec,
+    endSec: clip.endSec,
+  }).editedDurationSec;
+  return sourceDurationSec + (scenes.success ? scenes.data.reduce((sum, scene) => sum + scene.durationSec, 0) : 0);
+}

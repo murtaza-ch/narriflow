@@ -5,7 +5,7 @@ import { mcpFailureMessage } from "@narriflow/mcp-core";
 import { createUploadSessionHttpRoutes } from "../app/api/[[...route]]/upload-session-http";
 
 export interface McpUploadHttpDependencies {
-  admit(request: Request, workspaceId: string): Promise<{ actor: ActorScope; beforeAccept: () => void }>;
+  admit(request: Request, workspaceId: string): Promise<{ actor: ActorScope; beforeAccept: () => void; credential?: { scopes: readonly string[] } }>;
   authenticationFailure(error: unknown): Response | null;
   service: IntegrationUploadSessions;
 }
@@ -26,7 +26,7 @@ export function createMcpUploadHttpHandler(dependencies: McpUploadHttpDependenci
         return admitted.actor;
       },
       service: { ...dependencies.service,
-        open: (actor, input) => dependencies.service.open(actor, input, admitted.beforeAccept),
+        open: (actor, input) => dependencies.service.open(actor, input, admitted.beforeAccept, admitted.credential),
         finalize: (actor, input) => dependencies.service.finalize(actor, input, {}, admitted.beforeAccept) },
     }));
     const result = await routes.fetch(request);

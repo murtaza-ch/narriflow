@@ -12,7 +12,10 @@ const TABS: Array<{ tab: string; icon: string; groups: GroupConfig[] }> = [
   {
     tab: "Guides",
     icon: "book-open",
-    groups: [{ group: "Get started", pages: ["index", "quickstart"] }],
+    groups: [
+      { group: "Get started", pages: ["index", "quickstart"] },
+      { group: "Features", pages: ["search", "recipes", "publishing-queue", "standing-grants", "editor-timelines"] },
+    ],
   },
   {
     tab: "AI assistants",
@@ -32,7 +35,7 @@ const TABS: Array<{ tab: string; icon: string; groups: GroupConfig[] }> = [
     icon: "code",
     groups: [
       { group: "Get started", pages: ["api/introduction", "api/quickstart"] },
-      { group: "Guides", pages: ["api/uploads", "api/callbacks", "api/n8n"] },
+      { group: "Guides", pages: ["api/uploads", "api/caption-ai-shorts", "api/callbacks", "api/events", "api/webhooks", "api/n8n", "api/zapier", "api/make"] },
       { group: "API reference", apiReference: true },
     ],
   },

@@ -1,10 +1,12 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  clipExportService,
   clipService,
   computeDurationOptimality,
   computePacingScore,
   computePlatformScore,
   computeViralityScore,
+  getPerformanceGuidance,
   getWorkflowRunLifecycle,
   projectService,
   rethrowWorkflowAttemptLost,
@@ -20,6 +22,9 @@ import {
   getEffectiveClipTiming,
   normalizeTranscriptSliceForClip,
   splitUtterancesIntoSentences,
+  USER_ERROR_MESSAGES,
+  wholeSourceWindow,
+  wholeSourceWindowFault,
   type BrollCue,
   type ClipCategory,
   type ClipPlatformTarget,
@@ -213,12 +218,13 @@ Important constraints:
 - Prioritize quality over quantity, but return the requested number of candidates when the transcript contains enough distinct moments.`;
 
 // Byte-identical across every call regardless of video/content-pack, and
-// ordered so the one 2-way-variable line (hookGuidance) sits at the very end
-// of it. OpenAI's prompt caching only credits the longest unbroken prefix
-// match against a prior request, so keeping this block first (right after
-// the system prompt, which is already fully static) — and keeping all
-// per-request specifics (title, duration, transcript, ...) after it — lets
-// caching cover this block on every call instead of none of it.
+// ordered so the variable guidance lines (hookGuidance, then the optional
+// audience-data line) sit at the very end of it. OpenAI's prompt caching only
+// credits the longest unbroken prefix match against a prior request, so
+// keeping this block first (right after the system prompt, which is already
+// fully static) — and keeping all per-request specifics (title, duration,
+// transcript, ...) after it — lets caching cover this block on every call
+// instead of none of it.
 const CLIP_DETECTION_SELECTION_GUIDANCE = `Identify candidate clip-worthy moments in the transcript below. The system keeps the best subset after scoring.
 
 Selection guidance:
@@ -235,7 +241,9 @@ const HOOK_GUIDANCE_AUTO =
 const HOOK_GUIDANCE_MANUAL =
   "- A strong opening hook is preferred but NOT required. Favor clips with high story_completeness_score (full setup/escalation/payoff arc) over clips with the strongest hook.";
 
-function buildUserPrompt(
+/** `audienceDataLine` is the Workspace's one Performance Guidance line, or
+ * null; with null the prompt is exactly what it was before guidance existed. */
+export function buildUserPrompt(
   title: string,
   formattedTranscript: string,
   candidateCountTarget: number,
@@ -252,6 +260,7 @@ function buildUserPrompt(
     processingStartSec: number | null;
     processingEndSec: number | null;
     sourceLanguageCode: string | null;
+    audienceDataLine?: string | null;
   },
 ): string {
   const toneNote =
@@ -274,8 +283,10 @@ function buildUserPrompt(
     ? `provider language code ${options.sourceLanguageCode}`
     : "unknown; infer the source language from the transcript";
 
+  const audienceData = options.audienceDataLine ? `\n${options.audienceDataLine}` : "";
+
   return `${CLIP_DETECTION_SELECTION_GUIDANCE}
-${hookGuidance}
+${hookGuidance}${audienceData}
 
 Return ${candidateCountTarget} candidates; the system keeps the best ${finalClipCountTarget}.
 
@@ -1167,10 +1178,13 @@ async function callOpenAI(
 }
 
 interface ClipDetectionPersistence {
-  project: Pick<typeof projectService, "getTranscriptForWorker" | "getContentPackForRun">;
+  project: Pick<typeof projectService, "getTranscriptForWorker" | "getContentPackForRun" | "getSourceProbeDurationForWorker">;
   clips: Pick<typeof clipService, "persistDetectedClips" | "autoQueueDefaultRenders">;
+  exports: Pick<typeof clipExportService, "captionedExportWrite">;
   lifecycle: Pick<ReturnType<typeof getWorkflowRunLifecycle>, "completeMomentDetection" | "failAttempt">;
   notifyFailure: typeof notifyWorkflowFailureAfterSettlement;
+  /** The Workspace's Performance Guidance line, when it has qualifying data and the setting is on. */
+  guidance: Pick<ReturnType<typeof getPerformanceGuidance>, "promptLine">;
 }
 
 export async function processClipDetectionRun(
@@ -1179,8 +1193,9 @@ export async function processClipDetectionRun(
   persistence?: ClipDetectionPersistence,
 ) {
   const adapters = persistence ?? {
-    project: projectService, clips: clipService, lifecycle: getWorkflowRunLifecycle(),
+    project: projectService, clips: clipService, exports: clipExportService, lifecycle: getWorkflowRunLifecycle(),
     notifyFailure: notifyWorkflowFailureAfterSettlement,
+    guidance: getPerformanceGuidance(),
   };
   const run: WorkflowRunJob = { ...attempt, id: attempt.workflowRunId };
   const { signal } = context;
@@ -1229,10 +1244,12 @@ export async function processClipDetectionRun(
     const fullDurationSec = transcriptRow.durationSeconds ?? 0;
     const sourceLanguageCode = transcriptRow.languageCode ?? null;
 
-    if (allUtterances.length === 0 && fullText.length === 0) {
+    // A caption-only generation needs no speech: a silent source, or one
+    // captioned by the caller, has an empty transcript.
+    if (contentPack.mode !== "caption_only" && allUtterances.length === 0 && fullText.length === 0) {
       throw new WorkflowWorkerError(
-        "transcript_not_ready",
-        "Transcript has no content",
+        "source_has_no_speech",
+        USER_ERROR_MESSAGES.source_has_no_speech!,
         "permanent",
       );
     }
@@ -1246,29 +1263,33 @@ export async function processClipDetectionRun(
       processingEndSec ?? sourceDurationSec ?? fullDurationSec ?? 0;
 
     if (contentPack.mode === "caption_only") {
-      log("info", "clip_detection_caption_only_short_circuit", {
-        workflowRunId: run.id,
-        projectId: run.projectId,
-        windowStart,
-        windowEnd,
-      });
-
-      // Fall back to the last utterance's end when no duration metadata exists
-      // (e.g. an RSS import with no declared duration), so caption-only never
-      // produces a zero/0.01s render of the whole video.
+      // The clip is the processing window, or the whole source. The probed
+      // duration is exact where the stored duration is rounded; when neither
+      // is known, the transcript's last word bounds it.
       const transcriptEndSec = allUtterances.reduce(
         (max, utterance) => Math.max(max, utterance.endSec),
         0,
       );
-      const captionEndSec = Math.max(
-        windowStart + 1,
-        windowEnd > windowStart
-          ? windowEnd
-          : (sourceDurationSec ?? fullDurationSec) || transcriptEndSec,
-      );
+      const knownDurationSec = (sourceDurationSec ?? fullDurationSec) || transcriptEndSec;
+      const captionWindow = wholeSourceWindow(contentPack, {
+        durationSec: Math.max(1, knownDurationSec),
+        probeDurationSec: await adapters.project.getSourceProbeDurationForWorker(run.projectId),
+      });
+      signal?.throwIfAborted();
+      const windowFault = wholeSourceWindowFault(captionWindow);
+      if (windowFault) {
+        throw new WorkflowWorkerError(windowFault, USER_ERROR_MESSAGES[windowFault]!, "permanent");
+      }
+      log("info", "clip_detection_caption_only_short_circuit", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        windowStart: captionWindow.startSec,
+        windowEnd: captionWindow.endSec,
+      });
+
       const captionClip: FinalDetectedClip = {
-        startSec: windowStart,
-        endSec: captionEndSec,
+        startSec: captionWindow.startSec,
+        endSec: captionWindow.endSec,
         title: run.project.title,
         hookText: run.project.title,
         payoffText: null,
@@ -1286,8 +1307,8 @@ export async function processClipDetectionRun(
         instagramScore: 1,
         transcriptSlice: buildCaptionOnlyTranscriptSlice(
           allUtterances,
-          windowStart,
-          captionEndSec,
+          captionWindow.startSec,
+          captionWindow.endSec,
         ),
       };
 
@@ -1300,11 +1321,22 @@ export async function processClipDetectionRun(
       );
 
       try {
+        if (contentPack.captionedVideo) {
+          // A captioned video ends with its export at the requested formats. The
+          // export is admitted by the transaction that completes detection, so a
+          // retry of this run can never leave one behind or render a second.
+          await adapters.lifecycle.completeMomentDetection(attempt, {
+            admit: adapters.exports.captionedExportWrite(attempt, contentPack.captionedVideo),
+          });
+          return;
+        }
+        // Any other caption-only run queues the usual preview render.
         await adapters.clips.autoQueueDefaultRenders(
           attempt,
           contentPack.defaultAspectRatio,
         );
       } catch (error) {
+        rethrowWorkflowAttemptLost(error);
         log("error", "auto_render_queue_failed", {
           workflowRunId: run.id,
           projectId: run.projectId,
@@ -1359,6 +1391,19 @@ export async function processClipDetectionRun(
     const autoHook = contentPack.autoHook;
     const specificMoments = contentPack.specificMoments;
 
+    // The Workspace's audience data is a hint, never a requirement: a failed
+    // read detects moments exactly as before.
+    let audienceDataLine: string | null = null;
+    try {
+      audienceDataLine = await adapters.guidance.promptLine(attempt.project.workspaceId);
+    } catch (error) {
+      log("error", "performance_guidance_unavailable", {
+        workflowRunId: run.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    signal.throwIfAborted();
+
     const apiKey = getRequiredOpenAIApiKey();
     const model = process.env.OPENAI_CLIP_MODEL ?? "gpt-5.4-mini";
 
@@ -1375,6 +1420,7 @@ export async function processClipDetectionRun(
       candidateCountTarget,
       durationPolicy,
       platformTargets,
+      performanceGuidance: audienceDataLine !== null,
     });
 
     // Update progress
@@ -1410,6 +1456,7 @@ export async function processClipDetectionRun(
           processingStartSec,
           processingEndSec,
           sourceLanguageCode,
+          audienceDataLine,
         },
       );
 

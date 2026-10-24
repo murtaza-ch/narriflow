@@ -1,0 +1,96 @@
+---
+title: Edit in your own editor
+sidebarTitle: Editor timelines
+description: Open a clip in Premiere Pro, Final Cut Pro, DaVinci Resolve or any editor as a timeline cut from your original video.
+---
+
+A timeline is a clip's edit written as an editor project: your original video, cut at the moments the clip keeps. Open it to trim, regrade or add your own graphics on the full-quality source. Each clip also comes with its captions as an SRT file.
+
+| Editor | Format | File |
+| --- | --- | --- |
+| Premiere Pro | FCP7 XML (xmeml v5) | `.xml` |
+| Final Cut Pro, DaVinci Resolve | FCPXML 1.11 | `.fcpxml` |
+| Any editor | CMX3600 EDL | `.edl` |
+
+<Steps>
+  <Step title="Download the timeline">
+    Open the clip's export page. Under **Edit in your own editor**, choose **Premiere**, **Final Cut, Resolve** or **EDL**. You get a ZIP with the timeline and the SRT.
+  </Step>
+  <Step title="Download the original video">
+    Select **Original video** on the same page. The file keeps the name the timeline refers to, such as `my-talk-source.mp4`. The video is too large to ship inside the ZIP, so it downloads on its own. The link is private and lasts 15 minutes.
+  </Step>
+  <Step title="Put them in one folder">
+    Unzip the timeline into the folder with the video. Keep the video's name.
+  </Step>
+  <Step title="Open the timeline">
+    - **Premiere Pro.** Choose **File → Import** and select the `.xml` file. If the clip shows as offline, right-click it, choose **Link Media** and pick the video once.
+    - **Final Cut Pro.** Choose **File → Import → XML** and select the `.fcpxml` file. If the media is missing, choose **File → Relink Files → Original Media**.
+    - **DaVinci Resolve.** Choose **File → Import → Timeline** and select the `.fcpxml` file, or the `.edl`. Turn off **Automatically import source clips into media pool** if you have already added the video.
+    - **Other editors.** Import the `.edl` as a timeline, then add the video as its source clip.
+  </Step>
+  <Step title="Add the captions">
+    Import the `.srt` as a caption track. In Premiere Pro, use **File → Import** and drag it onto the timeline. In Resolve, use **File → Import → Subtitle**.
+  </Step>
+</Steps>
+
+## What the timeline contains
+
+- **The same cuts as the export.** If the clip's edit removes the pauses between two moments, the timeline has one cut for each moment kept, in order.
+- **The current edit.** The timeline follows the clip as it is now, not the version of the export you opened it from. The export page shows which version.
+- **Exact frames.** Cuts land on the video's own frames at its own frame rate: 23.976, 24, 25, 29.97, 30, 47.952, 48, 50, 59.94 or 60 fps. Each cut sits at its edited time rounded once, so many cuts never drift apart from the captions.
+- **The video's own timecode.** If the file carries a start timecode, such as `01:00:00:00` from a camera, the timeline cuts at that source timecode. Otherwise it assumes the video starts at `00:00:00:00`. Timecode is non-drop-frame unless the video's own start timecode is drop-frame; then the whole timeline is. So one hour of 29.97 fps non-drop footage reads `00:59:56:12`. The EDL starts its timeline at `01:00:00:00`.
+- **The original audio**, linked to the video.
+
+The timeline has no Narriflow scenes, overlays, music, B-roll, reframing or burned-in captions. Those are part of the rendered export, not the source, so they are not editable layers. Captions come in the SRT, timed to the cuts without any inserted scenes.
+
+<Note>
+  Projects imported before this feature existed do not have the video details a timeline needs. Import the video again to export a timeline. Audio-only sources cannot be exported as a timeline, and neither can videos at a frame rate other than those listed above, such as variable-frame-rate phone video that does not average to one of them. Convert the video to a constant frame rate and import it again.
+</Note>
+
+## Get a timeline from code
+
+Both the API and AI assistants return the timeline as text along with a download link for the original video. The link lasts 15 minutes, and each request issues a new one.
+
+<CodeGroup>
+
+```typescript TypeScript
+import { writeFile } from "node:fs/promises";
+
+const BASE = "https://app.narriflow.com/api/v1";
+const response = await fetch(`${BASE}/clips/${clipId}/timeline?format=fcpxml`, {
+  headers: { Authorization: `Bearer ${process.env.NARRIFLOW_API_KEY}` },
+});
+const result = await response.json();
+
+await writeFile(result.timeline.fileName, result.timeline.content);
+await writeFile(result.subtitles.fileName, result.subtitles.content);
+await writeFile(result.source.fileName, Buffer.from(await (await fetch(result.source.downloadUrl)).arrayBuffer()));
+```
+
+```bash cURL
+curl "$BASE/clips/$CLIP_ID/timeline?format=fcpxml" \
+  -H "Authorization: Bearer $NARRIFLOW_API_KEY"
+```
+
+```python Python
+import os, requests
+
+BASE = "https://app.narriflow.com/api/v1"
+result = requests.get(
+    f"{BASE}/clips/{clip_id}/timeline",
+    params={"format": "fcpxml"},
+    headers={"Authorization": f"Bearer {os.environ['NARRIFLOW_API_KEY']}"},
+).json()
+
+for name in ("timeline", "subtitles"):
+    with open(result[name]["fileName"], "w") as file:
+        file.write(result[name]["content"])
+with open(result["source"]["fileName"], "wb") as file:
+    file.write(requests.get(result["source"]["downloadUrl"]).content)
+```
+
+</CodeGroup>
+
+`format` is `xmeml`, `fcpxml` or `edl`. The response has `timeline.content`, `subtitles.content` and `source.downloadUrl`. Save the timeline, the SRT and the video in one folder, with the video under `source.fileName`. Your key needs the `exports:read` scope. See [Get an editor timeline](/docs/api-reference/clips/get-an-editor-timeline) in the API reference.
+
+Assistants call `narriflow_get_clip_timeline` with the same inputs. It needs the `exports:read` scope and is described in [Tools](/docs/ai/tools).

@@ -1,8 +1,15 @@
 import { z } from "zod";
 import { clipAspectRatioSchema, clipRenderResolutionSchema } from "./clip";
-import { socialDeliveryModeSchema, socialPlatformSchema, socialPostStatusSchema, confirmSocialPublicationSchema, scheduleSocialPostSchema } from "./social";
+import { socialDeliveryModeSchema, socialPlatformSchema, socialPostMetricsSnapshotSchema, socialPostStatusSchema, confirmSocialPublicationSchema, scheduleSocialPostSchema } from "./social";
 import { autopilotStatusSchema } from "./autopilot";
-import { clipExportRequestSchema, clipViewSchema, exportViewSchema, generationSettingsInputSchema, projectViewSchema } from "./integration";
+import { finishingSettingsSchema } from "./finishing";
+import { postingScheduleSchema } from "./posting-schedule";
+import { proposeSocialPostSchema, socialPostProposalSchema } from "./publishing-queue";
+import { timelineFormatSchema } from "./timeline-export";
+import { captionedVideoOptionsSchema, framingNoticeSchema } from "./captioned-video";
+import { acceptedRecipeSchema, clipExportRequestSchema, clipViewSchema, exportViewSchema, generationSettingsSchema, projectViewSchema, recipeIdSchema, recipesResultSchema, refuseRecipeWithInlineSettings } from "./integration";
+import { LIBRARY_SEARCH_DEFAULT_LIMIT, librarySearchLimitSchema, librarySearchQuerySchema, librarySearchResultSchema } from "./library-search";
+import { WORKSPACE_EVENT_DEFAULT_LIMIT, WORKSPACE_EVENT_MAX_LIMIT, WORKSPACE_EVENT_TYPES, workspaceEventCursorSchema, workspaceEventOrderSchema, workspaceEventTypeSchema, workspaceEventsResultSchema } from "./workspace-event";
 
 const id = z.string().uuid();
 const text = z.string().max(2_000);
@@ -11,12 +18,16 @@ const link = z.string().url().max(4_096);
 const continuationLink = z.string().url().max(49_152);
 export const mcpWorkspaceInput = { workspaceId: id.optional() };
 export const mcpMutationInput = { workspaceId: id, clientIdempotencyKey: id };
-const generation = generationSettingsInputSchema;
+// Omitted generation means the defaults; a Recipe replaces it.
+const generation = generationSettingsSchema.optional();
+const recipeId = recipeIdSchema.optional();
+const finishing = finishingSettingsSchema.optional().describe("Export the best clips and write copy when generation completes (Pro and above)");
 /** Omitted means the Workspace's default Brand Profile, if any. */
 const brandProfileId = id.optional().describe("Brand Profile from narriflow_list_brand_profiles; omit to use the Workspace default");
-export const mcpSubmitVideoSchema = z.strictObject({ ...mcpMutationInput, url: link, title: z.string().trim().min(1).max(200).optional(), brandProfileId, generation });
-export const mcpUploadVideoSchema = z.strictObject({ ...mcpMutationInput, title: z.string().trim().min(1).max(200).optional(), brandProfileId, generation });
-export const mcpGenerateClipsSchema = z.strictObject({ ...mcpMutationInput, projectId: id, generation, forceRegenerate: z.boolean().default(false) });
+export const mcpSubmitVideoSchema = z.strictObject({ ...mcpMutationInput, url: link, title: z.string().trim().min(1).max(200).optional(), brandProfileId, generation, finishing, recipeId }).superRefine(refuseRecipeWithInlineSettings);
+export const mcpCreateCaptionedVideoSchema = captionedVideoOptionsSchema.extend({ ...mcpMutationInput, url: link, title: z.string().trim().min(1).max(200).optional(), brandProfileId });
+export const mcpUploadVideoSchema = z.strictObject({ ...mcpMutationInput, title: z.string().trim().min(1).max(200).optional(), brandProfileId, generation, finishing, recipeId }).superRefine(refuseRecipeWithInlineSettings);
+export const mcpGenerateClipsSchema = z.strictObject({ ...mcpMutationInput, projectId: id, generation, finishing, recipeId, forceRegenerate: z.boolean().default(false) }).superRefine(refuseRecipeWithInlineSettings);
 export const mcpGetProjectSchema = z.strictObject({ ...mcpWorkspaceInput, projectId: id });
 export const mcpListClipsSchema = z.strictObject({ ...mcpWorkspaceInput, projectId: id, limit: z.number().int().min(1).max(50).default(20), cursor: z.string().max(512).nullable().optional(), includeTranscriptExcerpt: z.boolean().default(false) });
 export const mcpGetClipSchema = z.strictObject({ ...mcpWorkspaceInput, projectId: id, clipId: id, includeTranscriptExcerpt: z.boolean().default(false) });
@@ -46,28 +57,37 @@ export const mcpListSocialPublicationsSchema = z.strictObject({ ...mcpWorkspaceI
 export const mcpConfirmSocialPublicationSchema = confirmSocialPublicationSchema.extend({ ...mcpMutationInput, socialPostId: id }).strict();
 export const mcpRecoverySchema = z.strictObject({ ...mcpMutationInput, socialPostId: id, reason: z.string().trim().min(1).max(500) });
 export const mcpRepublishSchema = mcpRecoverySchema.extend({ duplicateRiskAcknowledged: z.literal(true) });
-export const mcpCreateAutopilotSchema = z.strictObject({ ...mcpMutationInput, name: z.string().trim().min(1).max(120), rssUrl: link, titlePrefix: z.string().trim().min(1).max(100).nullable().optional(), intervalMinutes: z.number().int().min(60).max(10080).default(1440), maxEpisodesPerRun: z.number().int().min(1).max(10).default(3), generation });
+export const mcpCreateAutopilotSchema = z.strictObject({ ...mcpMutationInput, name: z.string().trim().min(1).max(120), rssUrl: link, titlePrefix: z.string().trim().min(1).max(100).nullable().optional(), intervalMinutes: z.number().int().min(60).max(10080).default(1440), maxEpisodesPerRun: z.number().int().min(1).max(10).default(3), recipeId: recipeIdSchema.describe("Recipe from narriflow_list_recipes: the Brand Profile, language, generation settings, and finishing every import uses") });
 export const mcpRunAutopilotSchema = z.strictObject({ ...mcpMutationInput, ruleId: id });
 export const mcpListProjectsSchema = z.strictObject({ ...mcpWorkspaceInput, limit: z.number().int().min(1).max(100).default(20), cursor: z.string().max(512).nullable().optional() });
 export const mcpWorkspaceOnlySchema = z.strictObject(mcpWorkspaceInput);
+export const mcpListEventsSchema = z.strictObject({ ...mcpWorkspaceInput, after: workspaceEventCursorSchema.optional(),
+  order: workspaceEventOrderSchema.default("asc").describe("asc (default) reads forward from `after`. desc returns the newest `limit` matching events, newest first, and cannot be combined with `after`; its nextCursor is the highest seq on the page."),
+  limit: z.number().int().min(1).max(WORKSPACE_EVENT_MAX_LIMIT).default(WORKSPACE_EVENT_DEFAULT_LIMIT),
+  types: z.array(workspaceEventTypeSchema).max(WORKSPACE_EVENT_TYPES.length).optional() });
+export const mcpEventsResultSchema = workspaceEventsResultSchema;
 export const mcpGetPublicationSchema = z.strictObject({ ...mcpWorkspaceInput, socialPostId: id });
+export const mcpSearchLibrarySchema = z.strictObject({ ...mcpWorkspaceInput, query: librarySearchQuerySchema, limit: librarySearchLimitSchema.default(LIBRARY_SEARCH_DEFAULT_LIMIT), projectId: id.optional().describe("Search only this Project") });
+export const mcpSearchLibraryResultSchema = librarySearchResultSchema;
 
 export const mcpFailureSchema = z.strictObject({ error: z.string().max(100), kind: z.enum(["invalid", "unprocessable", "forbidden", "payment_required", "missing", "conflict", "rate_limited", "unavailable"]).optional(), message: text, retryGuidance: z.enum(["correct_request", "request_access", "review_billing", "refresh_resource", "refresh_state", "retry_later"]).optional(), retryAfterSeconds: z.number().positive().optional(), details: z.record(z.string(), z.json()).optional() });
 export const mcpWorkspaceSchema = z.strictObject({ workspaceId: id, name: z.string().max(200), role: z.enum(["owner", "admin", "editor", "viewer"]), status: z.string().max(30), pricingTier: z.string().max(30), isPersonal: z.boolean(), mcpEnabled: z.boolean() });
 export const mcpProgressSchema = z.strictObject({ status: z.enum(["ready", "processing", "queued", "failed"]), label: z.string().max(200), active: z.boolean(), stage: z.string().max(100).nullable(), percent: z.number().min(0).max(100).nullable() });
-export const mcpAutopilotRuleSchema = z.strictObject({ ruleId: id, workspaceId: id, name: z.string().max(120), rssUrl: link, status: autopilotStatusSchema, intervalMinutes: z.number().int().positive(), maxEpisodesPerRun: z.number().int().positive(), nextRunAt: date, lastCheckedAt: date.nullable(), lastSuccessAt: date.nullable(), importedEpisodeCount: z.number().int().nonnegative() });
-export const mcpAccountSchema = z.strictObject({ accountId: id, platform: socialPlatformSchema, displayName: z.string().max(500), handle: z.string().max(500).nullable(), status: z.enum(["active", "expired", "revoked"]) });
-export const mcpPublicationSchema = z.strictObject({ socialPostId: id, projectId: id, clipId: id.nullable(), accountId: id.nullable(), platform: socialPlatformSchema, deliveryMode: socialDeliveryModeSchema, status: socialPostStatusSchema, caption: z.string().max(5_000), scheduledFor: date.nullable(), postedAt: date.nullable(), externalUrl: link.nullable(), errorCode: z.string().max(200).nullable(), allowedActions: z.array(z.enum(["cancel", "recheck", "confirm_published", "publish_again", "reconnect_account", "schedule_again"])), reviewUrl: link });
-export const mcpPublicationRecoverySchema = z.strictObject({ socialPostId: id, projectId: id, platform: socialPlatformSchema, status: socialPostStatusSchema, scheduledFor: date.nullable(), postedAt: date.nullable(), externalUrl: link.nullable(), errorCode: z.string().max(200).nullable(), allowedActions: mcpPublicationSchema.shape.allowedActions, attempts: z.array(z.strictObject({ attemptId: id, attemptNumber: z.number().int().positive(), phase: z.string().max(60), outcome: z.string().max(60).nullable(), failureCode: z.string().max(200).nullable(), startedAt: date.nullable(), terminalAt: date.nullable(), decisions: z.array(z.strictObject({ kind: z.string().max(100), reason: z.string().max(500), evidenceKind: z.string().max(100).nullable(), ownershipValidated: z.boolean(), createdAt: date })) })), reviewUrl: link });
+export const mcpAutopilotRuleSchema = z.strictObject({ ruleId: id, workspaceId: id, name: z.string().max(120), rssUrl: link, status: autopilotStatusSchema, recipeId: id, recipeName: z.string().max(120), pausedReason: text.nullable(), intervalMinutes: z.number().int().positive(), maxEpisodesPerRun: z.number().int().positive(), nextRunAt: date, lastCheckedAt: date.nullable(), lastSuccessAt: date.nullable(), importedEpisodeCount: z.number().int().nonnegative() });
+export const mcpAccountSchema = z.strictObject({ accountId: id, platform: socialPlatformSchema, displayName: z.string().max(500), handle: z.string().max(500).nullable(), status: z.enum(["active", "expired", "revoked"]),
+  postingSchedule: postingScheduleSchema.nullable().describe("Weekly slots a person's accepted proposals fill; null when the account has none") });
+export const mcpPublicationSchema = z.strictObject({ socialPostId: id, projectId: id, clipId: id.nullable(), accountId: id.nullable(), platform: socialPlatformSchema, deliveryMode: socialDeliveryModeSchema, status: socialPostStatusSchema, caption: z.string().max(5_000), scheduledFor: date.nullable(), postedAt: date.nullable(), externalUrl: link.nullable(), errorCode: z.string().max(200).nullable(), latestMetrics: socialPostMetricsSnapshotSchema.nullable(), allowedActions: z.array(z.enum(["cancel", "recheck", "confirm_published", "publish_again", "reconnect_account", "schedule_again"])), reviewUrl: link });
+export const mcpPublicationRecoverySchema = z.strictObject({ socialPostId: id, projectId: id, platform: socialPlatformSchema, status: socialPostStatusSchema, scheduledFor: date.nullable(), postedAt: date.nullable(), externalUrl: link.nullable(), errorCode: z.string().max(200).nullable(), latestMetrics: socialPostMetricsSnapshotSchema.nullable(), allowedActions: mcpPublicationSchema.shape.allowedActions, attempts: z.array(z.strictObject({ attemptId: id, attemptNumber: z.number().int().positive(), phase: z.string().max(60), outcome: z.string().max(60).nullable(), failureCode: z.string().max(200).nullable(), startedAt: date.nullable(), terminalAt: date.nullable(), decisions: z.array(z.strictObject({ kind: z.string().max(100), reason: z.string().max(500), evidenceKind: z.string().max(100).nullable(), ownershipValidated: z.boolean(), createdAt: date })) })), reviewUrl: link });
 export const mcpPublishingOptionsResultSchema = z.strictObject({ accountId: id, platform: socialPlatformSchema, directEnabled: z.boolean(), inboxEnabled: z.boolean(), privacyOptions: z.array(z.string().max(100)).max(50), commentDisabled: z.boolean(), duetDisabled: z.boolean(), stitchDisabled: z.boolean(), maximumDurationSec: z.number().nonnegative(), textLimit: z.number().int().nonnegative(), aspectRatios: z.array(clipAspectRatioSchema), confirmationRequired: z.literal(true) });
 export const mcpOperationKindSchema = z.enum(["intake", "generation", "export"]);
 /** Pass to narriflow_get_operation to follow exactly the work a mutation accepted. */
 export const mcpOperationRefSchema = z.strictObject({ kind: mcpOperationKindSchema, id });
 const operationStatusTool = z.literal("narriflow_get_operation");
-export const mcpOperationSchema = z.strictObject({ projectId: id, operation: mcpOperationRefSchema, status: z.enum(["accepted", "working", "completed", "failed", "cancelled"]), statusTool: operationStatusTool, reviewUrl: link });
+export const mcpOperationSchema = z.strictObject({ projectId: id, operation: mcpOperationRefSchema, status: z.enum(["accepted", "working", "completed", "failed", "cancelled"]), statusTool: operationStatusTool, reviewUrl: link,
+  recipe: acceptedRecipeSchema.optional().describe("The Recipe and revision this request used, when it named one") });
 export const mcpUploadHandoffSchema = z.strictObject({ workspaceId: id, status: z.literal("awaiting_file"), handoffUrl: continuationLink, localUploadCommand: z.literal("bun run mcp:upload --file <path> --workspace <workspaceId> --key <clientIdempotencyKey>"), confirmationExpiresAt: date });
 export const mcpPreparedPublicationSchema = z.strictObject({ status: z.literal("confirmation_required"), intent: mcpPrepareSocialPostSchema, accountDisplayName: z.string().max(500), preparationToken: z.string().max(32_768), confirmationUrl: continuationLink, expiresAt: date });
-export const mcpAppTransferResultSchema = z.strictObject({ action: z.enum(["open", "status", "grants", "finalize", "discard"]), outcome: z.enum(["queued_for_ingest", "reconciling", "uploading", "terminal", "granted", "discarded", "compensating"]), operation: mcpOperationRefSchema.optional(), statusTool: operationStatusTool.optional() });
+export const mcpAppTransferResultSchema = z.strictObject({ action: z.enum(["open", "status", "grants", "finalize", "discard"]), outcome: z.enum(["queued_for_ingest", "reconciling", "uploading", "terminal", "granted", "discarded", "compensating"]), operation: mcpOperationRefSchema.optional(), statusTool: operationStatusTool.optional(), recipe: acceptedRecipeSchema.optional() });
 export const mcpAppConfirmationResultSchema = z.strictObject({ status: z.literal("confirmed") });
 export const mcpAppConfirmIntentSchema = z.strictObject({ workspaceId: id, token: z.string().min(1).max(32_768), accepted: z.boolean() });
 export const mcpListWorkspacesSchema = z.strictObject({});
@@ -93,7 +113,9 @@ export const mcpExportOutputSchema = z.strictObject({
   reason: z.literal("plan_limit").nullable().describe("Why the granted output differs from the request"),
 });
 export const mcpCreatedClipExportResultSchema = z.strictObject({ export: exportViewSchema, reused: z.boolean(), output: mcpExportOutputSchema, operation: mcpOperationRefSchema, statusTool: operationStatusTool });
-export const mcpAccountsResultSchema = z.strictObject({ accounts: z.array(mcpAccountSchema) });
+export const mcpAccountsResultSchema = z.strictObject({ accounts: z.array(mcpAccountSchema), timeZone: z.string().max(100).describe("The Workspace time zone that posting slots are in") });
+export const mcpProposeSocialPostSchema = proposeSocialPostSchema.extend(mcpMutationInput);
+export const mcpProposedSocialPostResultSchema = z.strictObject({ proposal: socialPostProposalSchema, queueUrl: link.describe("Where a person accepts or rejects it in Narriflow"), replayed: z.boolean() });
 export const mcpScheduledPublicationResultSchema = z.strictObject({ socialPostId: id, projectId: id, clipId: id, status: socialPostStatusSchema, scheduledFor: date, reviewUrl: link, statusTool: z.literal("narriflow_get_social_publication") });
 export const mcpPublicationsResultSchema = z.strictObject({ items: z.array(mcpPublicationSchema), nextCursor: z.string().nullable() });
 export const mcpAutopilotRulesResultSchema = z.strictObject({ rules: z.array(mcpAutopilotRuleSchema) });
@@ -109,6 +131,7 @@ export const mcpOperationStatusResultSchema = z.strictObject({
   progress: z.number().min(0).max(1),
   items: z.array(z.strictObject({ kind: z.enum(["clip", "variant"]), id, state: operationItemState, failureCode: z.string().max(200).nullable() })).max(2_000),
   results: z.strictObject({ projectId: id.nullable(), clipIds: z.array(id).max(2_000), exportId: id.nullable() }),
+  notices: z.array(framingNoticeSchema).max(4).describe("Facts about how the work was done that the caller may want to act on"),
   failureCode: z.string().max(200).nullable(),
   reviewUrl: link.nullable(),
 });
@@ -118,6 +141,20 @@ export const mcpExportDownloadResultSchema = z.strictObject({
   variants: z.array(z.strictObject({ variantId: id, aspectRatio: clipAspectRatioSchema, resolution: clipRenderResolutionSchema, watermark: z.boolean(), fileName: z.string().max(200), sizeBytes: z.number().int().nonnegative().nullable(), downloadUrl: z.string().url().max(8_192).describe("Private Download Grant; do not share or store"), expiresAt: date })).max(4),
   subtitles: z.array(z.strictObject({ format: z.enum(["srt", "vtt"]), fileName: z.string().max(200), content: z.string().max(500_000) })).max(2),
 });
+export const mcpGetClipTimelineSchema = z.strictObject({ ...mcpWorkspaceInput, projectId: id, clipId: id, format: timelineFormatSchema });
+export const mcpClipTimelineResultSchema = z.strictObject({
+  projectId: id, clipId: id, editorRevision: z.number().int().nonnegative(), format: timelineFormatSchema,
+  timeline: z.strictObject({ fileName: z.string().max(200), content: z.string().max(2_000_000).describe("Timeline file text; save it beside the source file under fileName") }),
+  subtitles: z.strictObject({ format: z.literal("srt"), fileName: z.string().max(200), content: z.string().max(500_000) }),
+  source: z.strictObject({
+    fileName: z.string().max(200).describe("The name the timeline refers to; save the source file under it"),
+    sizeBytes: z.number().int().nonnegative().nullable(),
+    downloadUrl: z.string().url().max(8_192).describe("Private Download Grant; do not share or store"),
+    expiresAt: date,
+  }),
+});
+export const mcpListRecipesSchema = z.strictObject(mcpWorkspaceInput);
+export const mcpRecipesResultSchema = recipesResultSchema;
 export const mcpListBrandProfilesSchema = z.strictObject(mcpWorkspaceInput);
 export const mcpBrandProfilesResultSchema = z.strictObject({
   profiles: z.array(z.strictObject({ brandProfileId: id, name: z.string().max(200), isDefault: z.boolean(),

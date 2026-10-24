@@ -1,0 +1,10 @@
+{
+    "id": "5b1c3a52-9f0e-4d6a-8c1b-2e7d4f9a0b13",
+    "seq": 42,
+    "type": "operation.finished",
+    "occurredAt": "2026-10-24T12:00:00.000Z",
+    "projectId": "00000000-0000-4000-8000-000000000004",
+    "operationId": "op_AAAAAAAAAAAAAAAAAAAAAAA",
+    "operationKind": "generation",
+    "state": "completed"
+}

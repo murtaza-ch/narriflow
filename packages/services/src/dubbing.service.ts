@@ -5,6 +5,7 @@ import {
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioToDb,
+  clipSourceEdgeSec,
   requestClipDubSchema,
   type ClipAspectRatio,
   type ClipDubSnapshot,
@@ -274,6 +275,7 @@ export class DubbingService {
             title: true,
             languageCode: true,
             sourceDurationSeconds: true,
+            sourceProbe: true,
             transcript: { select: { languageCode: true } },
           },
         },
@@ -281,10 +283,10 @@ export class DubbingService {
       orderBy: { createdAt: "asc" },
     });
     return dubs.map((dub) => {
-      const document = decodeClipEditorDocumentFromStorage(
-        dub.clip,
-        dub.project.sourceDurationSeconds,
-      );
+      const document = decodeClipEditorDocumentFromStorage(dub.clip, {
+        durationSec: clipSourceEdgeSec(dub.project),
+        wholeSource: dub.clip.wholeSource,
+      });
       return {
         ...dub,
         clip: {

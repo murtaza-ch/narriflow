@@ -31,7 +31,7 @@ const handler = createMcpUploadHttpHandler({
     if (!token) {
       const principal = await authenticateMcpRequest(request);
       const actor = await admission.requireWorkspace("narriflow_upload_video", principal, workspaceId);
-      return { actor, beforeAccept: await getMcpMutationGuard(principal) };
+      return { actor, beforeAccept: await getMcpMutationGuard(principal), credential: principal };
     }
     const user = await getCurrentAppUser();
     if (!user) throw new OAuthError(OAuthErrorCode.InvalidToken, "Sign in to Narriflow to continue this upload");

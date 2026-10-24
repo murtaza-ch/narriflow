@@ -1,0 +1,140 @@
+[
+    {
+        "name": "url",
+        "type": "url",
+        "label": "Video link",
+        "required": true,
+        "help": "A supported video link, such as a YouTube URL."
+    },
+    {
+        "name": "title",
+        "type": "text",
+        "label": "Project title",
+        "validate": {
+            "max": 200
+        },
+        "help": "Defaults to the video's own title."
+    },
+    {
+        "name": "brandProfileId",
+        "type": "select",
+        "label": "Brand Profile",
+        "options": "rpc://listBrandProfiles",
+        "help": "Leave empty to use the Workspace default."
+    },
+    {
+        "name": "clipCountTarget",
+        "type": "uinteger",
+        "label": "Number of clips",
+        "validate": {
+            "min": 3,
+            "max": 30
+        },
+        "help": "How many clips to look for, from 3 to 30. Leave empty for 10."
+    },
+    {
+        "name": "clipLengthPreset",
+        "type": "select",
+        "label": "Clip length",
+        "options": [
+            {
+                "label": "Auto",
+                "value": "auto"
+            },
+            {
+                "label": "Under 30 seconds",
+                "value": "under_30s"
+            },
+            {
+                "label": "30 to 60 seconds",
+                "value": "30_to_60s"
+            },
+            {
+                "label": "60 to 120 seconds",
+                "value": "60_to_120s"
+            },
+            {
+                "label": "120 to 180 seconds",
+                "value": "120_to_180s"
+            }
+        ],
+        "help": "Leave empty for Auto."
+    },
+    {
+        "name": "specificMoments",
+        "type": "text",
+        "label": "Specific moments",
+        "validate": {
+            "max": 500
+        },
+        "help": "Describe moments to find, in up to 500 characters. For example: every time the guest mentions pricing."
+    },
+    {
+        "name": "finishing",
+        "type": "collection",
+        "label": "Finish automatically",
+        "help": "When clips are ready, Narriflow exports the best ones and writes their copy, then the Finishing finished event fires. Leave empty to skip. Needs a plan with campaign operations.",
+        "spec": [
+            {
+                "name": "topClips",
+                "type": "uinteger",
+                "label": "Top clips",
+                "validate": {
+                    "min": 1,
+                    "max": 10
+                },
+                "help": "Export this many of the best clips, from 1 to 10. Required to finish automatically."
+            },
+            {
+                "name": "minScore",
+                "type": "uinteger",
+                "label": "Minimum virality score",
+                "validate": {
+                    "min": 0,
+                    "max": 100
+                },
+                "help": "Skip clips that score below this, from 0 to 100."
+            },
+            {
+                "name": "copyPlatforms",
+                "type": "select",
+                "label": "Write copy for",
+                "multiple": true,
+                "options": [
+                    {
+                        "label": "TikTok",
+                        "value": "tiktok"
+                    },
+                    {
+                        "label": "YouTube Shorts",
+                        "value": "youtube_shorts"
+                    },
+                    {
+                        "label": "Instagram Reels",
+                        "value": "instagram_reels"
+                    },
+                    {
+                        "label": "Facebook Reels",
+                        "value": "facebook_reels"
+                    },
+                    {
+                        "label": "LinkedIn",
+                        "value": "linkedin"
+                    },
+                    {
+                        "label": "X",
+                        "value": "x"
+                    }
+                ],
+                "help": "Also write a caption for each exported clip on these platforms."
+            }
+        ]
+    },
+    {
+        "name": "runKey",
+        "type": "text",
+        "label": "Run key",
+        "advanced": true,
+        "help": "Narriflow remembers a request for good, so the same inputs are the same request forever. Map the trigger's Event ID here to run once for each event, or change any input to run again."
+    }
+]

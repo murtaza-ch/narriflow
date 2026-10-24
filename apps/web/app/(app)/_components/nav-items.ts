@@ -1,4 +1,5 @@
 import {
+  BookMarked,
   Bot,
   CalendarDays,
   Download,
@@ -6,6 +7,8 @@ import {
   House,
   PlugZap,
   Palette,
+  TrendingUp,
+  Search,
   type LucideIcon,
 } from "lucide-react";
 
@@ -23,9 +26,12 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: "Home", href: "/home", icon: House },
   { label: "Projects", href: "/projects", icon: FolderOpen },
+  { label: "Search", href: "/search", icon: Search },
   { label: "Exports", href: "/exports", icon: Download },
   { label: "Calendar", href: "/calendar", icon: CalendarDays },
+  { label: "What worked", href: "/performance", icon: TrendingUp },
   { label: "Autopilot", href: "/autopilot", icon: Bot },
+  { label: "Recipes", href: "/recipes", icon: BookMarked },
   { label: "Brand kit", href: "/brand-kit", icon: Palette },
   { label: "Integrations", href: "/integrations", icon: PlugZap },
 ];

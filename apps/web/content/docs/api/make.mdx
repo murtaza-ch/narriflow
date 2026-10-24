@@ -1,0 +1,99 @@
+---
+title: Make
+description: Start Make scenarios when Narriflow finishes clips, and submit videos, export clips and queue social posts from any scenario.
+---
+
+The Narriflow app for Make covers the same ground as the [REST API](/docs/api/introduction). One trigger starts a scenario when clips are ready, an export finishes, Narriflow finishes a project on its own, an Autopilot episode arrives, or a social post is published or needs attention. Actions submit a video link, generate clips, export a clip and propose a social post. A search issues fresh download links, and a universal module calls any other endpoint.
+
+<Note>
+  The app is private for now. Narriflow shares it with you as an invite link, and it is not in Make's app directory yet.
+</Note>
+
+## Connect
+
+<Steps>
+  <Step title="Create an API key">
+    In Narriflow, open **Settings → Developer access** and create a key. Turn on the permissions your scenarios need, from the table below. The Workspace must be on an active Business plan.
+  </Step>
+  <Step title="Install the app">
+    Open the invite link while signed in to Make and confirm the installation in your organization.
+  </Step>
+  <Step title="Create a connection">
+    Add a Narriflow module to a scenario, select **Add** next to **Connection** and paste the API key. Leave **Narriflow URL** (under **Show advanced settings**) as `https://app.narriflow.com`. Make names the connection after your Workspace.
+  </Step>
+</Steps>
+
+| You want | Turn on |
+| --- | --- |
+| To connect, and every watch, search and dropdown | The read permissions a new key has by default: `usage:read`, `projects:read`, `exports:read` |
+| Social post events and the Social account dropdown | `publishing:read`, also on by default |
+| Submit a video link and Generate clips | **Allow this key to import, upload and generate clips** (`processing:write`) |
+| Export a clip | **Allow this key to request clip exports** (`exports:write`) |
+| Propose a social post | **Publishing** (`publishing:write`) |
+
+A module that lacks a permission fails with a message that names it.
+
+## Watch events
+
+**Watch events** reads the [event feed](/docs/api/events). Pick the event types, then add a filter after the module for the outcome you want:
+
+| You want to start on | Event types | Filter |
+| --- | --- | --- |
+| Clips ready | Operation finished | **Operation kind** equal to `generation`, and **State** equal to `completed` or `partial` |
+| Export finished | Operation finished | **Operation kind** equal to `export`, and **State** equal to `completed` or `partial` |
+| Finishing ready | Finishing finished | **State** equal to `ready` or `partial` |
+| Autopilot episode imported | Autopilot episode imported | None |
+| Post published | Social post finished | **State** equal to `posted` |
+| Post needs attention | Social post finished | **State** equal to `needs_attention` or `failed` |
+
+Each bundle has the **Event ID**, **Sequence number**, **Event type**, **Occurred at** and the IDs the event carries: Project ID, Operation ID, Clip ID, Export IDs, Social post ID, Platform and State. Events carry IDs only. To read more, add **Make an API call** with the ID:
+
+- Clips of a project: `GET /api/v1/projects/{Project ID}/clips`.
+- The export an Operation ID started: `GET /api/v1/operations/{Operation ID}`, then use `body.results.exportId` in **Get export download**.
+
+### Where it starts, and what it never skips
+
+The first time you add the module, **Choose where to start** lists the newest 100 events. Choose the newest one to start from now, or **All** to process every event Narriflow still keeps (30 days). After that, each run asks Narriflow for the events after the last one it handled, oldest first, so none are skipped however many happen between runs. **Limit** is the most events one run handles: the rest follow in the next run. A scenario that is off for longer than 30 days misses the events Narriflow has already deleted.
+
+## Modules
+
+| Module | What it does |
+| --- | --- |
+| Submit a video link | Imports a video from a link and generates clips. Optional: project title, Brand Profile, number of clips, clip length, specific moments, and **Finish automatically** (export the best clips and write copy). Returns the Project ID, Operation ID and Review URL. Uses processing minutes. |
+| Generate clips | Generates clips for a Project ID, with the same settings. **Generate again** replaces clips the project already has. |
+| Export a clip | Exports a Clip ID in the formats and resolution you choose, as the clip looks when the module runs. Returns the Export ID. Watch events for the export to finish. |
+| Propose a social post | Adds an export to a social account's Publishing Queue as a draft, with your caption or the latest copy Narriflow wrote. Nothing is published until a person accepts it in Narriflow. Returns the Proposal ID and the queue link. |
+| Get export download | Issues fresh download links for a finished export, one bundle for each ready format, each with the subtitles as SRT and WebVTT text. |
+| Make an API call | Calls any [REST API](/docs/api/introduction) path with the connection's key. Start the path with `/api/v1`. |
+
+The Brand Profile and Social account fields are dropdowns filled from your Workspace. Switch a dropdown to mapping to use an ID from an earlier module.
+
+<Note>
+  Download links from Get export download expire 15 minutes after the module runs. Pass them to a file module later in the same scenario, such as HTTP **Get a file**, Google Drive or Slack.
+</Note>
+
+## Retries and repeats
+
+Each action sends an `Idempotency-Key` made from the module's inputs. If Make retries a module, or resumes an incomplete execution, Narriflow returns the first result instead of starting the work twice, and **Replay of an earlier identical request** is true.
+
+Narriflow remembers a request for good, so the same inputs are the same request forever, even from another scenario: submitting the same link with the same settings twice gives one project, and repeating identical Generate clips settings is a permanent replay. Every action has an optional **Run key** (under **Show advanced settings**) for the cases where you want one run per event. Map the trigger's **Event ID** to it: the same event never runs twice, and a new event runs again with the same inputs. Without a Run key, change an input to start the work again. See [Idempotency](/docs/api/introduction#idempotency).
+
+## Example: post new clips to Slack
+
+1. **Watch events**, with the type Finishing finished, and a filter on **State**.
+2. **Iterator**, over **Export IDs**.
+3. **Get export download** with the iterator's value as the Export ID.
+4. **HTTP → Get a file** with **Download URL**, then **Slack → Upload a file**.
+
+Turn on **Finish automatically** in Submit a video link or an Autopilot rule so that Finishing finished events arrive. For a flow that runs outside Make, see the [n8n template](/docs/api/n8n#autopilot-clips-to-slack).
+
+## Troubleshooting
+
+| Message or symptom | Cause |
+| --- | --- |
+| `scope_required` | The key lacks the permission the message names. Turn it on for the key, or create a new key, then reconnect. |
+| The scenario stops and asks you to reconnect | Narriflow refused the key as missing, invalid or revoked. Create a key and reconnect. |
+| `integration_access_unavailable` | The Workspace needs an active Business plan. |
+| Social post events fail, naming `publishing:read` | The key lacks that permission, so Narriflow hides events about posts from it. |
+| A module returns an earlier result and **Replay of an earlier identical request** is true | The same Run key and inputs were used before. Change an input, or map a new Run key. |
+| The connection test fails with a URL message | **Narriflow URL** must be an `https://` origin. Leave it as `https://app.narriflow.com` unless Narriflow gave you a development address. |

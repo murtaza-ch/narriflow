@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ingestRecoveryAction,
+  ingestRecoveryLabel,
   liveIngestStageWord,
   mergePipelineStepsWithLiveEvents,
   mergeStageWithLiveEvent,
@@ -21,6 +22,27 @@ describe("ingest recovery action", () => {
 
   test("a transient exhausted import remains manually retryable", () => {
     expect(ingestRecoveryAction("ingest_retries_exhausted")).toBe("retry");
+  });
+
+  test("a Drive Picker import can't be retried whatever failed, because its token is gone", () => {
+    for (const code of [
+      "ingest_retries_exhausted",
+      "worker_stalled",
+      "media_duration_unavailable",
+      "processing_quota_exhausted",
+      "workspace_processing_capacity_reached",
+      "drive_token_expired",
+    ]) {
+      expect(ingestRecoveryAction(code, true)).toBe("new_upload");
+    }
+    expect(ingestRecoveryLabel(true)).toBe("Choose the file again");
+  });
+
+  test("recovery follows the source, so other imports keep their existing paths", () => {
+    expect(ingestRecoveryAction("ingest_retries_exhausted", false)).toBe("retry");
+    expect(ingestRecoveryAction("source_provider_access_denied", false)).toBe("new_upload");
+    expect(ingestRecoveryLabel(false)).toBe("Upload video instead");
+    expect(ingestRecoveryLabel()).toBe("Upload video instead");
   });
 });
 

@@ -76,6 +76,21 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		await pool?.end();
 	});
 
+	/** The settings an Autopilot rule imports with. */
+	const recipeFor = async (workspaceId: string) =>
+		(await prisma.recipe.create({
+			data: {
+				workspaceId,
+				name: "Claim fencing settings",
+				contentPack: {
+					outputTypes: ["short_clip"],
+					clipCountTarget: 3,
+					clipDurationSecTarget: 30,
+					platformPlaybookVersion: "platform-playbook-v1",
+				},
+			},
+		})).id;
+
 	async function fixture(label: string) {
 		const suffix = randomUUID();
 		const user = await prisma.user.create({
@@ -259,12 +274,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					workspaceId: current.workspace.id,
 					name: "Claim fencing",
 					rssUrl: "https://feeds.example.test/private",
-					contentPack: {
-						outputTypes: ["short_clip"],
-						clipCountTarget: 3,
-						clipDurationSecTarget: 30,
-						platformPlaybookVersion: "platform-playbook-v1",
-					},
+					recipeId: await recipeFor(current.workspace.id),
 					nextRunAt: new Date(0),
 				},
 			});
@@ -603,12 +613,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				workspaceId: current.workspace.id,
 				name: "Immutable claim",
 				rssUrl: "https://feeds.example.test/show.xml",
-				contentPack: {
-					outputTypes: ["short_clip"],
-					clipCountTarget: 3,
-					clipDurationSecTarget: 30,
-					platformPlaybookVersion: "platform-playbook-v1",
-				},
+				recipeId: await recipeFor(current.workspace.id),
 				nextRunAt: new Date(0),
 			},
 		});
@@ -710,12 +715,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					rssUrl: "https://feeds.example.test/show.xml",
 					initialImportMode: "latest",
 					initialImportCount: 1,
-					contentPack: {
-						outputTypes: ["short_clip"],
-						clipCountTarget: 3,
-						clipDurationSecTarget: 30,
-						platformPlaybookVersion: "platform-playbook-v1",
-					},
+					recipeId: await recipeFor(current.workspace.id),
 					nextRunAt: new Date(0),
 				},
 			});
@@ -798,12 +798,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				workspaceId: current.workspace.id,
 				name: "Before edit",
 				rssUrl: "https://feeds.example.test/show.xml",
-				contentPack: {
-					outputTypes: ["short_clip"],
-					clipCountTarget: 3,
-					clipDurationSecTarget: 30,
-					platformPlaybookVersion: "platform-playbook-v1",
-				},
+				recipeId: await recipeFor(current.workspace.id),
 				nextRunAt: new Date(0),
 			},
 		});

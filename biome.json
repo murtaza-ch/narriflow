@@ -12,6 +12,8 @@
       "!**/.next",
       "!**/dist",
       "!**/.turbo",
+      "!integrations/zapier",
+      "!integrations/make",
       "!packages/db/prisma/migrations",
       "!packages/db/generated",
       "!.agents/skills",

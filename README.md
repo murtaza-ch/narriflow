@@ -20,6 +20,8 @@ Current architecture and vocabulary live in [GLOSSARY.md](GLOSSARY.md) and the [
 | `packages/mcp-core` | Shared MCP tools, authentication, and transport support |
 | `packages/ui` | Chakra UI v3 components and Blueline theme |
 | `packages/auth`, `packages/email`, `packages/config` | Shared authentication, email, and configuration |
+| `integrations/zapier` | Separate npm project: the Zapier app over the public REST API |
+| `integrations/make` | Make custom app definition (JSON for Make's Apps SDK) over the public REST API |
 | `tools/videos` | Separate npm project for marketing videos |
 
 ## Stack
@@ -160,7 +162,8 @@ flowchart TD
 - Presigned URL: a temporary URL for uploading or downloading R2 objects without exposing storage credentials.
 - SSE: Server-Sent Events, a browser stream used for one-way live updates from the server.
 - Pub/sub: publish/subscribe messaging; here, Redis broadcasts workflow events to connected clients.
-- Autopilot rule: a saved RSS feed watcher that imports unseen episodes and persists generation settings before ingest finishes.
+- Autopilot rule: a saved RSS feed watcher that imports unseen episodes with a Recipe, whose Brand Profile and generation settings are frozen onto each import before ingest finishes.
+- Recipe: a named, revisioned set of Workspace settings (Brand Profile, language, Content Pack, finishing) that rules and REST/MCP requests reference.
 - MCP server: the stateless Model Context Protocol endpoint at `/mcp`, with OAuth or workspace API-key authentication and a local stdio fallback.
 
 ## Local environment files
@@ -226,6 +229,7 @@ Notes:
 - Project notification emails from the worker stay off, and are recorded as skipped, until `NOTIFICATION_EMAILS_ENABLED=true`. Set it only after the sending domain is verified in Resend.
 - Generated stills require `OPENAI_API_KEY`, `OPENAI_IMAGE_MODEL=gpt-image-2`, and the same `GENERATED_MEDIA_PROMPT_ACTIVE_KEY_VERSION`, `GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY`, `GENERATED_MEDIA_PROMPT_DECRYPTION_KEYS_JSON`, and `GENERATED_MEDIA_PROMPT_FINGERPRINT_KEY` in web and worker. Generate the encryption and fingerprint keys independently with `openssl rand -base64 32`. Keep retired encryption keys in the JSON keyring until every prompt encrypted by them passes its 30-day retention deadline.
 - Native social OAuth requires `SOCIAL_TOKEN_ENCRYPTION_KEY` plus the provider client IDs/secrets listed in the env example. Register `${NEXT_PUBLIC_APP_URL}/api/social/oauth/callback` as the redirect URI in each provider app.
+- The upload page offers **Google Drive** and **Dropbox** pickers only when configured. Drive needs `NEXT_PUBLIC_GOOGLE_API_KEY`, `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, and `NEXT_PUBLIC_GOOGLE_APP_ID` together, plus `SOCIAL_TOKEN_ENCRYPTION_KEY` in both web and worker (it seals the Drive access token on the Ingest Job). Dropbox needs `NEXT_PUBLIC_DROPBOX_APP_KEY`. Create the apps with [the cloud file picker runbook](docs/runbooks/cloud-file-pickers.md).
 - Free-project retention must use identical `PROJECT_RETENTION_MODE` and `PROJECT_RETENTION_ENFORCEMENT_STARTED_AT` values in web and worker. Leave the mode at `observe` for at least seven days; enforcement without a valid explicit UTC activation timestamp assigns no deadlines.
 - Expansion writes fail closed. Enable only the release group being deployed with `NARRIFLOW_WRITES_BRAND_PROFILES=1`, `NARRIFLOW_WRITES_VISUAL_ASSETS=1`, `NARRIFLOW_WRITES_BRAND_FONTS=1`, `NARRIFLOW_WRITES_BRAND_KIT_PROJECTION=1`, `NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS=1`, `NARRIFLOW_WRITES_SCENE_CARDS=1`, `NARRIFLOW_WRITES_SCENE_IMAGES=1`, `NARRIFLOW_WRITES_SCENE_VIDEOS=1`, `NARRIFLOW_WRITES_SCENE_TEMPLATES=1`, or `NARRIFLOW_WRITES_GENERATED_MEDIA=1`. Review rooms are enabled by the Business plan entitlement and do not use release flags. Disabling another group leaves existing rows readable.
 - `EXPORT_BUNDLE_RETENTION_DAYS=7` controls completed ZIP availability and is frozen into each bundle at admission. Accepted values are whole days from 1 through 30.
@@ -256,6 +260,8 @@ Useful runtime settings:
 - The four `GENERATED_MEDIA_PROMPT_*` values must match the web values. Rotate encryption by moving the old version and key into `GENERATED_MEDIA_PROMPT_DECRYPTION_KEYS_JSON`, assigning a new active version, and generating a new encryption key. Do not rotate the fingerprint key unless prompt idempotency records have been cleared intentionally.
 - Unknown generated-image outcomes are inspected and explicitly settled with `bun run --cwd packages/services generated-media:operator -- --workspace <uuid> --job <uuid>`; reconciliation additionally requires `--decision`, `--actor`, and `--reason`.
 - `OPENAI_CLIP_REASONING_EFFORT=medium`
+- Library search embeds finished transcripts with `text-embedding-3-small` using `OPENAI_API_KEY` in both the worker (indexing) and web (queries). The database needs the `vector` extension; see [the environment runbook](docs/runbooks/environments.md). `LIBRARY_INDEX_POLL_INTERVAL_MS=10000` and `LIBRARY_INDEX_BATCH_SIZE=5` tune the indexing loop.
+- Finishing (exporting the best clips and writing copy once a generation completes) runs in the worker's `finishing` loop. It uses `OPENAI_API_KEY` for assisted copy; `FINISHING_POLL_INTERVAL_MS=15000` and `FINISHING_BATCH_SIZE=3` tune it. Apply the `generation_finishing` migration before deploying.
 - `OPENAI_TTS_MODEL=gpt-4o-mini-tts` and `OPENAI_DUB_TRANSLATION_MODEL=gpt-5.4-mini` for voiceover dubbing.
 - `ASSEMBLYAI_KEYTERMS_PROMPT=comma,separated,terms` to opt into deployment-specific names or brands. Terms are trimmed, deduplicated, limited to six words each, and capped at the Universal-2-safe 200-term limit; Narriflow sends no built-in demo vocabulary.
 - `WORKER_REAP_INTERVAL_MS=300000` to recover Ingest Jobs whose fenced claim lease expired. Graceful shutdown releases claims without consuming automatic retries.

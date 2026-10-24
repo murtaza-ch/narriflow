@@ -52,7 +52,7 @@ export const publishingCopySchema = z.strictObject({
 });
 
 export const publishingTimingSchema = z.strictObject({
-	scheduleMode: z.enum(["now", "scheduled", "spread"]),
+	scheduleMode: z.enum(["now", "scheduled", "spread", "queue"]).describe("queue gives each post the next free slot of its account's posting schedule"),
 	startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 	timeZone: z.string().trim().min(1).max(100),
 	postingWindow: z.strictObject({

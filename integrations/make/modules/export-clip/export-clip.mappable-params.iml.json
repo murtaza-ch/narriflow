@@ -1,0 +1,63 @@
+[
+    {
+        "name": "clipId",
+        "type": "text",
+        "label": "Clip ID",
+        "required": true,
+        "help": "The clip to export, as it looks when this module runs. Get clip IDs from Make an API call with GET /api/v1/projects/{projectId}/clips."
+    },
+    {
+        "name": "aspectRatios",
+        "type": "select",
+        "label": "Formats",
+        "multiple": true,
+        "required": true,
+        "default": [
+            "9:16"
+        ],
+        "options": [
+            {
+                "label": "9:16 vertical",
+                "value": "9:16"
+            },
+            {
+                "label": "1:1 square",
+                "value": "1:1"
+            },
+            {
+                "label": "16:9 landscape",
+                "value": "16:9"
+            },
+            {
+                "label": "4:5 portrait",
+                "value": "4:5"
+            }
+        ],
+        "help": "Each format is rendered as its own file."
+    },
+    {
+        "name": "resolution",
+        "type": "select",
+        "label": "Resolution",
+        "required": true,
+        "default": "1080p",
+        "options": [
+            {
+                "label": "1080p",
+                "value": "1080p"
+            },
+            {
+                "label": "720p",
+                "value": "720p"
+            }
+        ],
+        "help": "A plan that does not include 1080p exports at 720p, and says so in Granted resolution."
+    },
+    {
+        "name": "runKey",
+        "type": "text",
+        "label": "Run key",
+        "advanced": true,
+        "help": "Narriflow remembers a request for good, so the same inputs are the same request forever. An edit to the clip is a new export on its own. Map the trigger's Event ID here to run once for each event."
+    }
+]

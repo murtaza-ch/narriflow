@@ -1,5 +1,8 @@
 import { publishingPreviewSchema } from "@narriflow/validators";
 import {
+	createClipFromSelectionSchema,
+	LIBRARY_SEARCH_MAX_LIMIT,
+	librarySearchQuerySchema,
 	regenerateClipsRequestSchema,
 	recheckSocialPublicationSchema,
 	confirmSocialPublicationSchema,
@@ -168,12 +171,56 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 	},
 	{
 		method: "POST",
+		path: "/autopilot/rules/:ruleId/take-over",
+		capability: "workspace.manage",
+	},
+	{
+		method: "POST",
 		path: "/autopilot/rules/:ruleId/run-now",
 		capability: "processing.consume",
 		rateLimit: workspaceRate("autopilot-run", 10, 3_600),
 	},
+	{ method: "GET", path: "/recipes", capability: "content.view" },
+	{
+		method: "POST",
+		path: "/recipes",
+		capability: "content.edit",
+		rateLimit: workspaceRate("recipe-create", 30, 3_600),
+	},
+	{
+		method: "PATCH",
+		path: "/recipes/:recipeId",
+		capability: "content.edit",
+	},
+	{
+		method: "POST",
+		path: "/recipes/:recipeId/duplicate",
+		capability: "content.edit",
+		rateLimit: workspaceRate("recipe-create", 30, 3_600),
+	},
+	{
+		method: "DELETE",
+		path: "/recipes/:recipeId",
+		capability: "content.edit",
+	},
 	{ method: "GET", path: "/projects", capability: "content.view" },
 	{ method: "GET", path: "/workspace/search", capability: "content.view" },
+	{
+		method: "GET",
+		path: "/library/search",
+		capability: "content.view",
+		rateLimit: actorRate("library-search", 30),
+		input: {
+			schema: z
+				.object({
+					q: librarySearchQuerySchema,
+					limit: z.coerce.number().int().min(1).max(LIBRARY_SEARCH_MAX_LIMIT).optional(),
+					projectId: z.string().uuid().optional(),
+				})
+				.strict(),
+			query: ["q", "limit", "projectId"],
+		},
+	},
 	{
 		method: "GET",
 		path: "/workspace/exports/:exportId/download",
@@ -239,6 +286,10 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 		"/projects/:id/clips/:clipId/create-from-selection",
 		"content.edit",
 	),
+	{
+		...project("POST", "/projects/:id/clips/create-from-range", "content.edit"),
+		input: bodyInput(createClipFromSelectionSchema, ["id"]),
+	},
 	project("GET", "/projects/:id/clips/:clipId/editor", "content.edit"),
 	project("PUT", "/projects/:id/clips/:clipId/editor", "content.edit"),
 	project("POST", "/projects/:id/clips/:clipId/editor/reset", "content.edit"),
@@ -508,6 +559,16 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 	project(
 		"GET",
 		"/projects/:id/clips/:clipId/exports/:exportId/subtitles/:format",
+		"content.download",
+	),
+	project(
+		"GET",
+		"/projects/:id/clips/:clipId/timeline/:format",
+		"content.download",
+	),
+	project(
+		"GET",
+		"/projects/:id/clips/:clipId/timeline-source",
 		"content.download",
 	),
 	project(
@@ -904,6 +965,17 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
 		"project",
 		"publishing.manage",
 	),
+	action("app/(app)/calendar/queue/actions.ts", "savePostingScheduleAction", "workspace", "publishing.manage"),
+	action("app/(app)/calendar/queue/actions.ts", "tiktokAcceptanceOptionsAction", "workspace", "publishing.manage"),
+	action("app/(app)/calendar/queue/actions.ts", "updateProposalCaptionAction", "workspace", "publishing.manage"),
+	action("app/(app)/calendar/queue/actions.ts", "rejectProposalAction", "workspace", "publishing.manage"),
+	action("app/(app)/calendar/queue/actions.ts", "acceptProposalAction", "workspace", "publishing.manage"),
+	action("app/(app)/calendar/queue/actions.ts", "acceptAllProposalsAction", "workspace", "publishing.manage"),
+	action("app/(app)/calendar/queue/actions.ts", "proposeToQueueAction", "workspace", "publishing.manage"),
+	action("app/(app)/settings/automation-grants/actions.ts", "createStandingGrantAction", "workspace", "workspace.manage"),
+	action("app/(app)/settings/automation-grants/actions.ts", "renewStandingGrantAction", "workspace", "workspace.manage"),
+	action("app/(app)/settings/automation-grants/actions.ts", "pauseStandingGrantAction", "workspace", "workspace.manage"),
+	action("app/(app)/settings/automation-grants/actions.ts", "revokeStandingGrantAction", "workspace", "workspace.manage"),
 	action(
 		"app/(app)/exports/actions.ts",
 		"retryWorkspaceExportAction",
@@ -990,6 +1062,12 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
 	),
 	action(
 		"app/(app)/settings/actions.ts",
+		"updatePerformanceGuidanceAction",
+		"workspace",
+		"workspace.manage",
+	),
+	action(
+		"app/(app)/settings/actions.ts",
 		"inviteMemberAction",
 		"workspace",
 		"members.invite",
@@ -1037,6 +1115,30 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
 		"api.manage",
 	),
 	action(
+		"app/(app)/settings/actions.ts",
+		"createWebhookAction",
+		"workspace",
+		"api.manage",
+	),
+	action(
+		"app/(app)/settings/actions.ts",
+		"deleteWebhookAction",
+		"workspace",
+		"api.manage",
+	),
+	action(
+		"app/(app)/settings/actions.ts",
+		"enableWebhookAction",
+		"workspace",
+		"api.manage",
+	),
+	action(
+		"app/(app)/settings/actions.ts",
+		"testWebhookAction",
+		"workspace",
+		"api.manage",
+	),
+	action(
 		"app/(app)/brand-kit/style-actions.ts",
 		"createBrandTemplateAction",
 		"workspace",
@@ -1069,6 +1171,12 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
 	action(
 		"app/(app)/upload/actions.ts",
 		"commitLinkImportAction",
+		"workspace",
+		"processing.consume",
+	),
+	action(
+		"app/(app)/upload/actions.ts",
+		"commitDriveImportAction",
 		"workspace",
 		"processing.consume",
 	),
@@ -1169,12 +1277,16 @@ export const browserSessionPages: readonly PageSurface[] = [
 	page("app/(app)/autopilot/page.tsx"),
 	page("app/(app)/calendar/new/page.tsx", "workspace", "publishing.manage"),
 	page("app/(app)/calendar/page.tsx"),
+	page("app/(app)/calendar/queue/page.tsx"),
 	page("app/(app)/exports/page.tsx"),
 	page("app/(app)/home/page.tsx"),
 	page("app/(app)/integrations/mcp/page.tsx"),
 	signedInPage("app/(app)/integrations/mcp/confirm/page.tsx"),
 	signedInPage("app/(app)/integrations/mcp/upload/page.tsx"),
 	page("app/(app)/integrations/page.tsx"),
+	page("app/(app)/performance/page.tsx"),
+	page("app/(app)/recipes/page.tsx"),
+	page("app/(app)/search/page.tsx"),
 	page("app/(app)/layout.tsx", "optional_workspace"),
 	page(
 		"app/(app)/projects/[projectId]/clips/[clipId]/exports/[exportId]/page.tsx",
@@ -1189,6 +1301,7 @@ export const browserSessionPages: readonly PageSurface[] = [
 	page("app/(app)/projects/[projectId]/page.tsx", "project"),
 	page("app/(app)/projects/page.tsx"),
 	page("app/(app)/settings/api/page.tsx", "workspace", "api.manage"),
+	page("app/(app)/settings/automation-grants/page.tsx"),
 	page("app/(app)/settings/billing/page.tsx"),
 	page("app/(app)/brand-kit/styles/[id]/page.tsx"),
 	page("app/(app)/settings/members/page.tsx"),
@@ -1227,6 +1340,7 @@ export const independentTrustModules = [
 	{ module: "app/api/webhooks/clerk/route.ts", trustModel: "clerk_signature" },
 	{ module: "app/mcp/route.ts", trustModel: "mcp_oauth_or_scoped_api_key" },
 	{ module: "app/share/[token]/page.tsx", trustModel: "public_share_token" },
+	{ module: "app/review/opt-out/route.ts", trustModel: "signed_reviewer_opt_out" },
 	{
 		module: "app/api/review/[token]/[[...review]]/route.ts",
 		trustModel: "signed_review_guest_session",

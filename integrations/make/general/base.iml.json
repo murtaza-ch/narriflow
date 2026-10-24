@@ -1,0 +1,25 @@
+{
+    "baseUrl": "{{ifempty(connection.baseUrl, 'https://app.narriflow.com')}}/api/v1",
+    "headers": {
+        "authorization": "Bearer {{connection.apiKey}}",
+        "accept": "application/json"
+    },
+    "response": {
+        "error": {
+            "401": {
+                "type": "InvalidAccessTokenError",
+                "message": "[401] {{ifempty(body.message, 'This API key is invalid or revoked.')}} Reconnect Narriflow with a valid Workspace API key.{{if(body.requestId, ' (request ' + body.requestId + ')', '')}}"
+            },
+            "403": {
+                "type": "InvalidConfigurationError",
+                "message": "[{{statusCode}}] {{ifempty(body.error, 'error')}}: {{ifempty(body.message, 'Narriflow could not complete the request.')}}{{if(body.details.scope, ' Turn on the ' + body.details.scope + ' permission for this API key in Narriflow under Settings, then Developer access, and reconnect.', '')}}{{if(body.requestId, ' (request ' + body.requestId + ')', '')}}"
+            },
+            "message": "[{{statusCode}}] {{ifempty(body.error, 'error')}}: {{ifempty(body.message, 'Narriflow could not complete the request.')}}{{if(body.details.scope, ' Turn on the ' + body.details.scope + ' permission for this API key in Narriflow under Settings, then Developer access, and reconnect.', '')}}{{if(body.requestId, ' (request ' + body.requestId + ')', '')}}"
+        }
+    },
+    "log": {
+        "sanitize": [
+            "request.headers.authorization"
+        ]
+    }
+}

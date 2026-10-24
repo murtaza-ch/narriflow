@@ -2,9 +2,10 @@ import { Box, Input, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Combobox } from "@narriflow/ui/components/combobox";
-import { workspaceService } from "@narriflow/services";
+import { performanceService, workspaceService } from "@narriflow/services";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
-import { updateWorkspaceAction } from "../actions";
+import { updatePerformanceGuidanceAction, updateWorkspaceAction } from "../actions";
+import { PerformanceGuidanceField } from "./performance-guidance-field";
 import { WorkspaceAvatarControl } from "./workspace-avatar-control";
 import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
 
@@ -19,6 +20,7 @@ export default async function WorkspaceSettingsPage() {
   const workspace = await workspaceService.getWorkspace(appUser.actorUserId, appUser.workspaceId,
   );
   if (!workspace) return null;
+  const guidance = await performanceService.guidance(appUser);
   const avatarUrls = await workspaceService.getAvatarUrls(
     appUser.actorUserId,
     [appUser.workspaceId,
@@ -44,6 +46,21 @@ export default async function WorkspaceSettingsPage() {
           </Stack>
         </AuthenticatedActionForm>
       </Box>
+      <Stack gap="3" p="6" bg="bg.subtle" borderRadius="l3">
+        <AuthenticatedActionForm action={updatePerformanceGuidanceAction}>
+          <Stack gap="3" maxW="520px">
+            <PerformanceGuidanceField
+              enabled={guidance.enabled}
+              qualifies={guidance.qualifies}
+              minimumClips={guidance.minimumWorkspacePosts}
+              canManage={canManage}
+            />
+            {canManage ? (
+              <ActionSubmitButton pendingLabel="Saving…" size="sm" alignSelf="flex-start">Save</ActionSubmitButton>
+            ) : null}
+          </Stack>
+        </AuthenticatedActionForm>
+      </Stack>
       <WorkspaceAvatarControl avatarUrl={avatarUrls[appUser.workspaceId] ?? null} workspaceName={workspace.name} canManage={canManage} />
       <Text fontSize="12px" color="fg.subtle">
         Status:{" "}

@@ -14,7 +14,9 @@ import {
   type RepublishSocialPublicationInput,
   type SocialPublicationAction,
 } from "@narriflow/validators";
+import { combineLatestCaptures, latestCaptureInclude } from "./performance-summary";
 import { structuredSocialPublicationMetrics } from "./social-publication-observability";
+import { emitSocialPostFinished } from "./social-post-finished";
 import { SOCIAL_PROVIDER_API_VERSIONS } from "./social-publication-config";
 import { socialOAuthService } from "./social-oauth.service";
 import {
@@ -368,6 +370,7 @@ export const socialPublicationRecovery = {
         nextAttemptAt: true,
         workspace: { select: { status: true } },
         socialAccount: { select: { status: true } },
+        trackedVideos: latestCaptureInclude,
         publicationAttempts: {
           orderBy: [{ attemptNumber: "desc" }, { createdAt: "desc" }],
           select: {
@@ -413,9 +416,10 @@ export const socialPublicationRecovery = {
         "Social publication was not found",
       );
     }
-    const { workspace, socialAccount, ...facts } = post;
+    const { workspace, socialAccount, trackedVideos, ...facts } = post;
     return {
       ...facts,
+      latestMetrics: combineLatestCaptures(trackedVideos),
       allowedActions: allowedSocialPublicationActions({
         ...post,
         workspace,
@@ -647,7 +651,6 @@ export const socialPublicationRecovery = {
           receiptId,
           platformPostId: parsed.providerReference ?? null,
           externalUrl,
-          metrics: Prisma.JsonNull,
         },
       });
       await tx.publicationAnalyticsIntent.upsert({
@@ -691,6 +694,7 @@ export const socialPublicationRecovery = {
           ownershipValidated,
         },
       });
+      await emitSocialPostFinished(tx, { socialPostId: post.id, attemptId: attempt.id });
       return {
         socialPostId: post.id,
         attemptId: attempt.id,

@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
-import { clipService, clipExportService, projectService, socialPublicationScheduling, workspaceService, ExpectedDomainFailureError } from "@narriflow/services";
+import { autopilotService, clipService, clipExportService, projectService, recipeService, socialPublicationScheduling, workspaceService, ExpectedDomainFailureError } from "@narriflow/services";
 import { buildNarriflowMcpServer, type NarriflowMcpPrincipal, type NarriflowMcpServerOptions } from "./index";
 import * as services from "@narriflow/services";
+import { buildGenerationContentPack } from "@narriflow/validators";
 import { createMcpConfirmation, acceptMcpConfirmation, verifyMcpPreparation } from "./mcp-confirmation";
 const userId = "00000000-0000-4000-8000-000000000001";
 const workspaceId = "00000000-0000-4000-8000-000000000002";
@@ -71,6 +72,99 @@ describe("Compact MCP workflow", () => {
     const result = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key, generation: { clipCountTarget: 6, clipLengthPreset: "under_30s" } } });
     expect(result.structuredContent).toMatchObject({ data: { projectId, operation: { kind: "generation", id: operationId }, status: "accepted", statusTool: "narriflow_get_operation" } });
     expect(trigger).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), projectId, expect.objectContaining({ contentPack: expect.objectContaining({ clipCountTarget: 6, clipDurationSecTarget: 25, maxDurationSec: 35 }) }), services.integrationKeyUuid(userId, "generate_clips", key), expect.objectContaining({ mutation: expect.objectContaining({ clientIdempotencyKey: key }) }));
+  });
+
+  test("generation and submission carry finishing to the service, and an invalid one never reaches it", async () => {
+    admitActor();
+    const trigger = spyOn(projectService, "triggerGeneration").mockResolvedValue({ workflowRunId: "00000000-0000-4000-8000-000000000006", acceptedAt: "2026-10-05T00:00:00.000Z", initialSeq: 2 });
+    mocks.push(trigger);
+    const key = "00000000-0000-4000-8000-000000000005";
+    const client = await connect({ ...principal, scopes: ["processing:write"] });
+    const finishing = { topClips: 3, minScore: 50, aspectRatios: ["9:16"], copyPlatforms: ["tiktok", "x"] };
+    const accepted = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key, finishing } });
+    expect(accepted.isError).not.toBe(true);
+    // Finishing travels beside the generation input, never inside the browser's request shape.
+    expect(trigger.mock.calls[0]?.[2]).not.toHaveProperty("finishing");
+    expect(trigger.mock.calls[0]?.[4]).toMatchObject({ finishing: { topClips: 3, minScore: 50, aspectRatios: ["9:16"], copyPlatforms: ["tiktok", "x"], resolution: "1080p" } });
+
+    const plain = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key } });
+    expect(plain.isError).not.toBe(true);
+    expect(trigger.mock.calls[1]?.[4]).not.toHaveProperty("finishing", expect.anything());
+
+    const refused = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key, finishing: { topClips: 11 } } });
+    expect(refused.isError).toBe(true);
+    expect(trigger).toHaveBeenCalledTimes(2);
+  });
+
+  test("recipes are listed by name for choosing, without Content Pack internals", async () => {
+    admitActor();
+    const recipeId = "00000000-0000-4000-8000-0000000000e1";
+    const list = spyOn(recipeService, "list").mockResolvedValue([{ id: recipeId, workspaceId, name: "Weekly show", revision: 3, brandProfileId: null, languageCode: "en", contentPack: buildGenerationContentPack({ clipCountTarget: 6 }), finishing: null, ruleCount: 1, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-02T00:00:00.000Z" }]);
+    mocks.push(list);
+    const result = await (await connect()).callTool({ name: "narriflow_list_recipes", arguments: { workspaceId } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ data: { recipes: [{ recipeId, name: "Weekly show", revision: 3, languageCode: "en", finishing: null, generation: { clipCountTarget: 6, defaultAspectRatio: "9:16" } }] } });
+    expect(JSON.stringify(result.structuredContent)).not.toContain("platformPlaybookVersion");
+  });
+
+  test("generation and submission can name a Recipe in place of settings, and report the revision they used", async () => {
+    admitActor();
+    const recipeId = "00000000-0000-4000-8000-0000000000e1";
+    const operationId = "00000000-0000-4000-8000-000000000006";
+    const trigger = spyOn(projectService, "triggerGeneration").mockResolvedValue({ workflowRunId: operationId, acceptedAt: "2026-10-05T00:00:00.000Z", initialSeq: 2, recipe: { id: recipeId, revision: 4 } });
+    const intake = spyOn(projectService, "queueLinkIngest").mockResolvedValue({ project: { id: projectId }, queuedJobId: operationId, replayed: false, receiptId: "00000000-0000-4000-8000-0000000000aa", recipe: { id: recipeId, revision: 4 } } as never);
+    mocks.push(trigger, intake);
+    const key = "00000000-0000-4000-8000-000000000005";
+    const client = await connect({ ...principal, scopes: ["processing:write"] });
+
+    const generated = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key, recipeId } });
+    expect(generated.structuredContent).toMatchObject({ data: { projectId, operation: { kind: "generation", id: operationId }, recipe: { id: recipeId, revision: 4 } } });
+    // The run is asked for with the Recipe itself; nothing is read until it is accepted.
+    expect(trigger.mock.calls[0]?.[2]).toMatchObject({ forceRegenerate: false, recipe: { id: recipeId } });
+    expect(trigger.mock.calls[0]?.[2]).not.toHaveProperty("contentPack");
+
+    const submitted = await client.callTool({ name: "narriflow_submit_video", arguments: { workspaceId, clientIdempotencyKey: key, url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", recipeId } });
+    expect(submitted.structuredContent).toMatchObject({ data: { operation: { kind: "intake", id: operationId }, recipe: { id: recipeId, revision: 4 } } });
+    expect(intake.mock.calls[0]?.[2]).toMatchObject({ command: "submit_video", recipe: { id: recipeId } });
+    expect(intake.mock.calls[0]?.[2]).not.toHaveProperty("generationContext");
+
+    // A Recipe beside inline settings is a validation error and reaches no service.
+    for (const [name, inline] of [["narriflow_generate_clips", { projectId, generation: { clipCountTarget: 5 } }], ["narriflow_submit_video", { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", finishing: { topClips: 2 } }], ["narriflow_upload_video", { brandProfileId: userId }]] as const) {
+      const refused = await client.callTool({ name, arguments: { workspaceId, clientIdempotencyKey: key, recipeId, ...inline } });
+      expect(refused.isError).toBe(true);
+    }
+    expect(trigger).toHaveBeenCalledTimes(1);
+    expect(intake).toHaveBeenCalledTimes(1);
+  });
+
+  test("autopilot rules import with a Recipe, and a paused rule says why", async () => {
+    admitActor();
+    const ruleId = "00000000-0000-4000-8000-000000000007";
+    const recipeId = "00000000-0000-4000-8000-000000000008";
+    const key = "00000000-0000-4000-8000-000000000005";
+    const rule = (overrides: Record<string, unknown>) => ({ id: ruleId, workspaceId, createdByUserId: userId, name: "Podcast", rssUrl: "https://podcast.test/feed.xml", titlePrefix: null, recipeId, recipeName: "Weekly show", intervalMinutes: 1440, maxEpisodesPerRun: 3, feedTitle: null, initialImportMode: "future_only" as const, initialImportCount: 3, status: "active" as const, pauseKind: null, lastCheckedAt: null, lastSuccessAt: null, nextRunAt: "2026-10-24T00:00:00.000Z", lastError: null, consecutiveFailures: 0, importedEpisodeCount: 0, createdAt: "2026-10-24T00:00:00.000Z", ...overrides });
+    const create = spyOn(autopilotService, "createRule").mockResolvedValue(rule({}));
+    const list = spyOn(autopilotService, "listRules").mockResolvedValue([rule({}), rule({ id: "00000000-0000-4000-8000-000000000009", status: "paused", pauseKind: "acting_member" as const, lastError: "Dana Lee can no longer run this rule. A Workspace Owner or Admin can take it over to resume it.", consecutiveFailures: 0 }), rule({ id: "00000000-0000-4000-8000-00000000000a", status: "failed", lastError: "feed unreachable" })]);
+    mocks.push(create, list);
+    const client = await connect({ ...principal, scopes: ["autopilot:read", "autopilot:write"] });
+    const created = await client.callTool({ name: "narriflow_create_rss_autopilot_rule", arguments: { workspaceId, clientIdempotencyKey: key, name: "Podcast", rssUrl: "https://podcast.test/feed.xml", recipeId } });
+    expect(created.isError).not.toBe(true);
+    // The calling credential goes with it, so the Recipe's queue delivery is checked against its scopes.
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), expect.objectContaining({ recipeId }), expect.anything(), expect.objectContaining({ scopes: ["autopilot:read", "autopilot:write"] }));
+    // The rule carries no settings of its own: a Recipe is required, and inline ones are refused.
+    const omitted = await client.callTool({ name: "narriflow_create_rss_autopilot_rule", arguments: { workspaceId, clientIdempotencyKey: key, name: "Podcast", rssUrl: "https://podcast.test/feed.xml" } });
+    expect(omitted.isError).toBe(true);
+    const inline = await client.callTool({ name: "narriflow_create_rss_autopilot_rule", arguments: { workspaceId, clientIdempotencyKey: key, name: "Podcast", rssUrl: "https://podcast.test/feed.xml", recipeId, brandProfileId: null } });
+    expect(inline.isError).toBe(true);
+    expect(create).toHaveBeenCalledTimes(1);
+
+    const listed = await client.callTool({ name: "narriflow_list_autopilot_rules", arguments: { workspaceId } });
+    expect(listed.structuredContent).toMatchObject({ data: { rules: [
+      { ruleId, status: "active", recipeId, recipeName: "Weekly show", pausedReason: null },
+      { status: "paused", recipeId, pausedReason: expect.stringContaining("take it over") },
+      { status: "failed", recipeId, pausedReason: null },
+    ] } });
+    expect(JSON.stringify(listed.structuredContent)).not.toContain("feed unreachable");
   });
 
   test("export review exposes the exact revision and ordinary download page without signed URLs", async () => {

@@ -1,0 +1,32 @@
+[
+    {
+        "name": "projectId",
+        "type": "text",
+        "label": "Project ID"
+    },
+    {
+        "name": "operationId",
+        "type": "text",
+        "label": "Operation ID"
+    },
+    {
+        "name": "operationKind",
+        "type": "text",
+        "label": "Operation kind"
+    },
+    {
+        "name": "statusUrl",
+        "type": "url",
+        "label": "Status URL"
+    },
+    {
+        "name": "reviewUrl",
+        "type": "url",
+        "label": "Review URL"
+    },
+    {
+        "name": "replayed",
+        "type": "boolean",
+        "label": "Replay of an earlier identical request"
+    }
+]

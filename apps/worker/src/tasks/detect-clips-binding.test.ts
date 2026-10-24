@@ -31,16 +31,21 @@ function harness(readPack: Persistence["project"]["getContentPackForRun"]) {
     project: {
       getContentPackForRun: readPack,
       getTranscriptForWorker: async () => { transcriptReads++; throw new Error("Unexpected transcript read"); },
+      getSourceProbeDurationForWorker: async () => null,
     },
     clips: {
       persistDetectedClips: async () => { clipWrites++; throw new Error("Unexpected clip write"); },
       autoQueueDefaultRenders: async () => { throw new Error("Unexpected render admission"); },
+    },
+    exports: {
+      captionedExportWrite: () => { throw new Error("Unexpected export admission"); },
     },
     lifecycle: {
       failAttempt: async (received, failure) => { expect(received).toEqual(attempt); failures.push(failure); },
       completeMomentDetection: async () => { completions++; },
     },
     notifyFailure: async (notice) => { notices.push(notice); },
+    guidance: { promptLine: async () => null },
   };
   const context = { signal: new AbortController().signal, reportProgress: async () => {} };
   return { persistence, context, failures, notices, counts: () => ({ transcriptReads, clipWrites, completions }) };
@@ -97,6 +102,84 @@ describe("Clip detection bound Content Pack execution", () => {
     expect(h.counts().completions).toBe(1);
     expect(h.failures).toEqual([]);
     expect(h.notices).toEqual([]);
+  });
+
+  describe("captioned videos", () => {
+    const captionedPack = (captionedVideo: Record<string, unknown>, overrides: Record<string, unknown> = {}): StoredContentPack => ({
+      ...storedPack(),
+      processingStartSec: null, processingEndSec: null, defaultAspectRatio: "9:16",
+      ...contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 10, clipDurationSecTarget: 45,
+        platformPlaybookVersion: "platform-playbook-v1", mode: "caption_only", captionedVideo, ...overrides }),
+      captionedVideo,
+    } as unknown as StoredContentPack);
+    const settings = { framing: "fit", aspectRatios: ["9:16", "1:1"], resolution: "1080p", captions: { source: "none" } };
+    const emptyTranscript = (durationSeconds: number) => async () => ({
+      projectId: attempt.projectId, status: "completed", text: "", speakerCount: 0, durationSeconds, languageCode: null, utterancesJson: [],
+    } as unknown as Transcript);
+
+    test("accepts an empty transcript, ends the clip at the probed duration, and exports instead of rendering a preview", async () => {
+      const h = harness(async () => captionedPack(settings));
+      h.persistence.project.getTranscriptForWorker = emptyTranscript(8);
+      h.persistence.project.getSourceProbeDurationForWorker = async () => 7.6;
+      const short = { ...attempt, project: { ...attempt.project, sourceDurationSeconds: 8 } };
+      let exported: unknown = null;
+      const writer = async () => ({ exportId: "export", clipId: "clip" });
+      h.persistence.clips.persistDetectedClips = async (_received, clips) => {
+        expect(clips).toHaveLength(1);
+        expect(clips[0]).toMatchObject({ startSec: 0, endSec: 7.6, transcriptSlice: [] });
+      };
+      h.persistence.exports.captionedExportWrite = ((received: unknown, received2: unknown) => { expect(received).toEqual(short); exported = received2; return writer; }) as never;
+      let completedWith: unknown = null;
+      h.persistence.lifecycle.completeMomentDetection = async (_received, options) => { completedWith = options?.admit; };
+      await processClipDetectionRun(short, h.context, h.persistence);
+      expect(exported).toEqual(contentPackSchema.parse(captionedPack(settings)).captionedVideo);
+      // The export is admitted by the transaction that completes detection, not before it.
+      expect(completedWith).toBe(writer);
+      expect(h.failures).toEqual([]);
+    });
+
+    test("the clip keeps the probed tail the rounded duration would have lost", async () => {
+      const h = harness(async () => captionedPack(settings));
+      h.persistence.project.getTranscriptForWorker = emptyTranscript(8);
+      h.persistence.project.getSourceProbeDurationForWorker = async () => 8.4;
+      let window: [number, number] | null = null;
+      h.persistence.clips.persistDetectedClips = async (_received, clips) => { window = [clips[0]!.startSec, clips[0]!.endSec]; };
+      h.persistence.exports.captionedExportWrite = (() => async () => ({ exportId: "export", clipId: "clip" })) as never;
+      await processClipDetectionRun({ ...attempt, project: { ...attempt.project, sourceDurationSeconds: 8 } }, h.context, h.persistence);
+      expect(window).toEqual([0, 8.4]);
+      expect(h.counts().completions).toBe(1);
+      expect(h.failures).toEqual([]);
+    });
+
+    test("an empty transcript still fails a clip-mode run", async () => {
+      const h = harness(async () => ({ ...storedPack(), mode: "clip", processingStartSec: null, processingEndSec: null } as StoredContentPack));
+      h.persistence.project.getTranscriptForWorker = emptyTranscript(60);
+      await processClipDetectionRun(attempt, h.context, h.persistence);
+      expect(h.failures).toMatchObject([{ code: "source_has_no_speech", disposition: "permanent" }]);
+    });
+
+    test("refuses a source beyond 3 minutes permanently, before any clip or export is written", async () => {
+      const h = harness(async () => captionedPack(settings));
+      h.persistence.project.getTranscriptForWorker = emptyTranscript(181);
+      const long = { ...attempt, project: { ...attempt.project, sourceDurationSeconds: 181 } };
+      h.persistence.lifecycle.failAttempt = async (_received, failure) => { h.failures.push(failure); };
+      await processClipDetectionRun(long, h.context, h.persistence);
+      expect(h.failures).toMatchObject([{ code: "whole_source_too_long", disposition: "permanent" }]);
+      expect(h.counts().clipWrites).toBe(0);
+    });
+
+    test("accepts the 3-minute edge and an 8-second source", async () => {
+      for (const seconds of [180, 8]) {
+        const h = harness(async () => captionedPack(settings));
+        h.persistence.project.getTranscriptForWorker = emptyTranscript(seconds);
+        let window: [number, number] | null = null;
+        h.persistence.clips.persistDetectedClips = async (_received, clips) => { window = [clips[0]!.startSec, clips[0]!.endSec]; };
+        h.persistence.exports.captionedExportWrite = (() => async () => ({ exportId: "export", clipId: "clip" })) as never;
+        await processClipDetectionRun({ ...attempt, project: { ...attempt.project, sourceDurationSeconds: seconds } }, h.context, h.persistence);
+        expect(window).toEqual([0, seconds]);
+        expect(h.failures).toEqual([]);
+      }
+    });
   });
 
   test("a clip-mode pack queues automatic renders in its requested aspect ratio", async () => {

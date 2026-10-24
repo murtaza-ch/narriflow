@@ -23,6 +23,9 @@ import { deriveClipExportAggregate } from "./clip-export-aggregate";
 import {
   admitRetiredClipMediaCleanup,
 } from "./media-cleanup";
+import { queueExportFinished, queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
+import { flushWorkspaceEvents } from "./workspace-event";
+import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 
 export const WORKFLOW_LEASE_DURATION_MS = 2 * 60 * 1000;
 export const WORKFLOW_HEARTBEAT_INTERVAL_MS = 30 * 1000;
@@ -348,7 +351,13 @@ export class WorkflowRunLifecycle {
   ): Promise<T> {
     for (let attempt = 1; attempt <= TRANSACTION_RETRY_LIMIT; attempt += 1) {
       try {
-        return await this.prisma.$transaction(operation);
+        // Workspace Events queued by the operation are written last, after every
+        // lock the operation takes, and are dropped with a retried attempt.
+        return await this.prisma.$transaction(async (tx) => {
+          const result = await operation(tx);
+          await flushWorkspaceEvents(tx);
+          return result;
+        });
       } catch (error) {
         if (
           attempt === TRANSACTION_RETRY_LIMIT ||
@@ -392,94 +401,10 @@ export class WorkflowRunLifecycle {
     };
   }
 
-  private async appendEvent(
-    tx: TransactionClient,
-    input: {
-      projectId: string;
-      workflowRunId: string;
-      attemptId: string;
-      stage: WorkflowStage;
-      status: WorkflowStatus;
-      progress: number;
-      errorCode: string | null;
-      transition: string;
-      followUpWorkflowRunId?: string;
-      generationRenders?: NonNullable<WorkflowStageUpdatedEvent["generationRenders"]>;
-      generationRenderResults?: NonNullable<WorkflowStageUpdatedEvent["generationRenderResults"]>;
-      analyticsRequired?: boolean;
-      notification?: RenderTerminalNotificationPayload;
-    },
-  ) {
-    const emittedAt = new Date();
-    const dedupeKey = `${input.workflowRunId}:${input.attemptId}:${input.transition}`;
-    const existing = await tx.workflowEvent.findUnique({
-      where: { dedupeKey },
-      select: { id: true },
-    });
-    if (existing) return;
-    const projects = await tx.$queryRaw<Array<{ workflowEventSeq: number }>>`
-      UPDATE "Project"
-      SET "workflowEventSeq" = GREATEST(
-        "workflowEventSeq",
-        COALESCE(
-          (
-            SELECT MAX("seq")
-            FROM "WorkflowEvent"
-            WHERE "projectId" = ${input.projectId}::uuid
-          ),
-          0
-        )
-      ) + 1
-      WHERE "id" = ${input.projectId}::uuid
-      RETURNING "workflowEventSeq"
-    `;
-    const project = projects[0];
-    if (!project) throw new Error("Workflow event project unavailable");
-    // A render cache can be reset by Studio or deleted by a later generation.
-    // Preserve its first settled results in the same durable workflow event.
-    let generationRenderResults = input.generationRenderResults;
-    if (input.stage === "clip_rendering" && ["completed", "partial", "failed"].includes(input.status)) {
-      const renders = await tx.clipRender.findMany({ where: { workflowRunId: input.workflowRunId, exportVariantId: null },
-        select: { id: true, status: true, errorCode: true } });
-      generationRenderResults = renders.flatMap((render) => render.status === "completed" || render.status === "failed"
-        ? [{ renderId: render.id, status: render.status as "completed" | "failed", errorCode: render.errorCode }] : []);
-    }
-    const payload = {
-      event: "workflow.stage.updated" as const,
-      projectId: input.projectId,
-      workflowRunId: input.workflowRunId,
-      seq: project.workflowEventSeq,
-      stage: input.stage,
-      status: input.status,
-      progress: input.progress,
-      errorCode: input.errorCode,
-      emittedAt: emittedAt.toISOString(),
-      ...(input.followUpWorkflowRunId ? { followUpWorkflowRunId: input.followUpWorkflowRunId } : {}),
-      ...(input.generationRenders ? { generationRenders: input.generationRenders } : {}),
-      ...(generationRenderResults ? { generationRenderResults } : {}),
-      ...(input.notification ? { notification: input.notification } : {}),
-    } satisfies WorkflowStageUpdatedEvent;
-
-    await tx.workflowEvent.create({
-      data: {
-        projectId: input.projectId,
-        workflowRunId: input.workflowRunId,
-        seq: payload.seq,
-        stage: input.stage,
-        status: input.status,
-        progress: input.progress,
-        errorCode: input.errorCode,
-        emittedAt,
-        dedupeKey,
-        eventType: payload.event,
-        payload: payload as unknown as Prisma.InputJsonValue,
-        availableAt: emittedAt,
-        nextDeliveryAt: emittedAt,
-        redisRequired: this.redisDeliveryRequired,
-        analyticsRequired:
-          (input.analyticsRequired ?? false) && Boolean(this.publishAnalytics),
-        notificationRequired: Boolean(input.notification),
-      },
+  private appendEvent(tx: TransactionClient, input: WorkflowEventInput) {
+    return appendWorkflowEvent(tx, input, {
+      redisRequired: this.redisDeliveryRequired,
+      analyticsEnabled: Boolean(this.publishAnalytics),
     });
   }
 
@@ -963,10 +888,17 @@ export class WorkflowRunLifecycle {
     errorCode: string;
   }): Promise<number> {
     return this.transaction(async (tx) => {
-      const cancelled = await tx.workflowRun.updateMany({
+      const queued = await tx.workflowRun.findMany({
         where: { projectId: input.projectId, status: "queued" },
+        select: { id: true, stage: true },
+      });
+      const cancelled = await tx.workflowRun.updateMany({
+        where: { id: { in: queued.map((run) => run.id) }, status: "queued" },
         data: { status: "cancelled", errorCode: input.errorCode },
       });
+      for (const run of queued) {
+        await this.emitFinishedOperations(tx, { workflowRunId: run.id, projectId: input.projectId, stage: run.stage });
+      }
       return cancelled.count;
     });
   }
@@ -1015,11 +947,14 @@ export class WorkflowRunLifecycle {
       const cancelled = await tx.clipRender.updateMany({ where: { id: { in: pending.map((render) => render.id) }, status: "pending", exportVariantId: null,
         clip: { projectId: input.projectId, workflowRunId: detection.id } },
         data: { status: "failed", errorCode: "MCP_CANCELLED", failureDisposition: "permanent", completedAt: new Date() } });
-      if (cancelled.count) await this.appendEvent(tx, { projectId: input.projectId, workflowRunId: detection.id,
-        attemptId: detection.attemptId ?? detection.id, stage: "moment_detection", status: "completed", progress: 100,
-        errorCode: "MCP_CANCELLED", transition: "mcp_render_cancelled",
-        generationRenderResults: (await tx.clipRender.findMany({ where: { id: { in: pending.map((render) => render.id) }, errorCode: "MCP_CANCELLED" }, select: { id: true } }))
-          .map((render) => ({ renderId: render.id, status: "failed", errorCode: "MCP_CANCELLED" })) });
+      if (cancelled.count) {
+        await this.appendEvent(tx, { projectId: input.projectId, workflowRunId: detection.id,
+          attemptId: detection.attemptId ?? detection.id, stage: "moment_detection", status: "completed", progress: 100,
+          errorCode: "MCP_CANCELLED", transition: "mcp_render_cancelled",
+          generationRenderResults: (await tx.clipRender.findMany({ where: { id: { in: pending.map((render) => render.id) }, errorCode: "MCP_CANCELLED" }, select: { id: true } }))
+            .map((render) => ({ renderId: render.id, status: "failed", errorCode: "MCP_CANCELLED" })) });
+        await this.emitFinishedOperations(tx, { workflowRunId: detection.id, projectId: input.projectId, stage: "moment_detection" });
+      }
       return cancelled.count > 0;
     });
   }
@@ -1034,6 +969,7 @@ export class WorkflowRunLifecycle {
         data: { status: "failed", errorCode: "MCP_CANCELLED" } });
       await this.appendEvent(tx, { projectId: run.projectId, workflowRunId: run.id, attemptId: run.attemptId ?? run.id,
         stage: run.stage as WorkflowStage, status: "failed", progress: run.progress, errorCode: "MCP_CANCELLED", transition: "mcp_cancelled" });
+      await this.emitFinishedOperations(tx, { workflowRunId: run.id, projectId: run.projectId, stage: run.stage });
       return true;
   }
 
@@ -1358,6 +1294,20 @@ export class WorkflowRunLifecycle {
           completedAt: aggregate.terminal ? new Date() : null,
         },
       });
+      if (aggregate.terminal) await queueExportFinished(tx, exportId);
+    }
+  }
+
+  /** Queues the Workspace Events for operations a run's terminal settlement
+   * finished; the transaction wrapper writes them last. Call it after follow-up
+   * work is admitted: a lineage is only terminal once nothing is left to drain. */
+  private async emitFinishedOperations(
+    tx: TransactionClient,
+    run: { workflowRunId: string; projectId: string; stage: string },
+  ) {
+    if (run.stage === "clip_rendering") await queueExportsFinishedByRun(tx, run.workflowRunId);
+    if (run.stage === "stt" || run.stage === "moment_detection" || run.stage === "clip_rendering") {
+      await queueFinishedGenerations(tx, { id: run.workflowRunId, projectId: run.projectId });
     }
   }
 
@@ -1410,6 +1360,18 @@ export class WorkflowRunLifecycle {
           })),
         });
       }
+    });
+  }
+
+  /** Runs a domain write in a transaction that only the owning moment
+   * detection attempt can commit. */
+  async fencedDetectionWrite<T>(
+    attempt: WorkflowAttemptRef,
+    write: (tx: TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.transaction(async (tx) => {
+      await this.fenceChildMutation(tx, attempt, "moment_detection");
+      return write(tx);
     });
   }
 
@@ -2129,8 +2091,18 @@ export class WorkflowRunLifecycle {
     });
   }
 
-  async completeMomentDetection(attempt: WorkflowAttemptRef) {
-    await this.completeStage(attempt);
+  /**
+   * Completes a moment-detection attempt. `admit` is the domain write the
+   * completion cannot be separated from: a captioned video's export. It runs in
+   * the same transaction, so the export becomes visible exactly when the run
+   * is completed, and a crash or retry of detection leaves no export behind.
+   * The export is frozen into the completion event.
+   */
+  async completeMomentDetection(
+    attempt: WorkflowAttemptRef,
+    options: { admit?: (tx: TransactionClient) => Promise<{ exportId: string; clipId: string }> } = {},
+  ) {
+    await this.settleSuccess(attempt, "completed", null, options.admit);
   }
 
   /**
@@ -2324,6 +2296,7 @@ export class WorkflowRunLifecycle {
         tx,
         attempt,
       );
+      await this.emitFinishedOperations(tx, attempt);
 
       return {
         status: terminal.status,
@@ -2406,6 +2379,7 @@ export class WorkflowRunLifecycle {
     attempt: WorkflowAttemptRef,
     status: Extract<WorkflowStatus, "completed" | "partial" | "failed">,
     aggregate: WorkflowAggregateResult | null,
+    admit?: (tx: TransactionClient) => Promise<{ exportId: string; clipId: string }>,
   ) {
     await this.transaction(async (tx) => {
       const databaseNow = await this.databaseNow(tx);
@@ -2427,6 +2401,7 @@ export class WorkflowRunLifecycle {
         },
       });
       if (won.count === 0) throw new WorkflowAttemptLost(attempt);
+      const generationExport = await admit?.(tx);
       await this.appendEvent(tx, {
         projectId: attempt.projectId,
         workflowRunId: attempt.workflowRunId,
@@ -2437,7 +2412,9 @@ export class WorkflowRunLifecycle {
         errorCode: status === "failed" ? "aggregate_failed" : null,
         transition: `terminal:${status}`,
         analyticsRequired: true,
+        ...(generationExport ? { generationExport } : {}),
       });
+      await this.emitFinishedOperations(tx, attempt);
     });
   }
 
@@ -2543,6 +2520,7 @@ export class WorkflowRunLifecycle {
       if (!requeue && attempt.stage === "clip_rendering") {
         await this.admitLateRenderFollowUp(tx, attempt);
       }
+      if (!requeue) await this.emitFinishedOperations(tx, attempt);
     });
   }
 

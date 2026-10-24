@@ -1,0 +1,28 @@
+{
+    "url": "/projects",
+    "method": "POST",
+    "headers": {
+        "Idempotency-Key": "make:submit-video-link:{{sha256(trim(ifempty(parameters.runKey, '')) + '|' + parameters.url + '|' + ifempty(parameters.title, '') + '|' + ifempty(parameters.brandProfileId, '') + '|' + ifempty(parameters.clipCountTarget, '') + '|' + ifempty(parameters.clipLengthPreset, '') + '|' + ifempty(parameters.specificMoments, '') + '|' + ifempty(parameters.finishing.topClips, '') + '|' + ifempty(parameters.finishing.minScore, '') + '|' + if(parameters.finishing.copyPlatforms, join(parameters.finishing.copyPlatforms, ','), ''))}}"
+    },
+    "body": {
+        "url": "{{parameters.url}}",
+        "title": "{{parameters.title}}",
+        "brandProfileId": "{{parameters.brandProfileId}}",
+        "generation": {
+            "clipCountTarget": "{{parameters.clipCountTarget}}",
+            "clipLengthPreset": "{{parameters.clipLengthPreset}}",
+            "specificMoments": "{{parameters.specificMoments}}"
+        },
+        "finishing": "{{if(parameters.finishing.topClips || parameters.finishing.minScore || parameters.finishing.copyPlatforms, parameters.finishing, undefined)}}"
+    },
+    "response": {
+        "output": {
+            "projectId": "{{body.projectId}}",
+            "operationId": "{{body.operation.operationId}}",
+            "operationKind": "{{body.operation.kind}}",
+            "statusUrl": "{{body.operation.statusUrl}}",
+            "reviewUrl": "{{body.reviewUrl}}",
+            "replayed": "{{if(headers.`idempotent-replayed` = 'true', true, false)}}"
+        }
+    }
+}

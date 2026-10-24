@@ -21,9 +21,15 @@ import type {
 } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
+	acceptedRecipe,
 	ASSEMBLYAI_SPEECH_MODEL_CHAIN,
+	recipeColumn,
+	type AcceptedRecipe,
+	buildRecipeGenerationContext,
 	detectLinkProvider,
+	driveIngestSchema,
 	generateProjectRequestSchema,
+	googleDriveFileViewUrl,
 	linkIngestSchema,
 	resolvePricingTier,
 	rssImportSchema,
@@ -33,19 +39,33 @@ import {
 	type WorkflowStageUpdatedEvent,
 	contentPackSchema,
 	parseStoredContentPack,
+	planTranscript,
+	sourceProbeSchema,
 	deriveProjectListProgress,
+	finishingSettingsSchema,
 	PLATFORM_PLAYBOOK_VERSION,
+	type ClipAspectRatio,
 	type ContentPack,
+	type DriveIngestInput,
+	type FinishingSettings,
+	type FinishingSettingsInput,
 	type GenerateProjectInput,
 	type LinkIngestInput,
+	type LinkProviderId,
 	type RssImportInput,
 	userErrorMessage,
 	type TranscriptExportFormat,
 	type TranscriptSnapshot,
 } from "@narriflow/validators";
 import { deleteObject } from "./r2-storage";
+import {
+	createDriveTokenCipher,
+	googleDriveFileReader,
+	type DriveFileReader,
+} from "./drive-source";
 import { brandTemplateService } from "./brand-template.service";
 import { brandProfileService } from "./brand-profile.service";
+import type { RecipeUse, ResolvedRecipe } from "./recipe.service";
 import type { BrandActorScope } from "./brand-ownership";
 import {
 	autoTriggerIdempotencyKey,
@@ -70,8 +90,30 @@ import {
 	type WorkspaceCapability,
 } from "./workspace.service";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { appendWorkspaceEvent } from "./workspace-event";
+import {
+	finishingColumn,
+	freezeGenerationFinishing,
+	settleFinishedGenerationFinishing,
+} from "./generation-finishing";
 
 type ProjectAccessResult = "owned" | "forbidden" | "missing";
+
+/** What a link-style intake contributes to the Project and Ingest Job it creates. */
+interface LinkIntakeSource {
+	provider: LinkProviderId;
+	sourceType: "youtube" | "link";
+	/** Stored as the Project's source reference. */
+	sourceUrl: string;
+	defaultTitle: string;
+	/** The source's own duration, when it states one, reserved at admission. */
+	declaredSeconds?: number | null;
+	job: {
+		jobType: "link_import" | "drive_import";
+		payload: Prisma.InputJsonValue;
+		sourceCredential?: string;
+	};
+}
 
 const STT_PROVIDER = "assemblyai";
 const STT_PROVIDER_MODEL = ASSEMBLYAI_SPEECH_MODEL_CHAIN.join(",");
@@ -79,6 +121,21 @@ const STT_PROVIDER_MODEL = ASSEMBLYAI_SPEECH_MODEL_CHAIN.join(",");
 // project page fetch will ever pull for the Activity tab; the client applies
 // its own tighter display cap (PROJECT_EVENT_ROW_LIMIT) on top of this.
 const WORKFLOW_HISTORY_FETCH_LIMIT = 200;
+
+/** The row data for writing a pack over a stored one: an absent captionedVideo clears it. */
+/** What an intake commits with its Content Pack: the settings, the language,
+ * any finishing, and the Recipe they were read from. */
+type IntakeGenerationContext = {
+	contentPack: ContentPack;
+	languageCode: string | null;
+	finishing?: FinishingSettings | null;
+	recipe?: AcceptedRecipe | null;
+};
+
+function storedPackData(pack: unknown, draft: boolean) {
+	const parsed = parseStoredContentPack(pack);
+	return { ...parsed, captionedVideo: parsed.captionedVideo ?? Prisma.DbNull, draft };
+}
 
 function isMissingObjectError(error: unknown) {
 	if (typeof error !== "object" || error === null) return false;
@@ -413,6 +470,106 @@ export async function runProjectDeletion(
 		: { kind: "already_deleted" };
 }
 
+/** The Brand Profile an intake path freezes onto its new Project. Without a
+ * profile it falls back to the Workspace's default Brand Template. */
+type IntakeBrand = {
+	profile: Awaited<ReturnType<typeof brandProfileService.resolveForProject>> | null;
+	template: Awaited<ReturnType<typeof brandTemplateService.resolveSnapshotForUser>>;
+};
+
+/** Refuses (throws) when the chosen profile can't be applied: never imports
+ * without the brand, so an approval rule can't be skipped. */
+async function resolveIntakeBrand(
+	actor: BrandActorScope,
+	input: { profileId: string | null; templateId?: string | null },
+): Promise<IntakeBrand> {
+	const profile = input.profileId
+		? await brandProfileService.resolveForProject(actor, {
+				profileId: input.profileId,
+				templateId: input.templateId,
+			})
+		: null;
+	const template = profile
+		? null
+		: await brandTemplateService.resolveSnapshotForUser(
+				actor.workspaceOwnerUserId,
+				input.templateId ?? null,
+				{ workspaceId: actor.workspaceId, actorUserId: actor.actorUserId },
+			);
+	return { profile, template };
+}
+
+function intakeBrandColumns(brand: IntakeBrand) {
+	return {
+		brandTemplateId: brand.profile?.templateId ?? brand.template?.templateId ?? null,
+		brandSnapshot: brand.profile?.templateSnapshot
+			? (brand.profile.templateSnapshot as unknown as Prisma.InputJsonValue)
+			: brand.template
+				? (brand.template.snapshot as unknown as Prisma.InputJsonValue)
+				: Prisma.JsonNull,
+		brandProfileId: brand.profile?.profileId ?? null,
+		brandProfileSnapshot: brand.profile?.profileSnapshot
+			? (brand.profile.profileSnapshot as unknown as Prisma.InputJsonValue)
+			: Prisma.JsonNull,
+	};
+}
+
+async function recordIntakeBrandApplied(
+	tx: Prisma.TransactionClient,
+	actor: BrandActorScope,
+	projectId: string,
+	brand: IntakeBrand,
+) {
+	if (!brand.profile) return;
+	await tx.programAnalyticsEvent.create({
+		data: {
+			workspaceId: actor.workspaceId,
+			actorUserId: actor.actorUserId,
+			projectId,
+			type: "brand_profile_applied",
+			metadata: {
+				profileId: brand.profile.profileId,
+				...(brand.profile.templateId ? { templateId: brand.profile.templateId } : {}),
+				assetKind: "profile",
+				planTier: resolvePricingTier(actor.pricingTier),
+				outcome: "succeeded",
+			},
+		},
+	});
+}
+
+/** Freezes the finishing a generation request asked for onto the generation it
+ * admitted or reused. A reused generation keeps the finishing it was frozen
+ * with: a request that asks for other settings, or for finishing that already
+ * ran, conflicts like a different Content Pack does. One that finished before
+ * finishing was asked for will not settle again, so its transition is applied
+ * here. */
+async function freezeRequestedFinishing(
+	tx: Prisma.TransactionClient,
+	scope: ActorScope,
+	projectId: string,
+	originRunId: string,
+	finishing: FinishingSettings,
+	defaultAspectRatio: ClipAspectRatio,
+	reused: boolean,
+) {
+	const frozen = await freezeGenerationFinishing(tx, {
+		workspaceId: scope.workspaceId,
+		projectId,
+		originRunId,
+		actorUserId: scope.actorUserId,
+		settings: finishing,
+		defaultAspectRatio,
+	});
+	if (!frozen.created && (!frozen.matches || frozen.ended))
+		throw new ProjectServiceError(
+			"generation_settings_conflict",
+			"Existing generation has different finishing, or finishing already ran. Request a fresh generation with forceRegenerate after current work completes.",
+		);
+	if (reused && frozen.created)
+		await settleFinishedGenerationFinishing(tx, projectId, originRunId);
+}
+
 export class ProjectService {
 	private requirePrisma() {
 		const prisma = getPrismaClient();
@@ -648,9 +805,15 @@ export class ProjectService {
 				activeRun: null,
 				lastSeq: 0,
 				ingestAttemptCount: 0,
+				ingestJobType: null,
 			};
-		const [activeWorkflowRun, latestRun, lastSeq, ingestAttemptCount] =
-			await Promise.all([
+		const [
+			activeWorkflowRun,
+			latestRun,
+			lastSeq,
+			ingestAttemptCount,
+			latestIngestJob,
+		] = await Promise.all([
 				prisma.workflowRun.findFirst({
 					where: {
 						projectId,
@@ -666,6 +829,13 @@ export class ProjectService {
 				// Total ingest attempts so far (original + retries) — lets the project
 				// page decide whether "Retry ingest" is still allowed.
 				prisma.ingestJob.count({ where: { projectId } }),
+				// The latest job's type decides recovery: a Drive Picker import
+				// can't be retried, only chosen again.
+				prisma.ingestJob.findFirst({
+					where: { projectId },
+					orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+					select: { jobType: true },
+				}),
 			]);
 		const project = toProjectSnapshot(row);
 		const relevantRun = activeWorkflowRun ?? latestRun;
@@ -679,6 +849,7 @@ export class ProjectService {
 			activeRun: relevantRun ? toWorkflowRunSnapshot(relevantRun) : null,
 			lastSeq,
 			ingestAttemptCount,
+			ingestJobType: latestIngestJob?.jobType ?? null,
 		};
 	}
 
@@ -942,21 +1113,40 @@ export class ProjectService {
 	async triggerGeneration(
 		scope: ActorScope,
 		projectId: string,
-		input: GenerateProjectInput,
+		/** Explicit settings, or the Recipe an integration request named. */
+		input: GenerateProjectInput | { forceRegenerate: boolean; recipe: RecipeUse },
 		idempotencyKey: string,
 		options: {
 			existingContentPackId?: string;
 			mutation?: IntegrationMutation;
+			/** Finishing for this generation. Only integration requests carry it. */
+			finishing?: FinishingSettingsInput;
 		} = {},
 	) {
-		const parsed = generateProjectRequestSchema.parse(input);
+		const recipeUse = "recipe" in input ? input.recipe : null;
+		const parsed = recipeUse ? null : generateProjectRequestSchema.parse(input);
+		const forceRegenerate = recipeUse ? (input as { forceRegenerate: boolean }).forceRegenerate : parsed!.forceRegenerate;
+		let finishing = options.finishing
+			? finishingSettingsSchema.parse(options.finishing)
+			: undefined;
+		if ((finishing || recipeUse) && !options.mutation)
+			throw new Error("Finishing and Recipes are asked for by integration requests only");
+		if (recipeUse && finishing)
+			throw new Error("A Recipe carries its own finishing");
 		await this.requireActor(scope, "processing.consume");
 		if (options.mutation) {
 			const mutation = options.mutation;
+			// An inline request commits its settings now; a Recipe is read when the
+			// request is accepted, after any replay lookup.
+			let settings: { contentPack: ContentPack; languageCode: string | null } | null = parsed
+				? { contentPack: parsed.contentPack, languageCode: parsed.languageCode }
+				: null;
+			let usedRecipe: ResolvedRecipe | null = null;
 			const accepted = await getOperationReceiptExecutor().execute<{
 				workflowRunId: string;
 				acceptedAt: string;
 				initialSeq: number;
+				recipe?: { id: string; revision: number };
 			}>({
 				identity: {
 					workspaceId: scope.workspaceId,
@@ -964,17 +1154,33 @@ export class ProjectService {
 					command: "generate_clips",
 					clientIdempotencyKey: mutation.clientIdempotencyKey,
 				},
-				input: {
-					projectId,
-					settings: parsed,
-					contentPackId: options.existingContentPackId ?? null,
-				},
+				input: recipeUse
+					? {
+							projectId,
+							recipeId: recipeUse.id,
+							forceRegenerate,
+							contentPackId: options.existingContentPackId ?? null,
+						}
+					: {
+							projectId,
+							settings: parsed,
+							contentPackId: options.existingContentPackId ?? null,
+							finishing: finishing ?? null,
+						},
 				callback: receiptCallback(scope.workspaceId, mutation, (value: { workflowRunId: string }) => ({ kind: "generation", id: value.workflowRunId })),
 				authorize: async () => {
 					await this.requireActor(scope, "processing.consume");
 				},
 				beforeAccept: mutation.beforeAccept,
+				prepare: recipeUse
+					? async () => {
+							usedRecipe = await recipeUse.resolve();
+							settings = { contentPack: usedRecipe.contentPack, languageCode: usedRecipe.languageCode };
+							finishing = usedRecipe.finishing ?? undefined;
+						}
+					: undefined,
 				mutate: async (tx) => {
+					const { contentPack, languageCode } = settings!;
 					const refusal = await this.settleForGeneration(
 						tx,
 						scope.workspaceId,
@@ -1001,7 +1207,7 @@ export class ProjectService {
 							"project_ingest_not_ready",
 							"Project ingest is not ready.",
 						);
-					if (parsed.forceRegenerate) {
+					if (forceRegenerate) {
 						const active = await tx.workflowRun.findFirst({
 							where: {
 								projectId,
@@ -1025,7 +1231,7 @@ export class ProjectService {
 							);
 						}
 					}
-					const reusable = !parsed.forceRegenerate
+					const reusable = !forceRegenerate
 						? await tx.workflowRun.findFirst({
 								where: {
 									projectId,
@@ -1048,8 +1254,8 @@ export class ProjectService {
 								contentPackId,
 								contentPack: contentPackId
 									? undefined
-									: parseStoredContentPack(parsed.contentPack),
-								languageCode: parsed.languageCode,
+									: parseStoredContentPack(contentPack),
+								languageCode,
 								transcriptProvider: STT_PROVIDER,
 								transcriptProviderModel: STT_PROVIDER_MODEL,
 							},
@@ -1067,12 +1273,23 @@ export class ProjectService {
 						acceptedRun.contentPack.draft ||
 						operationFingerprint(
 							parseStoredContentPack(acceptedRun.contentPack),
-						) !== operationFingerprint(parsed.contentPack) ||
-						acceptedRun.project.languageCode !== parsed.languageCode
+						) !== operationFingerprint(contentPack) ||
+						acceptedRun.project.languageCode !== languageCode
 					) {
 						throw new ProjectServiceError(
 							"generation_settings_conflict",
 							"Existing generation uses different settings. Request a fresh generation with forceRegenerate after current work completes.",
+						);
+					}
+					if (finishing) {
+						await freezeRequestedFinishing(
+							tx,
+							scope,
+							projectId,
+							admitted.id,
+							finishing,
+							contentPack.defaultAspectRatio,
+							Boolean(reusable),
 						);
 					}
 					const events = await tx.workflowEvent.aggregate({
@@ -1087,6 +1304,7 @@ export class ProjectService {
 							acceptedAt:
 								reusable?.updatedAt.toISOString() ?? new Date().toISOString(),
 							initialSeq: events._max.seq ?? 0,
+							...(usedRecipe && { recipe: acceptedRecipe(usedRecipe) }),
 						},
 					};
 				},
@@ -1094,6 +1312,8 @@ export class ProjectService {
 			return { ...accepted.value, replayed: accepted.replayed, receiptId: accepted.receiptId };
 		}
 
+		// Only explicit settings reach here: a Recipe is an integration input.
+		if (!parsed) throw new Error("A Recipe is used by integration requests only");
 		if (!idempotencyKey)
 			throw new ProjectServiceError(
 				"idempotency_key_required",
@@ -1162,16 +1382,99 @@ export class ProjectService {
 		scope: ActorScope,
 		input: LinkIngestInput,
 		options: {
-			generationContext?: {
-				contentPack: ContentPack;
-				languageCode: string | null;
-			};
+			generationContext?: IntakeGenerationContext;
 			mutation?: IntegrationMutation;
+			/** The integration command this intake's receipt belongs to. */
+			command?: "submit_video" | "create_captioned_video";
+			/** A Recipe supplies the Brand Profile and generation context. */
+			recipe?: RecipeUse;
 		} = {},
 	) {
 		const parsed = linkIngestSchema.parse(input);
+		return this.acceptLinkIntake(
+			scope,
+			parsed,
+			async () => {
+				const provider = detectLinkProvider(parsed.url);
+				if (!provider) {
+					throw new LinkUnsupportedSourceError();
+				}
+				return {
+					provider,
+					sourceType: provider === "youtube" ? "youtube" : "link",
+					sourceUrl: parsed.url,
+					defaultTitle: "Link Import",
+					job: {
+						jobType: "link_import",
+						payload: {
+							url: parsed.url,
+							provider,
+							requestedTitle: parsed.title ?? null,
+						},
+					},
+				};
+			},
+			options,
+		);
+	}
+
+	/**
+	 * A file chosen in the Google Drive Picker. The server reads the file's name,
+	 * size, type and duration from Drive, then admits it like a link import. The
+	 * browser's short-lived access token is sealed on the Ingest Job and cleared
+	 * by every terminal transition.
+	 */
+	async queueDriveIngest(
+		scope: ActorScope,
+		input: DriveIngestInput,
+		options: { files?: DriveFileReader } = {},
+	) {
+		const { fileId, accessToken, ...settings } = driveIngestSchema.parse(input);
+		return this.acceptLinkIntake(
+			scope,
+			settings,
+			async () => {
+				// Sealing first fails fast when the encryption key is missing.
+				const cipher = createDriveTokenCipher();
+				const file = await (options.files ?? googleDriveFileReader).read({
+					fileId,
+					accessToken,
+				});
+				return {
+					provider: "gdrive",
+					sourceType: "link",
+					sourceUrl: googleDriveFileViewUrl(file.fileId),
+					defaultTitle:
+						file.name.replace(/\.[^/.]+$/, "").trim().slice(0, 200) ||
+						"Drive Import",
+					declaredSeconds: file.durationSeconds,
+					job: {
+						jobType: "drive_import",
+						payload: { fileId: file.fileId, fileName: file.name },
+						sourceCredential: cipher.seal(accessToken),
+					},
+				};
+			},
+			{},
+		);
+	}
+
+	private async acceptLinkIntake(
+		scope: ActorScope,
+		parsed: Omit<LinkIngestInput, "url">,
+		resolveSource: () => Promise<LinkIntakeSource>,
+		options: {
+			generationContext?: IntakeGenerationContext;
+			mutation?: IntegrationMutation;
+			command?: "submit_video" | "create_captioned_video";
+			recipe?: RecipeUse;
+		},
+	) {
 		const prisma = this.requirePrisma();
 		const actor = await this.requireActor(scope, "processing.consume");
+		if (options.recipe && (!options.mutation || options.generationContext || parsed.brandProfileId !== undefined)) {
+			throw new Error("A Recipe replaces the generation context and Brand Profile of an integration request");
+		}
 
 		// Idempotent replay: the same commit token returns the already-created
 		// project instead of importing twice (double-click, retried request).
@@ -1191,51 +1494,37 @@ export class ProjectService {
 			}
 		}
 
-		let provider: NonNullable<ReturnType<typeof detectLinkProvider>>;
-		let sourceType: "youtube" | "link";
-		let brandActorScope: BrandActorScope | null;
-		let profileResolved: Awaited<
-			ReturnType<typeof brandProfileService.resolveForProject>
-		> | null;
-		let brandResolved: Awaited<
-			ReturnType<typeof brandTemplateService.resolveSnapshotForUser>
-		> | null;
+		let source: LinkIntakeSource;
+		let brand: IntakeBrand;
 		let createdAt: Date;
 		let retention: Awaited<
 			ReturnType<typeof projectRetentionService.assignmentForWorkspace>
 		>;
 		let pack: ContentPack;
+		let generationContext = options.generationContext;
+		let usedRecipe: ResolvedRecipe | null = null;
 		const prepare = async () => {
-			const detectedProvider = detectLinkProvider(parsed.url);
-			if (!detectedProvider) {
-				throw new LinkUnsupportedSourceError();
+			// A named Recipe is read here, after the replay lookup: its settings
+			// commit with this intake, and the request fingerprint holds only its ID.
+			if (options.recipe) {
+				const recipe = await options.recipe.resolve();
+				usedRecipe = recipe;
+				generationContext = { ...buildRecipeGenerationContext(recipe), recipe: acceptedRecipe(recipe) };
 			}
-			provider = detectedProvider;
-			sourceType = provider === "youtube" ? "youtube" : "link";
+			source = await resolveSource();
 
 			// Assistant intake treats an omitted Brand Profile as the Workspace
 			// default, resolved after replay lookup so retries keep their identity.
-			const profileId =
-				parsed.brandProfileId === undefined && options.mutation
+			// A Recipe states its own choice, including none.
+			const profileId = options.recipe
+				? usedRecipe!.brandProfileId
+				: parsed.brandProfileId === undefined && options.mutation
 					? await brandProfileService.getDefaultId(actor)
-					: parsed.brandProfileId;
-			brandActorScope = profileId ? actor : null;
-			profileResolved = brandActorScope
-				? await brandProfileService.resolveForProject(brandActorScope, {
-						profileId: profileId!,
-						templateId: parsed.brandTemplateId,
-					})
-				: null;
-			brandResolved = profileResolved
-				? null
-				: await brandTemplateService.resolveSnapshotForUser(
-						actor.workspaceOwnerUserId,
-						parsed.brandTemplateId ?? null,
-						{
-							workspaceId: actor.workspaceId,
-							actorUserId: actor.actorUserId,
-						},
-					);
+					: (parsed.brandProfileId ?? null);
+			brand = await resolveIntakeBrand(actor, {
+				profileId,
+				templateId: parsed.brandTemplateId,
+			});
 			createdAt = new Date();
 			retention = await projectRetentionService.assignmentForWorkspace(
 				actor.workspaceId,
@@ -1244,8 +1533,8 @@ export class ProjectService {
 
 			// Browser intake can wait for setup; MCP commits runnable settings
 			// in the same transaction as its Project and Ingest Job.
-			pack = options.generationContext
-				? contentPackSchema.parse(options.generationContext.contentPack)
+			pack = generationContext
+				? contentPackSchema.parse(generationContext.contentPack)
 				: contentPackSchema.parse({
 						outputTypes: ["short_clip"],
 						clipCountTarget: 10,
@@ -1267,6 +1556,7 @@ export class ProjectService {
 				projectId,
 				actorUserId: actor.actorUserId,
 				intakeKind: "link",
+				declaredSeconds: source.declaredSeconds,
 			});
 			const createdProject = await tx.project.create({
 				data: {
@@ -1274,67 +1564,36 @@ export class ProjectService {
 					workspaceId: actor.workspaceId,
 					createdByUserId: actor.actorUserId,
 					updatedByUserId: actor.actorUserId,
-					title: parsed.title ?? "Link Import",
-					sourceMediaUrl: parsed.url,
-					sourceType,
-					sourceProvider: provider,
-					sourceInput: parsed.url,
+					title: parsed.title ?? source.defaultTitle,
+					sourceMediaUrl: source.sourceUrl,
+					sourceType: source.sourceType,
+					sourceProvider: source.provider,
+					sourceInput: source.sourceUrl,
 					ingestStatus: "queued",
-					languageCode: options.generationContext
-						? options.generationContext.languageCode
+					languageCode: generationContext
+						? generationContext.languageCode
 						: (parsed.languageCode ?? null),
 					commitToken: options.mutation ? null : (parsed.commitToken ?? null),
-					brandTemplateId:
-						profileResolved?.templateId ?? brandResolved?.templateId ?? null,
-					brandSnapshot: profileResolved?.templateSnapshot
-						? (profileResolved.templateSnapshot as unknown as Prisma.InputJsonValue)
-						: brandResolved
-							? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
-							: Prisma.JsonNull,
-					brandProfileId: profileResolved?.profileId ?? null,
-					brandProfileSnapshot: profileResolved?.profileSnapshot
-						? (profileResolved.profileSnapshot as unknown as Prisma.InputJsonValue)
-						: Prisma.JsonNull,
+					...intakeBrandColumns(brand),
 					createdAt,
 					retentionPolicyKey: retention?.retentionPolicyKey ?? null,
 					expiresAt: retention?.expiresAt ?? null,
 				},
 			});
-			if (profileResolved && brandActorScope) {
-				await tx.programAnalyticsEvent.create({
-					data: {
-						workspaceId: actor.workspaceId,
-						actorUserId: actor.actorUserId,
-						projectId: createdProject.id,
-						type: "brand_profile_applied",
-						metadata: {
-							profileId: profileResolved.profileId,
-							...(profileResolved.templateId
-								? { templateId: profileResolved.templateId }
-								: {}),
-							assetKind: "profile",
-							planTier: resolvePricingTier(brandActorScope.pricingTier),
-							outcome: "succeeded",
-						},
-					},
-				});
-			}
+			await recordIntakeBrandApplied(tx, actor, createdProject.id, brand);
 
 			const createdJob = await getIngestJobLifecycle().enqueue(tx, {
 				projectId: createdProject.id,
-				jobType: "link_import",
-				payload: {
-					url: parsed.url,
-					provider,
-					requestedTitle: parsed.title ?? null,
-				},
+				...source.job,
 			});
 
 			await tx.contentPack.create({
 				data: {
 					projectId: createdProject.id,
 					...parseStoredContentPack(pack),
-					draft: !options.generationContext,
+					draft: !generationContext,
+					...finishingColumn(generationContext),
+					...recipeColumn(generationContext),
 				},
 			});
 
@@ -1346,12 +1605,14 @@ export class ProjectService {
 				identity: {
 					workspaceId: actor.workspaceId,
 					actorUserId: actor.actorUserId,
-					command: "submit_video",
+					command: options.command ?? "submit_video",
 					clientIdempotencyKey: mutation.clientIdempotencyKey,
 				},
 				input: {
 					source: parsed,
-					generationContext: options.generationContext ?? null,
+					...(options.recipe
+						? { recipeId: options.recipe.id }
+						: { generationContext: options.generationContext ?? null }),
 				},
 				callback: receiptCallback(actor.workspaceId, mutation, (value: { queuedJobId: string }) => ({ kind: "intake", id: value.queuedJobId })),
 				authorize: async () => {
@@ -1367,6 +1628,7 @@ export class ProjectService {
 						value: {
 							project: toProjectSnapshot(created.project),
 							queuedJobId: created.jobId,
+							...(usedRecipe && { recipe: acceptedRecipe(usedRecipe) }),
 						},
 					};
 				},
@@ -1414,10 +1676,7 @@ export class ProjectService {
 	async importFromRss(
 		scope: ActorScope,
 		input: RssImportInput,
-		generationContext?: {
-			contentPack: ContentPack;
-			languageCode: string | null;
-		},
+		generationContext?: IntakeGenerationContext,
 	) {
 		const parsed = rssImportSchema.parse(input);
 		// Authorize before performing remote network I/O. importResolvedRssEpisodes
@@ -1444,7 +1703,7 @@ export class ProjectService {
 				rssUrl: feed.finalUrl,
 				episodes,
 				titlePrefix: parsed.titlePrefix,
-				brandTemplateId: parsed.brandTemplateId,
+				brandProfileId: parsed.brandProfileId,
 				commitToken: parsed.commitToken,
 			},
 			{ generationContext },
@@ -1469,14 +1728,11 @@ export class ProjectService {
 				mimeType?: string | null;
 			}>;
 			titlePrefix?: string;
-			brandTemplateId?: string | null;
+			brandProfileId?: string | null;
 			commitToken?: string;
 		},
 		options: {
-			generationContext?: {
-				contentPack: ContentPack;
-				languageCode: string | null;
-			};
+			generationContext?: IntakeGenerationContext;
 			autopilotRuleId?: string;
 		} = {},
 	) {
@@ -1530,14 +1786,9 @@ export class ProjectService {
 			}
 		}
 
-		const brandResolved = await brandTemplateService.resolveSnapshotForUser(
-			actor.workspaceOwnerUserId,
-			input.brandTemplateId ?? null,
-			{
-				workspaceId: actor.workspaceId,
-				actorUserId: actor.actorUserId,
-			},
-		);
+		const brand = await resolveIntakeBrand(actor, {
+			profileId: input.brandProfileId ?? null,
+		});
 
 		const createdProjects: Array<{
 			project: ProjectSnapshot;
@@ -1598,15 +1849,13 @@ export class ProjectService {
 							sourceDurationSeconds: episode.durationSeconds ?? null,
 							languageCode: options.generationContext?.languageCode ?? null,
 							commitToken: input.commitToken ?? null,
-							brandTemplateId: brandResolved?.templateId ?? null,
-							brandSnapshot: brandResolved
-								? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
-								: Prisma.JsonNull,
+							...intakeBrandColumns(brand),
 							createdAt,
 							retentionPolicyKey: retention?.retentionPolicyKey ?? null,
 							expiresAt: retention?.expiresAt ?? null,
 						},
 					});
+					await recordIntakeBrandApplied(tx, actor, createdProject.id, brand);
 
 					const createdJob = await getIngestJobLifecycle().enqueue(tx, {
 						projectId: createdProject.id,
@@ -1621,6 +1870,11 @@ export class ProjectService {
 								...parseStoredContentPack(
 									options.generationContext.contentPack,
 								),
+								...finishingColumn(options.generationContext),
+								...recipeColumn(options.generationContext),
+								// Only this import names a rule: a generation's finishing copies it,
+								// and Standing Grants cover finishing by it.
+								autopilotRuleId: options.autopilotRuleId ?? null,
 							},
 						});
 					}
@@ -1634,6 +1888,17 @@ export class ProjectService {
 								},
 							},
 							data: { projectId: createdProject.id },
+						});
+						await appendWorkspaceEvent(tx, {
+							workspaceId: actor.workspaceId,
+							projectId: createdProject.id,
+							type: "autopilot.episode_imported",
+							subject: {
+								ruleId: options.autopilotRuleId,
+								projectId: createdProject.id,
+								episodeId: episode.id,
+							},
+							dedupeKey: `autopilot.episode_imported:${createdProject.id}`,
 						});
 					}
 
@@ -1739,6 +2004,56 @@ export class ProjectService {
 		return row?.brandSnapshot ?? null;
 	}
 
+	/**
+	 * What the transcription stage does for this run: transcribe the speech, or
+	 * complete at once with supplied or empty captions. This is the only place
+	 * speech-to-text is skipped; `planTranscript` states the rule.
+	 */
+	async getTranscriptPlanForWorker(run: {
+		projectId: string;
+		contentPackId: string | null;
+	}) {
+		const prisma = this.requirePrisma();
+		const project = await prisma.project.findUnique({
+			where: { id: run.projectId },
+			select: {
+				sourceProbe: true,
+				sourceDurationSeconds: true,
+				languageCode: true,
+			},
+		});
+		const pack = await this.getContentPackForRun(run);
+		const probe = sourceProbeSchema.safeParse(project?.sourceProbe);
+		return {
+			plan: planTranscript({
+				captionedVideo: pack ? parseStoredContentPack(pack).captionedVideo : undefined,
+				sourceProbe: probe.success ? probe.data : null,
+			}),
+			durationSeconds: project?.sourceDurationSeconds ?? null,
+			// "auto" is a form value, not a transcript language.
+			languageCode: sourceLanguageCodeSchema.safeParse(project?.languageCode).data ?? null,
+		};
+	}
+
+	/** Whether this generation can finish with no speech: a caption-only run needs none. */
+	async runAllowsEmptyTranscript(workflowRunId: string): Promise<boolean> {
+		const run = await this.requirePrisma().workflowRun.findUnique({
+			where: { id: workflowRunId },
+			select: { contentPack: { select: { mode: true } } },
+		});
+		return run?.contentPack?.mode === "caption_only";
+	}
+
+	/** The source's exact probed duration. Project.sourceDurationSeconds is rounded. */
+	async getSourceProbeDurationForWorker(projectId: string): Promise<number | null> {
+		const row = await this.requirePrisma().project.findUnique({
+			where: { id: projectId },
+			select: { sourceProbe: true },
+		});
+		const probe = sourceProbeSchema.safeParse(row?.sourceProbe);
+		return probe.success ? probe.data.durationSec : null;
+	}
+
 	async getProjectLanguageCodeForWorker(
 		projectId: string,
 	): Promise<string | null> {
@@ -1796,7 +2111,7 @@ export class ProjectService {
 			};
 		}
 
-		const packData = { ...parseStoredContentPack(contentPack), draft: false };
+		const packData = storedPackData(contentPack, false);
 
 		// Upsert-in-place: repeated Configure updates the same row, never
 		// inserts. A pack already bound to a WorkflowRun is immutable — a
@@ -1910,7 +2225,7 @@ export class ProjectService {
 		});
 		if (existingRun) return false;
 
-		const draftData = { ...parseStoredContentPack(contentPack), draft: true };
+		const draftData = storedPackData(contentPack, true);
 
 		await prisma.$transaction(async (tx) => {
 			const latest = await tx.contentPack.findFirst({

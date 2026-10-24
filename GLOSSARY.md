@@ -102,7 +102,7 @@ A stable reason that a Workflow Attempt could not produce its intended outcome, 
 _Avoid_: Exception string, error-code registry
 
 **Ingest Job**:
-A persistent execution record for bringing source media into a project before post-ingest processing begins. Its lifecycle module owns claims, progress, settlement, automatic retries, manual retry admission and the generation handoff. Job, Project and Workflow Event changes commit together. Automatic retries reuse a job with bounded attempts and backoff; a manual retry creates one new job under a separate project budget.
+A persistent execution record for bringing source media into a project before post-ingest processing begins. Its lifecycle module owns claims, progress, settlement, automatic retries, manual retry admission and the generation handoff. Job, Project and Workflow Event changes commit together. Automatic retries reuse a job with bounded attempts and backoff; a manual retry creates one new job under a separate project budget. A Google Drive Picker job also holds a sealed source credential, the picker's short-lived access token for that one file. Every terminal transition clears it, so such a job is never retried manually: the person chooses the file again.
 _Avoid_: Workflow run, upload task
 
 **Ingest Claim**:
@@ -122,8 +122,16 @@ The number of a Workspace's videos in flight, derived under the Workspace usage 
 _Avoid_: Concurrency counter
 
 **Operation Status**:
-The transport-neutral, lineage-derived state of one accepted mutation: an intake, a generation, or an export. It reports `working`, `completed`, `partial`, `failed`, or `cancelled`, with progress, per-clip or per-format outcomes, the Project, Clip, and export IDs produced, and a typed failure code. An intake follows its Upload Session or Ingest Job into the stored generation run it handed off to; it never infers work from the Project's latest run. MCP tools, Tasks, the REST API, and Completion Callbacks read it; it carries no media URLs.
+The transport-neutral, lineage-derived state of one accepted mutation: an intake, a generation, or an export. It reports `working`, `completed`, `partial`, `failed`, or `cancelled`, with progress, per-clip or per-format outcomes, the Project, Clip, and export IDs produced, notices about how the work was done (such as `framing_degraded`), and a typed failure code. An intake follows its Upload Session or Ingest Job into the stored generation run it handed off to; it never infers work from the Project's latest run. MCP tools, Tasks, the REST API, and Completion Callbacks read it; it carries no media URLs.
 _Avoid_: Task state, project status, job status
+
+**Captioned Video**:
+A finished short, such as an AI-generated one, that Narriflow captions, frames, and exports without detecting clips. It is a caption-only generation whose settings (framing Fit or Center, caption source, export formats) are frozen in the Content Pack at acceptance. The Project gets one Whole-source Clip, and the generation's Operation Status ends with that clip's export. The export is admitted in the transaction that completes detection, so it exists exactly when the run is completed. The generation names that export and reports the first final outcome the export reached: retrying a failed export updates the export's own operation, but the generation stays as it was first announced, and deleting the export afterwards does not change it.
+_Avoid_: Finish job, caption-only upload
+
+**Whole-source Clip**:
+The one clip of a caption-only generation: its processing window, or the entire source. `Clip.wholeSource` gives it the 1 to 180 second duration bounds in `clipDurationBounds`, where a detected clip stays at 10 to 120 seconds. The bounds apply wherever a clip window is checked: persistence encode and decode, the boundaries request, the ingest handoff, detection, and the Studio's trim handles.
+_Avoid_: Full-length clip, source clip
 
 **Operation Receipt**:
 The durable acceptance record of one idempotent mutation. It is keyed by Workspace, acting user, canonical command, and the client's idempotency key, and it stores the input fingerprint and the accepted result. Rotating an API key or switching between MCP and REST replays the same receipt. Upload Sessions keep their own key instead; integrations derive it per user from the caller's key.
@@ -131,7 +139,27 @@ _Avoid_: MCP operation, request log
 
 **Completion Callback**:
 A signed, at-least-once notification delivered to a caller-supplied URL when one accepted operation reaches a terminal Operation Status. It carries IDs only, follows the Standard Webhooks format, and is signed with the Workspace's callback signing secret. Each acceptance registers at most one.
-_Avoid_: Webhook subscription, event stream
+_Avoid_: Webhook, event stream
+
+**Transcript Passage**:
+A 30 to 60 second span of a finished Transcript, cut on utterance boundaries, with its embedding and full-text form. A worker loop builds Passages from each completed Transcript and replaces only the ones whose content hash changed; a failed embedding backs that Transcript off and never touches generation. Library search ranks Passages by meaning and by exact words after limiting them to the actor's Workspace and viewable Projects, in the same query.
+_Avoid_: Chunk, snippet, search index entry
+
+**Workspace Event**:
+An append-only, versioned record in a Workspace's event feed that reports one transition that finished: an Autopilot import, an Operation Status reaching a final state, a Finishing ending, a Social Post being proposed to a Publishing Queue, a Social Post reaching an outcome, or a Standing Grant pausing or expiring. It carries IDs only, is written in the transaction that makes the transition, and is deduplicated by that transition. Its `seq` comes from a per-Workspace counter row bumped by the writing transaction, so pollers that read in `seq` order never see a gap fill in behind their cursor. Events expire after 30 days and survive Project deletion. Delivery is at least once.
+_Avoid_: Workflow Event, webhook, product analytics event
+
+**Webhook Subscription**:
+A Workspace's HTTPS endpoint that receives chosen types of Workspace Event as signed, at-least-once POSTs in `seq` order. It keeps its own cursor, `lastDeliveredSeq`, which moves only after the endpoint answers 2xx, and it signs with the Workspace's callback signing secret like a Completion Callback. It is disabled with a reason after 20 consecutive failures, a 410, or when its cursor falls behind the 30-day retention; re-enabling resumes from the cursor.
+_Avoid_: Callback, REST Hook, event stream
+
+**Recipe**:
+A named, revisioned set of Workspace settings: a Brand Profile (or none), the source language, the Content Pack settings, and optional Finishing. Autopilot rules require one and carry none of those settings themselves; REST and MCP intake and generation may name one with `recipeId` instead of sending the settings inline, never both. The Recipe is read when a request is accepted, after any replay lookup, and the accepted result records its ID and revision, so editing a Recipe changes the next import and never work already accepted, and an honest retry after an edit replays instead of conflicting. Browser intake fills its setup form from a Recipe and submits the form's explicit settings. Edits bump `revision` with optimistic concurrency; a Recipe an Autopilot rule uses cannot be deleted. Writes stay in the browser; REST and MCP only read Recipes.
+_Avoid_: Preset, template, profile (a Brand Profile is only the branding part)
+
+**Finishing**:
+What happens after one generation completes, asked for by a Recipe (so by an Autopilot rule that uses it) or inline on a REST or MCP request: export the generation's best clips, write assisted copy for chosen platforms, then leave the Project ready to review, propose each picked clip to chosen accounts' Publishing Queues, or (for an Autopilot rule with a Standing Grant) send the finished exports to the grant's reviewers as a Review Round. The settings are one schema, frozen with the generation when it is admitted as one Generation Finishing row keyed by the generation's speech-to-text run. The generation's settlement makes the row due in its own transaction; a worker loop claims due rows with a lease, checks the plan (Pro and above) and that the acting user still has access, and ends the row `ready`, `partial` or `skipped` with a reason. Exports and copy use keys derived from the row, so a re-claim never repeats them.
+_Avoid_: Auto-export, post-processing, publishing (Finishing proposes posts and never posts)
 
 **Media Cleanup**:
 The durable execution module that owns exact-key removal of unreferenced private media after an approved producer commits its database state. It owns idempotent obligation admission, provisional copy-compensation holds, fenced claims, renewal, storage outcome classification, bounded retry, settlement, and identifier-safe diagnostics. Clip Editor Document Persistence, detected Clip replacement, and Clip duplication still own the decision and transaction that create or adopt cleanup intent.
@@ -155,6 +183,22 @@ _Avoid_: Publishing Draft, provider operation
 The immutable editor revision, exact Clip Export and variant, social account, platform, caption, settings, capability version, and schedule that every attempt for one Social Post must use.
 _Avoid_: Current clip, latest render, execution payload
 
+**Posting Schedule**:
+A Social Account's weekly slots, each a weekday and a local time in the Workspace time zone. A slot keeps its local time across daylight saving changes: 09:00 stays 09:00. An account without slots has no queue to accept into.
+_Avoid_: Posting window (a range a bulk batch is spread across), Calendar
+
+**Proposal**:
+A Social Post in the `draft` status that names a clip, a finished Clip Export variant, a Social Account and a draft caption, and records whether a person, an integration or Finishing proposed it. It has no scheduled time, takes no slot and is never claimed for publication. A person rejects it, which cancels it, or accepts it, which converts the same Social Post in place into a scheduled one in the account's next free slot and records who accepted it. Its ID never changes.
+_Avoid_: Publishing Draft (browser-local), Publication Intent (a Proposal has not been confirmed), approval
+
+**Publishing Queue**:
+A Social Account's Posting Schedule together with the Proposals waiting for it. Accepting takes the next free slot: the first slot after now that no other active Social Post for that account occupies at exactly that time, chosen under a row lock on the Social Account in the transaction that writes the post. Only a person in Narriflow accepts, or a Standing Grant a person gave; REST, MCP and Finishing can only propose.
+_Avoid_: Scheduler, autopublish
+
+**Standing Grant**:
+A Workspace Owner's or Admin's standing authority for one Autopilot rule's output to go out without a click: its Proposals accepted into one Social Account's Publishing Queue (`publish`), or its finished exports sent as a Review Round to named reviewers (`review_send`). It has a daily and a weekly cap counted over the last 24 hours and 7 days, an expiry at most 90 days ahead, a status (`active`, `paused`, `expired`, `revoked`) and a revision that rises on each renewal. What goes out under it records the grant and revision as its evidence. It never weakens a Brand Profile's approval rule, never covers a TikTok account, and pauses itself when a post it accepted fails or needs attention. Only Owners and Admins create, renew, pause or revoke one.
+_Avoid_: Auto-approve, autopilot permission, override (an override is a person's audited decision on one export)
+
 **Social Publication Attempt**:
 One durable, idempotent attempt to deliver a Social Post, with ordered checkpoints, bounded provider calls, retry lineage, and a terminal accepted, failed, or unknown outcome.
 _Avoid_: Social Post, worker run, blind retry
@@ -166,6 +210,22 @@ _Avoid_: Publishing status, worker ID, account lock
 **Provider Receipt**:
 The unique durable evidence that a provider or webhook receiver accepted one Social Publication Attempt. Receipt creation, Social Post settlement, and analytics intent creation commit atomically.
 _Avoid_: HTTP 2xx, external URL, provider response
+
+**Tracked Video**:
+One directly published video whose public counts Narriflow reads back from its platform, identified by a post ID the platform itself verified (never a webhook receiver's own claim), and only while it is public. It belongs to the Workspace, not the Project, so deleting a Project or purging it by retention detaches the Social Post but keeps the captures and Clip Facts. A TikTok inbox delivery becomes a Tracked Video only once a public post is verified.
+_Avoid_: Metric row, analytics post, synced post
+
+**Performance Capture**:
+One scheduled read of a Tracked Video's views, likes, comments, shares, saves, and watch time, at about 1 hour, 24 hours, 3 days, 7 days, and 28 days after publication, then no more. A worker claims it under a fenced lease and settles it once as captured or skipped. A revoked or expired grant, a removed account, or a deleted video skips it with a reason and never fails the Social Post. A count the platform does not report stays empty rather than zero, and each capture keeps the API version that produced it.
+_Avoid_: Metric snapshot, sync run, analytics event
+
+**Clip Facts**:
+The virality score, category, hook strength, duration, aspect ratio, platform, and posted hour in the Workspace time zone, frozen once, in the pass that first tracks a video (within a minute of publication), and never rewritten. "What worked" groups by them after the Project is gone.
+_Avoid_: Live clip scores, clip metadata
+
+**Performance Guidance**:
+What tends to work for one Workspace's audience, computed about nightly from the clips it posted from Narriflow to TikTok and YouTube Shorts in the last 180 days (Tracked Videos' Clip Facts and 7-day counts). Each video's views are divided by its own platform's median first, so platforms are never pooled, and a clip posted to several platforms counts once toward every threshold. For each category and length band it keeps a lift (the median of those ratios, pulled toward 1 as n / (n + 20) for n clips) and a sample size; only groups of at least 10 clips count, once the Workspace has at least 30. Hook strength is not a grouping, because it is already part of the score being nudged. Moment detection gets one prompt line naming the two strongest groups and the weakest; Finishing multiplies each clip's score by a factor from 0.8 to 1.25 (the mean lift of the groups the clip falls in), lets a clip overtake another only when their plain scores are within 15 points, and records the factor on the pick. It never changes the scoring scale. The Workspace setting "Use my performance data to pick clips" is null for the default (on once the data qualifies), or an explicit yes or no.
+_Avoid_: Model tuning, learning, personalization
 
 **Publication Manual Decision**:
 An audited editor or operator choice to recheck the existing provider operation, confirm publication with labeled evidence, or authorize a linked new attempt despite duplicate risk. It records the actor and bounded reason without rewriting the uncertain attempt.
@@ -194,6 +254,10 @@ _Avoid_: Share link, project snapshot, approval request
 **Download Grant**:
 One short-lived private URL issued on explicit request for one finished export file, together with subtitle text derived from the export's frozen snapshot. Each request issues fresh grants; listings and status results never contain them, and audit logs record the grant without its URL.
 _Avoid_: Download link (that names the signed-in export page), share link
+
+**Editor Timeline**:
+A clip's current edit written for Premiere Pro (xmeml), Final Cut Pro and DaVinci Resolve (FCPXML), or any editor (EDL): the Project's original source, cut at the ranges the render keeps, with the clip's captions as SRT. Cuts and captions come from the same render timing and cut plan as an export, so they keep the same footage and words. Scenes, overlays, and burned-in captions are not timeline layers. The source is too large to zip, so it comes as a Download Grant under the file name the timeline refers to. Frame rate, dimensions, audio, and any embedded start timecode come from the source probe measured at ingest; a Project ingested before that exists, an audio-only source, and a source whose frame rate is not a standard editor rate have no Editor Timeline. Each cut sits at its edited time rounded once, so frame rounding never accumulates against the captions.
+_Avoid_: Project file, render, export (an Editor Timeline renders nothing)
 
 **Generated Media Job**:
 One metered provider request that may produce a Visual Asset after moderation and usage settlement.

@@ -21,15 +21,15 @@ Each connection carries scopes. Read scopes are granted by default. Each write s
 
 | Scope | Allows |
 | --- | --- |
-| `projects:read` | Projects, clips, Brand Profiles, and the status of imports and generations |
+| `projects:read` | Projects, clips, Brand Profiles, Recipes, the status of imports and generations, and the Workspace event feed |
 | `usage:read` | Plan and processing minutes |
 | `exports:read` | Exports, download links, and client review rounds |
 | `autopilot:read` | RSS Autopilot rules |
-| `publishing:read` | Connected accounts, publishing options and posts |
+| `publishing:read` | Connected accounts and their posting slots, publishing options and posts, and queue proposals and posting outcomes in the event feed |
 | `processing:write` | Submit links, upload files, generate clips |
 | `exports:write` | Request clip exports |
 | `autopilot:write` | Create and run RSS Autopilot rules |
-| `publishing:write` | Prepare, schedule and recover posts |
+| `publishing:write` | Prepare, schedule and recover posts, and propose posts to a publishing queue |
 
 A new API key gets the five read scopes. Choose each write scope when you create the key. The [tools list](/docs/ai/tools) shows the scope each tool needs.
 

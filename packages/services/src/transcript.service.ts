@@ -155,13 +155,34 @@ function formatReadableTimestamp(totalSeconds: number) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** A source with no speech, such as music over video, is a finished transcript
+ * with no utterances. */
+function emptyAssemblyAiTranscript(payload: AssemblyAiPayload, rawPayload: unknown): NormalizedTranscript {
+  return {
+    provider: "assemblyai",
+    providerModel: getAssemblyAiProviderModel(payload),
+    providerJobId: payload.id ?? null,
+    languageCode: payload.language_code ?? null,
+    languageConfidence: getAssemblyAiLanguageConfidence(payload),
+    text: "",
+    utterances: [],
+    speakerCount: 0,
+    durationSeconds: typeof payload.audio_duration === "number" ? Math.round(payload.audio_duration) : null,
+    rawPayload,
+  };
+}
+
+/** `allowEmpty` accepts a transcript with no speech instead of refusing it:
+ * a caption-only generation needs none. */
 export function normalizeAssemblyAiTranscript(
   rawPayload: unknown,
+  options: { allowEmpty?: boolean } = {},
 ): NormalizedTranscript {
   const payload = rawPayload as AssemblyAiPayload;
   const utterances = payload.utterances ?? [];
 
   if (utterances.length === 0) {
+    if (options.allowEmpty) return emptyAssemblyAiTranscript(payload, rawPayload);
     throw new TranscriptNormalizationError(
       "assemblyai_utterances_missing",
       "AssemblyAI transcript did not include diarized utterances",
@@ -255,6 +276,7 @@ export function normalizeAssemblyAiTranscript(
   const normalizedUtterances = splitUtterancesIntoSentences(turnUtterances);
 
   if (normalizedUtterances.length === 0) {
+    if (options.allowEmpty) return emptyAssemblyAiTranscript(payload, rawPayload);
     throw new TranscriptNormalizationError(
       "assemblyai_utterances_missing",
       "AssemblyAI transcript did not include usable utterances",

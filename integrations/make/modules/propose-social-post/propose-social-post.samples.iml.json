@@ -1,0 +1,13 @@
+{
+    "proposalId": "00000000-0000-4000-8000-000000000070",
+    "projectId": "00000000-0000-4000-8000-000000000004",
+    "clipId": "00000000-0000-4000-8000-000000000010",
+    "socialAccountId": "00000000-0000-4000-8000-000000000060",
+    "platform": "tiktok",
+    "caption": "Nobody tells you what happens after launch day.",
+    "source": "integration",
+    "exportId": "00000000-0000-4000-8000-000000000020",
+    "aspectRatio": "9:16",
+    "queueUrl": "https://app.narriflow.com/calendar/queue",
+    "replayed": false
+}

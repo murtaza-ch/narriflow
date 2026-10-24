@@ -1,4 +1,5 @@
 import { getPrismaClient } from "@narriflow/db/client";
+import { signReviewOptOutToken } from "./review-opt-out";
 import { decryptReviewValue, reviewDeliverySecret } from "./review.service";
 
 export const REVIEW_NOTIFICATION_MAX_ATTEMPTS = 3;
@@ -32,6 +33,8 @@ export interface ReviewNotificationContext {
   roundTitle: string;
   reviewPath: string;
   kind: ReviewNotificationKind;
+  /** For a round a Standing Grant sent: the signed link that stops automated review requests from the Workspace. */
+  optOut: { path: string; workspaceName: string } | null;
 }
 
 export interface ReviewNotificationStore {
@@ -66,6 +69,8 @@ export interface ReviewNotificationMailInput {
   projectTitle: string;
   roundTitle: string;
   reviewUrl: string;
+  /** Present on a round a Standing Grant sent. */
+  optOut?: { url: string; workspaceName: string };
   idempotencyKey: string;
 }
 
@@ -105,7 +110,7 @@ function requirePrisma() {
   return prisma;
 }
 
-function defaultStore(): ReviewNotificationStore {
+export function createReviewNotificationStore(): ReviewNotificationStore {
   return {
     listDue(now, limit) {
       return requirePrisma().reviewNotificationLedger.findMany({
@@ -144,6 +149,9 @@ function defaultStore(): ReviewNotificationStore {
           title: true,
           projectId: true,
           deliveryTokenEncrypted: true,
+          workspaceId: true,
+          standingGrantId: true,
+          workspace: { select: { name: true } },
           project: { select: { title: true } },
         } } },
       });
@@ -160,6 +168,12 @@ function defaultStore(): ReviewNotificationStore {
           ? `/projects/${ledger.reviewRound.projectId}?tab=review`
           : `/review/${decryptReviewValue(ledger.reviewRound.deliveryTokenEncrypted, reviewDeliverySecret())}`,
         kind,
+        optOut: kind === "round_sent" && ledger.reviewRound.standingGrantId
+          ? {
+              path: `/review/opt-out?token=${encodeURIComponent(signReviewOptOutToken({ workspaceId: ledger.reviewRound.workspaceId, email: ledger.recipientEmail }, reviewDeliverySecret()))}`,
+              workspaceName: ledger.reviewRound.workspace.name,
+            }
+          : null,
       };
     },
     async markSent(id, leaseExpiresAt, providerMessageId, sentAt) {
@@ -207,6 +221,7 @@ const defaultMailer: ReviewNotificationMailer = async (input) => {
     projectTitle: input.projectTitle,
     roundTitle: input.roundTitle,
     reviewUrl: input.reviewUrl,
+    optOut: input.optOut,
   });
   return email.sendEmail({
     to: input.to,
@@ -286,6 +301,7 @@ export class ReviewNotificationService {
           projectTitle: context.projectTitle,
           roundTitle: context.roundTitle,
           reviewUrl: new URL(context.reviewPath, appBaseUrl).toString(),
+          ...(context.optOut ? { optOut: { url: new URL(context.optOut.path, appBaseUrl).toString(), workspaceName: context.optOut.workspaceName } } : {}),
           idempotencyKey: `review-notification-${row.id}`,
         });
       } catch {
@@ -359,6 +375,6 @@ export class ReviewNotificationService {
 }
 
 export const reviewNotificationService = new ReviewNotificationService({
-  store: defaultStore(),
+  store: createReviewNotificationStore(),
   mailer: defaultMailer,
 });

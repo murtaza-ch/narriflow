@@ -1,0 +1,34 @@
+---
+title: Recipes
+sidebarTitle: Recipes
+description: Save your usual settings once, then use them by name in imports, Autopilot rules, the API and your assistants.
+---
+
+A Recipe is a named set of settings: a Brand Profile, the speech language, how many clips and how long, and optional [Finishing](/docs/publishing-queue). Change a Recipe once and everything that uses it follows, starting with the next import. Work Narriflow already accepted keeps the settings it started with.
+
+## Create and edit a Recipe
+
+1. Open **Recipes**, then select **New Recipe**.
+2. Name it, choose a Brand Profile (or none), a format, a clip length and the speech language.
+3. Turn on Finishing if new videos should be exported and given copy automatically. Finishing needs the Pro plan.
+4. Select **Create Recipe**.
+
+Anyone who can edit content can create, edit, duplicate and delete Recipes. Everyone else can read them. Duplicate a Recipe to try a variation without touching the original.
+
+If two people edit the same Recipe at once, the second save is refused so nobody overwrites the other. Reload and apply the edit again.
+
+A Recipe that an Autopilot rule uses can't be deleted. Move the rule to another Recipe, or delete the rule, first. Deleting a Recipe never changes work that already used it.
+
+## Use a Recipe
+
+- **Importing in Narriflow.** Choose a Recipe at the top of the import form. It fills in the language, Brand Profile and clip settings. You can still change any of them, and the import uses what the form shows.
+- **Autopilot.** Every rule uses one Recipe. Pick it when you create or edit the rule. Editing the Recipe changes what the rule imports next; episodes it already imported are untouched. If the Recipe's Brand Profile can't be applied, the rule pauses and says why. Choose another Recipe, or fix the profile and turn the rule back on.
+- **The API and your assistants.** Send `recipeId` instead of `brandProfileId`, `generation` and `finishing` when you submit a video, open an upload or generate clips. List Recipes with `GET /recipes` or `narriflow_list_recipes`. Sending a Recipe together with those settings is refused.
+
+Narriflow reads the Recipe when it accepts your request and tells you which revision it used. If you retry a request with the same idempotency key after editing the Recipe, you get the original result back rather than a conflict. A new key picks up your edit.
+
+Saving a Recipe, and choosing one for a rule, checks the same things saving the settings directly would. The Brand Profile must apply on your plan, and Finishing needs the Pro plan and, to propose posts to a [publishing queue](/docs/publishing-queue), the right to manage publishing. An API key that proposes posts also needs the `publishing:write` scope.
+
+Rules run as the member who created them. If a Recipe proposes posts to a queue and a rule's member can't manage publishing, that rule still exports clips and writes copy but proposes nothing, and its finishing reports `actor_lacks_publishing`. Saving the Recipe tells you which rules that affects. Generating clips for an existing Project with a Recipe uses its language, clip settings and finishing; the Project keeps its own Brand Profile. Choosing a Recipe on the import form doesn't apply its finishing; Autopilot, the API and assistants do.
+
+API keys and assistants only read Recipes. Create and edit them in Narriflow.

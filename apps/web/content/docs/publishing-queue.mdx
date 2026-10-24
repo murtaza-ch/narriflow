@@ -1,0 +1,112 @@
+---
+title: Publishing queue
+sidebarTitle: Publishing queue
+description: Give each account weekly posting slots, let Finishing, the API and your assistants propose posts, and accept them into the next free slot.
+---
+
+A publishing queue is an account's weekly posting slots plus the posts waiting for them. Finishing, the API and your assistants can propose a post. Nothing posts until a person accepts it, and accepting puts it in the account's next free slot.
+
+## Set posting slots
+
+1. Open **Calendar**, then **Queue**.
+2. Under **Posting schedule**, find the account and select **+** beside a weekday to add a time.
+3. Select **Save schedule**.
+
+Slots are weekdays and local times in your Workspace time zone, for example Monday, Wednesday and Friday at 9:00 AM. A slot keeps its local time when the clocks change, so 9:00 AM stays 9:00 AM. If a time doesn't exist on the day the clocks spring forward, the post goes out at the moment that time would have been. If a time happens twice, it takes the first one.
+
+Anyone who can manage publishing can edit slots. An account with no slots has no queue to accept into.
+
+## Where proposals come from
+
+A proposal is a clip, one of its finished exports, an account, and a draft caption. It takes no slot and never posts by itself. It can come from:
+
+- **Finishing.** Choose **Propose posts to my publishing queue** in a Recipe's Finishing settings, or send `"delivery": "propose_to_queue"` with `queueAccountIds` on a generation request. After the copy is ready, each picked clip is proposed to each account, using that platform's copy. An API key or connection needs the `publishing:write` scope to ask for this, and the settings are refused if an account isn't connected or none of the chosen export formats fits its platform.
+- **You.** Select **Propose to queue** under a post's description in the publishing drawer. Use it when someone else should check the post, or to line several up.
+- **The API.** `POST /social-posts/proposals`. See [below](#propose-from-the-api).
+- **Your assistants.** `narriflow_propose_social_post`. See [Tools](/docs/ai/tools).
+
+Narriflow keeps up to 200 proposals per Workspace.
+
+## Accept, edit or reject
+
+**Calendar → Queue → Proposed posts** lists what is waiting, oldest first. Each card shows the account, the clip, the caption and the slot it would take now.
+
+- **Edit** the caption in the card. It saves when you leave the field.
+- **Accept** gives the post the account's next free slot. A slot is free when no other active post for that account is at exactly that time, so two people accepting at once never get the same slot.
+- **Reject** cancels the proposal for good.
+- **Accept all** accepts every proposal except TikTok's, oldest first, each into its own account's next slot. It tells you how many it skipped and which couldn't be accepted, and keeps going through a long inbox.
+
+TikTok asks for the creator's choices on every post, so you accept those one at a time: choose to post directly, with a visibility and the comment, duet, stitch and AI settings, or send the video to your TikTok inbox to finish there.
+
+Accepting applies the same checks as scheduling by hand. If the clip changed after the export, accepting fails and you reject the proposal and propose the new export. If the project's Brand Profile requires client approval and the export isn't approved, accepting is refused until it is.
+
+## Accepted posts
+
+An accepted post is an ordinary scheduled post. It appears on the **Calendar** at its slot, with the rest, and you can cancel it there.
+
+## Schedule a batch into the queue
+
+In the publishing drawer, **Schedule** shows **Use posting schedule** when every chosen account has slots. Each post takes the next free slot of its own account, one after another. A batch spread across a posting window skips times an account already has a post at.
+
+## Propose from the API
+
+The key needs `publishing:read` to list accounts and `publishing:write` to propose. List the accounts to get their IDs and slots:
+
+<CodeGroup>
+
+```typescript TypeScript
+const base = "https://app.narriflow.com/api/v1";
+const headers = { Authorization: `Bearer ${process.env.NARRIFLOW_API_KEY}` };
+
+const { accounts, timeZone } = (await (await fetch(`${base}/social-accounts`, { headers })).json()) as {
+  accounts: Array<{ accountId: string; platform: string; displayName: string; postingSchedule: { slots: Array<{ weekday: string; time: string }> } | null }>;
+  timeZone: string;
+};
+```
+
+```bash curl
+curl "https://app.narriflow.com/api/v1/social-accounts" \
+  -H "Authorization: Bearer $NARRIFLOW_API_KEY"
+```
+
+</CodeGroup>
+
+Then propose a clip's finished export. `caption` is optional and defaults to the latest assisted copy for the platform.
+
+<CodeGroup>
+
+```typescript TypeScript
+const response = await fetch(`${base}/social-posts/proposals`, {
+  method: "POST",
+  headers: { ...headers, "Content-Type": "application/json", "Idempotency-Key": "clip-42-youtube" },
+  body: JSON.stringify({ clipId, exportId, socialAccountId: accounts[0]!.accountId }),
+});
+const { proposal, queueUrl } = (await response.json()) as { proposal: { proposalId: string; caption: string }; queueUrl: string };
+```
+
+```bash curl
+curl -X POST "https://app.narriflow.com/api/v1/social-posts/proposals" \
+  -H "Authorization: Bearer $NARRIFLOW_API_KEY" \
+  -H "Idempotency-Key: clip-42-youtube" \
+  -H "Content-Type: application/json" \
+  -d '{"clipId":"…","exportId":"…","socialAccountId":"…"}'
+```
+
+</CodeGroup>
+
+The response is `201` with the `proposal` and a `queueUrl` where a person accepts it. Retrying with the same `Idempotency-Key` and body returns the original proposal with an `Idempotent-Replayed: true` header.
+
+The API cannot accept a proposal, choose a time, or publish. That stays with a person in Narriflow. A proposal is refused with a typed error when:
+
+| Code | Meaning |
+| --- | --- |
+| `social_account_unavailable` | The account isn't connected to the Workspace, or needs reconnecting. |
+| `clip_export_not_found` | The export doesn't exist for that clip in the Workspace. |
+| `editor_revision_conflict` | The clip changed after the export. Export its current revision. |
+| `social_proposal_variant_unavailable` | The export has no finished format, or none of a length and shape the platform accepts. |
+| `social_proposal_caption_too_long` | The caption is over the platform's limit. |
+| `social_proposal_limit_reached` | The Workspace already holds 200 proposals. |
+
+## Watch the queue
+
+Each proposal adds a `social_post.proposed` event to the [event feed](/docs/api/events), with the proposal's ID as `socialPostId`. The proposal's ID is the post's ID for good. When a person accepts it, the same post becomes scheduled in its slot, and when it goes out you get `social_post.finished` for that same ID.

@@ -10,6 +10,10 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
+import { buildGenerationContentPack } from "@narriflow/validators";
+import { encodeOperationId } from "./operation-status";
+import { recipeService } from "./recipe.service";
+import { listWorkspaceEvents } from "./workspace-event";
 import {
   createUploadSessionModule,
   defaultUploadSessionConfig,
@@ -1010,5 +1014,89 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     ).toBe(1);
     expect(providerAborts).toContain("provider-2");
     expect(providerAborts).toContain("provider-3");
+  });
+
+  test("an Upload Session that ends before its import emits one intake event, whichever way it ends", async () => {
+    const owner = await prisma.user.create({ data: { clerkId: `upload-events:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Upload events", ownerUserId: owner.id, pricingTier: "business", members: { create: { userId: owner.id, role: "owner" } } } });
+    const now = new Date();
+    const session = async (status: "compensating" | "finalizing") => {
+      const attemptId = randomUUID();
+      const row = await prisma.uploadSession.create({ data: {
+        workspaceId: workspace.id, actorUserId: owner.id, clientIdempotencyKey: randomUUID(), immutableInputFingerprint: `events-${randomUUID()}`,
+        preallocatedProjectId: randomUUID(), title: "Ends early", fileName: "early.mp4", fileSizeBytes: 2048n, contentType: "video/mp4",
+        browserFingerprint: "events", generationSettings: { languageCode: "en", contentPack: CONTENT_PACK }, transferKind: "single",
+        storageKey: `workspaces/${workspace.id}/${randomUUID()}.mp4`, status, failureCode: status === "compensating" ? "upload_session_expired" : null,
+        reconciliationAttemptId: status === "compensating" ? attemptId : null, expiresAt: new Date(now.getTime() + 60_000), hardExpiresAt: new Date(now.getTime() + 120_000),
+      } });
+      return { row, attemptId };
+    };
+    const intake = (id: string, state: string) => ({ operation: { kind: "intake", id: encodeOperationId({ kind: "intake", id }) }, projectId: null, state });
+    const feed = async () => (await listWorkspaceEvents(prisma, { workspaceId: workspace.id }, { limit: 200 })).data.map((event) => event.subject);
+
+    const expired = await session("compensating");
+    await prismaUploadSessionPersistence.settleTerminal({ sessionId: expired.row.id, reconciliationAttemptId: expired.attemptId, status: "expired", failureCode: "upload_session_expired", updatedAt: now });
+    const aborted = await session("compensating");
+    await prismaUploadSessionPersistence.settleTerminal({ sessionId: aborted.row.id, reconciliationAttemptId: aborted.attemptId, status: "aborted", failureCode: "user_discarded", updatedAt: now });
+    const unverified = await session("finalizing");
+    await prismaUploadSessionPersistence.recordFailure({ sessionId: unverified.row.id, status: "failed", failureCode: "upload_size_mismatch", updatedAt: now });
+    expect(await feed()).toEqual([intake(expired.row.id, "failed"), intake(aborted.row.id, "cancelled"), intake(unverified.row.id, "failed")]);
+
+    // Compensating is not the end, and a lost-claim replay of a settled session writes nothing.
+    const compensating = await session("finalizing");
+    await prismaUploadSessionPersistence.recordFailure({ sessionId: compensating.row.id, status: "compensating", failureCode: "upload_size_mismatch", updatedAt: now });
+    await expect(prismaUploadSessionPersistence.settleTerminal({ sessionId: expired.row.id, reconciliationAttemptId: expired.attemptId, status: "expired", failureCode: "upload_session_expired", updatedAt: now }))
+      .rejects.toBeInstanceOf(UploadSessionReconciliationClaimLostError);
+    expect(await feed()).toHaveLength(3);
+  });
+
+  test("an upload opened with a Recipe replays after the Recipe is edited, keeps the revision it froze, and a new key sees the edit", async () => {
+    const user = await prisma.user.create({ data: { clerkId: `upload-recipe-${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Upload Recipe", ownerUserId: user.id, pricingTier: "business", members: { create: { userId: user.id, role: "owner" } } } });
+    const scope = { actorUserId: user.id, workspaceId: workspace.id };
+    const recipe = await recipeService.create(scope, { name: "Uploads", brandProfileId: null, contentPack: buildGenerationContentPack({ clipCountTarget: 10 }) });
+    const storage = {
+      async grantSinglePut() { return { url: "https://upload.invalid/direct" }; },
+      async headExactObjectIfExists() { return null; },
+      async deleteExactObject() {},
+    } as unknown as UploadSessionStorage;
+    const module = createUploadSessionModule({
+      config: defaultUploadSessionConfig(),
+      persistence: prismaUploadSessionPersistence,
+      storage,
+      admission: { async resolveBrand() { return null; } },
+      now: () => new Date(),
+      createId: randomUUID,
+    });
+    const recipeUse = { id: recipe.id, resolve: () => recipeService.resolve(scope, recipe.id) };
+    const open = (clientIdempotencyKey: string) => module.open({
+      actorUserId: user.id,
+      workspaceId: workspace.id,
+      clientIdempotencyKey,
+      title: "From a Recipe",
+      source: { fileName: "recipe.mp4", sizeBytes: 2_048, contentType: "video/mp4", browserFingerprint: '["recipe.mp4",2048,"video/mp4",1]' },
+      brandTemplateId: null,
+      brandProfileId: null,
+      generation: null,
+      recipe: recipeUse,
+    });
+    const stored = async (sessionId: string) => (await prisma.uploadSession.findUniqueOrThrow({ where: { id: sessionId } })).generationSettings as {
+      contentPack: { clipCountTarget: number };
+      recipe: { id: string; revision: number };
+    };
+
+    const key = randomUUID();
+    const first = await open(key);
+    expect(await stored(first.sessionId)).toMatchObject({ contentPack: { clipCountTarget: 10 }, recipe: { id: recipe.id, revision: 1 } });
+
+    await recipeService.update(scope, recipe.id, { expectedRevision: 1, contentPack: buildGenerationContentPack({ clipCountTarget: 4 }) });
+    const retry = await open(key);
+    expect(retry.sessionId).toBe(first.sessionId);
+    expect(await stored(first.sessionId)).toMatchObject({ contentPack: { clipCountTarget: 10 }, recipe: { id: recipe.id, revision: 1 } });
+    expect(await prisma.uploadSession.count({ where: { workspaceId: workspace.id } })).toBe(1);
+
+    const fresh = await open(randomUUID());
+    expect(fresh.sessionId).not.toBe(first.sessionId);
+    expect(await stored(fresh.sessionId)).toMatchObject({ contentPack: { clipCountTarget: 4 }, recipe: { id: recipe.id, revision: 2 } });
   });
 });

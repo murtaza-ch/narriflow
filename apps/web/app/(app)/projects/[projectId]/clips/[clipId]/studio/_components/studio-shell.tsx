@@ -165,7 +165,7 @@ const TIMELINE_SNAP_THRESHOLD_SEC = 0.25;
 /** Shared guard for `deleteSelectedSegment` (timeline), `deleteSourceRange`
  *  (transcript selection, Phase B step 11), and `applyRemoveSilence` (Phase
  *  B step 12, which passes the whole batch of detected ranges at once):
- *  mirrors the worker's render-time `isEmpty` check (`cut-plan.ts`) so a
+ *  mirrors the worker's render-time `isEmpty` check (`buildClipCutPlan`) so a
  *  delete that would leave nothing renderable is rejected client-side
  *  before it's ever dispatched, instead of discovered later as a failed
  *  render. Pure/module-level so every caller shares one implementation
@@ -371,6 +371,12 @@ export interface ClipInfo {
   viralityScore: number;
   category: string;
   sourceKind: "video" | "audio";
+  /** The clip is its whole source (a caption-only video), so its trim bounds are
+   *  `clipDurationBounds(true)`, not the detected-clip 10 to 120 seconds. */
+  wholeSource: boolean;
+  /** Where the source ends: its probed duration, exact, else the rounded one. A
+   *  whole-source clip's trim handles stop here. */
+  sourceEdgeSec: number | null;
   /** Detection-time visual cues, clip-relative. The studio uses the same
    *  cues as the worker so its automatic-cutaway plan never falls back to
    *  one repeated title query when richer timing data already exists. */

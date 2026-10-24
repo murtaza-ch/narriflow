@@ -27,13 +27,11 @@ import {
   detectSilenceRanges,
   SILENCE_DEFAULT_MIN_SILENCE_SEC,
   SILENCE_DEFAULT_PAD_SEC,
-  CLIP_MIN_DURATION_SEC,
-  CLIP_MAX_DURATION_SEC,
 } from "@narriflow/validators";
 import type { EditedTimeMap, SourceRange, TranscriptUtterance } from "@narriflow/validators";
 import type { ClipPreviewPeaks } from "@narriflow/services";
 import { useStudio } from "./studio-shell";
-import { resolveTrimPosition } from "./trim-control";
+import { resolveTrimPosition, trimLimits, trimSourceCeilingSec } from "./trim-control";
 import { usePlaybackTime } from "./playback-clock";
 import { deletedRangesToCutMarkers, projectSegmentToEdited, type CutMarker } from "./edited-timeline";
 import { loadClipPreviewPeaks, sampleAmplitudeAtSourceTime } from "./waveform-peaks";
@@ -1343,6 +1341,11 @@ const TrimHandle = memo(function TrimHandle({
   trackHeight: number;
 }) {
   const { clipInfo, clipStartSec, clipEndSec, commitTrim, trimHandlesDisabled } = useStudio("clipInfo", "clipStartSec", "clipEndSec", "commitTrim", "trimHandlesDisabled");
+  // Stable between renders: the pointer handler's deps must not churn with clipInfo.
+  const trimClip = useMemo(
+    () => ({ wholeSource: clipInfo.wholeSource, sourceEdgeSec: clipInfo.sourceEdgeSec }),
+    [clipInfo.wholeSource, clipInfo.sourceEdgeSec],
+  );
 
   const dragRef = useRef<TrimDragState | null>(null);
   const transcriptRef = useRef<TrimTranscript | null>(null);
@@ -1402,17 +1405,17 @@ const TrimHandle = memo(function TrimHandle({
       const dxPx = e.clientX - drag.startClientX;
       const deltaSec = dxPx / pxPerSec;
       const transcript = transcriptRef.current;
-      const sourceCeilingSec = transcript ? transcript.sourceDurationSec : Number.POSITIVE_INFINITY;
+      const sourceCeilingSec = trimSourceCeilingSec(trimClip, transcript ? transcript.sourceDurationSec : Number.POSITIVE_INFINITY);
 
       drag.candidateSec = resolveTrimPosition({
         side, startSec: drag.grabStartSec, endSec: drag.grabEndSec,
         candidateSec: (side === "start" ? drag.grabStartSec : drag.grabEndSec) + deltaSec,
-        sourceDurationSec: sourceCeilingSec, words: transcript?.words,
+        sourceDurationSec: sourceCeilingSec, wholeSource: clipInfo.wholeSource, words: transcript?.words,
       });
 
       paintDrag(dxPx, drag);
     },
-    [pxPerSec, side, paintDrag],
+    [pxPerSec, side, paintDrag, clipInfo.wholeSource, trimClip],
   );
 
   const endDrag = useCallback(() => {
@@ -1477,7 +1480,7 @@ const TrimHandle = memo(function TrimHandle({
       const current = side === "start" ? clipStartSec : clipEndSec;
       const next = resolveTrimPosition({ side, startSec: clipStartSec, endSec: clipEndSec,
         candidateSec: current + direction * (event.shiftKey ? 1 : 0.1),
-        sourceDurationSec: transcript.sourceDurationSec,
+        sourceDurationSec: trimSourceCeilingSec(trimClip, transcript.sourceDurationSec), wholeSource: clipInfo.wholeSource,
       });
       if (Math.abs(next - current) < TRIM_COMMIT_EPSILON_SEC / 2) return;
       await commitTrim(side === "start" ? next : clipStartSec, side === "end" ? next : clipEndSec);
@@ -1489,6 +1492,11 @@ const TrimHandle = memo(function TrimHandle({
     }
   };
 
+  const ariaLimits = trimLimits({
+    side, startSec: clipStartSec, endSec: clipEndSec, wholeSource: clipInfo.wholeSource,
+    sourceDurationSec: trimSourceCeilingSec(trimClip, transcriptRef.current?.sourceDurationSec ?? Number.POSITIVE_INFINITY),
+  });
+
   return (
     <Box
       ref={gripRef}
@@ -1497,8 +1505,8 @@ const TrimHandle = memo(function TrimHandle({
       aria-label={side === "start" ? "Trim clip start" : "Trim clip end"}
       aria-disabled={trimHandlesDisabled}
       aria-orientation="horizontal"
-      aria-valuemin={side === "start" ? Math.max(0, clipEndSec - CLIP_MAX_DURATION_SEC) : clipStartSec + CLIP_MIN_DURATION_SEC}
-      aria-valuemax={side === "start" ? clipEndSec - CLIP_MIN_DURATION_SEC : Math.min(transcriptRef.current?.sourceDurationSec ?? Infinity, clipStartSec + CLIP_MAX_DURATION_SEC)}
+      aria-valuemin={ariaLimits.minimum}
+      aria-valuemax={ariaLimits.maximum}
       aria-valuenow={side === "start" ? clipStartSec : clipEndSec}
       aria-valuetext={`${(side === "start" ? clipStartSec : clipEndSec).toFixed(2)} seconds`}
       title="Arrow keys trim by 0.1 seconds; Shift + arrow trims by 1 second"

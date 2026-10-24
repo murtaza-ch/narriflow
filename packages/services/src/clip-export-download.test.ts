@@ -16,7 +16,7 @@ const snapshot = {
     transcriptSlice: [{ index: 0, speaker: 0, speakerLabel: "Speaker 1", confidence: 0.9, startSec: 1, endSec: 2, text: "Hello there",
       words: [{ word: "Hello", startSec: 1, endSec: 1.4, confidence: 0.9 }, { word: "there", startSec: 1.5, endSec: 2, confidence: 0.9 }] }],
     studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }), brollUrl: null, deletedRanges: [],
-  }), 600),
+  }), { durationSec: 600, wholeSource: false }),
   llmModel: "test",
 };
 function variant(id: string, status: string, storageKey: string | null) {

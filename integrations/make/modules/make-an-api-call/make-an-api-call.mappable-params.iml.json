@@ -1,0 +1,98 @@
+[
+    {
+        "name": "url",
+        "type": "text",
+        "label": "URL",
+        "required": true,
+        "help": "Enter a path relative to `https://app.narriflow.com`. For example: `/api/v1/operations/op_...`. The REST API reference lists every path."
+    },
+    {
+        "name": "method",
+        "type": "select",
+        "label": "Method",
+        "default": "GET",
+        "required": true,
+        "options": [
+            {
+                "label": "GET",
+                "value": "GET"
+            },
+            {
+                "label": "POST",
+                "value": "POST"
+            },
+            {
+                "label": "PUT",
+                "value": "PUT"
+            },
+            {
+                "label": "PATCH",
+                "value": "PATCH"
+            },
+            {
+                "label": "DELETE",
+                "value": "DELETE"
+            }
+        ]
+    },
+    {
+        "name": "headers",
+        "type": "array",
+        "label": "Headers",
+        "help": "You don't have to add authorization headers; we already did that for you. Requests that start work need an Idempotency-Key header.",
+        "spec": {
+            "type": "collection",
+            "label": "Header",
+            "spec": [
+                {
+                    "name": "key",
+                    "type": "text",
+                    "label": "Key"
+                },
+                {
+                    "name": "value",
+                    "type": "text",
+                    "label": "Value"
+                }
+            ]
+        },
+        "labels": {
+            "add": "Add header"
+        },
+        "default": [
+            {
+                "key": "Content-Type",
+                "value": "application/json"
+            }
+        ]
+    },
+    {
+        "name": "qs",
+        "type": "array",
+        "label": "Query string",
+        "spec": {
+            "type": "collection",
+            "label": "Parameter",
+            "spec": [
+                {
+                    "name": "key",
+                    "type": "text",
+                    "label": "Key"
+                },
+                {
+                    "name": "value",
+                    "type": "text",
+                    "label": "Value"
+                }
+            ]
+        },
+        "labels": {
+            "add": "Add parameter"
+        }
+    },
+    {
+        "name": "body",
+        "type": "any",
+        "label": "Body"
+    }
+]

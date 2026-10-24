@@ -612,6 +612,7 @@ describe("native publication adapters", () => {
 			kind: "accepted",
 			receipt: {
 				receiptId: "youtube-video-1",
+				platformPostIds: ["youtube-video-1"],
 				externalUrl: "https://www.youtube.com/shorts/youtube-video-1",
 				providerProcessingStatus: "processing",
 			},
@@ -1127,8 +1128,8 @@ describe("native publication adapters", () => {
 			receipt: {
 				receiptId: "container-lost-response",
 				platformPostId: null,
+				platformPostIds: [],
 				externalUrl: null,
-				metrics: null,
 			},
 		});
 		expect(state.requests).toHaveLength(1);

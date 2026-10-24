@@ -111,7 +111,7 @@ export async function createClipPersistenceFixture(prisma: PrismaClient) {
   const document = clipPersistenceEditorDocument();
   const storedDocument = encodeClipEditorDocumentForStorage(
     document,
-    project.sourceDurationSeconds,
+    { durationSec: project.sourceDurationSeconds, wholeSource: false },
   );
   const clip = await prisma.clip.create({
     data: {
@@ -156,10 +156,11 @@ export async function addClipPersistenceFixtureClip(
   fixture: Awaited<ReturnType<typeof createClipPersistenceFixture>>,
   index: number,
   document: EditorDocument,
+  options: { wholeSource?: boolean } = {},
 ) {
   const storedDocument = encodeClipEditorDocumentForStorage(
     document,
-    fixture.project.sourceDurationSeconds,
+    { durationSec: fixture.project.sourceDurationSeconds, wholeSource: options.wholeSource ?? false },
   );
   const clip = await prisma.clip.create({
     data: {

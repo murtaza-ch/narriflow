@@ -16,6 +16,7 @@ import { BrandAccessError } from "./brand-ownership";
 import { brandTemplateService } from "./brand-template.service";
 import { brandFontService } from "./brand-font.service";
 import { projectService } from "./project.service";
+import { createProductionReviewApprovalGate } from "./review-approval-gate.prisma";
 import { ProgramWriteDisabledError } from "./program-rollout";
 import { sceneTemplateService } from "./scene-template.service";
 import {
@@ -169,6 +170,45 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect((await assistantIntake()).project.id).toBe(first.project.id);
     await expect(projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
       { url: "https://www.youtube.com/watch?v=brand-foreign-db-test", commitToken: randomUUID(), brandProfileId: other.id })).rejects.toBeInstanceOf(BrandProfileNotFoundError);
+  });
+
+  test("RSS imports freeze the Brand Profile like link intake, so its approval rule gates the clips", async () => {
+    const f = await workspaceFixture("rss-intake");
+    const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
+    const client = await brandProfileService.create(f.scope, { name: "Client brand", slug: "client-brand", approvalRule: "approval_required" });
+    const episode = (id: string) => ({ id, title: `Episode ${id}`, enclosureUrl: `https://cdn.example.test/${id}.mp3`, durationSeconds: 60 });
+    const settings = { generationContext: { contentPack: buildGenerationContentPack(), languageCode: null } };
+    const rssProjects = () => prisma.project.count({ where: { workspaceId: f.workspace.id, sourceType: "rss" } });
+
+    const branded = await projectService.importResolvedRssEpisodes(scope, { rssUrl: "https://feeds.example.test/show.xml", episodes: [episode("branded")], brandProfileId: client.id }, settings);
+    const unbranded = await projectService.importResolvedRssEpisodes(scope, { rssUrl: "https://feeds.example.test/show.xml", episodes: [episode("unbranded")], brandProfileId: null }, settings);
+    const frozen = await prisma.project.findUniqueOrThrow({ where: { id: branded.projects[0]!.project.id }, select: { brandProfileId: true, brandProfileSnapshot: true } });
+    expect(frozen.brandProfileId).toBe(client.id);
+    expect(frozen.brandProfileSnapshot).toMatchObject({ profileId: client.id, approvalRule: "approval_required" });
+    expect(await prisma.programAnalyticsEvent.count({ where: { projectId: branded.projects[0]!.project.id, type: "brand_profile_applied" } })).toBe(1);
+
+    // The review approval gate reads the frozen snapshot: clips of the branded
+    // RSS Project need client approval, the unbranded one is advisory.
+    const exportFor = async (projectId: string) => {
+      const detection = await prisma.workflowRun.create({ data: { projectId, stage: "moment_detection", status: "completed", idempotencyKey: randomUUID() } });
+      const clip = await prisma.clip.create({ data: { projectId, workflowRunId: detection.id, index: 0, startSec: 0, endSec: 30, hookText: "Hook", reasoning: "Test", category: "story",
+        transcriptSlice: [], viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50,
+        tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "test", llmModel: "test" } });
+      return prisma.clipExport.create({ data: { projectId, workspaceId: f.workspace.id, clipId: clip.id, editorRevision: 0, fingerprint: randomUUID(), resolution: "720p", watermark: true, status: "ready", progress: 100 } });
+    };
+    const gate = createProductionReviewApprovalGate();
+    const authorize = (projectId: string, exportId: string) => gate.authorize({ principal: { kind: "workspace_user", userId: f.user.id }, workspaceId: f.workspace.id, projectId, exportIds: [exportId], idempotencyKey: randomUUID() });
+    await expect(authorize(branded.projects[0]!.project.id, (await exportFor(branded.projects[0]!.project.id)).id)).rejects.toMatchObject({ code: "review_approval_required" });
+    await expect(authorize(unbranded.projects[0]!.project.id, (await exportFor(unbranded.projects[0]!.project.id)).id)).resolves.toMatchObject({ allowed: true });
+
+    // A profile that can't be applied refuses the import instead of importing without the brand.
+    const before = await rssProjects();
+    await brandProfileService.softDelete(f.scope, (await brandProfileService.create(f.scope, { name: "Gone", slug: "gone" })).id, { revision: 1 });
+    const gone = await prisma.brandProfile.findFirstOrThrow({ where: { workspaceId: f.workspace.id, slug: "gone" } });
+    await expect(projectService.importResolvedRssEpisodes(scope, { rssUrl: "https://feeds.example.test/show.xml", episodes: [episode("gone")], brandProfileId: gone.id }, settings)).rejects.toBeInstanceOf(BrandProfileNotFoundError);
+    await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
+    await expect(projectService.importResolvedRssEpisodes(scope, { rssUrl: "https://feeds.example.test/show.xml", episodes: [episode("downgraded")], brandProfileId: client.id }, settings)).rejects.toBeInstanceOf(BrandAccessError);
+    expect(await rssProjects()).toBe(before);
   });
 
   test("persists a member style as the profile default", async () => {

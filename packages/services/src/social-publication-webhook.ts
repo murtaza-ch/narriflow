@@ -4,7 +4,6 @@ import { request as requestHttps } from "node:https";
 import { connect as connectTcp } from "node:net";
 import { Readable } from "node:stream";
 import { connect as connectTls } from "node:tls";
-import { socialPostMetricsSchema } from "@narriflow/validators";
 import type {
 	PublicationPlatform,
 	PublicationPlatformContext,
@@ -155,14 +154,12 @@ function parseReceiverResult(
 				operation: null,
 			};
 		}
-		const metrics = socialPostMetricsSchema.safeParse(receipt?.metrics);
 		return {
 			kind: "accepted",
 			receipt: {
 				receiptId,
 				platformPostId: nonEmptyString(receipt?.externalPostId),
 				externalUrl: safeExternalUrl(receipt?.externalUrl),
-				metrics: metrics.success ? metrics.data : null,
 			},
 		};
 	}

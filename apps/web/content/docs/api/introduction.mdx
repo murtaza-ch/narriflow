@@ -41,12 +41,14 @@ A key acts only in its own Workspace, with its scopes and with its creator's cur
 | Scope | Endpoints |
 | --- | --- |
 | `usage:read` | `GET /workspace` |
-| `projects:read` | `GET /brand-profiles`, `GET /projects`, `GET /projects/{id}`, `GET /projects/{id}/clips`, `GET /clips/{id}` |
+| `projects:read` | `GET /brand-profiles`, `GET /recipes`, `GET /recipes/{id}`, `GET /library/search`, `GET /projects`, `GET /projects/{id}`, `GET /projects/{id}/clips`, `GET /clips/{id}`, `GET /events` |
 | `processing:write` | `POST /uploads`, `GET /uploads/{id}`, `POST /uploads/{id}/grants`, `POST /uploads/{id}/finalize`, `DELETE /uploads/{id}`, `POST /projects`, `POST /projects/{id}/generations` |
 | `exports:write` | `POST /clips/{id}/exports` |
-| `exports:read` | `GET /exports/{id}`, `GET /exports/{id}/download` |
+| `exports:read` | `GET /exports/{id}`, `GET /exports/{id}/download`, `GET /clips/{id}/timeline` |
+| `publishing:read` | `GET /social-accounts` |
+| `publishing:write` | `POST /social-posts/proposals` |
 
-`GET /operations/{id}` needs `projects:read` for imports and generations, and `exports:read` for exports. `POST /operations/{id}/callback/redeliver` needs `processing:write` or `exports:write` the same way. A missing scope returns `403 scope_required` and names the scope.
+`GET /operations/{id}` needs `projects:read` for imports and generations, and `exports:read` for exports. `POST /operations/{id}/callback/redeliver` needs `processing:write` or `exports:write` the same way. `GET /events` also needs `publishing:read` to include `social_post.proposed` and `social_post.finished` events; without it they are left out. A missing scope returns `403 scope_required` and names the scope.
 
 ## Plan and processing minutes
 
@@ -66,7 +68,7 @@ In loops, build keys from the run, the item and the action, for example `run-81:
 
 ## Operations
 
-A request that starts work returns `202` with an `operation` holding an opaque `operationId` and a `statusUrl`. Read it with `GET /operations/{id}` or have Narriflow call you back. The state is `working`, `completed`, `partial`, `failed` or `cancelled`, with progress, each clip's or format's outcome, and the IDs produced. An intake follows its upload or import into the clip generation it starts. See [Completion callbacks](/docs/api/callbacks).
+A request that starts work returns `202` with an `operation` holding an opaque `operationId` and a `statusUrl`. Read it with `GET /operations/{id}` or have Narriflow call you back. The state is `working`, `completed`, `partial`, `failed` or `cancelled`, with progress, each clip's or format's outcome, and the IDs produced. An intake follows its upload or import into the clip generation it starts. See [Completion callbacks](/docs/api/callbacks), and [Events](/docs/api/events) or [Webhooks](/docs/api/webhooks) for work that no request of yours started.
 
 ## Errors
 

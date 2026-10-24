@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import type { Prisma, WorkspaceRole } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 
+import { pauseGrantsOfGranter } from "./standing-grant";
 import {
   WorkspaceOperationError,
   workspaceService,
   workspacesV1EnabledForUser,
 } from "./workspace.service";
+import { flushWorkspaceEvents } from "./workspace-event";
 
 function requiredPrisma() {
   const prisma = getPrismaClient();
@@ -198,6 +200,10 @@ export class WorkspaceMembershipService {
         data: { role: nextRole },
       });
       await markSeatCountChanged(tx, workspaceId, delta);
+      // A grant acts for a person who manages the Workspace. Demoted below Admin, theirs pause now,
+      // not at the next delivery.
+      if (nextRole !== "admin") await pauseGrantsOfGranter(tx, { workspaceId, userId: member.userId });
+      await flushWorkspaceEvents(tx);
       return updated;
     });
   }
@@ -224,6 +230,8 @@ export class WorkspaceMembershipService {
       }
       await tx.workspaceMember.delete({ where: { id: member.id } });
       await markSeatCountChanged(tx, workspaceId, isBillable(member.role) ? -1 : 0);
+      await pauseGrantsOfGranter(tx, { workspaceId, userId: member.userId });
+      await flushWorkspaceEvents(tx);
     });
   }
 }

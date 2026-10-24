@@ -33,7 +33,7 @@ const ratioItems = clipAspectRatioOptions.map((option) => ({
   icon: <RatioIcon ratio={option.value} />,
 }));
 
-const clipLengthItems = [
+export const clipLengthItems = [
   { value: "auto", label: "Auto" },
   { value: "under_30s", label: "Under 30 seconds" },
   { value: "30_to_60s", label: "30 to 60 seconds" },

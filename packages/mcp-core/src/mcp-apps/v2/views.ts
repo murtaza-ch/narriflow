@@ -62,7 +62,7 @@ export function uploadView(payload: Facts, context: Facts): CardView {
     html: accepted ? '<div class="upload-success"><span class="success-mark" aria-hidden="true">✓</span><h2>Upload received</h2><p>Narriflow is processing your video. Open your project to follow progress and review your clips.</p></div>' :
       `<p class="intro">Choose a video or audio file. Narriflow will find the moments worth sharing.</p>
       <label class="file-picker" id="file-picker">${uploadIcon}<strong id="file-name">Choose a file or drop it here</strong><span id="file-description">Video or audio from your device</span><span class="picker-button" aria-hidden="true">Browse files</span><input id="file" type="file" accept="video/*,audio/*" aria-label="Choose a video or audio file"></label>
-      <dl class="settings-band" aria-label="Generation settings">${fact("Output", generation.defaultAspectRatio ?? "9:16")}${fact("Clip length", label(generation.clipLengthPreset ?? "auto"))}${fact("Captions", label(generation.captionPreset ?? "brand_default"))}</dl>
+      <dl class="settings-band" aria-label="Generation settings">${context.recipeId ? fact("Settings", "Your saved Recipe") : `${fact("Output", generation.defaultAspectRatio ?? "9:16")}${fact("Clip length", label(generation.clipLengthPreset ?? "auto"))}${fact("Captions", label(generation.captionPreset ?? "brand_default"))}`}</dl>
       <p class="subtle">Your file uploads directly to Narriflow. Processing uses your workspace's minute quota.</p>`,
   };
 }

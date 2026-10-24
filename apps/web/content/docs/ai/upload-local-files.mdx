@@ -34,7 +34,7 @@ Codex and Claude Code can run a command on your machine. The helper handles any 
       --key <UUID>
     ```
 
-    Use the `workspaceId` from `narriflow_list_workspaces` and any UUID for `--key`. The helper prints the key before it starts. To use a Brand Profile, add `--brand <brandProfileId>`. To set generation settings, add `--settings settings.json`, a JSON file with the same fields as the [API's `generation` object](/docs/api/uploads#generation-settings).
+    Use the `workspaceId` from `narriflow_list_workspaces` and any UUID for `--key`. The helper prints the key before it starts. To use a Brand Profile, add `--brand <brandProfileId>`. To set generation settings, add `--settings settings.json`, a JSON file with the same fields as the [API's `generation` object](/docs/api/uploads#generation-settings). To export the best clips and write copy when generation completes, add `--finishing finishing.json`, a JSON file with the same fields as the [API's `finishing` object](/docs/api/uploads#finishing).
   </Step>
   <Step title="Follow the intake">
     When the upload finishes, the helper prints the intake operation. Ask your assistant to follow it with `narriflow_get_operation`.

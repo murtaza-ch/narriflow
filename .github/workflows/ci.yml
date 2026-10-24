@@ -37,6 +37,52 @@ jobs:
       - name: Production build
         run: bun run build
 
+  # integrations/zapier is its own npm project, so the Bun jobs above never run it.
+  zapier:
+    name: Zapier app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/zapier
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: integrations/zapier/package-lock.json
+
+      - name: Frozen install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Validate (offline)
+        run: npm run validate
+
+  # integrations/make is plain JSON for Make to interpret: no install, no build.
+  make:
+    name: Make app
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Test
+        run: node --test "integrations/make/test/*.test.mjs"
+
   postgres-invariants:
     name: PostgreSQL / ${{ matrix.domain }}
     runs-on: ubuntu-latest
@@ -64,9 +110,12 @@ jobs:
             command: test:vizard-expansion:db
           - domain: Integration API receipts, callbacks, and Tasks
             command: test:integration-api:db
+          - domain: Library Search
+            command: test:library-search:db
     services:
       postgres:
-        image: postgres:17
+        # pgvector for the library search migration; otherwise stock PostgreSQL 17.
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

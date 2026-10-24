@@ -179,13 +179,6 @@ describe("publication webhook contract", () => {
 				receiptId: "receiver-operation-1",
 				platformPostId: "receiver-post-1",
 				externalUrl: "https://receiver.example/posts/1",
-				metrics: {
-					views: 10,
-					likes: 2,
-					comments: 0,
-					shares: 0,
-					saves: 0,
-				},
 			},
 		});
 		expect(checkpoints).toEqual(["submission_started"]);

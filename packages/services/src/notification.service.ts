@@ -1,4 +1,5 @@
 import { getPrismaClient } from "@narriflow/db/client";
+import { finishingPicksSchema } from "@narriflow/validators";
 import { accessibleProjectWhere } from "./project-access";
 
 export const NOTIFICATION_MAX_ATTEMPTS = 3;
@@ -9,7 +10,8 @@ export type NotificationOutcome =
   | "no_clips"
   | "generation_failed"
   | "import_failed"
-  | "project_expiring";
+  | "project_expiring"
+  | "finishing_ready";
 
 export interface EnqueueNotificationInput {
   projectId: string;
@@ -39,6 +41,15 @@ export interface NotificationProject {
   primaryEmail: string | null;
   emailVerifiedAt: Date | null;
   expiresAt: Date | null;
+  clipCount: number;
+}
+
+/** Who a finishing notification goes to: the person the finishing ran for,
+ * not the Workspace owner the other outcomes address. */
+export interface FinishingDelivery {
+  primaryEmail: string | null;
+  emailVerifiedAt: Date | null;
+  /** The clips finishing exported, for a retry that has only the ledger row. */
   clipCount: number;
 }
 
@@ -82,6 +93,8 @@ export interface NotificationStore {
   getWorkflowRunContext(
     workflowRunId: string,
   ): Promise<WorkflowRunNotificationContext | null>;
+  /** A `finishing_ready` ledger row's source is its Generation Finishing id. */
+  getFinishingDelivery?(finishingId: string): Promise<FinishingDelivery | null>;
 }
 
 export interface NotificationMailInput {
@@ -186,7 +199,8 @@ function isNotificationOutcome(value: string): value is NotificationOutcome {
     value === "no_clips" ||
     value === "generation_failed" ||
     value === "import_failed" ||
-    value === "project_expiring"
+    value === "project_expiring" ||
+    value === "finishing_ready"
   );
 }
 
@@ -337,6 +351,26 @@ function getDefaultStore(): NotificationStore {
         },
       });
     },
+
+    async getFinishingDelivery(finishingId) {
+      const prisma = requirePrisma();
+      const finishing = await prisma.generationFinishing.findUnique({
+        where: { id: finishingId },
+        select: { actorUserId: true, picks: true },
+      });
+      if (!finishing?.actorUserId) return null;
+      const user = await prisma.user.findFirst({
+        where: { id: finishing.actorUserId, deletedAt: null },
+        select: { primaryEmail: true, emailVerifiedAt: true },
+      });
+      if (!user) return null;
+      const picks = finishingPicksSchema.catch([]).parse(finishing.picks);
+      return {
+        primaryEmail: user.primaryEmail,
+        emailVerifiedAt: user.emailVerifiedAt,
+        clipCount: picks.filter((pick) => pick.exportId && !pick.exportError).length,
+      };
+    },
   };
 }
 
@@ -363,6 +397,11 @@ const defaultMailer: NotificationMailer = async (input) => {
       expiresAt: string;
       upgradeLink: string;
     }) => { subject: string; html: string; text: string };
+    finishingReady: (input: {
+      clipCount: number;
+      projectTitle: string;
+      deepLink: string;
+    }) => { subject: string; html: string; text: string };
     sendEmail: (input: {
       to: string;
       subject: string;
@@ -378,6 +417,12 @@ const defaultMailer: NotificationMailer = async (input) => {
           projectTitle: input.projectTitle,
           expiresAt: input.expiresAt,
           upgradeLink: input.deepLink,
+        })
+      : input.outcome === "finishing_ready"
+      ? email.finishingReady({
+          clipCount: input.clipCount,
+          projectTitle: input.projectTitle,
+          deepLink: input.deepLink,
         })
       : input.outcome === "clips_ready"
       ? email.clipsReady({
@@ -489,7 +534,8 @@ export class NotificationService {
 
     return this.deliverClaimed({
       ledger,
-      project,
+      project: await this.addressed(project, ledger),
+
       leaseExpiresAt,
       deepLink: input.deepLink,
       clipCount: input.clipCount,
@@ -580,7 +626,7 @@ export class NotificationService {
 
       const result = await this.deliverClaimed({
         ledger: { ...ledger, outcome: ledger.outcome },
-        project,
+        project: await this.addressed(project, ledger),
         leaseExpiresAt,
         ...retryInput,
       });
@@ -597,6 +643,23 @@ export class NotificationService {
     }
 
     return summary;
+  }
+
+  /** Every outcome goes to the Workspace owner except a finished finishing,
+   * which goes to the person it ran for. A missing person reads as a missing
+   * recipient, which settles the ledger row as skipped. */
+  private async addressed(
+    project: NotificationProject,
+    ledger: Pick<NotificationLedgerRow, "outcome" | "sourceId">,
+  ): Promise<NotificationProject> {
+    if (ledger.outcome !== "finishing_ready") return project;
+    const delivery = await this.store.getFinishingDelivery?.(ledger.sourceId);
+    return {
+      ...project,
+      primaryEmail: delivery?.primaryEmail ?? null,
+      emailVerifiedAt: delivery?.emailVerifiedAt ?? null,
+      clipCount: delivery?.clipCount ?? project.clipCount,
+    };
   }
 
   private settlementStatus(

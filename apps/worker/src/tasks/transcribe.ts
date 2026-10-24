@@ -14,13 +14,16 @@ import {
   workflowFailureFromUnknown,
   workflowHttpFailureDisposition,
   type ClaimedWorkflowAttempt,
+  type CompleteTranscriptInput,
   type WorkflowAttemptContext,
   type WorkflowAttemptRef,
 } from "@narriflow/services";
 import { isR2Configured } from "@narriflow/services/r2-storage";
 import {
   ASSEMBLYAI_SPEECH_MODEL_CHAIN,
+  fitSuppliedUtterances,
   sourceLanguageCodeSchema,
+  type TranscriptPlan,
 } from "@narriflow/validators";
 import { notifyWorkflowFailureAfterSettlement } from "../notifications";
 import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
@@ -546,6 +549,17 @@ async function extractTranscriptionAudio(
   });
 }
 
+/** The two persistence calls that decide whether speech-to-text runs at all. */
+interface TranscriptionSkipAdapters {
+  transcriptPlan: typeof projectService.getTranscriptPlanForWorker;
+  completeTranscript: (attempt: WorkflowAttemptRef, input: CompleteTranscriptInput) => Promise<void>;
+}
+
+const productionSkipAdapters: TranscriptionSkipAdapters = {
+  transcriptPlan: (run) => projectService.getTranscriptPlanForWorker(run),
+  completeTranscript: (attempt, input) => getWorkflowRunLifecycle().completeTranscript(attempt, input),
+};
+
 /**
  * Submit-and-release phase: submits the AssemblyAI job and returns as soon as
  * the provider job id is persisted. The transcription itself — 10-40 minutes
@@ -557,6 +571,7 @@ export async function processTranscriptRun(
   attempt: ClaimedWorkflowAttempt,
   context: WorkflowAttemptContext,
   workerProcess: WorkerProcessModule = productionWorkerProcessModule,
+  skip: TranscriptionSkipAdapters = productionSkipAdapters,
 ) {
   const run: WorkflowRunJob = { ...attempt, id: attempt.workflowRunId };
   const { signal } = context;
@@ -573,6 +588,18 @@ export async function processTranscriptRun(
         "sourceStorageKey is required for transcription",
         "permanent",
       );
+    }
+
+    // Speech-to-text is skipped for supplied or declined captions and for a
+    // source with no audio stream; the transcript then completes at once.
+    const skipped = await skip.transcriptPlan({
+      projectId: run.projectId,
+      contentPackId: attempt.contentPackId,
+    });
+    signal?.throwIfAborted();
+    if (skipped.plan.kind !== "speech_to_text") {
+      await completeWithoutSpeechToText(run, attempt, { ...skipped, plan: skipped.plan }, skip.completeTranscript);
+      return;
     }
 
     const apiKey = getRequiredAssemblyAiApiKey();
@@ -602,6 +629,37 @@ export async function processTranscriptRun(
     signal.throwIfAborted();
     await settleTranscriptRunFailure(run, attempt, error);
   }
+}
+
+/** Completes the transcript from supplied captions, or empty. An empty
+ * transcript is valid here: a caption-only generation needs no speech. */
+async function completeWithoutSpeechToText(
+  run: { id: string; projectId: string },
+  attempt: WorkflowAttemptRef,
+  input: { plan: Exclude<TranscriptPlan, { kind: "speech_to_text" }>; durationSeconds: number | null; languageCode: string | null },
+  completeTranscript: TranscriptionSkipAdapters["completeTranscript"],
+) {
+  const utterances = input.plan.kind === "supplied"
+    ? fitSuppliedUtterances(input.plan.utterances, input.durationSeconds ?? Number.POSITIVE_INFINITY)
+    : [];
+  await completeTranscript(attempt, {
+    provider: input.plan.kind === "supplied" ? "supplied_captions" : "none",
+    providerModel: null,
+    providerJobId: null,
+    languageCode: input.languageCode,
+    languageConfidence: null,
+    text: utterances.map((utterance) => utterance.text).join(" "),
+    utterances,
+    speakerCount: utterances.length > 0 ? 1 : 0,
+    durationSeconds: input.durationSeconds,
+    rawStorageKey: null,
+  });
+  log("info", "transcription_run_skipped", {
+    workflowRunId: run.id,
+    projectId: run.projectId,
+    reason: input.plan.kind === "supplied" ? "captions_supplied" : input.plan.reason,
+    utteranceCount: utterances.length,
+  });
 }
 
 async function settleTranscriptRunFailure(
@@ -634,7 +692,9 @@ async function finalizeCompletedTranscript(
   attempt: WorkflowAttemptRef,
   assemblyAiPayload: Record<string, unknown>,
 ) {
-  const normalized = normalizeAssemblyAiTranscript(assemblyAiPayload);
+  const normalized = normalizeAssemblyAiTranscript(assemblyAiPayload, {
+    allowEmpty: await projectService.runAllowsEmptyTranscript(run.id),
+  });
   const rawStorageKey = `projects/${run.projectId}/transcripts/${run.id}-assemblyai-${sanitizeFileName(
     normalized.providerModel ?? "unknown-model",
   )}.json`;

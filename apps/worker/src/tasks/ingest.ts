@@ -8,6 +8,9 @@ import {
   assertPublicHttpUrl,
   assertResponseContentLength,
   createByteLimitTransform,
+  createDriveTokenCipher,
+  driveDownloadRefusal,
+  driveFileMediaUrl,
   ExpectedDomainFailureError,
   guardedFetch,
   getIngestJobLifecycle,
@@ -15,6 +18,7 @@ import {
   IngestJobClaimLost,
   type IngestJobLifecycle,
   type ProcessingUsage,
+  readResponseTextBounded,
   redactUrlForDisplay,
   RemoteFetchError,
   UnsafeUrlError,
@@ -30,10 +34,12 @@ import {
 } from "@narriflow/services/r2-storage";
 import {
   detectLinkProvider,
+  googleDriveFileViewUrl,
   LINK_PROVIDERS,
   MAX_MEDIA_DURATION_SECONDS,
   MAX_UPLOAD_SIZE_BYTES,
   type LinkProviderId,
+  type SourceProbe,
 } from "@narriflow/validators";
 import { youtubeProxyRotates, ytdlpCommonArgs } from "../youtube-import";
 import {
@@ -72,8 +78,10 @@ function getYtdlpConcurrentFragments(): number {
 interface IngestJob {
   id: string;
   projectId: string;
-  jobType: "upload_finalize" | "rss_import" | "link_import";
+  jobType: "upload_finalize" | "rss_import" | "link_import" | "drive_import";
   payload: unknown;
+  /** Sealed Google Drive access token of a drive_import job. */
+  sourceCredential?: string | null;
   attemptCount: number;
   claimId: string;
 }
@@ -83,6 +91,7 @@ interface IngestRuntime {
   usage: Pick<ProcessingUsage, "resize">;
   putSource: typeof putFileFromPath;
   sourceStorage: SourceStorage;
+  fetchSource: typeof guardedFetch;
 }
 
 interface SourceStorage {
@@ -393,15 +402,14 @@ async function runUploadFinalize(
   // ffprobe reads the header over range requests, so a presigned URL avoids
   // downloading the whole file here while still using the stored object as the
   // authoritative source.
-  let probedDuration: number | null = null;
+  let probed: Awaited<ReturnType<typeof probeSource>> = { durationSeconds: null, sourceProbe: null };
   try {
     const url = await presignDownloadUrl({ key: pinnedKey });
-    probedDuration = await probeDurationSeconds(workerProcess, signal, url);
+    probed = await probeSource(workerProcess, signal, url);
   } catch {
     signal.throwIfAborted();
-    probedDuration = null;
   }
-  const durationSeconds = requireDuration(probedDuration);
+  const durationSeconds = requireDuration(probed.durationSeconds);
   await runtime.usage.resize({ projectId: job.projectId, seconds: durationSeconds });
 
   await runtime.lifecycle.complete(job, {
@@ -409,6 +417,7 @@ async function runUploadFinalize(
     sourceMimeType: verified.contentType,
     sourceSizeBytes: verified.sizeBytes,
     sourceDurationSeconds: durationSeconds,
+    sourceProbe: probed.sourceProbe,
   });
 }
 
@@ -454,24 +463,26 @@ export function readVerifiedUploadPayload(payload: unknown): {
   return { storageKey, sizeBytes, contentType, etag, uploadSessionId };
 }
 
-async function probeDurationSeconds(
+/** The billable duration and the stored source facts from one inspection;
+ * both are null when the media cannot be inspected. */
+async function probeSource(
   workerProcess: WorkerProcessModule,
   signal: AbortSignal,
   input: string,
-): Promise<number | null> {
+): Promise<{ durationSeconds: number | null; sourceProbe: SourceProbe | null }> {
   try {
-    return normalizeDuration(
-      (
-        await workerProcess.inspectMedia({
-          sourcePath: input,
-          signal,
-          deadlineMs: METADATA_PROBE_TIMEOUT_MS,
-        })
-      ).durationSec,
-    );
+    const inspection = await workerProcess.inspectMedia({
+      sourcePath: input,
+      signal,
+      deadlineMs: METADATA_PROBE_TIMEOUT_MS,
+    });
+    return {
+      durationSeconds: normalizeDuration(inspection.durationSec),
+      sourceProbe: inspection.sourceProbe ?? null,
+    };
   } catch {
     signal.throwIfAborted();
-    return null;
+    return { durationSeconds: null, sourceProbe: null };
   }
 }
 
@@ -651,9 +662,8 @@ async function runYtdlpLinkDownload(
       );
     }
 
-    const durationSeconds = requireDuration(
-      await probeDurationSeconds(workerProcess, signal, downloadedPath),
-    );
+    const probed = await probeSource(workerProcess, signal, downloadedPath);
+    const durationSeconds = requireDuration(probed.durationSeconds);
     if (durationSeconds > MAX_MEDIA_DURATION_SECONDS) {
       throw new IngestWorkerError(
         "ingest_max_duration_exceeded",
@@ -701,6 +711,7 @@ async function runYtdlpLinkDownload(
       sourceMimeType: "video/mp4",
       sourceSizeBytes: fileInfo.size,
       sourceDurationSeconds: durationSeconds,
+      sourceProbe: probed.sourceProbe,
     });
   });
 }
@@ -714,27 +725,115 @@ async function runDirectLinkDownload(
   signal: AbortSignal,
   runtime: IngestRuntime,
 ) {
-  return workerProcess.withScratchDirectory("narriflow-link-", async (tempDir) => {
-    const downloadUrl = provider === "dropbox" ? normalizeDropboxDownloadUrl(url) : url;
+  const downloadUrl = provider === "dropbox" ? normalizeDropboxDownloadUrl(url) : url;
+  let urlPath: string;
+  try {
+    urlPath = assertPublicHttpUrl(downloadUrl).pathname;
+  } catch (error) {
+    throw mapRemoteDownloadError(error);
+  }
+  return downloadDirectSource(
+    job,
+    { downloadUrl, fileName: urlPath, sourceInput: url, provider },
+    workerProcess,
+    signal,
+    runtime,
+  );
+}
 
-    let urlPath: string;
-    try {
-      urlPath = assertPublicHttpUrl(downloadUrl).pathname;
-    } catch (error) {
-      throw mapRemoteDownloadError(error);
-    }
-    const ext = extname(urlPath) || ".mp4";
+/** A Google Drive Picker file, downloaded with the job's sealed `drive.file`
+ *  token. The token is opened here, sent only to the Drive API, and never
+ *  logged or put in an error. The lifecycle clears it when the job ends. */
+async function runDriveImport(
+  job: IngestJob,
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
+  runtime: IngestRuntime,
+) {
+  const payload = assertObject(job.payload);
+  const fileId = String(payload.fileId ?? "").trim();
+  const fileName = String(payload.fileName ?? "").trim();
+  if (!/^[A-Za-z0-9_-]{10,200}$/.test(fileId)) {
+    throw new IngestWorkerError("worker_invalid_payload", "A Google Drive file is required.");
+  }
+  if (!job.sourceCredential) {
+    throw new IngestWorkerError(
+      "drive_token_expired",
+      "Google Drive access expired. Choose the file again.",
+    );
+  }
+  let accessToken: string;
+  try {
+    accessToken = createDriveTokenCipher().open(job.sourceCredential);
+  } catch {
+    throw new IngestWorkerError(
+      "worker_invalid_payload",
+      "The Google Drive credential couldn't be opened.",
+    );
+  }
+
+  await runtime.lifecycle.progress(job, "downloading");
+  return downloadDirectSource(
+    job,
+    {
+      downloadUrl: driveFileMediaUrl(fileId),
+      fileName,
+      sourceInput: googleDriveFileViewUrl(fileId),
+      provider: "gdrive",
+      headers: { authorization: `Bearer ${accessToken}` },
+      // An expired token or unreadable file is final, and so is a 403 with
+      // another reason; a rate limit, 5xx or 429 stays with the transient retry.
+      refusal: async (response) => {
+        if (![401, 403, 404].includes(response.status)) return null;
+        const body = await readResponseTextBounded(response, 16 * 1024).catch(() => "");
+        const refusal = driveDownloadRefusal(response.status, body);
+        return refusal === "transient"
+          ? refusal
+          : new IngestWorkerError(refusal.code, refusal.message);
+      },
+    },
+    workerProcess,
+    signal,
+    runtime,
+  );
+}
+
+interface DirectSource {
+  downloadUrl: string;
+  /** Names the stored object and its extension; a URL path or a file name. */
+  fileName: string;
+  sourceInput: string;
+  provider: LinkProviderId;
+  headers?: Record<string, string>;
+  /** Classifies a refused response before retry classification: a definitive
+   *  failure, "transient" to retry it, or null to leave it to the status. */
+  refusal?: (response: Response) => Promise<IngestWorkerError | "transient" | null>;
+}
+
+async function downloadDirectSource(
+  job: IngestJob,
+  source: DirectSource,
+  workerProcess: WorkerProcessModule,
+  signal: AbortSignal,
+  runtime: IngestRuntime,
+) {
+  const { downloadUrl, fileName, sourceInput: url, provider } = source;
+  return workerProcess.withScratchDirectory("narriflow-link-", async (tempDir) => {
+    const ext = extname(fileName) || ".mp4";
     const tempFile = join(tempDir, `source${ext}`);
     // downloadToFile retries transient failures internally (it needs the raw
     // pre-mapping error/status to classify retryability correctly).
-    const downloadMeta = await downloadToFile(downloadUrl, tempFile, signal);
+    const downloadMeta = await downloadToFile(downloadUrl, tempFile, signal, {
+      fetchSource: runtime.fetchSource,
+      headers: source.headers,
+      refusal: source.refusal,
+    });
 
     await runtime.lifecycle.progress(job, "normalizing");
 
     const fileInfo = await stat(tempFile);
-    const durationSeconds = requireDuration(
-      await probeDurationSeconds(workerProcess, signal, tempFile),
-    );
+    const probed = await probeSource(workerProcess, signal, tempFile);
+    const durationSeconds = requireDuration(probed.durationSeconds);
     if (durationSeconds > MAX_MEDIA_DURATION_SECONDS) {
       throw new IngestWorkerError(
         "ingest_max_duration_exceeded",
@@ -743,7 +842,7 @@ async function runDirectLinkDownload(
     }
     await runtime.usage.resize({ projectId: job.projectId, seconds: durationSeconds });
 
-    const baseName = sanitizeFileName(basename(urlPath, ext) || "source");
+    const baseName = sanitizeFileName(basename(fileName, ext) || "source");
     const key = `projects/${job.projectId}/link/${Date.now()}-${baseName}${ext}`;
 
     await runtime.putSource({
@@ -763,11 +862,21 @@ async function runDirectLinkDownload(
       sourceMimeType: downloadMeta.contentType,
       sourceSizeBytes: fileInfo.size,
       sourceDurationSeconds: durationSeconds,
+      sourceProbe: probed.sourceProbe,
     });
   });
 }
 
-async function downloadToFile(url: string, targetPath: string, signal: AbortSignal) {
+async function downloadToFile(
+  url: string,
+  targetPath: string,
+  signal: AbortSignal,
+  options: {
+    fetchSource?: typeof guardedFetch;
+    headers?: Record<string, string>;
+    refusal?: DirectSource["refusal"];
+  } = {},
+) {
   const maxRetries = INGEST_RETRY_MAX_ATTEMPTS;
 
   for (let attempt = 0; ; attempt++) {
@@ -776,10 +885,11 @@ async function downloadToFile(url: string, targetPath: string, signal: AbortSign
     let response: Response | undefined;
 
     try {
-      response = await guardedFetch(url, {
+      response = await (options.fetchSource ?? guardedFetch)(url, {
         headers: {
           accept: "audio/*, video/*, application/octet-stream;q=0.8",
           "user-agent": "NarriflowBot/1.0 (+https://narriflow.app)",
+          ...options.headers,
         },
         timeoutMs: MEDIA_DOWNLOAD_TIMEOUT_MS,
         signal,
@@ -795,7 +905,9 @@ async function downloadToFile(url: string, targetPath: string, signal: AbortSign
 
     try {
       if (!response.ok || !response.body) {
-        if (!isLastAttempt && isRetryableStatus(response.status)) {
+        const verdict = response.ok ? null : await options.refusal?.(response);
+        if (verdict instanceof IngestWorkerError) throw verdict;
+        if (!isLastAttempt && (verdict === "transient" || isRetryableStatus(response.status))) {
           await waitBeforeIngestRetry(
             "direct_media_status",
             attempt,
@@ -945,9 +1057,8 @@ async function runRssImport(
     await runtime.lifecycle.progress(job, "normalizing");
 
     const fileInfo = await stat(tempFile);
-    const durationSeconds = requireDuration(
-      await probeDurationSeconds(workerProcess, signal, tempFile),
-    );
+    const probed = await probeSource(workerProcess, signal, tempFile);
+    const durationSeconds = requireDuration(probed.durationSeconds);
     await runtime.usage.resize({ projectId: job.projectId, seconds: durationSeconds });
     const key = `projects/${job.projectId}/rss/${Date.now()}-${sanitizeFileName(episodeTitle)}${enclosureExt}`;
 
@@ -969,6 +1080,7 @@ async function runRssImport(
       sourceMimeType: downloadMeta.contentType,
       sourceSizeBytes: fileInfo.size,
       sourceDurationSeconds: durationSeconds,
+      sourceProbe: probed.sourceProbe,
     });
   });
 }
@@ -982,6 +1094,7 @@ export async function processIngestJob(
     usage?: IngestRuntime["usage"];
     putSource?: IngestRuntime["putSource"];
     sourceStorage?: IngestRuntime["sourceStorage"];
+    fetchSource?: IngestRuntime["fetchSource"];
   } = {},
 ) {
   const signal = options.signal ?? new AbortController().signal;
@@ -992,6 +1105,7 @@ export async function processIngestJob(
     usage: options.usage ?? getProcessingUsage(),
     putSource: options.putSource ?? putFileFromPath,
     sourceStorage: options.sourceStorage ?? r2SourceStorage,
+    fetchSource: options.fetchSource ?? guardedFetch,
   };
   const jobStartedAtMs = Date.now();
   log("info", "ingest_job_started", {
@@ -1007,6 +1121,8 @@ export async function processIngestJob(
       await runLinkImport(job, workerProcess, signal, runtime);
     } else if (job.jobType === "rss_import") {
       await runRssImport(job, workerProcess, signal, runtime);
+    } else if (job.jobType === "drive_import") {
+      await runDriveImport(job, workerProcess, signal, runtime);
     } else {
       throw new IngestWorkerError(
         "worker_unknown_job_type",

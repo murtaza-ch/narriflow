@@ -10,14 +10,25 @@ import {
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { CLIP_AUTO_LAYOUT_ENGINE, CLIP_AUTO_LAYOUT_VERSION, workflowStageUpdatedEventSchema } from "@narriflow/validators";
+import {
+  buildCaptionedVideoContentPack,
+  buildCaptionedVideoSettings,
+  buildGenerationContentPack,
+  CLIP_AUTO_LAYOUT_ENGINE,
+  CLIP_AUTO_LAYOUT_VERSION,
+  fitSuppliedUtterances,
+  workflowStageUpdatedEventSchema,
+} from "@narriflow/validators";
 import { Pool } from "pg";
 import {
   type WorkflowAttemptRef,
+  getWorkflowRunLifecycle,
   WorkflowAttemptLost,
   WorkflowFailure,
   WorkflowRunLifecycle,
 } from "./workflow-run-lifecycle";
+import { decodeFrozenClipEditorDocument } from "./clip-editor-document-persistence";
+import { clipExportService } from "./clip-export.service";
 import { notificationService } from "./notification.service";
 import { clipService } from "./clip.service";
 import { projectService } from "./project.service";
@@ -2532,6 +2543,55 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(render.workflowAttemptId).toBeNull();
   });
 
+  test("a captioned video's export is admitted by the transaction that completes detection, once, and only for the attempt that owns the clip", async () => {
+    const { user, workspace, project, run } = await fixture("moment_detection");
+    await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 8 } });
+    const clip = await clipFixture(project.id, run.id);
+    // An 8-second whole-source clip: outside the detected-clip bounds, inside the whole-source ones.
+    await prisma.clip.update({ where: { id: clip.id }, data: { endSec: 8, wholeSource: true } });
+    const lifecycle = getWorkflowRunLifecycle();
+    const attempt = await lifecycle.claim("moment_detection");
+    if (!attempt) throw new Error("moment-detection claim missing");
+
+    const settings = { aspectRatios: ["1:1", "9:16"] as ["1:1", "9:16"], resolution: "1080p" as const };
+    // A forged attempt completes nothing and admits nothing.
+    const forged = { ...attempt, attemptId: randomUUID() };
+    await expect(lifecycle.completeMomentDetection(forged, { admit: clipExportService.captionedExportWrite(forged, { ...settings, aspectRatios: ["4:5"] }) })).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    expect(await prisma.clipExport.count({ where: { projectId: project.id } })).toBe(0);
+    expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).status).toBe("running");
+
+    await lifecycle.completeMomentDetection(attempt, { admit: clipExportService.captionedExportWrite(attempt, settings) });
+    expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).status).toBe("completed");
+
+    const exports = await prisma.clipExport.findMany({
+      where: { projectId: project.id },
+      include: { variants: { include: { render: true }, orderBy: { aspectRatio: "asc" } } },
+    });
+    expect(exports).toHaveLength(1);
+    // The plan decides the granted output exactly as for an export requested by hand.
+    expect(exports[0]).toMatchObject({ clipId: clip.id, workspaceId: workspace.id, createdByUserId: user.id, editorRevision: 0, status: "queued", progress: 0, resolution: "720p", watermark: true });
+    expect(exports[0]!.variants.map((variant) => [variant.aspectRatio, variant.status, variant.resolution])).toEqual([["ratio_9_16", "pending", "720p"], ["ratio_1_1", "pending", "720p"]]);
+    for (const variant of exports[0]!.variants) {
+      expect(variant.render).toMatchObject({ clipId: clip.id, status: "pending", exportVariantId: variant.id, workflowRunId: null });
+      // The frozen snapshot carries the boundary policy, so the render worker can decode it.
+      expect(variant.render!.clipSnapshot).toMatchObject({ wholeSource: true, startSec: 0, endSec: 8 });
+      expect(decodeFrozenClipEditorDocument(variant.render!.clipSnapshot, 8)).toMatchObject({ clipStartSec: 0, clipEndSec: 8 });
+    }
+    // The completion event freezes the export for the generation.
+    const completion = await prisma.workflowEvent.findFirstOrThrow({ where: { workflowRunId: run.id, status: "completed" } });
+    expect(completion.payload).toMatchObject({ generationExport: { exportId: exports[0]!.id, clipId: clip.id } });
+  });
+
+  test("a captioned video without its clip cannot complete detection, and nothing is admitted or completed", async () => {
+    const { project, run } = await fixture("moment_detection");
+    const attempt = await getWorkflowRunLifecycle().claim("moment_detection");
+    if (!attempt) throw new Error("moment-detection claim missing");
+    await expect(getWorkflowRunLifecycle().completeMomentDetection(attempt, { admit: clipExportService.captionedExportWrite(attempt, { aspectRatios: ["9:16"], resolution: "720p" }) }))
+      .rejects.toMatchObject({ code: "clip_not_found" });
+    expect(await prisma.clipExport.count({ where: { projectId: project.id } })).toBe(0);
+    expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).status).toBe("running");
+  });
+
   test("export child completion settles its parent aggregate in the same lifecycle command", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
@@ -2791,6 +2851,65 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(settled.status).toBe("completed");
     expect(transcript.workflowAttemptId).toBe(attempt.attemptId);
     expect(child.status).toBe("queued");
+  });
+
+  describe("transcription for a captioned video", () => {
+    const probe = (audio: boolean) => ({ durationSec: 8, video: { width: 1080, height: 1920, frameRate: { numerator: 24, denominator: 1 }, startTimecode: null }, audio: audio ? { sampleRate: 48_000, channels: 2 } : null });
+    async function captionedRun(captions: Parameters<typeof buildCaptionedVideoSettings>[0]["captions"], options: { audio?: boolean } = {}) {
+      const { project, run } = await fixture("stt");
+      await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 8, languageCode: "auto", sourceProbe: probe(options.audio ?? true) } });
+      const pack = await prisma.contentPack.create({ data: { projectId: project.id, ...buildCaptionedVideoContentPack(buildCaptionedVideoSettings({ captions })) } });
+      await prisma.workflowRun.update({ where: { id: run.id }, data: { contentPackId: pack.id } });
+      const lifecycle = getWorkflowRunLifecycle();
+      const attempt = await lifecycle.claim("stt");
+      if (!attempt) throw new Error("stt claim missing");
+      return { project, run, pack, lifecycle, attempt, plan: await projectService.getTranscriptPlanForWorker({ projectId: project.id, contentPackId: attempt.contentPackId }) };
+    }
+
+    test("supplied captions complete the claimed run with no provider job and queue detection on the same pack", async () => {
+      const { project, run, pack, lifecycle, attempt, plan } = await captionedRun({ source: "supplied", text: "1\n00:00:00,000 --> 00:00:02,000\nHello there\n\n2\n00:00:09,000 --> 00:00:10,000\npast the end" });
+      expect(plan).toMatchObject({ plan: { kind: "supplied" }, durationSeconds: 8, languageCode: null });
+      if (plan.plan.kind !== "supplied") throw new Error("expected supplied captions");
+      const utterances = fitSuppliedUtterances(plan.plan.utterances, 8);
+      await lifecycle.completeTranscript(attempt, { provider: "supplied_captions", providerModel: null, providerJobId: null, languageCode: plan.languageCode, languageConfidence: null,
+        text: utterances.map((utterance) => utterance.text).join(" "), utterances, speakerCount: 1, durationSeconds: plan.durationSeconds, rawStorageKey: null });
+
+      const [settled, transcript, child] = await Promise.all([
+        prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
+        prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } }),
+        prisma.workflowRun.findFirstOrThrow({ where: { projectId: project.id, stage: "moment_detection" } }),
+      ]);
+      expect(settled.status).toBe("completed");
+      expect(transcript).toMatchObject({ status: "completed", provider: "supplied_captions", providerJobId: null, languageCode: null, text: "Hello there", durationSeconds: 8 });
+      expect((transcript.utterancesJson as Array<{ text: string }>).map((utterance) => utterance.text)).toEqual(["Hello there"]);
+      expect(child).toMatchObject({ status: "queued", contentPackId: pack.id });
+    });
+
+    test.each([
+      ["declined captions", { source: "none" as const }, true, "captions_none"],
+      ["a source with no audio stream", { source: "auto" as const }, false, "no_audio_stream"],
+    ])("%s complete the claimed run with an empty transcript", async (_name, captions, audio, reason) => {
+      const { project, lifecycle, attempt, plan } = await captionedRun(captions, { audio });
+      expect(plan.plan).toEqual({ kind: "empty", reason });
+      await lifecycle.completeTranscript(attempt, { provider: "none", providerModel: null, providerJobId: null, languageCode: plan.languageCode, languageConfidence: null,
+        text: "", utterances: [], speakerCount: 0, durationSeconds: plan.durationSeconds, rawStorageKey: null });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({ status: "completed", text: "", utterancesJson: [], speakerCount: 0 });
+      expect(await prisma.workflowRun.count({ where: { projectId: project.id, stage: "moment_detection", status: "queued" } })).toBe(1);
+    });
+
+    test("spoken captions on a source that may have speech still need the provider", async () => {
+      const { plan } = await captionedRun({ source: "auto" });
+      expect(plan.plan).toEqual({ kind: "speech_to_text" });
+    });
+
+    test("only a caption-only generation may finish a provider transcript with no speech", async () => {
+      const { run } = await captionedRun({ source: "auto" });
+      expect(await projectService.runAllowsEmptyTranscript(run.id)).toBe(true);
+      const ordinary = await fixture("stt");
+      const pack = await prisma.contentPack.create({ data: { projectId: ordinary.project.id, ...buildGenerationContentPack() } });
+      await prisma.workflowRun.update({ where: { id: ordinary.run.id }, data: { contentPackId: pack.id } });
+      expect(await projectService.runAllowsEmptyTranscript(ordinary.run.id)).toBe(false);
+    });
   });
 
   test("concurrent transitions allocate unique monotonic project sequences", async () => {

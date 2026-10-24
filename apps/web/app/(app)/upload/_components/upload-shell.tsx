@@ -35,10 +35,12 @@ import type {
   GenerationMode,
   ContentPack,
   LinkProviderId,
+  RecipeSnapshot,
 } from "@narriflow/validators";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
   detectLinkProvider,
+  googleDriveFileViewUrl,
   LINK_PROVIDERS,
 } from "@narriflow/validators";
 import { formatDate, formatTimecode } from "@/lib/format";
@@ -48,6 +50,8 @@ import {
   type BrowserRequestFailure,
 } from "@/lib/authenticated-request-browser";
 import { LanguageSelect } from "./language-select";
+import { RecipePicker } from "./recipe-picker";
+import type { RecipeFormSettings } from "../_lib/recipe-settings";
 import { ModeTabs } from "./mode-tabs";
 import { ProcessingTimeline } from "../../_shared/processing-timeline";
 import { ClipStyleSettings } from "./clip-style-settings";
@@ -66,6 +70,9 @@ import {
 import { safelyGetUploadResumeStorage } from "../_lib/upload-resume";
 import { createUploadSessionBrowserAdapter } from "../_lib/upload-session-browser";
 import { generateFromRssAction } from "../actions";
+import type { DrivePick } from "../_lib/google-drive-picker";
+import type { SourcePickerConfig } from "../_lib/source-pickers";
+import { SourcePickers } from "./source-pickers";
 import {
   LinkImportFlow,
   type LinkResumeData,
@@ -128,6 +135,8 @@ function ErrorNotice({ message }: { message: string }) {
 }
 
 interface UploadShellProps {
+  /** Saved Recipes the setup form can be filled from. */
+  recipes: RecipeSnapshot[];
   brandTemplates: {
     builtIns: BrandTemplateSummary[];
     mine: BrandTemplateSummary[];
@@ -150,9 +159,12 @@ interface UploadShellProps {
    *  Step 2 (Configure) resume, loaded and validated server-side. */
   resumeData: LinkResumeData | null;
   usageSummary: UploadUsageSummary;
+  /** Cloud file pickers the deployment has configured. */
+  sourcePickers: SourcePickerConfig;
 }
 
 export function UploadShell({
+  recipes,
   brandTemplates,
   brandProfiles,
   initialUrl,
@@ -160,6 +172,7 @@ export function UploadShell({
   initialMode = "clip",
   resumeData,
   usageSummary,
+  sourcePickers,
 }: UploadShellProps) {
   const router = useRouter();
   const uploadAdapter = useMemo(
@@ -197,6 +210,8 @@ export function UploadShell({
   const [linkProvider, setLinkProvider] = useState<LinkProviderId | null>(
     initialLinkProvider,
   );
+  // A Google Drive Picker choice, held only until Commit sends it to the server.
+  const [driveFile, setDriveFile] = useState<DrivePick | null>(null);
   const [rssUrl, setRssUrl] = useState("");
   const [rssCommitted, setRssCommitted] = useState(false);
   const [rssEpisodes, setRssEpisodes] = useState<RssEpisode[]>([]);
@@ -475,6 +490,7 @@ export function UploadShell({
       setLinkProvider(
         pasteDetectedProvider ?? detectLinkProvider(trimmedPaste),
       );
+      setDriveFile(null);
       return;
     }
     setActiveTab("rss");
@@ -483,11 +499,28 @@ export function UploadShell({
     void handleRssPreview(trimmedPaste);
   }
 
+  function chooseDropboxLink(link: string) {
+    setErrorMessage(null);
+    setActiveTab("link");
+    setLinkUrl(link);
+    setLinkProvider("dropbox");
+    setDriveFile(null);
+  }
+
+  function chooseDriveFile(picked: DrivePick) {
+    setErrorMessage(null);
+    setActiveTab("link");
+    setLinkUrl(googleDriveFileViewUrl(picked.fileId));
+    setLinkProvider("gdrive");
+    setDriveFile(picked);
+  }
+
   function handleChangeSource() {
     if (busy || uploadSourceLocked) return;
     setFile(null);
     setLinkUrl("");
     setLinkProvider(null);
+    setDriveFile(null);
     setRssCommitted(false);
     setRssEpisodes([]);
     setSelectedEpisodeIds([]);
@@ -497,6 +530,25 @@ export function UploadShell({
     setRssError(null);
     setErrorMessage(null);
     setActiveTab("file");
+  }
+
+  /** A Recipe only fills the form in; the form's own values are what is submitted. */
+  function applyRecipe(settings: RecipeFormSettings) {
+    setLanguageCode(settings.languageCode);
+    setMode(settings.clip.mode);
+    setClipLength(settings.clip.clipLengthPreset);
+    setCaptionPreset(settings.clip.captionPreset);
+    setAutoHook(settings.clip.autoHook);
+    setSpecificMoments(settings.clip.specificMoments);
+    setPlatformTargets(settings.clip.platformTargets);
+    setClipCountTarget(settings.clip.clipCountTarget);
+    setToneConstraints(settings.clip.toneConstraints);
+    // A profile that is no longer there leaves the current choice alone.
+    const profile = brandProfiles.items.find((candidate) => candidate.id === settings.brandProfileId);
+    if (settings.brandProfileId === null || profile) {
+      setBrandProfileId(settings.brandProfileId);
+      setBrandTemplateId(profile?.defaultTemplateId ?? null);
+    }
   }
 
   function getFormValues(
@@ -885,6 +937,13 @@ export function UploadShell({
                 }}
               />
             </Box>
+            <SourcePickers
+              config={sourcePickers}
+              disabled={busy || uploadSourceLocked}
+              onDriveFile={chooseDriveFile}
+              onDropboxLink={chooseDropboxLink}
+              onError={setErrorMessage}
+            />
             <Flex align="center" justify="space-between" gap="3" wrap="wrap">
               <Flex align="center" gap="2" color="fg.muted">
                 <AudioLines size={16} />
@@ -943,10 +1002,13 @@ export function UploadShell({
             linkProvider ??
             "youtube"
           }
+          recipes={recipes}
           brandTemplates={brandTemplates}
           brandProfiles={brandProfiles}
           usageSummary={usageSummary}
           resumeData={resumeData}
+          driveFile={driveFile}
+          onCommitted={() => setDriveFile(null)}
         />
       ) : (
         <SourceSetupFlow
@@ -1107,6 +1169,7 @@ export function UploadShell({
           }
           metadata={
             <Stack gap="4">
+              <RecipePicker recipes={recipes} onApply={applyRecipe} />
               <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="4">
                 <Box>
                   <Text textStyle="eyebrow" color="fg.muted" mb="2">
@@ -1180,6 +1243,7 @@ export function UploadShell({
                     profiles={brandProfiles.items}
                     profileValue={brandProfileId}
                     onProfileChange={setBrandProfileId}
+                    profileOnly={activeTab === "rss"}
                   />
                 </Box>
               </chakra.details>

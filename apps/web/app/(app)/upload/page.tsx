@@ -6,10 +6,12 @@ import {
   brandProfileService,
   brandTemplateService,
   projectService,
+  recipeService,
 } from "@narriflow/services";
 import { parseStoredContentPack } from "@narriflow/validators";
 import { UploadShell } from "./_components/upload-shell";
 import type { LinkResumeData } from "./_components/link-import-flow";
+import { sourcePickerConfig } from "./_lib/source-pickers";
 import type { IngestStageStatus } from "./_lib/use-ingest-stream";
 
 const RESUMABLE_INGEST_STATUSES: readonly IngestStageStatus[] = [
@@ -71,6 +73,7 @@ async function loadLinkResumeData(
     languageCode: snapshot.project.languageCode,
     ingestStatus: toIngestStageStatus(snapshot.project.ingestStatus),
     ingestErrorCode: snapshot.project.ingestErrorCode,
+    ingestFromDrivePicker: snapshot.ingestJobType === "drive_import",
     contentPack: parseStoredContentPack(draftPack),
   };
 }
@@ -101,12 +104,14 @@ export default async function UploadPage({
     defaultBrandProfileId,
     params,
     usageSummary,
+    recipes,
   ] = await Promise.all([
     brandTemplateService.list(appUser),
     brandProfileService.list(brandScope),
     brandProfileService.getDefaultId(brandScope),
     searchParams,
     projectService.getUsageSummary(appUser),
+    recipeService.list(appUser),
   ]);
   const rawUrl = Array.isArray(params.url) ? params.url[0] : params.url;
   const rawProjectId = Array.isArray(params.project)
@@ -128,6 +133,7 @@ export default async function UploadPage({
         animationFillMode="backwards"
       >
         <UploadShell
+          recipes={recipes}
           brandTemplates={brandTemplates}
           brandProfiles={{
             items: brandProfiles,
@@ -138,6 +144,12 @@ export default async function UploadPage({
           initialMode={params.mode === "caption_only" ? "caption_only" : "clip"}
           resumeData={resumeData}
           usageSummary={usageSummary}
+          sourcePickers={sourcePickerConfig({
+            NEXT_PUBLIC_GOOGLE_API_KEY: process.env.NEXT_PUBLIC_GOOGLE_API_KEY,
+            NEXT_PUBLIC_GOOGLE_CLIENT_ID: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
+            NEXT_PUBLIC_GOOGLE_APP_ID: process.env.NEXT_PUBLIC_GOOGLE_APP_ID,
+            NEXT_PUBLIC_DROPBOX_APP_KEY: process.env.NEXT_PUBLIC_DROPBOX_APP_KEY,
+          })}
         />
       </Box>
     </Stack>

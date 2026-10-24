@@ -1,0 +1,25 @@
+{
+    "url": "/exports/{{trim(parameters.exportId)}}/download",
+    "method": "GET",
+    "qs": {
+        "variantId": "{{parameters.variantId}}"
+    },
+    "response": {
+        "iterate": "{{body.variants}}",
+        "output": {
+            "exportId": "{{body.exportId}}",
+            "projectId": "{{body.projectId}}",
+            "clipId": "{{body.clipId}}",
+            "editorRevision": "{{body.editorRevision}}",
+            "variantId": "{{item.variantId}}",
+            "aspectRatio": "{{item.aspectRatio}}",
+            "resolution": "{{item.resolution}}",
+            "watermark": "{{item.watermark}}",
+            "fileName": "{{item.fileName}}",
+            "sizeBytes": "{{item.sizeBytes}}",
+            "downloadUrl": "{{item.downloadUrl}}",
+            "expiresAt": "{{item.expiresAt}}",
+            "subtitles": "{{body.subtitles}}"
+        }
+    }
+}

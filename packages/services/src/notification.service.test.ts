@@ -4,6 +4,7 @@ import {
   type NotificationLedgerRow,
   type NotificationMailInput,
   type NotificationProject,
+  type FinishingDelivery,
   type NotificationStore,
   type WorkflowRunNotificationContext,
 } from "./notification.service";
@@ -22,7 +23,12 @@ class MemoryNotificationStore implements NotificationStore {
     clipCount: 4,
   };
   workflowContext: WorkflowRunNotificationContext | null = null;
+  finishingDelivery: FinishingDelivery | null = null;
   private nextId = 1;
+
+  async getFinishingDelivery() {
+    return this.finishingDelivery;
+  }
 
   async getProject(projectId: string) {
     return this.project?.id === projectId ? this.project : null;
@@ -49,7 +55,8 @@ class MemoryNotificationStore implements NotificationStore {
       | "no_clips"
       | "generation_failed"
       | "import_failed"
-      | "project_expiring";
+      | "project_expiring"
+      | "finishing_ready";
   }) {
     const key = `${input.projectId}:${input.sourceId}:${input.outcome}`;
     const existing = this.ledgers.get(key);
@@ -544,4 +551,57 @@ test("a late notification failure cannot reverse a replacement's successful sett
   expect((await original.enqueueAndSend(input)).status).toBe("claim_lost");
   expect((await replacement.enqueueAndSend(input)).status).toBe("sent");
   expect(store.onlyLedger()).toMatchObject({ status: "sent", attemptCount: 0, providerMessageId: "current-message" });
+});
+
+describe("NotificationService finishing_ready", () => {
+  test("a finished finishing goes to the person it ran for, not the Workspace owner, and a repeat sends nothing", async () => {
+    const store = new MemoryNotificationStore();
+    store.finishingDelivery = { primaryEmail: "actor@example.com", emailVerifiedAt: null, clipCount: 3 };
+    const sent: NotificationMailInput[] = [];
+    const service = serviceWith(store, async (mail) => {
+      sent.push(mail);
+      return { sent: true, id: "message-1" };
+    });
+    const finishing = { projectId: "project-1", sourceId: "finishing-1", outcome: "finishing_ready" as const, deepLink: input.deepLink };
+
+    expect(await service.enqueueAndSend(finishing)).toMatchObject({ status: "sent" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ to: "actor@example.com", outcome: "finishing_ready", clipCount: 3 });
+    // The ledger row is keyed by the finishing row, so a repeat is absorbed.
+    expect(await service.enqueueAndSend(finishing)).toMatchObject({ status: "sent" });
+    expect(sent).toHaveLength(1);
+
+    // Other outcomes still go to the owner.
+    await service.enqueueAndSend(input);
+    expect(sent[1]).toMatchObject({ to: "owner@example.com", outcome: "clips_ready" });
+  });
+
+  test("a finishing whose person is gone is skipped rather than sent to the owner", async () => {
+    const store = new MemoryNotificationStore();
+    store.finishingDelivery = null;
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      return { sent: true };
+    });
+    const result = await service.enqueueAndSend({ projectId: "project-1", sourceId: "finishing-2", outcome: "finishing_ready", deepLink: input.deepLink });
+    expect(result.status).toBe("skipped");
+    expect(sends).toBe(0);
+  });
+
+  test("a retry of a finishing notification still goes to that person with the exported count", async () => {
+    const store = new MemoryNotificationStore();
+    store.finishingDelivery = { primaryEmail: "actor@example.com", emailVerifiedAt: null, clipCount: 2 };
+    const sent: NotificationMailInput[] = [];
+    let healthy = false;
+    const service = serviceWith(store, async (mail) => {
+      sent.push(mail);
+      return healthy ? { sent: true, id: "message-2" } : { sent: false, error: "provider down" };
+    });
+    expect(await service.enqueueAndSend({ projectId: "project-1", sourceId: "finishing-3", outcome: "finishing_ready", deepLink: input.deepLink })).toMatchObject({ status: "pending" });
+    healthy = true;
+    const summary = await service.resendPendingNotifications(10, () => ({ deepLink: input.deepLink }));
+    expect(summary).toMatchObject({ claimed: 1, sent: 1 });
+    expect(sent.at(-1)).toMatchObject({ to: "actor@example.com", clipCount: 2, outcome: "finishing_ready" });
+  });
 });

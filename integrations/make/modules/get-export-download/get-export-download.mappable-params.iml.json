@@ -1,0 +1,15 @@
+[
+    {
+        "name": "exportId",
+        "type": "text",
+        "label": "Export ID",
+        "required": true,
+        "help": "From Export a clip or from an Export IDs item of a Finishing finished event. The download links expire 15 minutes after this module runs. Use or save the files in the next modules."
+    },
+    {
+        "name": "variantId",
+        "type": "text",
+        "label": "Format ID",
+        "help": "Only the file for this format. Leave empty to get one bundle for each ready format."
+    }
+]

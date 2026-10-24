@@ -3,7 +3,6 @@ import {
 	socialPlatformSchema,
 	type ClipAspectRatio,
 	type SocialPlatform,
-	type SocialPostMetricsInput,
 } from "@narriflow/validators";
 import type { PublishSocialAccount } from "./social-oauth.service";
 
@@ -46,7 +45,6 @@ export type PublicationPlatformResult =
 				platformPostIds?: string[];
 				platformPostId: string | null;
 				externalUrl: string | null;
-				metrics: SocialPostMetricsInput | null;
 				providerProcessingStatus?: "processing" | "succeeded" | "failed" | null;
 				providerProcessingFailureCode?: string | null;
 				providerVisibility?: string | null;

@@ -71,6 +71,22 @@ export const workflowStageUpdatedEventSchema = z
       status: z.enum(["completed", "failed"]),
       errorCode: z.string().nullable(),
     })).max(2000).optional(),
+    /** The export a captioned video's detection completion admitted for its
+     * generation, frozen with that completion so the generation keeps naming it
+     * after the export or its clip is deleted. */
+    generationExport: z.strictObject({ exportId: z.string().uuid(), clipId: z.string().uuid() }).optional(),
+    /** The captioned video's export outcome the first time it was final. A later
+     * retry of the export does not change what its generation reported. */
+    generationExportResult: z.strictObject({
+      exportId: z.string().uuid(),
+      state: z.enum(["completed", "partial", "failed", "cancelled"]),
+      failureCode: z.string().nullable(),
+      items: z.array(z.strictObject({
+        id: z.string().uuid(),
+        state: z.enum(["completed", "failed", "cancelled"]),
+        failureCode: z.string().nullable(),
+      })).max(8),
+    }).optional(),
     emittedAt: z.string().datetime(),
     notification: z
       .union([

@@ -19,6 +19,11 @@ import {
   resolvePricingTier,
   uploadCompletionIntentSchema,
   uploadMimeTypes,
+  acceptedRecipe,
+  acceptedRecipeSchema,
+  buildRecipeGenerationContext,
+  recipeColumn,
+  type FinishingSettings,
   type OpenUploadSessionInput as ValidatedOpenUploadSessionInput,
   type ReadUploadSessionInput as ValidatedReadUploadSessionInput,
   type DiscardUploadSessionInput as ValidatedDiscardUploadSessionInput,
@@ -26,6 +31,7 @@ import {
   type GrantUploadPartsInput as ValidatedGrantUploadPartsInput,
 } from "@narriflow/validators";
 import { brandTemplateService } from "./brand-template.service";
+import type { RecipeUse } from "./recipe.service";
 import { registerUploadCallback, type CallbackRegistration } from "./completion-callback";
 import { ensureUploadCallback, prepareUploadCallback } from "./completion-callback-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
@@ -49,6 +55,8 @@ import {
   presignSingleUploadUrl,
 } from "./r2-storage";
 import { workspaceService } from "./workspace.service";
+import { emitUploadIntakeFinished } from "./operation-finished";
+import { finishingColumn } from "./generation-finishing";
 
 const MEBIBYTE = 1024 * 1024;
 const GIBIBYTE = 1024 * MEBIBYTE;
@@ -520,6 +528,10 @@ export interface OpenUploadSessionInput {
    * default once. The requested input, not the resolved default, is fingerprinted. */
   useDefaultBrandProfile?: boolean;
   generation: unknown;
+  /** An integration named a Recipe instead of sending settings. Admission reads
+   * it once, after the replay lookup, and freezes its settings onto the
+   * session. The Recipe's ID is fingerprinted, never its revision. */
+  recipe?: RecipeUse;
   /** Browser media metadata; reserved at admission, never trusted to settle. */
   declaredDurationSeconds?: number | null;
   transfer?: "auto" | "single";
@@ -728,9 +740,13 @@ function immutableInputFingerprint(input: OpenUploadSessionInput) {
     title: input.title,
     source: input.source,
     brandTemplateId: input.brandTemplateId,
-    brandProfileId: input.brandProfileId,
-    useDefaultBrandProfile: input.useDefaultBrandProfile || undefined,
-    generation: input.generation,
+    ...(input.recipe
+      ? { recipeId: input.recipe.id }
+      : {
+          brandProfileId: input.brandProfileId,
+          useDefaultBrandProfile: input.useDefaultBrandProfile || undefined,
+          generation: input.generation,
+        }),
     declaredDurationSeconds: input.declaredDurationSeconds ?? undefined,
     transfer: input.transfer === "single" ? "single" : undefined,
   });
@@ -1594,10 +1610,10 @@ export function createUploadSessionModule(
   }
 
   return {
-    async open(input: OpenUploadSessionInput): Promise<OpenUploadSessionOutcome> {
-      const fingerprint = immutableInputFingerprint(input);
+    async open(requested: OpenUploadSessionInput): Promise<OpenUploadSessionOutcome> {
+      const fingerprint = immutableInputFingerprint(requested);
       const resumeExisting = async (existing: UploadSessionRecord) => {
-        if (existing.actorUserId !== input.actorUserId) {
+        if (existing.actorUserId !== requested.actorUserId) {
           throw new UploadSessionNotFoundError();
         }
         if (existing.immutableInputFingerprint !== fingerprint) {
@@ -1703,8 +1719,8 @@ export function createUploadSessionModule(
         return uploadingOutcome(active);
       };
       const existing = await dependencies.persistence.findByClientKey({
-        workspaceId: input.workspaceId,
-        clientIdempotencyKey: input.clientIdempotencyKey,
+        workspaceId: requested.workspaceId,
+        clientIdempotencyKey: requested.clientIdempotencyKey,
       });
       if (existing) {
         diagnose(existing.id, "reservation", "succeeded", {
@@ -1714,6 +1730,16 @@ export function createUploadSessionModule(
         return resumeExisting(existing);
       }
 
+      // A named Recipe is read only now that no session exists for this key.
+      const recipe = requested.recipe ? await requested.recipe.resolve() : null;
+      const input: OpenUploadSessionInput = recipe
+        ? {
+            ...requested,
+            brandProfileId: recipe.brandProfileId,
+            useDefaultBrandProfile: false,
+            generation: { ...buildRecipeGenerationContext(recipe), recipe: acceptedRecipe(recipe) },
+          }
+        : requested;
       const now = dependencies.now();
       const sessionId = dependencies.createId();
       const projectId = dependencies.createId();
@@ -3543,6 +3569,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     const generation = initial.generationSettings as {
       languageCode?: unknown;
       contentPack?: unknown;
+      finishing?: FinishingSettings | null;
+      recipe?: { id: string; revision: number } | null;
     };
     const languageCode = String(generation.languageCode ?? "auto");
     const contentPack = contentPackSchema.parse(generation.contentPack);
@@ -3635,6 +3663,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           data: {
             projectId: current.preallocatedProjectId,
             ...contentPack,
+            ...finishingColumn(generation),
+            ...recipeColumn(generation),
           },
         });
         await getIngestJobLifecycle().enqueue(tx, {
@@ -3727,11 +3757,13 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       if (admissionAttemptId) throw new UploadSessionAdmissionClaimLostError();
       throw new UploadSessionReconciliationClaimLostError();
     }
-    if (status === "failed")
+    if (status === "failed") {
       await getProcessingUsage().release(tx, {
         projectId: row.preallocatedProjectId,
         reason: failureCode,
       });
+      await emitUploadIntakeFinished(tx, { workspaceId: row.workspaceId, sessionId, status });
+    }
     return fromPrismaUploadSession(row);
     });
   },
@@ -4012,6 +4044,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       projectId: row.preallocatedProjectId,
       reason: failureCode,
     });
+    await emitUploadIntakeFinished(tx, { workspaceId: row.workspaceId, sessionId, status });
     return fromPrismaUploadSession(row);
     });
   },
@@ -4280,9 +4313,18 @@ export class UploadSessionService {
   async open(
     scope: ActorScope,
     input: ValidatedOpenUploadSessionInput,
+    options: { recipe?: RecipeUse } = {},
   ) {
     const startedAt = performance.now();
     const parsed = openUploadSessionSchema.parse(input);
+    // Only integrations name a Recipe; the browser always sends its settings.
+    if (parsed.recipeId !== options.recipe?.id) {
+      throw new ExpectedDomainFailureError({
+        code: "upload_recipe_unsupported",
+        kind: "invalid",
+        message: "Recipes apply to assistant and API uploads. Send the upload's settings explicitly.",
+      });
+    }
     const { actorUserId, workspaceId } = scope;
     await workspaceService.requireActor(
       actorUserId,
@@ -4299,7 +4341,8 @@ export class UploadSessionService {
       brandProfileId: parsed.brandProfileId ?? null,
       // Browser intake always states its choice; only an omitted field means default.
       useDefaultBrandProfile: parsed.brandProfileId === undefined,
-      generation: parsed.generationContext,
+      generation: parsed.generationContext ?? null,
+      ...(options.recipe && { recipe: options.recipe }),
       declaredDurationSeconds: parsed.declaredDurationSeconds ?? null,
       transfer: parsed.transfer,
     });
@@ -4402,6 +4445,16 @@ export class UploadSessionService {
       }),
     );
     return result;
+  }
+
+  /** The Recipe and revision the caller's own Upload Session opened with, kept
+   * in its settings; null when it opened with explicit ones. */
+  async recipeUsed(scope: ActorScope, sessionId: string) {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
+    const record = await prismaUploadSessionPersistence.findByIdForWorkspace({ sessionId, workspaceId: scope.workspaceId });
+    if (!record || record.actorUserId !== scope.actorUserId) throw new UploadSessionNotFoundError();
+    const recipe = acceptedRecipeSchema.safeParse((record.generation as { recipe?: unknown } | null)?.recipe);
+    return recipe.success ? recipe.data : null;
   }
 
   /** Reads the caller's own Upload Session by ID, for API callers that

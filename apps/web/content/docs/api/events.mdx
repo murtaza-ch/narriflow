@@ -1,0 +1,141 @@
+---
+title: Events
+description: Poll one ordered feed for everything that finishes in a Workspace, including work no request of yours started, such as an Autopilot import.
+---
+
+A completion callback tells you about work your own request started. Autopilot starts work with no request, so there is nothing to attach a callback to. The event feed covers both. It lists what finished in the Workspace, oldest first, and you read it with a cursor.
+
+Events carry IDs only. When one arrives, call the API for the project, clips or files.
+
+## Poll the feed
+
+Call `GET /events` with the last cursor you saved. Handle every event, then save the returned `nextCursor`.
+
+<CodeGroup>
+
+```typescript TypeScript
+interface WorkspaceEvent {
+  id: string;
+  seq: number;
+  type: string;
+  version: number;
+  occurredAt: string;
+  subject: Record<string, unknown>;
+}
+
+const base = "https://app.narriflow.com/api/v1";
+const headers = { Authorization: `Bearer ${process.env.NARRIFLOW_API_KEY}` };
+
+export async function pollEvents(
+  cursor: string | undefined,
+  handle: (event: WorkspaceEvent) => Promise<void>,
+): Promise<string | undefined> {
+  for (;;) {
+    const url = new URL(`${base}/events`);
+    url.searchParams.set("limit", "100");
+    if (cursor) url.searchParams.set("after", cursor);
+    const response = await fetch(url, { headers });
+    if (!response.ok) throw new Error(`Narriflow returned ${response.status}`);
+    const page = (await response.json()) as { data: WorkspaceEvent[]; nextCursor: string };
+    for (const event of page.data) await handle(event);
+    cursor = page.nextCursor; // Persist this after the page is handled.
+    if (page.data.length === 0) return cursor;
+  }
+}
+```
+
+```bash curl
+curl "https://app.narriflow.com/api/v1/events?after=41&limit=100" \
+  -H "Authorization: Bearer $NARRIFLOW_API_KEY"
+```
+
+</CodeGroup>
+
+Poll every 15 to 60 seconds. Requests count against the key's [rate limit](/docs/api/introduction#rate-limits) like every other call.
+
+### Read the newest page instead
+
+A poller that only needs recent events can ask for the newest page each time, with no cursor to store. Send `order=desc`: the response holds the newest `limit` matching events, newest first. Deduplicate by `id`.
+
+```bash
+curl "https://app.narriflow.com/api/v1/events?order=desc&limit=100" \
+  -H "Authorization: Bearer $NARRIFLOW_API_KEY"
+```
+
+A newest page holds at most `limit` events (200 at most), so a poll interval in which more than that many matching events happen leaves a gap. If that is possible, read forward with `after`, which never skips. `order=desc` cannot be combined with `after`; the request returns `400` with `invalid_request`.
+
+## The response
+
+```json
+{
+  "data": [
+    {
+      "id": "5b1c3a52-9f0e-4d6a-8c1b-2e7d4f9a0b13",
+      "seq": 42,
+      "type": "operation.finished",
+      "version": 1,
+      "occurredAt": "2026-10-24T12:00:00.000Z",
+      "subject": {
+        "operation": { "kind": "generation", "id": "op_…" },
+        "projectId": "00000000-0000-4000-8000-000000000004",
+        "state": "completed"
+      }
+    }
+  ],
+  "nextCursor": "42"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | The event ID. Deduplicate by it. |
+| `seq` | The event's position in this Workspace's feed. Events always arrive in `seq` order. |
+| `type` | What happened. See [Event types](#event-types). |
+| `version` | The shape of `subject` for this `type`. It is `1` for every type today. |
+| `occurredAt` | When the change was committed. |
+| `subject` | The IDs the event is about. |
+| `nextCursor` | The last `seq` returned, as a string. When nothing is newer, it is the cursor you sent. With `order=desc` it is the highest `seq` on the page, which is its first event: still a cursor to read forward from, never one that points back. When a descending page is empty, it is the Workspace's newest `seq`, or `"0"` if it has no events yet. |
+
+## Query parameters
+
+| Parameter | Meaning |
+| --- | --- |
+| `after` | A `nextCursor` from an earlier response. Omit it to start at the oldest event Narriflow still keeps. |
+| `limit` | 1 to 200 events. The default is 100. |
+| `order` | `asc` (the default) reads forward from `after`. `desc` returns the newest `limit` matching events, newest first, and cannot be combined with `after`. |
+| `types` | A comma-separated list, such as `types=operation.finished,social_post.finished`. Omit it, or leave it empty, for every type. An unknown type returns `400`. Queue proposals and posting outcomes need the `publishing:read` scope: a request that names only those types without it returns `403` with `scope_required` and `details.scope`, and one that mixes them with other types returns the other types. |
+
+## Event types
+
+| Type | When | Subject |
+| --- | --- | --- |
+| `autopilot.episode_imported` | An Autopilot rule imported a new episode as a Project. | `ruleId`, `projectId`, `episodeId` (the feed's own ID for the episode). |
+| `operation.finished` | An import, generation or export reached a final state. | `operation` (`kind` and an `id` that `GET /operations/{id}` accepts), `projectId` (`null` when an upload ended before its import created a project), `state`. |
+| `finishing.finished` | Finishing a generation ended. | `projectId`, `operation` (the generation, `kind: "generation"`), `state`, `reason`, `exportIds`. |
+| `social_post.proposed` | A post was proposed to an account's [publishing queue](/docs/publishing-queue) and waits for a person to accept it. | `socialPostId` (the proposal's ID), `projectId`, `clipId`, `socialAccountId`, `platform`. |
+| `social_post.finished` | A scheduled post reached an outcome. | `socialPostId`, `projectId`, `clipId`, `platform`, `state`. |
+| `grant.paused` | An [automation grant](/docs/standing-grants) paused: a post it accepted failed or needs attention, its granter lost the role, or a person paused it. | `grantId`, `kind` (`publish` or `review_send`), `autopilotRuleId`, `reason`. |
+| `grant.expired` | An automation grant reached its expiry and stopped. | `grantId`, `kind`, `autopilotRuleId`. |
+
+`operation.finished` covers work from every source: the browser, Autopilot, the API and the connector. Its `state` is the final Operation Status: `completed`, `partial`, `failed` or `cancelled`. An import that hands off to clip generation finishes when its generation does, so you get one event for the generation and one for the import, both with that state. An import that fails first gets only its own event, and so does an upload that is cancelled, expires or fails verification before its import starts.
+
+`finishing.finished` reports what an Autopilot rule or a request's `finishing` settings did after clip generation. `state` is `ready` (every picked clip exported and its copy written), `partial` (some exports or copy failed, or the member the rule runs as can't manage publishing so nothing was proposed to a queue (`actor_lacks_publishing`), and `exportIds` lists only the exports that finished) or `skipped` (`reason` says why, such as `plan_required`, `no_clips` or `generation_failed`). A rule that sends review rounds under an [automation grant](/docs/standing-grants) ends `partial` with a `review_not_sent_…` reason when no round went out. It comes after the generation's own `operation.finished`.
+
+`social_post.finished` has the `state` `posted`, `sent_to_inbox` (TikTok inbox delivery), `failed` or `needs_attention`. A post that needed attention and was later confirmed produces a second event, `posted`. A post that is rechecked and needs attention again produces another `needs_attention`. Reading `social_post.proposed` and `social_post.finished` events needs the `publishing:read` scope on top of `projects:read`. Without it, they are left out of every page.
+
+`grant.paused` has the `reason` `manual`, `post_failed`, `post_needs_attention`, `granter_unavailable` or `rule_changed`. `autopilotRuleId` is `null` if the rule was deleted. A grant pauses at most once per revision, so renewing it and a later failure give another event. `grant.expired` comes once when the expiry passes. Neither names an account, a post or a reviewer.
+
+## Delivery guarantees
+
+- **At least once.** Keep the IDs you have handled and skip repeats.
+- **Ordered.** A page never has a gap that fills in later. Once you have read `seq` 42, no event with a lower `seq` will appear.
+- **One event per terminal transition.** A replay of the same outcome never produces a second event. A new outcome does: if you retry a failed export, its next result is another `operation.finished` for the same export, and a post that is rechecked and settles again is another `social_post.finished`. Read the resource for its current state.
+- **30 days.** Narriflow deletes events after 30 days. If your poller was down longer than that, the feed has a hole. Re-sync from `GET /projects`, `GET /exports/{id}` and `GET /operations/{id}`, then continue from the newest cursor.
+
+<Note>
+  The feed is a pull API. To have Narriflow send each event to a URL instead, add a [webhook](/docs/api/webhooks). For one request's result, a [completion callback](/docs/api/callbacks) still tells you sooner.
+</Note>
+
+## Read events in an assistant
+
+The connector exposes the same feed as `narriflow_list_events`. It takes `after`, `limit`, `order` and a `types` list, and returns the same `data` and `nextCursor`, with the same rules for `order=desc` and for types the credential cannot see. See [Tools](/docs/ai/tools).

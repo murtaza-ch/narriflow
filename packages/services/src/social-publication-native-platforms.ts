@@ -168,8 +168,8 @@ function facebookReelsPlatform(
 		receipt: {
 			receiptId: videoId,
 			platformPostId: videoId,
+			platformPostIds: [videoId],
 			externalUrl: null,
-			metrics: null,
 			providerProcessingStatus: "succeeded",
 		},
 	});
@@ -815,8 +815,8 @@ function youtubeReceipt(
 		receipt: {
 			receiptId: videoId,
 			platformPostId: videoId,
+			platformPostIds: processingFailed ? [] : [videoId],
 			externalUrl: `https://www.youtube.com/shorts/${videoId}`,
-			metrics: null,
 			providerProcessingStatus:
 				uploadStatus === "processed"
 					? "succeeded"
@@ -1296,8 +1296,8 @@ function instagramAccepted(
 		receipt: {
 			receiptId: containerId,
 			platformPostId: mediaId,
+			platformPostIds: mediaId ? [mediaId] : [],
 			externalUrl,
-			metrics: null,
 		},
 	};
 }
@@ -1750,7 +1750,6 @@ function tiktokAccepted(
 				status.platformPostId && username
 					? `https://www.tiktok.com/@${username}/video/${status.platformPostId}`
 					: null,
-			metrics: null,
 		},
 	};
 }
@@ -2090,7 +2089,6 @@ function tiktokPlatform(
 							receiptId: publishId,
 							platformPostId: null,
 							externalUrl: null,
-							metrics: null,
 							deliveryMode: "tiktok_inbox",
 						},
 					};
@@ -2426,8 +2424,8 @@ async function submitLinkedInPost(
 		receipt: {
 			receiptId: postId,
 			platformPostId: postId,
+			platformPostIds: [postId],
 			externalUrl: `https://www.linkedin.com/feed/update/${postId}/`,
-			metrics: null,
 		},
 	};
 }
@@ -2741,8 +2739,8 @@ function linkedInPlatform(
 						receipt: {
 							receiptId: postId,
 							platformPostId: postId,
+							platformPostIds: [postId],
 							externalUrl: `https://www.linkedin.com/feed/update/${postId}/`,
-							metrics: null,
 						},
 					};
 				}
@@ -2854,10 +2852,10 @@ async function submitXPost(
 		receipt: {
 			receiptId: posted.data.id,
 			platformPostId: posted.data.id,
+			platformPostIds: [posted.data.id],
 			externalUrl: username
 				? `https://x.com/${username}/status/${posted.data.id}`
 				: `https://x.com/i/web/status/${posted.data.id}`,
-			metrics: null,
 		},
 	};
 }
@@ -3285,10 +3283,10 @@ function xPlatform(
 						receipt: {
 							receiptId: postId,
 							platformPostId: postId,
+							platformPostIds: [postId],
 							externalUrl: username
 								? `https://x.com/${username}/status/${postId}`
 								: `https://x.com/i/web/status/${postId}`,
-							metrics: null,
 						},
 					};
 				}

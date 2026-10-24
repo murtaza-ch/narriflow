@@ -83,7 +83,8 @@ describe("critical PostgreSQL CI gates", () => {
   test("each database job gets an isolated Postgres service and fails fast", () => {
     const databaseJob = workflow.slice(workflow.indexOf("  postgres-invariants:"));
     expect(databaseJob).toContain("fail-fast: false");
-    expect(databaseJob).toContain("image: postgres:17");
+    // pgvector's PostgreSQL 17 image: the library search migration needs the extension.
+    expect(databaseJob).toContain("image: pgvector/pgvector:pg17");
     expect(databaseJob).toContain("DATABASE_URL:");
     expect(databaseJob).not.toContain("continue-on-error");
   });

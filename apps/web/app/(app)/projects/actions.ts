@@ -13,6 +13,7 @@ import {
 	clipService,
 	brandProfileService,
 	IngestNotFailedError,
+	IngestReselectRequiredError,
 	IngestRetryLimitExceededError,
 	ProjectAccessDeniedError,
 	ProjectDeletionIncompleteError,
@@ -302,7 +303,9 @@ export async function retryIngestFormAction(
 				? "ingest_retry_limit_exceeded"
 				: error instanceof IngestNotFailedError
 					? "ingest_not_failed"
-					: null;
+					: error instanceof IngestReselectRequiredError
+						? error.code
+						: null;
 		if (!code) throw error;
 
 		return {

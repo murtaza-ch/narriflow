@@ -1,0 +1,50 @@
+---
+title: Search your library
+sidebarTitle: Search
+description: Find the moment someone said something across every transcript in a Workspace, then turn it into a clip.
+---
+
+Search looks through the transcripts of every Project in your Workspace. It matches by meaning, so "what did we charge" finds a passage about subscription fees, and by exact words, so a name or a number finds the moments that say it.
+
+## Search in the app
+
+Select **Search** in the sidebar and type words or a question. Each result shows the Project, the time range in the source video, and the transcript text.
+
+- Select the Project name to open it.
+- Select **Make a clip** to create a clip over that passage. Narriflow opens it in Studio. The clip takes its caption style from the Project's best clip, and a very short passage is widened to the minimum clip length. A Project needs at least one clip before you can make another from its transcript.
+
+You only see Projects you can view. Projects that are being deleted or have expired are not searched.
+
+## When a transcript becomes searchable
+
+Narriflow indexes a transcript after it finishes, usually within a minute or two. Indexing runs separately from clip generation, so a delay or failure there never holds up your clips. If a transcript changes, only the passages that changed are indexed again.
+
+## Search from the API
+
+`GET /api/v1/library/search` needs the `projects:read` permission. `q` is required, `limit` defaults to 10 (at most 25), and `projectId` limits the search to one Project.
+
+<CodeGroup>
+
+```typescript TypeScript
+const params = new URLSearchParams({ q: "what did we charge for the subscription", limit: "5" });
+const response = await fetch(`https://app.narriflow.com/api/v1/library/search?${params}`, {
+  headers: { Authorization: `Bearer ${process.env.NARRIFLOW_API_KEY}` },
+});
+const { results } = await response.json();
+// [{ projectId, projectTitle, startMs, endMs, text, score }, ...]
+```
+
+```bash cURL
+curl -G "https://app.narriflow.com/api/v1/library/search" \
+  -H "Authorization: Bearer $NARRIFLOW_API_KEY" \
+  --data-urlencode "q=what did we charge for the subscription" \
+  --data-urlencode "limit=5"
+```
+
+</CodeGroup>
+
+Results come best first. `startMs` and `endMs` are positions in the source video. `score` ranks results within one response; do not compare it across searches. Both surfaces refuse a query shorter than 2 or longer than 300 characters.
+
+## Search from an AI assistant
+
+The `narriflow_search_library` tool takes the same `query`, `limit` and optional `projectId`, and needs the `projects:read` permission. It returns the same results. See [Tools](/docs/ai/tools).

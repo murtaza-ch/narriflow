@@ -1,0 +1,84 @@
+[
+    {
+        "name": "exportId",
+        "type": "text",
+        "label": "Export ID"
+    },
+    {
+        "name": "projectId",
+        "type": "text",
+        "label": "Project ID"
+    },
+    {
+        "name": "clipId",
+        "type": "text",
+        "label": "Clip ID"
+    },
+    {
+        "name": "editorRevision",
+        "type": "uinteger",
+        "label": "Editor revision"
+    },
+    {
+        "name": "variantId",
+        "type": "text",
+        "label": "Format ID"
+    },
+    {
+        "name": "aspectRatio",
+        "type": "text",
+        "label": "Format"
+    },
+    {
+        "name": "resolution",
+        "type": "text",
+        "label": "Resolution"
+    },
+    {
+        "name": "watermark",
+        "type": "boolean",
+        "label": "Watermarked"
+    },
+    {
+        "name": "fileName",
+        "type": "filename",
+        "label": "File name"
+    },
+    {
+        "name": "sizeBytes",
+        "type": "uinteger",
+        "label": "Size (bytes)"
+    },
+    {
+        "name": "downloadUrl",
+        "type": "url",
+        "label": "Download URL (expires in 15 minutes)"
+    },
+    {
+        "name": "expiresAt",
+        "type": "date",
+        "label": "Link expires at"
+    },
+    {
+        "name": "subtitles",
+        "type": "array",
+        "label": "Subtitles",
+        "spec": [
+            {
+                "name": "format",
+                "type": "text",
+                "label": "Format (srt or vtt)"
+            },
+            {
+                "name": "fileName",
+                "type": "filename",
+                "label": "File name"
+            },
+            {
+                "name": "content",
+                "type": "text",
+                "label": "Content"
+            }
+        ]
+    }
+]

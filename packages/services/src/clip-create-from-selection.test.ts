@@ -360,6 +360,21 @@ describe("planStudioEditsForClipFromSelection", () => {
     expect(result!.logo).toEqual(sourceStudioEdits.logo);
   });
 
+  test("drops visual B-roll, which is timed against the source clip's window", () => {
+    const result = planStudioEditsForClipFromSelection({
+      visualBroll: [
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          asset: { kind: "visual_asset", id: "33333333-3333-4333-8333-333333333333", fingerprint: "a".repeat(64) },
+          startSec: 2,
+          endSec: 6,
+          fit: "cover",
+        },
+      ],
+    });
+    expect(result!.visualBroll).toEqual([]);
+  });
+
   test("still returns non-null (schema defaults) for a source clip with no textLayers/sfx to begin with", () => {
     const result = planStudioEditsForClipFromSelection({});
     expect(result).not.toBeNull();

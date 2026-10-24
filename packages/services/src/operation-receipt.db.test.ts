@@ -12,8 +12,10 @@ import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import {
 	contentPackSchema,
+	parseStoredContentPack,
 	PLATFORM_PLAYBOOK_VERSION,
 } from "@narriflow/validators";
+import { captionedVideoGenerationContext, captionedVideoSettings } from "./integration-commands";
 import {
 	createOperationReceiptExecutor,
 	OperationIdempotencyConflictError,
@@ -340,6 +342,44 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
 	});
 
+	test("a captioned video freezes its settings and normalized captions with its intake, under its own receipt command", async () => {
+		const scope = { actorUserId, workspaceId };
+		const input = { title: "AI short", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" };
+		const mutation = { clientIdempotencyKey: randomUUID() };
+		const settings = captionedVideoSettings({ framing: "center", aspectRatios: ["9:16", "1:1"], resolution: "720p",
+			captions: { source: "supplied", text: "1\n00:00:00,000 --> 00:00:02,000\nHello there" } });
+		const options = { generationContext: captionedVideoGenerationContext(settings), mutation, command: "create_captioned_video" as const };
+		const accepted = await projectService.queueLinkIngest(scope, input, options);
+		const stored = await prisma.project.findUniqueOrThrow({ where: { id: accepted.project.id }, include: { contentPacks: true } });
+		expect(stored.contentPacks).toHaveLength(1);
+		const pack = parseStoredContentPack(stored.contentPacks[0]);
+		expect(pack).toMatchObject({ mode: "caption_only", defaultAspectRatio: "9:16", captionedVideo: settings });
+		expect(stored.languageCode).toBeNull();
+		const receipt = await prisma.operationReceipt.findFirstOrThrow({ where: { workspaceId, actorUserId, clientIdempotencyKey: mutation.clientIdempotencyKey } });
+		expect(receipt.command).toBe("create_captioned_video");
+		// The same key replays; different settings under it are a conflict; another command never shares its receipt.
+		expect(await projectService.queueLinkIngest(scope, input, options)).toEqual({ ...accepted, replayed: true });
+		await expect(projectService.queueLinkIngest(scope, input, { ...options,
+			generationContext: captionedVideoGenerationContext(captionedVideoSettings({ framing: "fit" })) })).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
+		const other = await projectService.queueLinkIngest(scope, input, { generationContext: options.generationContext, mutation });
+		expect(other.project.id).not.toBe(accepted.project.id);
+	});
+
+	test("saving a generation draft over a captioned pack replaces its settings, never leaving stale ones behind", async () => {
+		const scope = { actorUserId, workspaceId };
+		const accepted = await projectService.queueLinkIngest(scope, { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }, {
+			generationContext: captionedVideoGenerationContext(captionedVideoSettings({ captions: { source: "none" } })),
+			mutation: { clientIdempotencyKey: randomUUID() },
+			command: "create_captioned_video",
+		});
+		const clipPack = contentPackSchema.parse({ outputTypes: ["short_clip"], clipCountTarget: 5, clipDurationSecTarget: 45, platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION, mode: "clip" });
+		expect(await projectService.saveGenerationDraft(scope, accepted.project.id, clipPack, null)).toBe(true);
+		const stored = await prisma.contentPack.findMany({ where: { projectId: accepted.project.id } });
+		expect(stored).toHaveLength(1);
+		expect(stored[0]).toMatchObject({ mode: "clip", captionedVideo: null, draft: true });
+		expect(parseStoredContentPack(stored[0]).captionedVideo).toBeUndefined();
+	});
+
 	test("generation reuses only the requested settings and replays accepted work during outages", async () => {
 		const project = await prisma.project.create({
 			data: {
@@ -557,7 +597,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		const input = {
 			name: "Daily show",
 			rssUrl: "https://feeds.example.test/daily.xml",
-			contentPack: pack,
+			recipeId: (await prisma.recipe.create({ data: { workspaceId, name: "Daily", contentPack: pack } })).id,
 		};
 		const first = await service.createRule(
 			{ actorUserId, workspaceId },
@@ -594,7 +634,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		const rule = await service.createRule(scope, {
 			name: "Run now",
 			rssUrl: "https://feeds.example.test/run-now.xml",
-			contentPack: pack,
+			recipeId: (await prisma.recipe.create({ data: { workspaceId, name: "Run now", contentPack: pack } })).id,
 		});
 		const mutation = { clientIdempotencyKey: randomUUID() };
 		const first = await service.triggerRuleNow(scope, rule.id, mutation);

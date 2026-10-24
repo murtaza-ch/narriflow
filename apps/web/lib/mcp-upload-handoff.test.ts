@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createMcpUploadHandoff, verifyMcpUploadHandoff, MCP_CONTINUATION_TTL_MS, type NarriflowMcpPrincipal } from "@narriflow/mcp-core";
-import { buildGenerationContentPack } from "@narriflow/validators";
+import { buildGenerationContentPack, buildGenerationContext, generationSettingsSchema } from "@narriflow/validators";
 import type { ActorScope } from "@narriflow/services";
 import { admitMcpUploadHandoff, type McpUploadHandoffDependencies } from "./mcp-upload-handoff";
 
@@ -56,6 +56,33 @@ describe("assistant upload handoff authority", () => {
     const h = harness(1);
     await expect(admitMcpUploadHandoff(request("open", omitted), { workspaceId, token: unbranded, userId }, h.deps)).resolves.toMatchObject({ authority: "assistant" });
     await expect(admitMcpUploadHandoff(request("open", { ...omitted, brandProfileId: null }), { workspaceId, token: unbranded, userId }, h.deps)).rejects.toMatchObject({ code: "mcp_upload_handoff_conflict" });
+  });
+  test("a handoff that names a Recipe opens with the Recipe alone, which admission reads once", async () => {
+    const recipeId = "00000000-0000-4000-8000-0000000000e1";
+    const recipeToken = createMcpUploadHandoff(assistant, { workspaceId, clientIdempotencyKey: key, recipeId }, { secret, now: 0 }).token;
+    const open = (body: unknown, h = harness(1)) => admitMcpUploadHandoff(request("open", body), { workspaceId, token: recipeToken, userId }, h.deps);
+    const { generationContext: _settings, brandProfileId: _profile, brandTemplateId: _template, ...bare } = opening;
+    const named = { ...bare, recipeId };
+    // The credential is handed on, so admission can check the Recipe's finishing against its scopes.
+    await expect(open(named)).resolves.toMatchObject({ authority: "assistant", credential: assistant });
+    // Explicit settings, another Recipe, or none at all are not what the person approved.
+    await expect(open({ ...named, recipeId: "00000000-0000-4000-8000-0000000000e2" })).rejects.toMatchObject({ code: "mcp_upload_handoff_conflict" });
+    await expect(open({ ...named, recipeId: undefined })).rejects.toMatchObject({ code: "mcp_upload_request_invalid" });
+    await expect(open({ ...named, generationContext: opening.generationContext })).rejects.toMatchObject({ code: "mcp_upload_request_invalid" });
+    // An explicit-settings handoff refuses an opening that swaps in a Recipe.
+    await expect(admit("open", named, harness(1))).rejects.toMatchObject({ code: "mcp_upload_handoff_conflict" });
+  });
+  test("finishing the assistant asked for is signed into the handoff and must reach the Upload Session unchanged", async () => {
+    const finishing = { topClips: 3, copyPlatforms: ["tiktok" as const] };
+    const finishingToken = createMcpUploadHandoff(assistant, { workspaceId, clientIdempotencyKey: key, brandProfileId, finishing }, { secret, now: 0 }).token;
+    const open = (body: unknown) => admitMcpUploadHandoff(request("open", body), { workspaceId, token: finishingToken, userId }, harness(1).deps);
+    const frozen = buildGenerationContext(generationSettingsSchema.parse({}), finishing);
+    await expect(open({ ...opening, generationContext: frozen })).resolves.toMatchObject({ authority: "assistant" });
+    // Dropping or changing it is a different intent than the one the person approved.
+    await expect(open(opening)).rejects.toMatchObject({ code: "mcp_upload_handoff_conflict" });
+    await expect(open({ ...opening, generationContext: buildGenerationContext(generationSettingsSchema.parse({}), { topClips: 9 }) })).rejects.toMatchObject({ code: "mcp_upload_handoff_conflict" });
+    // And a handoff without finishing refuses an opening that adds it.
+    await expect(admit("open", { ...opening, generationContext: frozen }, harness(1))).rejects.toMatchObject({ code: "mcp_upload_handoff_conflict" });
   });
   for (const action of ["grants", "finalize", "discard"]) {
     test(`${action} after expiry or revocation runs only under the signed-in person's own authority`, async () => {

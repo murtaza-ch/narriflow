@@ -12,7 +12,7 @@ import {
 	assertPublicHttpUrl,
 	type audioAssetService as productionAudioAssetService,
 	type clipService as productionClipService,
-	decodeClipEditorDocumentFromStorage,
+	decodeFrozenClipEditorDocument,
 	type deleteObject as productionDeleteObject,
 	type downloadObjectToFile as productionDownloadObjectToFile,
 	hasFeature,
@@ -1882,7 +1882,7 @@ async function renderClipGroup(input: {
 		scheduleUpload,
 	} = input;
 	const storedClip = renderGroup[0]!.clipSnapshot ?? renderGroup[0]!.clip;
-	const editorDocument = decodeClipEditorDocumentFromStorage(
+	const editorDocument = decodeFrozenClipEditorDocument(
 		storedClip,
 		frozenState.sourceDurationSeconds,
 	);
@@ -3569,7 +3569,7 @@ async function executeClipRenderAttemptInScratch(params: {
 		for (const render of pendingRenders) {
 			const storedClip = render.clipSnapshot ?? render.clip;
 			try {
-				const editorDocument = decodeClipEditorDocumentFromStorage(
+				const editorDocument = decodeFrozenClipEditorDocument(
 					storedClip,
 					frozenState.sourceDurationSeconds,
 				);

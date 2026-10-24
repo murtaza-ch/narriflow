@@ -1,4 +1,28 @@
 import { z } from "zod";
+import { linkIngestSchema } from "./link-providers";
+
+/** Reaches only the files a person picks; a non-sensitive scope, so no CASA assessment. */
+export const GOOGLE_DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+
+/** Drive file IDs use this alphabet; keeping to it means an ID can't change the API path. */
+const GOOGLE_DRIVE_FILE_ID_PATTERN = /^[A-Za-z0-9_-]{10,200}$/;
+
+/** A file chosen in the Google Drive Picker. Settings match link intake; the
+ *  server reads name, size, type and duration from Drive, never from the browser. */
+export const driveIngestSchema = linkIngestSchema
+  .omit({ url: true })
+  .extend({
+    fileId: z.string().regex(GOOGLE_DRIVE_FILE_ID_PATTERN),
+    accessToken: z.string().min(1).max(4096),
+  })
+  .strict();
+
+export type DriveIngestInput = z.infer<typeof driveIngestSchema>;
+
+/** A Picker file's source reference on its Project. It is not a fetchable link. */
+export function googleDriveFileViewUrl(fileId: string) {
+  return `https://drive.google.com/file/d/${fileId}/view`;
+}
 
 export const rssPreviewSchema = z.object({
   rssUrl: z.string().url(),
@@ -20,7 +44,7 @@ export const rssImportSchema = z.object({
   episodeIds: z.array(z.string().min(1).max(128)).min(1).max(1),
   commitToken: z.string().uuid().optional(),
   titlePrefix: z.string().min(1).max(100).optional(),
-  brandTemplateId: z.string().uuid().nullable().optional(),
+  brandProfileId: z.string().uuid().nullable().optional(),
 }).strict();
 
 export const ingestStatusSchema = z.enum([

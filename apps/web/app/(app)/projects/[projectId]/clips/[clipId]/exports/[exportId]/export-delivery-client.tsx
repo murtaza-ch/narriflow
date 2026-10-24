@@ -31,6 +31,23 @@ import {
 
 const ACTIVE_STATUSES = new Set(["queued", "rendering", "partial_ready"]);
 
+const TIMELINE_DOWNLOADS = [
+	{ format: "xmeml", label: "Premiere" },
+	{ format: "fcpxml", label: "Final Cut, Resolve" },
+	{ format: "edl", label: "EDL" },
+] as const;
+
+type TimelineTarget = (typeof TIMELINE_DOWNLOADS)[number]["format"] | "source";
+
+function saveFile(url: string, fileName: string) {
+	const link = document.createElement("a");
+	link.href = url;
+	link.download = fileName;
+	document.body.appendChild(link);
+	link.click();
+	link.remove();
+}
+
 function formatBytes(value: number | null): string {
 	if (value === null || value < 0) return "—";
 	if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
@@ -85,9 +102,13 @@ export function ExportDeliveryClient({
 		null,
 	);
 	const [actionError, setActionError] = useState<string | null>(null);
+	const [timelineTarget, setTimelineTarget] = useState<TimelineTarget | null>(null);
+	const [timelineError, setTimelineError] = useState<string | null>(null);
+	const [timelineNote, setTimelineNote] = useState<string | null>(null);
 	const lastSeqRef = useRef(initialSeq);
 
-	const apiPath = `/api/projects/${data.projectId}/clips/${data.clipId}/exports/${data.id}`;
+	const clipPath = `/api/projects/${data.projectId}/clips/${data.clipId}`;
+	const apiPath = `${clipPath}/exports/${data.id}`;
 	const refresh = useCallback(async () => {
 		const response = await fetch(apiPath, { cache: "no-store" });
 		if (!response.ok) return;
@@ -237,6 +258,43 @@ export function ExportDeliveryClient({
 			setActionError("The failed variants could not be requeued. Try again.");
 		} finally {
 			setAction(null);
+		}
+	}
+
+	// The timeline ZIP is fetched, not linked, so a refusal shows its message
+	// instead of downloading an error page, and the revision shown is the one
+	// the response was cut from.
+	async function downloadTimeline(target: TimelineTarget) {
+		setTimelineTarget(target);
+		setTimelineError(null);
+		setTimelineNote(null);
+		let failure = "The timeline could not be downloaded. Try again.";
+		try {
+			const response = await fetch(
+				target === "source" ? `${clipPath}/timeline-source` : `${clipPath}/timeline/${target}`,
+				{ cache: "no-store" },
+			);
+			if (!response.ok) {
+				const body = await response.json().catch(() => null);
+				if (typeof body?.message === "string") failure = body.message;
+				throw new Error(failure);
+			}
+			if (target === "source") {
+				const grant = (await response.json()) as { downloadUrl: string; fileName: string };
+				saveFile(grant.downloadUrl, grant.fileName);
+				setTimelineNote(`Downloading ${grant.fileName}.`);
+				return;
+			}
+			const fileName = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? "timeline.zip";
+			const url = URL.createObjectURL(await response.blob());
+			saveFile(url, fileName);
+			setTimeout(() => URL.revokeObjectURL(url), 60_000);
+			const revision = response.headers.get("X-Editor-Revision");
+			setTimelineNote(`Downloaded ${fileName}${revision ? `, cut from edit v${revision}` : ""}.`);
+		} catch {
+			setTimelineError(failure);
+		} finally {
+			setTimelineTarget(null);
 		}
 	}
 
@@ -519,6 +577,52 @@ export function ExportDeliveryClient({
 								<ExternalLink size={16} /> Publish to social
 							</Link>
 						</Button>
+						<Stack gap="2" mt="2">
+							<Text textStyle="eyebrow" color="fg.muted">
+								Edit in your own editor
+							</Text>
+							<Flex gap="2">
+								{TIMELINE_DOWNLOADS.map(({ format, label }) => (
+									<Button
+										key={format}
+										variant="subtle"
+										size="md"
+										flex="1"
+										disabled={timelineTarget !== null}
+										onClick={() => void downloadTimeline(format)}
+									>
+										{timelineTarget === format ? <Spinner size="xs" /> : <Film size={16} />}{" "}
+										{label}
+									</Button>
+								))}
+							</Flex>
+							<Button
+								variant="subtle"
+								size="md"
+								w="full"
+								disabled={timelineTarget !== null}
+								onClick={() => void downloadTimeline("source")}
+							>
+								{timelineTarget === "source" ? <Spinner size="xs" /> : <Download size={16} />}{" "}
+								Original video
+							</Button>
+							<Text fontSize="12px" color="fg.muted">
+								Cuts the original video at the clip&apos;s current edit. Put the
+								video beside the timeline before opening it. Scenes and overlays
+								are not included; the ZIP has the captions as SRT.
+							</Text>
+							{timelineNote ? (
+								<Text fontSize="12px" color="fg.muted" role="status">
+									{timelineNote}
+								</Text>
+							) : null}
+							{timelineError ? (
+								<Flex gap="2" color="danger.fg" role="alert">
+									<AlertTriangle size={14} />
+									<Text fontSize="12px">{timelineError}</Text>
+								</Flex>
+							) : null}
+						</Stack>
 						{hasFailed ? (
 							<Button
 								variant="subtle"

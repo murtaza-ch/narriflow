@@ -1,15 +1,18 @@
 "use client";
 
 import { useState, useTransition, type ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Box, chakra, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import {
   AlertTriangle,
   ChevronDown,
+  Pencil,
   Plus,
   RotateCw,
   Rss,
   Trash2,
+  UserCheck,
   X,
 } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
@@ -23,13 +26,13 @@ import { Select } from "@narriflow/ui/components/select";
 import { Switch } from "@narriflow/ui/components/switch";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
-  BRAND_DEFAULT_CAPTION_PRESET_ID,
-  contentPackSchema,
   type AutopilotRuleSnapshot,
   type AutopilotStatus,
-  type ContentPack,
+  type RecipeSnapshot,
 } from "@narriflow/validators";
 import { formatDateTime } from "@/lib/format";
+import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
+import { describeFinishing } from "../recipes/finishing-form";
 
 const INTERVAL_OPTIONS = [
   { label: "Every 6 hours", value: "360" },
@@ -67,32 +70,7 @@ const STATUS_META: Record<
   failed: { stripe: "danger.solid", label: "Failed", color: "danger.fg" },
 };
 
-type RuleAction = "toggle" | "run" | "delete";
-
-function buildContentPack(input: {
-  clipCountTarget: number;
-}): ContentPack {
-  return contentPackSchema.parse({
-    outputTypes: ["short_clip"],
-    clipGenerationMode: "best",
-    clipCountTarget: input.clipCountTarget,
-    clipDurationSecTarget: 45,
-    minDurationSec: 15,
-    preferredMinDurationSec: 30,
-    preferredMaxDurationSec: 60,
-    maxDurationSec: 90,
-    platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
-    toneConstraints: ["concise", "conversational"],
-    captionPreset: BRAND_DEFAULT_CAPTION_PRESET_ID,
-    platformPlaybookVersion: "platform-playbook-v1",
-    mode: "clip",
-    autoHook: true,
-    specificMoments: "",
-    processingStartSec: null,
-    processingEndSec: null,
-    clipLengthPreset: "auto",
-  });
-}
+type RuleAction = "toggle" | "run" | "delete" | "takeover";
 
 async function request(
   url: string,
@@ -111,6 +89,49 @@ async function request(
   } catch {
     return "Network error — please try again.";
   }
+}
+
+/** The Recipe a rule imports with. Its settings are edited on the Recipes page. */
+export function RecipeSelect({
+  recipes,
+  value,
+  onChange,
+}: {
+  recipes: Array<Pick<RecipeSnapshot, "id" | "name">>;
+  value: string | null;
+  onChange: (id: string) => void;
+}) {
+  if (recipes.length === 0) {
+    return (
+      <Box bg="bg.subtle" borderRadius="l2" px="3" py="2.5">
+        <Text fontSize="12.5px" color="fg.muted">
+          Rules import with a Recipe.{" "}
+          <chakra.span asChild color="fg.accent" fontWeight="600" textDecoration="underline" textUnderlineOffset="3px">
+            <Link href="/recipes">Create one first</Link>
+          </chakra.span>
+          .
+        </Text>
+      </Box>
+    );
+  }
+  return (
+    <Stack gap="1.5">
+      <Select
+        label="Recipe"
+        items={recipes.map((recipe) => ({ label: recipe.name, value: recipe.id }))}
+        value={value ?? undefined}
+        onValueChange={onChange}
+        placeholder="Choose a Recipe"
+        size="sm"
+      />
+      <Text fontSize="12px" color="fg.muted">
+        Brand Profile, language, clip settings, and finishing come from the Recipe.{" "}
+        <chakra.span asChild color="fg.accent" fontWeight="500" textDecoration="underline" textUnderlineOffset="3px">
+          <Link href="/recipes">Manage Recipes</Link>
+        </chakra.span>
+      </Text>
+    </Stack>
+  );
 }
 
 function FieldGroup({ label, children }: { label: string; children: ReactNode }) {
@@ -150,10 +171,50 @@ function Field({
   );
 }
 
+export interface AutopilotRuleGrant {
+  id: string;
+  ruleId: string;
+  kind: "publish" | "review_send";
+  status: "active" | "paused";
+  /** The account it posts to, or the reviewer count. */
+  destination: string;
+  expiresAt: string;
+}
+
+/** Which automation grants cover a rule, with a way to manage them. */
+function RuleGrants({ ruleId, grants, canManage }: { ruleId: string; grants: AutopilotRuleGrant[]; canManage: boolean }) {
+  const covering = grants.filter((grant) => grant.ruleId === ruleId);
+  if (covering.length === 0 && !canManage) return null;
+  return (
+    <Text mt="1" fontSize="12px" color="fg.subtle">
+      {covering.length > 0
+        ? covering.map((grant) => `${grant.kind === "publish" ? "Posts to" : "Reviews by"} ${grant.destination}: ${grant.status === "paused" ? "paused" : `until ${formatDateTime(grant.expiresAt)}`}`).join(" · ")
+        : "No automation grant: posts and review rounds wait for a person."}
+      {" "}
+      <Link href={canManage ? `/settings/automation-grants?rule=${ruleId}` : "/settings/automation-grants"}>
+        <Text as="span" color="fg.muted" textDecoration="underline" textUnderlineOffset="3px">
+          {canManage ? "Manage grants" : "View grants"}
+        </Text>
+      </Link>
+    </Text>
+  );
+}
+
 export function AutopilotPanel({
   initialRules,
+  recipes,
+  canTakeOver,
+  finishingAvailable = true,
+  grants = [],
 }: {
   initialRules: AutopilotRuleSnapshot[];
+  recipes: RecipeSnapshot[];
+  /** Workspace Owners and Admins can take over a paused rule. */
+  canTakeOver: boolean;
+  /** Finishing needs the Pro plan; rules below it still import and generate. */
+  finishingAvailable?: boolean;
+  /** The Workspace's automation grants that are in force or paused, by the rule they cover. */
+  grants?: AutopilotRuleGrant[];
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -172,7 +233,10 @@ export function AutopilotPanel({
     "future_only" | "latest"
   >("future_only");
   const [initialImportCount, setInitialImportCount] = useState("3");
-  const [clipCountTarget, setClipCountTarget] = useState("10");
+  const [recipeId, setRecipeId] = useState<string | null>(null);
+  const [editingRule, setEditingRule] = useState<AutopilotRuleSnapshot | null>(
+    null,
+  );
 
   // Per-rule pending state — one in-flight action per rule, never global.
   const [pendingRules, setPendingRules] = useState<
@@ -194,7 +258,7 @@ export function AutopilotPanel({
     setMaxEpisodesPerRun("3");
     setInitialImportMode("future_only");
     setInitialImportCount("3");
-    setClipCountTarget("10");
+    setRecipeId(null);
     setFormError(null);
   }
 
@@ -207,15 +271,14 @@ export function AutopilotPanel({
       setFormError("RSS feed URL is required.");
       return;
     }
+    if (!recipeId) {
+      setFormError("Choose a Recipe for this rule.");
+      return;
+    }
     const maxEpisodes = Number(maxEpisodesPerRun);
-    const clipCount = Number(clipCountTarget);
     const initialCount = Number(initialImportCount);
     if (!Number.isInteger(maxEpisodes) || maxEpisodes < 1 || maxEpisodes > 10) {
       setFormError("Max episodes must be between 1 and 10.");
-      return;
-    }
-    if (!Number.isInteger(clipCount) || clipCount < 3 || clipCount > 30) {
-      setFormError("Clips per episode must be between 3 and 30.");
       return;
     }
     if (!Number.isInteger(initialCount) || initialCount < 1 || initialCount > 10) {
@@ -232,13 +295,11 @@ export function AutopilotPanel({
         name: name.trim(),
         rssUrl: rssUrl.trim(),
         titlePrefix: titlePrefix.trim() || null,
+        recipeId,
         intervalMinutes: Number(intervalMinutes),
         maxEpisodesPerRun: maxEpisodes,
         initialImportMode,
         initialImportCount: initialCount,
-        contentPack: buildContentPack({
-          clipCountTarget: clipCount,
-        }),
       }),
     });
     setCreating(false);
@@ -280,6 +341,28 @@ export function AutopilotPanel({
       type: "success",
       title: enabled ? "Rule resumed" : "Rule paused",
       description: rule.name,
+    });
+    startTransition(() => router.refresh());
+  }
+
+  async function takeOver(rule: AutopilotRuleSnapshot) {
+    setRulePending(rule.id, "takeover");
+    const error = await request(`/api/autopilot/rules/${rule.id}/take-over`, {
+      method: "POST",
+    });
+    setRulePending(rule.id, undefined);
+    if (error) {
+      toaster.create({
+        type: "error",
+        title: "Could not take over rule",
+        description: error,
+      });
+      return;
+    }
+    toaster.create({
+      type: "success",
+      title: "You now run this rule",
+      description: `${rule.name} will check its feed shortly.`,
     });
     startTransition(() => router.refresh());
   }
@@ -381,7 +464,12 @@ export function AutopilotPanel({
         ) : (
           <Box display="grid" gap="3">
             {initialRules.map((rule) => {
-              const meta = STATUS_META[rule.status];
+              // A paused rule with an error was stopped by Autopilot itself.
+              const pauseReason = rule.status === "paused" ? rule.lastError : null;
+              const meta = pauseReason
+                ? { stripe: "warning.solid", label: "Paused", color: "warning.fg" }
+                : STATUS_META[rule.status];
+              const recipe = recipes.find((entry) => entry.id === rule.recipeId);
               const pending = pendingRules[rule.id];
               const enabled = rule.status !== "paused";
               const expanded = Boolean(expandedErrors[rule.id]);
@@ -446,9 +534,44 @@ export function AutopilotPanel({
                           ? formatDateTime(rule.lastCheckedAt)
                           : "never"}{" "}
                         · next {formatDateTime(rule.nextRunAt)}
+                        {` · Recipe: ${rule.recipeName}`}
                       </Text>
 
-                      {rule.lastError ? (
+                      {recipe?.finishing ? (
+                        <Text mt="1" fontSize="12px" color={finishingAvailable ? "fg.subtle" : "warning.fg"}>
+                          {finishingAvailable
+                            ? `Finishing: ${describeFinishing(recipe.finishing, (platform) => SOCIAL_PLATFORM_LABELS[platform])}`
+                            : "Finishing is off: it needs the Pro plan. New episodes still import and generate clips."}
+                        </Text>
+                      ) : null}
+
+                      <RuleGrants ruleId={rule.id} grants={grants} canManage={canTakeOver} />
+
+                      {pauseReason ? (
+                        <Box mt="2" me="4" p="3" bg="warning.subtle" borderRadius="l2">
+                          <Text
+                            fontSize="12px"
+                            color="warning.fg"
+                            whiteSpace="pre-wrap"
+                            wordBreak="break-word"
+                          >
+                            {pauseReason}
+                          </Text>
+                          {canTakeOver && rule.pauseKind === "acting_member" ? (
+                            <Button
+                              mt="2.5"
+                              size="xs"
+                              variant="subtle"
+                              loading={pending === "takeover"}
+                              disabled={pending !== undefined && pending !== "takeover"}
+                              onClick={() => void takeOver(rule)}
+                            >
+                              <UserCheck size={12} strokeWidth={2} aria-hidden />
+                              Take over
+                            </Button>
+                          ) : null}
+                        </Box>
+                      ) : rule.lastError ? (
                         <Box mt="2">
                           <Flex
                             align="center"
@@ -537,6 +660,15 @@ export function AutopilotPanel({
                         <RotateCw size={12} strokeWidth={2} aria-hidden />
                         Run now
                       </Button>
+                      <IconButton
+                        size="xs"
+                        variant="ghost"
+                        aria-label={`Edit rule ${rule.name}`}
+                        disabled={pending !== undefined}
+                        onClick={() => setEditingRule(rule)}
+                      >
+                        <Pencil size={13} strokeWidth={1.75} />
+                      </IconButton>
                       <IconButton
                         size="xs"
                         variant="ghost"
@@ -697,21 +829,7 @@ export function AutopilotPanel({
                   </FieldGroup>
 
                   <FieldGroup label="Output">
-                    <SimpleGrid columns={{ base: 1, sm: 2 }} gap="3">
-                      <Field
-                        label="Clips per episode"
-                        htmlFor="autopilot-clips-per-episode"
-                      >
-                        <NumberInput
-                          value={clipCountTarget}
-                          onValueChange={(value) => setClipCountTarget(value)}
-                          min={3}
-                          max={30}
-                          size="sm"
-                          inputProps={{ id: "autopilot-clips-per-episode" }}
-                        />
-                      </Field>
-                    </SimpleGrid>
+                    <RecipeSelect recipes={recipes} value={recipeId} onChange={setRecipeId} />
                   </FieldGroup>
 
                   {formError ? (
@@ -734,6 +852,7 @@ export function AutopilotPanel({
                 <Button
                   size="sm"
                   loading={creating}
+                  disabled={recipes.length === 0}
                   onClick={() => void createRule()}
                 >
                   Create rule
@@ -744,7 +863,137 @@ export function AutopilotPanel({
         </Portal>
       </Dialog.Root>
 
+      <EditRuleDialog
+        key={editingRule?.id ?? "closed"}
+        rule={editingRule}
+        recipes={recipes}
+        onClose={() => setEditingRule(null)}
+        onSaved={() => {
+          setEditingRule(null);
+          startTransition(() => router.refresh());
+        }}
+      />
+
       {confirmDialog}
     </Stack>
+  );
+}
+
+function EditRuleDialog({
+  rule,
+  recipes,
+  onClose,
+  onSaved,
+}: {
+  rule: AutopilotRuleSnapshot | null;
+  recipes: RecipeSnapshot[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  // The parent keys this dialog by rule, so every open starts a fresh draft.
+  const [name, setName] = useState(rule?.name ?? "");
+  const [recipeId, setRecipeId] = useState<string | null>(rule?.recipeId ?? null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    if (!rule) return;
+    if (!name.trim()) {
+      setError("Rule name is required.");
+      return;
+    }
+    // Send only what changed: a rule whose Recipe's profile is gone can still
+    // be renamed, and choosing a Recipe resumes a rule paused over its profile.
+    const changes = {
+      ...(name.trim() !== rule.name && { name: name.trim() }),
+      ...(recipeId && recipeId !== rule.recipeId && { recipeId }),
+    };
+    if (Object.keys(changes).length === 0) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    const failure = await request(`/api/autopilot/rules/${rule.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+    setSaving(false);
+    if (failure) {
+      setError(failure);
+      return;
+    }
+    toaster.create({ type: "success", title: "Rule updated", description: name.trim() });
+    onSaved();
+  }
+
+  return (
+    <Dialog.Root
+      open={rule !== null}
+      onOpenChange={(details) => {
+        if (saving || details.open) return;
+        onClose();
+      }}
+      placement="center"
+      scrollBehavior="inside"
+    >
+      <Portal>
+        <Dialog.Backdrop />
+        <Dialog.Positioner>
+          <Dialog.Content maxW="480px">
+            <Dialog.Header px="6" pt="5" pb="4">
+              <Dialog.Title textStyle="title" fontSize="18px" color="fg">
+                Edit autopilot rule
+              </Dialog.Title>
+            </Dialog.Header>
+            <Dialog.CloseTrigger asChild>
+              <IconButton
+                aria-label="Close"
+                size="sm"
+                variant="ghost"
+                borderRadius="full"
+                position="absolute"
+                top="3"
+                insetInlineEnd="3"
+              >
+                <X size={16} />
+              </IconButton>
+            </Dialog.CloseTrigger>
+            <Dialog.Body px="6" py="0">
+              <Stack gap="4">
+                <Field label="Rule name" htmlFor="autopilot-edit-name">
+                  <Input
+                    id="autopilot-edit-name"
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    fontSize="13px"
+                    size="sm"
+                  />
+                </Field>
+                <RecipeSelect recipes={recipes} value={recipeId} onChange={setRecipeId} />
+                {error ? (
+                  <Flex align="center" gap="2" color="danger.fg">
+                    <AlertTriangle size={13} strokeWidth={2} aria-hidden />
+                    <Text fontSize="12.5px" fontWeight="500">
+                      {error}
+                    </Text>
+                  </Flex>
+                ) : null}
+              </Stack>
+            </Dialog.Body>
+            <Dialog.Footer px="6" py="4" gap="2">
+              <Dialog.ActionTrigger asChild>
+                <Button variant="subtle" size="sm" disabled={saving}>
+                  Cancel
+                </Button>
+              </Dialog.ActionTrigger>
+              <Button size="sm" loading={saving} onClick={() => void save()}>
+                Save
+              </Button>
+            </Dialog.Footer>
+          </Dialog.Content>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
   );
 }

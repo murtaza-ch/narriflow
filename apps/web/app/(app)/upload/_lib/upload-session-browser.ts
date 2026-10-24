@@ -47,6 +47,8 @@ export interface UploadSessionBrowserStartInput {
   brandTemplateId: string | null;
   brandProfileId?: string | null;
   generationContext: unknown;
+  /** An assistant handoff that names a Recipe sends it instead of the settings above. */
+  recipeId?: string;
   /** Local media metadata, reserved before transfer and never trusted to settle. */
   declaredDurationSeconds?: number | null;
 }
@@ -81,6 +83,7 @@ interface RunUploadSessionTransferInput {
   brandTemplateId: string | null;
   brandProfileId?: string | null;
   generationContext: unknown;
+  recipeId?: string;
   declaredDurationSeconds?: number | null;
   storage: UploadResumeStorage | null;
   fetcher?: typeof fetch;
@@ -573,10 +576,14 @@ async function runUploadSessionTransfer(
               contentType,
               browserFingerprint: fingerprint,
             },
-            brandTemplateId: input.brandTemplateId,
-            // Omitted (not null) lets an assistant handoff use the Workspace default.
-            ...(input.brandProfileId === undefined ? {} : { brandProfileId: input.brandProfileId }),
-            generationContext: input.generationContext,
+            ...(input.recipeId
+              ? { recipeId: input.recipeId }
+              : {
+                  brandTemplateId: input.brandTemplateId,
+                  // Omitted (not null) lets an assistant handoff use the Workspace default.
+                  ...(input.brandProfileId === undefined ? {} : { brandProfileId: input.brandProfileId }),
+                  generationContext: input.generationContext,
+                }),
             ...(input.declaredDurationSeconds
               ? { declaredDurationSeconds: input.declaredDurationSeconds }
               : {}),

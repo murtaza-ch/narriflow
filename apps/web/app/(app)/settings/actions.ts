@@ -2,14 +2,19 @@
 
 import { revalidatePath } from "next/cache";
 import { sendEmail } from "@narriflow/email";
-import { callbackSigningSecrets, hasFeature, WorkspaceOperationError, workspaceMembershipService, workspaceService,
+import {
+  assertCompletionCallbackUrl, callbackSigningSecrets, hasFeature, performanceService, webhookSubscriptions, WorkspaceOperationError, workspaceMembershipService, workspaceService,
 } from "@narriflow/services";
 import {
   executeWorkspaceAction,
   executeWorkspaceActionWithInput,
   authenticatedActionResultError,
 } from "@/lib/authenticated-request-action";
+import type { BrowserActorScope } from "@/lib/authenticated-request-policy.server";
 import {
+  createWebhookRequestSchema,
+  performanceGuidanceSettingActionSchema,
+  webhookReferenceActionSchema,
   workspaceApiKeyActionSchema,
   workspaceApiKeyReferenceActionSchema,
   workspaceInviteActionSchema,
@@ -65,6 +70,19 @@ export async function updateWorkspaceAction(formData: FormData) {
     );
     revalidatePath("/", "layout");
     revalidatePath("/settings/workspace");
+    },
+  );
+}
+
+export async function updatePerformanceGuidanceAction(formData: FormData) {
+  return executeWorkspaceActionWithInput(
+    "workspace.manage",
+    { enabled: formData.get("enabled") === "on" },
+    performanceGuidanceSettingActionSchema,
+    async (appUser, parsedInput) => {
+      await performanceService.setGuidanceEnabled(appUser, parsedInput.enabled);
+      revalidatePath("/settings/workspace");
+      revalidatePath("/performance");
     },
   );
 }
@@ -277,4 +295,44 @@ export async function rotateCallbackSigningSecretAction() {
     revalidatePath("/settings/api");
     return { ok: true as const, secret: rotated.secret, createdAt: rotated.createdAt };
   });
+}
+
+/** Webhook actions share REST's rules: Business, then the service's own refusals. */
+async function webhookOperation<T extends object>(appUser: BrowserActorScope, fallback: string, run: (actor: { actorUserId: string; workspaceId: string }) => Promise<T>) {
+  if (!hasFeature(appUser.workspace.pricingTier, "integrations.api")) {
+    throw new WorkspaceOperationError("workspace_api_requires_business", "Webhooks require Business");
+  }
+  try {
+    const result = await run({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId });
+    revalidatePath("/settings/api");
+    return { ok: true as const, ...result };
+  } catch (error) {
+    const failure = authenticatedActionResultError(error, fallback);
+    return { ok: false as const, error: failure.message, errorCode: failure.errorCode };
+  }
+}
+
+export async function createWebhookAction(input: { url: string; types: string[] }) {
+  return executeWorkspaceActionWithInput("api.manage", input, createWebhookRequestSchema, (appUser, parsed) =>
+    webhookOperation(appUser, "The webhook could not be created.", async (actor) => ({
+      webhook: await webhookSubscriptions.create(actor, { url: await assertCompletionCallbackUrl(parsed.url), types: parsed.types }),
+    })));
+}
+
+export async function deleteWebhookAction(webhookId: string) {
+  return executeWorkspaceActionWithInput("api.manage", { webhookId }, webhookReferenceActionSchema, (appUser, parsed) =>
+    webhookOperation(appUser, "The webhook could not be deleted.", (actor) => webhookSubscriptions.delete(actor, parsed.webhookId)));
+}
+
+export async function enableWebhookAction(webhookId: string) {
+  return executeWorkspaceActionWithInput("api.manage", { webhookId }, webhookReferenceActionSchema, (appUser, parsed) =>
+    webhookOperation(appUser, "The webhook could not be re-enabled.", async (actor) => ({
+      webhook: await webhookSubscriptions.enable(actor, parsed.webhookId),
+    })));
+}
+
+/** Sends one `webhook.test` event; `delivered` and `status` report the answer. */
+export async function testWebhookAction(webhookId: string) {
+  return executeWorkspaceActionWithInput("api.manage", { webhookId }, webhookReferenceActionSchema, (appUser, parsed) =>
+    webhookOperation(appUser, "The test event could not be sent.", (actor) => webhookSubscriptions.test(actor, parsed.webhookId)));
 }

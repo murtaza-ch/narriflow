@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, ran
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { ActorScope } from "./actor-scope";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
-import { encodeOperationId, type OperationKind, type OperationStatusReader, type TrustedOperationStatus } from "./operation-status";
+import { encodeOperationId, type OperationKind, type OperationStatus, type OperationStatusReader, type TrustedOperationStatus } from "./operation-status";
 import { OperationIdempotencyConflictError, type IntegrationMutation, type ReceiptCallback } from "./operation-receipt";
 import { uuidV5 } from "./uuid-v5";
 import {
@@ -134,6 +134,7 @@ export interface CallbackPayload {
     projectId: string | null;
     clipIds?: string[];
     exportId?: string;
+    notices?: OperationStatus["notices"];
     failureCode?: string;
   };
 }
@@ -157,6 +158,7 @@ export function buildCallbackPayload(input: { eventId: string; workspaceId: stri
       projectId: status.results.projectId,
       ...(status.results.clipIds.length ? { clipIds: status.results.clipIds } : {}),
       ...(status.results.exportId ? { exportId: status.results.exportId } : {}),
+      ...(status.notices.length ? { notices: status.notices } : {}),
       ...(status.failureCode ? { failureCode: status.failureCode } : {}),
     },
   };
@@ -187,7 +189,9 @@ export function classifyDelivery(status: number | null): DeliveryDisposition {
  * response body is never read. A fresh timestamp signs each attempt. */
 export async function deliverCallback(input: {
   url: string;
-  payload: CallbackPayload;
+  /** Its `id` is the Standard Webhooks message ID. Webhook Subscriptions send
+   * their own event payloads through this same delivery. */
+  payload: { id: string };
   secrets: readonly string[];
   now: Date;
   transport?: PinnedTransport;
@@ -220,7 +224,8 @@ export async function deliverCallback(input: {
 }
 
 const CALLBACK_EVENT_NAMESPACE = "3b9c5e21-7d4f-5a86-b1c2-9e0f7a6d5c4b";
-const LEASE_MS = 60_000;
+/** How long a worker owns a delivery row before another may claim it. */
+export const CALLBACK_LEASE_MS = 60_000;
 
 export function callbackEventId(acceptanceId: string) {
   return uuidV5(CALLBACK_EVENT_NAMESPACE, acceptanceId);
@@ -231,7 +236,7 @@ export class CallbackSecretRequiredError extends ExpectedDomainFailureError<"cal
     super({
       code: "callback_secret_required",
       kind: "conflict",
-      message: "Create a callback signing secret in Settings → Developer access before requesting callbacks",
+      message: "Create a callback signing secret in Settings → Developer access before using callbacks or webhooks",
     });
     this.name = "CallbackSecretRequiredError";
   }
@@ -384,7 +389,7 @@ export function createCompletionCallbackProcessor(dependencies: CompletionCallba
     for (const candidate of candidates) {
       const won = await prisma.completionCallback.updateMany({
         where: { id: candidate.id, state, ...free },
-        data: { leaseOwner, leaseExpiresAt: new Date(at.getTime() + LEASE_MS) },
+        data: { leaseOwner, leaseExpiresAt: new Date(at.getTime() + CALLBACK_LEASE_MS) },
       });
       if (won.count === 1) claimed.push(await prisma.completionCallback.findUniqueOrThrow({ where: { id: candidate.id } }));
     }

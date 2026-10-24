@@ -11,6 +11,7 @@ import type {
 	PublicationOperationPhase,
 } from "./social-publication-platform";
 import { PublicationPlatformExecutionError } from "./social-publication-platform";
+import { emitSocialPostFinished } from "./social-post-finished";
 import type { FrozenPublicationState } from "./social-publication-scheduling";
 import type { SocialPublicationMetrics } from "./social-publication-observability";
 
@@ -1490,9 +1491,6 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 									: null,
 							platformPostId: input.result.receipt.platformPostId,
 							externalUrl: input.result.receipt.externalUrl,
-							metrics: input.result.receipt.metrics
-								? (input.result.receipt.metrics as Prisma.InputJsonValue)
-								: Prisma.JsonNull,
 							providerProcessingStatus:
 								input.result.receipt.providerProcessingStatus ?? null,
 							providerProcessingFailureCode:
@@ -1538,28 +1536,6 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 							},
 						});
 					}
-					if (input.result.receipt.metrics) {
-						const metrics = input.result.receipt.metrics;
-						await tx.socialPostMetric.create({
-							data: {
-								projectId: row.socialPost.projectId,
-								postId: row.socialPostId,
-								platform: row.frozenState.platform,
-								views: metrics.views,
-								likes: metrics.likes,
-								comments: metrics.comments,
-								shares: metrics.shares,
-								saves: metrics.saves,
-								watchTimeSeconds: metrics.watchTimeSeconds ?? null,
-								capturedAt: metrics.capturedAt
-									? new Date(metrics.capturedAt)
-									: input.now,
-								metadata: metrics.metadata
-									? (metrics.metadata as Prisma.InputJsonValue)
-									: Prisma.JsonNull,
-							},
-						});
-					}
 					await tx.socialPublicationAttempt.update({
 						where: { id: row.id },
 						data: {
@@ -1591,7 +1567,11 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 							nextAttemptAt: null,
 						},
 					});
-					for (const postId of input.result.receipt.platformPostIds ?? []) {
+					// A video the platform itself verified: native adapters list its
+					// post IDs (none for a TikTok inbox delivery or a failed YouTube
+					// processing). A webhook receiver's self-reported ID never qualifies.
+					const publishedIds = input.result.receipt.platformPostIds ?? [];
+					for (const postId of publishedIds) {
 						await tx.publishedSocialVideo.upsert({
 							where: {
 								socialPostId_platformPostId: {
@@ -1602,12 +1582,16 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 							create: {
 								socialPostId: row.socialPostId,
 								platformPostId: postId,
-								externalUrl: `https://www.tiktok.com/@_/video/${postId}`,
+								externalUrl:
+									row.frozenState.platform === "tiktok"
+										? `https://www.tiktok.com/@_/video/${postId}`
+										: input.result.receipt.externalUrl,
 							},
 							update: {},
 						});
 					}
 					await releaseCurrentClaim(tx, input.owned, input.now);
+					await emitSocialPostFinished(tx, { socialPostId: row.socialPostId, attemptId: row.id });
 					return {
 						kind:
 							input.result.receipt.deliveryMode === "tiktok_inbox"
@@ -1707,6 +1691,7 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 					},
 				});
 				await releaseCurrentClaim(tx, input.owned, input.now);
+				await emitSocialPostFinished(tx, { socialPostId: row.socialPostId, attemptId: row.id });
 				return input.canReconcile && input.nextActionAt
 					? {
 							kind: "reconciling",
@@ -1756,6 +1741,7 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 						},
 					});
 					await releaseCurrentClaim(tx, input.owned, input.now);
+					await emitSocialPostFinished(tx, { socialPostId: row.socialPostId, attemptId: row.id });
 					return {
 						kind: "needs_attention",
 						attemptId: row.id,
@@ -1854,6 +1840,7 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 					update: {},
 				});
 				await releaseCurrentClaim(tx, input.owned, input.now);
+				await emitSocialPostFinished(tx, { socialPostId: row.socialPostId, attemptId: row.id });
 				return {
 					kind: "failed",
 					attemptId: row.id,
@@ -1946,17 +1933,20 @@ export async function synchronizePreparedSocialPosts(now = new Date()) {
 			state.clipExportVariant.status === "failed" ||
 			state.clipExportVariant.status === "completed"
 		) {
-			await prisma.socialPost.updateMany({
-				where: { id: state.socialPostId, status: "preparing_video" },
-				data: {
-					status: "failed",
-					errorCode:
-						state.clipExportVariant.errorCode ??
-						(state.clipExportVariant.status === "completed"
-							? "publication_media_duration_missing"
-							: "publication_media_preparation_failed"),
-					errorDisposition: "permanent",
-				},
+			await prisma.$transaction(async (tx) => {
+				const failed = await tx.socialPost.updateMany({
+					where: { id: state.socialPostId, status: "preparing_video" },
+					data: {
+						status: "failed",
+						errorCode:
+							state.clipExportVariant.errorCode ??
+							(state.clipExportVariant.status === "completed"
+								? "publication_media_duration_missing"
+								: "publication_media_preparation_failed"),
+						errorDisposition: "permanent",
+					},
+				});
+				if (failed.count === 1) await emitSocialPostFinished(tx, { socialPostId: state.socialPostId });
 			});
 		}
 	}
@@ -1980,6 +1970,9 @@ export async function claimDueSocialPublicationAttempts(input: {
 			scheduledFor: { lte: input.now },
 			OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: input.now } }],
 			workspace: { status: "active" },
+			// A post a Standing Grant accepted goes out only while that grant is active. A paused grant
+			// holds its posts until it is renewed; a revoked or expired one gives them back to the inbox.
+			AND: [{ OR: [{ standingGrantId: null }, { standingGrant: { is: { status: "active", expiresAt: { gt: input.now } } } }] }],
 			frozenState: {
 				is: {
 					storageKey: { not: null },
@@ -1997,13 +1990,25 @@ export async function claimDueSocialPublicationAttempts(input: {
 		if (!post.frozenState) continue;
 		await prisma
 			.$transaction(async (tx) => {
-				const [locked] = await tx.$queryRaw<Array<{ status: string }>>`
-          SELECT "status"::text AS "status"
+				const [locked] = await tx.$queryRaw<Array<{ status: string; standingGrantId: string | null }>>`
+          SELECT "status"::text AS "status", "standingGrantId"
           FROM "SocialPost"
           WHERE "id" = ${post.id}::uuid
           FOR UPDATE
         `;
 				if (locked?.status !== "scheduled") return;
+				if (locked.standingGrantId) {
+					// Shared, so a pause, revocation or expiry committed first is seen here, and one that
+					// comes after waits until this attempt exists. The post's lock is taken first, then
+					// the grant's, which is the order settlement and the pause hook already use.
+					const [grant] = await tx.$queryRaw<Array<{ live: boolean }>>`
+            SELECT ("status" = 'active' AND "expiresAt" > (${input.now.toISOString()}::timestamptz AT TIME ZONE 'UTC')) AS "live"
+            FROM "StandingGrant"
+            WHERE "id" = ${locked.standingGrantId}::uuid
+            FOR SHARE
+          `;
+					if (!grant?.live) return;
+				}
 				await tx.socialPublicationAttempt.create({
 					data: {
 						id: createId(),
@@ -2196,6 +2201,7 @@ export async function claimDueSocialPublicationAttempts(input: {
 						if (terminalPost.count !== 1) {
 							throw new PublicationClaimAdmissionRaceError();
 						}
+						await emitSocialPostFinished(tx, { socialPostId: current.socialPostId, attemptId: current.id });
 						return false;
 					}
 					await tx.publicationClaim.create({

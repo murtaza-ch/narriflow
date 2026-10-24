@@ -182,15 +182,24 @@ export function rememberBoundedIdentity(
 export type IngestRecoveryAction = "retry" | "new_upload";
 
 /** Provider access denials are deterministic for the same link and worker
- * runtime, and a changed upload can't be re-verified. Repeating the same
- * import is false recovery; start from a file. */
+ * runtime, a changed upload can't be re-verified, and a Google Drive Picker
+ * import (`fromDrivePicker`, decided by the source, not the error) keeps its
+ * token only until its job ends, so no failure of it can be retried. Repeating
+ * the same import is false recovery; start from a file. */
 export function ingestRecoveryAction(
   errorCode: string | null | undefined,
+  fromDrivePicker = false,
 ): IngestRecoveryAction {
-  return errorCode === "source_provider_access_denied" ||
+  return fromDrivePicker ||
+    errorCode === "source_provider_access_denied" ||
     errorCode === "upload_source_changed"
     ? "new_upload"
     : "retry";
+}
+
+/** The button that starts over from a new source. */
+export function ingestRecoveryLabel(fromDrivePicker = false): string {
+  return fromDrivePicker ? "Choose the file again" : "Upload video instead";
 }
 
 const INGEST_LIVE_STAGE_WORDS: Record<string, string> = {

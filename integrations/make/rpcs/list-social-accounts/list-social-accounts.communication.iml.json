@@ -1,0 +1,15 @@
+{
+    "url": "/social-accounts",
+    "method": "GET",
+    "response": {
+        "limit": 500,
+        "iterate": {
+            "container": "{{body.accounts}}",
+            "condition": "{{item.status = 'active'}}"
+        },
+        "output": {
+            "label": "{{item.displayName + ' (' + item.platform + ')'}}",
+            "value": "{{item.accountId}}"
+        }
+    }
+}

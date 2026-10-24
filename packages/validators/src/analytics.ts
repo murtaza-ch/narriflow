@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { socialPlatformSchema } from "./social";
+import { socialPlatformSchema, socialPostMetricsSnapshotSchema } from "./social";
 
 export const analyticsEventTypeSchema = z.enum([
   "render_completed",
@@ -156,6 +156,27 @@ export const analyticsSnapshotSchema = z.object({
       dubDownloadsOpened: z.number().int().nonnegative(),
     }),
   ),
+  /** The public counts read back from the platforms for this Project's published posts. */
+  postPerformance: z.object({
+    /** Videos with at least one reading. The totals add each one's newest reading. */
+    measuredVideos: z.number().int().nonnegative(),
+    totals: z.object({
+      views: z.number().int().nonnegative(),
+      likes: z.number().int().nonnegative(),
+      comments: z.number().int().nonnegative(),
+      shares: z.number().int().nonnegative(),
+    }),
+    /** The newest published posts, up to 100, each with its latest counts. */
+    posts: z.array(
+      z.object({
+        socialPostId: z.string().uuid(),
+        clipId: z.string().uuid().nullable(),
+        platform: socialPlatformSchema,
+        postedAt: z.string().datetime().nullable(),
+        latestMetrics: socialPostMetricsSnapshotSchema.nullable(),
+      }),
+    ),
+  }),
 });
 
 export const recordAnalyticsEventSchema = z

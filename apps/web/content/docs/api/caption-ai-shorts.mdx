@@ -1,0 +1,122 @@
+---
+title: Caption an AI short
+sidebarTitle: Caption an AI short
+description: Caption, frame and export a finished short, such as an AI-generated video, with one request and no clip detection.
+---
+
+A captioned video is a finished short that needs captions and a clean export. Narriflow does not look for moments. The Project gets one clip, the whole video, and exports it at each format you ask for with your Brand Profile applied. Videos run from 1 second to 3 minutes. Silent videos are fine.
+
+Your API key needs the `processing:write` scope. The work uses processing minutes, measured on the video's real length.
+
+## What you choose
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `framing` | `fit` keeps the whole frame and pads the rest. `center` fills the frame with a centered crop. | `fit` |
+| `aspectRatios` | One to four of `9:16`, `1:1`, `16:9`, `4:5`. | `["9:16"]` |
+| `resolution` | `720p` or `1080p`. Your plan's limit applies, and the export reports what it granted. | `1080p` |
+| `captions` | `{ "source": "auto" }` transcribes the speech. `{ "source": "supplied", "text": "…" }` uses your SRT or WebVTT. `{ "source": "none" }` adds none. | `auto` |
+| `brandProfileId` | A profile from `GET /brand-profiles`. Omit it for the Workspace default. | Workspace default |
+
+A video with no audio stream gets no speech captions, even with `auto`, and costs no transcription.
+
+### Supplied captions
+
+Send up to 64 KiB of SRT or WebVTT, at most 1,000 cues. Narriflow turns each cue into timed words, so your captions use the same caption styles, positions and subtitle files as spoken ones. Cues that overlap are trimmed so they never overlap on screen. Cues past the end of the video are dropped.
+
+Malformed captions are refused before any work starts, with a typed error:
+
+| Error | Meaning |
+| --- | --- |
+| `supplied_captions_malformed` | A cue has no timing line, an unreadable timestamp, or ends before it starts. `details.cue` names it. |
+| `supplied_captions_empty` | The text has no cues with words. |
+| `supplied_captions_too_large` | More than 64 KiB. |
+| `supplied_captions_too_many_cues` | More than 1,000 cues. |
+
+## Send a file
+
+`POST /captioned-videos` opens an Upload Session that carries your settings. Upload the file and finalize, as in [Upload a file](/docs/api/uploads). Finalize accepts a [completion callback](/docs/api/callbacks). Most AI tools return a plain MP4 URL that Narriflow cannot import directly, so this is the usual route.
+
+<CodeGroup>
+
+```typescript TypeScript
+// Uses the api() helper from the quickstart.
+import { readFile, stat } from "node:fs/promises";
+
+const path = "ai-short.mp4";
+const { upload } = await api<{ upload: { uploadId: string; transfer: { url: string; headers: Record<string, string> } } }>("/captioned-videos", {
+  method: "POST",
+  idempotencyKey: "ai-short-42:open",
+  body: {
+    source: { kind: "upload", file: { name: path, sizeBytes: (await stat(path)).size, contentType: "video/mp4" }, transfer: "single" },
+    framing: "fit",
+    aspectRatios: ["9:16", "1:1"],
+    resolution: "1080p",
+    captions: { source: "auto" },
+  },
+});
+
+const stored = await fetch(upload.transfer.url, { method: "PUT", headers: upload.transfer.headers, body: await readFile(path) });
+if (!stored.ok) throw new Error(`Storage returned ${stored.status}`);
+
+const finalized = await api<{ upload: { operation: { operationId: string } | null } }>(`/uploads/${upload.uploadId}/finalize`, { method: "POST", body: {} });
+const operationId = finalized.upload.operation?.operationId;
+```
+
+```bash cURL
+curl -X POST "$BASE/captioned-videos" \
+  -H "Authorization: Bearer $NARRIFLOW_API_KEY" \
+  -H "Idempotency-Key: ai-short-42:open" \
+  -H "Content-Type: application/json" \
+  -d '{"source": {"kind": "upload", "file": {"name": "ai-short.mp4", "sizeBytes": 4000000, "contentType": "video/mp4"}, "transfer": "single"},
+       "framing": "fit", "aspectRatios": ["9:16", "1:1"], "captions": {"source": "auto"}}'
+
+# Then PUT the bytes to upload.transfer.url and POST /uploads/$UPLOAD_ID/finalize.
+```
+
+</CodeGroup>
+
+## Send a link
+
+For a supported link, send `"source": { "kind": "url", "url": "…" }`. The request is accepted at once with `202`, and it takes an optional `callback`.
+
+```typescript TypeScript
+const accepted = await api<{ projectId: string; operation: { operationId: string; statusUrl: string } }>("/captioned-videos", {
+  method: "POST",
+  idempotencyKey: "ai-short-43:submit",
+  body: {
+    source: { kind: "url", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", callback: { url: "https://hooks.example.com/narriflow" } },
+    framing: "center",
+    captions: { source: "supplied", text: "1\n00:00:00,000 --> 00:00:02,000\nCaption my AI short" },
+  },
+});
+```
+
+## Follow the work
+
+`GET /operations/{id}` follows the whole job: import, captions, framing and export. It stays `working` until the export is finished, so one wait covers everything. When `state` is `completed` or `partial`, `results.exportId` names the export. The job reports how the export first ended. If you retry a failed export, follow the export's own operation for the new result; the job stays as it was first reported. Fetch fresh download links and SRT and VTT subtitles with `GET /exports/{id}/download`.
+
+```json
+{
+  "state": "completed",
+  "stage": "rendering",
+  "progress": 1,
+  "items": [{ "kind": "variant", "id": "…", "state": "completed", "failureCode": null }],
+  "results": { "projectId": "…", "clipIds": ["…"], "exportId": "…" },
+  "notices": [{ "code": "framing_degraded", "aspectRatio": "9:16", "croppedPercent": 68 }],
+  "failureCode": null
+}
+```
+
+## Fit and Center
+
+Fit never crops. A landscape video in a `9:16` export sits in the middle with black above and below.
+
+Center fills the frame with a centered crop and does not look for a subject. When the crop discards part of a video, `notices` reports `framing_degraded` for each affected format with the share of the frame lost, and the completion callback carries the same notices. A video that already has the export's shape loses nothing and gets no notice. If the notice appears, request `fit`, or send a video in the shape you want.
+
+## Limits and errors
+
+- A video longer than 3 minutes fails with `whole_source_too_long` before it uses any minutes. A video that rounds to 3 minutes, such as 3:00.4, still counts as 3 minutes. One shorter than a second fails with `whole_source_too_short`.
+- The export ends at the video's length rounded to the nearest second when that is shorter than the video itself, so a video of 8.4 seconds exports as 8, and up to half a second of the end can be missing.
+- The Studio opens the clip like any other. Its trim handles allow 1 to 180 seconds for a captioned video, where clips found in a long video stay at 10 to 120 seconds.
+- For a ready-made n8n workflow, see [n8n: caption an AI short](/docs/api/n8n#caption-an-ai-short).

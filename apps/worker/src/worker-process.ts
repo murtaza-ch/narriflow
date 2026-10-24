@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkflowFailure } from "@narriflow/services";
+import { SOURCE_TIMECODE_PATTERN, standardFrameRate, type FrameRate, type SourceProbe } from "@narriflow/validators";
 
 const DEFAULT_KILL_GRACE_MS = 5_000;
 const DEFAULT_MEDIA_FPS = 30;
@@ -54,6 +55,9 @@ export interface WorkerMediaInspection {
   hasAudio: boolean;
   hasVisualStream: boolean;
   fps: number;
+  /** The facts ingest stores on the Project for timeline exports. Every real
+   * inspection carries it; fakes of other tests may leave it out. */
+  sourceProbe?: SourceProbe;
 }
 
 export interface WorkerMediaInspectionRequest {
@@ -112,6 +116,10 @@ interface RawProbeStream {
   width?: number;
   height?: number;
   r_frame_rate?: string;
+  avg_frame_rate?: string;
+  sample_rate?: string;
+  channels?: number;
+  tags?: Record<string, string>;
   nb_frames?: string;
   duration?: string;
   disposition?: { attached_pic?: number };
@@ -259,6 +267,65 @@ function parseFrameRate(value: string | undefined): number {
   }
   const fps = numerator / denominator;
   return Number.isFinite(fps) && fps > 0 ? fps : DEFAULT_MEDIA_FPS;
+}
+
+/** ffprobe writes a rate as "30000/1001". */
+function parseRational(value: string | undefined): FrameRate | null {
+  const [numerator, denominator = 1] = (value ?? "").split("/").map(Number);
+  return Number.isInteger(numerator) && Number.isInteger(denominator) && numerator! > 0 && denominator > 0
+    ? { numerator: numerator!, denominator }
+    : null;
+}
+
+/** The video stream's rate as editors count it. The base rate (r_frame_rate)
+ * is exact for constant-rate files, so a standard base rate wins; the average
+ * is a fallback for variable-rate files, whose base rate is absurd (90000/1).
+ * A rate matching no standard is kept as measured, for the export to refuse. */
+function measuredFrameRate(stream: RawProbeStream): FrameRate | null {
+  const base = parseRational(stream.r_frame_rate);
+  const average = parseRational(stream.avg_frame_rate);
+  for (const rate of [base, average]) {
+    const standard = rate && standardFrameRate(rate.numerator / rate.denominator);
+    if (standard) return standard;
+  }
+  return average ?? base;
+}
+
+function timecodeTag(tags: Record<string, string> | undefined): string | null {
+  const entry = Object.entries(tags ?? {}).find(([key]) => key.toLowerCase() === "timecode");
+  return entry && SOURCE_TIMECODE_PATTERN.test(entry[1]) ? entry[1] : null;
+}
+
+/** The start timecode the file carries: on the video stream, on a timecode
+ * track, or on the container. */
+function embeddedStartTimecode(streams: RawProbeStream[], formatTags: Record<string, string> | undefined): string | null {
+  const videoFirst = [...streams].sort((a, b) => Number(b.codec_type === "video") - Number(a.codec_type === "video"));
+  for (const stream of videoFirst) {
+    const timecode = timecodeTag(stream.tags);
+    if (timecode) return timecode;
+  }
+  return timecodeTag(formatTags);
+}
+
+function buildSourceProbe(
+  durationSec: number | null,
+  streams: RawProbeStream[],
+  formatTags: Record<string, string> | undefined,
+  videoStream: RawProbeStream | undefined,
+  audioStream: RawProbeStream | undefined,
+): SourceProbe | undefined {
+  if (durationSec === null) return undefined;
+  const frameRate = videoStream ? measuredFrameRate(videoStream) : null;
+  const sampleRate = Number(audioStream?.sample_rate);
+  return {
+    durationSec,
+    video: videoStream && videoStream.width && videoStream.height && frameRate
+      ? { width: videoStream.width, height: videoStream.height, frameRate, startTimecode: embeddedStartTimecode(streams, formatTags) }
+      : null,
+    audio: audioStream && Number.isInteger(sampleRate) && sampleRate > 0
+      ? { sampleRate, channels: audioStream.channels && audioStream.channels > 0 ? audioStream.channels : 2 }
+      : null,
+  };
 }
 
 function isAttachedPicture(stream: RawProbeStream): boolean {
@@ -662,7 +729,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
 
     let data: {
       streams?: RawProbeStream[];
-      format?: { duration?: string };
+      format?: { duration?: string; tags?: Record<string, string> };
     };
     try {
       data = JSON.parse(result.stdout.toString("utf8")) as typeof data;
@@ -694,14 +761,23 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
     );
     const duration =
       Number.isFinite(formatDuration) && formatDuration > 0 ? formatDuration : streamDuration;
+    const durationSec = Number.isFinite(duration) && duration > 0 ? duration : null;
+    const sourceProbe = buildSourceProbe(
+      durationSec,
+      streams,
+      data.format?.tags,
+      videoStream,
+      streams.find((stream) => stream.codec_type === "audio"),
+    );
     return {
-      durationSec: Number.isFinite(duration) && duration > 0 ? duration : null,
+      durationSec,
       width: videoStream?.width ?? 0,
       height: videoStream?.height ?? 0,
       hasVideo: Boolean(videoStream),
       hasAudio,
       hasVisualStream,
       fps: parseFrameRate(videoStream?.r_frame_rate),
+      ...(sourceProbe ? { sourceProbe } : {}),
     };
   }
 

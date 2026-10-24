@@ -5,11 +5,13 @@ import { ExpectedDomainFailureError } from "./expected-domain-failure";
  * transport (browser, MCP, REST) records the same command for the same work. */
 export const RECEIPT_COMMANDS = [
 	"submit_video",
+	"create_captioned_video",
 	"generate_clips",
 	"create_clip_export",
 	"create_rss_autopilot_rule",
 	"run_autopilot_rule_now",
 	"prepare_social_post",
+	"propose_social_post",
 	"recheck_social_publication",
 	"confirm_social_publication",
 	"publish_social_publication_again",

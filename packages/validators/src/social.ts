@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { clipAspectRatioSchema } from "./clip";
+import { postingScheduleSchema } from "./posting-schedule";
 import { SOCIAL_PROVIDER_CAPABILITIES } from "./social-provider-capabilities";
 
 export const socialPlatformSchema = z.enum([
@@ -212,19 +213,6 @@ export const scheduleSocialPostSchema = z
 		}
 	});
 
-export const socialPostMetricsSchema = z
-	.object({
-		views: z.number().int().nonnegative().default(0),
-		likes: z.number().int().nonnegative().default(0),
-		comments: z.number().int().nonnegative().default(0),
-		shares: z.number().int().nonnegative().default(0),
-		saves: z.number().int().nonnegative().default(0),
-		watchTimeSeconds: z.number().int().nonnegative().nullable().optional(),
-		capturedAt: z.string().datetime().optional(),
-		metadata: z.record(z.string(), z.unknown()).optional(),
-	})
-	.strict();
-
 export const socialAccountSnapshotSchema = z.object({
 	id: z.string().uuid(),
 	platform: socialPlatformSchema,
@@ -235,17 +223,22 @@ export const socialAccountSnapshotSchema = z.object({
 	scopes: z.array(z.string()),
 	expiresAt: z.string().datetime().nullable(),
 	status: socialAccountStatusSchema,
+	postingSchedule: postingScheduleSchema.nullable().default(null),
 	createdAt: z.string().datetime(),
 	updatedAt: z.string().datetime(),
 });
 
+const publicCount = z.number().int().nonnegative().nullable();
+
+/** The latest reading of a post's public counts. A null count means the
+ *  platform doesn't report it, which is different from zero. */
 export const socialPostMetricsSnapshotSchema = z.object({
-	views: z.number().int().nonnegative(),
-	likes: z.number().int().nonnegative(),
-	comments: z.number().int().nonnegative(),
-	shares: z.number().int().nonnegative(),
-	saves: z.number().int().nonnegative(),
-	watchTimeSeconds: z.number().int().nonnegative().nullable(),
+	views: publicCount,
+	likes: publicCount,
+	comments: publicCount,
+	shares: publicCount,
+	saves: publicCount,
+	watchTimeSeconds: publicCount,
 	capturedAt: z.string().datetime(),
 });
 
@@ -293,7 +286,7 @@ export type SocialThumbnailSelection = z.infer<
 	typeof socialThumbnailSelectionSchema
 >;
 export type SocialAccountSnapshot = z.infer<typeof socialAccountSnapshotSchema>;
-export type SocialPostMetricsInput = z.infer<typeof socialPostMetricsSchema>;
+export type SocialPostMetricsSnapshot = z.infer<typeof socialPostMetricsSnapshotSchema>;
 export type SocialPostSnapshot = z.infer<typeof socialPostSnapshotSchema>;
 export type SocialPublicationAction = z.infer<
 	typeof socialPublicationActionSchema

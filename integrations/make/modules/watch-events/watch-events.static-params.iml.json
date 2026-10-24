@@ -1,0 +1,43 @@
+[
+    {
+        "name": "types",
+        "type": "select",
+        "label": "Event types",
+        "multiple": true,
+        "required": true,
+        "default": [
+            "operation.finished"
+        ],
+        "options": [
+            {
+                "label": "Operation finished (an import, clip generation or export)",
+                "value": "operation.finished"
+            },
+            {
+                "label": "Finishing finished (best clips exported and copy written)",
+                "value": "finishing.finished"
+            },
+            {
+                "label": "Autopilot episode imported",
+                "value": "autopilot.episode_imported"
+            },
+            {
+                "label": "Social post finished (needs the publishing:read permission)",
+                "value": "social_post.finished"
+            }
+        ],
+        "help": "Which Workspace Events start the scenario. Add a filter after this module to narrow them, for example Operation kind equal to generation for clips that are ready."
+    },
+    {
+        "name": "limit",
+        "type": "uinteger",
+        "label": "Limit",
+        "default": 20,
+        "required": true,
+        "validate": {
+            "min": 1,
+            "max": 200
+        },
+        "help": "The maximum number of events to work with during one execution cycle. Events arrive oldest first and none are skipped: any beyond the limit come in the next cycle."
+    }
+]

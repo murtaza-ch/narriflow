@@ -1,7 +1,14 @@
 import { z } from "zod";
-import { clipExportRequestSchema, clipViewSchema, exportViewSchema, generationSettingsSchema, projectViewSchema } from "./integration";
-import { mcpBrandProfilesResultSchema, mcpExportDownloadResultSchema, mcpExportOutputSchema, mcpOperationStatusResultSchema, mcpProgressSchema, mcpWorkspaceUsageResultSchema } from "./mcp";
+import { captionedVideoOptionsSchema } from "./captioned-video";
+import { finishingSettingsSchema } from "./finishing";
+import { proposeSocialPostSchema } from "./publishing-queue";
+import { acceptedRecipeSchema, clipExportRequestSchema, clipViewSchema, exportViewSchema, generationSettingsSchema, projectViewSchema, recipeIdSchema, recipeViewSchema, refuseRecipeWithInlineSettings } from "./integration";
+import { LIBRARY_SEARCH_DEFAULT_LIMIT, LIBRARY_SEARCH_MAX_LIMIT, librarySearchQuerySchema, librarySearchResultSchema } from "./library-search";
+import { mcpAccountsResultSchema, mcpBrandProfilesResultSchema, mcpProposedSocialPostResultSchema, mcpClipTimelineResultSchema, mcpExportDownloadResultSchema, mcpExportOutputSchema, mcpOperationStatusResultSchema, mcpProgressSchema, mcpWorkspaceUsageResultSchema } from "./mcp";
+import { timelineFormatSchema } from "./timeline-export";
 import { uploadMimeTypeSchema, MAX_UPLOAD_SIZE_BYTES } from "./upload";
+import { createWebhookRequestSchema, webhookViewSchema } from "./webhook-subscription";
+import { parseWorkspaceEventTypes, WORKSPACE_EVENT_DEFAULT_LIMIT, WORKSPACE_EVENT_MAX_LIMIT, WORKSPACE_EVENT_TYPES, workspaceEventCursorSchema, workspaceEventOrderSchema, workspaceEventsResultSchema } from "./workspace-event";
 
 /** REST v1 request and response envelopes. Command inputs and resource views
  * come from the shared validators; this file adds only REST's own shape.
@@ -30,6 +37,7 @@ export const callbackRequestSchema = z.strictObject({
 }).meta({ id: "CallbackRequest" });
 
 export const generationSettingsInput = generationSettingsSchema.meta({ id: "GenerationSettings" });
+export const finishingSettingsInput = finishingSettingsSchema.meta({ id: "FinishingSettings" });
 
 export const acceptedOperationSchema = z.strictObject({
   operationId: z.string(),
@@ -57,8 +65,10 @@ export const openUploadRequestSchema = z.strictObject({
   }),
   brandProfileId: id.optional().describe("Omit to use the Workspace default Brand Profile"),
   generation: generationSettingsInput.optional(),
+  finishing: finishingSettingsInput.optional(),
+  recipeId: recipeIdSchema.optional(),
   transfer: z.enum(["auto", "single"]).default("auto").describe("single returns one signed PUT at any supported size; auto uses multipart above 100 MiB"),
-}).meta({ id: "OpenUploadRequest" });
+}).superRefine(refuseRecipeWithInlineSettings).meta({ id: "OpenUploadRequest" });
 
 export const uploadSchema = z.strictObject({
   uploadId: id,
@@ -74,6 +84,7 @@ export const uploadSchema = z.strictObject({
   retryAfterSeconds: z.number().int().positive().nullable(),
   failureCode: z.string().nullable(),
   operation: acceptedOperationSchema.nullable().describe("The upload intake, once finalize accepts it"),
+  recipe: acceptedRecipeSchema.optional().describe("The Recipe and revision a session opened with a recipeId used. Returned by the open request"),
 }).meta({ id: "Upload" });
 
 export const uploadResultSchema = z.strictObject({ upload: uploadSchema, callback: acceptedCallbackSchema.optional() }).meta({ id: "UploadResult" });
@@ -96,21 +107,47 @@ export const submitVideoRequestSchema = z.strictObject({
   title: z.string().trim().min(1).max(200).optional(),
   brandProfileId: id.optional().describe("Omit to use the Workspace default Brand Profile"),
   generation: generationSettingsInput.optional(),
+  finishing: finishingSettingsInput.optional(),
+  recipeId: recipeIdSchema.optional(),
   callback: callbackRequestSchema.optional(),
-}).meta({ id: "SubmitVideoRequest" });
+}).superRefine(refuseRecipeWithInlineSettings).meta({ id: "SubmitVideoRequest" });
+
+export const captionedVideoRequestSchema = captionedVideoOptionsSchema.extend({
+  source: z.discriminatedUnion("kind", [
+    z.strictObject({
+      kind: z.literal("url"),
+      url: z.string().url().max(4_096).describe("A supported video link"),
+      callback: callbackRequestSchema.optional(),
+    }).describe("Import a supported link. Accepted at once, as for POST /projects."),
+    z.strictObject({
+      kind: z.literal("upload"),
+      file: openUploadRequestSchema.shape.file,
+      transfer: openUploadRequestSchema.shape.transfer,
+    }).describe("Open an Upload Session that carries these settings. Upload the file, then POST /uploads/{id}/finalize (with an optional callback)."),
+  ]),
+  title: z.string().trim().min(1).max(200).optional().describe("Defaults to the file name or link title"),
+  brandProfileId: id.optional().describe("Omit to use the Workspace default Brand Profile"),
+}).meta({ id: "CaptionedVideoRequest" });
 
 export const acceptedProjectSchema = z.strictObject({
   projectId: id,
   operation: acceptedOperationSchema,
   reviewUrl: z.string().url(),
   callback: acceptedCallbackSchema,
+  recipe: acceptedRecipeSchema.optional().describe("The Recipe and revision this request used, when it named one"),
 }).meta({ id: "AcceptedProjectOperation" });
 
 export const generateClipsRequestSchema = z.strictObject({
   generation: generationSettingsInput.optional(),
+  finishing: finishingSettingsInput.optional(),
+  recipeId: recipeIdSchema.optional(),
   forceRegenerate: z.boolean().default(false),
   callback: callbackRequestSchema.optional(),
-}).meta({ id: "GenerateClipsRequest" });
+}).superRefine(refuseRecipeWithInlineSettings).meta({ id: "GenerateClipsRequest" });
+
+export const recipeSchema = recipeViewSchema.meta({ id: "Recipe" });
+export const recipesResultSchema = z.strictObject({ recipes: z.array(recipeSchema) }).meta({ id: "RecipesResult" });
+export const recipeResultSchema = z.strictObject({ recipe: recipeSchema }).meta({ id: "RecipeResult" });
 
 export const projectSchema = projectViewSchema.meta({ id: "Project" });
 export const projectsResultSchema = z.strictObject({
@@ -123,6 +160,13 @@ export const listProjectsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().max(512).optional(),
 });
+
+export const librarySearchQuery = z.object({
+  q: librarySearchQuerySchema,
+  limit: z.coerce.number().int().min(1).max(LIBRARY_SEARCH_MAX_LIMIT).default(LIBRARY_SEARCH_DEFAULT_LIMIT),
+  projectId: id.optional().describe("Search only this Project"),
+});
+export const librarySearchResultsSchema = librarySearchResultSchema.meta({ id: "LibrarySearchResult" });
 
 export const clipSchema = clipViewSchema.meta({ id: "Clip" });
 export const clipsResultSchema = z.strictObject({ items: z.array(clipSchema), nextCursor: z.string().nullable() }).meta({ id: "ClipsResult" });
@@ -147,6 +191,8 @@ export const createdExportResultSchema = z.strictObject({
 export const exportResultSchema = z.strictObject({ export: exportSchema }).meta({ id: "ExportResult" });
 export const exportDownloadQuery = z.object({ variantId: id.optional() });
 export const exportDownloadResultSchema = mcpExportDownloadResultSchema.meta({ id: "ExportDownload" });
+export const clipTimelineQuery = z.object({ format: timelineFormatSchema.describe("xmeml for Premiere Pro, fcpxml for Final Cut Pro and DaVinci Resolve, edl for any editor") });
+export const clipTimelineResultSchema = mcpClipTimelineResultSchema.meta({ id: "ClipTimeline" });
 
 export const operationSchema = mcpOperationStatusResultSchema.omit({ operation: true }).extend({
   operationId: z.string(),
@@ -157,3 +203,27 @@ export const operationSchema = mcpOperationStatusResultSchema.omit({ operation: 
 export const redeliverResultSchema = z.strictObject({
   callbacks: z.array(z.strictObject({ eventId: id, state: z.enum(["waiting", "pending", "delivered", "failed", "cancelled"]) })),
 }).meta({ id: "RedeliverResult" });
+
+export { createWebhookRequestSchema };
+export const webhookResultSchema = z.strictObject({ webhook: webhookViewSchema }).meta({ id: "WebhookResult" });
+export const webhooksResultSchema = z.strictObject({ webhooks: z.array(webhookViewSchema) }).meta({ id: "WebhooksResult" });
+export const deletedWebhookSchema = z.strictObject({ webhookId: id, deleted: z.literal(true) }).meta({ id: "DeletedWebhook" });
+export const webhookTestResultSchema = z.strictObject({
+  eventId: id.describe("The webhook-id of the webhook.test event"),
+  delivered: z.boolean().describe("True when the endpoint answered 2xx"),
+  status: z.number().int().nullable().describe("The endpoint's HTTP status, or null when it didn't answer"),
+  durationMs: z.number().int().nonnegative(),
+}).meta({ id: "WebhookTestResult" });
+
+export const eventsResultSchema = workspaceEventsResultSchema.meta({ id: "EventsResult" });
+
+export const socialAccountsResultSchema = mcpAccountsResultSchema.meta({ id: "SocialAccountsResult" });
+export const proposeSocialPostRequestSchema = proposeSocialPostSchema.meta({ id: "ProposeSocialPostRequest" });
+export const proposedSocialPostResultSchema = mcpProposedSocialPostResultSchema.meta({ id: "ProposedSocialPostResult" });
+export const listEventsQuery = z.object({
+  after: workspaceEventCursorSchema.optional(),
+  order: workspaceEventOrderSchema.default("asc").describe("asc (default) reads forward from `after`. desc returns the newest `limit` matching events, newest first, and cannot be combined with `after`; its nextCursor is the highest seq on the page."),
+  limit: z.coerce.number().int().min(1).max(WORKSPACE_EVENT_MAX_LIMIT).default(WORKSPACE_EVENT_DEFAULT_LIMIT),
+  types: z.string().max(200).refine((value) => parseWorkspaceEventTypes(value) !== null, "Unknown event type")
+    .optional().describe(`Comma-separated event types: ${WORKSPACE_EVENT_TYPES.join(", ")}`),
+});

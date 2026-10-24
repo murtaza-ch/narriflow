@@ -2,6 +2,7 @@ import type {
 	IngestStatus as PrismaIngestStatus,
 	Project,
 } from "@prisma/client";
+import { clipSourceEdgeSec } from "@narriflow/validators";
 import type { RetentionPolicyKey } from "./project-retention.service";
 
 export interface ProjectSnapshot {
@@ -18,6 +19,8 @@ export interface ProjectSnapshot {
 	sourceMimeType: string | null;
 	sourceSizeBytes: number | null;
 	sourceDurationSeconds: number | null;
+	/** Where a clip window may end: the probed duration, exact, when known; else the rounded one. */
+	sourceEdgeSec: number | null;
 	languageCode: string | null;
 	brandProfileId: string | null;
 	brandTemplateId: string | null;
@@ -54,6 +57,7 @@ export function toProjectSnapshot(row: Project): ProjectSnapshot {
 		sourceMimeType: row.sourceMimeType,
 		sourceSizeBytes: bigintToNumber(row.sourceSizeBytes),
 		sourceDurationSeconds: row.sourceDurationSeconds,
+		sourceEdgeSec: clipSourceEdgeSec(row),
 		languageCode: row.languageCode,
 		brandProfileId: row.brandProfileId,
 		brandTemplateId: row.brandTemplateId,

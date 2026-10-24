@@ -1,6 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
-import { integrationKeyUuid, integrationUploadSessionKey, integrationUploadSessions } from "./integration-commands";
+import { assertInlineFinishing, integrationKeyUuid, integrationUploadSessionKey, integrationUploadSessions, requireQueueDeliveryScope, submitVideo } from "./integration-commands";
+import { projectService } from "./project.service";
+import { workspaceService } from "./workspace.service";
 import type { UploadSessionService } from "./upload-session.service";
 
 const USER = "00000000-0000-4000-8000-000000000001";
@@ -49,5 +51,39 @@ describe("integration Upload Sessions", () => {
     state = "reconciling";
     await sessions.finalize(actor, { sessionId: "s", parts: [] }, {}, paused);
     expect(finalized).toBe(1);
+  });
+});
+
+describe("finishing that sends a review round", () => {
+  const actor = { actorUserId: USER, workspaceId: "00000000-0000-4000-8000-000000000009" };
+
+  test("belongs to an Autopilot rule, so an inline request is refused before anything else", async () => {
+    await expect(assertInlineFinishing(actor, { delivery: "send_review_round" })).rejects.toMatchObject({ code: "finishing_review_delivery_rule_only", kind: "invalid" });
+    // Stopping at review names no accounts, so there is nothing more to check.
+    await assertInlineFinishing(actor, { delivery: "ready_to_review" });
+    await assertInlineFinishing(actor, undefined);
+  });
+});
+
+describe("finishing that proposes to the queue", () => {
+  const queueing = { topClips: 2, delivery: "propose_to_queue" as const, queueAccountIds: ["00000000-0000-4000-8000-000000000008"] };
+
+  test("needs the publishing write scope on top of the command's own", () => {
+    expect(() => requireQueueDeliveryScope({ scopes: ["processing:write"] }, queueing)).toThrow(expect.objectContaining({ code: "scope_required", details: { scope: "publishing:write" } }));
+    requireQueueDeliveryScope({ scopes: ["processing:write", "publishing:write"] }, queueing);
+    // Stopping at review touches no publishing state.
+    requireQueueDeliveryScope({ scopes: ["processing:write"] }, { delivery: "ready_to_review" });
+    requireQueueDeliveryScope({ scopes: [] }, undefined);
+  });
+
+  test("needs the acting person to manage publishing, checked before any work is accepted", async () => {
+    const requireActor = spyOn(workspaceService, "requireActor").mockRejectedValue(new ExpectedDomainFailureError({ code: "workspace_access_denied", kind: "forbidden", message: "No publishing access" }));
+    const intake = spyOn(projectService, "queueLinkIngest").mockRejectedValue(new Error("must not run"));
+    try {
+      await expect(submitVideo({ actorUserId: USER, workspaceId: "00000000-0000-4000-8000-000000000009" }, { url: "https://youtu.be/x", generation: {} as never, finishing: queueing }, { clientIdempotencyKey: "k" }))
+        .rejects.toMatchObject({ code: "workspace_access_denied" });
+      expect(requireActor).toHaveBeenCalledWith(USER, "00000000-0000-4000-8000-000000000009", "publishing.manage");
+      expect(intake).not.toHaveBeenCalled();
+    } finally { requireActor.mockRestore(); intake.mockRestore(); }
   });
 });

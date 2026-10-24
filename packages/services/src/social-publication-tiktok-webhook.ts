@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import { publicationOperationLookupHash } from "./social-publication-attempt";
+import { emitSocialPostFinished } from "./social-post-finished";
 
 const MAX_SIGNATURE_AGE_SECONDS = 5 * 60;
 
@@ -217,7 +218,13 @@ export async function recordTikTokPublicationEvent(
 			if (attempt.socialPost.status === "cancelled")
 				return { kind: "already_settled" as const, attemptId: attempt.id };
 			if (event.event === "post.publish.failed") {
-				if (attempt.receipt || attempt.phase === "succeeded")
+				// A redelivered failure, or one that arrives after a worker already
+				// failed the attempt, changes nothing and so announces nothing.
+				if (
+					attempt.receipt ||
+					attempt.phase === "succeeded" ||
+					attempt.phase === "failed"
+				)
 					return { kind: "already_settled" as const, attemptId: attempt.id };
 				const codes: Record<string, string> = {
 					spam_risk: "tiktok_spam_risk",
@@ -254,6 +261,7 @@ export async function recordTikTokPublicationEvent(
 						where: { id: attempt.currentClaimId, releasedAt: null },
 						data: { releasedAt: now, accountSlotKey: null },
 					});
+				await emitSocialPostFinished(tx, { socialPostId: attempt.socialPostId, attemptId: attempt.id });
 				return { kind: "failed" as const, attemptId: attempt.id };
 			}
 			const published = event.event !== "post.publish.inbox_delivered";
@@ -372,6 +380,7 @@ export async function recordTikTokPublicationEvent(
 					},
 				});
 			}
+			await emitSocialPostFinished(tx, { socialPostId: attempt.socialPostId, attemptId: attempt.id });
 			return {
 				kind:
 					alreadyRecorded || (!published && attempt.receipt)

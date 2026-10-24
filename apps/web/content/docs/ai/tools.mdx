@@ -1,6 +1,6 @@
 ---
 title: Tools
-description: All 29 tools the Narriflow connector exposes, grouped by job, with the access each one needs.
+description: All 35 tools the Narriflow connector exposes, grouped by job, with the access each one needs.
 ---
 
 Read tools never change anything. Write tools start processing or change publishing state, and each needs a write scope. Each tool below lists its access and the scope it needs. See [Permissions](/docs/ai/permissions) for how scopes and roles combine.
@@ -21,12 +21,17 @@ Read tools never change anything. Write tools start processing or change publish
 
 - `narriflow_list_projects` (Read, `projects:read`). Pages through Projects, up to 100 per page, with progress and clip counts.
 - `narriflow_get_project` (Read, `projects:read`). Reads one Project's current facts and latest activity.
+- `narriflow_search_library` (Read, `projects:read`). Searches every transcript in the Workspace by meaning and by exact words and returns timestamped moments with their Project. 10 results by default and 25 at most; pass `projectId` to search one Project.
 - `narriflow_list_brand_profiles` (Read, `projects:read`). Lists the Workspace's Brand Profiles by name and marks the default. Pass a `brandProfileId` when you submit or upload.
-- `narriflow_submit_video` (Write, `processing:write`). Imports a supported video link and starts clip generation with the settings you choose. Uses processing minutes.
+- `narriflow_list_recipes` (Read, `projects:read`). Lists the Workspace's [Recipes](/docs/recipes): saved settings with a name, a Brand Profile, a language, clip settings and finishing. Pass a `recipeId` instead of those settings when you submit, upload, generate or create an Autopilot rule. Recipes are created and edited in Narriflow.
+- `narriflow_submit_video` (Write, `processing:write`). Imports a supported video link and starts clip generation with the settings you choose, or with a `recipeId`. Uses processing minutes.
+- `narriflow_create_captioned_video` (Write, `processing:write`). Captions a finished short, such as an AI-generated video, from a supported link. There is no clip detection: the Project gets one clip, the whole video (1 second to 3 minutes), framed `fit` (the whole frame) or `center` (a centered crop) and exported at each format you ask for. Captions come from the speech, SRT or WebVTT text you supply, or none. Operation Status reports the export and a `framing_degraded` notice when Center crops part of the frame. For a local file, use the [REST API](/docs/api/caption-ai-shorts).
 - `narriflow_upload_video` (Write, `processing:write`). Opens an upload for a local file, through a picker in the assistant or a Narriflow link. The file goes straight to storage. See [Upload local files](/docs/ai/upload-local-files).
 - `narriflow_generate_clips` (Write, `processing:write`). Generates clips for a ready Project. A forced regeneration cannot overlap generation that is still running.
 
-Omit `brandProfileId` on `narriflow_submit_video` and `narriflow_upload_video` to use the Workspace's default Brand Profile.
+Omit `brandProfileId` on `narriflow_submit_video` and `narriflow_upload_video` to use the Workspace's default Brand Profile. Send `recipeId` instead of `brandProfileId`, `generation` and `finishing` to use a Recipe's settings; sending both is refused. The result names the Recipe and its revision, and a retry with the same key after you edit the Recipe returns the original result. `narriflow_generate_clips` uses the Recipe's language, generation settings and finishing; the Project keeps the Brand Profile it was imported with, so the Recipe's Brand Profile is ignored there.
+
+`narriflow_submit_video`, `narriflow_upload_video` and `narriflow_generate_clips` also take an optional `finishing` object: `topClips` (1 to 10), `minScore` (0 to 100), `aspectRatios`, `resolution`, `copyPlatforms`, and `delivery`. With `"delivery": "propose_to_queue"` and `queueAccountIds`, each finished clip is also proposed to those accounts' [publishing queues](/docs/publishing-queue), using each platform's copy; nothing is posted until you accept. This also needs the `publishing:write` scope. `"delivery": "send_review_round"` belongs to Autopilot rules with an [automation grant](/docs/standing-grants) and is refused here. When the generation completes, Narriflow exports the best clips and writes assisted copy for those platforms, then leaves the Project ready to review. It needs the Pro plan or above; below that, the import and clips still work and finishing is skipped with a reason shown on the Project. Follow it with `narriflow_list_events` and the `finishing.finished` type.
 
 ## Clips
 
@@ -38,6 +43,7 @@ Omit `brandProfileId` on `narriflow_submit_video` and `narriflow_upload_video` t
 - `narriflow_create_clip_export` (Write, `exports:write`). Exports the exact editor revision you reviewed, in one to four aspect ratios (9:16, 1:1, 16:9 or 4:5) at 720p or 1080p. The result states the resolution and watermark your plan grants.
 - `narriflow_get_clip_export` (Read, `exports:read`). Reads an export's progress and its Narriflow page.
 - `narriflow_get_export_download` (Read, `exports:read`). Issues fresh private download links for a finished export's video files, plus SRT and VTT subtitles. Links last 15 minutes. Call again for new ones.
+- `narriflow_get_clip_timeline` (Read, `exports:read`). Returns a clip's current edit as an editor timeline (`xmeml` for Premiere Pro, `fcpxml` for Final Cut Pro and DaVinci Resolve, or `edl`), its SRT captions, and a private 15-minute download link for the original video. Save the video under the returned file name beside the timeline. See [Edit in your own editor](/docs/editor-timelines).
 
 ## Review handoffs
 
@@ -47,12 +53,13 @@ Omit `brandProfileId` on `narriflow_submit_video` and `narriflow_upload_video` t
 
 ## Publishing
 
-- `narriflow_list_social_accounts` (Read, `publishing:read`). Lists connected accounts and their status, without credentials.
+- `narriflow_list_social_accounts` (Read, `publishing:read`). Lists connected accounts and their status, without credentials, with each account's weekly posting slots and the Workspace time zone they are in.
 - `narriflow_get_publishing_options` (Read, `publishing:read`). Reads the platform limits and account-specific choices for one account.
 - `narriflow_prepare_social_post` (Write, `publishing:write`). Shows the exact export, revision, account, caption, settings and time. Preparing a post does not approve or schedule it.
+- `narriflow_propose_social_post` (Write, `publishing:write`). Adds a clip's finished export to an account's [publishing queue](/docs/publishing-queue) as a draft caption. It takes `clipId`, `exportId`, `socialAccountId` and an optional `caption` (the latest assisted copy for the platform by default). It schedules and publishes nothing and cannot choose a time: you accept the proposal in Narriflow, which gives it the account's next free posting slot and applies the Brand Profile's approval rule.
 - `narriflow_schedule_social_post` (Write, `publishing:write`). Schedules only the exact prepared post, after you confirm it. Rechecks review approval first.
-- `narriflow_list_social_publications` (Read, `publishing:read`). Lists a Project's scheduled and published posts.
-- `narriflow_get_social_publication` (Read, `publishing:read`). Reads one post's attempts and the recovery actions available.
+- `narriflow_list_social_publications` (Read, `publishing:read`). Lists a Project's scheduled and published posts, with the latest view and engagement counts read back from YouTube Shorts and TikTok.
+- `narriflow_get_social_publication` (Read, `publishing:read`). Reads one post's attempts, the recovery actions available, and its latest counts. Counts are empty until the first reading, about an hour after posting, and for platforms Narriflow doesn't read.
 - `narriflow_recheck_social_publication` (Write, `publishing:write`). Checks the existing provider operation without submitting again.
 - `narriflow_confirm_social_publication` (Write, `publishing:write`). Records evidence that a post went live, such as its platform URL, without a new submission.
 - `narriflow_publish_social_publication_again` (Write, `publishing:write`). Creates a new attempt. It requires you to acknowledge the risk of a duplicate post.
@@ -61,10 +68,18 @@ You confirm a scheduled post in Narriflow or in the assistant's confirmation car
 
 ## Autopilot
 
-- `narriflow_list_autopilot_rules` (Read, `autopilot:read`). Lists RSS Autopilot rules with their schedule and status.
-- `narriflow_create_rss_autopilot_rule` (Write, `autopilot:write`). Creates a rule from a feed URL, a check interval (60 minutes to 7 days, daily by default), up to 10 episodes per run (3 by default) and generation settings. Imported episodes use processing minutes.
+- `narriflow_list_autopilot_rules` (Read, `autopilot:read`). Lists RSS Autopilot rules with their schedule, Recipe and status. A paused rule includes `pausedReason`.
+- `narriflow_create_rss_autopilot_rule` (Write, `autopilot:write`). Creates a rule from a feed URL, a check interval (60 minutes to 7 days, daily by default), up to 10 episodes per run (3 by default) and a `recipeId`. Imported episodes use processing minutes. If the Recipe proposes finished clips to a publishing queue, the connection also needs the `publishing:write` scope, since the rule will act in publishing state.
 - `narriflow_run_autopilot_rule_now` (Write, `autopilot:write`). Marks a rule due so the worker checks it on its next poll. Normal processing limits apply.
+
+A rule takes its Brand Profile, language, clip settings and finishing from its Recipe. Every episode it imports carries the Recipe's Brand Profile logo, fonts, scenes, writing guidance and approval rule. Editing the Recipe changes the rule's next import and never one it already made. Narriflow refuses to create a rule on a Recipe whose Brand Profile your plan can't apply.
+
+A rule acts as the member who created it. If that member is removed or loses permission to process videos, or its Recipe's Brand Profile can't be applied, the rule pauses and `pausedReason` says why. It does not retry on its own. In Narriflow, on the Autopilot page:
+
+- If the member lost access, a Workspace Owner or Admin chooses **Take over** to become the rule's member and resume it.
+- If the Brand Profile failed, anyone who can edit the rule chooses another Recipe with **Edit**, which resumes it. Restoring the profile and turning the rule back on also works.
 
 ## Operations
 
 - `narriflow_get_operation` (Read, `projects:read` or `exports:read`). Follows the work one accepted request started. It needs `projects:read` for imports and generations and `exports:read` for exports. The state is `working`, `completed`, `partial`, `failed` or `cancelled`, with progress, per-clip or per-format outcomes and the IDs produced.
+- `narriflow_list_events` (Read, `projects:read`, plus `publishing:read` for posting outcomes). Polls what finished in the Workspace, including work no request started, such as an Autopilot import. Pass the returned `nextCursor` as `after`, or pass `order: "desc"` (without `after`) to read the newest page, newest first. Events are ordered, delivered at least once and kept for 30 days. Asking only for types you can't see without `publishing:read` is refused with `scope_required`. See [Events](/docs/api/events).

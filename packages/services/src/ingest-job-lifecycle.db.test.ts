@@ -15,6 +15,7 @@ import {
   IngestJobClaimLost,
   IngestJobLifecycle,
   IngestNotFailedError,
+  IngestReselectRequiredError,
   IngestRetryLimitExceededError,
   type IngestJobLifecycleDependencies,
 } from "./ingest-job-lifecycle";
@@ -322,9 +323,15 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     const { project, job } = await fixture();
     const module = lifecycle();
     const claim = (await module.claim())!;
+    const sourceProbe = {
+      durationSec: 12.5,
+      video: { width: 1920, height: 1080, frameRate: { numerator: 30000, denominator: 1001 }, startTimecode: null },
+      audio: { sampleRate: 48000, channels: 2 },
+    };
     await module.complete(claim, {
       sourceStorageKey: "projects/source.mp4",
       sourceSizeBytes: 42,
+      sourceProbe,
     });
     const accepted = await prisma.project.findUniqueOrThrow({
       where: { id: project.id },
@@ -333,6 +340,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       "r2://ingest-test/projects/source.mp4",
     );
     expect(accepted.sourceSizeBytes).toBe(42n);
+    expect(accepted.sourceProbe).toEqual(sourceProbe);
     expect(accepted.ingestStatus).toBe("ready");
     expect(
       (await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } }))
@@ -505,6 +513,87 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       }),
     ).toBe(1);
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
+  });
+  describe("whole-source windows at the generation handoff", () => {
+    const captionedVideo = { framing: "fit", aspectRatios: ["9:16"], resolution: "1080p", captions: { source: "none" } };
+    async function captionOnlyHandoff(sourceDurationSeconds: number, options: { probe?: number; window?: [number, number]; plain?: boolean } = {}) {
+      const { project, job, workspace } = await fixture("ready");
+      await prisma.contentPack.create({
+        data: {
+          projectId: project.id, outputTypes: ["short_clip"], clipCountTarget: 10, clipDurationSecTarget: 45, toneConstraints: [],
+          captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01", mode: "caption_only",
+          processingStartSec: options.window?.[0] ?? null, processingEndSec: options.window?.[1] ?? null,
+          ...(options.plain ? {} : { captionedVideo }),
+        },
+      });
+      await reservation(project.id, workspace.id, "reserved", sourceDurationSeconds);
+      await prisma.project.update({
+        where: { id: project.id },
+        data: {
+          sourceDurationSeconds,
+          ...(options.probe === undefined ? {} : { sourceProbe: { durationSec: options.probe, video: null, audio: null } }),
+        },
+      });
+      const module = lifecycle();
+      return { project, job, handed: await module.processGenerationHandoffs(1, job.id) };
+    }
+    const reservationState = async (projectId: string) =>
+      (await prisma.processingUsageReservation.findUniqueOrThrow({ where: { projectId } })).state;
+
+    test("a captioned video over 3 minutes is refused before it costs minutes or speech-to-text", async () => {
+      const { project, job, handed } = await captionOnlyHandoff(181);
+      expect(handed).toBe(0);
+      expect(await reservationState(project.id)).toBe("released");
+      expect(await prisma.workflowRun.count({ where: { projectId: project.id } })).toBe(0);
+      expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "failed", lastError: expect.stringContaining("whole_source_too_long") });
+      expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).ingestErrorCode).toBe("whole_source_too_long");
+      expect(await prisma.workflowEvent.count({ where: { ingestJobId: job.id, notificationRequired: true } })).toBe(1);
+    });
+
+    test("a source under a second is refused, while 8 seconds and exactly 3 minutes are admitted", async () => {
+      const short = await captionOnlyHandoff(1, { probe: 0.6 });
+      expect(short.handed).toBe(0);
+      expect((await prisma.project.findUniqueOrThrow({ where: { id: short.project.id } })).ingestErrorCode).toBe("whole_source_too_short");
+      for (const seconds of [8, 180]) {
+        const admitted = await captionOnlyHandoff(seconds);
+        expect(admitted.handed).toBe(1);
+        expect(await reservationState(admitted.project.id)).toBe("settled");
+        expect(await prisma.workflowRun.count({ where: { projectId: admitted.project.id, stage: "stt" } })).toBe(1);
+      }
+    });
+
+    test("the exact probed duration decides: 180.4 seconds is a 3 minute source, 180.6 is not", async () => {
+      // Project.sourceDurationSeconds is rounded (180 and 181); the probe is exact.
+      const admitted = await captionOnlyHandoff(180, { probe: 180.4 });
+      expect(admitted.handed).toBe(1);
+      expect(await prisma.workflowRun.count({ where: { projectId: admitted.project.id, stage: "stt" } })).toBe(1);
+      const over = await captionOnlyHandoff(181, { probe: 180.6 });
+      expect(over.handed).toBe(0);
+      expect((await prisma.project.findUniqueOrThrow({ where: { id: over.project.id } })).ingestErrorCode).toBe("whole_source_too_long");
+      // An 8.4 second source is admitted whole.
+      expect((await captionOnlyHandoff(8, { probe: 8.4 })).handed).toBe(1);
+    });
+
+    test("a processing window decides, not the length of a long source", async () => {
+      expect((await captionOnlyHandoff(1_800, { window: [60, 150] })).handed).toBe(1);
+      const tooWide = await captionOnlyHandoff(1_800, { window: [0, 600] });
+      expect(tooWide.handed).toBe(0);
+      expect((await prisma.project.findUniqueOrThrow({ where: { id: tooWide.project.id } })).ingestErrorCode).toBe("whole_source_too_long");
+    });
+
+    test("a plain caption-only run keeps its Project ready and fails in detection, not at the handoff", async () => {
+      const admitted = await captionOnlyHandoff(600, { plain: true });
+      expect(admitted.handed).toBe(1);
+      expect((await prisma.project.findUniqueOrThrow({ where: { id: admitted.project.id } })).ingestStatus).toBe("ready");
+    });
+
+    test("a clip-mode source of any length is not subject to the whole-source bounds", async () => {
+      const { project, job, workspace } = await fixture("ready");
+      await committedPack(project.id);
+      await reservation(project.id, workspace.id, "reserved", 600);
+      await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 600 } });
+      expect(await lifecycle().processGenerationHandoffs(1, job.id)).toBe(1);
+    });
   });
   test("handoff retry is durable, fair to due retries and exactly-once at admission", async () => {
     const { project, job, workspace } = await fixture("ready");
@@ -701,6 +790,85 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     expect(
       await prisma.transcript.count({ where: { projectId: project.id } }),
     ).toBe(0);
+  });
+  describe("Drive Picker intake credential", () => {
+    const SEALED = "v1:sealed-test-credential";
+    async function driveFixture() {
+      const made = await fixture("queued", { fileId: "drive-file-id-0001", fileName: "a.mp4" });
+      await prisma.ingestJob.update({
+        where: { id: made.job.id },
+        data: { jobType: "drive_import", sourceCredential: SEALED },
+      });
+      return made;
+    }
+    const credential = async (id: string) =>
+      (await prisma.ingestJob.findUniqueOrThrow({ where: { id } })).sourceCredential;
+
+    test("a claim carries the sealed credential, and a requeued job keeps it while it can still download", async () => {
+      const { job } = await driveFixture();
+      const module = lifecycle();
+      const first = (await module.claim({ youtubeAvailable: false }))!;
+      expect(first).toMatchObject({ id: job.id, jobType: "drive_import", sourceCredential: SEALED });
+      expect(await module.fail(first, "source_download_failed", "socket closed")).toEqual({ outcome: "requeue" });
+      expect(await credential(job.id)).toBe(SEALED);
+    });
+
+    test("completing the download discards the credential", async () => {
+      const { job } = await driveFixture();
+      const module = lifecycle();
+      const claim = (await module.claim())!;
+      await module.complete(claim, { sourceStorageKey: "projects/p/link/a.mp4" });
+      expect(await credential(job.id)).toBeNull();
+    });
+
+    test("a permanent failure, the reaper's last attempt, and a cancellation all discard it", async () => {
+      const expired = await driveFixture();
+      const module = lifecycle();
+      const claim = (await module.claim())!;
+      expect(await module.fail(claim, "drive_token_expired", "expired")).toEqual({
+        outcome: "permanent",
+        terminalErrorCode: "drive_token_expired",
+      });
+      expect(await credential(expired.job.id)).toBeNull();
+      expect(
+        await prisma.project.findUniqueOrThrow({ where: { id: expired.project.id } }),
+      ).toMatchObject({ ingestStatus: "failed", ingestErrorCode: "drive_token_expired" });
+
+      const stalled = await driveFixture();
+      await prisma.ingestJob.update({
+        where: { id: stalled.job.id },
+        data: { attemptCount: 2, updatedAt: new Date(clock - 60 * 60_000) },
+      });
+      const last = (await module.claim())!;
+      expect(last.id).toBe(stalled.job.id);
+      expect(await credential(stalled.job.id)).toBe(SEALED);
+      clock += 11 * 60_000;
+      expect(await module.reapExpired()).toBe(1);
+      expect(await credential(stalled.job.id)).toBeNull();
+
+      const cancelled = await driveFixture();
+      expect(
+        await module.cancelQueuedOperation({
+          actorUserId: cancelled.user.id,
+          workspaceId: cancelled.workspace.id,
+          projectId: cancelled.project.id,
+          ingestJobId: cancelled.job.id,
+        }),
+      ).toBe(true);
+      expect(await credential(cancelled.job.id)).toBeNull();
+    });
+
+    test("a failed Drive import is never retried with a new job, because the token is gone", async () => {
+      const { project, job, user, workspace } = await driveFixture();
+      const module = lifecycle();
+      await reservation(project.id, workspace.id);
+      await module.fail((await module.claim())!, "drive_file_unavailable", "gone");
+      await expect(
+        module.retry({ projectId: project.id, workspaceId: workspace.id, actorUserId: user.id }),
+      ).rejects.toBeInstanceOf(IngestReselectRequiredError);
+      expect(await prisma.ingestJob.count({ where: { projectId: project.id } })).toBe(1);
+      expect(await credential(job.id)).toBeNull();
+    });
   });
   test("unavailable YouTube skips its current link payload while other intake claims", async () => {
     const { project, job } = await fixture("queued", {

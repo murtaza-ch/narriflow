@@ -8,7 +8,12 @@ import {
 	getWorkflowRunLifecycle,
 	getSocialPublicationRuntime,
 	getCompletionCallbackProcessor,
+	getWebhookDeliveryProcessor,
+	getStandingGrantMaintenance,
+	getPerformanceSync,
+	getPerformanceGuidance,
 	getIngestJobLifecycle,
+	getLibrarySearch,
 	IngestJobClaimLost,
 	reviewService,
 	projectRetentionService,
@@ -16,6 +21,7 @@ import {
 	purgeOldWebhookDeliveryLogs,
 	purgeOldWorkflowEvents,
 	pruneExpiredMcpTasks,
+	purgeExpiredWorkspaceEvents,
 	generatedMediaService,
 	purgeExpiredGeneratedMediaPrompts,
 	reconcileOrphanGeneratedMediaReservations,
@@ -28,6 +34,7 @@ import {
 	type WorkflowAttemptRef,
 } from "@narriflow/services";
 import { processDueAutopilotRules } from "./tasks/autopilot";
+import { processDueGenerationFinishing } from "./tasks/generation-finishing";
 import { processClipDetectionRun } from "./tasks/detect-clips";
 import { processPendingClipPreviews } from "./tasks/clip-preview";
 import { processPendingAutoLayoutAnalyses } from "./tasks/auto-layout-analysis";
@@ -43,6 +50,7 @@ import {
 	processTranscriptRun,
 } from "./tasks/transcribe";
 import {
+	getWorkerAppBaseUrl,
 	notifyExpiringProject,
 	retryPendingNotifications,
 	retryPendingReviewNotifications,
@@ -77,6 +85,16 @@ const workflowEventDispatchIntervalMs = Number(
 );
 const completionCallbackPollIntervalMs = Number(
 	process.env.COMPLETION_CALLBACK_POLL_INTERVAL_MS ?? "5000",
+);
+// Readings are scheduled hours apart, so a minute only bounds how soon a due
+// capture is noticed.
+const performanceSyncPollIntervalMs = Number(
+	process.env.PERFORMANCE_SYNC_POLL_INTERVAL_MS ?? "60000",
+);
+// Performance Guidance is recomputed for a Workspace once its last result is a
+// day old; this only bounds how soon a stale one is noticed.
+const performanceGuidancePollIntervalMs = Number(
+	process.env.PERFORMANCE_GUIDANCE_POLL_INTERVAL_MS ?? String(15 * 60 * 1000),
 );
 const maxConsecutivePollFailures = Number(
 	process.env.WORKER_MAX_CONSECUTIVE_POLL_FAILURES ?? "20",
@@ -113,8 +131,21 @@ const thumbnailFramePollIntervalMs = Number(
 const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
 	process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS,
 );
+// Library search indexing: embedding calls, bounded per tick. It only reads
+// finished transcripts, so it can neither delay nor block generation.
+const libraryIndexPollIntervalMs = Number(
+	process.env.LIBRARY_INDEX_POLL_INTERVAL_MS ?? "10000",
+);
+const libraryIndexBatchSize = Number(
+	process.env.LIBRARY_INDEX_BATCH_SIZE ?? "5",
+);
 const autopilotPollIntervalMs = Number(
 	process.env.AUTOPILOT_POLL_INTERVAL_MS ?? "30000",
+);
+// Finishing: export the best clips and write copy once a generation completes.
+// It claims durable rows with a lease, so a restarted or second worker resumes.
+const finishingPollIntervalMs = Number(
+	process.env.FINISHING_POLL_INTERVAL_MS ?? "15000",
 );
 const notificationRetryBatchSize = Number(
 	process.env.NOTIFICATION_RETRY_BATCH_SIZE ?? "25",
@@ -367,6 +398,29 @@ const maintenanceLoop = createPollLoop("maintenance", async () => {
 	await reapStalledRunsIfDue();
 	await getIngestJobLifecycle().processGenerationHandoffs();
 	await pruneExpiredMcpTasks();
+	const expiredEvents = await purgeExpiredWorkspaceEvents();
+	if (expiredEvents > 0) {
+		console.warn(
+			JSON.stringify({
+				level: "info",
+				message: "workspace_events_purged",
+				count: expiredEvents,
+			}),
+		);
+	}
+	// Standing Grants past their expiry end, and a grant that paused itself tells its granter.
+	const grants = getStandingGrantMaintenance(getWorkerAppBaseUrl);
+	const expiredGrants = await grants.expireDue();
+	if (expiredGrants > 0) {
+		console.warn(
+			JSON.stringify({
+				level: "info",
+				message: "standing_grants_expired",
+				count: expiredGrants,
+			}),
+		);
+	}
+	await grants.notifyPaused();
 	return 0;
 });
 
@@ -403,6 +457,16 @@ const completionCallbackLoop = createPollLoop("completion_callbacks", async () =
 	if (workerShutdown.signal.aborted) return 0;
 	const callbacks = getCompletionCallbackProcessor();
 	return (await callbacks.observe()) + (await callbacks.deliver());
+});
+
+// Webhook Subscriptions: send each active subscription its next Workspace Events
+// in order, then email the creator of any that were just disabled. It shares the
+// callback cadence; a caught-up subscription is looked at again every few seconds.
+const webhookDeliveryLoop = createPollLoop("webhook_deliveries", async () => {
+	if (workerShutdown.signal.aborted) return 0;
+	const webhooks = getWebhookDeliveryProcessor(getWorkerAppBaseUrl);
+	const delivered = await webhooks.deliver();
+	return delivered + (await webhooks.notifyDisabled());
 });
 
 const workspaceBillingLoop = createPollLoop("workspace_billing", async () => {
@@ -479,8 +543,50 @@ const publishLoop = createPollLoop("publish", async () => {
 	return processDueSocialPosts(workerShutdown.signal);
 });
 
+// Reads view and engagement counts back from the platforms. A rate limit or a
+// revoked grant only delays or skips captures; it never touches the Social Post.
+// This loop is optional, so its failures are logged instead of tripping the
+// circuit breaker that would restart publishing with it.
+const performanceSyncLoop = createPollLoop("performance_sync", async () => {
+	try {
+		return await getPerformanceSync().run();
+	} catch (error) {
+		console.warn(
+			JSON.stringify({
+				level: "error",
+				message: "performance_sync_failed",
+				ts: new Date().toISOString(),
+				error: error instanceof Error ? error.message : "Unknown error",
+			}),
+		);
+		return 0;
+	}
+});
+
+// Recomputes each Workspace's Performance Guidance about nightly. Optional, so
+// a failure is logged instead of tripping the circuit breaker.
+const performanceGuidanceLoop = createPollLoop("performance_guidance", async () => {
+	try {
+		return await getPerformanceGuidance().refreshStale();
+	} catch (error) {
+		console.warn(
+			JSON.stringify({
+				level: "error",
+				message: "performance_guidance_failed",
+				ts: new Date().toISOString(),
+				error: error instanceof Error ? error.message : "Unknown error",
+			}),
+		);
+		return 0;
+	}
+});
+
 const autopilotLoop = createPollLoop("autopilot", async () => {
 	return processDueAutopilotRules();
+});
+
+const finishingLoop = createPollLoop("finishing", async () => {
+	return processDueGenerationFinishing();
 });
 
 /** CPU-bound stage: clip rendering only. */
@@ -558,12 +664,25 @@ const thumbnailFrameLoop = createPollLoop("thumbnail_frames", async () => {
 	return thumbnailFramePreparationService.processPending(1);
 });
 
+/** Embeds completed transcripts into searchable passages. A provider failure
+ * backs that transcript off and ends the tick without failing the loop. */
+const libraryIndexLoop = createPollLoop("library_index", async () => {
+	let indexed = 0;
+	while (indexed < libraryIndexBatchSize && !workerShutdown.signal.aborted) {
+		const count = await getLibrarySearch().indexNext();
+		if (count === 0) break;
+		indexed += count;
+	}
+	return indexed;
+});
+
 const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: maintenanceLoop, intervalMs: 60 * 1000 },
 	{ loop: uploadSessionMaintenanceLoop, intervalMs: 30 * 1000 },
 	{ loop: workflowLeaseLoop, intervalMs: workflowLeaseReapIntervalMs },
 	{ loop: workflowEventLoop, intervalMs: workflowEventDispatchIntervalMs },
 	{ loop: completionCallbackLoop, intervalMs: completionCallbackPollIntervalMs },
+	{ loop: webhookDeliveryLoop, intervalMs: completionCallbackPollIntervalMs },
 	{ loop: workspaceBillingLoop, intervalMs: workspaceBillingPollIntervalMs },
 	{ loop: ingestLoop, intervalMs: pollIntervalMs },
 	{ loop: sttLoop, intervalMs: pollIntervalMs },
@@ -572,7 +691,10 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: dubbingLoop, intervalMs: pollIntervalMs },
 	{ loop: exportBundleLoop, intervalMs: pollIntervalMs },
 	{ loop: publishLoop, intervalMs: pollIntervalMs },
+	{ loop: performanceSyncLoop, intervalMs: performanceSyncPollIntervalMs },
+	{ loop: performanceGuidanceLoop, intervalMs: performanceGuidancePollIntervalMs },
 	{ loop: autopilotLoop, intervalMs: autopilotPollIntervalMs },
+	{ loop: finishingLoop, intervalMs: finishingPollIntervalMs },
 	{ loop: renderLoop, intervalMs: renderPollIntervalMs },
 	{ loop: previewLoop, intervalMs: previewPollIntervalMs },
 	{ loop: autoLayoutLoop, intervalMs: autoLayoutPollIntervalMs },
@@ -580,6 +702,7 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: mediaCleanupLoop, intervalMs: mediaCleanupPollIntervalMs },
 	{ loop: generatedMediaLoop, intervalMs: generatedMediaPollIntervalMs },
 	{ loop: thumbnailFrameLoop, intervalMs: thumbnailFramePollIntervalMs },
+	{ loop: libraryIndexLoop, intervalMs: libraryIndexPollIntervalMs },
 ];
 
 const server = createServer(async (req, res) => {

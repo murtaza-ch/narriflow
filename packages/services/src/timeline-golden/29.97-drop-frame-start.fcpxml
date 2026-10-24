@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.11">
+  <resources>
+    <format id="r1" frameDuration="1001/30000s" width="1920" height="1080"/>
+    <asset id="r2" name="my-talk-source.mp4" start="8999991/2500s" duration="3003/5s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+      <media-rep kind="original-media" src="my-talk-source.mp4"/>
+    </asset>
+  </resources>
+  <library>
+    <event name="Narriflow">
+      <project name="Big idea &amp; more">
+        <sequence format="r1" duration="7007/1875s" tcStart="0s" tcFormat="DF" audioLayout="stereo" audioRate="48k">
+          <spine>
+            <asset-clip ref="r2" offset="0s" name="my-talk-source.mp4" start="9030021/2500s" duration="1001/400s" format="r1" tcFormat="DF"/>
+            <asset-clip ref="r2" offset="1001/400s" name="my-talk-source.mp4" start="108607499/30000s" duration="37037/30000s" format="r1" tcFormat="DF"/>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>

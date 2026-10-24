@@ -23,15 +23,23 @@ export const INTEGRATION_COMMANDS = {
   list_projects: { capability: "content.view", scope: "projects:read" },
   get_project: { capability: "content.view", scope: "projects:read" },
   list_brand_profiles: { capability: "content.view", scope: "projects:read" },
+  /** Recipes are read to pick one by ID; saving them stays in the browser. */
+  list_recipes: { capability: "content.view", scope: "projects:read" },
   submit_video: { capability: "processing.consume", scope: "processing:write" },
+  /** Captions a finished short and exports it, from a link or an Upload Session. */
+  create_captioned_video: { capability: "processing.consume", scope: "processing:write" },
   /** Also admits the Upload Session's status, grants, finalize, and discard. */
   open_upload: { capability: "processing.consume", scope: "processing:write" },
   generate_clips: { capability: "processing.consume", scope: "processing:write" },
+  /** Searches the Workspace's transcripts; results are limited to Projects the actor can view. */
+  search_library: { capability: "content.view", scope: "projects:read" },
   list_clips: { capability: "content.view", scope: "projects:read" },
   get_clip: { capability: "content.view", scope: "projects:read" },
   create_clip_export: { capability: "processing.consume", scope: "exports:write" },
   get_clip_export: { capability: "content.download", scope: "exports:read" },
   get_export_download: { capability: "content.download", scope: "exports:read" },
+  /** An editor timeline of the clip's current edit, with a Download Grant for the original source. */
+  get_clip_timeline: { capability: "content.download", scope: "exports:read" },
   /** Reads use the scope of the work they describe; see `operationReadScope`. */
   get_operation: { capability: "content.view", scope: "projects:read" },
   /** Redelivery uses the scope of the original mutation; see `operationWriteScope`. */
@@ -42,12 +50,19 @@ export const INTEGRATION_COMMANDS = {
   list_social_accounts: { capability: "content.view", scope: "publishing:read" },
   get_publishing_options: { capability: "content.view", scope: "publishing:read" },
   prepare_social_post: { capability: "publishing.manage", scope: "publishing:write" },
+  /** Proposing is not approving: the post waits in the Publishing Queue for a person in Narriflow to accept it. */
+  propose_social_post: { capability: "publishing.manage", scope: "publishing:write" },
   schedule_social_post: { capability: "publishing.manage", scope: "publishing:write" },
   list_social_publications: { capability: "content.view", scope: "publishing:read" },
   get_social_publication: { capability: "content.view", scope: "publishing:read" },
   recheck_social_publication: { capability: "publishing.manage", scope: "publishing:write" },
   confirm_social_publication: { capability: "publishing.manage", scope: "publishing:write" },
   publish_social_publication_again: { capability: "publishing.manage", scope: "publishing:write" },
+  /** Publishing outcomes in the feed also need `publishing:read`; see `listEvents`. */
+  list_events: { capability: "content.view", scope: "projects:read" },
+  list_webhooks: { capability: "content.view", scope: "projects:read" },
+  /** Create, delete, re-enable, and test. Posting outcomes also need `publishing:read`; see `requireWebhookTypeScopes`. */
+  manage_webhooks: { capability: "processing.consume", scope: "processing:write" },
   list_autopilot_rules: { capability: "content.view", scope: "autopilot:read" },
   create_rss_autopilot_rule: { capability: "content.edit", scope: "autopilot:write" },
   run_autopilot_rule_now: { capability: "processing.consume", scope: "autopilot:write" },
@@ -91,6 +106,14 @@ export class IntegrationAdmissionError extends ExpectedDomainFailureError<
   constructor(code: IntegrationAdmissionFailureCode, message: string, details?: { scope: string }) {
     super({ code, kind: admissionFailureKinds[code], message, details });
     this.name = "IntegrationAdmissionError";
+  }
+}
+
+/** Finishing that proposes to the queue ends in publishing state, so a credential
+ * that starts it needs the publishing write scope as well as the command's own. */
+export function requireQueueDeliveryScope(credential: { scopes: readonly string[] }, finishing: { delivery?: string } | null | undefined) {
+  if (finishing?.delivery === "propose_to_queue" && !credential.scopes.includes("publishing:write")) {
+    throw new IntegrationAdmissionError("scope_required", "This credential requires the publishing:write scope", { scope: "publishing:write" });
   }
 }
 

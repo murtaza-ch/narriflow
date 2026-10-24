@@ -718,6 +718,74 @@ describe("Upload Session", () => {
     await expect(module.open({ ...input, useDefaultBrandProfile: false })).rejects.toMatchObject({ code: "upload_session_idempotency_conflict" });
   });
 
+  test("a named Recipe is read once at admission, after the replay lookup; its ID, never its revision, is the replay identity", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const resolutions: unknown[] = [];
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      admission: {
+        async resolveBrand(input) {
+          resolutions.push(input);
+          return { templateId: null, snapshot: null, profileId: input.brandProfileId, profileSnapshot: { name: "Recipe profile" } };
+        },
+      },
+    });
+    let revision = 1;
+    const reads: number[] = [];
+    const recipe = (id: string) => ({
+      id,
+      async resolve() {
+        reads.push(revision);
+        return { id, revision, brandProfileId: "recipe-profile", languageCode: "es", contentPack: CONTENT_PACK, finishing: null };
+      },
+    });
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "58585858-5858-4585-8585-585858585858",
+      title: "Recipe upload",
+      source: { fileName: "recipe.mp4", sizeBytes: 33_554_432, contentType: "video/mp4", browserFingerprint: '["recipe.mp4",33554432,"video/mp4",58]' },
+      brandTemplateId: null,
+      brandProfileId: null,
+      generation: null,
+      recipe: recipe("recipe-1"),
+    };
+
+    const first = await module.open(input);
+    // The Recipe is edited; the honest retry replays the session and never reads it again.
+    revision = 2;
+    expect(await module.open({ ...input, recipe: recipe("recipe-1") })).toEqual(first);
+    expect(reads).toEqual([1]);
+    expect(harness.facts.sessions).toHaveLength(1);
+    expect(harness.facts.sessions[0]).toMatchObject({
+      brandProfileId: "recipe-profile",
+      generation: { languageCode: "es", contentPack: CONTENT_PACK, recipe: { id: "recipe-1", revision: 1 } },
+    });
+    expect(resolutions).toEqual([expect.objectContaining({ brandProfileId: "recipe-profile", useDefaultBrandProfile: false })]);
+
+    // The same key with another Recipe, or with explicit settings, is a different request.
+    await expect(module.open({ ...input, recipe: recipe("recipe-2") })).rejects.toMatchObject({ code: "upload_session_idempotency_conflict" });
+    await expect(module.open({ ...input, recipe: undefined, generation: { languageCode: "es", contentPack: CONTENT_PACK } })).rejects.toMatchObject({ code: "upload_session_idempotency_conflict" });
+  });
+
+  test("a Recipe that can't be read refuses the open before any session or reservation exists", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const module = createUploadSessionModule({ ...harness.adapters, config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }) });
+    const gone = { id: "recipe-gone", async resolve(): Promise<never> { throw new Error("This Recipe doesn't exist in the Workspace"); } };
+    await expect(module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "59595959-5959-4595-8595-595959595959",
+      title: "Gone",
+      source: { fileName: "gone.mp4", sizeBytes: 33_554_432, contentType: "video/mp4", browserFingerprint: '["gone.mp4",33554432,"video/mp4",59]' },
+      brandTemplateId: null,
+      brandProfileId: null,
+      generation: null,
+      recipe: gone,
+    })).rejects.toThrow("doesn't exist");
+    expect(harness.facts.sessions).toHaveLength(0);
+    expect(harness.facts.quotaChecks).toBe(0);
+  });
+
   test("active multipart replay returns completed-part facts without another provider start", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const module = createUploadSessionModule({

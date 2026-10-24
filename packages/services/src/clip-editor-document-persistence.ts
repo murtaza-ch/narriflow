@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-  CLIP_MAX_DURATION_SEC,
-  CLIP_MIN_DURATION_SEC,
+  clipDurationBounds,
+  clipDurationWithinBounds,
+  clipSourceEdgeSec,
   DEFAULT_CAPTION_PRESET,
   EDITOR_DOCUMENT_VERSION,
   applyStudioEditsPatchSchema,
@@ -101,6 +102,8 @@ export interface ClipEditorDocumentStoredState {
   document: EditorDocument;
   original: EditorDocument | null;
   sourceDurationSec: number | null;
+  /** The clip is its whole source; `clipDurationBounds(wholeSource)` bounds its window. */
+  wholeSource: boolean;
   sourceStorageKey: string | null;
   sourceTranscript: TranscriptUtterance[];
   viralityScore: number;
@@ -218,15 +221,25 @@ function persistenceError(
   throw new ClipEditorDocumentPersistenceError(code, message);
 }
 
+/** What bounds a clip's window: the source's length, and the duration policy
+ * its `wholeSource` flag selects (`clipDurationBounds`). */
+export interface ClipSourceWindow {
+  durationSec: number | null;
+  wholeSource: boolean;
+}
+
+function sourceOf(state: Pick<ClipEditorDocumentStoredState, "sourceDurationSec" | "wholeSource">): ClipSourceWindow {
+  return { durationSec: state.sourceDurationSec, wholeSource: state.wholeSource };
+}
+
 function assertDocumentWindow(
   document: EditorDocument,
-  sourceDurationSec: number | null,
+  source: ClipSourceWindow,
 ): void {
   const durationSec = document.clipEndSec - document.clipStartSec;
   if (
-    durationSec < CLIP_MIN_DURATION_SEC - 0.001 ||
-    durationSec > CLIP_MAX_DURATION_SEC + 0.001 ||
-    (sourceDurationSec !== null && document.clipEndSec > sourceDurationSec + 0.001)
+    !clipDurationWithinBounds(durationSec, source.wholeSource) ||
+    (source.durationSec !== null && document.clipEndSec > source.durationSec + 0.001)
   ) {
     persistenceError(
       "editor_boundaries_invalid",
@@ -237,13 +250,13 @@ function assertDocumentWindow(
 
 function canonicalizeDocument(
   value: unknown,
-  sourceDurationSec: number | null,
+  source: ClipSourceWindow,
 ): EditorDocument {
   const parsed = editorDocumentSchema.safeParse(value);
   if (!parsed.success) {
     persistenceError("corrupt_stored_document", "Clip Editor Document is malformed");
   }
-  assertDocumentWindow(parsed.data, sourceDurationSec);
+  assertDocumentWindow(parsed.data, source);
   for (const externalUrl of [
     parsed.data.brollUrl,
     parsed.data.studioEdits.music.url,
@@ -318,17 +331,25 @@ function planNextDocument(
   intent: ClipEditorDocumentMutationIntent,
 ): EditorDocument | null {
   if (intent.kind === "replace") {
-    return canonicalizeDocument(intent.document, state.sourceDurationSec);
+    return canonicalizeDocument(intent.document, sourceOf(state));
   }
   if (intent.kind === "reset") {
     return state.original
-      ? canonicalizeDocument(state.original, state.sourceDurationSec)
+      ? canonicalizeDocument(state.original, sourceOf(state))
       : null;
   }
   if (intent.kind === "set_boundaries") {
     const requested = updateClipBoundariesSchema.safeParse(intent);
     if (!requested.success) {
       persistenceError("editor_boundaries_invalid", "clip boundaries are invalid");
+    }
+    const bounds = clipDurationBounds(state.wholeSource);
+    const requestedDurationSec = requested.data.endSec - requested.data.startSec;
+    if (!clipDurationWithinBounds(requestedDurationSec, state.wholeSource, 0)) {
+      persistenceError(
+        "editor_boundaries_invalid",
+        `clip must be ${bounds.minSec} to ${bounds.maxSec} seconds`,
+      );
     }
     if (
       state.sourceDurationSec !== null &&
@@ -362,7 +383,7 @@ function planNextDocument(
           endSec: effective.endSec,
         }),
       },
-      state.sourceDurationSec,
+      sourceOf(state),
     );
   }
   if (intent.kind === "set_caption_preset") {
@@ -371,19 +392,19 @@ function planNextDocument(
         ...state.document,
         captionPreset: intent.captionPreset ?? DEFAULT_CAPTION_PRESET,
       },
-      state.sourceDurationSec,
+      sourceOf(state),
     );
   }
   if (intent.kind === "set_broll_url") {
     return canonicalizeDocument(
       { ...state.document, brollUrl: intent.brollUrl },
-      state.sourceDurationSec,
+      sourceOf(state),
     );
   }
   if (intent.kind === "set_studio_edits") {
     return canonicalizeDocument(
       { ...state.document, studioEdits: intent.studioEdits },
-      state.sourceDurationSec,
+      sourceOf(state),
     );
   }
   const parsed = updateClipTranscriptSliceSchema.safeParse({
@@ -401,7 +422,7 @@ function planNextDocument(
         state.document.clipEndSec,
       ),
     },
-    state.sourceDurationSec,
+    sourceOf(state),
   );
 }
 
@@ -412,7 +433,7 @@ function planProjectSelectionDocument(
   if (intent.kind === "set_caption_preset") {
     return canonicalizeDocument(
       { ...state.document, captionPreset: intent.captionPreset },
-      state.sourceDurationSec,
+      sourceOf(state),
     );
   }
   if (intent.patches.length === 0) {
@@ -428,7 +449,7 @@ function planProjectSelectionDocument(
   }
   return canonicalizeDocument(
     { ...state.document, studioEdits },
-    state.sourceDurationSec,
+    sourceOf(state),
   );
 }
 
@@ -438,10 +459,10 @@ function canonicalizeStoredState(
   try {
     return {
       ...state,
-      document: canonicalizeDocument(state.document, state.sourceDurationSec),
+      document: canonicalizeDocument(state.document, sourceOf(state)),
       original:
         state.original !== null
-          ? canonicalizeDocument(state.original, state.sourceDurationSec)
+          ? canonicalizeDocument(state.original, sourceOf(state))
           : null,
     };
   } catch (error) {
@@ -1003,10 +1024,11 @@ function toPrismaJson(value: unknown): Prisma.InputJsonValue {
 
 export function encodeClipEditorDocumentForStorage(
 	value: EditorDocument,
-	sourceDurationSec: number | null,
+	source: ClipSourceWindow,
 ): {
   startSec: number;
   endSec: number;
+  wholeSource: boolean;
   captionPreset: Prisma.InputJsonValue;
   transcriptSlice: Prisma.InputJsonValue;
   studioEdits: Prisma.InputJsonValue;
@@ -1017,8 +1039,9 @@ export function encodeClipEditorDocumentForStorage(
   censorSegments: Prisma.InputJsonValue;
   mediaMotions: Prisma.InputJsonValue;
 } {
-  const document = canonicalizeDocument(value, sourceDurationSec);
+  const document = canonicalizeDocument(value, source);
   return {
+    wholeSource: source.wholeSource,
     startSec: document.clipStartSec,
     endSec: document.clipEndSec,
     captionPreset: toPrismaJson(document.captionPreset),
@@ -1099,11 +1122,27 @@ function decodeStoredDocument(row: unknown): EditorDocument {
   return decoded.data;
 }
 
+/** A stored clip row. The caller states the clip's `wholeSource` flag, which
+ * selects the duration policy, so a select that left it out can't quietly
+ * apply the detected-clip bounds. */
 export function decodeClipEditorDocumentFromStorage(
   row: unknown,
+  source: ClipSourceWindow,
+): EditorDocument {
+  return canonicalizeDocument(decodeStoredDocument(row), source);
+}
+
+/** A frozen export snapshot, which always records its own `wholeSource` flag;
+ * a snapshot without one is corrupt rather than a detected clip. */
+export function decodeFrozenClipEditorDocument(
+  snapshot: unknown,
   sourceDurationSec: number | null,
 ): EditorDocument {
-  return canonicalizeDocument(decodeStoredDocument(row), sourceDurationSec);
+  const wholeSource = (snapshot as { wholeSource?: unknown } | null)?.wholeSource;
+  if (typeof wholeSource !== "boolean") {
+    persistenceError("corrupt_stored_document", "Frozen clip snapshot has no wholeSource flag");
+  }
+  return decodeClipEditorDocumentFromStorage(snapshot, { durationSec: sourceDurationSec, wholeSource });
 }
 
 function decodePrismaState(
@@ -1111,16 +1150,18 @@ function decodePrismaState(
     project: {
       workspaceId: string;
       sourceDurationSeconds: number | null;
+      sourceProbe: Prisma.JsonValue | null;
       sourceStorageKey: string | null;
       transcript: { utterancesJson: Prisma.JsonValue } | null;
     };
     renders: Array<{ id: string; storageKey: string | null }>;
   },
 ): ClipEditorDocumentStoredState {
-  const document = decodeClipEditorDocumentFromStorage(
-    row,
-    row.project.sourceDurationSeconds,
-  );
+  const sourceDurationSec = clipSourceEdgeSec(row.project);
+  const document = decodeClipEditorDocumentFromStorage(row, {
+    durationSec: sourceDurationSec,
+    wholeSource: row.wholeSource,
+  });
   const original =
     row.editorOriginal === null
       ? null
@@ -1143,7 +1184,8 @@ function decodePrismaState(
     revision: row.editorRevision,
     document,
     original: original?.data ?? null,
-    sourceDurationSec: row.project.sourceDurationSeconds,
+    sourceDurationSec,
+    wholeSource: row.wholeSource,
     sourceStorageKey: row.project.sourceStorageKey,
     sourceTranscript: sourceTranscript?.data.transcriptSlice ?? [],
     viralityScore: row.viralityScore,
@@ -1173,6 +1215,7 @@ const prismaClipInclude = {
     select: {
       workspaceId: true,
       sourceDurationSeconds: true,
+      sourceProbe: true,
       sourceStorageKey: true,
       transcript: { select: { utterancesJson: true } },
     },
@@ -1298,6 +1341,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
       select: {
           workspaceId: true,
         sourceDurationSeconds: true,
+        sourceProbe: true,
         sourceStorageKey: true,
         transcript: { select: { utterancesJson: true } },
         clips: {
@@ -1314,6 +1358,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
         project: {
           workspaceId: project.workspaceId,
           sourceDurationSeconds: project.sourceDurationSeconds,
+          sourceProbe: project.sourceProbe,
           sourceStorageKey: project.sourceStorageKey,
           transcript: project.transcript,
         },

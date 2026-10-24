@@ -1,0 +1,29 @@
+[
+    {
+        "label": "Events",
+        "modules": [
+            "watchEvents"
+        ]
+    },
+    {
+        "label": "Videos and clips",
+        "modules": [
+            "submitVideoLink",
+            "generateClips",
+            "exportClip",
+            "getExportDownload"
+        ]
+    },
+    {
+        "label": "Publishing",
+        "modules": [
+            "proposeSocialPost"
+        ]
+    },
+    {
+        "label": "Other",
+        "modules": [
+            "makeAnApiCall"
+        ]
+    }
+]

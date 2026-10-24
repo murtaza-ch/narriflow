@@ -196,6 +196,8 @@ export const clipSnapshotSchema = z.object({
   transcriptSlice: z.array(transcriptUtteranceSchema),
   renderVariants: z.array(clipRenderVariantSchema),
   captionPreset: captionPresetSchema.nullable().optional(),
+  /** The clip is the whole source, so `clipDurationBounds(true)` applies. */
+  wholeSource: z.boolean().default(false),
   brollUrl: z.string().nullable().optional(),
   brollCues: brollCuesArraySchema.optional(),
   studioEdits: studioEditsSchema.optional(),
@@ -210,21 +212,75 @@ export const clipSnapshotSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
-/** Shortest a clip's [startSec, endSec) window may ever be — enforced by the
- *  clip-length dialog's boundaries endpoint (`updateClipBoundariesSchema` below) and reused
- *  by the in-studio trim path (vizard-parity.md Phase B step 13:
- *  `saveClipEditorDocument`'s boundary-change validation, plus the client's
- *  drag-guard on the trim handles) so the two paths can never disagree about
- *  how short a clip is allowed to get. */
+/** The duration a clip's [startSec, endSec) window may have. Detected clips are
+ *  10 to 120 seconds. A whole-source clip (a caption-only generation, such as a
+ *  captioned video) is the entire source, so it may be 1 to 180 seconds.
+ *
+ *  This is the one boundary policy. The persistence codec checks it on encode
+ *  and decode, the boundaries endpoint checks it, and the Studio's trim handles
+ *  clamp to it, so they can never disagree about how short or long a clip may
+ *  get. `Clip.wholeSource` selects the policy; a caller never chooses it. */
 export const CLIP_MIN_DURATION_SEC = 10;
-/** Longest a clip's [startSec, endSec) window may ever be — enforced by the
- *  clip-length dialog's boundaries endpoint (below) AND by in-studio trim (vizard-parity.md
- *  Phase B closing review finding 3): trim handles clamp to this ceiling
- *  client-side (timeline.tsx's `TrimHandle`) exactly the way they already
- *  clamp to `CLIP_MIN_DURATION_SEC`, since the server now rejects a
- *  boundary-changing save that exceeds it the same as this endpoint does. */
 export const CLIP_MAX_DURATION_SEC = 120;
+export const WHOLE_SOURCE_CLIP_MIN_DURATION_SEC = 1;
+export const WHOLE_SOURCE_CLIP_MAX_DURATION_SEC = 180;
 
+export function clipDurationBounds(wholeSource: boolean) {
+  return wholeSource
+    ? { minSec: WHOLE_SOURCE_CLIP_MIN_DURATION_SEC, maxSec: WHOLE_SOURCE_CLIP_MAX_DURATION_SEC }
+    : { minSec: CLIP_MIN_DURATION_SEC, maxSec: CLIP_MAX_DURATION_SEC };
+}
+
+/** Sources are measured to the millisecond but billed and shown in whole
+ *  seconds, so a source that rounds to the limit qualifies: a whole-source clip
+ *  of 180.4 seconds is a 180 second source. */
+export const WHOLE_SOURCE_CLIP_ROUNDING_SLACK_SEC = 0.5;
+
+/** Whether a clip window of this length obeys `clipDurationBounds`, with the
+ *  whole-source rounding slack at the top. `epsilonSec` absorbs float noise. */
+export function clipDurationWithinBounds(durationSec: number, wholeSource: boolean, epsilonSec = 0.001) {
+  const { minSec, maxSec } = clipDurationBounds(wholeSource);
+  const tooLong = wholeSource
+    ? durationSec >= maxSec + WHOLE_SOURCE_CLIP_ROUNDING_SLACK_SEC
+    : durationSec > maxSec + epsilonSec;
+  return durationSec >= minSec - epsilonSec && !tooLong;
+}
+
+/** The longest window `clipDurationWithinBounds` accepts. */
+export function clipMaxWindowSec(wholeSource: boolean, epsilonSec = 0.001) {
+  const { maxSec } = clipDurationBounds(wholeSource);
+  return wholeSource ? maxSec + WHOLE_SOURCE_CLIP_ROUNDING_SLACK_SEC - epsilonSec : maxSec;
+}
+
+/** Where a clip's window may end: the source's exact probed duration when it
+ *  is known, else `Project.sourceDurationSeconds`, which is rounded to whole
+ *  seconds and so can fall up to half a second short of the media. */
+export function clipSourceEdgeSec(project: { sourceDurationSeconds: number | null; sourceProbe?: unknown }): number | null {
+  const probed = (project.sourceProbe as { durationSec?: unknown } | null | undefined)?.durationSec;
+  return typeof probed === "number" && Number.isFinite(probed) && probed > 0 ? probed : project.sourceDurationSeconds;
+}
+
+/** The clip a caption-only generation makes: its processing window, or the
+ *  whole source. The end is the source's exact duration (see
+ *  `clipSourceEdgeSec`), so no tail is lost to rounding. */
+export function wholeSourceWindow(
+  pack: { processingStartSec: number | null; processingEndSec: number | null },
+  source: { durationSec: number; probeDurationSec: number | null },
+) {
+  const sourceEndSec = source.probeDurationSec ?? source.durationSec;
+  const startSec = pack.processingStartSec ?? 0;
+  return { startSec, endSec: Math.min(pack.processingEndSec ?? sourceEndSec, sourceEndSec) };
+}
+
+/** Why a whole-source window can't become a clip, or null when it can. */
+export function wholeSourceWindowFault(window: { startSec: number; endSec: number }): "whole_source_too_short" | "whole_source_too_long" | null {
+  const durationSec = window.endSec - window.startSec;
+  if (durationSec < WHOLE_SOURCE_CLIP_MIN_DURATION_SEC) return "whole_source_too_short";
+  return clipDurationWithinBounds(durationSec, true, 0) ? null : "whole_source_too_long";
+}
+
+/** The shape of a boundaries request. Duration limits depend on the clip, so
+ *  Clip Editor Document Persistence applies `clipDurationBounds`. */
 export const updateClipBoundariesSchema = z
   .object({
     startSec: z.number().nonnegative(),
@@ -232,12 +288,6 @@ export const updateClipBoundariesSchema = z
   })
   .refine((data) => data.endSec > data.startSec, {
     message: "endSec must be greater than startSec",
-  })
-  .refine((data) => data.endSec - data.startSec >= CLIP_MIN_DURATION_SEC, {
-    message: `Clip must be at least ${CLIP_MIN_DURATION_SEC} seconds`,
-  })
-  .refine((data) => data.endSec - data.startSec <= CLIP_MAX_DURATION_SEC, {
-    message: `Clip must be at most ${CLIP_MAX_DURATION_SEC} seconds`,
   });
 
 export const updateClipTranscriptSliceSchema = z.object({

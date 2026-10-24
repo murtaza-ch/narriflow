@@ -140,6 +140,7 @@ export {
 	createClipEditorDocumentPersistence,
 	createInMemoryClipEditorDocumentStore,
 	decodeClipEditorDocumentFromStorage,
+	decodeFrozenClipEditorDocument,
 	encodeClipEditorDocumentForStorage,
 	prismaClipEditorDocumentStore,
 	ClipEditorDocumentPersistenceError,
@@ -284,6 +285,42 @@ export {
 	AnalyticsServiceError,
 	type AnalyticsFailureCode,
 } from "./analytics.service";
+export {
+	CAPTURE_OFFSETS_MINUTES,
+	createPerformanceSync,
+	type PerformanceSkipReason,
+} from "./performance-sync";
+export { getPerformanceSync } from "./performance-sync-runtime";
+export { performanceService, PerformanceService } from "./performance.service";
+export {
+	computePerformanceGuidance,
+	createPerformanceGuidance,
+	guidanceGroupLabel,
+	guidancePromptLine,
+	liftFactor,
+	rankClips,
+	readAppliedGuidance,
+	MAXIMUM_LIFT_FACTOR,
+	MAXIMUM_REORDER_SCORE_GAP,
+	MINIMUM_GUIDANCE_GROUP_POSTS,
+	MINIMUM_GUIDANCE_WORKSPACE_POSTS,
+	MINIMUM_LIFT_FACTOR,
+	type AppliedGuidance,
+	type GuidanceVideo,
+	type GuidanceView,
+	type LabelledGuidanceGroup,
+} from "./performance-guidance";
+export { getPerformanceGuidance } from "./performance-guidance-runtime";
+export {
+	MINIMUM_GROUP_VIDEOS,
+	MINIMUM_MEASURED_VIDEOS,
+	summarizePerformance,
+	type PerformanceDimensionId,
+	type PerformanceGroup,
+	type PerformanceStat,
+	type PerformanceSummary,
+	type PerformanceVideo,
+} from "./performance-summary";
 export {
 	autoCensorService,
 	AutoCensorAccessError,
@@ -467,8 +504,19 @@ export * from "./workspace.service";
 export * from "./workspace-library.service";
 export * from "./workspace-membership.service";
 export * from "./calendar-time";
+export { nextFreeSlots, postingSlotInstants } from "./posting-schedule";
+export {
+	assertFinishingQueue,
+	assertQueueAccounts,
+	publishingQueue,
+	PublishingQueueError,
+	type AcceptedProposal,
+	type ProposalInboxItem,
+} from "./publishing-queue.service";
 export * from "./assisted-social-copy";
 export * from "./assisted-social-copy-runtime";
+export { getGenerationFinishing, getProjectFinishing } from "./generation-finishing-runtime";
+export type { ProjectFinishingView } from "./generation-finishing";
 export * from "./bulk-social-scheduling";
 export * from "./bulk-social-scheduling-runtime";
 export * from "./openai-assisted-copy-provider";
@@ -532,7 +580,8 @@ export {
 	type ProcessingUsageSummary,
 } from "./processing-usage";
 export { getProcessingUsage, processingCapacityFromEnv } from "./processing-usage-runtime";
-export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestRetryLimitExceededError, MAX_INGEST_RETRY_ATTEMPTS, type ClaimedIngestJob, type IngestClaimRef, type IngestExecutionContext, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
+export { createDriveTokenCipher, createGoogleDriveFileReader, driveDownloadRefusal, driveFileMediaUrl, DriveSourceError, googleDriveFileReader, readDriveFileMetadata, verifyDriveAccessToken, type DriveFileMetadata, type DriveFileReader, type DriveTokenCipher } from "./drive-source";
+export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestReselectRequiredError, IngestRetryLimitExceededError, MAX_INGEST_RETRY_ATTEMPTS, type ClaimedIngestJob, type IngestClaimRef, type IngestExecutionContext, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
 
 export { LayoutEvidenceLifecycle, LayoutEvidenceClaimLost, type ClipPendingPreview, type ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
 export { getLayoutEvidenceLifecycle } from "./layout-evidence-runtime";
@@ -545,7 +594,20 @@ export { prismaMcpTaskPersistence, pruneExpiredMcpTasks, getMcpTaskPersistence, 
 export { createOperationStatusReader, decodeOperationId, encodeOperationId, deriveGenerationStatus, deriveExportStatus, deriveIntakePhase, type OperationKind, type OperationState, type OperationStatus, type OperationItem, type TrustedOperationStatus } from "./operation-status";
 export { operationStatusService } from "./operation-status-runtime";
 export { clipExportSubtitleFiles, type ClipExportSubtitleFile } from "./clip-export-subtitles";
+export { clipTimelineService } from "./clip-timeline.service";
 export { IntegrationAdmission, IntegrationAdmissionError, INTEGRATION_COMMANDS, INTEGRATION_SURFACE_FEATURES, INTEGRATION_ACCESS_MESSAGES, operationReadScope, operationWriteScope, type IntegrationCommand, type IntegrationPrincipal, type IntegrationSurface } from "./integration-admission";
-export { integrationKeyUuid, integrationUploadSessionKey, integrationUploadSessions, locateClip, locateExport, redeliverCallbacks, submitVideo, generateClips, createClipExport, projectView, clipView, exportView, type OperationRef, type IntegrationUploadSessions } from "./integration-commands";
+export { assertInlineFinishing, integrationKeyUuid, integrationUploadSessionKey, integrationUploadSessions, locateClip, locateExport, redeliverCallbacks, submitVideo, createCaptionedVideo, captionedVideoSettings, captionedVideoGenerationContext, generateClips, createClipExport, listEvents, projectView, clipView, exportView, proposeSocialPost, requireQueueDeliveryScope, socialAccountsView, recipeView, recipesView, type CommandCredential, type OperationRef, type IntegrationUploadSessions } from "./integration-commands";
+export { recipeService, RecipeService, RecipeError, type RecipeFailureCode, type RecipeUse, type ResolvedRecipe } from "./recipe.service";
+export { appendWorkspaceEvent, deleteExpiredWorkspaceEvents, listWorkspaceEvents, type WorkspaceEventQuery } from "./workspace-event";
+export { purgeExpiredWorkspaceEvents } from "./workspace-event-runtime";
 export { assertCompletionCallbackUrl, buildCallbackPayload, CALLBACK_RETRY_DELAYS_MS, callbackEventId, CallbackSecretRequiredError, createCompletionCallbackProcessor, generateCallbackSigningSecret, signCallback, type CallbackPayload, type CompletionCallbackProcessorDependencies } from "./completion-callback";
 export { callbackSigningSecrets, getCompletionCallbackProcessor } from "./completion-callback-runtime";
+export { requireWebhookTypeScopes, webhookView, type WebhookCredential, type WebhookDisabledNotice, type WebhookNoticeResult } from "./webhook-subscription";
+export { getWebhookDeliveryProcessor, webhookSubscriptions } from "./webhook-subscription-runtime";
+export { StandingGrantError, normalizeReviewerEmails } from "./standing-grant";
+export { acceptProposalUnderGrant, getStandingGrantMaintenance, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
+
+export { chunkUtterances, PASSAGE_MAX_MS, PASSAGE_MIN_MS, type TranscriptPassageDraft } from "./library-passages";
+export { LibrarySearch, LibrarySearchError, lexicalQueryText, type LibrarySearchDependencies, type LibrarySearchInput } from "./library-search";
+export { getLibrarySearch, librarySearchService } from "./library-search-runtime";
+export { createOpenAiEmbeddingProvider, EmbeddingProviderError, LIBRARY_EMBEDDING_DIMENSIONS, LIBRARY_EMBEDDING_MODEL, type EmbeddingProvider } from "./openai-embedding-provider";

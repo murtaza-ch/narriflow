@@ -1,0 +1,57 @@
+[
+    {
+        "name": "exportId",
+        "type": "text",
+        "label": "Export ID"
+    },
+    {
+        "name": "projectId",
+        "type": "text",
+        "label": "Project ID"
+    },
+    {
+        "name": "clipId",
+        "type": "text",
+        "label": "Clip ID"
+    },
+    {
+        "name": "editorRevision",
+        "type": "uinteger",
+        "label": "Editor revision"
+    },
+    {
+        "name": "status",
+        "type": "text",
+        "label": "Status"
+    },
+    {
+        "name": "reused",
+        "type": "boolean",
+        "label": "Reused an identical export"
+    },
+    {
+        "name": "grantedResolution",
+        "type": "text",
+        "label": "Granted resolution"
+    },
+    {
+        "name": "watermark",
+        "type": "boolean",
+        "label": "Watermarked"
+    },
+    {
+        "name": "operationId",
+        "type": "text",
+        "label": "Operation ID"
+    },
+    {
+        "name": "reviewUrl",
+        "type": "url",
+        "label": "Review URL"
+    },
+    {
+        "name": "replayed",
+        "type": "boolean",
+        "label": "Replay of an earlier identical request"
+    }
+]

@@ -1,0 +1,28 @@
+{
+    "url": "/social-posts/proposals",
+    "method": "POST",
+    "headers": {
+        "Idempotency-Key": "make:propose-social-post:{{sha256(trim(ifempty(parameters.runKey, '')) + '|' + trim(parameters.clipId) + '|' + trim(parameters.exportId) + '|' + parameters.socialAccountId + '|' + ifempty(parameters.caption, ''))}}"
+    },
+    "body": {
+        "clipId": "{{trim(parameters.clipId)}}",
+        "exportId": "{{trim(parameters.exportId)}}",
+        "socialAccountId": "{{parameters.socialAccountId}}",
+        "caption": "{{parameters.caption}}"
+    },
+    "response": {
+        "output": {
+            "proposalId": "{{body.proposal.proposalId}}",
+            "projectId": "{{body.proposal.projectId}}",
+            "clipId": "{{body.proposal.clipId}}",
+            "socialAccountId": "{{body.proposal.socialAccountId}}",
+            "platform": "{{body.proposal.platform}}",
+            "caption": "{{body.proposal.caption}}",
+            "source": "{{body.proposal.source}}",
+            "exportId": "{{body.proposal.exportId}}",
+            "aspectRatio": "{{body.proposal.aspectRatio}}",
+            "queueUrl": "{{body.queueUrl}}",
+            "replayed": "{{body.replayed}}"
+        }
+    }
+}

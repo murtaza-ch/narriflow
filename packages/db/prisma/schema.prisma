@@ -64,6 +64,7 @@ enum IngestJobType {
   upload_finalize
   rss_import
   link_import
+  drive_import
 }
 
 enum IngestJobStatus {
@@ -179,6 +180,12 @@ enum SocialDeliveryMode {
   tiktok_inbox
 }
 
+enum PerformanceCaptureState {
+  scheduled
+  captured
+  skipped
+}
+
 enum SocialPostStatus {
   inbox_delivered
   draft
@@ -191,6 +198,26 @@ enum SocialPostStatus {
   failed
   needs_attention
   cancelled
+}
+
+/// Who proposed a Social Post into the Publishing Queue.
+enum SocialPostProposalSource {
+  person
+  integration
+  finishing
+}
+
+/// What a Standing Grant lets one Autopilot rule's output do without a click.
+enum StandingGrantKind {
+  publish
+  review_send
+}
+
+enum StandingGrantStatus {
+  active
+  paused
+  expired
+  revoked
 }
 
 enum PublicationAttemptPhase {
@@ -242,6 +269,11 @@ enum AutopilotStatus {
   paused
   running
   failed
+}
+
+enum AutopilotPauseKind {
+  acting_member
+  brand_profile
 }
 
 enum AutopilotInitialImportMode {
@@ -395,6 +427,8 @@ model Project {
   sourceMimeType           String?
   sourceSizeBytes          BigInt?
   sourceDurationSeconds    Int?
+  /// Measured at ingest: frame rate, dimensions, and audio. See sourceProbeSchema.
+  sourceProbe              Json?
   languageCode             String?
   ingestStatus             IngestStatus              @default(pending)
   ingestErrorCode          String?
@@ -430,6 +464,7 @@ model Project {
   contentPacks             ContentPack[]
   ingestJobs               IngestJob[]
   transcript               Transcript?
+  transcriptPassages       TranscriptPassage[]
   clips                    Clip[]
   createdBy                User?                     @relation("ProjectCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   workspace                Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -440,7 +475,8 @@ model Project {
   workflowEvents           WorkflowEvent[]
   contentAssets            ContentAsset[]
   socialPosts              SocialPost[]
-  socialPostMetrics        SocialPostMetric[]
+  workspaceEventKeys       WorkspaceEventKey[]
+  generationFinishings     GenerationFinishing[]
   analyticsEvents          ProjectAnalyticsEvent[]
   generatedMediaJobs       GeneratedMediaJob[]
   assistedCopyGenerations  AssistedCopyGeneration[]
@@ -525,6 +561,19 @@ model ContentPack {
   draft                   Boolean      @default(false)
   clipLengthPreset        String       @default("auto")
   defaultAspectRatio      String       @default("9:16")
+  /// Set only by the Autopilot import, from the rule that imported the Project.
+  /// A generation's finishing copies it, and Standing Grants cover finishing by it.
+  autopilotRuleId         String?      @db.Uuid
+  /// Captioned-video settings (framing, caption source with normalized
+  /// supplied utterances, export formats), validated by
+  /// captionedVideoSettingsSchema. Requires mode "caption_only".
+  captionedVideo          Json?
+  /// Finishing settings the request carried; the handoff freezes them onto a
+  /// GenerationFinishing row. Null means no finishing.
+  finishing               Json?
+  /// The Recipe ({ id, revision }) this generation's settings were read from,
+  /// kept for audit. Null when the settings were sent explicitly.
+  recipe                  Json?
   createdAt               DateTime     @default(now())
   updatedAt               DateTime     @updatedAt
 
@@ -568,11 +617,12 @@ model WorkflowRun {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
-  project        Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  contentPack    ContentPack?  @relation(fields: [contentPackId], references: [id], onDelete: SetNull)
+  project        Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  contentPack    ContentPack?         @relation(fields: [contentPackId], references: [id], onDelete: SetNull)
   renderVariants ClipRender[]
   exportBundle   ExportBundle?
-  ingestHandoffs IngestJob[]    @relation("IngestJobGenerationRun")
+  ingestHandoffs IngestJob[]          @relation("IngestJobGenerationRun")
+  finishing      GenerationFinishing?
 
   // Raw partial unique index (not expressible in Prisma schema — see the
   // 20260729000000_one_live_clip_rendering_run migration): at most one
@@ -613,13 +663,13 @@ model NotificationLedger {
 /// (a backfill or new mid-flight write would silently disable the overall
 /// transcription timeout in processSubmittedTranscriptResults).
 model Transcript {
-  id                 String           @id @default(uuid()) @db.Uuid
-  projectId          String           @unique @db.Uuid
-  status             TranscriptStatus @default(queued)
+  id                 String              @id @default(uuid()) @db.Uuid
+  projectId          String              @unique @db.Uuid
+  status             TranscriptStatus    @default(queued)
   provider           String?
   providerModel      String?
   providerJobId      String?
-  workflowAttemptId  String?          @db.Uuid
+  workflowAttemptId  String?             @db.Uuid
   languageCode       String?
   languageConfidence Float?
   text               String?
@@ -629,11 +679,52 @@ model Transcript {
   errorCode          String?
   rawStorageKey      String?
   completedAt        DateTime?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
-  project            Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// Library search indexing. `passagesIndexedFor` is the `completedAt` the
+  /// passages were built from; a newer `completedAt` means the transcript changed.
+  /// `passagesRetryAt` is both the claim lease and the retry backoff. After
+  /// 8 attempts the transcript is left alone and `passagesIndexError` names why.
+  passagesIndexedFor DateTime?
+  passagesAttempts   Int                 @default(0)
+  passagesRetryAt    DateTime?
+  passagesIndexError String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  project            Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  passages           TranscriptPassage[]
 
   @@index([status, updatedAt])
+}
+
+/// A 30 to 60 second span of a Transcript, embedded for library search. Rows
+/// are written with raw SQL (the vector column is not a Prisma type), and
+/// `searchText` is a generated tsvector (`to_tsvector('english', text)`).
+/// `workspaceId` is denormalized and every query also joins Project, so a stale
+/// value can never leak a passage.
+///
+/// The cosine HNSW index on `embedding` is created by the migration only:
+/// `CREATE INDEX "TranscriptPassage_embedding_idx" ON "TranscriptPassage"
+/// USING hnsw ("embedding" public.vector_cosine_ops)`. Prisma cannot express it,
+/// so it is the one index that `prisma migrate diff` will not list.
+model TranscriptPassage {
+  id             String                      @id @default(uuid()) @db.Uuid
+  workspaceId    String                      @db.Uuid
+  projectId      String                      @db.Uuid
+  transcriptId   String                      @db.Uuid
+  startMs        Int
+  endMs          Int
+  text           String
+  embedding      Unsupported("vector(1536)")
+  embeddingModel String
+  contentHash    String
+  searchText     Unsupported("tsvector")?    @default(dbgenerated("to_tsvector('english'::regconfig, text)"))
+  createdAt      DateTime                    @default(now())
+  project        Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  transcript     Transcript                  @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+
+  @@unique([transcriptId, contentHash])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([searchText], type: Gin)
 }
 
 model UploadSession {
@@ -694,6 +785,9 @@ model IngestJob {
   projectId                String          @db.Uuid
   jobType                  IngestJobType
   payload                  Json
+  /// Sealed Google Drive access token of a drive_import job. It exists only
+  /// while the job can still download; every terminal transition clears it.
+  sourceCredential         String?
   status                   IngestJobStatus @default(queued)
   attemptCount             Int             @default(0)
   claimId                  String?         @db.Uuid
@@ -781,6 +875,10 @@ model User {
   personalWorkspace               Workspace?                       @relation("PersonalWorkspaceOwner")
   createdProjects                 Project[]                        @relation("ProjectCreatedBy")
   createdAutopilotRules           AutopilotRule[]                  @relation("AutopilotRuleCreatedBy")
+  createdRecipes                  Recipe[]                         @relation("RecipeCreatedBy")
+  updatedRecipes                  Recipe[]                         @relation("RecipeUpdatedBy")
+  createdWebhookSubscriptions     WebhookSubscription[]            @relation("WebhookSubscriptionCreatedBy")
+  grantedStandingGrants           StandingGrant[]                  @relation("StandingGrantGrantedBy")
   socialAccounts                  SocialAccount[]
   socialOAuthStates               SocialOAuthState[]
   workspaceMemberships            WorkspaceMember[]
@@ -817,6 +915,9 @@ model Workspace {
   pricingTier            PricingTier     @default(free)
   defaultBrandTemplateId String?         @db.Uuid
   defaultBrandProfileId  String?         @db.Uuid
+  /// "Use my performance data to pick clips". Null means the default, which is
+  /// on once the Workspace's guidance qualifies; false switches it off.
+  usePerformanceGuidance Boolean?
   createdAt              DateTime        @default(now())
   updatedAt              DateTime        @updatedAt
 
@@ -830,6 +931,7 @@ model Workspace {
   uploadSessions             UploadSession[]
   folders                    WorkspaceFolder[]
   autopilotRules             AutopilotRule[]
+  recipes                    Recipe[]
   apiKeys                    ApiKey[]
   socialAccounts             SocialAccount[]
   socialOAuthStates          SocialOAuthState[]
@@ -852,6 +954,15 @@ model Workspace {
   publicationManualDecisions PublicationManualDecision[]
   completionCallbacks        CompletionCallback[]
   callbackSigningSecrets     CallbackSigningSecret[]
+  trackedVideos              TrackedVideo[]
+  performanceGuidance        PerformanceGuidance?
+  workspaceEvents            WorkspaceEvent[]
+  workspaceEventKeys         WorkspaceEventKey[]
+  workspaceEventCounter      WorkspaceEventCounter?
+  webhookSubscriptions       WebhookSubscription[]
+  generationFinishings       GenerationFinishing[]
+  standingGrants             StandingGrant[]
+  reviewerOptOuts            ReviewerOptOut[]
   billingAccount             WorkspaceBillingAccount?
 
   @@index([ownerUserId])
@@ -997,9 +1108,8 @@ model AutopilotRule {
   name                String
   rssUrl              String
   titlePrefix         String?
-  brandTemplateId     String?                    @db.Uuid
-  languageCode        String?
-  contentPack         Json
+  /// The Brand Profile, language, Content Pack, and finishing every import uses.
+  recipeId            String                     @db.Uuid
   intervalMinutes     Int                        @default(1440)
   maxEpisodesPerRun   Int                        @default(3)
   feedTitle           String?
@@ -1014,6 +1124,7 @@ model AutopilotRule {
   leaseExpiresAt      DateTime?
   consecutiveFailures Int                        @default(0)
   status              AutopilotStatus            @default(active)
+  pauseKind           AutopilotPauseKind?
   lastCheckedAt       DateTime?
   lastSuccessAt       DateTime?
   nextRunAt           DateTime                   @default(now())
@@ -1023,10 +1134,48 @@ model AutopilotRule {
 
   createdBy User?              @relation("AutopilotRuleCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // NoAction, not Restrict: deleting a Workspace removes its rules and Recipes in one statement.
+  recipe    Recipe             @relation(fields: [recipeId], references: [id], onDelete: NoAction)
   episodes  AutopilotEpisode[]
+  standingGrants StandingGrant[]
 
   @@index([workspaceId, status, createdAt])
   @@index([status, nextRunAt, leaseExpiresAt])
+  @@index([recipeId])
+}
+
+/// Named, revisioned Workspace settings that Autopilot rules and integration
+/// requests reference. Work already accepted keeps the settings it froze.
+model Recipe {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @db.Uuid
+  name            String
+  /// Bumped by every edit; writers send the revision they read.
+  revision        Int       @default(1)
+  /// Bumped only by edits to what work would use (Brand Profile, language,
+  /// Content Pack, finishing), never by a rename. Standing Grants fingerprint it.
+  contentRevision Int       @default(1)
+  /// Null means no Brand Profile.
+  brandProfileId  String?   @db.Uuid
+  /// Source language; null means detect it.
+  languageCode    String?
+  contentPack     Json
+  /// Finishing settings; null means no finishing.
+  finishing       Json?
+  createdByUserId String?   @db.Uuid
+  updatedByUserId String?   @db.Uuid
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  brandProfile   BrandProfile?   @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+  createdBy      User?           @relation("RecipeCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedBy      User?           @relation("RecipeUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  autopilotRules AutopilotRule[]
+
+  @@index([workspaceId, deletedAt, createdAt])
+  @@index([brandProfileId])
 }
 
 model AutopilotEpisode {
@@ -1097,6 +1246,9 @@ model SocialAccount {
   expiresAt             DateTime?
   status                SocialAccountStatus @default(active)
   metadata              Json?
+  /// Weekly posting slots in the Workspace time zone, `{ slots: [{ weekday, time }] }`.
+  /// Null means the account has no schedule, so nothing can be accepted into its queue.
+  postingSchedule       Json?
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
 
@@ -1104,6 +1256,8 @@ model SocialAccount {
   workspace               Workspace?               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   socialPosts             SocialPost[]
   frozenPublicationStates FrozenPublicationState[]
+  trackedVideos           TrackedVideo[]
+  standingGrants          StandingGrant[]
 
   @@unique([workspaceId, platform, providerAccountId])
   @@index([userId, platform, status])
@@ -1174,6 +1328,10 @@ model Clip {
   captionPreset   Json?
   brollUrl        String?
   studioEdits     Json?
+  /// The clip is its whole source (a caption-only generation, such as a
+  /// captioned video). Selects clipDurationBounds(true): 1 to 180 seconds
+  /// instead of the detected-clip 10 to 120.
+  wholeSource     Boolean      @default(false)
 
   // Studio editor document (docs/plans/vizard-parity.md Phase A): optimistic-
   // concurrency revision bumped by every real editor-document save,
@@ -1355,6 +1513,9 @@ model ClipExport {
   progress        Int              @default(0)
   errorCode       String?
   workflowRunId   String?          @db.Uuid
+  /// Times a failed export was queued again. Each terminal outcome of an
+  /// export is a separate Workspace Event, named by this count.
+  retryCount      Int              @default(0)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
   completedAt     DateTime?
@@ -1396,6 +1557,7 @@ model ClipExportVariant {
   render                   ClipRender?
   frozenPublicationStates  FrozenPublicationState[]
   thumbnailFrameOperations ThumbnailFrameOperation[]
+  socialPostProposals      SocialPostProposal[]
 
   @@unique([exportId, aspectRatio])
   @@index([exportId, status])
@@ -1510,11 +1672,18 @@ model ReviewRound {
   supersededAt           DateTime?
   decision               String?
   decidedAt              DateTime?
+  /// The Standing Grant that sent this round, and the revision it had then.
+  standingGrantId        String?   @db.Uuid
+  standingGrantRevision  Int?
+  /// The finishing that sent it; unique, so a finishing sends at most one round.
+  finishingId            String?   @unique @db.Uuid
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
   workspace           Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project             Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  standingGrant       StandingGrant?             @relation(fields: [standingGrantId], references: [id], onDelete: SetNull)
+  finishing           GenerationFinishing?       @relation(fields: [finishingId], references: [id], onDelete: SetNull)
   items               ReviewRoundItem[]
   comments            ReviewComment[]
   decisions           ReviewDecision[]
@@ -1527,6 +1696,7 @@ model ReviewRound {
   @@unique([projectId, revision])
   @@index([workspaceId, createdAt(sort: Desc)])
   @@index([status, expiresAt])
+  @@index([standingGrantId, createdAt])
 }
 
 model ReviewRoundContext {
@@ -1813,6 +1983,7 @@ model BrandProfile {
   fonts                     BrandProfileFont[]
   audio                     BrandProfileAudio[]
   projects                  Project[]
+  recipes                   Recipe[]
   defaultForUsers           User[]                 @relation("UserDefaultBrandProfile")
   defaultForWorkspaces      Workspace[]            @relation("WorkspaceDefaultBrandProfile")
   sceneTemplates            SceneTemplate[]
@@ -1974,7 +2145,8 @@ model AssistedCopyVariant {
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
 
-  generation AssistedCopyGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  generation          AssistedCopyGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  socialPostProposals SocialPostProposal[]
 
   @@unique([generationId, platform])
 }
@@ -2233,26 +2405,34 @@ model SocialPost {
   nextAttemptAt            DateTime?
   metadata                 Json?
   reviewApprovalOverrideId String?                        @db.Uuid
+  /// The Standing Grant that accepted this post unattended, and the revision it
+  /// had then. Null for a post a person accepted or scheduled.
+  standingGrantId          String?                        @db.Uuid
+  standingGrantRevision    Int?
   createdAt                DateTime                       @default(now())
   updatedAt                DateTime                       @updatedAt
 
   project                Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  standingGrant          StandingGrant?              @relation(fields: [standingGrantId], references: [id], onDelete: SetNull)
   workspace              Workspace?                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   clip                   Clip?                       @relation(fields: [clipId], references: [id], onDelete: SetNull)
   socialAccount          SocialAccount?              @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
-  metrics                SocialPostMetric[]
+  trackedVideos          TrackedVideo[]
   frozenState            FrozenPublicationState?
   publicationAttempts    SocialPublicationAttempt[]
   manualDecisions        PublicationManualDecision[]
   reviewApprovalOverride ReviewApprovalOverride?     @relation(fields: [reviewApprovalOverrideId], references: [id], onDelete: SetNull)
+  proposal               SocialPostProposal?
 
   @@unique([workspaceId, clientIdempotencyKey])
   @@index([projectId, scheduledFor])
   @@index([workspaceId, scheduledFor])
+  @@index([socialAccountId, scheduledFor])
   @@index([status, scheduledFor])
   @@index([clipId])
   @@index([socialAccountId])
   @@index([reviewApprovalOverrideId])
+  @@index([standingGrantId])
 }
 
 model FrozenPublicationState {
@@ -2285,6 +2465,29 @@ model FrozenPublicationState {
   @@index([clipExportId])
   @@index([clipExportVariantId])
   @@index([socialAccountId])
+}
+
+/// A Social Post in the `draft` status that waits for a person to accept it into
+/// an account's posting schedule. It has no `scheduledFor`, takes no slot, and
+/// is never claimed for publication. Accepting it converts the same Social Post
+/// in place into a scheduled one in the next free slot; this row stays as the
+/// durable record of who proposed it and who accepted it.
+model SocialPostProposal {
+  socialPostId          String                   @id @db.Uuid
+  source                SocialPostProposalSource
+  clipExportVariantId   String                   @db.Uuid
+  assistedCopyVariantId String?                  @db.Uuid
+  title                 String?
+  createdAt             DateTime                 @default(now())
+  acceptedAt            DateTime?
+  acceptedByUserId      String?                  @db.Uuid
+
+  socialPost          SocialPost           @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  clipExportVariant   ClipExportVariant    @relation(fields: [clipExportVariantId], references: [id], onDelete: Cascade)
+  assistedCopyVariant AssistedCopyVariant? @relation(fields: [assistedCopyVariantId], references: [id], onDelete: SetNull)
+
+  @@index([clipExportVariantId])
+  @@index([assistedCopyVariantId])
 }
 
 model SocialPublicationAttempt {
@@ -2376,7 +2579,6 @@ model ProviderReceipt {
   receiptId                     String
   platformPostId                String?
   externalUrl                   String?
-  metrics                       Json?
   providerProcessingStatus      String?
   providerProcessingFailureCode String?
   providerVisibility            String?
@@ -2410,27 +2612,85 @@ model PublicationAnalyticsIntent {
   @@index([projectId, createdAt])
 }
 
-model SocialPostMetric {
-  id               String         @id @default(uuid()) @db.Uuid
-  projectId        String         @db.Uuid
-  postId           String         @db.Uuid
-  platform         SocialPlatform
-  views            Int            @default(0)
-  likes            Int            @default(0)
-  comments         Int            @default(0)
-  shares           Int            @default(0)
-  saves            Int            @default(0)
+/// Tracked Video: one directly published video whose public counts are read
+/// back from its platform on a fixed schedule. It belongs to the Workspace,
+/// not the Project, so deleting a Project or purging it by retention only
+/// detaches `socialPostId`; the captures and the clip facts stay. `clipFacts`
+/// is frozen once, at the first successful capture, and never rewritten.
+model TrackedVideo {
+  id              String         @id @default(uuid()) @db.Uuid
+  workspaceId     String         @db.Uuid
+  socialAccountId String?        @db.Uuid
+  socialPostId    String?        @db.Uuid
+  platform        SocialPlatform
+  platformPostId  String
+  publishedAt     DateTime
+  /// The clip this video is of, frozen when it is first tracked. No foreign key:
+  /// it only tells videos of one clip apart (a clip posted to several platforms)
+  /// after the clip or its Project is gone.
+  clipId          String?        @db.Uuid
+  clipFacts       Json?
+  clipFactsAt     DateTime?
+  createdAt       DateTime       @default(now())
+
+  workspace     Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount?       @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+  socialPost    SocialPost?          @relation(fields: [socialPostId], references: [id], onDelete: SetNull)
+  captures      PerformanceCapture[]
+
+  @@unique([workspaceId, platform, platformPostId])
+  @@index([workspaceId, publishedAt])
+  @@index([socialPostId])
+}
+
+/// Performance Capture: one scheduled read of a Tracked Video's public counts.
+/// A row is created per slot when the video is first tracked, claimed by a
+/// worker lease when due, and settled once as captured or skipped. A count the
+/// platform doesn't report stays null. `raw` keeps the provider's metrics and
+/// `apiVersion` the API that produced them.
+model PerformanceCapture {
+  id               String                  @id @default(uuid()) @db.Uuid
+  trackedVideoId   String                  @db.Uuid
+  slot             Int
+  dueAt            DateTime
+  state            PerformanceCaptureState @default(scheduled)
+  attempts         Int                     @default(0)
+  leaseOwner       String?
+  leaseExpiresAt   DateTime?
+  skipReason       String?
+  capturedAt       DateTime?
+  apiVersion       String?
+  views            Int?
+  likes            Int?
+  comments         Int?
+  shares           Int?
+  saves            Int?
   watchTimeSeconds Int?
-  metadata         Json?
-  capturedAt       DateTime       @default(now())
-  createdAt        DateTime       @default(now())
+  raw              Json?
+  createdAt        DateTime                @default(now())
 
-  project Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  post    SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  trackedVideo TrackedVideo @relation(fields: [trackedVideoId], references: [id], onDelete: Cascade)
 
-  @@index([projectId, capturedAt])
-  @@index([postId, capturedAt])
-  @@index([platform, capturedAt])
+  @@unique([trackedVideoId, slot])
+  @@index([state, dueAt])
+}
+
+/// Performance Guidance: what tends to work for one Workspace's audience, from
+/// its recent Tracked Videos' frozen clip facts and 7-day counts, normalised per
+/// platform. Recomputed about nightly. `platforms` and `groups` follow
+/// `performanceGuidanceSchema`; `groups` is empty until the Workspace has
+/// enough clips. `attemptedAt` is the last try, successful or not, so a
+/// Workspace that keeps failing waits a day like any other instead of holding up
+/// the rest; `computedAt` is when `groups` was actually computed.
+model PerformanceGuidance {
+  workspaceId String   @id @db.Uuid
+  computedAt  DateTime
+  attemptedAt DateTime
+  totalPosts  Int
+  platforms   Json
+  groups      Json
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
 
 model ProjectAnalyticsEvent {
@@ -2473,6 +2733,7 @@ model PublishedSocialVideo {
   socialPost     SocialPost @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
 
   @@unique([socialPostId, platformPostId])
+  @@index([publishedAt])
 }
 
 /// Operation Receipt: the durable acceptance record of one idempotent
@@ -2547,26 +2808,240 @@ model CallbackSigningSecret {
   @@index([workspaceId, retiresAt])
 }
 
+/// Workspace Event: an append-only, Workspace-scoped, versioned record of one
+/// finished transition, polled with `seq` as the cursor. `subject` carries IDs
+/// only. There is no foreign key to Project, so events outlive their Project;
+/// a maintenance loop deletes rows after 30 days.
+model WorkspaceEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @db.Uuid
+  seq         BigInt
+  type        String
+  version     Int       @default(1)
+  subject     Json
+  occurredAt  DateTime
+  createdAt   DateTime  @default(now())
+  /// One transition never emits twice.
+  dedupeKey   String    @unique
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, seq])
+  @@index([createdAt])
+}
+
+/// The durable memory that a transition already has its Workspace Event. The
+/// 30-day purge deletes events but never keys, so a later settlement of the
+/// same lineage can't emit it again. Keys go with their Project, or with the
+/// Workspace when the transition ended before any Project existed.
+model WorkspaceEventKey {
+  dedupeKey   String    @id
+  workspaceId String    @db.Uuid
+  projectId   String?   @db.Uuid
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([projectId])
+}
+
+/// The per-Workspace sequence behind `WorkspaceEvent.seq`. A writing
+/// transaction increments it as its last write, and the row lock holds until
+/// commit, so commit order matches `seq` order. It lives here, not on
+/// `Workspace`, whose row existing `FOR UPDATE` locks already contend for.
+model WorkspaceEventCounter {
+  workspaceId String    @id @db.Uuid
+  lastSeq     BigInt    @default(0)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+/// Webhook Subscription: a Workspace's HTTPS endpoint that receives its
+/// Workspace Events as signed POSTs, in `seq` order, at least once. The URL is
+/// sealed like a Completion Callback URL; logs and errors carry only `urlHost`.
+/// `lastDeliveredSeq` is the cursor: every matching event up to it has been
+/// acknowledged with a 2xx, and it moves only on success. A worker loop claims
+/// the row with a lease. It is disabled with a reason after 20 consecutive
+/// failures, a 410, or when the cursor falls behind event retention.
+model WebhookSubscription {
+  id                  String    @id @default(uuid()) @db.Uuid
+  workspaceId         String    @db.Uuid
+  createdByUserId     String?   @db.Uuid
+  encryptedUrl        String
+  urlHost             String
+  urlFingerprint      String
+  /// Workspace Event types to deliver; never empty.
+  types               String[]
+  /// active | disabled
+  status              String    @default("active")
+  lastDeliveredSeq    BigInt
+  consecutiveFailures Int       @default(0)
+  nextAttemptAt       DateTime  @default(now())
+  leaseOwner          String?
+  leaseExpiresAt      DateTime?
+  lastAttemptAt       DateTime?
+  lastResponseStatus  Int?
+  lastDeliveredAt     DateTime?
+  /// consecutive_failures | cursor_expired | endpoint_gone
+  disabledReason      String?
+  disabledAt          DateTime?
+  /// Set when the creator's email was attempted; a skipped send clears it.
+  disabledNotifiedAt  DateTime?
+  /// Set by re-enabling: the next drain moves the cursor past events that
+  /// expired while the subscription was disabled, then clears it.
+  skipExpiredOnResume Boolean   @default(false)
+  /// Throttles `POST /webhooks/{id}/test`.
+  lastTestedAt        DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy           User?     @relation("WebhookSubscriptionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, urlFingerprint])
+  @@index([status, nextAttemptAt])
+  @@index([createdByUserId])
+}
+
+/// What happens after one generation completes, asked for by an Autopilot rule
+/// or inline on a request: export the best clips, write assisted copy, then
+/// leave the Project ready to review. One row per generation, keyed by its
+/// origin (speech-to-text) run and created in the transaction that admits it,
+/// so retries and replays find the same row. The generation's settlement moves
+/// `waiting` to `due` or `skipped` in its own transaction; a worker loop claims
+/// `due` rows with a lease and ends them `ready`, `partial` or `skipped`.
+/// `picks` remembers the chosen clips and what each one produced, so a
+/// re-claim resumes where the last attempt stopped instead of starting over.
+model GenerationFinishing {
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @db.Uuid
+  projectId      String    @db.Uuid
+  originRunId    String    @unique @db.Uuid
+  /// The person the work runs as. No foreign key: a missing member skips it.
+  actorUserId    String?   @db.Uuid
+  /// FrozenFinishingSettings, resolved at admission.
+  settings       Json
+  /// The Autopilot rule whose import froze this row, from its Content Pack. Null for
+  /// finishing asked for inline by a request. Standing Grants cover only these rows.
+  autopilotRuleId String?   @db.Uuid
+  /// waiting | due | running | exporting | ready | partial | skipped
+  state          String    @default("waiting")
+  reason         String?
+  picks          Json?
+  /// Unexpected failures; waiting for exports is not an attempt.
+  attempts       Int       @default(0)
+  dueAt          DateTime?
+  nextAttemptAt  DateTime?
+  claimToken     String?   @db.Uuid
+  leaseExpiresAt DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  originRun WorkflowRun @relation(fields: [originRunId], references: [id], onDelete: Cascade)
+  reviewRound ReviewRound?
+
+  @@index([state, nextAttemptAt, leaseExpiresAt])
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([workspaceId])
+}
+
+/// Authority a Workspace Owner or Admin gave one Autopilot rule's output to go out
+/// without a click: its proposals accepted into a Social Account's queue
+/// (`publish`), or its finished exports sent as a Review Round to named reviewers
+/// (`review_send`). Caps count acceptances or rounds in the last 24 hours and
+/// 7 days; the grant ends at `expiresAt`. `revision` rises on each renewal, and
+/// what a grant sent records the revision it went out under.
+model StandingGrant {
+  id                 String              @id @default(uuid()) @db.Uuid
+  workspaceId        String              @db.Uuid
+  kind               StandingGrantKind
+  /// Null once the rule is deleted; the grant is revoked then and kept as the audit trail.
+  autopilotRuleId    String?             @db.Uuid
+  /// publish only; never a TikTok account.
+  socialAccountId    String?             @db.Uuid
+  /// review_send only: normalized email addresses.
+  reviewerEmails     Json?
+  dailyCap           Int
+  weeklyCap          Int
+  expiresAt          DateTime
+  status             StandingGrantStatus @default(active)
+  pausedReason       String?
+  /// A pause the system made is emailed to the granter once.
+  pauseNoticePending Boolean             @default(false)
+  /// A worker holds the notice until this time; the notice stays pending until it is sent.
+  pauseNoticeLeaseUntil DateTime?
+  /// Hash of the rule's content-bearing fields and its Brand Profile's approval rule when
+  /// the grant was made or renewed. A rule that no longer matches pauses the grant.
+  ruleFingerprint    String
+  revision           Int                 @default(1)
+  grantedByUserId    String?             @db.Uuid
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  workspace     Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  autopilotRule AutopilotRule?       @relation(fields: [autopilotRuleId], references: [id], onDelete: SetNull)
+  socialAccount SocialAccount?       @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+  grantedBy     User?                @relation("StandingGrantGrantedBy", fields: [grantedByUserId], references: [id], onDelete: SetNull)
+  events        StandingGrantEvent[]
+  socialPosts   SocialPost[]
+  reviewRounds  ReviewRound[]
+
+  @@index([workspaceId, status])
+  @@index([autopilotRuleId, status])
+  @@index([status, expiresAt])
+  @@index([pauseNoticePending])
+}
+
+/// The grant's audit trail: created, renewed, paused, revoked, expired.
+model StandingGrantEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  grantId     String   @db.Uuid
+  kind        String
+  revision    Int
+  /// Null when the system acted.
+  actorUserId String?  @db.Uuid
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  grant StandingGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+
+  @@index([grantId, createdAt])
+}
+
+/// A reviewer who asked, from a grant-sent review email, to stop automated review
+/// requests from one Workspace. Grants skip them; a person can still invite them.
+model ReviewerOptOut {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  email       String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, email])
+}
+
 /// Request-owned handle for existing work. Expiry never changes domain work.
 model McpTask {
-  id                     String    @id @default(uuid()) @db.Uuid
-  ownerUserId            String    @db.Uuid
-  callerId               String
-  workspaceId            String    @db.Uuid
-  toolName               String
-  domainKind             String
-  domainId               String    @db.Uuid
-  projectId              String    @db.Uuid
-  clipId                 String?   @db.Uuid
-  originatingOperationId String
-  resultContract         Json
-  initialResult          Json
-  status                 String    @default("working")
-  terminalOutcome        Json?
+  id                      String    @id @default(uuid()) @db.Uuid
+  ownerUserId             String    @db.Uuid
+  callerId                String
+  workspaceId             String    @db.Uuid
+  toolName                String
+  domainKind              String
+  domainId                String    @db.Uuid
+  projectId               String    @db.Uuid
+  clipId                  String?   @db.Uuid
+  originatingOperationId  String
+  resultContract          Json
+  initialResult           Json
+  status                  String    @default("working")
+  terminalOutcome         Json?
   cancellationRequestedAt DateTime?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
-  expiresAt              DateTime
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  expiresAt               DateTime
 
   @@unique([ownerUserId, callerId, toolName, domainKind, domainId])
   @@index([expiresAt])

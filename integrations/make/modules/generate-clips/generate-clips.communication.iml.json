@@ -1,0 +1,26 @@
+{
+    "url": "/projects/{{trim(parameters.projectId)}}/generations",
+    "method": "POST",
+    "headers": {
+        "Idempotency-Key": "make:generate-clips:{{sha256(trim(ifempty(parameters.runKey, '')) + '|' + trim(parameters.projectId) + '|' + if(parameters.forceRegenerate, 'true', 'false') + '|' + ifempty(parameters.clipCountTarget, '') + '|' + ifempty(parameters.clipLengthPreset, '') + '|' + ifempty(parameters.specificMoments, '') + '|' + ifempty(parameters.finishing.topClips, '') + '|' + ifempty(parameters.finishing.minScore, '') + '|' + if(parameters.finishing.copyPlatforms, join(parameters.finishing.copyPlatforms, ','), ''))}}"
+    },
+    "body": {
+        "generation": {
+            "clipCountTarget": "{{parameters.clipCountTarget}}",
+            "clipLengthPreset": "{{parameters.clipLengthPreset}}",
+            "specificMoments": "{{parameters.specificMoments}}"
+        },
+        "finishing": "{{if(parameters.finishing.topClips || parameters.finishing.minScore || parameters.finishing.copyPlatforms, parameters.finishing, undefined)}}",
+        "forceRegenerate": "{{if(parameters.forceRegenerate, true, false)}}"
+    },
+    "response": {
+        "output": {
+            "projectId": "{{body.projectId}}",
+            "operationId": "{{body.operation.operationId}}",
+            "operationKind": "{{body.operation.kind}}",
+            "statusUrl": "{{body.operation.statusUrl}}",
+            "reviewUrl": "{{body.reviewUrl}}",
+            "replayed": "{{if(headers.`idempotent-replayed` = 'true', true, false)}}"
+        }
+    }
+}

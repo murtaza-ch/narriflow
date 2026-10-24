@@ -429,7 +429,13 @@ export class ReviewService {
     return reviewRoundSummary(round);
   }
 
-  async createRound(scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier }, input: unknown) {
+  async createRound(
+    scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier },
+    input: unknown,
+    /** A Standing Grant sending the round, and the finishing it is the round of. `admit` runs in the
+     * round's transaction: it checks the grant and counts its caps, and returns the revision it ran under. */
+    options: { grant?: { id: string; admit(tx: Prisma.TransactionClient): Promise<{ revision: number }> }; finishingId?: string } = {},
+  ) {
     if (!hasFeature(scope.pricingTier, "review.rooms")) {
       throw new ReviewServiceError("review_feature_unavailable", "Review rooms are not available on this plan");
     }
@@ -466,6 +472,7 @@ export class ReviewService {
       ? await hashReviewPasscode(parsed.passcode)
       : null;
     const round = await withSerializableRetry(() => prisma.$transaction(async (tx) => {
+      const granted = options.grant ? await options.grant.admit(tx) : null;
       const latest = await tx.reviewRound.findFirst({
         where: { projectId: scope.projectId },
         orderBy: { revision: "desc" },
@@ -505,6 +512,8 @@ export class ReviewService {
         deliveryTokenEncrypted,
         recipientEmails,
         passcodeHash,
+        ...(granted && options.grant ? { standingGrantId: options.grant.id, standingGrantRevision: granted.revision } : {}),
+        ...(options.finishingId ? { finishingId: options.finishingId } : {}),
         expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : null,
         items: { create: parsed.items.map((item, position) => ({
           clipId: item.clipId,
@@ -516,7 +525,10 @@ export class ReviewService {
         })) },
         auditEvents: { create: {
           kind: latest ? "round_resubmitted" : "round_sent",
-          metadata: latest ? { previousRoundId: latest.id } : undefined,
+          metadata: latest || granted ? {
+            ...(latest ? { previousRoundId: latest.id } : {}),
+            ...(granted && options.grant ? { standingGrantId: options.grant.id, standingGrantRevision: granted.revision } : {}),
+          } : undefined,
         } },
         notificationLedgers: { create: recipientEmails.map((recipientEmail) => ({
           recipientEmail,

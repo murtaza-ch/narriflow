@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 
-import { autopilotService, clipService, ExpectedDomainFailureError, projectService, workspaceService,
+import { autopilotService, clipService, ExpectedDomainFailureError, projectService, publishingQueue, workspaceService,
   type WorkspaceActorContext, type ExpectedDomainFailureKind } from "@narriflow/services";
 
 import { INTEGRATION_COMMANDS } from "@narriflow/services";
@@ -53,12 +53,14 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       "narriflow_run_autopilot_rule_now",
       "narriflow_publish_social_publication_again",
       "narriflow_recheck_social_publication",
-      "narriflow_submit_video", "narriflow_upload_video", "narriflow_generate_clips",
+      "narriflow_submit_video", "narriflow_create_captioned_video", "narriflow_upload_video", "narriflow_generate_clips",
+      "narriflow_search_library",
       "narriflow_list_clips", "narriflow_get_clip", "narriflow_create_clip_export", "narriflow_get_clip_export",
-      "narriflow_list_social_accounts", "narriflow_get_publishing_options", "narriflow_prepare_social_post",
+      "narriflow_list_social_accounts", "narriflow_get_publishing_options", "narriflow_prepare_social_post", "narriflow_propose_social_post",
       "narriflow_schedule_social_post", "narriflow_list_social_publications",
-      "narriflow_get_operation", "narriflow_get_export_download", "narriflow_list_brand_profiles",
+      "narriflow_get_operation", "narriflow_get_export_download", "narriflow_get_clip_timeline", "narriflow_list_brand_profiles", "narriflow_list_recipes",
       "narriflow_create_review_handoff", "narriflow_list_review_rounds", "narriflow_get_review_round",
+      "narriflow_list_events",
     ].sort());
     expect(modelTools.map((tool) => tool.name).sort()).toEqual(Object.keys(MCP_TOOL_COMMANDS).sort());
 
@@ -73,8 +75,8 @@ describe("Narriflow MCP 2026-07-28 server", () => {
         ?.annotations?.destructiveHint,
     ).toBe(true);
     // Connector additions only read; the review handoff creates and sends nothing.
-    for (const name of ["narriflow_get_operation", "narriflow_get_export_download", "narriflow_list_brand_profiles",
-      "narriflow_create_review_handoff", "narriflow_list_review_rounds", "narriflow_get_review_round"]) {
+    for (const name of ["narriflow_get_operation", "narriflow_get_export_download", "narriflow_get_clip_timeline", "narriflow_list_brand_profiles", "narriflow_list_recipes", "narriflow_search_library",
+      "narriflow_create_review_handoff", "narriflow_list_review_rounds", "narriflow_get_review_round", "narriflow_list_events"]) {
       expect(tools.find((tool) => tool.name === name)?.annotations).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     }
   });
@@ -358,7 +360,7 @@ const identityPrincipal: NarriflowMcpPrincipal = { kind: "oauth", userId: ACTOR_
 
 const toolArguments: Record<Exclude<NarriflowMcpToolName, "narriflow_list_workspaces">, Record<string, unknown>> = {
   narriflow_confirm_social_publication: { clientIdempotencyKey: RESOURCE_ID, workspaceId: WORKSPACE_ID, socialPostId: RESOURCE_ID, reason: "Provider checked", evidenceKind: "manual_unvalidated" },
-  narriflow_create_rss_autopilot_rule: { clientIdempotencyKey: RESOURCE_ID, workspaceId: WORKSPACE_ID, name: "Podcast", rssUrl: "https://podcast.test/feed.xml" },
+  narriflow_create_rss_autopilot_rule: { clientIdempotencyKey: RESOURCE_ID, workspaceId: WORKSPACE_ID, name: "Podcast", rssUrl: "https://podcast.test/feed.xml", recipeId: RESOURCE_ID },
   narriflow_get_project: { workspaceId: WORKSPACE_ID, projectId: RESOURCE_ID },
   narriflow_get_social_publication: { workspaceId: WORKSPACE_ID, socialPostId: RESOURCE_ID },
   narriflow_get_workspace_usage: { workspaceId: WORKSPACE_ID },
@@ -368,8 +370,10 @@ const toolArguments: Record<Exclude<NarriflowMcpToolName, "narriflow_list_worksp
   narriflow_publish_social_publication_again: { clientIdempotencyKey: RESOURCE_ID, workspaceId: WORKSPACE_ID, socialPostId: RESOURCE_ID, reason: "Accept duplicate risk", duplicateRiskAcknowledged: true },
   narriflow_recheck_social_publication: { clientIdempotencyKey: RESOURCE_ID, workspaceId: WORKSPACE_ID, socialPostId: RESOURCE_ID, reason: "Inspect provider operation" },
   narriflow_submit_video: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID, url: "https://youtu.be/example" },
+  narriflow_create_captioned_video: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID, url: "https://youtu.be/example" },
   narriflow_upload_video: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID },
   narriflow_generate_clips: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID, projectId: RESOURCE_ID },
+  narriflow_search_library: { workspaceId: WORKSPACE_ID, query: "pricing strategy" },
   narriflow_list_clips: { workspaceId: WORKSPACE_ID, projectId: RESOURCE_ID },
   narriflow_get_clip: { workspaceId: WORKSPACE_ID, projectId: RESOURCE_ID, clipId: RESOURCE_ID },
   narriflow_create_clip_export: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID, projectId: RESOURCE_ID, clipId: RESOURCE_ID, expectedRevision: 3, aspectRatios: ["9:16"], resolution: "1080p" },
@@ -377,11 +381,15 @@ const toolArguments: Record<Exclude<NarriflowMcpToolName, "narriflow_list_worksp
   narriflow_list_social_accounts: { workspaceId: WORKSPACE_ID },
   narriflow_get_publishing_options: { workspaceId: WORKSPACE_ID, accountId: RESOURCE_ID },
   narriflow_prepare_social_post: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID, projectId: RESOURCE_ID, clipId: RESOURCE_ID, expectedEditorRevision: 3, clipExportId: RESOURCE_ID, clipExportVariantId: RESOURCE_ID, accountId: RESOURCE_ID, platform: "youtube_shorts", caption: "Example caption", aspectRatio: "9:16", resolution: "1080p", scheduledFor: "2026-10-06T00:00:00.000Z" },
+  narriflow_propose_social_post: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID, clipId: RESOURCE_ID, exportId: RESOURCE_ID, socialAccountId: RESOURCE_ID },
   narriflow_schedule_social_post: { workspaceId: WORKSPACE_ID, clientIdempotencyKey: RESOURCE_ID, preparationToken: "x".repeat(40) },
   narriflow_list_social_publications: { workspaceId: WORKSPACE_ID, projectId: RESOURCE_ID },
   narriflow_get_operation: { workspaceId: WORKSPACE_ID, operation: { kind: "intake", id: RESOURCE_ID } },
+  narriflow_list_events: { workspaceId: WORKSPACE_ID },
   narriflow_get_export_download: { workspaceId: WORKSPACE_ID, exportId: RESOURCE_ID },
+  narriflow_get_clip_timeline: { workspaceId: WORKSPACE_ID, projectId: RESOURCE_ID, clipId: RESOURCE_ID, format: "edl" },
   narriflow_list_brand_profiles: { workspaceId: WORKSPACE_ID },
+  narriflow_list_recipes: { workspaceId: WORKSPACE_ID },
   narriflow_create_review_handoff: { workspaceId: WORKSPACE_ID, items: [{ exportId: RESOURCE_ID, variantIds: [RESOURCE_ID] }] },
   narriflow_list_review_rounds: { workspaceId: WORKSPACE_ID, projectId: RESOURCE_ID },
   narriflow_get_review_round: { workspaceId: WORKSPACE_ID, roundId: RESOURCE_ID },
@@ -454,5 +462,60 @@ describe("MCP registered tool admission and failures", () => {
       expect(result.structuredContent).toEqual({ data: { error: "narriflow_tool_failed", message: "Narriflow tool failed without exposing internal details" } });
       expect(JSON.stringify(result)).not.toContain("password=private");
     } finally { actorSpy.mockRestore(); usageSpy.mockRestore(); }
+  });
+});
+
+describe("narriflow_propose_social_post", () => {
+  const WORKSPACE = "00000000-0000-4000-8000-000000000003";
+  const ID = "00000000-0000-4000-8000-000000000004";
+  const actor: WorkspaceActorContext = { actorUserId: "00000000-0000-4000-8000-000000000001", workspaceId: WORKSPACE, workspaceName: "Team",
+    workspaceOwnerUserId: "another-user", role: "editor", status: "active", pricingTier: "business", isPersonalWorkspace: false };
+  const proposal = { proposalId: ID, projectId: ID, clipId: ID, socialAccountId: ID, platform: "x", caption: "Draft", source: "integration",
+    exportId: ID, exportVariantId: ID, aspectRatio: "9:16", createdAt: "2026-10-24T12:00:00.000Z" };
+  const oauth: NarriflowMcpPrincipal = { kind: "oauth", userId: actor.actorUserId, clientId: "client", scopes: ["publishing:write"] };
+
+  test("proposes into the queue without any confirmation flow and says where a person accepts it", async () => {
+    const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(actor);
+    const propose = spyOn(publishingQueue, "propose").mockResolvedValue({ proposal, replayed: false } as never);
+    try {
+      const client = await connect(oauth);
+      const result = await client.callTool({ name: "narriflow_propose_social_post", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: ID, clipId: ID, exportId: ID, socialAccountId: ID, caption: "Draft" } });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({ data: { proposal, queueUrl: expect.stringMatching(/\/calendar\/queue$/), replayed: false } });
+      expect(actorSpy).toHaveBeenCalledWith(actor.actorUserId, WORKSPACE, "publishing.manage");
+      expect(propose.mock.calls[0]![1]).toEqual({ clipId: ID, exportId: ID, socialAccountId: ID, caption: "Draft" });
+      expect(propose.mock.calls[0]![2]).toMatchObject({ source: "integration", mutation: { clientIdempotencyKey: ID } });
+    } finally { actorSpy.mockRestore(); propose.mockRestore(); }
+  });
+
+  test("finishing that proposes to the queue needs publishing:write on submit, generate and upload", async () => {
+    const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(actor);
+    const submit = spyOn(projectService, "queueLinkIngest").mockRejectedValue(new Error("must not run"));
+    try {
+      const client = await connect({ ...oauth, scopes: ["processing:write"] });
+      const finishing = { topClips: 2, delivery: "propose_to_queue", queueAccountIds: [ID] };
+      const calls = [
+        { name: "narriflow_submit_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: ID, url: "https://youtu.be/example", finishing } },
+        { name: "narriflow_generate_clips", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: ID, projectId: ID, finishing } },
+        { name: "narriflow_upload_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: ID, finishing } },
+      ];
+      for (const call of calls) {
+        const result = await client.callTool(call);
+        expect(result.structuredContent).toMatchObject({ data: { error: "scope_required", details: { scope: "publishing:write" } } });
+      }
+      expect(submit).not.toHaveBeenCalled();
+    } finally { actorSpy.mockRestore(); submit.mockRestore(); }
+  });
+
+  test("cannot choose a time, and needs the publishing write scope", async () => {
+    const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(actor);
+    const propose = spyOn(publishingQueue, "propose").mockResolvedValue({ proposal, replayed: false } as never);
+    try {
+      const timed = await (await connect(oauth)).callTool({ name: "narriflow_propose_social_post", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: ID, clipId: ID, exportId: ID, socialAccountId: ID, scheduledFor: "2030-01-01T00:00:00Z" } });
+      expect(timed.isError).toBe(true);
+      const readOnly = await (await connect({ ...oauth, scopes: ["publishing:read"] })).callTool({ name: "narriflow_propose_social_post", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: ID, clipId: ID, exportId: ID, socialAccountId: ID } });
+      expect(readOnly.structuredContent).toMatchObject({ data: { error: "scope_required", details: { scope: "publishing:write" } } });
+      expect(propose).not.toHaveBeenCalled();
+    } finally { actorSpy.mockRestore(); propose.mockRestore(); }
   });
 });

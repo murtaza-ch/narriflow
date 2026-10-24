@@ -1,0 +1,42 @@
+{
+    "url": "/events",
+    "method": "GET",
+    "qs": {
+        "types": "{{join(parameters.types, ',')}}",
+        "order": "asc",
+        "limit": 100,
+        "after": "{{ifempty(data.lastId, undefined)}}"
+    },
+    "response": {
+        "iterate": "{{body.data}}",
+        "limit": "{{parameters.limit}}",
+        "output": {
+            "id": "{{item.id}}",
+            "seq": "{{item.seq}}",
+            "type": "{{item.type}}",
+            "occurredAt": "{{item.occurredAt}}",
+            "projectId": "{{item.subject.projectId}}",
+            "operationId": "{{item.subject.operation.id}}",
+            "operationKind": "{{item.subject.operation.kind}}",
+            "state": "{{item.subject.state}}",
+            "reason": "{{item.subject.reason}}",
+            "exportIds": "{{item.subject.exportIds}}",
+            "ruleId": "{{item.subject.ruleId}}",
+            "episodeId": "{{item.subject.episodeId}}",
+            "socialPostId": "{{item.subject.socialPostId}}",
+            "clipId": "{{item.subject.clipId}}",
+            "platform": "{{item.subject.platform}}"
+        },
+        "trigger": {
+            "type": "id",
+            "order": "asc",
+            "id": "{{item.seq}}"
+        }
+    },
+    "pagination": {
+        "qs": {
+            "after": "{{body.nextCursor}}"
+        },
+        "condition": "{{length(body.data) = 100}}"
+    }
+}

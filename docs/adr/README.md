@@ -19,3 +19,6 @@ Add an ADR when a decision is costly to reverse, would surprise a reader without
 - [0011: Worker Process Module owns subprocess and scratch lifetimes](0011-worker-process-module.md)
 - [0012: Processing Usage owns minute admission and settlement](0012-processing-usage.md)
 - [0013: Integrations share commands and receipts, with per-request callbacks](0013-integration-surfaces.md)
+- [0014: Workspace Events are a pull feed written in the transaction that makes the change](0014-workspace-events.md)
+- [0015: The Publishing Queue holds proposals as draft posts and takes slots under an account lock](0015-publishing-queue.md)
+- [0016: Standing Grants let a person authorize one Autopilot rule's output to go out unattended, and count their caps under the delivery's own lock](0016-standing-grants.md)

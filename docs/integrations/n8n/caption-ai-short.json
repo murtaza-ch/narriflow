@@ -1,0 +1,709 @@
+{
+  "name": "Narriflow: caption an AI short",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "d1a271b5-cacf-518e-b81c-d75222c1f93a",
+      "name": "Caption an AI short",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "5bc6c610-469b-5d13-979f-533453360201",
+              "name": "videoUrl",
+              "value": "REPLACE_WITH_AI_SHORT_URL",
+              "type": "string"
+            },
+            {
+              "id": "d5a87bfc-7f70-550c-8177-d9fc47a7aa52",
+              "name": "framing",
+              "value": "fit",
+              "type": "string"
+            },
+            {
+              "id": "d5166eee-1e15-5552-92ae-e9c5cf15e277",
+              "name": "captions",
+              "value": "auto",
+              "type": "string"
+            },
+            {
+              "id": "ab1549f4-57a3-5776-963c-7638587c86ae",
+              "name": "srt",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0974b6e4-8a01-5ee8-b016-c6b1ccb7029f",
+      "name": "AI short and options",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.videoUrl }}",
+        "authentication": "none",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "dc4261a9-6c45-54af-a451-7fa29b766fc4",
+      "name": "Download AI short",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The idempotency key comes from the execution and the action, so a retried request replays.\nconst item = $input.first();\nconst buffer = await this.helpers.getBinaryDataBuffer(0, 'data');\nconst options = $('AI short and options').first().json;\n// captions: auto transcribes the speech, none leaves the video uncaptioned,\n// supplied burns in the SRT or WebVTT text from the srt field.\nconst captions = options.captions === 'supplied' ? { source: 'supplied', text: options.srt } : { source: options.captions || 'auto' };\nreturn [{\n  json: {\n    file: { name: item.binary.data.fileName || 'ai-short.mp4', sizeBytes: buffer.length, contentType: item.binary.data.mimeType || 'video/mp4' },\n    keys: { open: `${$execution.id}:open` },\n    settings: { framing: options.framing || 'fit', aspectRatios: ['9:16'], resolution: '1080p', captions },\n  },\n  binary: item.binary,\n}];"
+      },
+      "id": "598a9724-ebc7-53a0-b84d-e0a8bf610bce",
+      "name": "Prepare upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/captioned-videos",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.keys.open }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ...$json.settings, source: { kind: 'upload', file: $json.file, transfer: 'single' } }) }}",
+        "options": {}
+      },
+      "id": "25a4c0ed-c019-5984-8d84-d2f3d1f51141",
+      "name": "Open upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Narriflow API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Carry the downloaded file to the PUT request.\nreturn $input.all().map((item, index) => ({ json: item.json, binary: $('Prepare upload').all()[index].binary }));"
+      },
+      "id": "3c174693-495c-5fa3-96f8-394712d94e53",
+      "name": "Attach file",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $json.upload.transfer.url }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "={{ $json.upload.transfer.headers['Content-Type'] }}"
+            }
+          ]
+        },
+        "options": {},
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data"
+      },
+      "id": "54ceb7bf-3540-5a65-b729-79416cef4cc6",
+      "name": "PUT file to storage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/uploads/{{ $('Open upload').item.json.upload.uploadId }}/finalize",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ callback: { url: $execution.resumeUrl + '/intake' } }) }}",
+        "options": {}
+      },
+      "id": "4940de0e-67ed-58e9-aea6-16525dc9c92e",
+      "name": "Finalize with callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Narriflow API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.upload.operation.statusUrl }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "6d38fc54-2721-5e3e-a860-201bce35bc71",
+      "name": "Read intake",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Narriflow API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The operations this execution waits on. A callback is only a wake-up;\n// Operation Status is the source of truth.\nreturn [{ json: { operationIds: $input.all().map((item) => item.json.operationId) } }];"
+      },
+      "id": "36bf3831-1891-5094-a170-f887989b6026",
+      "name": "Track operations",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1f91cf99-8da3-5882-bccd-5d0a6cbb9be0",
+              "leftValue": "={{ $('Read intake').first().json.state !== 'working' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2a87216e-cf56-50c1-b70b-dca75d0cf2a7",
+      "name": "Intake finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "limitWait": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 12,
+        "resumeUnit": "hours",
+        "options": {
+          "webhookSuffix": "intake",
+          "rawBody": true,
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "40c1f278-9658-505c-a9f9-c5b005113f4b",
+      "name": "Wait for intake",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2420,
+        500
+      ],
+      "webhookId": "db6f0fb2-ee14-5056-8e9b-3f23d90398da"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Verify the Standard Webhooks signature, then accept only a new event for an\n// operation this execution is waiting on. Anything else waits again.\nconst crypto = require('crypto');\nlet secret = $vars.NARRIFLOW_CALLBACK_SECRET;\ntry { secret = secret || $env.NARRIFLOW_CALLBACK_SECRET; } catch {}\nif (!secret) throw new Error('Set the NARRIFLOW_CALLBACK_SECRET variable (whsec_…) from Narriflow Settings → API');\nconst key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');\nconst waiting = new Set($('Track operations').first().json.operationIds);\nconst seen = $getWorkflowStaticData('global');\nseen.narriflowEvents = seen.narriflowEvents || {};\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst id = headers['webhook-id'];\nconst timestamp = Number(headers['webhook-timestamp']);\n// The raw body is binary data; n8n may keep it in filesystem or S3 storage.\nconst raw = item.binary && item.binary.data\n  ? (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8')\n  : JSON.stringify(item.json.body);\nconst expected = crypto.createHmac('sha256', key).update(`${id}.${timestamp}.${raw}`).digest('base64');\nconst offered = String(headers['webhook-signature'] || '').split(' ').map((part) => part.split(',')[1]);\nconst fresh = Math.abs(Date.now() / 1000 - timestamp) < 300;\nconst signed = offered.some((signature) => signature && signature.length === expected.length\n  && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)));\nlet event = null;\ntry { event = JSON.parse(raw); } catch {}\nconst accepted = Boolean(signed && fresh && event && event.id === id\n  && waiting.has(event.data.operationId) && !seen.narriflowEvents[id]);\nif (accepted) seen.narriflowEvents[id] = Date.now();\nreturn [{ json: { accepted, eventId: id || null, operationId: event?.data?.operationId ?? null } }];"
+      },
+      "id": "4d29f233-d939-5064-97b4-7274fd782a45",
+      "name": "Verify intake event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f84f4779-b060-5531-96e2-033304ee3fff",
+              "leftValue": "={{ $json.accepted }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "407ca05f-55de-5aa9-8858-74b4e4b0992b",
+      "name": "Intake event valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2860,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Read intake').first().json.statusUrl }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "3718b227-b8a9-54b3-804d-cfc3e913853c",
+      "name": "Re-read intake",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        500
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Narriflow API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "dc56cdf1-4099-5b86-9179-f8d96fd169a4",
+              "leftValue": "={{ $json.state !== 'working' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d0d99275-5b4f-5c8c-8624-c75fc2fd9bed",
+      "name": "Intake done now?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3300,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The intake's status follows the whole job: import, captions, framing, and the export.\nconst latest = $input.first().json;\nconst status = latest.state && latest.results ? latest : $('Read intake').first().json;\nif (!['completed', 'partial'].includes(status.state) || !status.results.exportId) {\n  throw new Error(`Narriflow could not caption this video (${status.state}: ${status.failureCode || 'no export'}). Open ${status.reviewUrl} for details.`);\n}\n// notices carries framing_degraded when Center cropped part of the frame.\nreturn [{ json: status }];"
+      },
+      "id": "51e993ec-2f11-5258-bb56-f9153205b106",
+      "name": "Check result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/exports/{{ $json.results.exportId }}/download",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "0178743b-85ee-59df-a532-00311c888062",
+      "name": "Download grants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3740,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Narriflow API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const grants = $input.first().json;\nconst notices = $('Check result').first().json.notices;\nreturn grants.variants.map((variant) => ({ json: { fileName: variant.fileName, aspectRatio: variant.aspectRatio, downloadUrl: variant.downloadUrl, notices } }));"
+      },
+      "id": "29e68868-8dc4-5e40-8f90-e608a67cdf6e",
+      "name": "One item per file",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.downloadUrl }}",
+        "authentication": "none",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "e7fa7596-e247-52e3-aa93-50687797fe63",
+      "name": "Fetch MP4",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4180,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Caption an AI short": {
+      "main": [
+        [
+          {
+            "node": "AI short and options",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI short and options": {
+      "main": [
+        [
+          {
+            "node": "Download AI short",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download AI short": {
+      "main": [
+        [
+          {
+            "node": "Prepare upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare upload": {
+      "main": [
+        [
+          {
+            "node": "Open upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open upload": {
+      "main": [
+        [
+          {
+            "node": "Attach file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach file": {
+      "main": [
+        [
+          {
+            "node": "PUT file to storage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PUT file to storage": {
+      "main": [
+        [
+          {
+            "node": "Finalize with callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize with callback": {
+      "main": [
+        [
+          {
+            "node": "Read intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read intake": {
+      "main": [
+        [
+          {
+            "node": "Track operations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Track operations": {
+      "main": [
+        [
+          {
+            "node": "Intake finished?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intake finished?": {
+      "main": [
+        [
+          {
+            "node": "Check result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for intake": {
+      "main": [
+        [
+          {
+            "node": "Verify intake event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify intake event": {
+      "main": [
+        [
+          {
+            "node": "Intake event valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intake event valid?": {
+      "main": [
+        [
+          {
+            "node": "Re-read intake",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-read intake": {
+      "main": [
+        [
+          {
+            "node": "Intake done now?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intake done now?": {
+      "main": [
+        [
+          {
+            "node": "Check result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check result": {
+      "main": [
+        [
+          {
+            "node": "Download grants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download grants": {
+      "main": [
+        [
+          {
+            "node": "One item per file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per file": {
+      "main": [
+        [
+          {
+            "node": "Fetch MP4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {}
+}

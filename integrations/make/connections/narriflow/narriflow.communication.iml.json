@@ -1,0 +1,23 @@
+{
+    "url": "{{ifempty(parameters.baseUrl, 'https://app.narriflow.com')}}/api/v1/workspace",
+    "method": "GET",
+    "headers": {
+        "authorization": "Bearer {{parameters.apiKey}}",
+        "accept": "application/json"
+    },
+    "response": {
+        "valid": "{{statusCode >= 200 && statusCode < 300}}",
+        "error": {
+            "message": "[{{statusCode}}] {{ifempty(body.error, 'error')}}: {{ifempty(body.message, 'Narriflow did not accept this API key.')}}{{if(body.requestId, ' (request ' + body.requestId + ')', '')}}"
+        },
+        "metadata": {
+            "type": "text",
+            "value": "{{ifempty(body.workspace.name, 'Narriflow')}}"
+        }
+    },
+    "log": {
+        "sanitize": [
+            "request.headers.authorization"
+        ]
+    }
+}

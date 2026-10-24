@@ -78,6 +78,12 @@ try {
 		"packages/services/src/completion-callback.db.test.ts",
 		"packages/services/src/mcp-task.db.test.ts",
 		"packages/services/src/operation-status.db.test.ts",
+		"packages/services/src/workspace-event.db.test.ts",
+		"packages/services/src/webhook-subscription.db.test.ts",
+		"packages/services/src/generation-finishing.db.test.ts",
+		"packages/services/src/recipe.db.test.ts",
+		"packages/services/src/recipe-migration.db.test.ts",
+		"apps/web/lib/rest-api/events.db.test.ts",
 	]) {
 		await run(["bun", "test", suite], {
 			ALLOW_INTEGRATION_DB_TESTS: "1",

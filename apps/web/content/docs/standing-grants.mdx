@@ -1,0 +1,75 @@
+---
+title: Automation grants
+sidebarTitle: Automation grants
+description: Let one Autopilot rule's posts or review rounds go out without a click, within caps and until an expiry. A grant never overrides a Brand Profile's approval rule.
+---
+
+By default every post and every review round waits for a person's click. An automation grant is a Workspace Owner's or Admin's standing permission for one Autopilot rule's output to go out without one. It has caps, an expiry, a pause and a history, and anyone in the Workspace can see it.
+
+There are two kinds:
+
+- **Post to an account.** Posts that the rule's Finishing proposes to an account's [publishing queue](/docs/publishing-queue) are accepted into that account's next free slot.
+- **Send review rounds.** When the rule's Finishing ends, its finished clips are sent to named reviewers as one review round. This needs the Business plan, like every review round.
+
+Only Owners and Admins can create, renew, pause or revoke a grant. Everyone else can see what is granted and what went out under it, and how many reviewers a review grant has, but not their addresses.
+
+## Create a grant
+
+1. Open **Settings**, then **Automation grants**, and select **New grant**. From an Autopilot rule, select **Manage grants** to start with that rule chosen.
+2. Choose the rule and what it may do.
+3. For a post grant, choose the account. For a review grant, enter the reviewers' email addresses, one per line.
+4. Set the caps and how long the grant lasts.
+
+The rule's Finishing settings decide what is proposed or sent. For a post grant, turn on **Propose posts to my publishing queue** for the same account. For a review grant, turn on **Send a review round to the grant's reviewers**. A grant without matching Finishing does nothing, and Finishing without a grant leaves the work waiting for you.
+
+Each rule can have one grant per destination: one per account, and one for review rounds.
+
+## The rule is part of the grant
+
+A grant is made for the rule as its granter saw it. Narriflow remembers what the rule reads from, which Recipe it uses and that Recipe's settings (the generation settings, and what Finishing does and to which accounts), and which Brand Profile the Recipe applies and whether that profile requires approval. If any of that changes, including editing the Recipe's settings or pointing the rule at another Recipe, the grant pauses until an Owner or Admin renews it, and renewing approves the rule as it now stands. Renaming the rule or its Recipe, or changing how often the rule checks the feed, doesn't count. Deleting a rule revokes its grants, and disconnecting an account revokes the grants for it. They stay in the list as history.
+
+## Caps and expiry
+
+A grant has a daily cap and a weekly cap. They count what went out under the grant in the last 24 hours and the last 7 days: posts accepted, or rounds sent. A post you later cancel still counts. Caps are 1 to 20 a day and 1 to 100 a week, and the week can't be lower than the day. Narriflow counts them in the same step that takes the slot or creates the round, so two things happening at once can't both take the last place.
+
+A grant lasts at most 90 days, and the app offers 7, 14, 30, 60 or 90. When it expires it stops, and a person renews it. **Renew** restates the caps, the expiry and the reviewers, starts a new revision, and resumes a grant that was paused or expired. Whoever renews it becomes the person it acts for.
+
+## What goes out, and what waits
+
+A grant only supplies the click. Everything else a person's click would face still applies, and when any of it says no, the clip stays a proposal for you to accept, or the clips stay ready to review.
+
+- **Brand approval.** If the Project's Brand Profile requires client approval, the export needs an approved review round before a post grant can accept it. A grant never overrides this. Only an Owner or Admin's own audited override, given with a reason when they schedule by hand, can.
+- **Caps.** Over a cap, the proposal waits.
+- **Slots.** The account needs posting slots, and a free one.
+- **The clip.** If it changed after the export, the proposal waits.
+- **The account.** If it needs reconnecting, the proposal waits.
+- **TikTok.** TikTok needs the creator's choices on every post, so a TikTok account can't hold a grant. Its proposals always wait for you.
+- **The plan.** If the Workspace drops below Business, review rounds are not sent. Finishing ends with the reason, and the clips are ready to review.
+- **Where the settings came from.** Only the rule's own import is covered. If an API key or assistant asks for finishing on a Project the rule imported, that request's finishing is never accepted or sent under the rule's grants.
+
+Every review email a grant sends ends with a link, "Stop automated review requests from" the Workspace, that works without signing in. A reviewer who follows it and confirms is skipped by every grant in that Workspace from then on, and the grant's card lists who opted out. If nobody is left, no round is sent. Someone in the Workspace can still invite them to a review by hand.
+
+A review grant sends one round for each finished generation, only when every picked clip exported and its copy was written. The round is named after the Project, and the Brand Profile decides whether the reviewers' approval is required. The finishing's reason on the Project page, and in the `finishing.finished` event, says when a round was not sent.
+
+## Evidence
+
+A post accepted under a grant records the grant and its revision. A round sent under one records them too. The grant's history lists its creation, renewals, pauses, revocation and expiry with who did each, and the most recent posts and rounds it sent, each linking to its Project.
+
+## When a grant pauses itself
+
+A grant pauses when:
+
+- **A post it accepted fails or needs attention.** Narriflow pauses the grant as the outcome is recorded, and emails the person it acts for. If they are no longer an Owner or Admin, the Workspace owner is emailed instead. A post accepted before the last renewal doesn't pause the renewed grant.
+- **The person it acts for is no longer an Owner or Admin.** The next time it would act, it pauses instead.
+
+A paused grant accepts and sends nothing, and it holds the posts it already accepted: they stay scheduled but don't start publishing until a person renews the grant. If a post's attempt has already begun, it finishes. You can also pause a grant yourself.
+
+**Revoke** and expiry end a grant for good. Posts it scheduled that haven't started publishing go back to the **Proposed posts** inbox, as the proposals they were, for a person to accept again. Rounds already sent stay open. A revoked destination can be granted again as a new grant.
+
+Demoting or removing the person a grant acts for pauses their grants at once.
+
+## Watch grants from your tools
+
+Two [events](/docs/api/events) report a grant stopping. `grant.paused` has the `reason` `manual`, `post_failed`, `post_needs_attention`, `granter_unavailable` or `rule_changed`. `grant.expired` fires once when the expiry passes. Both carry only IDs: the grant, its kind and its rule (`null` if the rule was deleted). They need no scope beyond reading events, and you can send them to a [webhook](/docs/api/webhooks).
+
+Grants are managed in the app. The API and assistants can read their events but can't create, renew or revoke a grant, because that authority belongs to a person.

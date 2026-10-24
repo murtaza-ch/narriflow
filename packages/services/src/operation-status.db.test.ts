@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
-import { buildGenerationContentPack } from "@narriflow/validators";
+import { buildCaptionedVideoContentPack, buildCaptionedVideoSettings, buildGenerationContentPack } from "@narriflow/validators";
 import { createOperationStatusReader } from "./operation-status";
 
 const url = process.env.INTEGRATION_TEST_DATABASE_URL;
@@ -95,6 +95,100 @@ db("Operation Status lineage", () => {
     const status = await read("export", exported.id);
     expect(status).toMatchObject({ state: "partial", results: { projectId, clipIds: [clip.id], exportId: exported.id } });
     expect(status.items.map((item) => [item.state, item.failureCode]).sort()).toEqual([["completed", null], ["failed", "export_file_missing"], ["failed", "render_failed"]]);
+  });
+
+  describe("a captioned video", () => {
+    const probe = { durationSec: 8, video: { width: 1920, height: 1080, frameRate: { numerator: 24, denominator: 1 }, startTimecode: null }, audio: null };
+    async function captioned(framing: "fit" | "center") {
+      const created = await prisma.project.create({ data: { workspaceId, createdByUserId: userId, title: "Captioned", sourceMediaUrl: "r2://source.mp4", ingestStatus: "ready", sourceDurationSeconds: 8, sourceProbe: probe } });
+      const settings = buildCaptionedVideoSettings({ framing, aspectRatios: ["9:16", "1:1"], captions: { source: "none" } });
+      const pack = await prisma.contentPack.create({ data: { projectId: created.id, ...buildCaptionedVideoContentPack(settings) } });
+      const origin = await prisma.workflowRun.create({ data: { projectId: created.id, contentPackId: pack.id, stage: "stt", status: "completed", idempotencyKey: randomUUID() } });
+      const detection = await prisma.workflowRun.create({ data: { projectId: created.id, contentPackId: pack.id, stage: "moment_detection", status: "completed", idempotencyKey: `${origin.idempotencyKey}__moment_detection` } });
+      const clip = await prisma.clip.create({ data: { projectId: created.id, workflowRunId: detection.id, index: 0, startSec: 0, endSec: 8, wholeSource: true, hookText: "Captioned", reasoning: "Test", category: "story",
+        transcriptSlice: [], viralityScore: 1, hookStrengthScore: 1, emotionalIntensityScore: 1, pacingScore: 1, durationOptimalityScore: 1, tiktokScore: 1, youtubeScore: 1, instagramScore: 1, llmProvider: "test", llmModel: "test" } });
+      return { projectId: created.id, origin, detection, clip };
+    }
+    /** The detection run's durable record, as the lifecycle appends it: the export frozen at
+     * completion, then (once) the outcome the export first ended as. */
+    let eventSeq = 0;
+    const record = (projectId: string, detectionId: string, extra: Record<string, unknown>) => {
+      eventSeq += 1;
+      const emittedAt = new Date().toISOString();
+      return prisma.workflowEvent.create({ data: { projectId, workflowRunId: detectionId, seq: eventSeq, stage: "moment_detection", status: "completed", progress: 100, emittedAt: new Date(), dedupeKey: randomUUID(),
+        payload: { event: "workflow.stage.updated", projectId, workflowRunId: detectionId, seq: eventSeq, stage: "moment_detection", status: "completed", progress: 100, errorCode: null, emittedAt, ...extra } as never } });
+    };
+    const freeze = (projectId: string, detectionId: string, exportId: string, clipId: string) => record(projectId, detectionId, { generationExport: { exportId, clipId } });
+    const exportFor = (projectId: string, clipId: string, status: string, variants: Array<{ aspectRatio: "ratio_9_16" | "ratio_1_1"; status: string; storageKey?: string | null; errorCode?: string }>) =>
+      prisma.clipExport.create({ data: { projectId, workspaceId, clipId, editorRevision: 0, fingerprint: randomUUID(), resolution: "1080p", watermark: false, status: status as never, progress: status === "ready" ? 100 : 20,
+        variants: { create: variants.map((variant) => ({ resolution: "1080p", watermark: false, ...variant, status: variant.status as never })) } } });
+
+    test("is not done until its export is, and names the export", async () => {
+      const { origin, detection, projectId, clip } = await captioned("fit");
+      expect(await read("generation", origin.id)).toMatchObject({ state: "failed", failureCode: "export_unavailable", results: { projectId, clipIds: [clip.id], exportId: null } });
+      const exported = await exportFor(projectId, clip.id, "rendering", [{ aspectRatio: "ratio_9_16", status: "completed", storageKey: "projects/x/a.mp4" }, { aspectRatio: "ratio_1_1", status: "rendering" }]);
+      await freeze(projectId, detection.id, exported.id, clip.id);
+      expect(await read("generation", origin.id)).toMatchObject({ state: "working", stage: "rendering", results: { projectId, clipIds: [clip.id], exportId: exported.id },
+        items: [{ kind: "variant", state: "completed" }, { kind: "variant", state: "working" }] });
+      await prisma.clipExport.update({ where: { id: exported.id }, data: { status: "ready", progress: 100 } });
+      await prisma.clipExportVariant.updateMany({ where: { exportId: exported.id, aspectRatio: "ratio_1_1" }, data: { status: "completed", storageKey: "projects/x/b.mp4" } });
+      expect(await read("generation", origin.id)).toMatchObject({ state: "completed", progress: 1, results: { exportId: exported.id }, failureCode: null });
+    });
+
+    test("an intake follows it to the export, and a failed format makes it partial", async () => {
+      const { origin, detection, projectId, clip } = await captioned("fit");
+      const job = await prisma.ingestJob.create({ data: { projectId, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date(), generationHandoffAt: new Date(), generationRunId: origin.id } });
+      const exported = await exportFor(projectId, clip.id, "partial_ready", [{ aspectRatio: "ratio_9_16", status: "completed", storageKey: "projects/x/a.mp4" }, { aspectRatio: "ratio_1_1", status: "failed", errorCode: "render_failed" }]);
+      await freeze(projectId, detection.id, exported.id, clip.id);
+      expect(await read("intake", job.id)).toMatchObject({ kind: "intake", state: "partial", failureCode: "render_failed", results: { exportId: exported.id } });
+    });
+
+    test("an export the person makes later never stands in for the video's own", async () => {
+      const { origin, detection, projectId, clip } = await captioned("fit");
+      const first = await exportFor(projectId, clip.id, "rendering", [{ aspectRatio: "ratio_9_16", status: "rendering" }]);
+      await freeze(projectId, detection.id, first.id, clip.id);
+      await exportFor(projectId, clip.id, "ready", [{ aspectRatio: "ratio_1_1", status: "completed", storageKey: "projects/x/later.mp4" }]);
+      expect(await read("generation", origin.id)).toMatchObject({ state: "working", results: { exportId: first.id } });
+    });
+
+    test("once its export has ended, a retry or a deletion of the export leaves the generation as it reported", async () => {
+      const { origin, detection, projectId, clip } = await captioned("fit");
+      const exported = await exportFor(projectId, clip.id, "failed", [{ aspectRatio: "ratio_9_16", status: "failed", errorCode: "render_failed" }, { aspectRatio: "ratio_1_1", status: "failed", errorCode: "render_failed" }]);
+      await freeze(projectId, detection.id, exported.id, clip.id);
+      const variants = await prisma.clipExportVariant.findMany({ where: { exportId: exported.id }, orderBy: { aspectRatio: "asc" } });
+      // The first final outcome is recorded on the detection run, as the lifecycle does when the export ends.
+      await record(projectId, detection.id, { generationExportResult: { exportId: exported.id, state: "failed", failureCode: "render_failed",
+        items: variants.map((variant) => ({ id: variant.id, state: "failed", failureCode: "render_failed" })) } });
+      const reported = await read("generation", origin.id);
+      expect(reported).toMatchObject({ state: "failed", failureCode: "render_failed", results: { exportId: exported.id }, items: [{ kind: "variant", state: "failed" }, { kind: "variant", state: "failed" }] });
+
+      // A retry that succeeds updates the export, not what the generation reported.
+      await prisma.clipExport.update({ where: { id: exported.id }, data: { status: "ready", progress: 100, errorCode: null } });
+      await prisma.clipExportVariant.updateMany({ where: { exportId: exported.id }, data: { status: "completed", storageKey: "projects/x/retry.mp4", errorCode: null } });
+      expect(await read("export", exported.id)).toMatchObject({ state: "completed" });
+      expect(await read("generation", origin.id)).toEqual(reported);
+
+      // Deleting the export (its clip, or the person) doesn't flip it either, and it still names the export.
+      await prisma.clipExport.delete({ where: { id: exported.id } });
+      expect(await read("generation", origin.id)).toEqual(reported);
+    });
+
+    test("an export deleted before it ended leaves the generation failed, still naming it", async () => {
+      const { origin, detection, projectId, clip } = await captioned("fit");
+      const exported = await exportFor(projectId, clip.id, "rendering", [{ aspectRatio: "ratio_9_16", status: "rendering" }]);
+      await freeze(projectId, detection.id, exported.id, clip.id);
+      await prisma.clipExport.delete({ where: { id: exported.id } });
+      expect(await read("generation", origin.id)).toMatchObject({ state: "failed", failureCode: "export_unavailable", results: { exportId: exported.id } });
+    });
+
+    test("Center reports where it crops the frame, Fit reports nothing, and a clip-mode generation has no notices", async () => {
+      const center = await captioned("center");
+      expect(await read("generation", center.origin.id)).toMatchObject({ notices: [{ code: "framing_degraded", aspectRatio: "9:16", croppedPercent: 68 }, { code: "framing_degraded", aspectRatio: "1:1", croppedPercent: 44 }] });
+      const fit = await captioned("fit");
+      expect((await read("generation", fit.origin.id)).notices).toEqual([]);
+      const { id: projectId } = await project();
+      expect((await read("generation", (await sttRun(projectId, "running")).id)).notices).toEqual([]);
+    });
   });
 
   test("work in another Workspace is concealed, and trusted reads report deleted lineage as unavailable", async () => {

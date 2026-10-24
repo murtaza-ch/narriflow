@@ -40,6 +40,7 @@ import {
 	CalendarClock,
 	ChevronDown,
 	Film,
+	Inbox,
 	Plus,
 	Send,
 	Share2,
@@ -76,6 +77,8 @@ import { createPublishingCompositionSession, type PublishingCompositionSession, 
 import { PublishingPosts } from "./publishing-posts";
 import { PanelHeader } from "./panel-header";
 import { PublishingCover } from "./publishing-cover";
+import { proposeToQueueAction } from "../../calendar/queue/actions";
+import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
 
 type Config = {
 	projectId: string;
@@ -447,6 +450,7 @@ function PublishingComposer({
 	const [lockedHashtags, setLockedHashtags] = useState("");
 	const [replaceScope, setReplaceScope] = useState<string | null>(null);
 	const [coverAccount, setCoverAccount] = useState<string | null>(null);
+	const [queued, setQueued] = useState<Record<string, { state: "pending" | "done" | "error"; message?: string }>>({});
 	const eligible = useMemo(
 		() =>
 			config.accounts.filter(
@@ -533,7 +537,8 @@ function PublishingComposer({
 		clipIds: clips.map((c) => c.id),
 	});
 	useEffect(() => {
-		if (!open || JSON.parse(timingSignature).scheduleMode === "now") {
+		const mode = JSON.parse(timingSignature).scheduleMode;
+		if (!open || mode === "now" || mode === "queue") {
 			setSlots([]);
 			setPreviewError("");
 			return;
@@ -566,6 +571,20 @@ function PublishingComposer({
 	}, [timingSignature, open, config.projectId]);
 	function update(key: string, patch: Partial<PublishingDraft>) {
 		session.updateDraft(key, patch);
+	}
+	/** Hands the draft's export and caption to the account's publishing queue, where a person accepts it into a slot. */
+	async function proposeToQueue(key: string, clipId: string, exportId: string, socialAccountId: string, caption: string) {
+		setQueued((current) => ({ ...current, [key]: { state: "pending" } }));
+		const result = await proposeToQueueAction({
+			clipId, exportId, socialAccountId, idempotencyKey: crypto.randomUUID(),
+			...(caption.trim() ? { caption: caption.trim() } : {}),
+		});
+		setQueued((current) => ({
+			...current,
+			[key]: isAuthenticatedActionFailure(result)
+				? { state: "error", message: authenticatedActionResultMessage(result, "The post could not be proposed.") }
+				: { state: "done" },
+		}));
 	}
 	function generate(clip: ClipSnapshot, targets: typeof pairs, force = false) {
 		return session.generate({ clipId: clip.id, accountIds: targets.map((target) => target.account.id), force, instruction, lockedPhrases: lockedPhrases.split(",").map((value) => value.trim()).filter(Boolean), lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [] }, (input) => publishingRequest(`/api/projects/${config.projectId}/assisted-copy/generations`, input));
@@ -656,6 +675,13 @@ function PublishingComposer({
 		(p) => drafts[p.key]?.deliveryMode === "tiktok_inbox",
 	).length;
 	const directCount = unresolved.length - inboxCount;
+	// Posting slots are the account's own, so the queue is offered when every chosen account has some.
+	const queueAvailable =
+		accounts.length > 0 &&
+		accounts.every((account) => (account.postingSchedule?.slots.length ?? 0) > 0);
+	// A queued post's time is chosen when it is written, so there is nothing to preview.
+	const needsPreview = timing.scheduleMode !== "now" && timing.scheduleMode !== "queue";
+	const queueBlocked = timing.scheduleMode === "queue" && !queueAvailable;
 	const submitBlockedReason = pending
 		? null
 		: !restored
@@ -666,7 +692,9 @@ function PublishingComposer({
 					? "Resolve the highlighted publishing requirements before submitting."
 					: pairs.length > 1 && !config.campaignSchedulingEnabled
 						? "Publishing multiple posts together requires a Pro plan."
-						: timing.scheduleMode !== "now" && (!!previewError || !slots.length)
+						: queueBlocked
+							? "Add posting slots to every chosen account, or pick a time."
+							: needsPreview && (!!previewError || !slots.length)
 							? previewError || "Choose a valid schedule before submitting."
 							: approvalBlocked &&
 								(!config.canOverrideReview || !override.trim())
@@ -1101,6 +1129,28 @@ minH="220px" p="4" lineHeight="1.8"
 																{d.caption.length}/{capability.textLimit}
 																</Text>
 														</Flex>
+														{media && (
+															<Flex align="center" gap="2" wrap="wrap">
+																<Button
+																	variant="ghost"
+																	size="xs"
+																	disabled={queued[key]?.state === "pending" || queued[key]?.state === "done"}
+																	onClick={() => void proposeToQueue(key, active.id, media.export.id, account.id, d.caption)}
+																>
+																	<Inbox size={15} /> Propose to queue
+																</Button>
+																{queued[key]?.state === "done" && (
+																	<Text role="status" fontSize="12px" color="fg.muted">
+																		Proposed. <Link href="/calendar/queue">Accept it in the queue</Link>
+																	</Text>
+																)}
+																{queued[key]?.state === "error" && (
+																	<Text role="alert" fontSize="12px" color="danger.fg">
+																		{queued[key]?.message}
+																	</Text>
+																)}
+															</Flex>
+														)}
 														{config.assistedCopyEnabled && (
 															<Button
 																aria-label="Regenerate"
@@ -1404,8 +1454,24 @@ minH="220px" p="4" lineHeight="1.8"
 				>
 				{timing.scheduleMode !== "now" && (<chakra.fieldset disabled={disabled} border="0" p={{base:"3",md:"5"}} m="0" bg="bg" borderRadius="12px" maxH="40dvh" overflowY="auto">
 					<Stack gap="4"><Flex justify="space-between" align="center"><Text fontSize="sm" fontWeight="medium">Schedule posts</Text><Text fontSize="xs" color="fg.muted">{config.workspaceTimezone}</Text></Flex>
-						
-						
+						{(queueAvailable || timing.scheduleMode === "queue") && (
+							<Stack gap="1">
+								<Checkbox
+									checked={timing.scheduleMode === "queue"}
+									onCheckedChange={(checked) =>
+										setTiming((t) => ({ ...t, scheduleMode: checked ? "queue" : "scheduled" }))
+									}
+								>
+									Use posting schedule
+								</Checkbox>
+								{timing.scheduleMode === "queue" && (
+									<Text fontSize="xs" color="fg.muted">
+										Each post takes the next free slot of its account. Set the slots in the publishing queue.
+									</Text>
+								)}
+							</Stack>
+						)}
+						{timing.scheduleMode !== "queue" && (
 							<>
 								<Flex gap="4" align="end" wrap="wrap">
 									<Field.Root flex="1" minW="130px">
@@ -1528,7 +1594,7 @@ minH="220px" p="4" lineHeight="1.8"
 									</Collapsible.Root>
 								)}
 							</>
-						
+						)}
 					</Stack>
 				</chakra.fieldset>)}
 				{error && (
@@ -1596,7 +1662,8 @@ minH="220px" p="4" lineHeight="1.8"
 										!unresolved.length ||
 										issueCount > 0 ||
 										(pairs.length > 1 && !config.campaignSchedulingEnabled) ||
-										(timing.scheduleMode !== "now" &&
+										queueBlocked ||
+										(needsPreview &&
 											(!!previewError || !slots.length)) ||
 										(approvalBlocked &&
 											(!config.canOverrideReview || !override.trim()))))

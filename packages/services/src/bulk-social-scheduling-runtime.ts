@@ -16,6 +16,7 @@ import {
 	type BulkScheduleStore,
 } from "./bulk-social-scheduling";
 import { hasFeature } from "./plan-features";
+import { readQueueSlots } from "./publishing-queue.service";
 import { accessibleProjectWhere } from "./project-access";
 import { createProductionSocialPublicationScheduling } from "./social-publication-scheduling-runtime";
 import { workspaceService } from "./workspace.service";
@@ -391,6 +392,7 @@ function productionModule() {
 			};
 		},
 		schedule: admission.schedule,
+		queueSlots: ({ workspaceId, accountIds, from }) => readQueueSlots(workspaceId, accountIds, from),
 		createId: randomUUID,
 		now: () => new Date(),
 	});
@@ -410,6 +412,8 @@ export class BulkSocialSchedulingService {
 		});
 		if (workspace?.timezone !== input.timeZone)
 			throw new BulkSocialSchedulingError("schedule_timezone_mismatch");
+		// Each queued post takes its own account's next free slot when it is written.
+		if (input.scheduleMode === "queue") return { slots: [] };
 		return {
 			slots: publishingSlots(input).map((date, index) => ({
 				clipId: input.clipIds[index],

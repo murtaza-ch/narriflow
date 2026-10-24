@@ -105,6 +105,8 @@ try {
     "packages/services/src/workflow-run-lifecycle.db.test.ts",
     "packages/services/src/ingest-job-lifecycle.db.test.ts",
     "packages/services/src/project-actor-scope.db.test.ts",
+    "packages/services/src/workspace-event-emission.db.test.ts",
+    "packages/services/src/generation-finishing-transition.db.test.ts",
   ];
   if (process.env.WORKFLOW_TEST_NAME) {
     testCommand.push("--test-name-pattern", process.env.WORKFLOW_TEST_NAME);

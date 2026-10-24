@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { deriveExportStatus, deriveGenerationStatus, deriveIntakePhase, intakeProgress, type GenerationRender, type GenerationRun } from "./operation-status";
+import { deriveExportStatus, deriveGenerationStatus, deriveIntakePhase, intakeProgress, type CaptionedExportOutcome, type GenerationRender, type GenerationRun } from "./operation-status";
 
 const origin: GenerationRun = { id: "stt", stage: "stt", status: "completed", errorCode: null, idempotencyKey: "generation", contentPackId: "pack" };
 const detection: GenerationRun = { ...origin, id: "detection", stage: "moment_detection", idempotencyKey: "generation__moment_detection" };
@@ -64,6 +64,50 @@ describe("generation Operation Status", () => {
   test("terminal render work with a missing original artifact fails instead of borrowing shared results", () => {
     expect(deriveGenerationStatus({ origin, detection, expectedRenders: frozen(["a"]), renders: [], renderRuns: [{ ...render, status: "completed" }], renderOutcomes: [] }))
       .toMatchObject({ state: "failed", failureCode: "render_unavailable" });
+  });
+});
+
+describe("captioned video Operation Status", () => {
+  const variant = (id: string, status: string, hasAsset = status === "completed", errorCode: string | null = null) => ({ id, status, hasAsset, errorCode });
+  const exportLineage = (status: string, variants: ReturnType<typeof variant>[], progress = 0, errorCode: string | null = null) => ({ status, progress, errorCode, variants });
+  // Detection froze the export's ID; the live row is read by that ID, so a deleted one is null.
+  const lineage = (exported: ReturnType<typeof exportLineage> | null, notices = [{ code: "framing_degraded" as const, aspectRatio: "9:16" as const, croppedPercent: 68 }], outcome: CaptionedExportOutcome | null = null) =>
+    deriveGenerationStatus({ origin, detection, renders: [], renderRuns: [], clipIds: ["clip"], captionedVideo: { exportId: "export", outcome, export: exported }, notices });
+
+  test("the generation ends with its export, not with detection or a preview render", () => {
+    expect(lineage(exportLineage("queued", [variant("a", "pending"), variant("b", "pending")]))).toMatchObject({ state: "working", stage: "rendering", progress: 0.6, exportId: "export" });
+    expect(lineage(exportLineage("rendering", [variant("a", "completed"), variant("b", "rendering")], 50))).toMatchObject({ state: "working", progress: 0.8,
+      items: [{ kind: "variant", id: "a", state: "completed" }, { kind: "variant", id: "b", state: "working" }] });
+    expect(lineage(exportLineage("ready", [variant("a", "completed"), variant("b", "completed")], 100))).toMatchObject({ state: "completed", progress: 1, failureCode: null, exportId: "export", clipIds: ["clip"] });
+  });
+
+  test("reports partial and failed exports with the failing format", () => {
+    expect(lineage(exportLineage("partial_ready", [variant("a", "completed"), variant("b", "failed", false, "render_failed")], 100))).toMatchObject({
+      state: "partial", failureCode: "render_failed", items: [{ id: "a", state: "completed" }, { id: "b", state: "failed", failureCode: "render_failed" }] });
+    expect(lineage(exportLineage("failed", [variant("a", "failed", false, "render_failed")], 100, "render_failed"))).toMatchObject({ state: "failed", failureCode: "render_failed" });
+  });
+
+  test("notices ride along with every state; a deleted export fails the operation", () => {
+    const notices = [{ code: "framing_degraded", aspectRatio: "9:16", croppedPercent: 68 }];
+    expect(lineage(exportLineage("queued", [variant("a", "pending")]))).toMatchObject({ notices });
+    expect(lineage(null)).toMatchObject({ state: "failed", failureCode: "export_unavailable", exportId: "export", notices });
+    expect(deriveGenerationStatus({ origin: { ...origin, status: "running" }, detection: null, renders: [], renderRuns: [], notices })).toMatchObject({ state: "working", stage: "transcribing", notices });
+    expect(deriveGenerationStatus({ origin, detection, renders: [], renderRuns: [] })).toMatchObject({ notices: [], exportId: null });
+  });
+
+  test("a failed detection still fails before any export exists", () => {
+    expect(deriveGenerationStatus({ origin, detection: { ...detection, status: "failed", errorCode: "whole_source_too_long" }, renders: [], renderRuns: [], captionedVideo: { exportId: null, outcome: null, export: null } }))
+      .toMatchObject({ state: "failed", failureCode: "whole_source_too_long" });
+  });
+
+  test("the export's first final outcome stands: a later retry or a deleted export does not change the generation", () => {
+    const failedOutcome: CaptionedExportOutcome = { exportId: "export", state: "failed", failureCode: "render_failed",
+      items: [{ id: "a", state: "failed", failureCode: "render_failed" }, { id: "b", state: "cancelled", failureCode: "cancelled" }] };
+    const expected = { state: "failed", stage: "rendering", progress: 1, failureCode: "render_failed", exportId: "export",
+      items: [{ kind: "variant", id: "a", state: "failed", failureCode: "render_failed" }, { kind: "variant", id: "b", state: "cancelled", failureCode: "cancelled" }] };
+    // The live export has since been retried to success, or deleted: the record decides.
+    expect(lineage(exportLineage("ready", [variant("a", "completed"), variant("b", "completed")], 100), undefined, failedOutcome)).toMatchObject(expected);
+    expect(lineage(null, undefined, failedOutcome)).toMatchObject(expected);
   });
 });
 

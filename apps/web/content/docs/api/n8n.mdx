@@ -1,6 +1,6 @@
 ---
 title: n8n template
-description: Import a ready-made n8n workflow that turns each new video in a Google Drive folder into exported clips.
+description: Import ready-made n8n workflows that turn Google Drive videos into exported clips, caption an AI short, or post finished Autopilot clips to Slack.
 ---
 
 The template watches a Google Drive folder. For each new video it uploads the file to Narriflow, waits for the clips, exports the top ones as 9:16 at 1080p, saves the MP4 and SRT files to another Drive folder, and posts a summary with the Narriflow review link to Slack. It uses only HTTP Request, Wait, Code, Google Drive and Slack nodes, and the [Narriflow API](/docs/api/introduction).
@@ -43,6 +43,36 @@ The template watches a Google Drive folder. For each new video it uploads the fi
 6. **Download grants** fetches fresh download links and subtitles. **Save MP4** and **Save SRT** store them in Drive, and **Post to Slack** sends the summary.
 
 Delivery is at least once, so the template treats a callback only as a wake-up and reads Operation Status for the truth.
+
+### Let Narriflow finish the clips
+
+Steps 5 and 6 export clips from the flow. To have Narriflow do it instead, add a `finishing` object to the **Open upload** body, for example `{"topClips": 3, "copyPlatforms": ["tiktok"]}`. Narriflow exports the best clips, writes copy and ends with a `finishing.finished` event. Poll `GET /events?types=finishing.finished` for it and use its `exportIds` with **Download grants**. See [Finishing](/docs/api/uploads#finishing).
+
+## Autopilot clips to Slack
+
+A third template posts to Slack whenever Narriflow finishes clips on its own, such as an Autopilot import with finishing turned on. <a href="/docs/downloads/autopilot-to-slack.json" download="autopilot-to-slack.json">Download autopilot-to-slack.json</a>.
+
+No request of the workflow starts that work, so there is no callback to wait for. Every 5 minutes the workflow reads `GET /events?types=finishing.finished` from a cursor kept in its static data. For each finished run it fetches fresh download links with `GET /exports/{id}/download` and the clip titles with `GET /clips/{id}`, then posts one Slack message with each clip's title, a download link and a link to open it in Narriflow. The cursor moves only after an event is handled. An export or clip that was deleted is left out of the message instead of blocking the cursor, and any other error stops the run so the next one retries it.
+
+<Steps>
+  <Step title="Create an API key">
+    The read permissions a new key has are enough. The template makes no write call and needs no signing secret.
+  </Step>
+  <Step title="Add the credential and variable">
+    Create the same **Header Auth** credential as above, named `Narriflow API key`, and set the `NARRIFLOW_URL` variable.
+  </Step>
+  <Step title="Pick the Slack channel and activate">
+    Replace `REPLACE_WITH_SLACK_CHANNEL`, connect your Slack credential and activate the workflow. n8n keeps the cursor only for an active workflow.
+  </Step>
+</Steps>
+
+On its first run the workflow finds the newest finished run and starts after it, so activating it doesn't send up to 30 days of history. A manual test run has no saved cursor, so it posts nothing. Download links expire after 15 minutes, and the message says so.
+
+## Caption an AI short
+
+A second template captions a finished short, such as an AI-generated video, and fetches the exported MP4. It downloads the video from a URL, uploads it with `POST /captioned-videos`, waits for the export with the same signed-callback pattern, checks the result, and downloads the files. <a href="/docs/downloads/caption-ai-short.json" download="caption-ai-short.json">Download caption-ai-short.json</a>. Use the same API key credential, variables and callback secret as above. See [Caption an AI short](/docs/api/caption-ai-shorts) for the request.
+
+In **AI short and options**, set `videoUrl` to your video, `framing` to `fit` or `center`, and `captions` to `auto`, `none` or `supplied` (with the SRT or WebVTT text in `srt`). **Check result** stops the run with Narriflow's failure code if the video could not be captioned, and passes `notices` along so a later node can act on `framing_degraded`. **Fetch MP4** downloads one file per requested format, and you connect your own storage or posting node after it.
 
 <Note>
   A recorded run on a real n8n instance with Google Drive and Slack is still pending. The workflow passes its offline checks, including signature verification, but treat your first run as a test.

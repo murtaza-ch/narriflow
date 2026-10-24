@@ -2,10 +2,18 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type IngestJob } from "@prisma/client";
 import {
   ASSEMBLYAI_SPEECH_MODEL_CHAIN,
+  defaultAspectRatioSchema,
+  finishingSettingsSchema,
   sourceLanguageCodeSchema,
+  sourceProbeSchema,
+  USER_ERROR_MESSAGES,
+  wholeSourceWindow,
+  wholeSourceWindowFault,
+  type SourceProbe,
   type WorkflowStageUpdatedEvent,
 } from "@narriflow/validators";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import { freezeGenerationFinishing, queueSettledGenerationFinishing } from "./generation-finishing";
 import { accessibleProjectWhere } from "./project-access";
 import { autoTriggerIdempotencyKey } from "./generation-sequencing";
 import {
@@ -21,6 +29,8 @@ import {
   type ProcessingUsage,
 } from "./processing-usage";
 import { admitMediaCleanupObligations } from "./media-cleanup";
+import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
+import { flushWorkspaceEvents } from "./workspace-event";
 
 export const MAX_INGEST_RETRY_ATTEMPTS = 5;
 function intakeKindFor(jobType: IngestJob["jobType"]) {
@@ -43,6 +53,16 @@ export class IngestNotFailedError extends ExpectedDomainFailureError<"ingest_not
       code: "ingest_not_failed",
       kind: "conflict",
       message: "This project's ingest isn't in a failed state.",
+    });
+  }
+}
+/** A Drive intake can't be retried: its sealed token is gone, so the person picks the file again. */
+export class IngestReselectRequiredError extends ExpectedDomainFailureError<"drive_token_expired"> {
+  constructor() {
+    super({
+      code: "drive_token_expired",
+      kind: "conflict",
+      message: "Choose the file again from Google Drive.",
     });
   }
 }
@@ -69,6 +89,8 @@ export interface IngestClaimRef {
 export interface ClaimedIngestJob extends IngestClaimRef {
   jobType: IngestJob["jobType"];
   payload: Prisma.JsonValue;
+  /** Sealed Drive access token; null for every other job type. */
+  sourceCredential: string | null;
   attemptCount: number;
 }
 export interface IngestExecutionContext {
@@ -197,6 +219,7 @@ export class IngestJobLifecycle {
       projectId: string;
       jobType: IngestJob["jobType"];
       payload: Prisma.InputJsonValue;
+      sourceCredential?: string;
       uploadSessionId?: string;
     },
   ): Promise<{ id: string }> {
@@ -237,7 +260,7 @@ export class IngestJobLifecycle {
             ? [
                 {
                   OR: [
-                    { jobType: { in: ["upload_finalize", "rss_import"] } },
+                    { jobType: { in: ["upload_finalize", "rss_import", "drive_import"] } },
                     {
                       jobType: "link_import",
                       NOT: {
@@ -277,6 +300,7 @@ export class IngestJobLifecycle {
           projectId: candidate.projectId,
           jobType: candidate.jobType,
           payload: candidate.payload,
+          sourceCredential: candidate.sourceCredential,
           attemptCount: candidate.attemptCount + 1,
           claimId,
         };
@@ -338,8 +362,10 @@ export class IngestJobLifecycle {
       sourceMimeType?: string | null;
       sourceSizeBytes?: number | null;
       sourceDurationSeconds?: number | null;
+      sourceProbe?: SourceProbe | null;
     },
   ): Promise<void> {
+    const { sourceProbe, ...sourceFacts } = source;
     await this.deps.prisma.$transaction(async (tx) => {
       const now = await this.now(tx);
       const updated = await tx.ingestJob.updateMany({
@@ -350,6 +376,7 @@ export class IngestJobLifecycle {
           claimExpiresAt: null,
           completedAt: now,
           lastError: null,
+          sourceCredential: null,
           generationHandoffAt: null,
           generationHandoffRetryAt: null,
         },
@@ -358,7 +385,7 @@ export class IngestJobLifecycle {
       await tx.project.update({
         where: { id: claim.projectId },
         data: {
-          ...source,
+          ...sourceFacts,
           sourceMediaUrl:
             source.sourceMediaUrl ??
             `r2://${this.deps.sourceBucket ?? "unknown-bucket"}/${source.sourceStorageKey}`,
@@ -366,6 +393,7 @@ export class IngestJobLifecycle {
             typeof source.sourceSizeBytes === "number"
               ? BigInt(source.sourceSizeBytes)
               : undefined,
+          sourceProbe: sourceProbe ?? Prisma.DbNull,
           ingestStatus: "ready",
           ingestErrorCode: null,
           ingestCompletedAt: now,
@@ -444,6 +472,8 @@ export class IngestJobLifecycle {
         lastError: `${code}: ${message}`,
         completedAt: terminal ? now : null,
         updatedAt: now,
+        // A requeued job may still download within the token's lifetime.
+        ...(terminal ? { sourceCredential: null } : {}),
       },
     });
     if (!updated.count) return null;
@@ -473,6 +503,7 @@ export class IngestJobLifecycle {
       },
       now,
     );
+    if (terminal) await emitIntakeFinished(tx, job.id, "failed");
     return decision;
   }
   async fail(
@@ -571,13 +602,14 @@ export class IngestJobLifecycle {
       if (!job) return false;
       const now = await this.now(tx);
       const changed = await tx.ingestJob.updateMany({ where: { id: job.id, status: "queued" },
-        data: { status: "cancelled", completedAt: now, lastError: "MCP_CANCELLED" } });
+        data: { status: "cancelled", completedAt: now, lastError: "MCP_CANCELLED", sourceCredential: null } });
       if (!changed.count) return false;
       await this.deps.usage.release(tx, { projectId: input.projectId, reason: "MCP_CANCELLED" });
       await tx.project.updateMany({ where: { id: input.projectId, ingestStatus: "queued" },
         data: { ingestStatus: "failed", ingestErrorCode: "MCP_CANCELLED" } });
       await this.event(tx, { id: job.id, projectId: job.projectId, transition: "mcp_cancelled",
         stage: "ingest", status: "failed", progress: 0, errorCode: "MCP_CANCELLED" }, now);
+      await emitIntakeFinished(tx, job.id, "cancelled");
       return true;
     });
   }
@@ -612,6 +644,8 @@ export class IngestJobLifecycle {
       // Re-admission takes the Workspace usage lock before any Project lock.
       // A released reservation returns to the current period under fresh
       // allowance, per-video, and capacity checks.
+      if (intake?.ingestStatus === "failed" && intake.ingestJobs[0]?.jobType === "drive_import")
+        throw new IngestReselectRequiredError();
       if (intake?.ingestStatus === "failed" && intake.ingestJobs[0])
         await this.deps.usage.reserve(tx, {
           workspaceId: input.workspaceId,
@@ -708,6 +742,19 @@ export class IngestJobLifecycle {
           project.languageCode,
         );
         const result = await this.deps.prisma.$transaction(async (tx) => {
+          // A captioned video is its whole window, so a window outside the
+          // whole-source bounds is refused before it costs minutes or speech-to-text.
+          // Other caption-only runs fail in detection and leave the Project ready.
+          const fault = pack.mode === "caption_only" && pack.captionedVideo !== null && project.sourceDurationSeconds !== null
+            ? wholeSourceWindowFault(wholeSourceWindow(pack, {
+                durationSec: project.sourceDurationSeconds,
+                probeDurationSec: sourceProbeSchema.safeParse(project.sourceProbe).data?.durationSec ?? null,
+              }))
+            : null;
+          if (fault) {
+            await this.failHandoff(tx, job, fault, USER_ERROR_MESSAGES[fault]!);
+            return { handoff: false };
+          }
           // Settlement precedes speech-to-text admission in this transaction.
           const settlement = await this.deps.usage.settle(tx, project.id);
           if (settlement.outcome === "not_ready")
@@ -721,7 +768,7 @@ export class IngestJobLifecycle {
             );
             return { handoff: false };
           }
-          return this.deps.workflow.admitWithHandoff(
+          const admitted = await this.deps.workflow.admitWithHandoff(
           {
             projectId: project.id,
             idempotencyKey: key,
@@ -739,6 +786,9 @@ export class IngestJobLifecycle {
               select: { id: true },
             });
             if (prior) throw new IngestGenerationAlreadyAdmitted();
+            // Finishing was frozen onto the Content Pack at acceptance; it
+            // becomes this generation's row here, beside the handoff.
+            await this.freezePackFinishing(tx, project, pack, run.id);
             await this.acknowledgeHandoff(tx, job, run.id);
             if (run.created)
               await tx.transcript.upsert({
@@ -768,6 +818,8 @@ export class IngestJobLifecycle {
           },
           tx,
           );
+          await flushWorkspaceEvents(tx);
+          return admitted;
         }, PROCESSING_USAGE_TRANSACTION);
         if (result.handoff) settled++;
       } catch (error) {
@@ -876,6 +928,7 @@ export class IngestJobLifecycle {
       },
       clock,
     );
+    await emitIntakeFinished(tx, job.id, "failed");
     return true;
   }
   /** Records a settlement refusal from a request-path generation start (browser
@@ -918,6 +971,9 @@ export class IngestJobLifecycle {
       data: { generationHandoffAt: clock, generationHandoffRetryAt: null, generationRunId },
     });
     if (!accepted.count) throw new IngestJobClaimLost(job.id);
+    // The generation may have finished before this intake acknowledged it. The
+    // caller's transaction writes the event last.
+    await queueIntakeFinishedByGeneration(tx, generationRunId);
   }
   /** null means no generation exists; false means another handoff settled first. */
   private async acknowledgeExistingGeneration(
@@ -935,11 +991,45 @@ export class IngestJobLifecycle {
     if (!existing) return null;
     try {
       await this.acknowledgeHandoff(tx, job, existing.id);
+      // The intake's finishing must not vanish because another path admitted
+      // the generation first. A generation that already finished will not
+      // settle again, so its transition is applied here.
+      const pack = await tx.contentPack.findUnique({
+        where: { id: contentPackId },
+        include: { project: { select: { id: true, workspaceId: true, createdByUserId: true } } },
+      });
+      if (pack?.finishing && (await this.freezePackFinishing(tx, pack.project, pack, existing.id)))
+        await queueSettledGenerationFinishing(tx, job.projectId, existing.id);
+      await flushWorkspaceEvents(tx);
       return true;
     } catch (error) {
       if (error instanceof IngestJobClaimLost) return false;
       throw error;
     }
+  }
+  /** Freezes the finishing a Content Pack carries onto the generation the
+   * intake handed off to. True when this created the row. A generation that
+   * another path already froze different finishing onto keeps it; the intake
+   * has no caller to refuse, so that is logged. */
+  private async freezePackFinishing(
+    tx: Tx,
+    project: { id: string; workspaceId: string; createdByUserId: string | null },
+    pack: { finishing: Prisma.JsonValue; defaultAspectRatio: string; autopilotRuleId: string | null },
+    originRunId: string,
+  ): Promise<boolean> {
+    if (!pack.finishing) return false;
+    const frozen = await freezeGenerationFinishing(tx, {
+      workspaceId: project.workspaceId,
+      projectId: project.id,
+      originRunId,
+      actorUserId: project.createdByUserId,
+      settings: finishingSettingsSchema.parse(pack.finishing),
+      autopilotRuleId: pack.autopilotRuleId,
+      defaultAspectRatio: defaultAspectRatioSchema.catch("9:16").parse(pack.defaultAspectRatio),
+    });
+    if (!frozen.created && !frozen.matches)
+      console.warn(JSON.stringify({ level: "warn", message: "ingest_finishing_conflict_ignored", projectId: project.id, originRunId }));
+    return frozen.created;
   }
   private async deferHandoff(id: string, now: Date) {
     await this.deps.prisma.ingestJob.updateMany({

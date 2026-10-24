@@ -13,6 +13,8 @@ import {
 } from "./r2-storage";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { getProcessingUsage } from "./processing-usage-runtime";
+import { queueProjectExpiryFinished } from "./operation-finished";
+import { flushWorkspaceEvents } from "./workspace-event";
 
 export const RETENTION_POLICIES = {
 	free_project_v1: { durationMs: 72 * 60 * 60 * 1000 },
@@ -533,6 +535,7 @@ export class ProjectRetentionService {
 						status: "cancelled",
 						lastError: "PROJECT_EXPIRED",
 						completedAt: now,
+						sourceCredential: null,
 					},
 				}),
 				tx.transcript.updateMany({
@@ -552,7 +555,7 @@ export class ProjectRetentionService {
 				}),
 			]);
 
-			return tx.project.findUnique({
+			const claimedProject = await tx.project.findUnique({
 				where: { id: candidate.id },
 				select: {
 					id: true,
@@ -563,6 +566,10 @@ export class ProjectRetentionService {
 					purgeDeletedBytes: true,
 				},
 			});
+			// Cancelled intakes and failed exports are finished operations too.
+			await queueProjectExpiryFinished(tx, candidate.id);
+			await flushWorkspaceEvents(tx);
+			return claimedProject;
 			});
 	}
 

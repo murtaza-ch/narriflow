@@ -1,0 +1,26 @@
+{
+    "exportId": "00000000-0000-4000-8000-000000000020",
+    "projectId": "00000000-0000-4000-8000-000000000004",
+    "clipId": "00000000-0000-4000-8000-000000000010",
+    "editorRevision": 3,
+    "variantId": "00000000-0000-4000-8000-000000000080",
+    "aspectRatio": "9:16",
+    "resolution": "1080p",
+    "watermark": false,
+    "fileName": "why-most-launches-fail-9x16.mp4",
+    "sizeBytes": 12582912,
+    "downloadUrl": "https://files.example.com/signed/clip-9x16.mp4?signature=redacted",
+    "expiresAt": "2026-10-24T12:20:00.000Z",
+    "subtitles": [
+        {
+            "format": "srt",
+            "fileName": "why-most-launches-fail.srt",
+            "content": "1\n00:00:00,000 --> 00:00:02,000\nNobody tells you what happens after launch day.\n"
+        },
+        {
+            "format": "vtt",
+            "fileName": "why-most-launches-fail.vtt",
+            "content": "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nNobody tells you what happens after launch day.\n"
+        }
+    ]
+}

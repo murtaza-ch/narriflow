@@ -97,6 +97,7 @@ function harness(
 			store,
 			authorize: async () => ({ actor: ACTOR, timeZone: INPUT.timeZone }),
 			schedule,
+			queueSlots: async () => ({ schedules: new Map(), occupied: new Map() }),
 			createId: () =>
 				`00000000-0000-4000-8000-${String(++id).padStart(12, "0")}`,
 			now: () => new Date("2026-09-02T10:00:00.000Z"),
@@ -384,6 +385,7 @@ describe("bulk social scheduling", () => {
 				admitted.set(item.clientIdempotencyKey, socialPostId);
 				return { id: socialPostId };
 			},
+			queueSlots: async () => ({ schedules: new Map(), occupied: new Map() }),
 			createId: () => crypto.randomUUID(),
 			now: () => new Date("2026-09-02T10:00:00.000Z"),
 		});
@@ -441,6 +443,7 @@ describe("bulk social scheduling", () => {
 				eligible = false;
 				throw new Error("result read unavailable");
 			},
+			queueSlots: async () => ({ schedules: new Map(), occupied: new Map() }),
 			createId: () => crypto.randomUUID(), now: () => now,
 		});
 		const input = { ...INPUT, items: [INPUT.items[0]!] };
@@ -481,7 +484,8 @@ describe("bulk social scheduling", () => {
 					posts.set(request.clientIdempotencyKey, post);
 					return post;
 				},
-				createId: () => crypto.randomUUID(), now: () => now,
+				queueSlots: async () => ({ schedules: new Map(), occupied: new Map() }),
+			createId: () => crypto.randomUUID(), now: () => now,
 			});
 			const input = { ...INPUT, scheduleMode: "now" as const, items: [INPUT.items[0]!] };
 			await expect(module.schedule(input)).rejects.toMatchObject({ code: "campaign_schedule_item_failed" });
@@ -556,6 +560,7 @@ describe("bulk social scheduling", () => {
 				results.push(result);
 				return result;
 			},
+			queueSlots: async () => ({ schedules: new Map(), occupied: new Map() }),
 			createId: () => crypto.randomUUID(), now: () => now,
 		});
 		const input = { ...INPUT, items: [INPUT.items[0]!] };
@@ -591,6 +596,7 @@ describe("bulk social scheduling", () => {
 				admitted = true;
 				throw new Error("response lost");
 			},
+			queueSlots: async () => ({ schedules: new Map(), occupied: new Map() }),
 			createId: () => crypto.randomUUID(), now: () => now,
 		});
 		const input = { ...INPUT, items: [INPUT.items[0]!] };
@@ -656,5 +662,62 @@ describe("bulk social scheduling", () => {
 			"Independent account wording\n\n#Narriflow",
 		]);
 		expect(seen[0]!.scheduledFor).toEqual(seen[1]!.scheduledFor);
+	});
+});
+
+describe("bulk scheduling and the Publishing Queue", () => {
+	const WEEKLY = { slots: [{ weekday: "mon" as const, time: "09:00" }, { weekday: "thu" as const, time: "09:00" }] };
+
+	function queueHarness(options: { schedule?: typeof WEEKLY | null; occupied?: number[] } = {}) {
+		const store = createInMemoryBulkScheduleStore();
+		const admitted: SchedulePublicationInput[] = [];
+		let id = 100;
+		const module = createBulkSocialScheduling({
+			store,
+			authorize: async () => ({ actor: ACTOR, timeZone: INPUT.timeZone }),
+			schedule: async (item) => {
+				admitted.push(item);
+				return { id: item.clientIdempotencyKey };
+			},
+			queueSlots: async () => ({
+				schedules: new Map([[ACCOUNT, options.schedule === undefined ? WEEKLY : options.schedule]]),
+				occupied: new Map([[ACCOUNT, new Set(options.occupied ?? [])]]),
+			}),
+			createId: () => `00000000-0000-4000-8000-${String(++id).padStart(12, "0")}`,
+			now: () => new Date("2026-09-02T10:00:00.000Z"),
+		});
+		return { module, admitted, store };
+	}
+
+	test("queue mode leaves each time to the account's posting schedule", async () => {
+		const { module, admitted } = queueHarness();
+		const result = await module.schedule({ ...INPUT, scheduleMode: "queue" });
+		expect(result.status).toBe("completed");
+		expect(result.items.map((item) => item.scheduledFor)).toEqual([null, null]);
+		expect(admitted).toHaveLength(2);
+		for (const item of admitted) expect(item.slotQueue?.accountId).toBe(ACCOUNT);
+		// The same slot picker serves every post: the next free Karachi slot after the given moment.
+		const after = new Date("2026-09-02T10:00:00.000Z");
+		expect(admitted[0]!.slotQueue!.pick(new Set(), after)?.toISOString()).toBe("2026-09-03T04:00:00.000Z");
+		expect(admitted[0]!.slotQueue!.pick(new Set([Date.parse("2026-09-03T04:00:00.000Z")]), after)?.toISOString()).toBe("2026-09-07T04:00:00.000Z");
+	});
+
+	test("queue mode refuses an account without posting slots before admitting anything", async () => {
+		const { module, admitted } = queueHarness({ schedule: null });
+		await expect(module.schedule({ ...INPUT, scheduleMode: "queue" })).rejects.toMatchObject({ code: "campaign_schedule_posting_schedule_missing" });
+		expect(admitted).toHaveLength(0);
+	});
+
+	test("a spread batch skips instants the account already occupies", async () => {
+		const free = queueHarness();
+		await free.module.schedule(INPUT);
+		const [first, second] = free.admitted.map((item) => item.scheduledFor.toISOString());
+		expect(first).toBe("2026-09-03T04:00:00.000Z");
+		expect(second).toBe("2026-09-03T06:00:00.000Z");
+
+		const busy = queueHarness({ occupied: [Date.parse(first!)] });
+		await busy.module.schedule(INPUT);
+		expect(busy.admitted.map((item) => item.scheduledFor.toISOString())).toEqual([second!, "2026-09-03T08:00:00.000Z"]);
+		for (const item of busy.admitted) expect(item.slotQueue).toBeUndefined();
 	});
 });

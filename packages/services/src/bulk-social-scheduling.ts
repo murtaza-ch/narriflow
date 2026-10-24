@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { SocialPlatform } from "@narriflow/validators";
+import type { PostingSchedule, SocialPlatform } from "@narriflow/validators";
 import { composeAssistedCopyCaption } from "./assisted-social-copy";
+import { nextFreeSlots } from "./posting-schedule";
 import type {
 	PublicationIntent,
 	PublicationSchedulingActor,
@@ -87,6 +88,7 @@ const BULK_SOCIAL_SCHEDULING_FAILURES = {
 	campaign_schedule_item_incomplete: "conflict",
 	campaign_schedule_item_not_found: "missing",
 	campaign_schedule_item_failed: "unavailable",
+	campaign_schedule_posting_schedule_missing: "unprocessable",
 	campaign_schedule_not_found: "missing",
 	campaign_schedule_too_many_items: "invalid",
 	publication_provider_rate_limited: "rate_limited",
@@ -267,7 +269,8 @@ export function publishingSlots(
 	input: import("@narriflow/validators").PublishingPreviewRequest,
 	now = new Date(),
 ) {
-	if (input.scheduleMode === "now")
+	// A queued post has no time of its own: its account's schedule picks it when it is written.
+	if (input.scheduleMode === "now" || input.scheduleMode === "queue")
 		return input.clipIds.map(() => new Date(now));
 	if (input.scheduleMode === "scheduled")
 		return input.clipIds.map(() =>
@@ -316,6 +319,36 @@ export function publishingSlots(
 		}
 	}
 	return slots;
+}
+
+/** The times a spread batch gives each account when some of the window's
+ * instants are already occupied by that account's other posts: the account
+ * takes the next unoccupied instants of the same window, in clip order. Keyed
+ * `accountId:clipId`; an account with no conflict keeps the shared times. */
+function spreadAroundOccupied(
+	input: BulkSocialScheduleInput,
+	clipIds: string[],
+	accountIds: string[],
+	occupied: ReadonlyMap<string, ReadonlySet<number>>,
+	now: Date,
+) {
+	const result = new Map<string, Date>();
+	for (const accountId of accountIds) {
+		const taken = occupied.get(accountId);
+		if (!taken || taken.size === 0) continue;
+		const accountClips = clipIds.filter((clipId) => input.items.some((item) => item.accountId === accountId && item.clipId === clipId));
+		let length = accountClips.length;
+		for (;;) {
+			const candidates = publishingSlots({ ...input, clipIds: Array.from({ length }, (_, index) => String(index)) }, now);
+			const free = candidates.filter((candidate) => !taken.has(candidate.getTime()));
+			if (free.length >= accountClips.length || length >= accountClips.length + 500) {
+				for (const [index, clipId] of accountClips.entries()) result.set(`${accountId}:${clipId}`, free[index] ?? candidates[candidates.length - 1]!);
+				break;
+			}
+			length += accountClips.length - free.length;
+		}
+	}
+	return result;
 }
 
 function canonicalJson(value: unknown): string {
@@ -383,6 +416,11 @@ export function createBulkSocialScheduling(dependencies: {
 	schedule(input: SchedulePublicationInput, options: {
 		actor: PublicationSchedulingActor;
 	}): Promise<Pick<PublicationIntent, "id">>;
+	/** Each account's posting schedule and the instants its active posts already occupy. */
+	queueSlots(input: { workspaceId: string; accountIds: string[]; from: Date }): Promise<{
+		schedules: ReadonlyMap<string, PostingSchedule | null>;
+		occupied: ReadonlyMap<string, ReadonlySet<number>>;
+	}>;
 	createId(): string;
 	now(): Date;
 }) {
@@ -407,6 +445,26 @@ export function createBulkSocialScheduling(dependencies: {
 			}
 			const clipIds = [...new Set(input.items.map((item) => item.clipId))];
 			const slots = existing ? [] : publishingSlots({ ...input, clipIds }, dependencies.now());
+			const accountIds = [...new Set(input.items.map((item) => item.accountId))];
+			// A resumed queue batch still needs each account's schedule to choose its remaining slots.
+			const queueSlots = input.scheduleMode === "queue" || (input.scheduleMode === "spread" && !existing)
+				? await dependencies.queueSlots({ workspaceId: input.workspaceId, accountIds, from: dependencies.now() })
+				: null;
+			const queueSchedules = queueSlots?.schedules ?? new Map<string, PostingSchedule | null>();
+			if (queueSlots && input.scheduleMode === "queue" && !existing) {
+				const unscheduled = accountIds.filter((accountId) => !queueSlots.schedules.get(accountId));
+				if (unscheduled.length > 0) {
+					throw new BulkSocialSchedulingError(
+						"campaign_schedule_posting_schedule_missing",
+						"Add posting slots to every selected account, or choose a date and time instead.",
+					);
+				}
+			}
+			// Spread posts skip an instant the account's other posts already occupy:
+			// each account walks the same window and takes the next unoccupied times.
+			const spreadSlots = queueSlots && input.scheduleMode === "spread" && !existing
+				? spreadAroundOccupied(input, clipIds, accountIds, queueSlots.occupied, dependencies.now())
+				: null;
 			const requestFingerprint = sha256({
 				contract: "publishing-v1",
 				...input,
@@ -421,7 +479,9 @@ export function createBulkSocialScheduling(dependencies: {
 				account: item,
 				copy: item.copy,
 				thumbnail: item.thumbnail,
-				scheduledFor: slots[clipIds.indexOf(item.clipId)]!,
+				scheduledFor: input.scheduleMode === "queue"
+					? null
+					: spreadSlots?.get(`${item.accountId}:${item.clipId}`) ?? slots[clipIds.indexOf(item.clipId)]!,
 			}));
 			const opened = existing ? { operation: existing, replayed: true } : await dependencies.store.open({
 				workspaceId: input.workspaceId,
@@ -499,9 +559,21 @@ export function createBulkSocialScheduling(dependencies: {
 					aspectRatio: plan.clip.aspectRatio,
 					resolution: plan.clip.resolution,
 					thumbnail: plan.thumbnail,
+					// A queued post's time is chosen under its account's lock when it is written.
 					scheduledFor: opened.operation.items.find(
 						(item) => item.requestKey === plan.requestKey,
-					)!.scheduledFor!,
+					)!.scheduledFor ?? dependencies.now(),
+					...(input.scheduleMode === "queue"
+						? {
+							slotQueue: {
+								accountId: plan.account.accountId,
+								pick: (occupied: ReadonlySet<number>, after: Date) => {
+									const schedule = queueSchedules.get(plan.account.accountId);
+									return schedule ? nextFreeSlots({ schedule, timeZone: access.timeZone, after, occupied }).at(0) ?? null : null;
+								},
+							},
+						}
+						: {}),
 					reviewOverrideReason: input.reviewOverrideReason,
 				}, { actor: access.actor });
 

@@ -87,6 +87,24 @@ function sameParts(left: LocalParts, right: LocalParts) {
   );
 }
 
+/** The calendar date it is in the zone at this instant. */
+export function workspaceLocalDate(date: Date, timeZone: string) {
+  const { year, month, day } = partsInTimezone(date, timeZone);
+  return { year, month, day };
+}
+
+/**
+ * How a recurring local time resolves on a day the clock changes. The default
+ * refuses both, because a person picking one time must choose. A standing
+ * schedule instead takes the earlier of two repeated times and moves a time
+ * the clock skips to the instant it would have had, the usual "compatible"
+ * rule.
+ */
+export interface LocalTimeResolution {
+  ambiguous?: "reject" | "earlier";
+  nonexistent?: "reject" | "shift_forward";
+}
+
 /**
  * Converts a wall-clock value from the workspace timezone to one absolute
  * instant. Sampling offsets on both sides of the date handles DST and unusual
@@ -95,6 +113,7 @@ function sameParts(left: LocalParts, right: LocalParts) {
 export function workspaceLocalDateTimeToUtc(
   localDateTime: string,
   timeZone: string,
+  resolution: LocalTimeResolution = {},
 ): Date {
   const desired = parseLocalDateTime(localDateTime);
   const desiredEpoch = Date.UTC(
@@ -134,12 +153,20 @@ export function workspaceLocalDateTimeToUtc(
     .filter((candidate) => sameParts(partsInTimezone(candidate, timeZone), desired))
     .sort((left, right) => left.getTime() - right.getTime());
 
+  if (candidates.length === 0 && resolution.nonexistent === "shift_forward") {
+    // The clock skipped this time. Read it with the offset in force before the
+    // skip, the smallest one around it, which lands on the instant the time would
+    // have had whatever the length of the skip: an hour in most zones, half an
+    // hour in Lord Howe.
+    return new Date(desiredEpoch - Math.min(...offsets));
+  }
   if (candidates.length === 0) {
     throw new CalendarTimeError(
       "nonexistent_local_time",
       "That local time does not exist because the clock moves forward. Choose another time.",
     );
   }
+  if (candidates.length > 1 && resolution.ambiguous === "earlier") return candidates[0]!;
   if (candidates.length > 1) {
     throw new CalendarTimeError(
       "ambiguous_local_time",

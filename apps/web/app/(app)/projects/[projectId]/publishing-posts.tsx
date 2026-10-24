@@ -1,6 +1,7 @@
 "use client";
 import { SocialPlatformMark } from "@/lib/social-platform-mark";
 import { SocialPostLinks } from "@/lib/social-post-links";
+import { describeCounts } from "@/lib/performance-format";
 import { useState } from "react";
 import Link from "next/link";
 import {
@@ -286,6 +287,18 @@ export function PublishingPosts({
 								color="danger.fg"
 							>
 								{feedback.error}
+							</Text>
+						)}
+						{post.latestMetrics && (
+							<Text gridColumn="1 / -1" fontSize="xs" color="fg.muted">
+								{describeCounts(post.latestMetrics)}
+								{" · "}
+								as of{" "}
+								{new Intl.DateTimeFormat(undefined, {
+									month: "short",
+									day: "numeric",
+									timeZone,
+								}).format(new Date(post.latestMetrics.capturedAt))}
 							</Text>
 						)}
 						<Collapsible.Root minW="0">

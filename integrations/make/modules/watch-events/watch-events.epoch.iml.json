@@ -1,0 +1,22 @@
+{
+    "qs": {
+        "order": "desc",
+        "limit": 100,
+        "after": "{{undefined}}"
+    },
+    "pagination": {
+        "condition": false
+    },
+    "response": {
+        "limit": 100,
+        "output": {
+            "label": "#{{item.seq}} {{item.type}}{{if(item.subject.state, ' (' + item.subject.state + ')', '')}}",
+            "date": "{{item.occurredAt}}"
+        },
+        "trigger": {
+            "type": "id",
+            "order": "desc",
+            "id": "{{item.seq}}"
+        }
+    }
+}

@@ -4,7 +4,7 @@ import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Box, Drawer, Flex, Portal, Stack, Text } from "@chakra-ui/react";
-import { ArrowLeft, Bell, Braces, Building2, ChartNoAxesCombined, CreditCard, Menu, Share2, UserRound, Users, X } from "lucide-react";
+import { ArrowLeft, Bell, Braces, Building2, ChartNoAxesCombined, CreditCard, Menu, Share2, ShieldCheck, UserRound, Users, X } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
 import { NavLink } from "@narriflow/ui/components/nav-link";
 import { Button, IconButton } from "@narriflow/ui/components/button";
@@ -18,6 +18,7 @@ const workspaceLinks = [
   { label: "Workspace settings", href: "/settings/workspace", icon: Building2 },
   { label: "Members", href: "/settings/members", icon: Users },
   { label: "Social accounts", href: "/settings/social-accounts", icon: Share2 },
+  { label: "Automation grants", href: "/settings/automation-grants", icon: ShieldCheck },
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
   { label: "Usage history", href: "/settings/usage", icon: ChartNoAxesCombined },
   { label: "Developer access", href: "/settings/api", icon: Braces },

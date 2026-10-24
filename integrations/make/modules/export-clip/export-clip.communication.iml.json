@@ -1,0 +1,38 @@
+[
+    {
+        "url": "/clips/{{trim(parameters.clipId)}}",
+        "method": "GET",
+        "response": {
+            "temp": {
+                "editorRevision": "{{body.clip.editorRevision}}"
+            }
+        }
+    },
+    {
+        "url": "/clips/{{trim(parameters.clipId)}}/exports",
+        "method": "POST",
+        "headers": {
+            "Idempotency-Key": "make:export-clip:{{sha256(trim(ifempty(parameters.runKey, '')) + '|' + trim(parameters.clipId) + '|' + temp.editorRevision + '|' + join(parameters.aspectRatios, ',') + '|' + parameters.resolution)}}"
+        },
+        "body": {
+            "expectedRevision": "{{temp.editorRevision}}",
+            "aspectRatios": "{{parameters.aspectRatios}}",
+            "resolution": "{{parameters.resolution}}"
+        },
+        "response": {
+            "output": {
+                "exportId": "{{body.export.exportId}}",
+                "projectId": "{{body.export.projectId}}",
+                "clipId": "{{body.export.clipId}}",
+                "editorRevision": "{{body.export.editorRevision}}",
+                "status": "{{body.export.status}}",
+                "reused": "{{body.reused}}",
+                "grantedResolution": "{{body.output.granted.resolution}}",
+                "watermark": "{{body.output.granted.watermark}}",
+                "operationId": "{{body.operation.operationId}}",
+                "reviewUrl": "{{body.export.reviewUrl}}",
+                "replayed": "{{if(headers.`idempotent-replayed` = 'true', true, false)}}"
+            }
+        }
+    }
+]

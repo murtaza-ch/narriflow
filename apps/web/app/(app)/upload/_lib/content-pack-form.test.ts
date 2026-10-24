@@ -6,6 +6,7 @@ import {
 import {
   buildUploadGenerationContext,
   buildUploadSettingsFormData,
+  readBrandProfileIdFromForm,
   readContentPackFromForm,
 } from "./content-pack-form";
 
@@ -93,4 +94,14 @@ test("local upload preserves aspect ratio and an explicitly disabled hook", () =
 test("RSS form carries the selected brand profile", () => {
   const form = buildUploadSettingsFormData(baseInput({brandProfileId: "brand-profile-id"}));
   expect(form.get("brandProfileId")).toBe("brand-profile-id");
+});
+
+test("RSS intake reads its Brand Profile choice: an ID, or none when empty or absent", () => {
+  const withId = buildUploadSettingsFormData(baseInput({ brandProfileId: "  0b3a4c1e-6a84-4d5f-8c3a-1f2e3d4c5b6a " }));
+  expect(readBrandProfileIdFromForm(withId)).toBe("0b3a4c1e-6a84-4d5f-8c3a-1f2e3d4c5b6a");
+  const empty = new FormData();
+  empty.set("brandProfileId", "");
+  expect(readBrandProfileIdFromForm(empty)).toBeNull();
+  expect(readBrandProfileIdFromForm(buildUploadSettingsFormData(baseInput({ brandProfileId: null })))).toBeNull();
+  expect(readBrandProfileIdFromForm(new FormData())).toBeNull();
 });

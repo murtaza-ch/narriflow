@@ -73,6 +73,49 @@ the shared database before running code that requires it:
 bun run --cwd packages/db prisma:migrate:deploy
 ```
 
+### Library search and pgvector
+
+`20261024140000_library_search` runs `CREATE EXTENSION IF NOT EXISTS vector WITH
+SCHEMA public` and refers to `public.vector` everywhere, so migrations resolve
+the type whatever `search_path` they run with. The shared database (Neon
+`narriflow-dev`) needs no setup: Neon ships pgvector on every plan and the
+migration role can create it. Any other PostgreSQL that runs migrations,
+including the CI service (`pgvector/pgvector:pg17`) and local databases, needs
+pgvector installed. The extension belongs to the database. The disposable-schema
+gates create it in `public` if it is missing and never drop it; do not drop it
+while schemas that use it exist.
+
+The cosine HNSW index `TranscriptPassage_embedding_idx` exists only in the
+migration, because Prisma has no index type for it. `prisma migrate diff` lists
+it as the one difference; leave it in place.
+
+Both the local and the Railway worker run the `library_index` loop and claim
+transcripts through PostgreSQL, so either can index for the other. A worker
+that runs this code before the migration is applied fails the `library_index`
+loop on every tick (the new table and columns do not exist yet) and, like any
+loop, makes the worker exit after 20 consecutive failures, about three minutes.
+Apply the migration first. The loop uses `OPENAI_API_KEY` and waits without it; web needs the
+same key to embed search queries. After the migration, existing finished
+transcripts are indexed in the background, `LIBRARY_INDEX_BATCH_SIZE` per tick.
+
+A transcript that fails eight times is left alone, with the reason in
+`Transcript.passagesIndexError`. After fixing the cause, reset it with
+`UPDATE "Transcript" SET "passagesAttempts" = 0 WHERE "passagesIndexError" IS NOT NULL AND "passagesAttempts" >= 8`.
+
+### Workspace Events
+
+The `20261024130000_workspace_events` migration was edited in place after it was
+written and before it was ever applied to a shared database: it first created
+`WorkspaceEvent` and `WorkspaceEventCounter`, then gained `WorkspaceEventKey` and
+`ClipExport.retryCount`. Before deploying, check `_prisma_migrations` on the shared
+database. If that migration is already recorded there, Prisma reports a checksum
+mismatch and the added objects need their own follow-up migration instead.
+
+Apply `20261024130000_workspace_events` before any web or worker revision that
+uses it. Every settlement of an import, generation, export or post writes
+Workspace Events, so code running against a database without the migration
+fails those settlements.
+
 The GitHub `dev` integration deploys the Vercel app and Railway worker.
 Railway also runs the migration deployment command before starting its worker.
 Disposable-schema database tests still create their own schemas and must clean

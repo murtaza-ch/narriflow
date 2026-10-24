@@ -6,11 +6,13 @@ import { projectService } from "./project.service";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
   CLIP_MAX_DURATION_SEC,
+  clipSourceEdgeSec,
   CLIP_MIN_DURATION_SEC,
   CLIP_TITLE_MAX_LENGTH,
   CLIP_TITLE_SUGGESTION_COUNT,
   brollCuesArraySchema,
   buildTranscriptSliceForWindow,
+  captionedVideoFramingEdits,
   captionPresetSchema,
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
@@ -160,7 +162,7 @@ export function resolveClipCaptionPresetForContentPack(
 
 type ClipWithRenders = Clip & {
   renders: ClipRender[];
-  project?: { sourceDurationSeconds: number | null } | null;
+  project?: { sourceDurationSeconds: number | null; sourceProbe?: Prisma.JsonValue | null } | null;
 };
 
 const clipReviewSelect = {
@@ -353,10 +355,11 @@ export type MotionRenderAnalyticsMetadata = ReturnType<
 >;
 
 function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
-  const editorDocument = decodeClipEditorDocumentFromStorage(
-    clip,
-    clip.project?.sourceDurationSeconds ?? null,
-  );
+  const sourceEdgeSec = clip.project ? clipSourceEdgeSec(clip.project) : null;
+  const editorDocument = decodeClipEditorDocumentFromStorage(clip, {
+    durationSec: sourceEdgeSec,
+    wholeSource: clip.wholeSource,
+  });
   // tailPadSec 0: the stored bounds were already pad- and collision-
   // normalized against the FULL transcript when the clip was detected or
   // edited. The clip's own slice can't see the next word beyond its end, so
@@ -367,7 +370,7 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     utterances: editorDocument.transcriptSlice,
     startSec: editorDocument.clipStartSec,
     endSec: editorDocument.clipEndSec,
-    sourceDurationSec: clip.project?.sourceDurationSeconds ?? null,
+    sourceDurationSec: sourceEdgeSec,
     tailPadSec: 0,
   });
 
@@ -380,6 +383,7 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     startSec: effective.startSec,
     endSec: effective.endSec,
     durationSec: Math.round(effective.durationSec * 10) / 10,
+    wholeSource: clip.wholeSource,
     title: clip.title,
     hookText: clip.hookText,
     payoffText: clip.payoffText,
@@ -450,6 +454,7 @@ const clipActionFailureCatalog = {
 	clip_render_not_found: "missing",
 	clip_render_not_ready: "conflict",
   clip_selection_invalid: "unprocessable",
+  clip_source_missing: "conflict",
   clip_storage_delete_incomplete: "unavailable",
   clip_title_suggestion_failed: "unavailable",
   censor_feature_unavailable: "forbidden",
@@ -474,6 +479,7 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
 	clip_render_not_found: "Clip render not found",
 	clip_render_not_ready: "The clip has not been rendered for this aspect ratio",
   clip_selection_invalid: "Choose a valid transcript selection",
+  clip_source_missing: "Generate clips for this project before creating one from its transcript",
   clip_storage_delete_incomplete: "Clip storage cleanup is temporarily unavailable",
   clip_title_suggestion_failed: "Title suggestions are temporarily unavailable",
   censor_feature_unavailable: "Auto Censor is available on Creator and above",
@@ -584,8 +590,9 @@ function deriveTitleAndHookFromSlice(
 }
 
 /**
- * `studioEdits.textLayers`, `studioEdits.sfx`, and `studioEdits.sceneLayouts`
- * carry edited-timeline seconds relative to the source clip's window. Those
+ * `studioEdits.textLayers`, `studioEdits.sfx`, `studioEdits.sceneLayouts`, and
+ * `studioEdits.visualBroll` carry edited-timeline seconds relative to the
+ * source clip's window. Those
  * ranges have no meaning after this action creates a clip with a different
  * window, so the new clip starts without them. Window-independent styling is
  * copied unchanged.
@@ -605,7 +612,28 @@ export function planStudioEditsForClipFromSelection(
     textLayers: [],
     sceneLayouts: [],
     sfx: [],
+    visualBroll: [],
   };
+}
+
+/** The caption style a generation run gives its clips: the run's Content Pack
+ * choice, or the Brand Profile style snapshotted on the Project. */
+function runDefaultCaptionPreset(brandSnapshot: unknown, captionPresetId: string | null | undefined): CaptionPreset {
+  let template: CaptionPreset | null = null;
+  if (brandSnapshot && typeof brandSnapshot === "object" && !Array.isArray(brandSnapshot)) {
+    const snap = brandSnapshot as Record<string, unknown>;
+    if (snap.captionPreset && typeof snap.captionPreset === "object") {
+      template = captionPresetSchema.parse(snap.captionPreset);
+    }
+  }
+  return resolveClipCaptionPresetForContentPack(captionPresetId, template) ?? DEFAULT_CAPTION_PRESET;
+}
+
+/** What a new clip starts with besides its window. */
+interface NewClipLook {
+  captionPreset: CaptionPreset;
+  studioEdits: StudioEdits;
+  brollUrl: string | null;
 }
 
 /**
@@ -1018,7 +1046,7 @@ export class ClipService {
     const clip = await requirePrisma().clip.findFirst({
       where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       include: {
-        project: { select: { sourceDurationSeconds: true } },
+        project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
         renders: true,
       },
     });
@@ -1036,20 +1064,18 @@ export class ClipService {
     const { projectId, workflowRunId } = attempt;
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { brandSnapshot: true, sourceDurationSeconds: true },
+      select: { brandSnapshot: true, sourceDurationSeconds: true, sourceProbe: true },
     });
 
-    let templateCaptionPreset: CaptionPreset | null = null;
-    const snapshotRaw = project?.brandSnapshot;
-    if (snapshotRaw && typeof snapshotRaw === "object" && !Array.isArray(snapshotRaw)) {
-      const snap = snapshotRaw as Record<string, unknown>;
-      if (snap.captionPreset && typeof snap.captionPreset === "object") {
-        templateCaptionPreset = captionPresetSchema.parse(snap.captionPreset);
-      }
-    }
-    const resolvedCaptionPreset = resolveClipCaptionPresetForContentPack(
+    const resolvedCaptionPreset = runDefaultCaptionPreset(
+      project?.brandSnapshot,
       contentPack?.captionPreset,
-      templateCaptionPreset,
+    );
+    // A caption-only generation's clip is its whole source (see
+    // clipDurationBounds). A captioned video also states how to frame it.
+    const wholeSource = contentPack?.mode === "caption_only";
+    const studioEdits = studioEditsSchema.parse(
+      contentPack?.captionedVideo ? captionedVideoFramingEdits(contentPack.captionedVideo.framing) : undefined,
     );
 
     const detectedClipRows = clips.map((clip, i) => {
@@ -1058,16 +1084,16 @@ export class ClipService {
 				version: EDITOR_DOCUMENT_VERSION,
 				clipStartSec: clip.startSec,
 				clipEndSec: clip.endSec,
-          captionPreset: resolvedCaptionPreset ?? DEFAULT_CAPTION_PRESET,
+          captionPreset: resolvedCaptionPreset,
           transcriptSlice: clip.transcriptSlice,
-          studioEdits: studioEditsSchema.parse(undefined),
+          studioEdits,
 				brollUrl: null,
 				deletedRanges: [],
 				sceneBlocks: [],
 				censorSegments: [],
 				mediaMotions: [],
 			},
-        project?.sourceDurationSeconds ?? null,
+        { durationSec: project ? clipSourceEdgeSec(project) : null, wholeSource },
       );
       return {
             projectId,
@@ -1114,7 +1140,7 @@ export class ClipService {
         project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
       },
       include: {
-        project: { select: { sourceDurationSeconds: true } },
+        project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
         renders: true,
       },
       orderBy: { viralityScore: "desc" },
@@ -1151,7 +1177,7 @@ export class ClipService {
       where: { id: clipId },
       data: { title },
       include: {
-        project: { select: { sourceDurationSeconds: true } },
+        project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
         renders: true,
       },
     });
@@ -1195,6 +1221,7 @@ export class ClipService {
         sceneBlocks: true,
         censorSegments: true,
         mediaMotions: true,
+        wholeSource: true,
         // The transcript's detected language, stated verbatim in the prompt.
         // Without it the model infers a language from a ~400-character slice and
         // drifts: an English NVIDIA interview came back with Spanish titles, one
@@ -1203,6 +1230,7 @@ export class ClipService {
         project: {
           select: {
             sourceDurationSeconds: true,
+            sourceProbe: true,
             transcript: { select: { languageCode: true } },
           },
         },
@@ -1222,10 +1250,10 @@ export class ClipService {
       );
     }
 
-    const utterances = decodeClipEditorDocumentFromStorage(
-      clip,
-      clip.project.sourceDurationSeconds,
-    ).transcriptSlice;
+    const utterances = decodeClipEditorDocumentFromStorage(clip, {
+      durationSec: clipSourceEdgeSec(clip.project),
+      wholeSource: clip.wholeSource,
+    }).transcriptSlice;
     // Bounded so a long clip can't blow up the prompt — the opening lines carry
     // the hook, which is what a title has to land.
     const spokenText = utterances
@@ -1384,7 +1412,7 @@ export class ClipService {
     const source = await prisma.clip.findFirst({
       where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       include: {
-        project: { select: { sourceDurationSeconds: true } },
+        project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
         renders: { where: { exportVariantId: null } },
       },
     });
@@ -1392,14 +1420,9 @@ export class ClipService {
     if (!source) {
       throw new ClipActionError("clip_not_found");
     }
-    const sourceDocument = decodeClipEditorDocumentFromStorage(
-      source,
-      source.project.sourceDurationSeconds,
-    );
-    const duplicateDocument = encodeClipEditorDocumentForStorage(
-      sourceDocument,
-      source.project.sourceDurationSeconds,
-    );
+    const sourceWindow = { durationSec: clipSourceEdgeSec(source.project), wholeSource: source.wholeSource };
+    const sourceDocument = decodeClipEditorDocumentFromStorage(source, sourceWindow);
+    const duplicateDocument = encodeClipEditorDocumentForStorage(sourceDocument, sourceWindow);
 
     const newClipId = randomUUID();
 
@@ -1657,7 +1680,7 @@ export class ClipService {
       const snapshot = await prisma.clip.findUniqueOrThrow({
         where: { id: created.id },
         include: {
-          project: { select: { sourceDurationSeconds: true } },
+          project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
           renders: true,
         },
       });
@@ -1730,6 +1753,7 @@ export class ClipService {
           sceneBlocks: true,
           censorSegments: true,
           mediaMotions: true,
+          wholeSource: true,
           platformFit: true,
         },
       }),
@@ -1737,6 +1761,7 @@ export class ClipService {
         where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
         select: {
           sourceDurationSeconds: true,
+          sourceProbe: true,
           transcript: { select: { utterancesJson: true } },
         },
       }),
@@ -1749,39 +1774,120 @@ export class ClipService {
       throw new ClipActionError("clip_not_found");
     }
 
-    const sourceDocument = decodeClipEditorDocumentFromStorage(
-      source,
-      project.sourceDurationSeconds,
-    );
-
-    const rawUtterances =
-      (project.transcript?.utterancesJson as TranscriptUtterance[] | null) ?? [];
-
-    const plan = planCreateClipFromSelection({
-      rawUtterances,
-      sourceDurationSec: project.sourceDurationSeconds,
-      startSec: input.startSec,
-      endSec: input.endSec,
+    const sourceDocument = decodeClipEditorDocumentFromStorage(source, {
+      durationSec: clipSourceEdgeSec(project),
+      wholeSource: source.wholeSource,
     });
 
-    const studioEditsForNewClip = planStudioEditsForClipFromSelection(
-      sourceDocument.studioEdits,
-    );
-	const selectionDocument = encodeClipEditorDocumentForStorage(
-		{
-			version: EDITOR_DOCUMENT_VERSION,
-			clipStartSec: plan.startSec,
-        clipEndSec: plan.endSec,
+    return this.createClipAtRange({
+      projectId,
+      workflowRunId: source.workflowRunId,
+      afterIndex: source.index,
+      platformFit: source.platformFit,
+      sourceDurationSeconds: clipSourceEdgeSec(project),
+      rawUtterances: (project.transcript?.utterancesJson as TranscriptUtterance[] | null) ?? [],
+      range: input,
+      look: {
         captionPreset: sourceDocument.captionPreset,
+        studioEdits:
+          planStudioEditsForClipFromSelection(sourceDocument.studioEdits) ??
+          studioEditsSchema.parse(undefined),
+        brollUrl: sourceDocument.brollUrl,
+      },
+      origin: { reasoning: "Created from a transcript selection in the studio.", llmModel: "transcript-selection" },
+    });
+  }
+
+  /**
+   * Creates a clip over a transcript range of a Project, such as a library
+   * search result, with the same snapping and minimum-length policy as
+   * `createClipFromSelection`. It starts from what a fresh generation gives:
+   * the caption style of the Project's current run, default Studio edits, and
+   * no B-roll. Nothing is copied from an existing clip except its run and
+   * position. A Project without any clip has no run to join yet and is refused
+   * with `clip_source_missing`.
+   */
+  async createClipFromRange(
+    scope: ActorScope,
+    projectId: string,
+    input: { startSec: number; endSec: number },
+  ): Promise<ClipSnapshot> {
+    await this.authorizeActor(scope, "content.edit");
+    const project = await requirePrisma().project.findFirst({
+      where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+      select: {
+        sourceDurationSeconds: true,
+        sourceProbe: true,
+        brandSnapshot: true,
+        transcript: { select: { utterancesJson: true } },
+        clips: { orderBy: { createdAt: "desc" }, take: 1, select: { workflowRunId: true, index: true } },
+      },
+    });
+    if (!project) throw new ClipActionError("project_not_found");
+    const current = project.clips[0];
+    if (!current) throw new ClipActionError("clip_source_missing");
+    const run = await requirePrisma().workflowRun.findUnique({
+      where: { id: current.workflowRunId },
+      select: { contentPack: { select: { captionPreset: true } } },
+    });
+
+    return this.createClipAtRange({
+      projectId,
+      workflowRunId: current.workflowRunId,
+      afterIndex: current.index,
+      platformFit: [],
+      sourceDurationSeconds: clipSourceEdgeSec(project),
+      rawUtterances: (project.transcript?.utterancesJson as TranscriptUtterance[] | null) ?? [],
+      range: input,
+      look: {
+        captionPreset: runDefaultCaptionPreset(project.brandSnapshot, run?.contentPack?.captionPreset),
+        studioEdits: studioEditsSchema.parse(undefined),
+        brollUrl: null,
+      },
+      origin: { reasoning: "Created from a library search result.", llmModel: "library-search" },
+    });
+  }
+
+  /** The shared write behind both creation paths: plans the window from the
+   * transcript, then adds the clip after `afterIndex` in the run. */
+  private async createClipAtRange(input: {
+    projectId: string;
+    workflowRunId: string;
+    afterIndex: number;
+    platformFit: string[];
+    sourceDurationSeconds: number | null;
+    rawUtterances: TranscriptUtterance[];
+    range: { startSec: number; endSec: number };
+    look: NewClipLook;
+    origin: { reasoning: string; llmModel: string };
+  }): Promise<ClipSnapshot> {
+    const prisma = requirePrisma();
+    const { projectId, workflowRunId, look } = input;
+
+    const plan = planCreateClipFromSelection({
+      rawUtterances: input.rawUtterances,
+      sourceDurationSec: input.sourceDurationSeconds,
+      startSec: input.range.startSec,
+      endSec: input.range.endSec,
+    });
+
+    const selectionDocument = encodeClipEditorDocumentForStorage(
+      {
+        version: EDITOR_DOCUMENT_VERSION,
+        clipStartSec: plan.startSec,
+        clipEndSec: plan.endSec,
+        captionPreset: look.captionPreset,
         transcriptSlice: plan.transcriptSlice,
-        studioEdits: studioEditsForNewClip ?? studioEditsSchema.parse(undefined),
-			brollUrl: sourceDocument.brollUrl,
-			deletedRanges: [],
-			sceneBlocks: [],
-			censorSegments: [],
-			mediaMotions: [],
-		},
-      project.sourceDurationSeconds,
+        studioEdits: look.studioEdits,
+        brollUrl: look.brollUrl,
+        deletedRanges: [],
+        sceneBlocks: [],
+        censorSegments: [],
+        mediaMotions: [],
+      },
+      // A clip made from a selection is an ordinary clip, even in a project
+      // whose first clip is its whole source.
+      { durationSec: input.sourceDurationSeconds, wholeSource: false },
     );
 
     const newClipId = randomUUID();
@@ -1789,7 +1895,7 @@ export class ClipService {
     try {
       const created = await prisma.$transaction(async (tx) => {
         const highest = await tx.clip.aggregate({
-          where: { projectId, workflowRunId: source.workflowRunId },
+          where: { projectId, workflowRunId },
           _max: { index: true },
         });
 
@@ -1797,24 +1903,24 @@ export class ClipService {
           data: {
             id: newClipId,
             projectId,
-            workflowRunId: source.workflowRunId,
-            index: (highest._max.index ?? source.index) + 1,
+            workflowRunId,
+            index: (highest._max.index ?? input.afterIndex) + 1,
             status: "edited",
             ...selectionDocument,
             title: plan.title,
             hookText: plan.hookText,
             payoffText: null,
-            reasoning: "Created from a transcript selection in the studio.",
+            reasoning: input.origin.reasoning,
             category: "quote",
             // Vizard-parity: a duplicate/derived clip keeps the source's
             // platform targeting (duplicateClip does the same).
-            platformFit: source.platformFit,
+            platformFit: input.platformFit,
             // Fresh clip: no renders, no preview proxy, no B-roll cues, no
-            // editor history — see this method's doc comment for why nothing
-            // is copied from the source's rendered assets. deletedRanges /
-            // editorRevision / editorOriginal are left unset, taking their
-            // Prisma column defaults (null / 0 / null) — exactly the "empty
-            // history" state the plan calls for.
+            // editor history — see createClipFromSelection's doc comment for
+            // why nothing is copied from the source's rendered assets.
+            // deletedRanges / editorRevision / editorOriginal are left unset,
+            // taking their Prisma column defaults (null / 0 / null) — exactly
+            // the "empty history" state the plan calls for.
             viralityScore: plan.viralityScore,
             hookStrengthScore: plan.hookStrengthScore,
             emotionalIntensityScore: plan.emotionalIntensityScore,
@@ -1825,7 +1931,7 @@ export class ClipService {
             youtubeScore: plan.youtubeScore,
             instagramScore: plan.instagramScore,
             llmProvider: "manual",
-            llmModel: "transcript-selection",
+            llmModel: input.origin.llmModel,
             llmTokensUsed: null,
           },
         });
@@ -1837,7 +1943,7 @@ export class ClipService {
       const snapshot = await prisma.clip.findUniqueOrThrow({
         where: { id: created.id },
         include: {
-          project: { select: { sourceDurationSeconds: true } },
+          project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
           renders: true,
         },
       });
@@ -2072,7 +2178,7 @@ export class ClipService {
       !hasFeature(workspaceTier, "editor.motion") &&
       clipsToRender.some((clip) =>
         editorDocumentUsesMotion(
-          decodeClipEditorDocumentFromStorage(clip, null),
+          decodeClipEditorDocumentFromStorage(clip, { durationSec: null, wholeSource: clip.wholeSource }),
         ),
       )
     ) {
@@ -2267,6 +2373,7 @@ export class ClipService {
           select: {
             sourceStorageKey: true,
             sourceDurationSeconds: true,
+            sourceProbe: true,
             workspaceId: true,
             brandSnapshot: true,
             workspace: { select: { ownerUserId: true, pricingTier: true } },
@@ -2291,7 +2398,8 @@ export class ClipService {
 
         return {
           sourceStorageKey: project.sourceStorageKey,
-          sourceDurationSeconds: project.sourceDurationSeconds,
+          // The exact edge for clip windows (see clipSourceEdgeSec), not the rounded billing seconds.
+          sourceDurationSeconds: clipSourceEdgeSec(project),
           workspaceOwnerUserId: project.workspace.ownerUserId,
           workspaceId: project.workspaceId,
           pricingTier: resolvePricingTier(project.workspace.pricingTier),

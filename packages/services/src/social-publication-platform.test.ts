@@ -13,7 +13,6 @@ const results: PublicationPlatformResult[] = [
       receiptId: "receiver-operation-1",
       platformPostId: "post-1",
       externalUrl: "https://social.example/post-1",
-      metrics: null,
     },
   },
   {

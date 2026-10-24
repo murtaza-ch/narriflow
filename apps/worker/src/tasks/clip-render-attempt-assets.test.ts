@@ -59,6 +59,7 @@ function fixture(input: {
     clip: {
       id: "clip-scenes", index: 0, startSec: 0, endSec: 10, llmModel: "caption-only",
       transcriptSlice: [], deletedRanges: null, captionPreset: null, studioEdits: null,
+      wholeSource: false,
       editorDocumentVersion: 1,
       sceneBlocks: [scene(1, imageContent, 1), scene(2, textContent, 4),
         ...(input.duplicates ? [scene(3, imageContent, 7), scene(4, textContent, 9)] : [])],

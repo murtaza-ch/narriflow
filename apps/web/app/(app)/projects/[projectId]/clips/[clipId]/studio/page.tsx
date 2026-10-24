@@ -156,7 +156,7 @@ export default async function StudioPage({
     utterances: clip.transcriptSlice,
     startSec: clip.startSec,
     endSec: clip.endSec,
-    sourceDurationSec: snapshot.project.sourceDurationSeconds,
+    sourceDurationSec: snapshot.project.sourceEdgeSec,
     tailPadSec: 0,
   });
   const utterances = effective.transcriptSlice;
@@ -177,6 +177,8 @@ export default async function StudioPage({
       snapshot.project.sourceType === "rss"
         ? "audio"
         : "video",
+    wholeSource: clip.wholeSource,
+    sourceEdgeSec: snapshot.project.sourceEdgeSec,
     brollCues: clip.brollCues ?? [],
     can1080pExport: hasFeature(pricingTier, "export.1080p"),
     exportHasWatermark: !hasFeature(pricingTier, "export.noWatermark"),

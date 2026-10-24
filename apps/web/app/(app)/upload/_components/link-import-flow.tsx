@@ -7,11 +7,13 @@ import type {
   ContentPack,
   GenerationMode,
   LinkProviderId,
+  RecipeSnapshot,
 } from "@narriflow/validators";
 import {
   DEFAULT_LINK_CONFIGURE_STATE,
   type LinkConfigureState,
 } from "../_lib/link-content-pack";
+import type { DrivePick } from "../_lib/google-drive-picker";
 import type { IngestStageStatus } from "../_lib/use-ingest-stream";
 import { CommitStep, type CommitStepResult } from "./commit-step";
 import { ConfigureStep } from "./configure-step";
@@ -24,6 +26,8 @@ export interface LinkResumeData {
   languageCode: string | null;
   ingestStatus: IngestStageStatus;
   ingestErrorCode: string | null;
+  /** The ingest is a Google Drive Picker import, which can't be retried. */
+  ingestFromDrivePicker: boolean;
   contentPack: ContentPack;
 }
 
@@ -36,6 +40,8 @@ export interface UploadUsageSummary {
 }
 
 interface LinkImportFlowProps {
+  /** Saved Recipes the first step can fill its form from. */
+  recipes: RecipeSnapshot[];
   linkUrl: string;
   linkProvider: LinkProviderId;
   brandTemplates: {
@@ -56,6 +62,10 @@ interface LinkImportFlowProps {
   /** Present when the page mounted with `?project=<id>` — skips Step 1
    *  entirely and rehydrates Step 2 from the server-loaded draft. */
   resumeData: LinkResumeData | null;
+  /** A file chosen in the Google Drive Picker; Step 1 imports it instead of a link. */
+  driveFile?: DrivePick | null;
+  /** Called once Step 1 has handed the source to the server. */
+  onCommitted?: () => void;
 }
 
 function step2StateFromContentPack(contentPack: ContentPack): LinkConfigureState {
@@ -80,12 +90,15 @@ function step2StateFromContentPack(contentPack: ContentPack): LinkConfigureState
  * upload-shell state used by the untouched file/RSS flows.
  */
 export function LinkImportFlow({
+  recipes,
   linkUrl,
   linkProvider,
   brandTemplates,
   brandProfiles,
   usageSummary,
   resumeData,
+  driveFile = null,
+  onCommitted,
 }: LinkImportFlowProps) {
   const router = useRouter();
   const [step, setStep] = useState<"commit" | "configure">(
@@ -116,6 +129,9 @@ export function LinkImportFlow({
   const [sourceMediaUrl, setSourceMediaUrl] = useState(
     resumeData?.sourceMediaUrl ?? linkUrl,
   );
+  const [fromDrivePicker, setFromDrivePicker] = useState(
+    resumeData?.ingestFromDrivePicker ?? false,
+  );
 
   // Minted once per Step-1 render, never regenerated across re-renders of
   // this component — a resumed (Step-2) mount never needs one at all.
@@ -138,7 +154,9 @@ export function LinkImportFlow({
     setSourceMediaUrl(linkUrl);
     setIngestStatus("queued");
     setIngestErrorCode(null);
+    setFromDrivePicker(driveFile !== null);
     setStep("configure");
+    onCommitted?.();
     router.replace(`/upload?project=${result.projectId}`, { scroll: false });
   }
 
@@ -147,9 +165,12 @@ export function LinkImportFlow({
       <CommitStep
         linkUrl={linkUrl}
         linkProvider={linkProvider}
+        recipes={recipes}
+        onRecipeApplied={(clip) => setStep2State((current) => ({ ...current, ...clip }))}
         brandTemplates={brandTemplates}
         brandProfiles={brandProfiles}
         usageSummary={usageSummary}
+        driveFile={driveFile}
         commitToken={commitTokenRef.current}
         onCommitted={handleCommitted}
       />
@@ -163,6 +184,7 @@ export function LinkImportFlow({
       sourceMediaUrl={sourceMediaUrl}
       initialIngestStatus={ingestStatus}
       initialIngestErrorCode={ingestErrorCode}
+      ingestFromDrivePicker={fromDrivePicker}
       mode={mode}
       languageCode={languageCode}
       initialStep2={step2State}

@@ -238,3 +238,95 @@ export function sourceRangeToEdited(
   if (endSec - startSec < EDIT_RANGE_EPSILON_SEC) return null;
   return { startSec, endSec };
 }
+
+export interface ClipCutPlan {
+  /** Kept source segments, source-order, each >= MIN_KEPT_SEGMENT_SEC, with
+   *  edited-timeline offsets recomputed after any sliver was dropped. Empty
+   *  when nothing is left to render — see `isEmpty`. */
+  segments: EditedSegment[];
+  /** Total duration of the concatenated edited timeline. 0 when `isEmpty`. */
+  editedDurationSec: number;
+  /** The same shape `sourceToEdited` / `sourceRangeToEdited` /
+   *  `isSourceTimeDeleted` expect, built from the FINAL (post sliver-drop)
+   *  segment list — pass this, not a hand-rolled map, to retime anything
+   *  through the shared source↔edited helpers so a dropped sliver can't
+   *  disagree between the cut-concat filter graph and caption/overlay
+   *  retiming. */
+  map: EditedTimeMap;
+  /** True when there is nothing renderable left: either every source second
+   *  in the clip window was deleted, or every kept segment was a sub-50ms
+   *  sliver. Callers must never attempt an encode in this state — there is
+   *  no valid non-zero-duration output. */
+  isEmpty: boolean;
+  /** True when `deletedRanges` produced no actual cut (normalizes to zero
+   *  ranges within the clip window): exactly one segment spanning the whole
+   *  window. Callers MUST take the existing single-segment ffmpeg path
+   *  unchanged in this case — no filter-graph changes, byte-identical to
+   *  pre-cut-concat renders. */
+  isUncut: boolean;
+  /** Count of kept segments dropped for being under MIN_KEPT_SEGMENT_SEC,
+   *  for structured logging. */
+  droppedSliverCount: number;
+}
+
+/**
+ * Builds the render-time cut plan for a clip: the ordered kept source
+ * segments and edited-timeline duration implied by `deletedRanges` within
+ * the clip's own `[startSec, endSec)` window, after dropping any segment
+ * under `MIN_KEPT_SEGMENT_SEC`. The worker renders from it and timeline
+ * exports for editors cut from it, so both keep exactly the same footage.
+ */
+export function buildClipCutPlan(
+  deletedRanges: SourceRange[],
+  window: ClipWindow,
+): ClipCutPlan {
+  const isUncut = normalizeDeletedRanges(deletedRanges, window).length === 0;
+
+  if (isUncut) {
+    const map = buildEditedTimeMap([], window);
+    return {
+      segments: map.segments,
+      editedDurationSec: map.editedDurationSec,
+      map,
+      isEmpty: map.segments.length === 0,
+      isUncut: true,
+      droppedSliverCount: 0,
+    };
+  }
+
+  const rawMap = buildEditedTimeMap(deletedRanges, window);
+  const kept = rawMap.segments.filter(
+    (segment) =>
+      segment.sourceEndSec - segment.sourceStartSec >=
+      MIN_KEPT_SEGMENT_SEC - FLOAT_SLACK,
+  );
+  const droppedSliverCount = rawMap.segments.length - kept.length;
+
+  let cursor = 0;
+  const segments: EditedSegment[] = kept.map((segment) => {
+    const rebuilt: EditedSegment = {
+      sourceStartSec: segment.sourceStartSec,
+      sourceEndSec: segment.sourceEndSec,
+      editedStartSec: roundMs(cursor),
+    };
+    cursor += segment.sourceEndSec - segment.sourceStartSec;
+    return rebuilt;
+  });
+  const editedDurationSec = roundMs(cursor);
+
+  const map: EditedTimeMap = {
+    clipStartSec: window.startSec,
+    clipEndSec: window.endSec,
+    segments,
+    editedDurationSec,
+  };
+
+  return {
+    segments,
+    editedDurationSec,
+    map,
+    isEmpty: segments.length === 0,
+    isUncut: false,
+    droppedSliverCount,
+  };
+}

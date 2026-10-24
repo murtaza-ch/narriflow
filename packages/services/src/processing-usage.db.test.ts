@@ -15,6 +15,8 @@ import {
   parseStoredContentPack,
   PROCESSING_CAPACITY_DEFAULTS,
 } from "@narriflow/validators";
+import { createDriveTokenCipher, createGoogleDriveFileReader, DriveSourceError } from "./drive-source";
+import { projectRetentionService } from "./project-retention.service";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
 import { ProcessingUsage, ProcessingUsageError } from "./processing-usage";
@@ -72,6 +74,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
   let prisma: PrismaClient;
   let pool: Pool;
   let priorPrisma: PrismaClient | undefined;
+  let priorEncryptionKey: string | undefined;
   const prismaGlobal = globalThis as unknown as {
     narriflowPrismaClient?: PrismaClient;
   };
@@ -87,8 +90,12 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     });
     priorPrisma = prismaGlobal.narriflowPrismaClient;
     prismaGlobal.narriflowPrismaClient = prisma;
+    priorEncryptionKey = process.env.SOCIAL_TOKEN_ENCRYPTION_KEY;
+    process.env.SOCIAL_TOKEN_ENCRYPTION_KEY = "processing-usage-db-test-key";
   });
   afterAll(async () => {
+    if (priorEncryptionKey === undefined) delete process.env.SOCIAL_TOKEN_ENCRYPTION_KEY;
+    else process.env.SOCIAL_TOKEN_ENCRYPTION_KEY = priorEncryptionKey;
     prismaGlobal.narriflowPrismaClient = priorPrisma;
     await prisma.$disconnect();
     await pool.end();
@@ -614,6 +621,155 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
 
     await projectService.deleteProject(scope, link.project.id);
     expect(await row(link.project.id)).toMatchObject({ state: "released", reason: "project_deleted" });
+  });
+
+  test("a Drive Picker file is admitted as link intake from Drive's own facts, with its token sealed on the job", async () => {
+    clock = new Date();
+    const { workspace: ws, scope } = await workspace("free");
+    const accessToken = "ya29.drive-picker-secret";
+    const fileId = "1AbCdEfGhIjKlMnOpQrStUvWxYz_-0123";
+    const asked: Array<{ fileId: string; accessToken: string }> = [];
+    const files = (durationSeconds: number | null, fail?: ExpectedDomainFailureError) => ({
+      read: async (input: { fileId: string; accessToken: string }) => {
+        asked.push(input);
+        if (fail) throw fail;
+        return { fileId: input.fileId, name: "Weekly sync.mp4", mimeType: "video/mp4", sizeBytes: 1_000, durationSeconds };
+      },
+    });
+    const commitToken = randomUUID();
+    const drive = await projectService.queueDriveIngest(
+      scope,
+      { fileId, accessToken, commitToken },
+      { files: files(10 * 60) },
+    );
+    expect(asked).toEqual([{ fileId, accessToken }]);
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: drive.project.id } });
+    expect(project).toMatchObject({
+      title: "Weekly sync",
+      sourceType: "link",
+      sourceProvider: "gdrive",
+      sourceMediaUrl: `https://drive.google.com/file/d/${fileId}/view`,
+      ingestStatus: "queued",
+      commitToken,
+    });
+    expect(await row(project.id)).toMatchObject({ state: "reserved", intakeKind: "link", reservedSeconds: 600 });
+    const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: drive.queuedJobId! } });
+    expect(job).toMatchObject({
+      jobType: "drive_import",
+      status: "queued",
+      payload: { fileId, fileName: "Weekly sync.mp4" },
+    });
+    expect(job.sourceCredential).not.toBeNull();
+    expect(createDriveTokenCipher().open(job.sourceCredential!)).toBe(accessToken);
+    expect(await prisma.contentPack.findFirstOrThrow({ where: { projectId: project.id } })).toMatchObject({ draft: true });
+
+    // The token lives only in the sealed column.
+    const everywhere = JSON.stringify(
+      [
+        project,
+        { ...job, sourceCredential: null },
+        await prisma.workflowEvent.findMany({ where: { projectId: project.id } }),
+        await prisma.processingUsageReservation.findMany({ where: { workspaceId: ws.id } }),
+        await prisma.programAnalyticsEvent.findMany({ where: { projectId: project.id } }),
+      ],
+      (_key, value) => (typeof value === "bigint" ? value.toString() : value),
+    );
+    expect(everywhere).not.toContain(accessToken);
+
+    // A repeated commit returns the same Project without asking Drive again.
+    const replay = await projectService.queueDriveIngest(
+      scope,
+      { fileId, accessToken, commitToken },
+      { files: files(10 * 60) },
+    );
+    expect(replay.project.id).toBe(drive.project.id);
+    expect(replay.queuedJobId).toBe(drive.queuedJobId);
+    expect(asked).toHaveLength(1);
+
+    // Drive's duration is checked under the tier's per-video cap, and a file
+    // Drive refuses creates nothing.
+    await expect(
+      projectService.queueDriveIngest(scope, { fileId, accessToken }, { files: files(31 * 60) }),
+    ).rejects.toBeInstanceOf(ProcessingUsageError);
+    const expired = new DriveSourceError("drive_token_expired");
+    expect(
+      await refusal(projectService.queueDriveIngest(scope, { fileId, accessToken }, { files: files(null, expired) })),
+    ).toMatchObject({ code: "drive_token_expired" });
+    expect(await prisma.project.count({ where: { workspaceId: ws.id } })).toBe(1);
+    expect(await prisma.ingestJob.count({ where: { project: { workspaceId: ws.id } } })).toBe(1);
+  });
+
+  test("Drive intake through the real reader refuses a foreign token and a video longer than the tier allows", async () => {
+    clock = new Date();
+    const { workspace: ws, scope } = await workspace("free");
+    const fileId = "1AbCdEfGhIjKlMnOpQrStUvWxYz_-0123";
+    const clientId = "narriflow.apps.googleusercontent.com";
+    const drive = (durationMillis: string, aud = clientId) => {
+      const resolver = async () => [{ address: "142.250.80.42", family: 4 }];
+      const transport = async (url: URL) =>
+        new Response(
+          JSON.stringify(
+            url.hostname === "oauth2.googleapis.com"
+              ? { aud, scope: "https://www.googleapis.com/auth/drive.file" }
+              : { id: fileId, name: "Long.mp4", mimeType: "video/mp4", size: "1000", videoMediaMetadata: { durationMillis } },
+          ),
+          { status: 200 },
+        );
+      return createGoogleDriveFileReader({ clientId, transport, resolver });
+    };
+    const input = { fileId, accessToken: "ya29.reader-token" };
+
+    // Two hours exceeds the free tier's 30-minute per-video limit.
+    expect(
+      await refusal(projectService.queueDriveIngest(scope, input, { files: drive("7200000") })),
+    ).toMatchObject({ code: "upload_too_long" });
+    expect(
+      await refusal(projectService.queueDriveIngest(scope, input, { files: drive("600000", "another-app") })),
+    ).toMatchObject({ code: "drive_token_invalid" });
+    expect(await prisma.project.count({ where: { workspaceId: ws.id } })).toBe(0);
+
+    const admitted = await projectService.queueDriveIngest(scope, input, { files: drive("1800000") });
+    expect(await row(admitted.project.id)).toMatchObject({ state: "reserved", reservedSeconds: 1800 });
+    expect(await projectService.getProjectSnapshot(scope, admitted.project.id)).toMatchObject({
+      ingestJobType: "drive_import",
+    });
+  });
+
+  test("a retention purge discards the Drive token of the queued job it cancels", async () => {
+    clock = new Date();
+    const { scope } = await workspace("free");
+    const drive = await projectService.queueDriveIngest(
+      scope,
+      { fileId: "1AbCdEfGhIjKlMnOpQrStUvWxYz_-0123", accessToken: "ya29.retention-token" },
+      {
+        files: {
+          read: async (input) => ({ fileId: input.fileId, name: "a.mp4", mimeType: "video/mp4", sizeBytes: 1, durationSeconds: 60 }),
+        },
+      },
+    );
+    const before = await prisma.ingestJob.findUniqueOrThrow({ where: { id: drive.queuedJobId! } });
+    expect(before.sourceCredential).not.toBeNull();
+    await prisma.project.update({
+      where: { id: drive.project.id },
+      data: { retentionPolicyKey: "free_project_v1", expiresAt: new Date(Date.now() - 60 * 60_000) },
+    });
+
+    const priorEnv = { ...process.env };
+    process.env.PROJECT_RETENTION_MODE = "enforce";
+    process.env.PROJECT_RETENTION_ENFORCEMENT_STARTED_AT = "2020-01-01T00:00:00.000Z";
+    // Without R2 the purge stops after claiming, so the cancelled job stays inspectable.
+    delete process.env.R2_ACCOUNT_ID;
+    try {
+      await projectRetentionService.purgeDueProjects(10, new Date());
+    } finally {
+      for (const key of ["PROJECT_RETENTION_MODE", "PROJECT_RETENTION_ENFORCEMENT_STARTED_AT", "R2_ACCOUNT_ID"]) {
+        if (priorEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = priorEnv[key];
+      }
+    }
+
+    const after = await prisma.ingestJob.findUniqueOrThrow({ where: { id: drive.queuedJobId! } });
+    expect(after).toMatchObject({ status: "cancelled", lastError: "PROJECT_EXPIRED", sourceCredential: null });
   });
 
   test("generation admission settles once and commits a refusal on the failed Project", async () => {

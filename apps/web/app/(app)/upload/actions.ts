@@ -10,12 +10,14 @@ import {
 } from "@/lib/authenticated-request-action";
 import {
   projectService,
+  DriveSourceError,
   ProcessingUsageError,
   LinkUnsupportedSourceError,
 } from "@narriflow/services";
 import {
   contentPackSchema,
   detectLinkProvider,
+  driveIngestSchema,
   hasUserErrorMessage,
   userErrorMessage,
   type ContentPack,
@@ -23,15 +25,11 @@ import {
   rssImportSchema,
 } from "@narriflow/validators";
 import {
+  readBrandProfileIdFromForm,
   readContentPackFromForm,
   readLanguageCodeFromForm,
 } from "./_lib/content-pack-form";
 import type { AuthenticatedActionFailure } from "@/lib/authenticated-request-action";
-
-function readBrandTemplateIdFromForm(formData: FormData): string | null {
-  const value = String(formData.get("brandTemplateId") ?? "").trim();
-  return value && value !== "default" ? value : null;
-}
 
 const linkConfigureActionInputSchema = z.object({
   projectId: z.string().min(1),
@@ -51,6 +49,7 @@ const rssActionInputSchema = rssImportSchema.extend({
  */
 function commitErrorCode(error: unknown): string {
   if (error instanceof ProcessingUsageError) return error.code;
+  if (error instanceof DriveSourceError) return error.code;
   if (error instanceof LinkUnsupportedSourceError) {
     return "link_unsupported_source";
   }
@@ -125,6 +124,60 @@ export async function commitLinkImportAction(input: {
     };
   }
   });
+}
+
+/**
+ * Step 1 (Commit) for a file chosen in the Google Drive Picker. The browser
+ * sends the file ID and its short-lived `drive.file` token; the server reads
+ * the file's facts from Drive and seals the token on the Ingest Job. The token
+ * is neither logged nor returned.
+ */
+export async function commitDriveImportAction(input: {
+  fileId: string;
+  accessToken: string;
+  title: string | null;
+  brandTemplateId: string | null;
+  brandProfileId: string | null;
+  commitToken: string;
+  languageCode: string | null;
+  mode: GenerationMode;
+  processingStartSec: number | null;
+  processingEndSec: number | null;
+}): Promise<CommitLinkImportResult> {
+  return executeWorkspaceActionWithInput(
+    "processing.consume",
+    { ...input, title: input.title?.trim() || undefined },
+    driveIngestSchema,
+    async (appUser, parsed): Promise<CommitLinkImportResult> => {
+      try {
+        const ingest = await projectService.queueDriveIngest(appUser, parsed);
+        revalidatePath(`/projects/${ingest.project.id}`);
+        return {
+          ok: true,
+          projectId: ingest.project.id,
+          title: ingest.project.title,
+        };
+      } catch (error) {
+        const code = commitErrorCode(error);
+        return {
+          ok: false,
+          code,
+          message:
+            userErrorMessage(code) ??
+            "Could not start this import. Please try again.",
+        };
+      }
+    },
+    {
+      operationName: "commit-drive-import",
+      // Each commit makes one Drive API call on the person's behalf.
+      rateLimit: {
+        key: ({ workspaceId }) => `drive-import:${workspaceId}`,
+        limit: 10,
+        windowSeconds: 60,
+      },
+    },
+  );
 }
 
 /**
@@ -228,7 +281,7 @@ export async function generateFromRssAction(formData: FormData) {
     titlePrefix: titlePrefix || undefined,
     episodeIds,
     commitToken: commitToken || undefined,
-    brandTemplateId: readBrandTemplateIdFromForm(formData),
+    brandProfileId: readBrandProfileIdFromForm(formData),
     contentPack,
     languageCode: readLanguageCodeFromForm(formData),
   };
@@ -242,7 +295,7 @@ export async function generateFromRssAction(formData: FormData) {
         titlePrefix: parsedInput.titlePrefix,
         episodeIds: parsedInput.episodeIds,
         commitToken: parsedInput.commitToken,
-        brandTemplateId: parsedInput.brandTemplateId,
+        brandProfileId: parsedInput.brandProfileId,
       }, {
         contentPack: parsedInput.contentPack,
         languageCode: parsedInput.languageCode,

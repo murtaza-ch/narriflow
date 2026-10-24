@@ -17,6 +17,7 @@ import { AlertTriangle, Check, RotateCcw, ScanSearch } from "lucide-react";
 import { formatDuration } from "@/lib/format";
 import {
   ingestRecoveryAction,
+  ingestRecoveryLabel,
   liveIngestStageWord,
   mergeStageWithLiveEvent,
 } from "@/lib/project-state";
@@ -162,6 +163,8 @@ export interface ProcessingPanelProps {
   ingestStatus: string;
   ingestErrorCode: string | null;
   ingestAttemptsExhausted: boolean;
+  /** The latest ingest was a Google Drive Picker import, which only a new pick can recover. */
+  ingestFromDrivePicker: boolean;
   /** Pre-formatted "Retry limit reached (N/MAX)…" copy — computed
    *  server-side (page.tsx already imports MAX_INGEST_RETRY_ATTEMPTS from
    *  @narriflow/services; that constant lives in the Prisma-backed
@@ -311,9 +314,11 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
               <AlertTriangle size={14} aria-hidden />
               <Text fontSize="sm">{userErrorMessage(props.ingestErrorCode)}</Text>
             </Flex>
-            {ingestRecoveryAction(props.ingestErrorCode) === "new_upload" ? (
+            {ingestRecoveryAction(props.ingestErrorCode, props.ingestFromDrivePicker) === "new_upload" ? (
               <Button asChild size="sm" variant="subtle" alignSelf="flex-start">
-                <Link href="/upload">Upload video instead</Link>
+                <Link href="/upload">
+                  {ingestRecoveryLabel(props.ingestFromDrivePicker)}
+                </Link>
               </Button>
             ) : (
               <RetryIngestButton

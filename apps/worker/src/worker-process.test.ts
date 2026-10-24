@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -478,8 +478,9 @@ test("media inspection normalizes duration, streams, dimensions, fps, and HTTP c
                 width: 1920,
                 height: 1080,
                 r_frame_rate: "30000/1001",
+                avg_frame_rate: "30000/1001",
               },
-              { codec_type: "audio" },
+              { codec_type: "audio", sample_rate: "48000", channels: 2 },
             ],
           }),
         ),
@@ -501,6 +502,11 @@ test("media inspection normalizes duration, streams, dimensions, fps, and HTTP c
     hasAudio: true,
     hasVisualStream: true,
     fps: 30000 / 1001,
+    sourceProbe: {
+      durationSec: 12.5,
+      video: { width: 1920, height: 1080, frameRate: { numerator: 30000, denominator: 1001 }, startTimecode: null },
+      audio: { sampleRate: 48000, channels: 2 },
+    },
   });
   expect(received).toMatchObject({
     command: "ffprobe",
@@ -548,6 +554,70 @@ test("media inspection does not classify attached cover art as playable video", 
     hasAudio: true,
     hasVisualStream: true,
     fps: 30,
+    sourceProbe: { durationSec: 48, video: null, audio: null },
+  });
+});
+
+async function probeOf(streams: unknown[], format: unknown = { duration: "30" }) {
+  const module = createWorkerProcessModule({
+    execute: async () => ({ exitCode: 0, stdout: Buffer.from(JSON.stringify({ format, streams })) }),
+  });
+  const { sourceProbe } = await module.inspectMedia({
+    sourcePath: "/tmp/source.mov",
+    signal: new AbortController().signal,
+    deadlineMs: 1_000,
+  });
+  return sourceProbe;
+}
+
+const videoStream = (rates: { r_frame_rate?: string; avg_frame_rate?: string }, extra: Record<string, unknown> = {}) =>
+  ({ codec_type: "video", width: 1920, height: 1080, ...rates, ...extra });
+
+describe("the source probe's frame rate", () => {
+  test.each([
+    ["a constant 30 fps file whose average drifts to 29.98 stays 30", { r_frame_rate: "30/1", avg_frame_rate: "2998/100" }, { numerator: 30, denominator: 1 }],
+    ["a constant 29.97 file whose average reads 30 stays 29.97", { r_frame_rate: "30000/1001", avg_frame_rate: "30/1" }, { numerator: 30000, denominator: 1001 }],
+    ["a base rate with no average (0/0) is used", { r_frame_rate: "30000/1001", avg_frame_rate: "0/0" }, { numerator: 30000, denominator: 1001 }],
+    ["an average with no base rate is used", { avg_frame_rate: "25/1" }, { numerator: 25, denominator: 1 }],
+    ["a variable-rate file's absurd base rate falls back to its standard average", { r_frame_rate: "90000/1", avg_frame_rate: "29970/1000" }, { numerator: 30000, denominator: 1001 }],
+    ["a rounded decimal base rate snaps to the exact fraction", { r_frame_rate: "2997/100", avg_frame_rate: "0/0" }, { numerator: 30000, denominator: 1001 }],
+  ])("%s", async (_name, rates, expected) => {
+    expect((await probeOf([videoStream(rates)]))?.video?.frameRate).toEqual(expected);
+  });
+
+  test("a rate matching no standard is stored as measured, for the export to refuse", async () => {
+    expect((await probeOf([videoStream({ r_frame_rate: "25/2", avg_frame_rate: "25/2" })]))?.video?.frameRate).toEqual({ numerator: 25, denominator: 2 });
+    expect((await probeOf([videoStream({ r_frame_rate: "90000/1", avg_frame_rate: "0/0" })]))?.video?.frameRate).toEqual({ numerator: 90000, denominator: 1 });
+    expect((await probeOf([videoStream({ r_frame_rate: "90000/1", avg_frame_rate: "15/1" })]))?.video?.frameRate).toEqual({ numerator: 15, denominator: 1 });
+  });
+
+  test("a video with no readable rate has no video facts", async () => {
+    expect((await probeOf([videoStream({ r_frame_rate: "0/0", avg_frame_rate: "0/0" }), { codec_type: "audio", sample_rate: "48000" }]))?.video).toBeNull();
+  });
+});
+
+describe("the source probe's start timecode", () => {
+  const rates = { r_frame_rate: "30000/1001", avg_frame_rate: "30000/1001" };
+
+  test("a file without a timecode starts at none", async () => {
+    expect((await probeOf([videoStream(rates)]))?.video?.startTimecode).toBeNull();
+  });
+
+  test.each([
+    ["the video stream", [videoStream(rates, { tags: { timecode: "01:00:00:00" } })], { duration: "30" }, "01:00:00:00"],
+    ["a timecode track, keeping the drop-frame mark", [videoStream(rates), { codec_type: "data", codec_tag_string: "tmcd", tags: { timecode: "10:15:30;12" } }], { duration: "30" }, "10:15:30;12"],
+    ["the container", [videoStream(rates)], { duration: "30", tags: { timecode: "00:59:58:00" } }, "00:59:58:00"],
+    ["a differently cased tag", [videoStream(rates, { tags: { TIMECODE: "02:00:00:00" } })], { duration: "30" }, "02:00:00:00"],
+  ])("is read from %s", async (_name, streams, format, expected) => {
+    expect((await probeOf(streams, format))?.video?.startTimecode).toBe(expected);
+  });
+
+  test("the video stream's timecode wins over the container's", async () => {
+    expect((await probeOf([videoStream(rates, { tags: { timecode: "01:00:00:00" } })], { duration: "30", tags: { timecode: "05:00:00:00" } }))?.video?.startTimecode).toBe("01:00:00:00");
+  });
+
+  test("a value that is not a timecode is ignored", async () => {
+    expect((await probeOf([videoStream(rates, { tags: { timecode: "not a timecode" } })]))?.video?.startTimecode).toBeNull();
   });
 });
 

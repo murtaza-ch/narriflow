@@ -1,0 +1,514 @@
+{
+  "name": "Narriflow: Autopilot clips to Slack",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "444fdf78-8aa8-5485-98e0-6fb05b9c3c4c",
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The cursor is the last event this workflow has handled. It lives in workflow static data,\n// which n8n keeps for active workflows only (a manual test run always starts without one).\nconst state = $getWorkflowStaticData('global');\nreturn [{ json: { after: state.cursor || '' } }];"
+      },
+      "id": "3b2d9b90-3031-517a-bee4-022381068dbf",
+      "name": "Read cursor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "255833b9-b2d5-5498-9163-ef4bf5fdd4c8",
+              "leftValue": "={{ $json.after !== '' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e311514b-3e3e-555d-bb0b-fb89b6fd6c44",
+      "name": "Have a cursor?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/events?types=finishing.finished&order=desc&limit=1",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "cab5d390-0d73-5075-abd7-2329ad25cd51",
+      "name": "Newest finishing event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        520
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Narriflow API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// First run: start after the newest finishing event, so activating the workflow doesn't replay history.\n// nextCursor is the highest seq on the page, or 0 when the Workspace has no finishing event yet.\nconst { nextCursor } = $input.first().json;\n$getWorkflowStaticData('global').cursor = String(nextCursor);\nreturn [{ json: { cursor: String(nextCursor) } }];"
+      },
+      "id": "6fa88b78-16e1-5d9c-8dd8-28951e7faa34",
+      "name": "Start from newest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/events?types=finishing.finished&limit=100&after={{ $json.after }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "d3386718-7e95-5040-9b3d-4c60faef1d1a",
+      "name": "Poll finishing events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Narriflow API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Keep finished runs that exported something. Skipped runs only move the cursor.\nconst state = $getWorkflowStaticData('global');\nconst { data, nextCursor } = $input.first().json;\nconst posting = data.filter((event) =>\n  ['ready', 'partial'].includes(event.subject.state) && event.subject.exportIds.length > 0);\nif (posting.length === 0) {\n  state.cursor = nextCursor;\n  return [];\n}\nreturn posting.map((event) => ({\n  json: {\n    eventId: event.id,\n    seq: event.seq,\n    projectId: event.subject.projectId,\n    state: event.subject.state,\n    exportIds: event.subject.exportIds,\n    nextCursor,\n  },\n}));"
+      },
+      "id": "15691279-b52b-5e80-b234-d805133c4c52",
+      "name": "Finished events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "ca002085-34ff-5b25-b508-7148a0f8011b",
+      "name": "One event at a time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The page is handled, including skipped runs after the last post.\nconst state = $getWorkflowStaticData('global');\nstate.cursor = $('Finished events').first().json.nextCursor;\nreturn [{ json: { cursor: state.cursor } }];"
+      },
+      "id": "6c097788-38db-5edf-9886-a2f6f74109e3",
+      "name": "Save page cursor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One download request per export the finished run produced.\nconst event = $input.first().json;\nreturn event.exportIds.map((exportId) => ({ json: { ...event, exportId } }));"
+      },
+      "id": "3903e179-75ab-51bd-b46f-59a2d8ba15f1",
+      "name": "One item per export",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/exports/{{ $json.exportId }}/download",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "7f9800cc-19d4-5030-8759-fbb32dbe1cb1",
+      "name": "Download grants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Narriflow API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/clips/{{ $json.statusCode === 200 ? $json.body.clipId : '00000000-0000-4000-8000-000000000000' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "2fff2dc2-b8ab-5307-8d7b-75e4fa2b1b27",
+      "name": "Read clip",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Narriflow API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Grants and clips come back in the order of the exports, so they pair by position.\n// A deleted export (404) is left out, so one missing export can't block the cursor.\n// Any other failure stops the run; the cursor stays and the next run retries the event.\nconst base = $vars.NARRIFLOW_URL || 'https://app.narriflow.com';\nconst event = $('One event at a time').first().json;\nconst grants = $('Download grants').all();\nconst escape = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst refuse = (response, what) => {\n  if (response.statusCode >= 400 && response.statusCode !== 404) {\n    throw new Error(`Narriflow answered ${response.statusCode} for ${what}.`);\n  }\n};\nconst lines = [];\n$input.all().forEach((item, index) => {\n  const grant = grants[index].json;\n  refuse(grant, `export ${event.exportIds[index]}`);\n  if (grant.statusCode === 404) return;\n  refuse(item.json, `the clip of export ${event.exportIds[index]}`);\n  const file = grant.body.variants[0];\n  const clip = item.json.statusCode === 404 ? null : item.json.body.clip;\n  const links = [file && `<${file.downloadUrl}|Download ${file.aspectRatio} MP4>`, clip && `<${clip.reviewUrl}|Open in Narriflow>`].filter(Boolean);\n  if (links.length === 0) return;\n  lines.push(`- *${escape((clip && clip.title) || 'Untitled clip')}*: ${links.join(' | ')}`);\n});\nif (lines.length === 0) return [{ json: { post: false } }];\nconst note = event.state === 'partial' ? ' Some exports did not finish.' : '';\nconst text = [\n  `Narriflow finished ${lines.length} clip${lines.length === 1 ? '' : 's'}.${note}`,\n  ...lines,\n  `<${base}/projects/${event.projectId}|Review the project>. Download links expire after 15 minutes; open a clip in Narriflow for a fresh one.`,\n].join('\\n');\nreturn [{ json: { post: true, text } }];"
+      },
+      "id": "6c15bc94-dc9f-53a5-a06e-dd203bf636b0",
+      "name": "Compose message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e87bac7d-a3da-51c6-beaf-fa1a67ecab4a",
+              "leftValue": "={{ $json.post }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e9faae96-1d37-526e-85e9-791f4d662700",
+      "name": "Anything to post?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_SLACK_CHANNEL",
+          "mode": "name"
+        },
+        "text": "={{ $json.text }}",
+        "otherOptions": {}
+      },
+      "id": "82d4b1f1-2b89-5bc7-a0d6-f797a19ebf50",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Everything up to this event is handled. If a later event fails, the next run starts after this one.\n$getWorkflowStaticData('global').cursor = String($('One event at a time').first().json.seq);\nreturn $input.all();"
+      },
+      "id": "f5517e9b-771d-5741-b849-0718cc70677d",
+      "name": "Save event cursor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every 5 minutes": {
+      "main": [
+        [
+          {
+            "node": "Read cursor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read cursor": {
+      "main": [
+        [
+          {
+            "node": "Have a cursor?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Have a cursor?": {
+      "main": [
+        [
+          {
+            "node": "Poll finishing events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Newest finishing event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Newest finishing event": {
+      "main": [
+        [
+          {
+            "node": "Start from newest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll finishing events": {
+      "main": [
+        [
+          {
+            "node": "Finished events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finished events": {
+      "main": [
+        [
+          {
+            "node": "One event at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One event at a time": {
+      "main": [
+        [
+          {
+            "node": "Save page cursor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "One item per export",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per export": {
+      "main": [
+        [
+          {
+            "node": "Download grants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download grants": {
+      "main": [
+        [
+          {
+            "node": "Read clip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read clip": {
+      "main": [
+        [
+          {
+            "node": "Compose message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose message": {
+      "main": [
+        [
+          {
+            "node": "Anything to post?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything to post?": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save event cursor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to Slack": {
+      "main": [
+        [
+          {
+            "node": "Save event cursor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save event cursor": {
+      "main": [
+        [
+          {
+            "node": "One event at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {}
+}

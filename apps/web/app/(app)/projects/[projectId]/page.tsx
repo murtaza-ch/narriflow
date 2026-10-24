@@ -15,6 +15,7 @@ import {
 	clipService,
 	campaignActionRolloutFromEnv,
 	dubbingService,
+	getProjectFinishing,
 	hasFeature,
 	isProgramWriteEnabled,
 	isSocialProviderPublishingEnabled,
@@ -36,11 +37,12 @@ import {
 	userErrorMessage,
 	workspaceAllowsCapability,
 } from "@narriflow/validators";
+import { FinishingStatus } from "./finishing-status";
 import { ProjectEvents } from "./project-events";
 import { SourceIcon } from "./source-icon";
 import { ProjectEventsProvider } from "./project-events-provider";
 import { PipelineStepper } from "./pipeline-stepper";
-import { ingestRecoveryAction } from "@/lib/project-state";
+import { ingestRecoveryAction, ingestRecoveryLabel } from "@/lib/project-state";
 import { ProjectTabs, TabCountBadge } from "./project-tabs";
 import { projectTabFromSearchParam } from "./project-tab";
 import { ProcessingPanel } from "./processing-panel";
@@ -183,6 +185,7 @@ export default async function ProjectDetailPage({
 		brandProfiles,
 		reviewRoom,
 		activeWorkspace,
+		finishing,
 	] = await Promise.all([
 		activeTab === "transcript"
 			? projectService.getTranscriptSnapshot(appUser, projectId)
@@ -217,6 +220,7 @@ export default async function ProjectDetailPage({
 		activeTab === "posts" || activeTab === "clips"
 			? workspaceService.getWorkspace(appUser.actorUserId, appUser.workspaceId)
 			: Promise.resolve(null),
+		getProjectFinishing({ workspaceId: appUser.workspaceId, projectId }),
 	]);
 	const reviewRoomData = reviewRoom
 		? (JSON.parse(JSON.stringify(reviewRoom)) as ReviewRoomData)
@@ -260,6 +264,8 @@ export default async function ProjectDetailPage({
 	const isIngestFailed = snapshot.project.ingestStatus === "failed";
 	const ingestAttemptsExhausted =
 		snapshot.ingestAttemptCount >= MAX_INGEST_RETRY_ATTEMPTS;
+	// A Google Drive Picker import can't be retried: its token ended with its job.
+	const ingestFromDrivePicker = snapshot.ingestJobType === "drive_import";
 	const ingestRetryLimitMessage = `Retry limit reached (${snapshot.ingestAttemptCount}/${MAX_INGEST_RETRY_ATTEMPTS}). This source keeps failing to import.`;
 	// Ingest only ever reaches "ready" once sourceStorageKey is set, so a null
 	// key here means the source was reclaimed after retention (see
@@ -560,6 +566,12 @@ export default async function ProjectDetailPage({
 										</Text>
 									</Flex>
 								)}
+								{finishing && (
+									<FinishingStatus
+										projectId={projectId}
+										finishing={finishing}
+									/>
+								)}
 								{snapshot.project.ingestErrorCode && (
 									<Stack gap="2">
 										<Flex align="center" gap="2" color="danger.fg">
@@ -569,8 +581,10 @@ export default async function ProjectDetailPage({
 											</Text>
 										</Flex>
 										{isIngestFailed &&
-											ingestRecoveryAction(snapshot.project.ingestErrorCode) ===
-												"retry" && (
+											ingestRecoveryAction(
+												snapshot.project.ingestErrorCode,
+												ingestFromDrivePicker,
+											) === "retry" && (
 												<RetryIngestButton
 													projectId={projectId}
 													disabled={ingestAttemptsExhausted}
@@ -578,15 +592,19 @@ export default async function ProjectDetailPage({
 												/>
 											)}
 										{isIngestFailed &&
-											ingestRecoveryAction(snapshot.project.ingestErrorCode) ===
-												"new_upload" && (
+											ingestRecoveryAction(
+												snapshot.project.ingestErrorCode,
+												ingestFromDrivePicker,
+											) === "new_upload" && (
 												<Button
 													size="sm"
 													variant="subtle"
 													asChild
 													alignSelf="flex-start"
 												>
-													<Link href="/upload">Upload video instead</Link>
+													<Link href="/upload">
+														{ingestRecoveryLabel(ingestFromDrivePicker)}
+													</Link>
 												</Button>
 											)}
 									</Stack>
@@ -750,6 +768,7 @@ export default async function ProjectDetailPage({
 										ingestStatus={snapshot.project.ingestStatus}
 										ingestErrorCode={snapshot.project.ingestErrorCode}
 										ingestAttemptsExhausted={ingestAttemptsExhausted}
+										ingestFromDrivePicker={ingestFromDrivePicker}
 										ingestRetryLimitMessage={ingestRetryLimitMessage}
 										transcribe={transcribeStage}
 										detect={detectStage}

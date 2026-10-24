@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { autoCensorWordId, captionPresetSchema, editorDocumentSchema, studioEditsSchema } from "@narriflow/validators";
+import { autoCensorWordId, captionPresetSchema, editorDocumentSchema, parseSuppliedCaptions, studioEditsSchema } from "@narriflow/validators";
 import { captionCueText, captionCueVisibleRange, deriveCaptionCues, planClipComposition } from "./clip-composition-plan";
 import { formatSubtitles } from "./subtitles";
 
@@ -34,6 +34,23 @@ describe("subtitle cues share burn-in's derivation", () => {
       "00:00:00.500 --> 00:00:02.000\nHello there, friends.\n\n" +
       "00:00:03.000 --> 00:00:04.400\nToday we build.\n\n",
     );
+  });
+
+  test("supplied captions flow through the same cue derivation as spoken words, on every surface", () => {
+    const supplied = parseSuppliedCaptions("1\n00:00:00,000 --> 00:00:03,000\nOne two three four five six\n\n2\n00:00:04,000 --> 00:00:05,000\nSeven eight");
+    const captioned = document({ transcriptSlice: supplied }, { wordsPerCue: 3 });
+    const cues = deriveCaptionCues(captioned);
+    expect(cues.map((cue) => cue.text)).toEqual(["One two three", "four five six", "Seven eight"]);
+    expect(cues.map((cue) => [cue.startSec, cue.endSec])).toEqual([[0, 1.5], [1.5, 3], [4, 5]]);
+    const planned = planClipComposition({
+      document: captioned, source: { identity: "source:test", kind: "video", width: 1080, height: 1920 },
+      evidence: { automaticLayout: { state: "missing" } }, assets: { backgroundImage: { state: "missing" } },
+      capabilities: { automaticSpeakerLayout: false, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "t", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (planned.status === "invalid") throw new Error(planned.error.code);
+    const burnedIn = planned.plan.targets[0]!.visualLayers.flatMap((layer) => layer.kind === "caption" ? [captionCueText(layer.words)] : []);
+    expect(burnedIn).toEqual(cues.map((cue) => cue.text));
   });
 
   test("follows each preset's wordsPerCue and text treatment", () => {

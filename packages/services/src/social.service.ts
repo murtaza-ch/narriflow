@@ -5,14 +5,18 @@ import { accessibleProjectWhere } from "./project-access";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-	socialPostMetricsSchema,
-	type SocialPostMetricsInput,
 	type SocialPostSnapshot,
 	type ConfirmSocialPublicationInput,
 	type RecheckSocialPublicationInput,
 	type RepublishSocialPublicationInput,
 } from "@narriflow/validators";
+import {
+	combineLatestCaptures,
+	latestCaptureInclude,
+	type LatestCaptures,
+} from "./performance-summary";
 import { socialPublicationScheduling } from "./social-publication-scheduling-runtime";
+import { publishingQueue } from "./publishing-queue.service";
 import {
 	allowedSocialPublicationActions,
 	socialPublicationRecovery,
@@ -88,10 +92,7 @@ const socialPostSnapshotInclude = {
 						},
 					},
 				},
-				metrics: {
-					orderBy: { capturedAt: "desc" },
-					take: 1,
-				},
+				trackedVideos: latestCaptureInclude,
 			} satisfies Prisma.SocialPostInclude;
 
 function toSocialPostSnapshot(row: {
@@ -127,15 +128,7 @@ function toSocialPostSnapshot(row: {
 			providerVisibility: string | null;
 		} | null;
 	}>;
-	metrics?: Array<{
-		views: number;
-		likes: number;
-		comments: number;
-		shares: number;
-		saves: number;
-		watchTimeSeconds: number | null;
-		capturedAt: Date;
-	}>;
+	trackedVideos?: LatestCaptures[];
 	createdAt: Date;
 }): SocialPostSnapshot {
 	const aspectRatio =
@@ -179,17 +172,7 @@ function toSocialPostSnapshot(row: {
 		providerVisibility:
 			row.publicationAttempts?.[0]?.receipt?.providerVisibility ?? null,
 		allowedActions: allowedSocialPublicationActions(row),
-		latestMetrics: row.metrics?.[0]
-			? {
-					views: row.metrics[0].views,
-					likes: row.metrics[0].likes,
-					comments: row.metrics[0].comments,
-					shares: row.metrics[0].shares,
-					saves: row.metrics[0].saves,
-					watchTimeSeconds: row.metrics[0].watchTimeSeconds,
-					capturedAt: row.metrics[0].capturedAt.toISOString(),
-				}
-			: null,
+		latestMetrics: combineLatestCaptures(row.trackedVideos ?? []),
 		createdAt: row.createdAt.toISOString(),
 	};
 }
@@ -305,16 +288,21 @@ export class SocialService {
 				workspaceId: scope.workspaceId,
 				project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
 			},
-			select: { id: true },
+			select: { id: true, status: true },
 		});
 		if (!existing) {
 			throw new SocialServiceError("social_post_not_found");
 		}
-		await socialPublicationScheduling.cancel({
-			actorUserId: scope.actorUserId,
-			workspaceId: scope.workspaceId,
-			postId,
-		});
+		if (existing.status === "draft") {
+			// A proposal never held a slot or started publishing; cancelling it is rejecting it.
+			await publishingQueue.reject(scope, postId);
+		} else {
+			await socialPublicationScheduling.cancel({
+				actorUserId: scope.actorUserId,
+				workspaceId: scope.workspaceId,
+				postId,
+			});
+		}
 
 		const row = await prisma.socialPost.findUnique({
 			where: { id: postId },
@@ -325,49 +313,6 @@ export class SocialService {
 		}
 
 		return toSocialPostSnapshot(row);
-	}
-
-	async recordMetricsForPostId(postId: string, input: SocialPostMetricsInput) {
-		const parsed = socialPostMetricsSchema.parse(input);
-		const prisma = requirePrisma();
-		const post = await prisma.socialPost.findUnique({
-			where: { id: postId },
-			select: { id: true, projectId: true, platform: true },
-		});
-		if (!post) {
-			throw new SocialServiceError("social_post_not_found");
-		}
-
-		await prisma.socialPostMetric.create({
-			data: {
-				projectId: post.projectId,
-				postId: post.id,
-				platform: post.platform,
-				views: parsed.views,
-				likes: parsed.likes,
-				comments: parsed.comments,
-				shares: parsed.shares,
-				saves: parsed.saves,
-				watchTimeSeconds: parsed.watchTimeSeconds ?? null,
-				capturedAt: parsed.capturedAt
-					? new Date(parsed.capturedAt)
-					: new Date(),
-				metadata: parsed.metadata
-					? (parsed.metadata as Prisma.InputJsonValue)
-					: Prisma.JsonNull,
-			},
-		});
-
-		const updated = await prisma.socialPost.findUnique({
-			where: { id: post.id },
-			include: socialPostSnapshotInclude,
-		});
-
-		if (!updated) {
-			throw new SocialServiceError("social_post_not_found");
-		}
-
-		return toSocialPostSnapshot(updated);
 	}
 }
 

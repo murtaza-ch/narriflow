@@ -167,6 +167,11 @@ export function readLanguageCodeFromForm(
   return sourceLanguageCodeFromFormValue(formData.get("languageCode"));
 }
 
+/** RSS intake always states its Brand Profile choice; an empty field means none. */
+export function readBrandProfileIdFromForm(formData: FormData): string | null {
+  return String(formData.get("brandProfileId") ?? "").trim() || null;
+}
+
 export type UploadSettingsFormInput = {
   languageCode: string;
   mode: GenerationMode;

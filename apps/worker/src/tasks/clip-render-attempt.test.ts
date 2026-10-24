@@ -138,6 +138,7 @@ function createOrdinaryTracer(input: {
 			studioEdits: input.motionTransition
 				? { transition: { type: "slide-left", durationSec: 0.35 } }
 				: null,
+			wholeSource: false,
 			editorDocumentVersion: 1,
 			sceneBlocks: [],
 			censorSegments: [],
@@ -535,6 +536,7 @@ function createUploadQueueTracer(input: {
 				deletedRanges: null,
 				captionPreset: null,
 				studioEdits: null,
+				wholeSource: false,
 				editorDocumentVersion: 1,
 				sceneBlocks: [],
 				censorSegments: [],
@@ -786,6 +788,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 			deletedRanges: null,
 			captionPreset: null,
 			studioEdits: null,
+			wholeSource: false,
 			editorDocumentVersion: 1,
 			sceneBlocks: [],
 			censorSegments: [],
@@ -1298,6 +1301,7 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
 			deletedRanges: [{ startSec: 0, endSec: 10 }],
 			captionPreset: null,
 			studioEdits: null,
+			wholeSource: false,
 			editorDocumentVersion: 1,
 			sceneBlocks: [],
 			censorSegments: [],

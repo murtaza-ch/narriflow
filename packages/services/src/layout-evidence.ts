@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   clipAutoLayoutAnalysisSchema,
+  clipSourceEdgeSec,
   getEffectiveClipTiming,
   type ClipAutoLayoutAnalysis,
   type EditorDocument,
@@ -143,9 +144,10 @@ export class LayoutEvidenceLifecycle {
         sceneBlocks: true,
         censorSegments: true,
         mediaMotions: true,
+        wholeSource: true,
         editorRevision: true,
         project: {
-          select: { sourceStorageKey: true, sourceDurationSeconds: true },
+          select: { sourceStorageKey: true, sourceDurationSeconds: true, sourceProbe: true },
         },
       },
     });
@@ -158,10 +160,10 @@ export class LayoutEvidenceLifecycle {
       // comment): slice-only timing treats stored bounds as final.
       let document: EditorDocument;
       try {
-        document = decodeClipEditorDocumentFromStorage(
-          clip,
-          clip.project.sourceDurationSeconds,
-        );
+        document = decodeClipEditorDocumentFromStorage(clip, {
+          durationSec: clipSourceEdgeSec(clip.project),
+          wholeSource: clip.wholeSource,
+        });
       } catch (error) {
         console.warn(
           JSON.stringify({
@@ -178,7 +180,7 @@ export class LayoutEvidenceLifecycle {
         utterances: document.transcriptSlice,
         startSec: document.clipStartSec,
         endSec: document.clipEndSec,
-        sourceDurationSec: clip.project.sourceDurationSeconds ?? null,
+        sourceDurationSec: clipSourceEdgeSec(clip.project),
         tailPadSec: 0,
       });
 
@@ -188,7 +190,7 @@ export class LayoutEvidenceLifecycle {
         startSec: effective.startSec,
         endSec: effective.endSec,
         sourceStorageKey: clip.project.sourceStorageKey,
-        sourceDurationSec: clip.project.sourceDurationSeconds ?? null,
+        sourceDurationSec: clipSourceEdgeSec(clip.project),
         editorRevision: clip.editorRevision,
       });
     }
@@ -320,11 +322,12 @@ export class LayoutEvidenceLifecycle {
         sceneBlocks: true,
         censorSegments: true,
         mediaMotions: true,
+        wholeSource: true,
         editorRevision: true,
         previewStorageKey: true,
         previewStartSec: true,
         previewDurationSec: true,
-        project: { select: { sourceDurationSeconds: true, sourceStorageKey: true } },
+        project: { select: { sourceDurationSeconds: true, sourceProbe: true, sourceStorageKey: true } },
       },
     });
 
@@ -338,10 +341,10 @@ export class LayoutEvidenceLifecycle {
       }
       let document: EditorDocument;
       try {
-        document = decodeClipEditorDocumentFromStorage(
-          clip,
-          clip.project.sourceDurationSeconds,
-        );
+        document = decodeClipEditorDocumentFromStorage(clip, {
+          durationSec: clipSourceEdgeSec(clip.project),
+          wholeSource: clip.wholeSource,
+        });
       } catch (error) {
         console.warn(
           JSON.stringify({

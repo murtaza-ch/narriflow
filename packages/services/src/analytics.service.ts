@@ -1,4 +1,5 @@
 import { workspaceService } from "./workspace.service";
+import { combineLatestCaptures, latestCaptureInclude } from "./performance-summary";
 import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
 import { Prisma } from "@prisma/client";
@@ -228,10 +229,62 @@ export class AnalyticsService {
       byClipMap.set(entry.clipId, existing);
     }
 
+    // Aggregated in the query so the totals cover every post, not one page.
+    const [measured] = await prisma.$queryRaw<
+      Array<{
+        videos: number;
+        views: bigint;
+        likes: bigint;
+        comments: bigint;
+        shares: bigint;
+      }>
+    >`
+      SELECT COUNT(*)::int AS videos,
+        COALESCE(SUM(newest."views"), 0)::bigint AS views,
+        COALESCE(SUM(newest."likes"), 0)::bigint AS likes,
+        COALESCE(SUM(newest."comments"), 0)::bigint AS comments,
+        COALESCE(SUM(newest."shares"), 0)::bigint AS shares
+      FROM (
+        SELECT DISTINCT ON (c."trackedVideoId") c."views", c."likes", c."comments", c."shares"
+        FROM "PerformanceCapture" c
+        JOIN "TrackedVideo" tv ON tv."id" = c."trackedVideoId"
+        JOIN "SocialPost" sp ON sp."id" = tv."socialPostId"
+        WHERE sp."projectId" = ${projectId}::uuid AND c."state" = 'captured'
+        ORDER BY c."trackedVideoId", c."capturedAt" DESC
+      ) newest`;
+    const posted = await prisma.socialPost.findMany({
+      where: { projectId, workspaceId: scope.workspaceId, status: "posted" },
+      orderBy: [{ postedAt: "desc" }, { id: "desc" }],
+      take: 100,
+      select: {
+        id: true,
+        clipId: true,
+        platform: true,
+        postedAt: true,
+        trackedVideos: latestCaptureInclude,
+      },
+    });
+
     return {
       projectId,
       totals,
       byClip: [...byClipMap.values()],
+      postPerformance: {
+        measuredVideos: measured?.videos ?? 0,
+        totals: {
+          views: Number(measured?.views ?? 0),
+          likes: Number(measured?.likes ?? 0),
+          comments: Number(measured?.comments ?? 0),
+          shares: Number(measured?.shares ?? 0),
+        },
+        posts: posted.map((post) => ({
+          socialPostId: post.id,
+          clipId: post.clipId,
+          platform: post.platform,
+          postedAt: post.postedAt?.toISOString() ?? null,
+          latestMetrics: combineLatestCaptures(post.trackedVideos),
+        })),
+      },
     };
   }
 }

@@ -364,6 +364,14 @@ export class BrandProfileService {
     return profile.id;
   }
 
+  /** Like requireUsableId, and also refuses when the plan or the rollout
+   * switch would stop resolveForProject from applying the profile now. */
+  async requireApplicableId(scope: BrandActorScope, id: string) {
+    assertProgramWriteEnabled("brand_kit_projection");
+    assertBrandApplicationAllowed(scope);
+    return this.requireUsableId(scope, id);
+  }
+
   async getDefaultId(scope: BrandActorScope) {
     const prisma = this.requirePrisma();
     const owner = resolveBrandOwner(scope);

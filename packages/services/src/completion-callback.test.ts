@@ -78,12 +78,18 @@ describe("Completion Callback events", () => {
 
   test("payloads carry IDs only and wait while work continues", () => {
     const createdAt = new Date("2026-10-08T00:00:00.000Z");
-    const working = { ...OPERATION, state: "working" as const, stage: "rendering", progress: 0.5, items: [], failureCode: null, results: { projectId: "p", clipIds: ["c"], exportId: OPERATION.id } };
+    const working = { ...OPERATION, state: "working" as const, stage: "rendering", progress: 0.5, items: [], notices: [], failureCode: null, results: { projectId: "p", clipIds: ["c"], exportId: OPERATION.id } };
     expect(buildCallbackPayload({ eventId: "e", workspaceId: "w", createdAt, status: working })).toBeNull();
     const payload = buildCallbackPayload({ eventId: "e", workspaceId: "w", createdAt, status: { ...working, state: "partial", failureCode: "render_failed" } });
     expect(payload).toEqual({ id: "e", type: "operation.completed", version: 1, createdAt: createdAt.toISOString(), workspaceId: "w",
       data: { operationId: encodeOperationId(OPERATION), kind: "export", state: "partial", projectId: "p", clipIds: ["c"], exportId: OPERATION.id, failureCode: "render_failed" } });
     expect(JSON.stringify(payload)).not.toMatch(/https?:/);
+  });
+
+  test("a notice about how the work was done travels with the event", () => {
+    const notice = { code: "framing_degraded" as const, aspectRatio: "9:16" as const, croppedPercent: 68 };
+    const done = { ...OPERATION, state: "completed" as const, stage: "rendering", progress: 1, items: [], notices: [notice], failureCode: null, results: { projectId: "p", clipIds: ["c"], exportId: OPERATION.id } };
+    expect(buildCallbackPayload({ eventId: "e", workspaceId: "w", createdAt: new Date(), status: done })?.data.notices).toEqual([notice]);
   });
 
   test("an unavailable operation produces a terminal unavailable event", () => {

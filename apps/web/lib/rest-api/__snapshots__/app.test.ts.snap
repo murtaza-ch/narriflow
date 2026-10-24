@@ -3,23 +3,36 @@
 exports[`REST v1 OpenAPI document lists exactly the v1 endpoints 1`] = `
 [
   "DELETE /uploads/{id}",
+  "DELETE /webhooks/{id}",
   "GET /brand-profiles",
   "GET /clips/{id}",
+  "GET /clips/{id}/timeline",
+  "GET /events",
   "GET /exports/{id}",
   "GET /exports/{id}/download",
+  "GET /library/search",
   "GET /operations/{id}",
   "GET /projects",
   "GET /projects/{id}",
   "GET /projects/{id}/clips",
+  "GET /recipes",
+  "GET /recipes/{id}",
+  "GET /social-accounts",
   "GET /uploads/{id}",
+  "GET /webhooks",
   "GET /workspace",
+  "POST /captioned-videos",
   "POST /clips/{id}/exports",
   "POST /operations/{id}/callback/redeliver",
   "POST /projects",
   "POST /projects/{id}/generations",
+  "POST /social-posts/proposals",
   "POST /uploads",
   "POST /uploads/{id}/finalize",
   "POST /uploads/{id}/grants",
+  "POST /webhooks",
+  "POST /webhooks/{id}/enable",
+  "POST /webhooks/{id}/test",
 ]
 `;
 
@@ -83,6 +96,25 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
           "projectId": {
             "format": "uuid",
             "type": "string",
+          },
+          "recipe": {
+            "additionalProperties": false,
+            "description": "The Recipe and revision this request used, when it named one",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string",
+              },
+              "revision": {
+                "exclusiveMinimum": 0,
+                "type": "integer",
+              },
+            },
+            "required": [
+              "id",
+              "revision",
+            ],
+            "type": "object",
           },
           "reviewUrl": {
             "format": "uri",
@@ -167,6 +199,212 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         },
         "required": [
           "url",
+        ],
+        "type": "object",
+      },
+      "CaptionedVideoRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "aspectRatios": {
+            "default": [
+              "9:16",
+            ],
+            "items": {
+              "enum": [
+                "9:16",
+                "1:1",
+                "16:9",
+                "4:5",
+              ],
+              "type": "string",
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "type": "array",
+          },
+          "brandProfileId": {
+            "description": "Omit to use the Workspace default Brand Profile",
+            "format": "uuid",
+            "type": "string",
+          },
+          "captions": {
+            "default": {
+              "source": "auto",
+            },
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Transcribe the speech. A video without audio gets no captions.",
+                "properties": {
+                  "source": {
+                    "enum": [
+                      "auto",
+                    ],
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "source",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "description": "Export without captions",
+                "properties": {
+                  "source": {
+                    "enum": [
+                      "none",
+                    ],
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "source",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "source": {
+                    "enum": [
+                      "supplied",
+                    ],
+                    "type": "string",
+                  },
+                  "text": {
+                    "description": "SRT or WebVTT text, up to 64 KiB and 1000 cues",
+                    "maxLength": 262144,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "source",
+                  "text",
+                ],
+                "type": "object",
+              },
+            ],
+          },
+          "framing": {
+            "default": "fit",
+            "enum": [
+              "fit",
+              "center",
+            ],
+            "type": "string",
+          },
+          "resolution": {
+            "default": "1080p",
+            "description": "The plan's resolution rule applies; the response reports what was granted",
+            "enum": [
+              "720p",
+              "1080p",
+            ],
+            "type": "string",
+          },
+          "source": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Import a supported link. Accepted at once, as for POST /projects.",
+                "properties": {
+                  "callback": {
+                    "$ref": "#/components/schemas/CallbackRequest",
+                  },
+                  "kind": {
+                    "enum": [
+                      "url",
+                    ],
+                    "type": "string",
+                  },
+                  "url": {
+                    "description": "A supported video link",
+                    "format": "uri",
+                    "maxLength": 4096,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "kind",
+                  "url",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "description": "Open an Upload Session that carries these settings. Upload the file, then POST /uploads/{id}/finalize (with an optional callback).",
+                "properties": {
+                  "file": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "contentType": {
+                        "enum": [
+                          "video/mp4",
+                          "video/quicktime",
+                          "video/webm",
+                          "video/x-matroska",
+                          "audio/mpeg",
+                          "audio/wav",
+                          "audio/x-wav",
+                          "audio/mp4",
+                          "audio/aac",
+                        ],
+                        "type": "string",
+                      },
+                      "name": {
+                        "maxLength": 500,
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                      "sizeBytes": {
+                        "exclusiveMinimum": 0,
+                        "maximum": 5363466240,
+                        "type": "integer",
+                      },
+                    },
+                    "required": [
+                      "name",
+                      "sizeBytes",
+                      "contentType",
+                    ],
+                    "type": "object",
+                  },
+                  "kind": {
+                    "enum": [
+                      "upload",
+                    ],
+                    "type": "string",
+                  },
+                  "transfer": {
+                    "default": "auto",
+                    "description": "single returns one signed PUT at any supported size; auto uses multipart above 100 MiB",
+                    "enum": [
+                      "auto",
+                      "single",
+                    ],
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "kind",
+                  "file",
+                ],
+                "type": "object",
+              },
+            ],
+          },
+          "title": {
+            "description": "Defaults to the file name or link title",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "source",
         ],
         "type": "object",
       },
@@ -334,6 +572,119 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         ],
         "type": "object",
       },
+      "ClipTimeline": {
+        "additionalProperties": false,
+        "properties": {
+          "clipId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "editorRevision": {
+            "minimum": 0,
+            "type": "integer",
+          },
+          "format": {
+            "enum": [
+              "xmeml",
+              "fcpxml",
+              "edl",
+            ],
+            "type": "string",
+          },
+          "projectId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "downloadUrl": {
+                "description": "Private Download Grant; do not share or store",
+                "format": "uri",
+                "maxLength": 8192,
+                "type": "string",
+              },
+              "expiresAt": {
+                "format": "date-time",
+                "type": "string",
+              },
+              "fileName": {
+                "description": "The name the timeline refers to; save the source file under it",
+                "maxLength": 200,
+                "type": "string",
+              },
+              "sizeBytes": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null",
+                ],
+              },
+            },
+            "required": [
+              "fileName",
+              "sizeBytes",
+              "downloadUrl",
+              "expiresAt",
+            ],
+            "type": "object",
+          },
+          "subtitles": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "maxLength": 500000,
+                "type": "string",
+              },
+              "fileName": {
+                "maxLength": 200,
+                "type": "string",
+              },
+              "format": {
+                "enum": [
+                  "srt",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "format",
+              "fileName",
+              "content",
+            ],
+            "type": "object",
+          },
+          "timeline": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "description": "Timeline file text; save it beside the source file under fileName",
+                "maxLength": 2000000,
+                "type": "string",
+              },
+              "fileName": {
+                "maxLength": 200,
+                "type": "string",
+              },
+            },
+            "required": [
+              "fileName",
+              "content",
+            ],
+            "type": "object",
+          },
+        },
+        "required": [
+          "projectId",
+          "clipId",
+          "editorRevision",
+          "format",
+          "timeline",
+          "subtitles",
+          "source",
+        ],
+        "type": "object",
+      },
       "ClipsResult": {
         "additionalProperties": false,
         "properties": {
@@ -392,6 +743,40 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
           "expectedRevision",
           "aspectRatios",
           "resolution",
+        ],
+        "type": "object",
+      },
+      "CreateWebhookRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "types": {
+            "description": "Event types to deliver. Queue proposals (social_post.proposed) and posting outcomes (social_post.finished) need the publishing:read scope.",
+            "items": {
+              "enum": [
+                "autopilot.episode_imported",
+                "operation.finished",
+                "finishing.finished",
+                "social_post.proposed",
+                "social_post.finished",
+                "grant.paused",
+                "grant.expired",
+              ],
+              "type": "string",
+            },
+            "maxItems": 7,
+            "minItems": 1,
+            "type": "array",
+          },
+          "url": {
+            "description": "Public HTTPS URL on port 443. Receives each matching event as a signed POST.",
+            "format": "uri",
+            "maxLength": 2048,
+            "type": "string",
+          },
+        },
+        "required": [
+          "url",
+          "types",
         ],
         "type": "object",
       },
@@ -478,6 +863,26 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         ],
         "type": "object",
       },
+      "DeletedWebhook": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "enum": [
+              true,
+            ],
+            "type": "boolean",
+          },
+          "webhookId": {
+            "format": "uuid",
+            "type": "string",
+          },
+        },
+        "required": [
+          "webhookId",
+          "deleted",
+        ],
+        "type": "object",
+      },
       "Error": {
         "additionalProperties": false,
         "properties": {
@@ -505,6 +910,600 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
           "error",
           "message",
           "requestId",
+        ],
+        "type": "object",
+      },
+      "EventsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "description": "Deduplicate by this ID: delivery is at least once",
+                      "format": "uuid",
+                      "type": "string",
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string",
+                    },
+                    "seq": {
+                      "description": "Orders events within a Workspace; pass the last one as the next cursor",
+                      "exclusiveMinimum": 0,
+                      "type": "integer",
+                    },
+                    "subject": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "episodeId": {
+                          "description": "The feed's identifier for the episode",
+                          "type": "string",
+                        },
+                        "projectId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                        "ruleId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "ruleId",
+                        "projectId",
+                        "episodeId",
+                      ],
+                      "type": "object",
+                    },
+                    "type": {
+                      "enum": [
+                        "autopilot.episode_imported",
+                      ],
+                      "type": "string",
+                    },
+                    "version": {
+                      "enum": [
+                        1,
+                      ],
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "seq",
+                    "version",
+                    "occurredAt",
+                    "type",
+                    "subject",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "description": "Deduplicate by this ID: delivery is at least once",
+                      "format": "uuid",
+                      "type": "string",
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string",
+                    },
+                    "seq": {
+                      "description": "Orders events within a Workspace; pass the last one as the next cursor",
+                      "exclusiveMinimum": 0,
+                      "type": "integer",
+                    },
+                    "subject": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "operation": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "description": "The operationId that GET /operations/{id} accepts",
+                              "type": "string",
+                            },
+                            "kind": {
+                              "enum": [
+                                "intake",
+                                "generation",
+                                "export",
+                              ],
+                              "type": "string",
+                            },
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                          ],
+                          "type": "object",
+                        },
+                        "projectId": {
+                          "description": "Null when an upload ended before its import created a project",
+                          "format": "uuid",
+                          "type": [
+                            "string",
+                            "null",
+                          ],
+                        },
+                        "state": {
+                          "enum": [
+                            "completed",
+                            "partial",
+                            "failed",
+                            "cancelled",
+                          ],
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "operation",
+                        "projectId",
+                        "state",
+                      ],
+                      "type": "object",
+                    },
+                    "type": {
+                      "enum": [
+                        "operation.finished",
+                      ],
+                      "type": "string",
+                    },
+                    "version": {
+                      "enum": [
+                        1,
+                      ],
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "seq",
+                    "version",
+                    "occurredAt",
+                    "type",
+                    "subject",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "description": "Deduplicate by this ID: delivery is at least once",
+                      "format": "uuid",
+                      "type": "string",
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string",
+                    },
+                    "seq": {
+                      "description": "Orders events within a Workspace; pass the last one as the next cursor",
+                      "exclusiveMinimum": 0,
+                      "type": "integer",
+                    },
+                    "subject": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "exportIds": {
+                          "description": "The exports that finished, one or more per picked clip",
+                          "items": {
+                            "format": "uuid",
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                        "operation": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "description": "The generation's operationId",
+                              "type": "string",
+                            },
+                            "kind": {
+                              "enum": [
+                                "generation",
+                              ],
+                              "type": "string",
+                            },
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                          ],
+                          "type": "object",
+                        },
+                        "projectId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                        "reason": {
+                          "description": "Why finishing was skipped or incomplete; null when ready",
+                          "type": [
+                            "string",
+                            "null",
+                          ],
+                        },
+                        "state": {
+                          "enum": [
+                            "ready",
+                            "partial",
+                            "skipped",
+                          ],
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "projectId",
+                        "operation",
+                        "state",
+                        "reason",
+                        "exportIds",
+                      ],
+                      "type": "object",
+                    },
+                    "type": {
+                      "enum": [
+                        "finishing.finished",
+                      ],
+                      "type": "string",
+                    },
+                    "version": {
+                      "enum": [
+                        1,
+                      ],
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "seq",
+                    "version",
+                    "occurredAt",
+                    "type",
+                    "subject",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "description": "Deduplicate by this ID: delivery is at least once",
+                      "format": "uuid",
+                      "type": "string",
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string",
+                    },
+                    "seq": {
+                      "description": "Orders events within a Workspace; pass the last one as the next cursor",
+                      "exclusiveMinimum": 0,
+                      "type": "integer",
+                    },
+                    "subject": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "clipId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                        "platform": {
+                          "enum": [
+                            "tiktok",
+                            "youtube_shorts",
+                            "instagram_reels",
+                            "facebook_reels",
+                            "linkedin",
+                            "x",
+                          ],
+                          "type": "string",
+                        },
+                        "projectId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                        "socialAccountId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                        "socialPostId": {
+                          "description": "The proposal's ID",
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "socialPostId",
+                        "projectId",
+                        "clipId",
+                        "socialAccountId",
+                        "platform",
+                      ],
+                      "type": "object",
+                    },
+                    "type": {
+                      "enum": [
+                        "social_post.proposed",
+                      ],
+                      "type": "string",
+                    },
+                    "version": {
+                      "enum": [
+                        1,
+                      ],
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "seq",
+                    "version",
+                    "occurredAt",
+                    "type",
+                    "subject",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "description": "Deduplicate by this ID: delivery is at least once",
+                      "format": "uuid",
+                      "type": "string",
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string",
+                    },
+                    "seq": {
+                      "description": "Orders events within a Workspace; pass the last one as the next cursor",
+                      "exclusiveMinimum": 0,
+                      "type": "integer",
+                    },
+                    "subject": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "clipId": {
+                          "format": "uuid",
+                          "type": [
+                            "string",
+                            "null",
+                          ],
+                        },
+                        "platform": {
+                          "enum": [
+                            "tiktok",
+                            "youtube_shorts",
+                            "instagram_reels",
+                            "facebook_reels",
+                            "linkedin",
+                            "x",
+                          ],
+                          "type": "string",
+                        },
+                        "projectId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                        "socialPostId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                        "state": {
+                          "enum": [
+                            "posted",
+                            "sent_to_inbox",
+                            "failed",
+                            "needs_attention",
+                          ],
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "socialPostId",
+                        "projectId",
+                        "clipId",
+                        "platform",
+                        "state",
+                      ],
+                      "type": "object",
+                    },
+                    "type": {
+                      "enum": [
+                        "social_post.finished",
+                      ],
+                      "type": "string",
+                    },
+                    "version": {
+                      "enum": [
+                        1,
+                      ],
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "seq",
+                    "version",
+                    "occurredAt",
+                    "type",
+                    "subject",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "description": "Deduplicate by this ID: delivery is at least once",
+                      "format": "uuid",
+                      "type": "string",
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string",
+                    },
+                    "seq": {
+                      "description": "Orders events within a Workspace; pass the last one as the next cursor",
+                      "exclusiveMinimum": 0,
+                      "type": "integer",
+                    },
+                    "subject": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "autopilotRuleId": {
+                          "description": "Null if the rule was deleted",
+                          "format": "uuid",
+                          "type": [
+                            "string",
+                            "null",
+                          ],
+                        },
+                        "grantId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                        "kind": {
+                          "enum": [
+                            "publish",
+                            "review_send",
+                          ],
+                          "type": "string",
+                        },
+                        "reason": {
+                          "enum": [
+                            "manual",
+                            "post_failed",
+                            "post_needs_attention",
+                            "granter_unavailable",
+                            "rule_changed",
+                          ],
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "grantId",
+                        "kind",
+                        "autopilotRuleId",
+                        "reason",
+                      ],
+                      "type": "object",
+                    },
+                    "type": {
+                      "enum": [
+                        "grant.paused",
+                      ],
+                      "type": "string",
+                    },
+                    "version": {
+                      "enum": [
+                        1,
+                      ],
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "seq",
+                    "version",
+                    "occurredAt",
+                    "type",
+                    "subject",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "description": "Deduplicate by this ID: delivery is at least once",
+                      "format": "uuid",
+                      "type": "string",
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string",
+                    },
+                    "seq": {
+                      "description": "Orders events within a Workspace; pass the last one as the next cursor",
+                      "exclusiveMinimum": 0,
+                      "type": "integer",
+                    },
+                    "subject": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "autopilotRuleId": {
+                          "description": "Null if the rule was deleted",
+                          "format": "uuid",
+                          "type": [
+                            "string",
+                            "null",
+                          ],
+                        },
+                        "grantId": {
+                          "format": "uuid",
+                          "type": "string",
+                        },
+                        "kind": {
+                          "enum": [
+                            "publish",
+                            "review_send",
+                          ],
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "grantId",
+                        "kind",
+                        "autopilotRuleId",
+                      ],
+                      "type": "object",
+                    },
+                    "type": {
+                      "enum": [
+                        "grant.expired",
+                      ],
+                      "type": "string",
+                    },
+                    "version": {
+                      "enum": [
+                        1,
+                      ],
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "seq",
+                    "version",
+                    "occurredAt",
+                    "type",
+                    "subject",
+                  ],
+                  "type": "object",
+                },
+              ],
+            },
+            "type": "array",
+          },
+          "nextCursor": {
+            "description": "Pass as \`after\` on the next poll; the input cursor when no event is newer",
+            "type": "string",
+          },
+        },
+        "required": [
+          "data",
+          "nextCursor",
         ],
         "type": "object",
       },
@@ -820,11 +1819,97 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         },
         "type": "object",
       },
+      "FinishingSettings": {
+        "additionalProperties": false,
+        "properties": {
+          "aspectRatios": {
+            "description": "Export formats; omitted means the generation's default aspect ratio",
+            "items": {
+              "enum": [
+                "9:16",
+                "1:1",
+                "16:9",
+                "4:5",
+              ],
+              "type": "string",
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "type": "array",
+          },
+          "copyPlatforms": {
+            "default": [],
+            "description": "Write assisted copy for each picked clip on these platforms",
+            "items": {
+              "enum": [
+                "tiktok",
+                "youtube_shorts",
+                "instagram_reels",
+                "facebook_reels",
+                "linkedin",
+                "x",
+              ],
+              "type": "string",
+            },
+            "maxItems": 6,
+            "type": "array",
+          },
+          "delivery": {
+            "default": "ready_to_review",
+            "description": "What happens after finishing: stop at ready_to_review, propose each picked clip to the queue accounts for a person to accept (propose_to_queue also needs the publishing:write scope), or send the finished exports to the reviewers of a standing grant as a Review Round (send_review_round belongs to an Autopilot rule and needs an active grant)",
+            "enum": [
+              "ready_to_review",
+              "propose_to_queue",
+              "send_review_round",
+            ],
+            "type": "string",
+          },
+          "minScore": {
+            "default": 0,
+            "description": "Skip clips whose virality score is below this",
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer",
+          },
+          "queueAccountIds": {
+            "default": [],
+            "description": "With propose_to_queue: the connected accounts each picked clip is proposed to, using that platform's copy",
+            "items": {
+              "format": "uuid",
+              "type": "string",
+            },
+            "maxItems": 10,
+            "type": "array",
+          },
+          "resolution": {
+            "default": "1080p",
+            "description": "The plan's own resolution limit still applies",
+            "enum": [
+              "720p",
+              "1080p",
+            ],
+            "type": "string",
+          },
+          "topClips": {
+            "description": "Export this many of the generation's highest-scoring clips",
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer",
+          },
+        },
+        "required": [
+          "topClips",
+        ],
+        "type": "object",
+      },
       "GenerateClipsRequest": {
         "additionalProperties": false,
         "properties": {
           "callback": {
             "$ref": "#/components/schemas/CallbackRequest",
+          },
+          "finishing": {
+            "$ref": "#/components/schemas/FinishingSettings",
           },
           "forceRegenerate": {
             "default": false,
@@ -832,6 +1917,11 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
           },
           "generation": {
             "$ref": "#/components/schemas/GenerationSettings",
+          },
+          "recipeId": {
+            "description": "A Recipe from the Recipes list. It replaces brandProfileId, generation, and finishing: send it or those, never both. Generating clips for an existing Project uses the Recipe's language, generation settings, and finishing; the Project keeps the Brand Profile it was imported with",
+            "format": "uuid",
+            "type": "string",
           },
         },
         "type": "object",
@@ -1102,6 +2192,57 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         ],
         "type": "object",
       },
+      "LibrarySearchResult": {
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "endMs": {
+                  "minimum": 0,
+                  "type": "integer",
+                },
+                "projectId": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+                "projectTitle": {
+                  "maxLength": 500,
+                  "type": "string",
+                },
+                "score": {
+                  "description": "Relative rank value; higher is a better match. Compare only within one response",
+                  "type": "number",
+                },
+                "startMs": {
+                  "description": "Start of the passage in the source video",
+                  "minimum": 0,
+                  "type": "integer",
+                },
+                "text": {
+                  "description": "The transcript text of the passage",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "projectId",
+                "projectTitle",
+                "startMs",
+                "endMs",
+                "text",
+                "score",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "results",
+        ],
+        "type": "object",
+      },
       "OpenUploadRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1145,8 +2286,16 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
             ],
             "type": "object",
           },
+          "finishing": {
+            "$ref": "#/components/schemas/FinishingSettings",
+          },
           "generation": {
             "$ref": "#/components/schemas/GenerationSettings",
+          },
+          "recipeId": {
+            "description": "A Recipe from the Recipes list. It replaces brandProfileId, generation, and finishing: send it or those, never both. Generating clips for an existing Project uses the Recipe's language, generation settings, and finishing; the Project keeps the Brand Profile it was imported with",
+            "format": "uuid",
+            "type": "string",
           },
           "title": {
             "description": "Defaults to the file name",
@@ -1230,6 +2379,43 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
             ],
             "type": "string",
           },
+          "notices": {
+            "description": "Facts about how the work was done that the caller may want to act on",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "aspectRatio": {
+                  "enum": [
+                    "9:16",
+                    "1:1",
+                    "16:9",
+                    "4:5",
+                  ],
+                  "type": "string",
+                },
+                "code": {
+                  "enum": [
+                    "framing_degraded",
+                  ],
+                  "type": "string",
+                },
+                "croppedPercent": {
+                  "description": "How much of the source frame the centered cover crop discards",
+                  "maximum": 99,
+                  "minimum": 1,
+                  "type": "integer",
+                },
+              },
+              "required": [
+                "code",
+                "aspectRatio",
+                "croppedPercent",
+              ],
+              "type": "object",
+            },
+            "maxItems": 4,
+            "type": "array",
+          },
           "operationId": {
             "type": "string",
           },
@@ -1307,6 +2493,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
           "progress",
           "items",
           "results",
+          "notices",
           "failureCode",
           "reviewUrl",
           "operationId",
@@ -1595,6 +2782,393 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         ],
         "type": "object",
       },
+      "ProposeSocialPostRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "caption": {
+            "description": "The draft caption. Omit it to use the latest assisted copy for the platform, if any",
+            "maxLength": 5000,
+            "type": "string",
+          },
+          "clipId": {
+            "description": "The clip to post",
+            "format": "uuid",
+            "type": "string",
+          },
+          "exportId": {
+            "description": "A finished export of that clip. Narriflow picks its variant that fits the account's platform",
+            "format": "uuid",
+            "type": "string",
+          },
+          "socialAccountId": {
+            "description": "The connected account that should post it",
+            "format": "uuid",
+            "type": "string",
+          },
+        },
+        "required": [
+          "clipId",
+          "exportId",
+          "socialAccountId",
+        ],
+        "type": "object",
+      },
+      "ProposedSocialPostResult": {
+        "additionalProperties": false,
+        "properties": {
+          "proposal": {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "9:16",
+                  "1:1",
+                  "16:9",
+                  "4:5",
+                ],
+                "type": "string",
+              },
+              "caption": {
+                "type": "string",
+              },
+              "clipId": {
+                "format": "uuid",
+                "type": "string",
+              },
+              "createdAt": {
+                "format": "date-time",
+                "type": "string",
+              },
+              "exportId": {
+                "format": "uuid",
+                "type": "string",
+              },
+              "exportVariantId": {
+                "format": "uuid",
+                "type": "string",
+              },
+              "platform": {
+                "enum": [
+                  "tiktok",
+                  "youtube_shorts",
+                  "instagram_reels",
+                  "facebook_reels",
+                  "linkedin",
+                  "x",
+                ],
+                "type": "string",
+              },
+              "projectId": {
+                "format": "uuid",
+                "type": "string",
+              },
+              "proposalId": {
+                "format": "uuid",
+                "type": "string",
+              },
+              "socialAccountId": {
+                "format": "uuid",
+                "type": "string",
+              },
+              "source": {
+                "enum": [
+                  "person",
+                  "integration",
+                  "finishing",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "proposalId",
+              "projectId",
+              "clipId",
+              "socialAccountId",
+              "platform",
+              "caption",
+              "source",
+              "exportId",
+              "exportVariantId",
+              "aspectRatio",
+              "createdAt",
+            ],
+            "type": "object",
+          },
+          "queueUrl": {
+            "description": "Where a person accepts or rejects it in Narriflow",
+            "format": "uri",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "replayed": {
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "proposal",
+          "queueUrl",
+          "replayed",
+        ],
+        "type": "object",
+      },
+      "Recipe": {
+        "additionalProperties": false,
+        "properties": {
+          "brandProfileId": {
+            "description": "Applied to intake; null applies no Brand Profile",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "finishing": {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatios": {
+                "description": "Export formats; omitted means the generation's default aspect ratio",
+                "items": {
+                  "enum": [
+                    "9:16",
+                    "1:1",
+                    "16:9",
+                    "4:5",
+                  ],
+                  "type": "string",
+                },
+                "maxItems": 4,
+                "minItems": 1,
+                "type": "array",
+              },
+              "copyPlatforms": {
+                "default": [],
+                "description": "Write assisted copy for each picked clip on these platforms",
+                "items": {
+                  "enum": [
+                    "tiktok",
+                    "youtube_shorts",
+                    "instagram_reels",
+                    "facebook_reels",
+                    "linkedin",
+                    "x",
+                  ],
+                  "type": "string",
+                },
+                "maxItems": 6,
+                "type": "array",
+              },
+              "delivery": {
+                "default": "ready_to_review",
+                "description": "What happens after finishing: stop at ready_to_review, propose each picked clip to the queue accounts for a person to accept (propose_to_queue also needs the publishing:write scope), or send the finished exports to the reviewers of a standing grant as a Review Round (send_review_round belongs to an Autopilot rule and needs an active grant)",
+                "enum": [
+                  "ready_to_review",
+                  "propose_to_queue",
+                  "send_review_round",
+                ],
+                "type": "string",
+              },
+              "minScore": {
+                "default": 0,
+                "description": "Skip clips whose virality score is below this",
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer",
+              },
+              "queueAccountIds": {
+                "default": [],
+                "description": "With propose_to_queue: the connected accounts each picked clip is proposed to, using that platform's copy",
+                "items": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+                "maxItems": 10,
+                "type": "array",
+              },
+              "resolution": {
+                "default": "1080p",
+                "description": "The plan's own resolution limit still applies",
+                "enum": [
+                  "720p",
+                  "1080p",
+                ],
+                "type": "string",
+              },
+              "topClips": {
+                "description": "Export this many of the generation's highest-scoring clips",
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer",
+              },
+            },
+            "required": [
+              "topClips",
+            ],
+            "type": [
+              "object",
+              "null",
+            ],
+          },
+          "generation": {
+            "additionalProperties": false,
+            "properties": {
+              "autoHook": {
+                "default": true,
+                "type": "boolean",
+              },
+              "captionPreset": {
+                "default": "brand_default",
+                "enum": [
+                  "brand_default",
+                  "bold-pop",
+                  "blast",
+                  "punch",
+                  "spotlight",
+                  "street",
+                  "electric",
+                  "rise",
+                  "focus",
+                  "glass",
+                  "sticker",
+                  "frosted-glass",
+                  "highlighter",
+                  "bubblegum",
+                  "jelly",
+                  "candy",
+                  "retro",
+                  "afterglow",
+                  "cinema",
+                  "karaoke",
+                  "neon",
+                  "glitch",
+                  "flip",
+                  "typewriter",
+                  "block",
+                ],
+                "type": "string",
+              },
+              "clipCountTarget": {
+                "default": 10,
+                "maximum": 30,
+                "minimum": 3,
+                "type": "integer",
+              },
+              "clipLengthPreset": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "under_30s",
+                  "30_to_60s",
+                  "60_to_120s",
+                  "120_to_180s",
+                ],
+                "type": "string",
+              },
+              "defaultAspectRatio": {
+                "default": "9:16",
+                "enum": [
+                  "9:16",
+                  "1:1",
+                  "16:9",
+                  "4:5",
+                ],
+                "type": "string",
+              },
+              "mode": {
+                "default": "clip",
+                "enum": [
+                  "clip",
+                  "caption_only",
+                ],
+                "type": "string",
+              },
+              "processingEndSec": {
+                "default": null,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null",
+                ],
+              },
+              "processingStartSec": {
+                "default": null,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null",
+                ],
+              },
+              "specificMoments": {
+                "default": "",
+                "maxLength": 500,
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+          "languageCode": {
+            "description": "Source language; null detects it",
+            "maxLength": 30,
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "name": {
+            "maxLength": 120,
+            "type": "string",
+          },
+          "recipeId": {
+            "format": "uuid",
+            "type": "string",
+          },
+          "revision": {
+            "exclusiveMinimum": 0,
+            "type": "integer",
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string",
+          },
+        },
+        "required": [
+          "recipeId",
+          "name",
+          "revision",
+          "brandProfileId",
+          "languageCode",
+          "generation",
+          "finishing",
+          "updatedAt",
+        ],
+        "type": "object",
+      },
+      "RecipeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "recipe": {
+            "$ref": "#/components/schemas/Recipe",
+          },
+        },
+        "required": [
+          "recipe",
+        ],
+        "type": "object",
+      },
+      "RecipesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "recipes": {
+            "items": {
+              "$ref": "#/components/schemas/Recipe",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "recipes",
+        ],
+        "type": "object",
+      },
       "RedeliverResult": {
         "additionalProperties": false,
         "properties": {
@@ -1631,6 +3205,116 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         ],
         "type": "object",
       },
+      "SocialAccountsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "accountId": {
+                  "format": "uuid",
+                  "type": "string",
+                },
+                "displayName": {
+                  "maxLength": 500,
+                  "type": "string",
+                },
+                "handle": {
+                  "maxLength": 500,
+                  "type": [
+                    "string",
+                    "null",
+                  ],
+                },
+                "platform": {
+                  "enum": [
+                    "tiktok",
+                    "youtube_shorts",
+                    "instagram_reels",
+                    "facebook_reels",
+                    "linkedin",
+                    "x",
+                  ],
+                  "type": "string",
+                },
+                "postingSchedule": {
+                  "additionalProperties": false,
+                  "description": "Weekly slots a person's accepted proposals fill; null when the account has none",
+                  "properties": {
+                    "slots": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "time": {
+                            "description": "Local time in the Workspace time zone, HH:MM",
+                            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+                            "type": "string",
+                          },
+                          "weekday": {
+                            "enum": [
+                              "mon",
+                              "tue",
+                              "wed",
+                              "thu",
+                              "fri",
+                              "sat",
+                              "sun",
+                            ],
+                            "type": "string",
+                          },
+                        },
+                        "required": [
+                          "weekday",
+                          "time",
+                        ],
+                        "type": "object",
+                      },
+                      "maxItems": 28,
+                      "type": "array",
+                    },
+                  },
+                  "required": [
+                    "slots",
+                  ],
+                  "type": [
+                    "object",
+                    "null",
+                  ],
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "expired",
+                    "revoked",
+                  ],
+                  "type": "string",
+                },
+              },
+              "required": [
+                "accountId",
+                "platform",
+                "displayName",
+                "handle",
+                "status",
+                "postingSchedule",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "timeZone": {
+            "description": "The Workspace time zone that posting slots are in",
+            "maxLength": 100,
+            "type": "string",
+          },
+        },
+        "required": [
+          "accounts",
+          "timeZone",
+        ],
+        "type": "object",
+      },
       "SubmitVideoRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1642,8 +3326,16 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
           "callback": {
             "$ref": "#/components/schemas/CallbackRequest",
           },
+          "finishing": {
+            "$ref": "#/components/schemas/FinishingSettings",
+          },
           "generation": {
             "$ref": "#/components/schemas/GenerationSettings",
+          },
+          "recipeId": {
+            "description": "A Recipe from the Recipes list. It replaces brandProfileId, generation, and finishing: send it or those, never both. Generating clips for an existing Project uses the Recipe's language, generation settings, and finishing; the Project keeps the Brand Profile it was imported with",
+            "format": "uuid",
+            "type": "string",
           },
           "title": {
             "maxLength": 200,
@@ -1714,6 +3406,25 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
               "string",
               "null",
             ],
+          },
+          "recipe": {
+            "additionalProperties": false,
+            "description": "The Recipe and revision a session opened with a recipeId used. Returned by the open request",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string",
+              },
+              "revision": {
+                "exclusiveMinimum": 0,
+                "type": "integer",
+              },
+            },
+            "required": [
+              "id",
+              "revision",
+            ],
+            "type": "object",
           },
           "retryAfterSeconds": {
             "exclusiveMinimum": 0,
@@ -1877,6 +3588,168 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         },
         "required": [
           "upload",
+        ],
+        "type": "object",
+      },
+      "Webhook": {
+        "additionalProperties": false,
+        "properties": {
+          "consecutiveFailures": {
+            "minimum": 0,
+            "type": "integer",
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+          },
+          "disabledAt": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "disabledReason": {
+            "enum": [
+              "consecutive_failures",
+              "cursor_expired",
+              "endpoint_gone",
+              null,
+            ],
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "lastAttemptAt": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "lastDeliveredAt": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "lastDeliveredSeq": {
+            "description": "Every matching event up to this seq has been acknowledged with a 2xx",
+            "minimum": 0,
+            "type": "integer",
+          },
+          "lastResponseStatus": {
+            "description": "Null when the last attempt got no response",
+            "type": [
+              "integer",
+              "null",
+            ],
+          },
+          "status": {
+            "enum": [
+              "active",
+              "disabled",
+            ],
+            "type": "string",
+          },
+          "types": {
+            "items": {
+              "enum": [
+                "autopilot.episode_imported",
+                "operation.finished",
+                "finishing.finished",
+                "social_post.proposed",
+                "social_post.finished",
+                "grant.paused",
+                "grant.expired",
+              ],
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "urlHost": {
+            "description": "The endpoint's host. The full URL is sealed and never returned",
+            "type": "string",
+          },
+          "webhookId": {
+            "format": "uuid",
+            "type": "string",
+          },
+        },
+        "required": [
+          "webhookId",
+          "urlHost",
+          "types",
+          "status",
+          "disabledReason",
+          "disabledAt",
+          "lastDeliveredSeq",
+          "consecutiveFailures",
+          "lastAttemptAt",
+          "lastResponseStatus",
+          "lastDeliveredAt",
+          "createdAt",
+        ],
+        "type": "object",
+      },
+      "WebhookResult": {
+        "additionalProperties": false,
+        "properties": {
+          "webhook": {
+            "$ref": "#/components/schemas/Webhook",
+          },
+        },
+        "required": [
+          "webhook",
+        ],
+        "type": "object",
+      },
+      "WebhookTestResult": {
+        "additionalProperties": false,
+        "properties": {
+          "delivered": {
+            "description": "True when the endpoint answered 2xx",
+            "type": "boolean",
+          },
+          "durationMs": {
+            "minimum": 0,
+            "type": "integer",
+          },
+          "eventId": {
+            "description": "The webhook-id of the webhook.test event",
+            "format": "uuid",
+            "type": "string",
+          },
+          "status": {
+            "description": "The endpoint's HTTP status, or null when it didn't answer",
+            "type": [
+              "integer",
+              "null",
+            ],
+          },
+        },
+        "required": [
+          "eventId",
+          "delivered",
+          "status",
+          "durationMs",
+        ],
+        "type": "object",
+      },
+      "WebhooksResult": {
+        "additionalProperties": false,
+        "properties": {
+          "webhooks": {
+            "items": {
+              "$ref": "#/components/schemas/Webhook",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "webhooks",
         ],
         "type": "object",
       },
@@ -2106,6 +3979,155 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         "summary": "List Brand Profiles",
         "tags": [
           "Workspace",
+        ],
+      },
+    },
+    "/api/v1/captioned-videos": {
+      "post": {
+        "description": "Captions a short, finished video, such as an AI-generated one, frames it Fit (the whole frame) or Center (a centered cover crop), and exports it at each requested format. There is no clip detection: the Project gets one clip, the whole video, up to 3 minutes. Captions come from the speech (auto), from SRT or WebVTT you supply, or are omitted (none); a video without an audio stream gets no speech captions. Send a link to import it (202), or describe a file to open an Upload Session that carries these settings (200), upload it, and finalize it with POST /uploads/{id}/finalize. Follow the work with GET /operations/{id}: its results name the export, and its notices report framing_degraded when Center crops part of the frame.",
+        "parameters": [
+          {
+            "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+              "pattern": "^[A-Za-z0-9._~:-]{1,200}$",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptionedVideoRequest",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResult",
+                },
+              },
+            },
+            "description": "The Upload Session, for a file",
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedProjectOperation",
+                },
+              },
+            },
+            "description": "Accepted intake, for a link",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Caption a finished video",
+        "tags": [
+          "Projects",
         ],
       },
     },
@@ -2400,6 +4422,316 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         ],
       },
     },
+    "/api/v1/clips/{id}/timeline": {
+      "get": {
+        "description": "The clip's current edit as a timeline that cuts the original source at the clip's kept ranges, for Premiere Pro (xmeml), Final Cut Pro and DaVinci Resolve (fcpxml), or any editor (edl). Includes the clip's captions as SRT and a private Download Grant (valid 15 minutes) for the original source. Save the source under source.fileName beside the timeline file. Scenes, overlays, and burned-in captions are not timeline layers.",
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+          {
+            "description": "xmeml for Premiere Pro, fcpxml for Final Cut Pro and DaVinci Resolve, edl for any editor",
+            "in": "query",
+            "name": "format",
+            "required": true,
+            "schema": {
+              "description": "xmeml for Premiere Pro, fcpxml for Final Cut Pro and DaVinci Resolve, edl for any editor",
+              "enum": [
+                "xmeml",
+                "fcpxml",
+                "edl",
+              ],
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipTimeline",
+                },
+              },
+            },
+            "description": "Timeline, SRT, and a Download Grant for the source",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Get an editor timeline",
+        "tags": [
+          "Clips",
+        ],
+      },
+    },
+    "/api/v1/events": {
+      "get": {
+        "description": "Polls what finished in this Workspace, including work no request started, such as an Autopilot import. Events are ordered by seq; pass the returned nextCursor as \`after\`. Delivery is at least once, so deduplicate by event id. Events expire after 30 days; re-sync from the list endpoints if a poller was down longer. order=desc returns the newest events, newest first, for pollers that read the newest page each time and deduplicate by id: at most limit (200) matching events per poll interval. Queue proposals (social_post.proposed) and posting outcomes (social_post.finished) need the publishing:read scope: a request that names only those types without it is refused with scope_required, and one that mixes them with other types gets the other types.",
+        "parameters": [
+          {
+            "description": "A previous nextCursor; omit to start at the oldest retained event",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "description": "A previous nextCursor; omit to start at the oldest retained event",
+              "pattern": "^\\d{1,15}$",
+              "type": "string",
+            },
+          },
+          {
+            "description": "asc (default) reads forward from \`after\`. desc returns the newest \`limit\` matching events, newest first, and cannot be combined with \`after\`; its nextCursor is the highest seq on the page.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "description": "asc (default) reads forward from \`after\`. desc returns the newest \`limit\` matching events, newest first, and cannot be combined with \`after\`; its nextCursor is the highest seq on the page.",
+              "enum": [
+                "asc",
+                "desc",
+              ],
+              "type": "string",
+            },
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer",
+            },
+          },
+          {
+            "description": "Comma-separated event types: autopilot.episode_imported, operation.finished, finishing.finished, social_post.proposed, social_post.finished, grant.paused, grant.expired",
+            "in": "query",
+            "name": "types",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated event types: autopilot.episode_imported, operation.finished, finishing.finished, social_post.proposed, social_post.finished, grant.paused, grant.expired",
+              "maxLength": 200,
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsResult",
+                },
+              },
+            },
+            "description": "A page of events: in seq order, or newest first with order=desc",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "List Workspace Events",
+        "tags": [
+          "Events",
+        ],
+      },
+    },
     "/api/v1/exports/{id}": {
       "get": {
         "parameters": [
@@ -2663,6 +4995,158 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         "summary": "Issue Download Grants and subtitles",
         "tags": [
           "Exports",
+        ],
+      },
+    },
+    "/api/v1/library/search": {
+      "get": {
+        "description": "Finds timestamped moments across the Workspace's finished transcripts, by meaning and by exact words. Results are limited to Projects the key's user can view. Newly finished transcripts become searchable within a minute or two.",
+        "parameters": [
+          {
+            "description": "Words or a question; matches by meaning and by exact words",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "description": "Words or a question; matches by meaning and by exact words",
+              "maxLength": 300,
+              "minLength": 2,
+              "type": "string",
+            },
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer",
+            },
+          },
+          {
+            "description": "Search only this Project",
+            "in": "query",
+            "name": "projectId",
+            "required": false,
+            "schema": {
+              "description": "Search only this Project",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibrarySearchResult",
+                },
+              },
+            },
+            "description": "Matching moments, best first",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Search transcripts",
+        "tags": [
+          "Library",
         ],
       },
     },
@@ -3072,7 +5556,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         ],
       },
       "post": {
-        "description": "Imports a supported video link with committed generation settings. Accepts an optional completion callback.",
+        "description": "Imports a supported video link with committed generation settings, sent inline or named by recipeId (not both). A Recipe is read when the request is accepted, and the response reports the Recipe and revision it used. Retrying with the same Idempotency-Key replays the original result even after the Recipe is edited. Accepts an optional completion callback.",
         "parameters": [
           {
             "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
@@ -3644,6 +6128,505 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         "summary": "Generate clips",
         "tags": [
           "Projects",
+        ],
+      },
+    },
+    "/api/v1/recipes": {
+      "get": {
+        "description": "The Workspace's saved Recipes. Pass a recipeId to start an import or generation with a Recipe's Brand Profile, language, generation settings, and finishing instead of sending them. Recipes are created and edited in Narriflow.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipesResult",
+                },
+              },
+            },
+            "description": "Recipes",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "List Recipes",
+        "tags": [
+          "Workspace",
+        ],
+      },
+    },
+    "/api/v1/recipes/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipeResult",
+                },
+              },
+            },
+            "description": "The Recipe at its current revision",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Get a Recipe",
+        "tags": [
+          "Workspace",
+        ],
+      },
+    },
+    "/api/v1/social-accounts": {
+      "get": {
+        "description": "The Workspace's connected accounts without credentials, with each account's weekly posting slots and the time zone they are in. Propose posts to an account with POST /social-posts/proposals.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SocialAccountsResult",
+                },
+              },
+            },
+            "description": "Connected accounts",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "List connected social accounts",
+        "tags": [
+          "Publishing",
+        ],
+      },
+    },
+    "/api/v1/social-posts/proposals": {
+      "post": {
+        "description": "Adds a clip's finished export to an account's Publishing Queue as a draft. Nothing publishes: a person accepts the proposal in Narriflow, which freezes it into the account's next free posting slot and applies the Brand Profile's approval rule. The caption defaults to the latest assisted copy for the platform, if any. Retrying with the same Idempotency-Key returns the original proposal.",
+        "parameters": [
+          {
+            "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+              "pattern": "^[A-Za-z0-9._~:-]{1,200}$",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposeSocialPostRequest",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposedSocialPostResult",
+                },
+              },
+            },
+            "description": "The proposal",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Propose a social post",
+        "tags": [
+          "Publishing",
         ],
       },
     },
@@ -4314,6 +7297,632 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         "summary": "Issue more multipart part URLs",
         "tags": [
           "Uploads",
+        ],
+      },
+    },
+    "/api/v1/webhooks": {
+      "get": {
+        "description": "The Workspace's webhooks with their delivery status. A webhook's URL is never returned, only its host.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhooksResult",
+                },
+              },
+            },
+            "description": "Webhooks",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "List webhooks",
+        "tags": [
+          "Webhooks",
+        ],
+      },
+      "post": {
+        "description": "Delivers matching Workspace Events to a public HTTPS URL as signed POSTs, in seq order, at least once, signed with the Workspace's callback signing secret. Starts at the newest event; earlier ones are on GET /events. Needs a callback signing secret (callback_secret_required). Posting outcomes (social_post.finished) need the publishing:read scope.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWebhookRequest",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult",
+                },
+              },
+            },
+            "description": "The webhook",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Create a webhook",
+        "tags": [
+          "Webhooks",
+        ],
+      },
+    },
+    "/api/v1/webhooks/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedWebhook",
+                },
+              },
+            },
+            "description": "The deleted webhook's ID",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Delete a webhook",
+        "tags": [
+          "Webhooks",
+        ],
+      },
+    },
+    "/api/v1/webhooks/{id}/enable": {
+      "post": {
+        "description": "Resumes a disabled webhook from the last event it acknowledged. Events older than 30 days have expired; if delivery fell behind that far, it resumes from the oldest retained event.",
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult",
+                },
+              },
+            },
+            "description": "The webhook",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Re-enable a webhook",
+        "tags": [
+          "Webhooks",
+        ],
+      },
+    },
+    "/api/v1/webhooks/{id}/test": {
+      "post": {
+        "description": "Sends one signed webhook.test event to the endpoint now and reports its answer. It is not part of the event feed and does not move the webhook's cursor. One test per webhook every 5 seconds; a second one sooner is 429 webhook_test_throttled.",
+        "parameters": [
+          {
+            "description": "Resource ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Resource ID",
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookTestResult",
+                },
+              },
+            },
+            "description": "The endpoint's answer",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "The Workspace needs active Business access",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Send a test event",
+        "tags": [
+          "Webhooks",
         ],
       },
     },

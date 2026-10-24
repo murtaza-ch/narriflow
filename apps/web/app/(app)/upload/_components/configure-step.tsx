@@ -40,6 +40,8 @@ interface ConfigureStepProps {
   sourceMediaUrl: string;
   initialIngestStatus: IngestStageStatus;
   initialIngestErrorCode: string | null;
+  /** The ingest is a Google Drive Picker import, which can't be retried. */
+  ingestFromDrivePicker: boolean;
   mode: GenerationMode;
   languageCode: string;
   initialStep2: LinkConfigureState;
@@ -51,6 +53,7 @@ export function ConfigureStep({
   sourceMediaUrl,
   initialIngestStatus,
   initialIngestErrorCode,
+  ingestFromDrivePicker,
   mode,
   languageCode,
   initialStep2,
@@ -245,6 +248,7 @@ export function ConfigureStep({
           <RetryImportBand
             projectId={projectId}
             errorCode={ingestStream.errorCode}
+            fromDrivePicker={ingestFromDrivePicker}
             onSaveAndFinishLater={handleSaveAndFinishLater}
             savingDraft={savingDraft}
             saveDraftError={saveDraftError}

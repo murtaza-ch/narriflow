@@ -15,15 +15,15 @@ canonical `/mcp` resource in their verified audience. Both credentials use:
 | Scope | Tools |
 | --- | --- |
 | Discovery, no scope | `narriflow_list_workspaces` |
-| `projects:read` | `narriflow_list_projects`, `narriflow_get_project`, `narriflow_list_clips`, `narriflow_get_clip`, `narriflow_list_brand_profiles`, `narriflow_get_operation` (intake and generation) |
+| `projects:read` | `narriflow_list_projects`, `narriflow_get_project`, `narriflow_search_library`, `narriflow_list_clips`, `narriflow_get_clip`, `narriflow_list_brand_profiles`, `narriflow_list_recipes`, `narriflow_get_operation` (intake and generation), `narriflow_list_events` (posting outcomes also need `publishing:read`) |
 | `usage:read` | `narriflow_get_workspace_usage` |
-| `exports:read` | `narriflow_get_clip_export`, `narriflow_get_export_download`, `narriflow_get_operation` (export), `narriflow_create_review_handoff`, `narriflow_list_review_rounds`, `narriflow_get_review_round` |
+| `exports:read` | `narriflow_get_clip_export`, `narriflow_get_export_download`, `narriflow_get_clip_timeline`, `narriflow_get_operation` (export), `narriflow_create_review_handoff`, `narriflow_list_review_rounds`, `narriflow_get_review_round` |
 | `autopilot:read` | `narriflow_list_autopilot_rules` |
 | `publishing:read` | `narriflow_list_social_accounts`, `narriflow_get_publishing_options`, `narriflow_list_social_publications`, `narriflow_get_social_publication` |
-| `processing:write` | `narriflow_submit_video`, `narriflow_upload_video`, `narriflow_generate_clips` |
+| `processing:write` | `narriflow_submit_video`, `narriflow_create_captioned_video`, `narriflow_upload_video`, `narriflow_generate_clips` |
 | `exports:write` | `narriflow_create_clip_export` |
 | `autopilot:write` | `narriflow_create_rss_autopilot_rule`, `narriflow_run_autopilot_rule_now` |
-| `publishing:write` | `narriflow_prepare_social_post`, `narriflow_schedule_social_post`, `narriflow_recheck_social_publication`, `narriflow_confirm_social_publication`, `narriflow_publish_social_publication_again` |
+| `publishing:write` | `narriflow_prepare_social_post`, `narriflow_propose_social_post`, `narriflow_schedule_social_post`, `narriflow_recheck_social_publication`, `narriflow_confirm_social_publication`, `narriflow_publish_social_publication_again` |
 
 New API keys default to all five read grants; writes require explicit grants.
 Run-now requires `processing.consume`, marks the rule due, preserves worker
@@ -41,6 +41,45 @@ New forced generations cannot overlap active generation work.
 Workspace default Brand Profile when intake is admitted, so a retry keeps its
 identity even if the default changes.
 
+`narriflow_submit_video`, `narriflow_upload_video` and
+`narriflow_generate_clips` also accept `recipeId` from `narriflow_list_recipes`
+in place of `brandProfileId`, `generation` and `finishing`; sending both is a
+validation error. The Recipe is read when the request is accepted and the
+result reports `recipe: { id, revision }`; a retry after the Recipe was edited
+replays the original result. `narriflow_create_rss_autopilot_rule` requires
+`recipeId` and takes no settings of its own.
+
+`narriflow_submit_video`, `narriflow_upload_video` and
+`narriflow_generate_clips` accept an optional `finishing` object (the shared
+`finishingSettingsSchema`): `topClips`, `minScore`, `aspectRatios`,
+`resolution`, `copyPlatforms`, and `delivery`. It is part of the request
+fingerprint and is frozen when the generation is admitted. When the generation
+completes, the worker exports the best clips and writes assisted copy, then
+emits `finishing.finished`, which `narriflow_list_events` returns. It needs
+`campaign.operations` (Pro and above) when it runs; below that the row ends
+skipped and imports continue. `bun run mcp:upload --finishing <file>` reads
+the same object from a JSON file.
+
+`narriflow_propose_social_post` adds a clip's finished export to an account's
+Publishing Queue as a draft ([ADR 0015](../adr/0015-publishing-queue.md)). It
+skips the confirmation flow of `narriflow_prepare_social_post` because it
+approves nothing: it cannot choose a time, and a person accepts the proposal in
+Narriflow, which applies the Brand Profile's approval rule then.
+`narriflow_list_social_accounts` returns each account's `postingSchedule` and
+the Workspace `timeZone`. `finishing.delivery` may be `propose_to_queue` with
+`queueAccountIds`; that needs `publishing:write` as well as the tool's own scope.
+`send_review_round` is refused inline: it belongs to an Autopilot rule with a
+Standing Grant.
+
+`narriflow_create_rss_autopilot_rule` accepts the same `brandProfileId`, or
+`null` for none, and stores the resolved Workspace default on the rule when it
+is accepted, so later default changes don't move existing rules. It refuses a
+profile the plan can't apply. Every RSS Project the rule imports
+carries that profile's snapshot. A rule pauses, with `pausedReason` in
+`narriflow_list_autopilot_rules`, when its acting member (the creator) loses
+access or its Brand Profile can't be applied; a Workspace Owner or Admin takes
+it over in Narriflow.
+
 Every accepted mutation returns `operation: { kind, id }` and
 `statusTool: "narriflow_get_operation"`. Operation Status follows exactly that
 work: an intake (link import or Upload Session) through its stored generation
@@ -56,8 +95,10 @@ changed them. Clip lists default to 20, capped at 50. Excerpts are opt-in.
 Results contain compact product facts and ordinary review links, never media
 URLs, except `narriflow_get_export_download`: on explicit request it issues
 fresh Download Grants (15 minutes) for finished files plus SRT and VTT text
-derived from the export's frozen snapshot. Upload grants appear only in App
-metadata.
+derived from the export's frozen snapshot. `narriflow_get_clip_timeline` is
+the other: it returns a clip's current edit as an xmeml, FCPXML, or EDL
+timeline with its SRT and a Download Grant for the original source, which
+is too large to zip. Upload grants appear only in App metadata.
 
 To send exports to a client, `narriflow_create_review_handoff` checks Review
 Round rules and returns a Narriflow link that opens the composer with those
@@ -150,7 +191,8 @@ Its key needs `processing:write`. Reuse the same UUID and unchanged file to
 resume. The helper prints its idempotency key before networking, prints the
 intake operation to follow when it finishes, and never sends
 the Narriflow credential to storage. `--settings` accepts a JSON file matching
-the MCP generation-settings contract. Attachment adapters remain disabled
+the MCP generation-settings contract, and `--finishing` one matching the
+`finishing` object. Attachment adapters remain disabled
 until their specific host file contract is tested.
 
 Stdio runs with `bun --cwd apps/mcp run start`. Supply `NARRIFLOW_API_KEY` and

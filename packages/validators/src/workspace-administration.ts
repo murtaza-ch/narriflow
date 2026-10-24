@@ -21,6 +21,11 @@ export const workspaceSettingsActionSchema = z
   })
   .strict();
 
+/** "Use my performance data to pick clips". */
+export const performanceGuidanceSettingActionSchema = z
+  .object({ enabled: z.boolean() })
+  .strict();
+
 export const workspaceInviteActionSchema = z
   .object({
     email: z.string().trim().email().max(320),
@@ -100,6 +105,10 @@ export const workspaceMemberReferenceActionSchema = z
 
 export const workspaceApiKeyReferenceActionSchema = z
   .object({ keyId: workspaceEntityIdSchema })
+  .strict();
+
+export const webhookReferenceActionSchema = z
+  .object({ webhookId: workspaceEntityIdSchema })
   .strict();
 
 export const workspaceInviteAcceptanceActionSchema = z

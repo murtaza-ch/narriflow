@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildGenerationContext, generationSettingsSchema } from "@narriflow/validators";
 import { uploadVideo } from "./upload";
 
 const directories: string[] = [];
@@ -18,6 +19,23 @@ async function source() {
 }
 
 describe("local Upload Session delivery", () => {
+  test("opens the session with the generation context it was given, finishing included", async () => {
+    const bodies: unknown[] = [];
+    const fakeFetch: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/open")) {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json({ outcome: "queued_for_ingest", sessionId, projectId: "project", queuedJobId: "ingest" });
+      }
+      throw new Error("Unexpected request");
+    };
+    const settings = generationSettingsSchema.parse({});
+    const finishing = { topClips: 2, copyPlatforms: ["tiktok" as const] };
+    await uploadVideo({ endpoint: "https://narriflow.test", apiKey: "nf_secret", workspaceId, filePath: await source(), clientIdempotencyKey: key, fetch: fakeFetch,
+      generationContext: buildGenerationContext(settings, finishing) });
+    expect(bodies[0]).toMatchObject({ generationContext: { finishing: { topClips: 2, minScore: 0, copyPlatforms: ["tiktok"], delivery: "ready_to_review" } } });
+  });
+
   test("resumes server-verified parts and sends credentials only to Narriflow", async () => {
     const calls: Array<{ url: string; authorization: string | null; body: unknown }> = [];
     const fakeFetch: typeof fetch = async (input, init) => {
