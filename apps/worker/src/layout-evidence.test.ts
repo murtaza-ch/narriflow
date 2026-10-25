@@ -19,6 +19,7 @@ function input(overrides: Partial<LayoutEvidenceInput> = {}): LayoutEvidenceInpu
     clip: { id: "clip-1", startSec: 10, endSec: 20, deletedRanges: [], utterances: [], editorRevision: 7, previewStorageKey: "preview" },
     durable: {}, enabled: { automatic: true, screen: true, split: true }, hasBroll: false, pipMotionThreshold: 0.12,
     signal: new AbortController().signal,
+    sceneSource: { path: "original-1920x1080.mp4", startSec: 10 },
     getSegment: async () => ({ path: "original-or-proxy.mp4", startSec: 0, durationSec: 10 }),
     ...overrides,
   };
@@ -42,7 +43,7 @@ function harness(value = input(), overrides: Partial<LayoutEvidenceDependencies>
 }
 
 describe("LayoutEvidence", () => {
-  test("uses one conservative Automatic zoom policy for landscape, square and portrait originals", async () => {
+  test("frames faces to a consistent size across landscape, square and portrait originals", async () => {
     for (const [width, height] of [[640, 338], [1920, 1080], [1080, 1080], [1080, 1920]]) {
       const h = harness(input({ source: { identity: "source:zoom", width: width!, height: height!, hasVideo: true } }));
       await h.owner.fulfill(requests.slice(0, 1));
@@ -53,11 +54,36 @@ describe("LayoutEvidence", () => {
       for (const segment of result.value.analysis.segments) {
         expect(segment.layout).toBe("two-up");
         if (segment.layout !== "two-up") throw new Error("expected two camera seats");
-        expect(segment.topZoom).toBe(1.1);
-        expect(segment.bottomZoom).toBe(1.1);
+        expect(0.2 * segment.topZoom).toBeCloseTo(0.26, 5);
+        expect(0.2 * segment.bottomZoom).toBeCloseTo(0.26, 5);
         expect(segment.topCropTrack?.[0]?.cyNorm).toBe(segment.topCyNorm);
         expect(segment.bottomCropTrack?.[0]?.cyNorm).toBe(segment.bottomCyNorm);
       }
+    }
+  });
+
+  test("frames small podcast faces without leaving the table and chairs dominant", async () => {
+    const h = harness();
+    h.dependencies.detectors.detectMultiFacePath = async () => ({
+      samples: samples.map((sample) => ({
+        t: sample.t,
+        faces: [
+          { ...face(0.17), cy: 0.23, h: 0.11 },
+          { ...face(0.81), cy: 0.22, h: 0.12 },
+        ],
+      })),
+    });
+    await h.owner.fulfill(requests.slice(0, 1));
+    const result = h.owner.availability.automaticLayout;
+    if (result.state !== "available") throw new Error("expected Automatic evidence");
+    for (const segment of result.value.analysis.segments) {
+      if (segment.layout !== "two-up") throw new Error("expected two camera seats");
+      expect(0.11 * segment.topZoom).toBeCloseTo(0.26, 5);
+      expect(0.12 * segment.bottomZoom).toBeCloseTo(0.26, 5);
+      expect(segment.topZoom).toBeLessThanOrEqual(2.5);
+      expect(segment.bottomZoom).toBeLessThanOrEqual(2.5);
+      expect((segment.topCyNorm - 0.23) * segment.topZoom).toBeCloseTo(0.08, 5);
+      expect((segment.bottomCyNorm - 0.22) * segment.bottomZoom).toBeCloseTo(0.08, 5);
     }
   });
 
@@ -203,7 +229,7 @@ describe("LayoutEvidence", () => {
     expect(preview).toMatchObject({ sourceWidth: 1920, sourceHeight: 1080 });
     const multi = commands.find((command) => command.args.includes("--multi"));
     expect(multi?.args.slice(1)).toEqual(["proxy-640x360.mp4", "2", "10", "4", "/usr/local/share/narriflow/face_yunet.onnx", "--multi"]);
-    expect(preview.noSplitSegments.every((segment) => segment.layout !== "single" || segment.zoom <= 1.25)).toBe(true);
+    expect(preview.noSplitSegments.every((segment) => segment.layout !== "single" || segment.zoom <= 2.5)).toBe(true);
   });
 });
 

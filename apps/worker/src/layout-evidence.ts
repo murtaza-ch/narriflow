@@ -25,7 +25,6 @@ import {
   parseClipLayoutAnalysisFailure,
   parseClipSplitLayoutAnalysis,
   parseClipSplitLayoutFailure,
-  sourceToEdited,
   type ClipAutoLayoutAnalysis,
   type ClipLayoutAnalysis,
   type ClipLayoutAnalysisFailure,
@@ -80,6 +79,8 @@ export interface LayoutEvidenceInput {
   hasBroll: boolean;
   pipMotionThreshold: number;
   signal: AbortSignal;
+  /** Camera cuts use the original video clock, never a retimed face proxy. */
+  sceneSource: { path: string; startSec: number };
   /** The returned local media must cover the whole uncut Clip window. */
   getSegment(): Promise<{ path: string; startSec: number; durationSec: number } | null>;
 }
@@ -239,7 +240,15 @@ export class LayoutEvidence {
     if (this.input.source.hasVideo) {
       const segment = await this.segment();
       if (!segment) { this.availability.automaticLayout = { state: "failed" }; return; }
-      const [multi, sceneCuts] = await Promise.all([this.multi(segment), this.detect(() => this.deps.detectors.detectSceneCuts(this.detectionInput(segment)), [])]);
+      const [multi, sceneCuts] = await Promise.all([
+        this.multi(segment),
+        this.detect(() => this.deps.detectors.detectSceneCuts({
+          sourcePath: this.input.sceneSource.path,
+          startSec: this.input.sceneSource.startSec,
+          durationSec: this.rawDurationSec,
+          logContext: { clipId: this.input.clip.id },
+        }), []),
+      ]);
       if (!multi) { this.availability.automaticLayout = { state: "failed" }; return; }
       samples = remapMultiFaceSamplesForCutPlan(multi.samples, this.cutPlan, this.input.clip.startSec);
       cuts = remapSceneCutsForCutPlan(sceneCuts, this.cutPlan, this.input.clip.startSec);
@@ -299,11 +308,7 @@ function remapSceneCutsForCutPlan(
   clipStartSec: number,
 ): number[] {
   if (cutPlan.isUncut) {
-
-
-    return [...new Set(cuts.map((t) => Math.round(t * 1000) / 1000))].sort(
-      (a, b) => a - b,
-    );
+    return [...new Set(cuts)].sort((a, b) => a - b);
   }
   const out: number[] = [];
   for (const cut of cuts) {
@@ -312,12 +317,14 @@ function remapSceneCutsForCutPlan(
       (s) => sourceSec >= s.sourceStartSec && sourceSec <= s.sourceEndSec,
     );
     if (!segment) continue;
-    out.push(sourceToEdited(cutPlan.map, sourceSec));
+    // Word/editor timing rounds to milliseconds. Camera boundaries must keep
+    // their original frame precision within each retained source interval.
+    out.push(segment.editedStartSec + sourceSec - segment.sourceStartSec);
   }
   for (const segment of cutPlan.segments.slice(1)) {
     out.push(segment.editedStartSec);
   }
-  return [...new Set(out.map((t) => Math.round(t * 1000) / 1000))].sort(
+  return [...new Set(out.map((t) => Math.round(t * 1_000_000) / 1_000_000))].sort(
     (a, b) => a - b,
   );
 }

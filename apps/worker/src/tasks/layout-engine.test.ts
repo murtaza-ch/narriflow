@@ -405,6 +405,39 @@ describe("assignSeatsToSpeakers", () => {
 });
 
 describe("buildAutoLayoutPlan", () => {
+  it("does not flash Fit after a camera cut rounded to detector milliseconds", () => {
+    // Replay the confidence pattern at source 104.933s in MM-C3JqCXBk.
+    // FFmpeg reports more precision than the detector's millisecond clock.
+    const wide = (leftScore: number, rightScore: number) => [
+      { ...face(0.17, 0.23, 0.11), score: leftScore },
+      { ...face(0.81, 0.22, 0.12), score: rightScore },
+    ];
+    const plan = buildAutoLayoutPlan({
+      samples: [
+        { t: 0, faces: [face(0.54, 0.35, 0.4)] },
+        { t: 0.667, faces: [face(0.54, 0.35, 0.4)] },
+        { t: 0.933, faces: wide(0.849, 0.853) },
+        { t: 1.2, faces: wide(0.836, 0.849) },
+        { t: 1.467, faces: wide(0.868, 0.849) },
+        ...samplesOver(4, () => wide(0.87, 0.86)).map((sample) => ({
+          ...sample,
+          t: sample.t + 1.733,
+        })),
+      ],
+      sceneCuts: [0.933333],
+      words: [],
+      durationSec: 5.733,
+      allowTwoUp: true,
+    });
+    expect(plan.segments.map(({ startSec, endSec, layout, ...segment }) => ({
+      startSec, endSec, layout,
+      intent: "intent" in segment ? segment.intent : undefined,
+    }))).toEqual([
+      { startSec: 0, endSec: 0.933333, layout: "single", intent: undefined },
+      { startSec: 0.933333, endSec: 5.733, layout: "two-up", intent: undefined },
+    ]);
+  });
+
   /** Multicam scenario: solo A (0-8s), wide two-shot (8-16s), solo B (16-24s). */
   const soloA = (_t: number) => [face(0.5, 0.42, 0.28)];
   const wide = (_t: number) => [face(0.25, 0.4, 0.12), face(0.7, 0.42, 0.12)];

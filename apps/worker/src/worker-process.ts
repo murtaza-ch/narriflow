@@ -250,8 +250,10 @@ async function waitForProcessGroupExit(pid: number | undefined, timeoutMs: numbe
   while (Date.now() < deadlineAt) {
     try {
       process.kill(-pid, 0);
-    } catch {
-      return;
+    } catch (error) {
+      // macOS can return EPERM while a killed group is still exiting.
+      // Only ESRCH confirms that its descendants have disappeared.
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
     }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }

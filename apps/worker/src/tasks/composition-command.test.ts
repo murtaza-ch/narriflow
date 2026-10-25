@@ -2274,7 +2274,7 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
 			expect(withPlan).toEqual(withoutPlan);
 		});
 
-		test("two kept segments: emits per-segment trim/atrim + setpts/asetpts, then concat, before crop/scale", () => {
+		test("two kept segments preserve the edited video clock and concatenate audio before crop/scale", () => {
 			const args = buildSingleVideoArgs({
 				sourcePath: "/tmp/src.mp4",
 				outputPath: "/tmp/out.mp4",
@@ -2288,21 +2288,18 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
 			const graph = args[args.indexOf("-filter_complex") + 1]!;
 
 			expect(graph).toContain(
-				"[0:v]trim=start=0.000:end=10.000,setpts=PTS-STARTPTS[vseg0]",
+				"[0:v]setpts=PTS-STARTPTS,settb=AVTB,select='gte(t,0.000000)*lt(t,10.000000)+gte(t,15.000000)*lt(t,30.000000)',setpts='PTS-(5.000000*gte(T,15.000000))/TB'[vcat]",
 			);
 			expect(graph).toContain(
 				"[0:a:0]atrim=start=0.000:end=10.000,asetpts=PTS-STARTPTS[aseg0]",
 			);
 			expect(graph).toContain(
-				"[0:v]trim=start=15.000:end=30.000,setpts=PTS-STARTPTS[vseg1]",
-			);
-			expect(graph).toContain(
 				"[0:a:0]atrim=start=15.000:end=30.000,asetpts=PTS-STARTPTS[aseg1]",
 			);
 			expect(graph).toContain(
-				"[vseg0][aseg0][vseg1][aseg1]concat=n=2:v=1:a=1[vcat][acat]",
+				"[aseg0][aseg1]concat=n=2:v=0:a=1[acat]",
 			);
-			// Downstream crop/scale reads the concatenated video, not the raw input.
+			// Downstream crop/scale reads video on the edited clock.
 			expect(graph).toContain("[vcat]crop=");
 			// Dialogue fade reads the concatenated audio.
 			expect(graph).toContain("[acat]afade=t=in:st=0:d=0.040");
@@ -2350,7 +2347,7 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
 			expectLabelConsumedOnce(graph, "[vcat]");
 		});
 
-		test("single kept segment (deletion at the very start) skips concat and uses acopy for audio, copy for video", () => {
+		test("a starting deletion shifts the video clock and skips audio concat for one kept segment", () => {
 			const startOnlyPlan = buildClipCutPlan(
 				[{ startSec: 0, endSec: 5 }],
 				window,
@@ -2368,9 +2365,8 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
 			});
 			const graph = args[args.indexOf("-filter_complex") + 1]!;
 			expect(graph).toContain(
-				"[0:v]trim=start=5.000:end=30.000,setpts=PTS-STARTPTS[vseg0]",
+				"[0:v]setpts=PTS-STARTPTS,settb=AVTB,select='gte(t,5.000000)*lt(t,30.000000)',setpts='PTS-(5.000000*gte(T,5.000000))/TB'[vcat]",
 			);
-			expect(graph).toContain("[vseg0]copy[vcat]");
 			expect(graph).toContain(
 				"[0:a:0]atrim=start=5.000:end=30.000,asetpts=PTS-STARTPTS[aseg0]",
 			);
@@ -2413,7 +2409,7 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
 			});
 			const graph = args[args.indexOf("-filter_complex") + 1]!;
 			expect(graph).toContain(
-				"[vseg0][aseg0][vseg1][aseg1]concat=n=2:v=1:a=1[vcat][acat]",
+				"[aseg0][aseg1]concat=n=2:v=0:a=1[acat]",
 			);
 			expect(graph).toContain("[vcat]crop=");
 			expect(graph).toContain("[acat]afade=t=in:st=0:d=0.040");

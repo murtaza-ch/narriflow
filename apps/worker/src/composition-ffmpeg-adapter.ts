@@ -1214,6 +1214,8 @@ export function compileCompositionPlanVideo(input: {
 	plan: ClipCompositionPlan;
 	targetId: string;
 	videoInputLabel: string;
+	/** Cut video already carries the shared edited-time clock. */
+	videoClockIsEdited?: boolean;
 	outputLabel: string;
 	trailingChain?: string;
 	backgroundImageInputIndex?: number | null;
@@ -1371,15 +1373,18 @@ export function compileCompositionPlanVideo(input: {
 		if (target.scenes.length === 0) {
 			throw new Error("invalid_clip_composition_scenes");
 		}
-		const parts: string[] = [];
+		const sourceClock = "[composition_source_clock]";
+		const parts: string[] = [
+			`${input.videoInputLabel}${input.videoClockIsEdited ? "" : "setpts=PTS-STARTPTS,"}settb=AVTB${sourceClock}`,
+		];
 		const sceneInputs = target.scenes.map((_, index) =>
 			target.scenes.length === 1
-				? input.videoInputLabel
+				? sourceClock
 				: `[composition_scene_${index}_src]`,
 		);
 		if (target.scenes.length > 1) {
 			parts.push(
-				`${input.videoInputLabel}split=${target.scenes.length}${sceneInputs.join("")}`,
+				`${sourceClock}split=${target.scenes.length}${sceneInputs.join("")}`,
 			);
 		}
 		const imageBackgroundSceneIndexes = target.scenes.flatMap((scene, index) =>
@@ -1450,8 +1455,8 @@ export function compileCompositionPlanVideo(input: {
 			const sceneOutput = `[composition_scene_${sceneIndex}]`;
 			sceneOutputs.push(sceneOutput);
 			parts.push(
-				`${sceneInputs[sceneIndex]}trim=start=${sourceRange.startSec.toFixed(3)}:` +
-					`end=${sourceRange.endSec.toFixed(3)},setpts=PTS-STARTPTS${trimLabel}`,
+				`${sceneInputs[sceneIndex]}trim=start=${sourceRange.startSec.toFixed(6)}:` +
+					`end=${sourceRange.endSec.toFixed(6)},setpts=PTS-STARTPTS${trimLabel}`,
 			);
 			const layers = [...scene.layers]
 				.filter((layer) => layer.kind === "source-video")
@@ -1924,10 +1929,9 @@ interface CutConcatResult {
 
 /**
  * Builds the cut/concat prefix of the filter graph for a clip's kept source
- * segments (vizard-parity.md Phase B step 7): each kept segment is trimmed
- * out of the SAME single source input (`-ss clipStartSec -t clipDurationSec
- * -i sourcePath`, unchanged from today) via `trim`/`atrim` + `setpts`/
- * `asetpts`, then concatenated into one continuous edited-timeline stream —
+ * segments (vizard-parity.md Phase B step 7). Video keeps source-frame PTS
+ * after selecting retained intervals, then subtracts deleted time. Audio
+ * trims and concatenates the same intervals into its edited-time stream.
  * BEFORE crop/scale, captions, text layers, logo, transitions, music, gain,
  * or fades, so every one of those sees one continuous video/audio pair and
  * needs no cut-awareness of its own.
@@ -1938,11 +1942,9 @@ interface CutConcatResult {
  * pre-cut-concat renders (no filter-graph changes at all for the common
  * no-deletions case).
  *
- * `trim`/`atrim` operate on the SAME input-relative time base that every
- * other filter in this file already assumes for a `-ss X -i ...`-seeked
- * input (e.g. planned visual layers and B-roll `between(t,...)`
- * windows) — i.e. 0 at `clipStartSec`, not absolute source time — so segment
- * bounds are expressed as `segment.sourceStartSec/EndSec - clipStartSec`.
+ * Bounds are clip-relative. Video first normalizes its first decoded frame
+ * exactly as the camera detector does; resetting each kept fragment instead
+ * would accumulate fractional-frame errors against the planned camera cuts.
  */
 function buildCutConcatFilter(params: {
 	cutPlan: ClipCutPlan;
@@ -1966,20 +1968,33 @@ function buildCutConcatFilter(params: {
 	const audioOutLabel = params.audioOutLabel ?? "[acat]";
 
 	const filterParts: string[] = [];
-	const vLabels: string[] = [];
 	const aLabels: string[] = [];
+	if (includeVideo) {
+		const kept = segments.map((segment) => {
+			const start = (segment.sourceStartSec - params.clipStartSec).toFixed(6);
+			const end = (segment.sourceEndSec - params.clipStartSec).toFixed(6);
+			return `gte(t,${start})*lt(t,${end})`;
+		});
+		let previousRemovedSec = 0;
+		const removed = segments.flatMap((segment) => {
+			const start = segment.sourceStartSec - params.clipStartSec;
+			const removedSec = start - segment.editedStartSec;
+			const gap = removedSec - previousRemovedSec;
+			previousRemovedSec = removedSec;
+			return Math.abs(gap) < 0.000001 ? [] : [`${gap.toFixed(6)}*gte(T,${start.toFixed(6)})`];
+		});
+		// Rebuilding each kept fragment from zero loses the fractional frame
+		// remainder at every edit. Preserve source PTS and subtract only deleted
+		// time, so a camera frame and its edited-time crop still share a clock.
+		filterParts.push(
+			`${videoInputRef}setpts=PTS-STARTPTS,settb=AVTB,select='${kept.join("+")}',` +
+				`setpts='PTS-(${removed.join("+") || "0"})/TB'${videoOutLabel}`,
+		);
+	}
 
 	segments.forEach((segment, index) => {
 		const start = (segment.sourceStartSec - params.clipStartSec).toFixed(3);
 		const end = (segment.sourceEndSec - params.clipStartSec).toFixed(3);
-
-		if (includeVideo) {
-			const vLabel = `vseg${index}`;
-			filterParts.push(
-				`${videoInputRef}trim=start=${start}:end=${end},setpts=PTS-STARTPTS[${vLabel}]`,
-			);
-			vLabels.push(`[${vLabel}]`);
-		}
 
 		if (params.includeAudio) {
 			const aLabel = `aseg${index}`;
@@ -1991,18 +2006,7 @@ function buildCutConcatFilter(params: {
 	});
 
 	if (segments.length === 1) {
-		// A single kept segment needs no `concat` — the trim/setpts stage above
-		// already produced the final continuous stream (still a real cut when
-		// the segment doesn't span the whole clip window, e.g. a deletion at the
-		// very start/end — `concat` filter with n=1 would be a no-op anyway, but
-		// skipping it keeps the graph simpler and matches ffmpeg's own guidance
-		// against degenerate single-input concats).
-		// `copy` (video) and `acopy` (audio) are distinct ffmpeg filters — using
-		// the video-only `copy` on an audio pad label would fail at encode time.
-		const rename = (label: string, out: string, filterName: "copy" | "acopy") =>
-			filterParts.push(`${label}${filterName}${out}`);
-		if (includeVideo) rename(vLabels[0]!, videoOutLabel, "copy");
-		if (params.includeAudio) rename(aLabels[0]!, audioOutLabel, "acopy");
+		if (params.includeAudio) filterParts.push(`${aLabels[0]}acopy${audioOutLabel}`);
 		return {
 			filterParts,
 			videoLabel: includeVideo ? videoOutLabel : null,
@@ -2010,34 +2014,10 @@ function buildCutConcatFilter(params: {
 		};
 	}
 
-	if (includeVideo && params.includeAudio) {
-		const interleaved = segments
-			.map((_, i) => `${vLabels[i]}${aLabels[i]}`)
-			.join("");
-		filterParts.push(
-			`${interleaved}concat=n=${segments.length}:v=1:a=1${videoOutLabel}${audioOutLabel}`,
-		);
-		return {
-			filterParts,
-			videoLabel: videoOutLabel,
-			audioLabel: audioOutLabel,
-		};
+	if (params.includeAudio) {
+		filterParts.push(`${aLabels.join("")}concat=n=${segments.length}:v=0:a=1${audioOutLabel}`);
 	}
-
-	if (includeVideo) {
-		const interleaved = vLabels.join("");
-		filterParts.push(
-			`${interleaved}concat=n=${segments.length}:v=1:a=0${videoOutLabel}`,
-		);
-		return { filterParts, videoLabel: videoOutLabel, audioLabel: null };
-	}
-
-	// Audio-only (audiogram path): no video stream to concat at all.
-	const interleaved = aLabels.join("");
-	filterParts.push(
-		`${interleaved}concat=n=${segments.length}:v=0:a=1${audioOutLabel}`,
-	);
-	return { filterParts, videoLabel: null, audioLabel: audioOutLabel };
+	return { filterParts, videoLabel: includeVideo ? videoOutLabel : null, audioLabel: params.includeAudio ? audioOutLabel : null };
 }
 
 function buildAudioFadeChain(
@@ -2476,6 +2456,7 @@ function buildSingleVideoArgs(params: {
 		plan: params.composition.plan,
 		targetId: params.composition.targetId,
 		videoInputLabel,
+		videoClockIsEdited: isCut,
 		outputLabel: "[composition_base]",
 		backgroundImageInputIndex: bgImageInputIndex,
 		fps: params.probe.fps,
@@ -2722,6 +2703,7 @@ function buildBrollVideoArgs(params: {
 		plan: params.composition.plan,
 		targetId: params.composition.targetId,
 		videoInputLabel,
+		videoClockIsEdited: isCut,
 		outputLabel: "[stage0]",
 		backgroundImageInputIndex: bgImageInputIndex,
 		fps: params.probe.fps,

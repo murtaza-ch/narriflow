@@ -1932,7 +1932,8 @@ describe("composition FFmpeg adapter", () => {
 			brollInputs: [],
 			sceneInputs: [],
 			filterParts: [
-				"[0:v]trim=start=0.000:end=5.000,setpts=PTS-STARTPTS[composition_scene_0_trim]",
+				"[0:v]setpts=PTS-STARTPTS,settb=AVTB[composition_source_clock]",
+				"[composition_source_clock]trim=start=0.000000:end=5.000000,setpts=PTS-STARTPTS[composition_scene_0_trim]",
 				"[composition_scene_0_trim]split=2[composition_scene_0_layer_0_src][composition_scene_0_layer_1_src]",
 				"[composition_scene_0_layer_0_src]crop=1215:1080:0:0,scale=1080:960[composition_scene_0_layer_0]",
 				"[composition_scene_0_layer_1_src]crop=1215:1080:705:0,scale=1080:960[composition_scene_0_layer_1]",
@@ -1970,7 +1971,8 @@ describe("composition FFmpeg adapter", () => {
 				outputLabel: "[outv]",
 			}).filterParts,
 		).toEqual([
-			"[0:v]trim=start=0.000:end=5.000,setpts=PTS-STARTPTS[composition_scene_0_trim]",
+			"[0:v]setpts=PTS-STARTPTS,settb=AVTB[composition_source_clock]",
+			"[composition_source_clock]trim=start=0.000000:end=5.000000,setpts=PTS-STARTPTS[composition_scene_0_trim]",
 			"[composition_scene_0_trim]split=2[composition_scene_0_layer_0_src][composition_scene_0_layer_1_src]",
 			"[composition_scene_0_layer_0_src]scale=1080:676:force_original_aspect_ratio=decrease,pad=1080:676:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[composition_scene_0_layer_0]",
 			"[composition_scene_0_layer_1_src]crop=445:278:1352:714,scale=1080:674[composition_scene_0_layer_1]",

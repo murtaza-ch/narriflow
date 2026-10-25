@@ -191,7 +191,7 @@ export function segmentShots(
   durationSec: number,
 ): Shot[] {
   if (durationSec <= 0) return [];
-  const sorted = [...new Set(sceneCuts.map((timeSec) => timeSec.toFixed(3)))]
+  const sorted = [...new Set(sceneCuts.map((timeSec) => timeSec.toFixed(6)))]
     .map(Number)
     .filter((t) => t > 0 && t < durationSec)
     .sort((a, b) => a - b);
@@ -278,7 +278,13 @@ export function filterAutomaticFaceSamples(
 ): MultiFaceSample[] {
   const settings = { ...FACE_ADMISSION_DEFAULTS, ...options };
   const tracks: Array<{ face: DetectedFace; t: number }> = [];
-  const resets = [...(options.resetAtSecs ?? [])].sort((a, b) => a - b);
+  // Match the face detector's millisecond observation timestamps. Otherwise
+  // a cut at 14.933333 resets tracks one sample after the new shot's 14.933
+  // detection and discards a valid lower-confidence continuation. Shot
+  // boundaries themselves retain source-frame precision.
+  const resets = [...(options.resetAtSecs ?? [])]
+    .map((timeSec) => Number(timeSec.toFixed(3)))
+    .sort((a, b) => a - b);
   let resetIndex = 0;
   return samples.map((sample) => {
     while (resetIndex < resets.length && sample.t >= resets[resetIndex]!) {

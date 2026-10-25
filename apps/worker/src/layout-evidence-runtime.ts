@@ -245,13 +245,12 @@ async function detectMultiFacePath(params: {
 
 /**
  * Scene-cut detection (layout-engine wiring): runs ffmpeg's scene-change
- * `select` filter over the SAME low-res local segment face detection uses
- * and returns clip-relative cut times in seconds. Best-effort: any failure
- * returns [] (the layout engine then treats the clip as one shot) — never
- * blocks a render. `-ss` before `-i` is frame-accurate here (default
- * accurate_seek decodes from the prior keyframe and discards preroll) and
- * resets output timestamps to ~0, which is exactly the clip-relative
- * timebase the detector samples use.
+ * `select` filter over the original source window. Face proxies can drop,
+ * duplicate or retime frames, so their cut timestamps are not authoritative.
+ * Normalize the first decoded frame and microsecond time base exactly like
+ * the composition adapter before detecting cuts. Spatial downscaling keeps
+ * comparison cheap without changing frame cadence. Cancellation propagates;
+ * an ordinary detector failure still returns the current typed degradation.
  */
 async function detectSceneCuts(params: {
   sourcePath: string;
@@ -271,7 +270,7 @@ async function detectSceneCuts(params: {
       "-i",
       params.sourcePath,
       "-vf",
-      `select='gt(scene,${threshold})',metadata=print:file=-`,
+      `setpts=PTS-STARTPTS,settb=AVTB,scale=320:-2,select='gt(scene,${threshold})',metadata=print:file=-`,
       "-an",
       "-f",
       "null",

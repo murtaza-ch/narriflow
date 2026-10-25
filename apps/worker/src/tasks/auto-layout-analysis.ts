@@ -35,6 +35,7 @@ export async function analyzeClipAutoLayout(params: {
     source: { identity: sourceIdentity, hasVideo: original.hasVideo, width: original.width || 1, height: original.height || 1 },
     clip: { id: clip.id, startSec: clip.startSec, endSec: clip.endSec, deletedRanges: clip.deletedRanges, utterances: clip.transcriptSlice, editorRevision: clip.editorRevision, previewStorageKey: clip.previewStorageKey },
     durable: {}, enabled: { automatic: config.layoutEngineEnabled, screen: false, split: false }, hasBroll: false, pipMotionThreshold: config.pipMotionThreshold, signal,
+    sceneSource: { path: params.originalSourcePath, startSec: clip.startSec },
     getSegment: async () => {
       const offset = clip.startSec - clip.previewStartSec;
       if (offset < -0.05) return null;

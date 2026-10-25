@@ -2501,6 +2501,7 @@ function captionLayersForTarget(input: {
 function visualLayersForTarget(input: {
   document: EditorDocument;
   target: CompositionTarget;
+  scenes: readonly CompositionScene[];
   editedTimeMap: ReturnType<typeof buildEditedTimeMap>;
   logo: CompositionLogoAvailability | undefined;
 }): CompositionVisualLayer[] {
@@ -2530,9 +2531,31 @@ function visualLayersForTarget(input: {
     });
   }
 
-  visualLayers.push(
-    ...captionLayersForTarget({ document, target, editedTimeMap }),
-  );
+  const captions = captionLayersForTarget({ document, target, editedTimeMap });
+  const useSpeakerSeam = document.studioEdits.framing.mode === "auto" &&
+    document.captionPreset.position === "bottom" &&
+    document.captionPreset.positionY === undefined;
+  for (const caption of captions) {
+    // A bottom speaker's face sits near 71% of the full canvas, directly
+    // behind the default bottom captions. Keep the canonical cue intact and
+    // use the tile seam whenever it overlaps a stacked camera scene.
+    const stackedScene = useSpeakerSeam ? input.scenes.find((scene) =>
+      scene.startSec < caption.activeRange.endSec &&
+      scene.endSec > caption.activeRange.startSec &&
+      scene.layers.some((layer) => layer.kind === "source-video" && layer.speaker?.role === "top") &&
+      scene.layers.some((layer) => layer.kind === "source-video" && layer.speaker?.role === "bottom"),
+    ) : undefined;
+    const top = stackedScene?.layers.find((layer) => layer.kind === "source-video" && layer.speaker?.role === "top");
+    const bottom = stackedScene?.layers.find((layer) => layer.kind === "source-video" && layer.speaker?.role === "bottom");
+    const seam = top && bottom &&
+      Math.abs(top.destination.y + top.destination.height - bottom.destination.y) <= 2
+      ? (top.destination.y + top.destination.height + bottom.destination.y) / 2
+      : null;
+    visualLayers.push(seam === null ? caption : {
+      ...caption,
+      anchor: { ...caption.anchor, yPct: seam / target.height * 100 },
+    });
+  }
 
   if (logo?.state === "available" && logo.settings.enabled) {
     visualLayers.push({
@@ -3568,6 +3591,7 @@ export function planClipComposition(
         visualLayersForTarget({
           document: input.document,
           target: targetInput,
+          scenes: baseTarget.scenes,
           editedTimeMap,
           logo: input.assets.logo,
         }),

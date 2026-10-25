@@ -1708,6 +1708,52 @@ describe("Clip Composition Plan", () => {
     });
   });
 
+  test.each([
+    { position: "bottom", positionY: undefined, normalY: 72, stackedY: 50 },
+    { position: "bottom", positionY: 65, normalY: 65, stackedY: 65 },
+    { position: "top", positionY: undefined, normalY: 20, stackedY: 20 },
+    { position: "center", positionY: undefined, normalY: 50, stackedY: 50 },
+  ] as const)("keeps captions clear of stacked speakers while honoring $position at $positionY", ({ position, positionY, normalY, stackedY }) => {
+    const source = { identity: "source:caption-seam", kind: "video" as const, width: 1920, height: 1080 };
+    const single = (startSec: number, endSec: number) => ({ startSec, endSec, layout: "single", cxNorm: 0.5, subjects: [] });
+    const analysis = clipAutoLayoutAnalysisSchema.parse({
+      version: 1, engine: "shot-layout-v1", sourceIdentity: source.identity,
+      analyzedAtISO: "2026-10-25T00:00:00.000Z", clipStartSec: 0, clipEndSec: 5,
+      deletedRanges: [], editedDurationSec: 5, sourceWidth: 1920, sourceHeight: 1080,
+      segments: [single(0, 1), { startSec: 1, endSec: 3, layout: "two-up", topCxNorm: 0.2, bottomCxNorm: 0.8, subjects: [] }, single(3, 5)],
+      noSplitSegments: [single(0, 5)], shotCount: 3, soloShotCount: 2, multiShotCount: 1,
+      twoUpSegmentCount: 1, speakerCount: 2, mappedSpeakerCount: 2,
+    });
+    const document = editorDocumentSchema.parse({
+      version: 1, clipStartSec: 0, clipEndSec: 5,
+      captionPreset: captionPresetSchema.parse({ position, positionY }),
+      transcriptSlice: [0.2, 1.2, 3.2].map((startSec, index) => ({
+        index, speaker: 0, speakerLabel: "A", startSec, endSec: startSec + 0.4,
+        text: "Hello", confidence: null,
+        words: [{ word: "Hello", startSec, endSec: startSec + 0.4, confidence: null }],
+      })),
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
+      brollUrl: null, deletedRanges: [],
+    });
+    const result = planClipComposition({
+      document, source,
+      evidence: { automaticLayout: { state: "available", value: {
+        sourceIdentity: source.identity, engineVersion: "shot-layout-v1", analysis,
+        inputFingerprint: automaticLayoutInputFingerprint({ sourceIdentity: source.identity, clipStartSec: 0, clipEndSec: 5, deletedRanges: [], engineVersion: "shot-layout-v1" }),
+      } } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+        { id: "square", aspectRatio: "1:1", width: 1080, height: 1080 },
+      ],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const anchors = result.plan.targets.map((target) => target.visualLayers
+      .filter((layer) => layer.kind === "caption").map((layer) => layer.anchor.yPct));
+    expect(anchors).toEqual([[normalY, stackedY, normalY], [normalY, normalY, normalY]]);
+  });
+
   test("invalidates Auto evidence when its source identity or relevant window fingerprint is stale", () => {
     const document = editorDocumentSchema.parse({
     version: 1,

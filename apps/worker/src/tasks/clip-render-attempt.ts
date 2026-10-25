@@ -2616,6 +2616,7 @@ async function renderClipGroup(input: {
 			pipMotionThreshold: currentRenderConfig().pipMotionThreshold,
 			signal: currentRenderSignal() ?? new AbortController().signal,
 			getSegment: getAnalysisSegment,
+			sceneSource: { path: sourcePath, startSec: clipStartSec },
 		},
 		{
 			detectors: currentRenderAdapters().analysis,

@@ -84,12 +84,30 @@ test("persistent helper bounds startup readiness and terminates on timeout", asy
 });
 
 test("persistent helper reaps a descendant after its parent exits", async () => {
-  const helper = await createWorkerProcessModule({ killGraceMs: 20 }).start?.({
-    command: "sh",
-    args: ["-c", "sleep 60 >/dev/null 2>&1 & echo $!; exit 0"],
-    cwd: process.cwd(), env: { PATH: process.env.PATH }, signal: new AbortController().signal,
-  });
-  expect((await helper!.exited).exitCode).toBe(0);
+  const directory = await mkdtemp(join(tmpdir(), "narriflow-helper-descendant-"));
+  const childPidPath = join(directory, "child.pid");
+  let childPid: number | undefined;
+  try {
+    const helper = await createWorkerProcessModule({ killGraceMs: 20 }).start?.({
+      command: process.execPath,
+      args: ["-e", [
+        "const { spawn } = require('node:child_process');",
+        "const { writeFileSync } = require('node:fs');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        `writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
+        "process.exit(0);",
+      ].join(" ")],
+      signal: new AbortController().signal,
+    });
+    expect((await helper!.exited).exitCode).toBe(0);
+    childPid = Number(await readFile(childPidPath, "utf8"));
+    expect(() => process.kill(childPid!, 0)).toThrow();
+  } finally {
+    if (childPid) {
+      try { process.kill(childPid, "SIGKILL"); } catch {}
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("persistent startup failures discard sensitive stdout and preserve cancellation", async () => {
@@ -344,8 +362,7 @@ test("worker process terminates captured output that exceeds the caller limit", 
 });
 
 test("worker process samples worker and command memory", async () => {
-  const baselineBytes = process.memoryUsage().rss;
-  const samples: number[] = [];
+  const commandBytes: number[] = [];
 
   await createWorkerProcessModule({ killGraceMs: 20 }).execute({
     command: process.execPath,
@@ -355,11 +372,13 @@ test("worker process samples worker and command memory", async () => {
     ],
     signal: new AbortController().signal,
     deadlineMs: 2_000,
-    recordResourceSample: (rssBytes) => samples.push(rssBytes),
+    // The worker may release memory while the command runs. Compare each
+    // sample with its current RSS, not a baseline from before that release.
+    recordResourceSample: (rssBytes) => commandBytes.push(rssBytes - process.memoryUsage().rss),
   });
 
-  expect(samples.length).toBeGreaterThan(0);
-  expect(Math.max(...samples)).toBeGreaterThan(baselineBytes + 32 * 1024 * 1024);
+  expect(commandBytes.length).toBeGreaterThan(0);
+  expect(Math.max(...commandBytes)).toBeGreaterThan(32 * 1024 * 1024);
 });
 
 test("worker process times out and escalates from TERM to KILL", async () => {
