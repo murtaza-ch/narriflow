@@ -5,7 +5,7 @@ import {
   CLIP_AUTO_LAYOUT_VERSION,
   CLIP_SPLIT_LAYOUT_MAX_SEGMENTS,
   DUCKING_DEFAULTS,
-  buildEditedTimeMap,
+  buildClipCutPlan,
   capDuckingWindows,
   clipAutoLayoutMatchesInputs,
   computeSpeechWindows,
@@ -30,6 +30,7 @@ import {
   type ClipAutoLayoutSubject,
   type ClipSplitLayoutSegment,
   type EditorDocument,
+  type EditedTimeMap,
   type SceneBlock,
   type SceneContent,
   type EffectiveLogoSettings,
@@ -770,10 +771,11 @@ function buildAudioSchedule(
     musicSettings.fadeOutSec,
     editedDurationSec,
   );
-  const editedTimeMap = buildEditedTimeMap(input.document.deletedRanges, {
+  const editedTimeMap = buildClipCutPlan(input.document.deletedRanges, {
     startSec: input.document.clipStartSec,
     endSec: input.document.clipEndSec,
-  });
+  }).map;
+  const insertionAnchors = insertedBaseAnchors(input.document.sceneBlocks);
   const duckingWindows = musicSettings.ducking
     ? capDuckingWindows(
         computeSpeechWindows(
@@ -781,6 +783,9 @@ function buildAudioSchedule(
             input.document.transcriptSlice,
             input.document.clipStartSec,
             editedTimeMap,
+          ).flatMap((range) =>
+            sourceRangeSlicesForInsertions(range, insertionAnchors)
+              .map((slice) => slice.outputRange),
           ),
           editedDurationSec,
         ),
@@ -2246,6 +2251,34 @@ function insertedBaseAnchors(blocks: readonly SceneBlock[]) {
     });
 }
 
+/** One retained source interval can straddle a Scene Block. Each slice keeps
+ * its source range and one constant offset onto the final composition clock. */
+function sourceRangeSlicesForInsertions(
+  range: CompositionActiveRange,
+  anchors: ReturnType<typeof insertedBaseAnchors>,
+) {
+  const boundaries = [
+    range.startSec,
+    ...anchors
+      .map(({ baseAnchorSec }) => baseAnchorSec)
+      .filter((anchor) => anchor > range.startSec && anchor < range.endSec),
+    range.endSec,
+  ];
+  return boundaries.slice(0, -1).flatMap((startSec, index) => {
+    const endSec = boundaries[index + 1]!;
+    if (endSec <= startSec) return [];
+    const shiftSec = anchors
+      .filter(({ baseAnchorSec }) => baseAnchorSec <= startSec)
+      .reduce((sum, { block }) => sum + block.durationSec, 0);
+    return [{
+      startSec,
+      endSec,
+      shiftSec,
+      outputRange: { startSec: startSec + shiftSec, endSec: endSec + shiftSec },
+    }];
+  });
+}
+
 function retimeVisualLayersForInsertedScenes(
   layers: readonly CompositionVisualLayer[],
   blocks: readonly SceneBlock[],
@@ -2253,9 +2286,6 @@ function retimeVisualLayersForInsertedScenes(
 ): CompositionVisualLayer[] {
   if (blocks.length === 0) return [...layers];
   const anchors = insertedBaseAnchors(blocks);
-  const shift = (timeSec: number) => anchors
-    .filter(({ baseAnchorSec }) => baseAnchorSec <= timeSec)
-    .reduce((sum, { block }) => sum + block.durationSec, 0);
   return layers.flatMap((layer) => {
     if (layer.kind === "logo" || layer.kind === "output-treatment") {
       return [{ ...layer, activeRange: { startSec: 0, endSec: totalDurationSec } }];
@@ -2280,21 +2310,9 @@ function retimeVisualLayersForInsertedScenes(
         }),
       }];
     }
-    const boundaries = [
-      layer.activeRange.startSec,
-      ...anchors
-        .map(({ baseAnchorSec }) => baseAnchorSec)
-        .filter((anchor) => anchor > layer.activeRange.startSec && anchor < layer.activeRange.endSec),
-      layer.activeRange.endSec,
-    ];
     const slices: CompositionVisualLayer[] = [];
-    boundaries.slice(0, -1).forEach((startSec, index) => {
-      const endSec = boundaries[index + 1]!;
-      const outputRange = {
-        startSec: startSec + shift(startSec),
-        endSec: endSec + shift(Math.max(startSec, endSec - 0.000_001)),
-      };
-      if (outputRange.endSec <= outputRange.startSec) return;
+    sourceRangeSlicesForInsertions(layer.activeRange, anchors).forEach((slice, index) => {
+      const { startSec, endSec, shiftSec, outputRange } = slice;
       if (layer.kind === "caption") {
         // A word spanning an inserted scene belongs to each slice only for its
         // own part, so neither slice shows it across the scene.
@@ -2305,8 +2323,8 @@ function retimeVisualLayersForInsertedScenes(
             const wordEnd = Math.min(word.endSec, endSec);
             return {
               ...word,
-              startSec: wordStart + shift(wordStart),
-              endSec: wordEnd + shift(Math.max(wordStart, wordEnd - 0.000_001)),
+              startSec: wordStart + shiftSec,
+              endSec: wordEnd + shiftSec,
             };
           });
         if (words.length === 0) return;
@@ -2335,10 +2353,10 @@ export function deriveCaptionCues(
   document: EditorDocument,
   options: { readonly ignoreVisibility?: boolean } = {},
 ): CaptionCue[] {
-  const editedTimeMap = buildEditedTimeMap(document.deletedRanges, {
+  const editedTimeMap = buildClipCutPlan(document.deletedRanges, {
     startSec: document.clipStartSec,
     endSec: document.clipEndSec,
-  });
+  }).map;
   const cueDocument = options.ignoreVisibility
     ? { ...document, captionPreset: { ...document.captionPreset, visible: true } }
     : document;
@@ -2377,7 +2395,7 @@ export function captionCueVisibleRange(layer: CompositionCaptionVisualLayer, tot
 function captionLayersForTarget(input: {
   document: EditorDocument;
   target: CompositionTarget;
-  editedTimeMap: ReturnType<typeof buildEditedTimeMap>;
+  editedTimeMap: EditedTimeMap;
 }): CompositionCaptionVisualLayer[] {
   const { document, target, editedTimeMap } = input;
   const preset = document.captionPreset;
@@ -2502,7 +2520,7 @@ function visualLayersForTarget(input: {
   document: EditorDocument;
   target: CompositionTarget;
   scenes: readonly CompositionScene[];
-  editedTimeMap: ReturnType<typeof buildEditedTimeMap>;
+  editedTimeMap: EditedTimeMap;
   logo: CompositionLogoAvailability | undefined;
 }): CompositionVisualLayer[] {
   const { document, target, editedTimeMap, logo } = input;
@@ -2716,10 +2734,10 @@ export function planClipComposition(
     }
   }
 
-  const editedTimeMap = buildEditedTimeMap(input.document.deletedRanges, {
+  const editedTimeMap = buildClipCutPlan(input.document.deletedRanges, {
     startSec: input.document.clipStartSec,
     endSec: input.document.clipEndSec,
-  });
+  }).map;
   if (editedTimeMap.editedDurationSec <= 0) {
     return { status: "invalid", error: { code: "empty_edited_timeline" } };
   }

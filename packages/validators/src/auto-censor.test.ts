@@ -7,6 +7,20 @@ import {
 } from "./auto-censor";
 
 describe("detectAutoCensorSuggestions", () => {
+  test("does not suggest censoring speech in a discarded edit fragment", () => {
+    const suggestions = detectAutoCensorSuggestions({
+      documentRevision: 0, locale: "en", clipWindow: { startSec: 0, endSec: 3.2 },
+      deletedRanges: [{ startSec: 0.05, endSec: 0.3 }],
+      transcript: [{
+        index: 0, speakerLabel: "Speaker 1", startSec: 0, endSec: 0.04,
+        text: "fuck", confidence: 1,
+        words: [{ word: "fuck", startSec: 0, endSec: 0.04, confidence: 1 }],
+      }],
+      brandTerms: [], projectTerms: [], defaultTreatment: "mute", paddingSec: 0,
+    });
+    expect(suggestions).toEqual([]);
+  });
+
   test("finds a built-in term without mutating the corrected transcript", () => {
     const transcript = [
       {

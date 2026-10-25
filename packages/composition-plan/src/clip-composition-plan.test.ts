@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildClipCutPlan,
   autoCensorWordId,
   captionPresetSchema,
   CLIP_TRANSITION_TYPES,
@@ -10,6 +11,7 @@ import {
 } from "@narriflow/validators";
 import {
   automaticLayoutInputFingerprint,
+  deriveCaptionCues,
   interpolateCompositionCropTrack,
   CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
   planClipComposition,
@@ -53,6 +55,78 @@ function fitDocument() {
 }
 
 describe("Clip Composition Plan", () => {
+  test.each([
+    { name: "after", wordStart: 2, wordEnd: 2.5, expected: [{ startSec: 2.88, endSec: 3.62 }] },
+    { name: "across", wordStart: 0.8, wordEnd: 1.2, expected: [{ startSec: 0.68, endSec: 1.12 }, { startSec: 1.88, endSec: 2.32 }] },
+  ])("music ducking follows speech $name an inserted scene", ({ wordStart, wordEnd, expected }) => {
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(), clipStartSec: 0, clipEndSec: 4, deletedRanges: [],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        music: { url: "https://example.com/music.mp3", ducking: true },
+      }),
+      transcriptSlice: [{
+        index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: wordStart, endSec: wordEnd,
+        text: "Speech", confidence: 1,
+        words: [{ word: "Speech", startSec: wordStart, endSec: wordEnd, confidence: 1 }],
+      }],
+      sceneBlocks: [{
+        schemaVersion: 1, id: "8ab9d330-688f-4574-932c-27ac661245c1",
+        anchorSec: 1, durationSec: 1, content: { kind: "color", color: "#000000" },
+        motion: { entrance: "none", exit: "none" }, templateSnapshot: null,
+      }],
+    });
+    const result = planClipComposition({
+      document,
+      source: { identity: "source:inserted-audio", kind: "video", width: 320, height: 180 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" }, music: { state: "available", ref: "music:bed" } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const windows = result.plan.audioSchedule.music!.ducking.windows;
+    expect(windows).toHaveLength(expected.length);
+    expected.forEach((range, index) => {
+      expect(windows[index]!.startSec).toBeCloseTo(range.startSec, 8);
+      expect(windows[index]!.endSec).toBeCloseTo(range.endSec, 8);
+    });
+  });
+
+  test("dropped edit slivers share the render duration and caption clock", () => {
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      clipStartSec: 0,
+      clipEndSec: 3.2,
+      deletedRanges: [{ startSec: 0.05, endSec: 0.3 }],
+      transcriptSlice: [{
+        index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: 0, endSec: 0.6,
+        text: "Dropped Kept", confidence: 1,
+        words: [
+          { word: "Dropped", startSec: 0, endSec: 0.04, confidence: 1 },
+          { word: "Kept", startSec: 0.4, endSec: 0.6, confidence: 1 },
+        ],
+      }],
+    });
+    const result = planClipComposition({
+      document,
+      source: { identity: "source:sliver", kind: "video", width: 320, height: 180 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const cutPlan = buildClipCutPlan(document.deletedRanges, { startSec: 0, endSec: 3.2 });
+    expect(cutPlan.droppedSliverCount).toBe(1);
+    expect(result.plan.editedDurationSec).toBe(cutPlan.editedDurationSec);
+    expect(result.plan.targets[0]!.scenes.at(-1)!.endSec).toBe(2.9);
+    expect(deriveCaptionCues(document)).toEqual([{ startSec: 0.1, endSec: 0.3, text: "KEPT" }]);
+    const captions = result.plan.targets[0]!.visualLayers.filter((layer) => layer.kind === "caption");
+    expect(captions.flatMap((layer) => layer.words.map((word) => word.text))).toEqual(["KEPT"]);
+    expect(captions[0]!.words[0]!.startSec).toBe(0.1);
+  });
+
   test("resolves every clip transition into canonical target motion", () => {
     for (const type of CLIP_TRANSITION_TYPES) {
       const document = editorDocumentSchema.parse({

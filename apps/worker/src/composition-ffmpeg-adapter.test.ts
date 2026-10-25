@@ -67,6 +67,73 @@ function planCenter() {
 	return result.plan;
 }
 
+test("encoded music ducks at the speech's final time after a Scene Block", async () => {
+  await productionWorkerProcessModule.withScratchDirectory("narriflow-duck-clock-", async (directory) => {
+    const signal = new AbortController().signal;
+    const execute = (args: string[]) => productionWorkerProcessModule.execute({
+      command: "ffmpeg", args: ["-hide_banner", "-loglevel", "error", "-y", ...args],
+      signal, deadlineMs: 10_000, captureStdout: true,
+    });
+    const sourcePath = join(directory, "source.mp4");
+    const musicPath = join(directory, "music.wav");
+    const outputPath = join(directory, "output.mp4");
+    await execute([
+      "-f", "lavfi", "-i", "color=blue:s=90x160:r=30:d=4",
+      "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=4",
+      "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", sourcePath,
+    ]);
+    await execute(["-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=6", musicPath]);
+    const result = planClipComposition({
+      document: editorDocumentSchema.parse({
+        version: 1, clipStartSec: 0, clipEndSec: 4,
+        captionPreset: captionPresetSchema.parse({ visible: false }),
+        transcriptSlice: [{
+          index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: 2, endSec: 2.5,
+          text: "Speech", confidence: 1,
+          words: [{ word: "Speech", startSec: 2, endSec: 2.5, confidence: 1 }],
+        }],
+        studioEdits: studioEditsSchema.parse({
+          framing: { mode: "center" },
+          music: { url: "https://example.com/music.wav", volume: 100, ducking: true, fadeInSec: 0, fadeOutSec: 0 },
+        }),
+        brollUrl: null, deletedRanges: [],
+        sceneBlocks: [{
+          schemaVersion: 1, id: "8ab9d330-688f-4574-932c-27ac661245c1",
+          anchorSec: 1, durationSec: 1, content: { kind: "color", color: "#000000" },
+          motion: { entrance: "none", exit: "none" }, templateSnapshot: null,
+        }],
+      }),
+      source: { identity: "source:audio-clock", kind: "video", width: 90, height: 160 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" }, music: { state: "available", ref: "music:bed", durationSec: 6 } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const source = await productionWorkerProcessModule.inspectMedia({ sourcePath, signal, deadlineMs: 5000 });
+    await execute(compileClipCompositionCommand({
+      sourcePath, outputPath, startSec: 0, endSec: 4, source, plan: result.plan, targetId: "vertical",
+      audio: bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), { music: { sourceRef: "music:bed", path: musicPath } }),
+      encoder: { preset: "ultrafast", crf: "18" }, assets: { subtitlePath: null },
+    }));
+    const decoded = await execute(["-i", outputPath, "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1"]);
+    const samples = new DataView(decoded.stdout.buffer, decoded.stdout.byteOffset, decoded.stdout.byteLength);
+    expect(samples.byteLength / 4 / 48000).toBeGreaterThan(4.9);
+    const rms = (startSec: number, endSec: number) => {
+      const start = Math.floor(startSec * 48000);
+      const end = Math.floor(endSec * 48000);
+      let squareSum = 0;
+      for (let sample = start; sample < end; sample++) squareSum += samples.getFloat32(sample * 4, true) ** 2;
+      return Math.sqrt(squareSum / (end - start));
+    };
+    const beforeSpeech = rms(2.1, 2.3);
+    const duringSpeech = rms(3.1, 3.3);
+    expect(beforeSpeech).toBeGreaterThan(0.02);
+    expect(duringSpeech).toBeGreaterThan(0.001);
+    expect(duringSpeech).toBeLessThan(beforeSpeech * 0.5);
+  });
+}, 30_000);
+
 const realMediaDirectories: string[] = [];
 afterEach(async () =>
 	Promise.all(

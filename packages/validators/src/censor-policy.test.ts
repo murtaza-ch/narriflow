@@ -23,6 +23,23 @@ describe("maskCensoredCaptionWord", () => {
 });
 
 describe("normalizeCensorAudioSchedule", () => {
+  test("discarded fragments cannot shift mute intervals or retain removed speech", () => {
+    const schedule = normalizeCensorAudioSchedule({
+      clipWindow: { startSec: 0, endSec: 3.2 },
+      deletedRanges: [{ startSec: 0.05, endSec: 0.3 }],
+      segments: [
+        { startSec: 0, endSec: 0.04 },
+        { startSec: 0.4, endSec: 0.6 },
+      ].map((range, index) => ({
+        schemaVersion: 1, id: `segment-${index}`, sourceWordIds: [`word:${index}`],
+        sourceStartSec: range.startSec, sourceEndSec: range.endSec,
+        treatment: "mute", paddingSec: 0, beepSettings: null, captionMaskPolicy: null,
+        suggestionFingerprint: "a".repeat(64), policyVersion: "auto-censor-v1", enabled: true,
+      })),
+    });
+    expect(schedule).toEqual([{ startSec: 0.1, endSec: 0.3, treatment: "mute" }]);
+  });
+
   test("maps source intervals through cuts, clamps exact-end padding, and gives mute precedence", () => {
     const segment = (
       id: string,

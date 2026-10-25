@@ -105,3 +105,15 @@ Final verification for this follow-up: `bun run lint` passed with the same 13 ex
 ## Migration and rollout
 
 On October 26, the user authorized applying the migration, committing, and pushing to `dev`. The local environment check confirmed that the web, worker, and Prisma connections select the shared development resources. Prisma reported this as the only pending migration and applied it successfully to `neondb` on `deployed-dev`. Ten clips had cached Automatic evidence before the refresh. Pushing this change to `dev` triggers the configured worker and web deployments. The Railway connector and CLI require renewed account access; GitHub's commit status remains available to verify the worker rollout.
+
+Both deployments for `2f62f610` succeeded. After the worker rollout, all ten cached analyses were refreshed again and completed with timestamps after deployment. No earlier cached analysis remained, and the refreshed geometry used the new 2.5 zoom limit.
+
+## Additional edit-timing review
+
+A 50ms fragment exposed another clock mismatch. The renderer and Studio playback discard kept fragments below 100ms, while composition planning, caption derivation, censoring, overlay rebasing, and export-duration calculation still used the raw map. For a 3.2-second source with a deletion from 0.05 to 0.30 seconds, those paths planned 2.95 seconds while rendering retained 2.90 seconds. Captions and text overlays after the cut were 50ms late; mute intervals also shifted, and censor suggestions could include discarded speech. Scene Blocks could be accepted beyond the retained footage. These consumers now use the shared retained-source map. A seventh native-frame render scenario covers this discarded-fragment case.
+
+Music ducking also used speech times before Scene Block insertion. A one-second insertion therefore attenuated music one second before the source speech. Speech intervals now use the same insertion slices as captions and overlays before padding and merging ducking windows. Tests cover speech after and across an insertion. An actual encoded-audio test confirms that music remains louder before speech and falls below half that level during the correctly shifted speech interval.
+
+These changes require no schema migration or layout-evidence reset; the evidence already uses the retained-source map. Existing encoded exports need rendering again to receive the corrected caption, overlay, and audio timing.
+
+Verification passed: lint with the same 13 existing warnings and one informational diagnostic, all 13 type-check tasks, all eight fast-test tasks including 707 worker tests, and the disposable-schema persistence gate with 25 document-persistence tests plus seven duplication tests. The database gate completed its schema cleanup.

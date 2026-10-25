@@ -1,5 +1,5 @@
 import {
-  buildEditedTimeMap,
+  buildClipCutPlan,
   sourceRangeToEdited,
   type ClipWindow,
   type EditedTimeMap,
@@ -281,7 +281,7 @@ function sameCensorIntervalPolicy(
 export function normalizeCensorAudioSchedule(
   input: NormalizeCensorAudioScheduleInput,
 ): CensorAudioInterval[] {
-  const editedTimeMap = buildEditedTimeMap([...input.deletedRanges], input.clipWindow);
+  const editedTimeMap = buildClipCutPlan([...input.deletedRanges], input.clipWindow).map;
   const prepared = input.segments.flatMap((segment) => {
     if (!segment.enabled || segment.treatment === "caption_mask") return [];
     const sourceRange = {
@@ -399,7 +399,7 @@ export function detectAutoCensorSuggestions(
   input: DetectAutoCensorSuggestionsInput,
 ): AutoCensorSuggestion[] {
   const locale = normalizeLocaleTag(input.locale);
-  const editedTimeMap = buildEditedTimeMap([...(input.deletedRanges ?? [])], input.clipWindow);
+  const editedTimeMap = buildClipCutPlan([...(input.deletedRanges ?? [])], input.clipWindow).map;
   const words = input.transcript.flatMap((utterance) =>
     utterance.words.flatMap((word, wordIndex) => {
       const removed = word.startSec !== null && word.endSec !== null &&

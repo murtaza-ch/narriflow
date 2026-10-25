@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { captionPresetsEqual, captionPresetSchema } from "./caption-preset";
 import {
-  buildEditedTimeMap,
+  buildClipCutPlan,
   deletedRangesSchema,
   editedToSource,
   isSourceTimeDeleted,
@@ -83,10 +83,10 @@ export const editorDocumentSchema = z
 
     const blocks = sortSceneBlocks(doc.sceneBlocks);
     let insertedBeforeSec = 0;
-    const editedTimeMap = buildEditedTimeMap(doc.deletedRanges, {
+    const editedTimeMap = buildClipCutPlan(doc.deletedRanges, {
       startSec: doc.clipStartSec,
       endSec: doc.clipEndSec,
-    });
+    }).map;
     const sourceDurationSec = editedTimeMap.editedDurationSec;
     doc.studioEdits.sceneLayouts.forEach((selection, index) => {
       if (selection.endSec > sourceDurationSec + 0.001) {
@@ -560,8 +560,8 @@ function rebaseStudioEdits(
   newWindow: ClipWindow,
   newDeletedRanges: SourceRange[],
 ) {
-  const oldMap = buildEditedTimeMap(oldDeletedRanges, oldWindow);
-  const newMap = buildEditedTimeMap(newDeletedRanges, newWindow);
+  const oldMap = buildClipCutPlan(oldDeletedRanges, oldWindow).map;
+  const newMap = buildClipCutPlan(newDeletedRanges, newWindow).map;
   const textLayers = rebaseTextLayers(doc.studioEdits.textLayers, oldMap, newMap);
   const sfx = rebaseSfxPlacements(doc.studioEdits.sfx, oldMap, newMap);
   const speakerLayoutOverrides = rebaseSpeakerLayoutOverrides(
@@ -955,7 +955,7 @@ export function clipExportDurationSec(clip: {
 }): number {
   const ranges = deletedRangesSchema.safeParse(clip.deletedRanges ?? []);
   const scenes = z.array(sceneBlockSchema).safeParse(clip.sceneBlocks ?? []);
-  const sourceDurationSec = buildEditedTimeMap(ranges.success ? ranges.data : [], {
+  const sourceDurationSec = buildClipCutPlan(ranges.success ? ranges.data : [], {
     startSec: clip.startSec,
     endSec: clip.endSec,
   }).editedDurationSec;

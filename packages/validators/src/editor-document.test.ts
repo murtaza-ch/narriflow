@@ -8,6 +8,7 @@ import {
   canRedo,
   canUndo,
   createEditorHistory,
+  clipExportDurationSec,
   deletedRangesEqual,
   editorDocumentSchema,
   editorDocumentsEqual,
@@ -60,6 +61,40 @@ function makeDocument(): EditorDocument {
     deletedRanges: [],
   });
 }
+
+describe("renderable edited timing", () => {
+  test("export duration excludes a discarded 50ms fragment", () => {
+    expect(clipExportDurationSec({
+      startSec: 0, endSec: 3.2,
+      deletedRanges: [{ startSec: 0.05, endSec: 0.3 }],
+      sceneBlocks: [],
+    })).toBe(2.9);
+  });
+
+  test("deleting footage rebases overlays past a discarded fragment", () => {
+    const document = editorDocumentSchema.parse({
+      ...makeDocumentWithTextLayer(0.4, 1.4),
+      clipStartSec: 0, clipEndSec: 3.2, transcriptSlice: [],
+    });
+    const next = applyEditorAction(document, {
+      type: "deleteRange", range: { startSec: 0.05, endSec: 0.3 },
+    });
+    expect(next.studioEdits.textLayers[0]).toMatchObject({ startSec: 0.1, endSec: 1.1 });
+  });
+
+  test("a Scene Block cannot be anchored past the retained footage", () => {
+    const parsed = editorDocumentSchema.safeParse({
+      ...makeDocument(), clipStartSec: 0, clipEndSec: 3.2, transcriptSlice: [],
+      deletedRanges: [{ startSec: 0.05, endSec: 0.3 }],
+      sceneBlocks: [{
+        schemaVersion: 1, id: "8ab9d330-688f-4574-932c-27ac661245c1",
+        anchorSec: 2.925, durationSec: 1, content: { kind: "color", color: "#000000" },
+        motion: { entrance: "none", exit: "none" }, templateSnapshot: null,
+      }],
+    });
+    expect(parsed.success).toBe(false);
+  });
+});
 
 function makeDocumentWithTextLayer(
   startSec: number,

@@ -30,6 +30,7 @@ test.each([
 	"deleted-start",
 	"repeated-deletions",
 	"combined",
+	"sliver",
 ] as const)("native camera cuts and layout switches share every frame with %s footage and a retimed proxy", async (variant) => {
 	await worker.withScratchDirectory(
 		"narriflow-camera-clock-",
@@ -53,16 +54,18 @@ test.each([
 			const cameraFrames = [73, 149];
 			const cuts = cameraFrames.map((frame) => (frame - firstFrame) * frameSec);
 			const deletedRanges =
-				variant === "deleted-start"
-					? [{ startSec, endSec: startSec + 0.3 }]
-					: ["deleted", "repeated-deletions", "combined"].includes(variant)
-						? [
-								{ startSec: startSec + 0.3, endSec: startSec + 0.6 },
-								...(variant === "repeated-deletions"
-									? [{ startSec: startSec + 1.8, endSec: startSec + 2.1 }]
-									: []),
-							]
-						: [];
+				variant === "sliver"
+					? [{ startSec: startSec + 0.05, endSec: startSec + 0.3 }]
+					: variant === "deleted-start"
+						? [{ startSec, endSec: startSec + 0.3 }]
+						: ["deleted", "repeated-deletions", "combined"].includes(variant)
+							? [
+									{ startSec: startSec + 0.3, endSec: startSec + 0.6 },
+									...(variant === "repeated-deletions"
+										? [{ startSec: startSec + 1.8, endSec: startSec + 2.1 }]
+										: []),
+								]
+							: [];
 			const insertedFrames =
 				variant === "inserted" || variant === "combined" ? 60 : 0;
 			const insertionFrame = 60;
@@ -225,6 +228,14 @@ test.each([
 				],
 			});
 			if (result.status === "invalid") throw new Error(result.error.code);
+			const cutPlan = buildClipCutPlan(deletedRanges, {
+				startSec,
+				endSec: startSec + durationSec,
+			});
+			expect(result.plan.editedDurationSec).toBeCloseTo(
+				cutPlan.editedDurationSec + insertedFrames * frameSec,
+				6,
+			);
 			const source = await worker.inspectMedia({
 				sourcePath,
 				signal,
@@ -239,10 +250,7 @@ test.each([
 					source,
 					plan: result.plan,
 					targetId: "vertical",
-					cutPlan: buildClipCutPlan(deletedRanges, {
-						startSec,
-						endSec: startSec + durationSec,
-					}),
+					cutPlan,
 					audio: bindCompositionPlanAudioInputs(
 						compileCompositionPlanAudioSchedule(result.plan),
 						{},
@@ -271,6 +279,7 @@ test.each([
 				(_, index) => index,
 			).filter(
 				(index) =>
+					!(variant === "sliver" && index < 3) &&
 					!deletedRanges.some(
 						(range) =>
 							index * frameSec >= range.startSec - startSec &&
