@@ -451,15 +451,15 @@ describe("upload source pinning and usage facts", () => {
       usage: {
         resize: async () => {
           throw new ProcessingUsageError({
-            code: "processing_quota_exhausted",
-            message: "No minutes left",
-            details: { tier: "free", limitMinutes: 60, remainingMinutes: 5, requestedMinutes: 120 },
+            code: "credits_exhausted",
+            message: "No credits left",
+            details: { tier: "free", limitCredits: 60, remainingCredits: 5, requestedCredits: 120, renewsAt: "2026-11-01T00:00:00.000Z" },
           });
         },
       },
       putSource: async () => {},
     });
-    expect(settled).toEqual(["processing_quota_exhausted"]);
+    expect(settled).toEqual(["credits_exhausted"]);
     expect(commands).toHaveLength(1);
     expect(commands[0]).toContain("--skip-download");
   });

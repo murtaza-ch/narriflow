@@ -18,6 +18,8 @@ import {
   type ClipEditorDocumentStoredState,
 } from "./clip-editor-document-persistence";
 
+const BUSINESS = { pricingTier: "business" };
+
 function utterance(text: string, startSec = 10): TranscriptUtterance {
   const words = text.split(" ");
   return {
@@ -85,7 +87,7 @@ function actorScope(state: ClipEditorDocumentStoredState) {
 
 function setup(state = stored()) {
   const store = createInMemoryClipEditorDocumentStore([state]);
-  const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
+  const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
   const scope = {
     ...actorScope(state),
     projectId: state.projectId,
@@ -101,7 +103,7 @@ describe("Clip Editor Document Persistence", () => {
     const admissions: unknown[] = [];
     const persistence = createClipEditorDocumentPersistence({
       store,
-      authorize: async (scope, capability) => { admissions.push({ scope, capability }); },
+      authorize: async (scope, capability) => { admissions.push({ scope, capability }); return BUSINESS; },
     });
     const scope = { actorUserId: "editor-member", workspaceId: state.workspaceId, projectId: state.projectId, clipId: state.clipId };
     const current = await persistence.readDocument(scope);
@@ -116,7 +118,7 @@ describe("Clip Editor Document Persistence", () => {
     let reads = 0;
     const persistence = createClipEditorDocumentPersistence({
       store: { ...store, read: async (scope) => { reads += 1; return store.read(scope); } },
-      authorize: async (scope) => { if (scope.actorUserId === "denied") throw new Error("workspace_access_denied"); },
+      authorize: async (scope) => { if (scope.actorUserId === "denied") throw new Error("workspace_access_denied"); return BUSINESS; },
     });
     const scope = { actorUserId: "denied", workspaceId: state.workspaceId, projectId: state.projectId, clipId: state.clipId };
     await expect(persistence.readDocument(scope)).rejects.toThrow("workspace_access_denied");
@@ -472,7 +474,7 @@ describe("Clip Editor Document Persistence", () => {
     });
     const changed = stored({ clipId: "clip-changed", document: changedDocument });
     const store = createInMemoryClipEditorDocumentStore([open, matching, changed]);
-    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
 
     const result = await persistence.mutateProjectSelection({
       ...actorScope(open),
@@ -534,7 +536,7 @@ describe("Clip Editor Document Persistence", () => {
     });
     const changed = stored({ clipId: "clip-changed" });
     const store = createInMemoryClipEditorDocumentStore([matching, changed]);
-    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
 
     await expect(
       persistence.mutateProjectSelection({
@@ -553,7 +555,7 @@ describe("Clip Editor Document Persistence", () => {
   test("project selection rejects a mismatched Workspace", async () => {
     const state = stored();
     const store = createInMemoryClipEditorDocumentStore([state]);
-    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
 
     await expect(
       persistence.mutateProjectSelection({
@@ -580,7 +582,7 @@ describe("Clip Editor Document Persistence", () => {
       studioEdits: { textLayers: "bad" },
     } as never;
     const store = createInMemoryClipEditorDocumentStore([valid, malformed]);
-    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
     const before = store.inspect(valid.clipId);
 
     await expect(
@@ -601,7 +603,7 @@ describe("Clip Editor Document Persistence", () => {
     const second = stored({ clipId: "clip-second" });
     const store = createInMemoryClipEditorDocumentStore([first, second]);
     store.forceContention(3);
-    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {}, store });
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store });
 
     await expect(
       persistence.mutateProjectSelection({
@@ -827,9 +829,9 @@ describe("Clip Editor Document Persistence", () => {
   test("a no-op field intent rebases when a full save wins before acknowledgement", async () => {
     const seed = stored();
     const backing = createInMemoryClipEditorDocumentStore([seed]);
-    const competing = createClipEditorDocumentPersistence({ authorize: async () => {}, store: backing });
+    const competing = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store: backing });
     let raced = false;
-    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {},
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS,
       store: {
         read: (scope) => backing.read(scope),
         commit: (input) => backing.commit(input),
@@ -868,9 +870,9 @@ describe("Clip Editor Document Persistence", () => {
   test("Reset without an original conflicts when a first save wins before acknowledgement", async () => {
     const seed = stored();
     const backing = createInMemoryClipEditorDocumentStore([seed]);
-    const competing = createClipEditorDocumentPersistence({ authorize: async () => {}, store: backing });
+    const competing = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS, store: backing });
     let raced = false;
-    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {},
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS,
       store: {
         read: (scope) => backing.read(scope),
         commit: (input) => backing.commit(input),
@@ -969,7 +971,7 @@ describe("Clip Editor Document Persistence", () => {
   test("injected commit failure leaves the complete stored state untouched", async () => {
     const seed = stored();
     const backing = createInMemoryClipEditorDocumentStore([seed]);
-    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {},
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS,
       store: {
         read: (scope) => backing.read(scope),
         confirmRevision: (scope, revision) => backing.confirmRevision(scope, revision),
@@ -998,7 +1000,7 @@ describe("Clip Editor Document Persistence", () => {
     const seed = stored();
     const store = createInMemoryClipEditorDocumentStore([seed]);
     const events: Array<Parameters<ClipEditorDocumentDiagnostics["record"]>[0]> = [];
-    const persistence = createClipEditorDocumentPersistence({ authorize: async () => {},
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => BUSINESS,
       store,
       diagnostics: { record: (event) => events.push(event) },
       now: () => new Date("2026-08-29T00:00:00.000Z"),
@@ -1034,5 +1036,74 @@ describe("Clip Editor Document Persistence", () => {
     expect(serialized).not.toContain("private-object-key");
     expect(serialized).not.toContain("current.mp4");
     expect(serialized).not.toContain("captionPreset");
+  });
+});
+
+describe("Clip Editor Document plan deltas", () => {
+  const FREE = { pricingTier: "free" };
+  const scene = {
+    schemaVersion: 1 as const,
+    id: "10000000-0000-4000-8000-000000000001",
+    anchorSec: 0,
+    durationSec: 3,
+    content: { kind: "color" as const, color: "#1D4ED8" },
+    motion: { entrance: "none" as const, exit: "none" as const, durationSec: 0.5 },
+    templateSnapshot: null,
+  };
+  const fade = { type: "fade" as const, durationSec: 0.4 };
+
+  function freeSetup(state = stored()) {
+    const store = createInMemoryClipEditorDocumentStore([state]);
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => FREE, store });
+    return { store, persistence, scope: { ...actorScope(state), projectId: state.projectId, clipId: state.clipId } };
+  }
+
+  test("refuses motion on Free through a field patch, not only a full replace", async () => {
+    const { persistence, scope, store } = freeSetup();
+    const studioEdits = { ...document().studioEdits, transition: fade };
+    await expect(persistence.mutateDocument({ ...scope, intent: { kind: "set_studio_edits", studioEdits } }))
+      .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "editor.motion", requiredTier: "creator" } });
+    await expect(persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: 3, document: document({ studioEdits }) } }))
+      .rejects.toMatchObject({ code: "plan_feature_required" });
+    expect(store.inspect(scope.clipId)).toMatchObject({ writeCount: 0 });
+  });
+
+  test("refuses a bulk transition patch on Free before writing any clip", async () => {
+    const first = stored({ clipId: "clip-a" });
+    const second = stored({ clipId: "clip-b" });
+    const store = createInMemoryClipEditorDocumentStore([first, second]);
+    const persistence = createClipEditorDocumentPersistence({ authorize: async () => FREE, store });
+    await expect(persistence.mutateProjectSelection({
+      ...actorScope(first),
+      projectId: first.projectId,
+      intent: { kind: "patch_studio_edits", patches: [{ transition: fade }] },
+    })).rejects.toMatchObject({ code: "plan_feature_required" });
+    expect(store.inspect("clip-a")).toMatchObject({ writeCount: 0 });
+    expect(store.inspect("clip-b")).toMatchObject({ writeCount: 0 });
+  });
+
+  test("lets a downgraded Free workspace remove existing Scenes and motion, and refuses adding them back", async () => {
+    const paid = document({ sceneBlocks: [scene], studioEdits: { ...document().studioEdits, transition: fade } });
+    const { persistence, scope } = freeSetup(stored({ document: paid }));
+    const previous = process.env.NARRIFLOW_WRITES_SCENE_CARDS;
+    process.env.NARRIFLOW_WRITES_SCENE_CARDS = "1";
+    try {
+      const cleaned = await persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: 3, document: document() } });
+      expect(cleaned).toMatchObject({ revision: 4, noop: false });
+      expect(cleaned.document.sceneBlocks).toEqual([]);
+      await expect(persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: 4, document: document({ sceneBlocks: [scene] }) } }))
+        .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.scenes" } });
+    } finally {
+      if (previous === undefined) delete process.env.NARRIFLOW_WRITES_SCENE_CARDS;
+      else process.env.NARRIFLOW_WRITES_SCENE_CARDS = previous;
+    }
+  });
+
+  test("keeps unchanged paid content editable around on Free", async () => {
+    const paid = document({ studioEdits: { ...document().studioEdits, transition: fade } });
+    const { persistence, scope } = freeSetup(stored({ document: paid }));
+    const result = await persistence.mutateDocument({ ...scope, intent: { kind: "set_broll_url", brollUrl: "https://example.test/broll.mp4" } });
+    expect(result.noop).toBe(false);
+    expect(result.document.studioEdits.transition).toEqual(fade);
   });
 });

@@ -3,7 +3,7 @@ import { McpToolAdmission, MCP_WORKSPACE_ACCESS_MESSAGE, verifyMcpUploadHandoff 
 import { getCurrentAppUser } from "@narriflow/auth";
 import { getPrismaClient } from "@narriflow/db/client";
 import { boundedMcpRequest, mcpCorsResponse, rejectMcpOrigin } from "@narriflow/mcp-core/http";
-import { checkRateLimit, ExpectedDomainFailureError, hasFeature, integrationUploadSessionKey, integrationUploadSessions, uploadSessionService, workspaceService } from "@narriflow/services";
+import { checkRateLimit, ExpectedDomainFailureError, requirePlanFeature, integrationUploadSessionKey, integrationUploadSessions, uploadSessionService, workspaceService } from "@narriflow/services";
 import { authenticateMcpRequest, getMcpAllowedHosts, getMcpAllowedOrigins, getMcpAuthFailureResponse, getMcpMutationGuard } from "@/lib/mcp-auth";
 import { createMcpUploadHttpHandler } from "@/lib/mcp-upload-http";
 import { admitMcpContinuation } from "@/lib/mcp-continuation-principal";
@@ -19,9 +19,10 @@ const admission = new McpToolAdmission(workspaceService);
  * Workspace authority, never the assistant credential that opened it. */
 async function requireUploadOwnerActor(userId: string, workspaceId: string) {
   const actor = await workspaceService.requireActor(userId, workspaceId, "processing.consume");
-  if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) {
+  if (actor.status !== "active") {
     throw new ExpectedDomainFailureError({ code: "integration_access_unavailable", kind: "payment_required", message: MCP_WORKSPACE_ACCESS_MESSAGE });
   }
+  requirePlanFeature(actor.pricingTier, "integrations.mcp");
   return actor;
 }
 

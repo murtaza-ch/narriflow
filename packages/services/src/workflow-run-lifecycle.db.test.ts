@@ -1979,6 +1979,17 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         },
       }),
     ]);
+    // Each accepted dub holds its generation count before a worker runs it.
+    await prisma.generatedMediaUsageReservation.createMany({
+      data: [completedDub, failedDub].map((dub) => ({
+        jobId: dub.id,
+        kind: "dub" as const,
+        workspaceId: project.workspaceId,
+        policy: "metered",
+        periodStart: new Date(Date.UTC(2026, 9, 1)),
+        attachedAt: new Date(),
+      })),
+    });
     const lifecycle = new WorkflowRunLifecycle({
       prisma,
       leaseOwner: randomUUID(),
@@ -2023,6 +2034,9 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       workflowAttemptId: attempt.attemptId,
       errorCode: "dub_failed",
     });
+    expect(
+      await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: completedDub.id } }),
+    ).toMatchObject({ status: "finalized", actualUnits: 1 });
   });
 
   test("one of twenty racing workers owns a queued run", async () => {

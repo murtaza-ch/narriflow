@@ -24,7 +24,7 @@ import {
 	purgeExpiredWorkspaceEvents,
 	generatedMediaService,
 	purgeExpiredGeneratedMediaPrompts,
-	reconcileOrphanGeneratedMediaReservations,
+	reconcileGenerationUsageReservations,
 	getProcessingUsage,
 	thumbnailFramePreparationService,
 	uploadSessionService,
@@ -218,7 +218,8 @@ async function reapStalledRunsIfDue() {
 			);
 		}
 		await purgeExpiredGeneratedMediaPrompts();
-		await reconcileOrphanGeneratedMediaReservations();
+		// Settles image and dub counts whose request can no longer settle itself.
+		await reconcileGenerationUsageReservations();
 		// Releases processing reservations stranded by crashes; each release is
 		// logged with its reason by the Processing Usage module.
 		await getProcessingUsage().reconcileStranded({ limit: 100 });
@@ -245,18 +246,6 @@ async function reapStalledRunsIfDue() {
 					level: "info",
 					message: "review_rounds_expired",
 					count: expiredReviewRounds,
-					ts: new Date().toISOString(),
-				}),
-			);
-		}
-
-		const observeMetrics = await projectRetentionService.getObserveMetrics();
-		if (observeMetrics) {
-			console.warn(
-				JSON.stringify({
-					level: "info",
-					message: "project_retention_observe_metrics",
-					...observeMetrics,
 					ts: new Date().toISOString(),
 				}),
 			);

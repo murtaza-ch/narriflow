@@ -57,7 +57,7 @@ export default defineCreate({
   noun: 'Project',
   display: {
     label: 'Submit Video Link',
-    description: 'Imports a video from a link and generates clips. Uses processing minutes from the Workspace.',
+    description: 'Imports a video from a link and generates clips. Uses credits from the Workspace.',
   },
   operation: {
     inputFields,

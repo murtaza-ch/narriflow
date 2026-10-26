@@ -4,12 +4,12 @@ import { getPrismaClient } from "@narriflow/db/client";
 import {
   ALL_TEXT_OUTPUT_TYPES,
   contentSuiteLlmResponseSchemaForTypes,
-  resolvePricingTier,
   TEXT_OUTPUT_TYPE_LABELS,
   type ContentAsset,
   type TextOutputType,
 } from "@narriflow/validators";
 import { workspaceService } from "./workspace.service";
+import { requirePlanFeature } from "./plan-features";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -22,7 +22,6 @@ const contentSuiteFailureCatalog = {
   openai_bad_output: "unavailable",
   openai_not_configured: "unavailable",
   openai_request_failed: "unavailable",
-  requires_creator_plan: "payment_required",
   transcript_not_ready: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
@@ -35,7 +34,6 @@ const contentSuiteSafeMessages: Record<ContentSuiteFailureCode, string> = {
   openai_bad_output: "Content generation is temporarily unavailable",
   openai_not_configured: "Content generation is temporarily unavailable",
   openai_request_failed: "Content generation is temporarily unavailable",
-  requires_creator_plan: "Content generation is available on Creator and above",
   transcript_not_ready: "The transcript is not ready yet",
 };
 
@@ -240,12 +238,7 @@ export class ContentSuiteService {
     });
     if (!project) throw new ContentSuiteError("not_found");
 
-    const tier = resolvePricingTier(actor.pricingTier);
-    if (tier === "free") {
-      throw new ContentSuiteError(
-        "requires_creator_plan",
-      );
-    }
+    requirePlanFeature(actor.pricingTier, "content.repurposing");
 
     const transcript = project.transcript;
     if (!transcript || transcript.status !== "completed" || !transcript.text) {

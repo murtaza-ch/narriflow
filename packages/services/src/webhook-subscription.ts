@@ -25,6 +25,7 @@ import {
 } from "./completion-callback";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { IntegrationAdmissionError } from "./integration-admission";
+import { hasFeature } from "./plan-features";
 import type { HostResolver, PinnedTransport } from "./url-guard";
 import { listWorkspaceEvents } from "./workspace-event";
 
@@ -57,6 +58,8 @@ export const WEBHOOK_IDLE_POLL_MS = 5_000;
 const EVENTS_PER_CLAIM = 20;
 /** A skipped disabled-notice (emails off, no base URL) is tried again after this long. */
 const NOTICE_RETRY_MS = 5 * 60_000;
+/** A subscription whose Workspace's plan lacks API access is held and looked at again after this long. */
+export const WEBHOOK_PLAN_HOLD_MS = 15 * 60_000;
 
 /** What the endpoint receives. `webhook.test` has `seq` 0 and an empty subject. */
 export interface WebhookPayload {
@@ -280,6 +283,13 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
   const release = { leaseOwner: null, leaseExpiresAt: null };
   const leaseUntil = (at: Date) => new Date(at.getTime() + CALLBACK_LEASE_MS);
 
+  /** Webhooks go out under the same rule as API admission: an active Workspace
+   * whose plan includes API access. Read before a drain and before every POST. */
+  async function entitled(workspaceId: string) {
+    const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { status: true, pricingTier: true } });
+    return workspace?.status === "active" && hasFeature(workspace.pricingTier, "integrations.api");
+  }
+
   /** Takes the most overdue free subscription, or null when none is due. A
    * lane that loses a race tries the next candidate. */
   async function claimOne() {
@@ -314,6 +324,18 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
       });
       log({ level: "warn", message: "webhook_subscription_disabled", ...mark, reason, ...(updated.count === 0 ? { leaseLost: true } : {}) });
     };
+
+    /** Without API access (an inactive Workspace, or a plan without it), nothing is sent: the lease is released and the
+     * next look deferred, so a held row never crowds out the others. The cursor and
+     * failure count stay, and delivery resumes under the usual expiry rules. */
+    const hold = async () => {
+      await prisma.webhookSubscription.updateMany({ where: held, data: { ...release, nextAttemptAt: new Date(now().getTime() + WEBHOOK_PLAN_HOLD_MS) } });
+      log({ level: "info", message: "webhook_delivery_held", ...mark, reason: "integration_access_unavailable" });
+    };
+    if (!(await entitled(row.workspaceId))) {
+      await hold();
+      return 0;
+    }
 
     // Read the head before the events: everything at or below it is committed,
     // so an empty page proves nothing matching lies between the cursor and it.
@@ -352,6 +374,10 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
       if (performance.now() >= deadline) {
         // The tick is out of time: leave the rest due at once for the next one.
         await prisma.webhookSubscription.updateMany({ where: held, data: { ...release, nextAttemptAt: now() } });
+        return delivered;
+      }
+      if (!(await entitled(row.workspaceId))) {
+        await hold();
         return delivered;
       }
       // Still ours, still active, and this event not yet acknowledged? Renew

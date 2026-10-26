@@ -11,8 +11,9 @@ import { ProcessingUsageError } from "./processing-usage";
 import { pauseGrantsWhoseRuleChanged } from "./standing-grant";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { BrandProfileMembershipError, BrandProfileMissingAssetError, BrandProfileNotFoundError } from "./brand-profile.service";
-import { BrandAccessError } from "./brand-ownership";
+import { isBrandAccessRefusal } from "./brand-ownership";
 import { ProgramWriteDisabledError } from "./program-rollout";
+import { autopilotPlanPauseReason } from "./autopilot-plan";
 
 function db() { const prisma = getPrismaClient(); if (!prisma) throw new Error("Database client unavailable"); return prisma; }
 
@@ -188,9 +189,12 @@ export class ZoomService {
         continue;
       }
       const scope = { actorUserId: rule.createdByUserId ?? "", workspaceId: rule.workspaceId };
-      const pause = async (kind: "acting_member" | "zoom_connection" | "brand_profile", reason: string) => {
+      const pause = async (kind: "acting_member" | "zoom_connection" | "brand_profile" | "plan", reason: string) => {
         await prisma.autopilotRule.updateMany({ where: { id: rule.id, status: "active", updatedAt: rule.updatedAt }, data: { status: "paused", pauseKind: kind, lastError: reason, lastCheckedAt: this.now() } });
       };
+      // A rule the plan no longer runs pauses before importing anything; the notification is done with.
+      const planReason = await autopilotPlanPauseReason(prisma, rule);
+      if (planReason) { await pause("plan", planReason); continue; }
       try {
         if (!rule.createdByUserId) { await pause("acting_member", "The rule's acting member is unavailable. A Workspace Owner or Admin can take over."); deferred ??= new ZoomError("zoom_rule_changed"); continue; }
         await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
@@ -204,7 +208,7 @@ export class ZoomService {
           deferred ??= error;
         }
         else if (error instanceof ZoomError && error.code === "zoom_connection_unavailable") await pause("zoom_connection", error.message);
-        else if (error instanceof BrandProfileNotFoundError || error instanceof BrandProfileMissingAssetError || error instanceof BrandProfileMembershipError || error instanceof BrandAccessError || error instanceof ProgramWriteDisabledError) {
+        else if (error instanceof BrandProfileNotFoundError || error instanceof BrandProfileMissingAssetError || error instanceof BrandProfileMembershipError || isBrandAccessRefusal(error) || error instanceof ProgramWriteDisabledError) {
           await pause("brand_profile", "The Recipe's Brand Profile could not be applied. Fix the Brand Profile, then resume this rule.");
           deferred ??= error;
         }

@@ -6,8 +6,8 @@ import { FootageMark, RewindButton } from "./ending";
 import { Logo } from "./nav";
 
 /** The last call to action. Four variants are under review; see closing-variants.tsx. */
-export function Closing({ styles, freeMinutes }: { styles: Record<string, CaptionStyle>; freeMinutes: number }) {
-  return <ClosingVariants styles={styles} freeMinutes={freeMinutes} />;
+export function Closing({ styles, freeCredits }: { styles: Record<string, CaptionStyle>; freeCredits: number }) {
+  return <ClosingVariants styles={styles} freeCredits={freeCredits} />;
 }
 
 const FOOTER_LINKS = [
@@ -40,13 +40,13 @@ const FOOTER_LINKS = [
   },
 ];
 
-export function Footer({ freeMinutes }: { freeMinutes: number }) {
+export function Footer({ freeCredits }: { freeCredits: number }) {
   return (
     <footer className="lx-footer">
       <div className="lx-footer__top lx-container">
         <div className="lx-footer__signup">
           <p className="lx-serif">Don&apos;t miss a moment</p>
-          <span>Start with your email. Your first {freeMinutes} minutes every month are free.</span>
+          <span>Start with your email. {freeCredits} free credits every month, one per minute of video.</span>
           <SignupForm />
         </div>
         <nav className="lx-footer__cols" aria-label="Footer">

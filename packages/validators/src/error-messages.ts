@@ -7,15 +7,11 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"Enter a valid IANA timezone, such as America/New_York.",
 	workspace_collaboration_disabled:
 		"Workspace collaboration is not enabled for this account.",
-	workspace_invites_require_business:
-		"Workspace invitations require the Business plan.",
 	workspace_admin_invite_owner_required:
 		"Only Workspace owners can invite admins.",
 	workspace_invite_email_invalid: "Enter a valid email address.",
 	workspace_member_already_exists: "This person is already a Workspace member.",
 	workspace_invite_unavailable: "This invitation is no longer available.",
-	workspace_api_requires_business:
-		"Workspace API keys require the Business plan.",
 	workspace_api_name_required: "Enter a name for this API key.",
 	workspace_api_scope_invalid:
 		"One or more requested API key permissions are unsupported.",
@@ -111,8 +107,10 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"That RSS episode doesn't have a downloadable audio file. Choose a different episode.",
 	upload_too_long:
 		"This video exceeds your plan's per-video length limit. Upgrade your plan or upload a shorter video.",
-	processing_quota_exhausted:
-		"This video needs more processing minutes than your workspace has left this month. Upgrade, or wait for next month's minutes, then retry the import.",
+	credits_exhausted:
+		"This video needs more credits than your workspace has left this month. Upgrade, or wait for credits to renew on the 1st (UTC), then retry the import.",
+	credits_reservation_released:
+		"This video's credit reservation was released before processing started. Retry the import to reserve credits again.",
 	workspace_processing_capacity_reached:
 		"Your workspace is already processing as many videos as your plan allows. Try again when one finishes.",
 	upload_source_changed:
@@ -190,8 +188,6 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"Choose a connected account of this Workspace. Reconnect it first if it needs attention.",
 	standing_grant_tiktok_excluded:
 		"TikTok needs the creator's choices on every post, so it can't hold a standing grant. Accept its proposals yourself.",
-	standing_grant_plan_required:
-		"Sending review rounds needs the Business plan.",
 	standing_grant_duplicate:
 		"This rule already has a grant for that destination. Renew or revoke it instead.",
 	standing_grant_closed:
@@ -255,10 +251,6 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"The original source for this project is no longer available. Re-upload the source to continue.",
 	workflow_content_pack_invalid:
 		"The saved generation settings are missing or invalid. Review the clip settings and start generation again.",
-	requires_pro_plan:
-		"Voiceover dubbing is a Pro feature. Upgrade to Pro to dub your clips.",
-	requires_creator_plan:
-		"Repurposing is included with Creator and Pro plans. Upgrade to unlock it.",
 	social_oauth_env_missing:
 		"This platform's connection isn't configured on this server yet. Add the provider API credentials and try again.",
 	social_oauth_origin_invalid:
@@ -343,6 +335,16 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"This clip changed after selection. Refresh the project before retrying it.",
 	campaign_clip_not_found:
 		"This clip is no longer in the project. Refresh the project to update the selection.",
+	plan_feature_required:
+		"Your plan doesn't include this. See Billing for the plans that do.",
+	plan_limit_reached:
+		"This goes past your plan's limit. Remove one you no longer use, or see Billing for plans that include more.",
+	publication_plan_required:
+		"This post wasn't sent: the workspace's plan no longer includes social publishing. Change the plan, then schedule it again.",
+	publication_thumbnail_plan_required:
+		"This post wasn't sent: its custom thumbnail needs a plan with custom thumbnails. Schedule it again without the thumbnail, or change the plan.",
+	publication_account_beyond_plan:
+		"This post wasn't sent: the plan publishes to fewer accounts than are connected. Disconnect an older account, then schedule it again.",
 	// Extend as new codes appear.
 };
 

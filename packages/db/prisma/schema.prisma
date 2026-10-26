@@ -277,6 +277,8 @@ enum AutopilotPauseKind {
   acting_member
   brand_profile
   zoom_connection
+  /// The Workspace's plan no longer includes Autopilot, or runs fewer active rules than it has.
+  plan
 }
 
 enum AutopilotSourceKind {
@@ -1028,6 +1030,9 @@ model WorkspaceCheckoutAttempt {
   returnDestination    String
   customerOperationKey String
   checkoutOperationKey String      @unique
+  /// Equals billingAccountId only while this attempt holds the Billing
+  /// Account's one open subscription Checkout slot.
+  activeBillingAccountId String?   @unique @db.Uuid
   providerSessionId    String?     @unique
   providerPhase        String      @default("prepared")
   sessionStatus        String?
@@ -2260,27 +2265,45 @@ model ThumbnailFrameOperation {
   @@index([resultAssetId])
 }
 
+enum GenerationUsageKind {
+  image
+  dub
+}
+
+/// One Workspace-owned count for one AI image request or one voice-over dub.
+/// `jobId` is the subject id (a Generated Media Job or a Clip Dub) and has no
+/// foreign key: deleting the output, Project, or actor never refunds a count.
+/// `periodStart` pins the UTC admission month; the Free image sample is the
+/// `trial_metered` policy, counted for the Workspace's lifetime.
 model GeneratedMediaUsageReservation {
   id          String                    @id @default(uuid()) @db.Uuid
   jobId       String                    @unique @db.Uuid
+  kind        GenerationUsageKind
   workspaceId String                    @db.Uuid
-  actorUserId String                    @db.Uuid
+  actorUserId String?                   @db.Uuid
   policy      String
+  periodStart DateTime
   status      GeneratedMediaUsageStatus @default(reserved)
   actualUnits Int?
   reason      String?
+  /// Set when the subject row commits. Null means admission stopped before
+  /// any subject existed, so no provider work can have started.
+  attachedAt  DateTime?
   createdAt   DateTime                  @default(now())
   settledAt   DateTime?
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  actor     User      @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
+  actor     User?     @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
-  @@index([workspaceId, status, createdAt])
+  @@index([workspaceId, kind, periodStart, status])
+  @@index([workspaceId, kind, policy, status])
+  @@index([status, createdAt])
   @@index([actorUserId, createdAt])
 }
 
-/// One Workspace-owned claim on a UTC month's processing minutes for one
-/// intake, keyed by its Project ID. The Project ID deliberately has no foreign
+/// One Workspace-owned claim on a UTC month's credits for one intake, keyed
+/// by its Project ID. Debits are whole credits stored as seconds (multiples of
+/// 60, enforced by check constraints). The Project ID deliberately has no foreign
 /// key: deleting or purging a Project must never cascade into settled usage.
 model ProcessingUsageReservation {
   id               String               @id @default(uuid()) @db.Uuid

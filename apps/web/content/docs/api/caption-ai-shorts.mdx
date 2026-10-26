@@ -6,7 +6,7 @@ description: Caption, frame and export a finished short, such as an AI-generated
 
 A captioned video is a finished short that needs captions and a clean export. Narriflow does not look for moments. The Project gets one clip, the whole video, and exports it at each format you ask for with your Brand Profile applied. Videos run from 1 second to 3 minutes. Silent videos are fine.
 
-Your API key needs the `processing:write` scope. The work uses processing minutes, measured on the video's real length.
+Your API key needs the `processing:write` scope. The work uses credits, one per started minute of the video's real length.
 
 ## What you choose
 
@@ -116,7 +116,7 @@ Center fills the frame with a centered crop and does not look for a subject. Whe
 
 ## Limits and errors
 
-- A video longer than 3 minutes fails with `whole_source_too_long` before it uses any minutes. A video that rounds to 3 minutes, such as 3:00.4, still counts as 3 minutes. One shorter than a second fails with `whole_source_too_short`.
+- A video longer than 3 minutes fails with `whole_source_too_long` before it uses any credits. A video that rounds to 3 minutes, such as 3:00.4, still counts as 3 minutes. One shorter than a second fails with `whole_source_too_short`.
 - The export ends at the video's length rounded to the nearest second when that is shorter than the video itself, so a video of 8.4 seconds exports as 8, and up to half a second of the end can be missing.
 - The Studio opens the clip like any other. Its trim handles allow 1 to 180 seconds for a captioned video, where clips found in a long video stay at 10 to 120 seconds.
 - For a ready-made n8n workflow, see [n8n: caption an AI short](/docs/api/n8n#caption-an-ai-short).

@@ -14,7 +14,7 @@ const authentication: Authentication = {
       type: 'password',
       required: true,
       helpText:
-        'Create a Workspace API key in Narriflow under Settings, then Developer access. The Workspace needs the Business plan. See https://app.narriflow.com/docs/api/zapier for the permissions to turn on.',
+        'Create a Workspace API key in Narriflow under Settings, then Developer access. The Workspace needs the Pro or Business plan. See https://app.narriflow.com/docs/api/zapier for the permissions to turn on.',
     },
     {
       key: 'baseUrl',

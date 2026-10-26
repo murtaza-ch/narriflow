@@ -279,12 +279,12 @@ export const PLATFORMS: Array<{ id: PlatformId; name: string }> = [
 
 export const FAQS = [
   {
-    q: "What counts as a processing minute?",
-    a: "One minute of source video. A 60-minute episode uses 60 minutes on every plan, however many clips Narriflow finds in it.",
+    q: "How do credits work?",
+    a: "One credit is one started minute of source video. A 60-minute episode uses 60 credits on every plan, however many clips Narriflow finds in it. Re-running or editing the same project is free. Credits renew on the 1st of each month (UTC) and don't roll over.",
   },
   {
     q: "Which videos can I bring?",
-    a: "Upload a file, or paste a YouTube, Vimeo or other supported video link. Podcast RSS feeds work too, and Autopilot can clip new episodes as they arrive.",
+    a: "Upload a file, or paste a YouTube, Vimeo or other supported video link. Podcast RSS feeds work too, and on Pro, Autopilot can clip new episodes as they arrive.",
   },
   {
     q: "Which languages does it understand?",
@@ -292,14 +292,14 @@ export const FAQS = [
   },
   {
     q: "Where can I publish?",
-    a: "TikTok, YouTube Shorts, Instagram Reels, Facebook Reels, LinkedIn and X. Connect your accounts once, then post now or schedule from the calendar.",
+    a: "TikTok, YouTube Shorts, Instagram Reels, Facebook Reels, LinkedIn and X. Connect your accounts once on any paid plan, then post now or schedule from the calendar.",
   },
   {
     q: "Is there a free plan?",
-    a: "Yes. Free includes 60 processing minutes a month, 720p exports with a watermark, and projects kept for 3 days. Paid plans remove the watermark and export in 1080p.",
+    a: "Yes. Free includes 60 credits a month, the full editor, 720p exports with a watermark, and projects kept for 3 days. Paid plans remove the watermark, export in 1080p, and add publishing and brand tools.",
   },
   {
     q: "Can I automate it?",
-    a: "Business includes scoped API keys and MCP integrations. Drive Narriflow from your own code, from n8n, or from Claude, ChatGPT and Codex through the connector.",
+    a: "Pro includes scoped API keys, webhooks and MCP integrations, plus Autopilot. Drive Narriflow from your own code, from n8n, or from Claude, ChatGPT and Codex through the connector.",
   },
 ] as const;

@@ -1,110 +1,108 @@
 import { describe, expect, test } from "bun:test";
-import type { PricingTier } from "@narriflow/validators";
-import { hasFeature, type PlanFeature } from "./billing.service";
+import {
+  lowestTierWithFeature,
+  PLAN_CATALOG,
+  planFeatureSchema,
+  PRICING_TIER_ORDER,
+} from "@narriflow/validators";
+import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import {
+  hasFeature,
+  PlanRequirementError,
+  requirePlanFeature,
+  requireWithinPlanLimit,
+} from "./plan-features";
 
-// Pure entitlement matrix behind `hasFeature` (vizard-parity Phase C export
-// options): watermark presence and 1080p access derive from the owner's tier
-// through this single helper, never a raw `tier === "free"` check.
+function refusal(action: () => void): PlanRequirementError {
+  try {
+    action();
+  } catch (error) {
+    if (error instanceof PlanRequirementError) return error;
+    throw error;
+  }
+  throw new Error("expected a plan refusal");
+}
 
-const ALL_TIERS: PricingTier[] = ["free", "creator", "pro", "business"];
-const EXPORT_FEATURES: PlanFeature[] = ["export.1080p", "export.noWatermark"];
-const INTEGRATION_FEATURES: PlanFeature[] = ["integrations.api", "integrations.mcp"];
-const PROGRAM_FEATURES: PlanFeature[] = [
-  "brand.profiles",
-  "brand.customFonts",
-  "brand.scenes",
-  "editor.censoring",
-  "editor.motion",
-  "publishing.assistedCopy",
-  "campaign.operations",
-  "export.bundles",
-  "review.rooms",
-  "generated.images",
-  "generated.video",
-];
-const ALL_FEATURES: PlanFeature[] = [
-  ...EXPORT_FEATURES,
-  ...INTEGRATION_FEATURES,
-  ...PROGRAM_FEATURES,
-];
-
-describe("hasFeature (PLAN_FEATURES matrix)", () => {
-  test("free has neither export feature", () => {
-    for (const feature of EXPORT_FEATURES) {
-      expect(hasFeature("free", feature)).toBe(false);
-    }
-  });
-
-  test("every paid tier has both export features", () => {
-    for (const tier of ["creator", "pro", "business"] as const) {
-      for (const feature of EXPORT_FEATURES) {
-        expect(hasFeature(tier, feature)).toBe(true);
-      }
-    }
-  });
-
-  test("fails closed for removed pricing tiers", () => {
-    expect(hasFeature("starter", "export.1080p")).toBe(false);
-    expect(hasFeature("starter", "integrations.mcp")).toBe(false);
-  });
-
-  test("API and MCP integrations are Business capabilities", () => {
-    for (const tier of ["free", "creator", "pro"] as const) {
-      for (const feature of INTEGRATION_FEATURES) {
-        expect(hasFeature(tier, feature)).toBe(false);
-      }
-    }
-    for (const feature of INTEGRATION_FEATURES) {
-      expect(hasFeature("business", feature)).toBe(true);
-    }
-  });
-
-  test("is a total function over every tier x feature pair (no undefined/throw)", () => {
-    for (const tier of ALL_TIERS) {
-      for (const feature of ALL_FEATURES) {
+describe("hasFeature", () => {
+  test("is a total function over every tier x feature pair, failing closed for unknown tiers", () => {
+    for (const tier of [...PRICING_TIER_ORDER, "starter", "enterprise", null]) {
+      for (const feature of planFeatureSchema.options) {
         expect(typeof hasFeature(tier, feature)).toBe("boolean");
       }
     }
+    expect(hasFeature("starter", "integrations.mcp")).toBe(false);
+    expect(hasFeature(null, "export.noWatermark")).toBe(false);
   });
 
-  test("matches the Vizard expansion packaging matrix", () => {
-    for (const feature of [
-      "brand.profiles",
-      "brand.customFonts",
-      "brand.scenes",
-      "editor.censoring",
-      "editor.motion",
-      "publishing.assistedCopy",
-    ] as const) {
-      expect(hasFeature("free", feature)).toBe(false);
-      expect(hasFeature("creator", feature)).toBe(true);
-      expect(hasFeature("pro", feature)).toBe(true);
-      expect(hasFeature("business", feature)).toBe(true);
-    }
-
-    for (const feature of [
-      "campaign.operations",
-      "export.bundles",
-      "generated.video",
-    ] as const) {
-      expect(hasFeature("creator", feature)).toBe(false);
-      expect(hasFeature("pro", feature)).toBe(true);
-      expect(hasFeature("business", feature)).toBe(true);
-    }
-
-    expect(hasFeature("free", "generated.images")).toBe(true);
-    expect(hasFeature("business", "review.rooms")).toBe(true);
-    expect(hasFeature("pro", "review.rooms")).toBe(false);
-  });
-
-  test("unknown and removed tiers fail closed", () => {
-    expect(hasFeature("enterprise", "brand.profiles")).toBe(false);
-    expect(hasFeature("starter", "brand.profiles")).toBe(false);
-    expect(hasFeature("starter", "campaign.operations")).toBe(false);
+  test("Free exports carry the watermark; every paid tier removes it", () => {
+    expect(hasFeature("free", "export.noWatermark")).toBe(false);
+    for (const tier of ["creator", "pro", "business"]) expect(hasFeature(tier, "export.noWatermark")).toBe(true);
   });
 });
 
-test("dubbing is included in Pro and Business but not Free or Creator", () => {
-  for (const tier of ["free", "creator"]) expect(hasFeature(tier, "dubbing")).toBe(false);
-  for (const tier of ["pro", "business"]) expect(hasFeature(tier, "dubbing")).toBe(true);
+describe("requirePlanFeature", () => {
+  test("allows an included feature", () => {
+    for (const tier of PRICING_TIER_ORDER)
+      for (const feature of planFeatureSchema.options)
+        if (PLAN_CATALOG[tier].features[feature]) expect(() => requirePlanFeature(tier, feature)).not.toThrow();
+  });
+
+  test("refuses with the shared payment_required shape naming the cheapest tier", () => {
+    const failure = refusal(() => requirePlanFeature("free", "integrations.api"));
+    expect(failure).toBeInstanceOf(ExpectedDomainFailureError);
+    expect(failure).toMatchObject({
+      code: "plan_feature_required",
+      kind: "payment_required",
+      details: {
+        feature: "integrations.api",
+        currentTier: "free",
+        requiredTier: lowestTierWithFeature("integrations.api"),
+      },
+    });
+    expect(failure.message).toContain(PLAN_CATALOG[lowestTierWithFeature("integrations.api")!].name);
+  });
+
+  test("an unknown tier is refused as Free", () => {
+    expect(refusal(() => requirePlanFeature("enterprise", "review.rooms")).details).toMatchObject({
+      currentTier: "free",
+    });
+  });
+});
+
+describe("requireWithinPlanLimit", () => {
+  test("allows up to the limit and refuses the next object with used/max details", () => {
+    const max = PLAN_CATALOG.creator.limits.brandProfiles;
+    expect(() => requireWithinPlanLimit("creator", "brandProfiles", max - 1)).not.toThrow();
+    const failure = refusal(() => requireWithinPlanLimit("creator", "brandProfiles", max));
+    expect(failure).toMatchObject({
+      code: "plan_limit_reached",
+      kind: "payment_required",
+      details: { limit: "brandProfiles", used: max, max, currentTier: "creator" },
+    });
+    const required = failure.details?.requiredTier;
+    expect(required).not.toBeNull();
+    expect(PLAN_CATALOG[required!].limits.brandProfiles).toBeGreaterThan(max);
+  });
+
+  test("a zero limit refuses as a missing feature", () => {
+    expect(refusal(() => requireWithinPlanLimit("free", "socialDestinations", 0))).toMatchObject({
+      code: "plan_feature_required",
+      details: { limit: "socialDestinations", max: 0, currentTier: "free" },
+    });
+  });
+
+  test("a batch that no plan can hold has no required tier", () => {
+    const top = PLAN_CATALOG.business.limits.autopilotRules;
+    expect(refusal(() => requireWithinPlanLimit("business", "autopilotRules", top, 1)).details).toMatchObject({
+      requiredTier: null,
+    });
+  });
+
+  test("an over-limit Workspace (after a downgrade) is refused more, never less", () => {
+    const max = PLAN_CATALOG.creator.limits.brandTemplates;
+    expect(refusal(() => requireWithinPlanLimit("creator", "brandTemplates", max + 5)).details).toMatchObject({
+      used: max + 5,
+      max,
+    });
+  });
 });

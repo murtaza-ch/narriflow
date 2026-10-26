@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, t
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
-import { buildGenerationContentPack, finishingReasonMessage, parseStoredContentPack, type FinishingSettingsInput } from "@narriflow/validators";
+import { buildGenerationContentPack, creditDebitSeconds, finishingReasonMessage, parseStoredContentPack, processingPeriodStart, type FinishingSettingsInput } from "@narriflow/validators";
 import { AssistedSocialCopyError } from "./assisted-social-copy";
 import { clipExportService } from "./clip-export.service";
 import {
@@ -59,12 +59,20 @@ describeDb("Finishing runner on PostgreSQL", () => {
   }
   type Owner = Awaited<ReturnType<typeof workspace>>;
 
+  /** The credit reservation every accepted intake holds; `settled` once its speech-to-text was admitted. */
+  const usage = (owner: Owner, project: { id: string; sourceDurationSeconds: number | null }, state: "reserved" | "settled") => {
+    const seconds = creditDebitSeconds(project.sourceDurationSeconds ?? 0);
+    return prisma.processingUsageReservation.create({ data: { projectId: project.id, workspaceId: owner.workspaceId, actorUserId: owner.user.id, intakeKind: "upload",
+      periodStart: processingPeriodStart(new Date()), reservedSeconds: seconds, ...(state === "settled" ? { state, settledSeconds: seconds, settledAt: new Date() } : { state }) } });
+  };
+
   const PACK = { outputTypes: ["short_clip" as const], clipCountTarget: 5, clipDurationSecTarget: 30, platformPlaybookVersion: "test", defaultAspectRatio: "1:1" as const };
 
   /** A finished generation: committed pack, completed transcript, speech-to-text and detection runs, and clips with these scores. */
   async function finishedGeneration(owner: Owner, scores: number[], finishing: FinishingSettingsInput | null = FINISHING) {
     const project = await prisma.project.create({ data: { workspaceId: owner.workspaceId, createdByUserId: owner.user.id, title: "Generated", sourceMediaUrl: "https://example.test/source.mp4",
       sourceDurationSeconds: 120, ingestStatus: "ready", languageCode: "en" } });
+    await usage(owner, project, "settled");
     const pack = await prisma.contentPack.create({ data: { projectId: project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 5, clipDurationSecTarget: 30,
       platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "test", defaultAspectRatio: "1:1" } });
     const stt = await prisma.workflowRun.create({ data: { projectId: project.id, stage: "stt", status: "completed", idempotencyKey: `stt:${randomUUID()}`, contentPackId: pack.id } });
@@ -589,7 +597,11 @@ describeDb("Finishing runner on PostgreSQL", () => {
     const finishingFor = (settings: FinishingSettingsInput) => ({ minScore: 0, resolution: "1080p" as const, copyPlatforms: [], delivery: "ready_to_review" as const, ...settings });
     const trigger = (owner: Owner, projectId: string, settings: FinishingSettingsInput | undefined, key = randomUUID()) =>
       projectService.triggerGeneration(owner.scope, projectId, request(), key, { mutation: { clientIdempotencyKey: key }, ...(settings ? { finishing: finishingFor(settings) } : {}) });
-    const freshProject = (owner: Owner, title: string) => prisma.project.create({ data: { workspaceId: owner.workspaceId, createdByUserId: owner.user.id, title, sourceMediaUrl: `https://example.test/${title}.mp4`, sourceDurationSeconds: 60, ingestStatus: "ready" } });
+    const freshProject = async (owner: Owner, title: string) => {
+      const project = await prisma.project.create({ data: { workspaceId: owner.workspaceId, createdByUserId: owner.user.id, title, sourceMediaUrl: `https://example.test/${title}.mp4`, sourceDurationSeconds: 60, ingestStatus: "ready" } });
+      await usage(owner, project, "reserved");
+      return project;
+    };
 
     test("a new generation freezes one row keyed by its run, stable under replay and reuse", async () => {
       const owner = await workspace();

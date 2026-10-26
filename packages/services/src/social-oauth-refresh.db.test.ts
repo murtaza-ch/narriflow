@@ -12,6 +12,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import { SocialOAuthError, socialOAuthService } from "./social-oauth.service";
+import { publicationPlanRefusal, requirePublishableSocialAccount } from "./social-account-eligibility";
 
 process.env.SOCIAL_TOKEN_ENCRYPTION_KEY ??= "social-oauth-refresh-test-key-not-a-secret";
 process.env.TIKTOK_CLIENT_KEY ??= "test-client-key";
@@ -71,6 +72,7 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 				name: "OAuth refresh",
 				ownerUserId: user.id,
 				personalOwnerUserId: user.id,
+				pricingTier: "creator",
 				members: { create: { userId: user.id, role: "owner" } },
 			},
 		});
@@ -180,5 +182,112 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 			code: "social_oauth_refresh_invalid",
 		});
 		expect(await stored(id)).toEqual(before);
+	});
+});
+
+dbDescribe("Social Destination plan count PostgreSQL invariants", () => {
+	let prisma: PrismaClient;
+	let pool: Pool;
+	let previousGlobalPrisma: PrismaClient | undefined;
+	const prismaGlobal = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
+
+	beforeAll(async () => {
+		pool = new Pool({ connectionString: databaseUrl!, max: 8 });
+		prisma = new PrismaClient({
+			adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined),
+		});
+		previousGlobalPrisma = prismaGlobal.narriflowPrismaClient;
+		prismaGlobal.narriflowPrismaClient = prisma;
+	});
+
+	afterAll(async () => {
+		prismaGlobal.narriflowPrismaClient = previousGlobalPrisma;
+		await prisma?.$disconnect();
+		await pool?.end();
+	});
+
+	type Saved = { id: string; providerAccountId: string; publishingEligible: boolean };
+	// The OAuth callbacks end in this private save; the provider exchanges before it are not under test.
+	const save = (
+		socialOAuthService as unknown as {
+			saveAccounts(
+				scope: { actorUserId: string; workspaceId: string; credentialOwnerUserId: string },
+				platform: "instagram_reels",
+				inputs: Array<Record<string, unknown>>,
+			): Promise<Saved[]>;
+		}
+	).saveAccounts.bind(socialOAuthService);
+	const destination = (providerAccountId = randomUUID()) => ({
+		providerAccountId, displayName: "Instagram", accessToken: "access", refreshToken: null, expiresAt: null, scopes: [],
+	});
+
+	async function workspace(pricingTier: "free" | "creator" | "pro") {
+		const user = await prisma.user.create({ data: { clerkId: `destinations:${randomUUID()}` } });
+		const created = await prisma.workspace.create({
+			data: { name: "Destinations", ownerUserId: user.id, personalOwnerUserId: user.id, pricingTier, members: { create: { userId: user.id, role: "owner" } } },
+		});
+		const scope = { actorUserId: user.id, workspaceId: created.id, credentialOwnerUserId: user.id };
+		return { scope, workspaceId: created.id, connect: (...ids: string[]) => save(scope, "instagram_reels", ids.map(destination)) };
+	}
+	const slots = (workspaceId: string) => prisma.socialAccount.count({ where: { workspaceId, status: { not: "revoked" } } });
+
+	test("Free connects no destination; Creator's last slot goes to exactly one of two concurrent connects", async () => {
+		const free = await workspace("free");
+		await expect(free.connect("a")).rejects.toMatchObject({ code: "plan_feature_required", details: { limit: "socialDestinations", requiredTier: "creator" } });
+
+		const creator = await workspace("creator");
+		await creator.connect("one", "two");
+		const results = await Promise.allSettled([creator.connect("three"), creator.connect("four")]);
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: { code: "plan_limit_reached", details: { used: 3, max: 3, requiredTier: "pro" } } });
+		expect(await slots(creator.workspaceId)).toBe(3);
+	});
+
+	test("reconnecting an account at the cap is free, a revoked one needs a slot, and disconnecting frees one", async () => {
+		const creator = await workspace("creator");
+		const [first] = await creator.connect("one", "two", "three");
+		await expect(creator.connect("two")).resolves.toMatchObject([{ providerAccountId: "two", publishingEligible: true }]);
+		await socialOAuthService.disconnectAccount(creator.scope, first!.id);
+		await creator.connect("four");
+		await expect(creator.connect("one")).rejects.toMatchObject({ code: "plan_limit_reached" });
+		const four = await prisma.socialAccount.findFirstOrThrow({ where: { workspaceId: creator.workspaceId, providerAccountId: "four" } });
+		await socialOAuthService.disconnectAccount(creator.scope, four.id);
+		await expect(creator.connect("one")).resolves.toMatchObject([{ id: first!.id }]);
+		expect(await slots(creator.workspaceId)).toBe(3);
+	});
+
+	test("one grant with more destinations than free slots saves the first ones, in provider order", async () => {
+		const creator = await workspace("creator");
+		await creator.connect("existing");
+		const saved = await creator.connect("a", "existing", "b", "c");
+		expect(saved.map((account) => account.providerAccountId)).toEqual(["a", "existing", "b"]);
+		expect(await slots(creator.workspaceId)).toBe(3);
+	});
+
+	test("after a downgrade the oldest accounts publish, the rest are plan-ineligible with their tokens kept", async () => {
+		const pro = await workspace("pro");
+		const ids: string[] = [];
+		for (const name of ["a", "b", "c", "d", "e"]) ids.push((await pro.connect(name))[0]!.id);
+		// Distinct connection times, oldest first.
+		for (const [index, id] of ids.entries()) await prisma.socialAccount.update({ where: { id }, data: { createdAt: new Date(Date.UTC(2026, 0, 1 + index)) } });
+		await prisma.workspace.update({ where: { id: pro.workspaceId }, data: { pricingTier: "creator" } });
+
+		const listed = await socialOAuthService.listAccounts(pro.scope);
+		expect(listed.filter((account) => account.publishingEligible).map((account) => account.id).sort()).toEqual(ids.slice(0, 3).sort());
+		expect(await publicationPlanRefusal(prisma, { workspaceId: pro.workspaceId, socialAccountId: ids[0]!, customThumbnail: false })).toBeNull();
+		// A frozen custom thumbnail Creator doesn't include stops the post instead of sending it without one.
+		expect(await publicationPlanRefusal(prisma, { workspaceId: pro.workspaceId, socialAccountId: ids[0]!, customThumbnail: true })).toBe("publication_thumbnail_plan_required");
+		expect(await publicationPlanRefusal(prisma, { workspaceId: pro.workspaceId, socialAccountId: ids[4]!, customThumbnail: false })).toBe("publication_account_beyond_plan");
+		await expect(requirePublishableSocialAccount(prisma, { workspaceId: pro.workspaceId, accountId: ids[3]!, tier: "creator" }))
+			.rejects.toMatchObject({ code: "plan_limit_reached", details: { limit: "socialDestinations", used: 5, max: 3 } });
+		expect(await prisma.socialAccount.count({ where: { id: { in: ids }, status: "active", refreshTokenEncrypted: null, accessTokenEncrypted: { not: "" } } })).toBe(5);
+		// Additions stay blocked while over the cap.
+		await expect(pro.connect("f")).rejects.toMatchObject({ code: "plan_limit_reached" });
+
+		// Disconnecting an older account makes the next one eligible.
+		await socialOAuthService.disconnectAccount(pro.scope, ids[0]!);
+		expect(await publicationPlanRefusal(prisma, { workspaceId: pro.workspaceId, socialAccountId: ids[3]!, customThumbnail: false })).toBeNull();
+		await prisma.workspace.update({ where: { id: pro.workspaceId }, data: { pricingTier: "free" } });
+		expect(await publicationPlanRefusal(prisma, { workspaceId: pro.workspaceId, socialAccountId: ids[1]!, customThumbnail: false })).toBe("publication_plan_required");
 	});
 });

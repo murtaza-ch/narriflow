@@ -311,8 +311,8 @@ class UploadSessionBrowserFailure extends Error {
 }
 
 const UPLOAD_FAILURE_MESSAGES: Record<string, string> = {
-  processing_quota_exhausted:
-    "This video needs more processing minutes than your workspace has left this month. Review usage before retrying.",
+  credits_exhausted:
+    "This video needs more credits than your workspace has left this month. Review usage before retrying.",
   upload_too_long:
     "This video is longer than your plan's per-video limit. Upgrade or choose a shorter file.",
   workspace_processing_capacity_reached:

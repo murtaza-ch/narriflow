@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { Box, Flex, Image, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { Trash2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
@@ -135,6 +136,9 @@ export function SocialAccountsPanel({
 	facebookSelectionToken,
 	canManage,
 	returnTo,
+	accountLimit,
+	connectRequirement,
+	canManageBilling,
 }: {
 	accounts: SocialAccountSnapshot[];
 	connectedCount: number | null;
@@ -142,7 +146,13 @@ export function SocialAccountsPanel({
 	facebookSelectionToken: string | null;
 	canManage: boolean;
 	returnTo?: string;
+	/** Connected accounts the plan allows to publish. */
+	accountLimit: number;
+	/** Why the plan can't connect another account; `null` when it can. */
+	connectRequirement: string | null;
+	canManageBilling: boolean;
 }) {
+	const mayConnect = canManage && connectRequirement === null;
 	const router = useRouter();
 	const [isPending, startTransition] = useTransition();
 	const [disconnecting, setDisconnecting] = useState<string | null>(null);
@@ -417,6 +427,10 @@ export function SocialAccountsPanel({
 										>
 											{account.status.replaceAll("_", " ")}
 										</Text>
+									) : !account.publishingEligible ? (
+										<Text fontSize="xs" color="warning.fg">
+											Over your plan's {accountLimit}-account limit
+										</Text>
 									) : null}
 								</Box>
 								{canManage && account.status !== "active" ? (
@@ -455,6 +469,14 @@ export function SocialAccountsPanel({
 						? "Sign in to the social account you want to add, then choose a platform below."
 						: "Ask a workspace owner or admin to connect a social account."}
 				</Text>
+				{accountLimit > 0 ? (
+					<Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
+						Your plan publishes to {accountLimit} connected account{accountLimit === 1 ? "" : "s"}. Disconnect one to make room for another.
+					</Text>
+				) : null}
+				{canManage ? (
+					<PlanLimitNotice message={connectRequirement} actionLabel="See plans." canManageBilling={canManageBilling} />
+				) : null}
 			</Stack>
 			<SimpleGrid
 				columns={{ base: 1, sm: 2, md: 3 }}
@@ -482,7 +504,7 @@ export function SocialAccountsPanel({
 							</Text>
 						</Stack>
 					);
-					return canManage ? (
+					return mayConnect ? (
 						<Box
 							key={platform}
 							asChild

@@ -82,7 +82,6 @@ const BULK_SOCIAL_SCHEDULING_FAILURES = {
 	campaign_schedule_duplicate_account: "invalid",
 	campaign_schedule_duplicate_clip: "invalid",
 	campaign_schedule_clip_not_found: "missing",
-	campaign_schedule_entitlement_required: "forbidden",
 	campaign_schedule_idempotency_conflict: "conflict",
 	campaign_schedule_input_invalid: "invalid",
 	campaign_schedule_item_incomplete: "conflict",

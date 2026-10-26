@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { ArrowLeft, ArrowRight, ArrowUpRight, CalendarClock, CircleAlert, Download, Rss, ScanEye, Scissors, Upload } from "lucide-react";
 import { workspaceAllowsCapability } from "@narriflow/services";
+import { hasFeature, lowestTierWithFeature, PLAN_CATALOG, resolvePricingTier } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { docsUrl } from "@/lib/docs-url";
@@ -33,22 +34,24 @@ export default async function McpIntegrationPage() {
   const mcpUrl = `${process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000"}/mcp`;
   const configuration = await inspectMcpConfiguration({ resourceUrl: process.env.NEXT_PUBLIC_APP_URL ? mcpUrl : undefined, issuerUrl: process.env.CLERK_OAUTH_ISSUER, hasVerificationSecret: Boolean(process.env.CLERK_SECRET_KEY), hasConfirmationSecret: Buffer.byteLength(process.env.MCP_CONTINUATION_SECRET ?? "") >= 32 });
   const { workspace } = appUser;
-  const isBusiness = workspace.pricingTier === "business";
-  const isEligible = isBusiness && workspace.status === "active";
+  const hasPlan = hasFeature(workspace.pricingTier, "integrations.mcp");
+  const requiredPlan = PLAN_CATALOG[lowestTierWithFeature("integrations.mcp") ?? "business"].name;
+  const currentPlan = PLAN_CATALOG[resolvePricingTier(workspace.pricingTier)].name;
+  const isEligible = hasPlan && workspace.status === "active";
   const canManageApi = workspaceAllowsCapability(workspace, "api.manage");
 
-  const status = !isBusiness
-    ? { ready: false, label: "Needs the Business plan" }
+  const status = !hasPlan
+    ? { ready: false, label: `Needs the ${requiredPlan} plan` }
     : !isEligible
       ? { ready: false, label: "Workspace inactive" }
       : configuration.verified
-        ? { ready: true, label: "Business plan · Ready to connect" }
+        ? { ready: true, label: `${currentPlan} plan · Ready to connect` }
         : { ready: false, label: configuration.label };
 
-  const blocker = !isBusiness
+  const blocker = !hasPlan
     ? workspace.role === "owner"
-      ? "Upgrade to Business to connect an assistant. You can read the setup now."
-      : "Ask the workspace owner to upgrade to Business to connect an assistant."
+      ? `Upgrade to ${requiredPlan} to connect an assistant. You can read the setup now.`
+      : `Ask the workspace owner to upgrade to ${requiredPlan} to connect an assistant.`
     : !isEligible
       ? `This workspace is ${workspace.status.replace("_", " ")}. Tools stay off until it's active.`
       : !configuration.verified
@@ -73,7 +76,7 @@ export default async function McpIntegrationPage() {
       {!isEligible ? (
         <Button asChild size="sm" variant="subtle" flexShrink={0}>
           <Link href="/settings/billing">
-            {isBusiness ? "Open billing" : "View plans"}
+            {hasPlan ? "Open billing" : "View plans"}
             <ArrowRight size={16} />
           </Link>
         </Button>

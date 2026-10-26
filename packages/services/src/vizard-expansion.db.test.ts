@@ -224,7 +224,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			data: { pricingTier: "creator" },
 		});
 		await expect(request("creator-denied")).rejects.toMatchObject({
-			code: "requires_pro_plan",
+			code: "plan_feature_required",
+			details: { feature: "dubbing" },
 		});
 		await prisma.workspace.update({
 			where: { id: current.workspace.id },

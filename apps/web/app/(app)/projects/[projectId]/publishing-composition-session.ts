@@ -222,6 +222,7 @@ export function createPublishingCompositionSession(dependencies: {
 		return facts.accounts.filter(
 			(account) =>
 				account.status === "active" &&
+				account.publishingEligible &&
 				(account.platform !== "facebook_reels" || facts.facebookPublishingEnabled),
 		);
 	}

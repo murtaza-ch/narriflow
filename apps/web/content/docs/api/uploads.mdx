@@ -231,4 +231,4 @@ Narriflow freezes the settings when it admits the generation, and the first requ
 
 - Files are MP4, MOV, WebM, MKV, MP3, WAV, M4A or AAC, and just under 5 GiB at most.
 - Each plan limits the length of one video. `GET /workspace` returns it as `usage.maxUploadSeconds`.
-- Uploads use processing minutes. A video over the length limit is refused with `upload_too_long`.
+- Uploads use credits, one per started minute of the video. A video over the length limit is refused with `upload_too_long`, and one that needs more credits than are left with `credits_exhausted`.

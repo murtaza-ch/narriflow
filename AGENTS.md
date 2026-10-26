@@ -27,7 +27,8 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 
 ## Critical paths (where bugs hurt most)
 
-- Processing minutes and capacity — `packages/services/src/processing-usage.ts`; Stripe billing webhook — `packages/services/src/billing.service.ts`.
+- Plan catalog (prices, credits, features, limits) — `packages/validators/src/pricing.ts`; every plan check goes through `hasFeature`/`planLimits` or `requirePlanFeature`/`requireWithinPlanLimit` (`packages/services/src/plan-features.ts`), never a bare tier comparison.
+- Credits and capacity — `packages/services/src/processing-usage.ts`; Stripe billing — `packages/services/src/workspace-billing.service.ts` + `billing.service.ts`.
 - Upload Session admission, verification, and ingest handoff — `packages/services/src/upload-session.service.ts`.
 - Workflow claiming/reaper — `packages/services/src/workflow-run-lifecycle.ts`.
 - Clip render pipeline — `apps/worker/src/tasks/clip-render-attempt.ts` + `apps/worker/src/composition-ffmpeg-adapter.ts`.

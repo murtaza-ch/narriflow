@@ -200,20 +200,26 @@ describe("review handoff", () => {
 });
 
 test("Workspace access errors name the requirement without sales prompts", async () => {
-  for (const word of ["upgrade", "checkout", "billing", "http", "price", "subscribe"]) expect(MCP_WORKSPACE_ACCESS_MESSAGE.toLowerCase()).not.toContain(word);
   const client = await connect(oauth());
-  track(spyOn(workspaceService, "requireActor").mockResolvedValue({ ...actor, pricingTier: "pro" }));
-  const result = await client.callTool({ name: "narriflow_list_brand_profiles", arguments: { workspaceId: WORKSPACE } });
-  expect(data(result)).toMatchObject({ error: "integration_access_unavailable", message: MCP_WORKSPACE_ACCESS_MESSAGE });
+  const requireActor = track(spyOn(workspaceService, "requireActor").mockResolvedValue({ ...actor, pricingTier: "creator" }));
+  const planRefusal = data(await client.callTool({ name: "narriflow_list_brand_profiles", arguments: { workspaceId: WORKSPACE } }));
+  expect(planRefusal).toMatchObject({ error: "plan_feature_required", kind: "payment_required", retryGuidance: "review_billing",
+    details: { feature: "integrations.mcp", currentTier: "creator", requiredTier: "pro" } });
+  requireActor.mockResolvedValue({ ...actor, status: "restricted" });
+  const inactive = data(await client.callTool({ name: "narriflow_list_brand_profiles", arguments: { workspaceId: WORKSPACE } }));
+  expect(inactive).toMatchObject({ error: "integration_access_unavailable", message: MCP_WORKSPACE_ACCESS_MESSAGE });
+  for (const message of [String(planRefusal.message), MCP_WORKSPACE_ACCESS_MESSAGE]) {
+    for (const word of ["upgrade", "checkout", "billing", "http", "price", "subscribe"]) expect(message.toLowerCase()).not.toContain(word);
+  }
 });
 
-test("quota and per-video limits reach assistants as the requirement, without upgrade prompts", async () => {
-  track(spyOn(projectService, "queueLinkIngest").mockRejectedValue(new ExpectedDomainFailureError({ code: "processing_quota_exhausted", kind: "payment_required",
-    message: "This video needs 30 processing minutes, but the workspace has 10 of 1800 left this month on the business plan. Upgrade, or wait for next month's minutes.",
-    details: { tier: "business", limitMinutes: 1800, remainingMinutes: 10, requestedMinutes: 30 } })));
+test("credit and per-video limits reach assistants as the requirement, without upgrade prompts", async () => {
+  track(spyOn(projectService, "queueLinkIngest").mockRejectedValue(new ExpectedDomainFailureError({ code: "credits_exhausted", kind: "payment_required",
+    message: "This video needs 30 credits, but the workspace has 10 of 1800 Business credits left this month. Credits renew on 2026-11-01 (UTC), or upgrade for more.",
+    details: { tier: "business", limitCredits: 1800, remainingCredits: 10, requestedCredits: 30, renewsAt: "2026-11-01T00:00:00.000Z" } })));
   const client = await connect(oauth());
   const result = data(await client.callTool({ name: "narriflow_submit_video", arguments: { workspaceId: WORKSPACE, clientIdempotencyKey: KEY, url: "https://example.test/talk.mp4" } }));
-  expect(result).toMatchObject({ error: "processing_quota_exhausted", message: "This video needs 30 processing minutes, but the workspace has 10 of 1800 left this month.", details: { requestedMinutes: 30 } });
+  expect(result).toMatchObject({ error: "credits_exhausted", message: "This video needs 30 credits, but the workspace has 10 of 1800 left this month. Credits renew on 2026-11-01 (UTC).", details: { requestedCredits: 30 } });
   expect(String(result.message).toLowerCase()).not.toContain("upgrade");
   expect(mcpFailureMessage({ code: "upload_too_long", message: "Upgrade for longer videos.", details: { maxSeconds: 10_800 } })).toBe("This video is longer than the workspace's 180-minute per-video limit.");
 });

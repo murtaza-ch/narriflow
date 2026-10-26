@@ -4,8 +4,11 @@ import {
   WORKSPACE_BILLING_STRIPE_API_VERSION,
 } from "./billing.service";
 import { createWorkspaceBillingStripeContractHarness } from "./workspace-billing.stripe-test-support";
+import { PLAN_CATALOG } from "@narriflow/validators";
 import {
+  BILLING_INTERVALS,
   createBillingCatalog,
+  PAID_PRICING_TIERS,
   WORKSPACE_BILLING_WAKE_EVENT_TYPES,
 } from "./workspace-billing.service";
 
@@ -324,6 +327,110 @@ describe("Workspace Billing Stripe adapter contracts", () => {
           ? "sub_contract"
           : null,
       );
+    }
+  });
+
+  test("creates subscription Checkout with the requested short expiry", async () => {
+    const requests: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+    const fakeStripe = {
+      checkout: {
+        sessions: {
+          create: async (params: Record<string, unknown>, options: unknown) => {
+            requests.push({ params, options });
+            return {
+              id: "cs_contract_expiry",
+              url: "https://checkout.stripe.test/expiry",
+              expires_at: params.expires_at,
+              status: "open",
+              payment_status: "unpaid",
+              metadata: params.metadata,
+              client_reference_id: params.client_reference_id,
+            };
+          },
+        },
+      },
+    } as unknown as Stripe;
+    const adapter = createWorkspaceBillingStripeContractHarness().providerWith({
+      stripe: fakeStripe,
+      catalog: createBillingCatalog({
+        basePrices: PAID_PRICING_TIERS.flatMap((tier) =>
+          BILLING_INTERVALS.map((interval) => ({
+            priceId: `price_${tier}_${interval}`,
+            tier,
+            interval,
+          })),
+        ),
+        seatPrices: BILLING_INTERVALS.map((interval) => ({
+          priceId: `price_seat_${interval}`,
+          interval,
+        })),
+        worker: {
+          batchSize: 25,
+          concurrency: 4,
+          leaseMs: 60_000,
+          providerDeadlineMs: 10_000,
+          providerCallBudget: 4,
+        },
+      }),
+    });
+
+    const session = await adapter.createCheckoutSession!(
+      {
+        attemptId: "11111111-1111-4111-8111-222222222222",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        actorUserId: "11111111-1111-4111-8111-333333333333",
+        customerId: "cus_contract",
+        priceId: "price_pro_monthly",
+        successUrl: "https://app.test/settings/billing?checkout=return",
+        cancelUrl: "https://app.test/settings/billing?checkout=cancelled",
+        expiresAt: new Date("2026-10-26T10:31:00.000Z"),
+      },
+      "workspace-checkout-contract",
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.params).toMatchObject({
+      mode: "subscription",
+      expires_at: Math.floor(Date.parse("2026-10-26T10:31:00.000Z") / 1000),
+    });
+    expect(requests[0]!.options).toEqual({ idempotencyKey: "workspace-checkout-contract" });
+    expect(session.expiresAt.toISOString()).toBe("2026-10-26T10:31:00.000Z");
+  });
+
+  test("maps STRIPE_PRICE_<TIER>_<INTERVAL> for every paid catalog tier plus seat prices", () => {
+    expect(PAID_PRICING_TIERS).toEqual(
+      (Object.keys(PLAN_CATALOG) as Array<keyof typeof PLAN_CATALOG>).filter(
+        (tier) => tier !== "free",
+      ),
+    );
+    const names = [
+      ...PAID_PRICING_TIERS.flatMap((tier) =>
+        BILLING_INTERVALS.map(
+          (interval) => `STRIPE_PRICE_${tier.toUpperCase()}_${interval.toUpperCase()}`,
+        ),
+      ),
+      ...BILLING_INTERVALS.map(
+        (interval) => `STRIPE_PRICE_BUSINESS_SEAT_${interval.toUpperCase()}`,
+      ),
+    ];
+    const previous = Object.fromEntries(
+      ["STRIPE_SECRET_KEY", ...names].map((name) => [name, process.env[name]]),
+    );
+    try {
+      process.env.STRIPE_SECRET_KEY = "sk_test_workspace_billing_contract_fixture";
+      for (const name of names) process.env[name] = `price_${name.toLowerCase()}`;
+      const provider = createWorkspaceBillingStripeContractHarness().provider("core");
+      expect(provider.retrieveCurrentState).toBeFunction();
+
+      delete process.env.STRIPE_PRICE_BUSINESS_SEAT_ANNUAL;
+      expect(() => createWorkspaceBillingStripeContractHarness().provider("core")).toThrow(
+        expect.objectContaining({ code: "billing_catalog_invalid" }),
+      );
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
     }
   });
 });

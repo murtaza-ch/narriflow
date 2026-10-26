@@ -616,17 +616,17 @@ async function loadSceneSources(input: {
 		);
 	const workspace = await prisma.workspace.findUnique({
 		where: { id: input.workspaceId },
-		select: { personalOwnerUserId: true, pricingTier: true },
+		select: { personalOwnerUserId: true },
 	});
 	if (!workspace)
 		throw new RenderIOFailure(
 			"scene_asset_workspace_unavailable",
 			"Scene asset ownership could not be loaded",
 		);
-	const ownerWhere =
-		workspace.personalOwnerUserId && workspace.pricingTier !== "business"
-			? { userId: workspace.personalOwnerUserId, workspaceId: null }
-			: { workspaceId: input.workspaceId };
+	// Branding ownership follows the Workspace kind, never its plan.
+	const ownerWhere = workspace.personalOwnerUserId
+		? { userId: workspace.personalOwnerUserId, workspaceId: null }
+		: { workspaceId: input.workspaceId };
 	const [visuals, fonts] = await Promise.all([
 		input.visualIds.length
 			? prisma.visualAsset.findMany({

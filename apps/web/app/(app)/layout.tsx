@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { listUserWorkspaces } from "@narriflow/auth";
 import { admitOptionalWorkspacePage } from "@/lib/authenticated-request-page";
 import { Box } from "@chakra-ui/react";
-import { resolvePricingTier } from "@narriflow/validators";
+import { hasFeature, resolvePricingTier } from "@narriflow/validators";
 import { AppChrome } from "./_components/app-chrome";
 import { getCachedUsageSummary } from "./_components/usage";
 import { workspaceService, workspacesV1EnabledForUser, workspaceAllowsCapability,
@@ -50,8 +50,8 @@ export default async function AppLayout({ children,
         firstName={appUser.firstName}
         imageUrl={appUser.imageUrl}
         lastName={appUser.lastName}
-        usedMinutes={stats.usedMinutes}
-        limitMinutes={stats.limitMinutes}
+        remainingCredits={stats.remainingCredits}
+        limitCredits={stats.limitCredits}
         activeWorkspaceId={appUser.workspaceId}
         workspaceSelectionChanged={appUser.workspaceSelectionChanged}
         workspaceRole={appUser.workspace.role}
@@ -61,7 +61,7 @@ export default async function AppLayout({ children,
         workspaceMenu={{
           tier: resolvePricingTier(appUser.workspace.pricingTier),
           canManageApi: workspaceAllowsCapability(appUser.workspace, "api.manage"),
-          canInvite: workspaceAllowsCapability(appUser.workspace, "members.invite") && resolvePricingTier(appUser.workspace.pricingTier) === "business",
+          canInvite: workspaceAllowsCapability(appUser.workspace, "members.invite") && hasFeature(appUser.workspace.pricingTier, "workspace.members"),
           planAction,
         }}
         canCreateWorkspace={workspacesV1EnabledForUser(appUser.actorUserId)}

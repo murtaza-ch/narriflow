@@ -44,7 +44,7 @@ import {
   ClipEditorDocumentPersistenceError,
   ClipEditorRevisionConflictError,
 } from "./clip-editor-document-persistence";
-import { hasFeature } from "./plan-features";
+import { hasFeature, requirePlanFeature } from "./plan-features";
 import {
   assertCampaignActionWriteEnabled,
   assertProgramWriteEnabled,
@@ -66,7 +66,6 @@ const CAMPAIGN_OPERATION_FAILURES = {
   campaign_operation_admission_failed: "unavailable",
   campaign_operation_already_retried: "conflict",
   campaign_operation_claim_lost: "conflict",
-  campaign_operation_feature_unavailable: "forbidden",
   campaign_operation_forbidden: "forbidden",
   campaign_operation_idempotency_conflict: "conflict",
   campaign_operation_in_progress: "conflict",
@@ -115,22 +114,12 @@ function fingerprint(value: unknown) {
 }
 
 function assertCampaignBrandApplicationAllowed(scope: CampaignBrandActorScope) {
-  if (!hasFeature(scope.pricingTier as PricingTier, "campaign.operations")) {
-    throw new CampaignOperationError(
-      "campaign_operation_feature_unavailable",
-      "Selection-scoped brand actions require Pro or Business",
-    );
-  }
+  requirePlanFeature(scope.pricingTier, "campaign.operations");
   try {
     assertBrandApplicationAllowed(scope);
   } catch (error) {
     if (error instanceof BrandAccessError) {
-      throw new CampaignOperationError(
-        error.code === "brand_forbidden"
-          ? "campaign_operation_forbidden"
-          : "campaign_operation_feature_unavailable",
-        error.message,
-      );
+      throw new CampaignOperationError("campaign_operation_forbidden", error.message);
     }
     throw error;
   }
@@ -2045,12 +2034,7 @@ export class CampaignOperationService {
         "Motion cannot be applied with this Workspace role",
       );
     }
-    if (!hasFeature(scope.pricingTier, "campaign.operations")) {
-      throw new CampaignOperationError(
-        "campaign_operation_feature_unavailable",
-        "Applying motion to selected clips requires Pro or Business",
-      );
-    }
+    requirePlanFeature(scope.pricingTier, "campaign.operations");
 
     const input = applyMotionSelectedSchema.parse(value);
     const orderedClips = [...input.clips].sort((left, right) =>

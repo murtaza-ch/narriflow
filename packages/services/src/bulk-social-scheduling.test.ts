@@ -519,6 +519,7 @@ describe("bulk social scheduling", () => {
 			projectExists: async () => { mutableReads += 1; if (unavailable) throw new Error("project reader unavailable"); return true; },
 			readClip: async () => ({ editorRevision: 4 }),
 			readAccount: async () => ({ workspaceId: INPUT.workspaceId, platform: "youtube_shorts", status: "active", expiresAt: null, canRefresh: false }),
+			requirePublishableAccount: async () => {},
 			readExport: async () => ({
 				id: EXPORT_A, workspaceId: INPUT.workspaceId, projectId: INPUT.projectId, clipId: CLIP_A,
 				editorRevision: 4, resolution: "1080p", fingerprint: "frozen-export",

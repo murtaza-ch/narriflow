@@ -49,7 +49,7 @@ describe("Auto Censor review apply", () => {
       treatments: { caption_mask: true, mute: true, beep: true },
       paddingSec: 0.06,
       createId: () => crypto.randomUUID(),
-    })).toThrow("auto_censor_entitlement_required");
+    })).toThrow("plan_feature_required");
     expect(buildReviewedCensorSegments({
       suggestions: [suggestion],
       decisions: [{ fingerprint: suggestion.fingerprint, selected: true, treatment: "beep" }],

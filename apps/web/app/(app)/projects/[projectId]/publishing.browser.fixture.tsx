@@ -49,6 +49,7 @@ const accounts = [4, 5].map(
 			handle: null,
 			avatarUrl: null,
 			status: "active",
+			publishingEligible: true,
 			scopes: [],
 			expiresAt: null,
 			createdAt: "2026-09-01T00:00:00.000Z",

@@ -4,11 +4,30 @@ import Link from "next/link";
 
 /**
  * Inline plan-limit warning shown next to a disabled primary action. The
- * message is computed server-side so the specific limit copy survives
- * production Server-Action error redaction.
+ * message is computed server-side (see `planFeatureRequirement`) so the
+ * specific limit copy survives production Server-Action error redaction.
+ * Only the owner can change the plan; everyone else is told whom to ask.
  */
-export function PlanLimitNotice({ message }: { message: string | null }) {
+export function PlanLimitNotice({
+  message,
+  actionLabel = "Upgrade to keep generating.",
+  canManageBilling = true,
+}: {
+  message: string | null;
+  actionLabel?: string;
+  canManageBilling?: boolean;
+}) {
   if (!message) return null;
+  if (!canManageBilling) {
+    return (
+      <Flex align="flex-start" gap="1.5" mt="1.5" color="warning.fg">
+        <Box mt="0.5" flexShrink={0}>
+          <AlertTriangle size={13} aria-hidden />
+        </Box>
+        <Text fontSize="xs">{message} Ask the workspace owner to upgrade.</Text>
+      </Flex>
+    );
+  }
   return (
     <Flex align="flex-start" gap="1.5" mt="1.5" color="warning.fg">
       <Box mt="0.5" flexShrink={0}>
@@ -26,7 +45,7 @@ export function PlanLimitNotice({ message }: { message: string | null }) {
             transition="text-decoration-color 120ms ease"
             _hover={{ textDecorationColor: "fg" }}
           >
-            Upgrade to keep generating.
+            {actionLabel}
           </Text>
         </Link>
       </Text>

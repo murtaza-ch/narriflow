@@ -14,7 +14,6 @@ import { campaignOperationService } from "./campaign-operation.service";
 import { brandTemplateService } from "./brand-template.service";
 import { brandProfileService, BrandProfileNotFoundError } from "./brand-profile.service";
 import { recipeService } from "./recipe.service";
-import { BrandAccessError } from "./brand-ownership";
 import { ProgramWriteDisabledError } from "./program-rollout";
 import { workspaceService } from "./workspace.service";
 import { socialOAuthService } from "./social-oauth.service";
@@ -64,6 +63,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
         name: "RSS integration test",
         ownerUserId: user.id,
         personalOwnerUserId: user.id,
+        pricingTier: "business",
       },
     });
     workspaceId = workspace.id;
@@ -498,9 +498,10 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect((await saveRecipe(f, { brandProfileId: null }, "Plain")).finishing).toBeNull();
     });
 
-    test("finishing needs the Pro plan when a Recipe is saved and when a rule is pointed at one; a downgraded rule keeps importing with it off", async () => {
+    test("finishing and Autopilot need the Pro plan; a downgraded rule pauses before reading its feed and stays editable", async () => {
       const f = await businessFixture("finishing-plan");
-      const service = new AutopilotService({ fetchFeed: feedWith("downgraded-episode") });
+      let feedsRead = 0;
+      const service = new AutopilotService({ fetchFeed: async () => { feedsRead++; return feedWith("downgraded-episode")(); } });
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
       const finishing = { topClips: 2 };
       const recipe = await saveRecipe(f, { brandProfileId: null, finishing }, "Finished");
@@ -509,19 +510,25 @@ describeDb("Autopilot database concurrency and recovery", () => {
       const other = await service.createRule(scope, { name: "Plain rule", rssUrl: "https://feeds.example.test/plain.xml", recipeId: plain.id });
 
       await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
-      await expect(saveRecipe(f, { brandProfileId: null, finishing }, "Refused")).rejects.toMatchObject({ code: "recipe_finishing_plan_required" });
-      await expect(recipeService.update(scope, recipe.id, { expectedRevision: 1, finishing: { topClips: 5 } as never })).rejects.toMatchObject({ code: "recipe_finishing_plan_required" });
-      await expect(service.createRule(scope, { name: "Refused rule", rssUrl: "https://feeds.example.test/down.xml", recipeId: recipe.id })).rejects.toMatchObject({ code: "recipe_finishing_plan_required" });
-      await expect(service.updateRule(scope, other.id, { recipeId: recipe.id })).rejects.toMatchObject({ code: "recipe_finishing_plan_required" });
+      const finishingRefusal = { code: "plan_feature_required", kind: "payment_required", details: { feature: "campaign.operations", requiredTier: "pro" } };
+      await expect(saveRecipe(f, { brandProfileId: null, finishing }, "Refused")).rejects.toMatchObject(finishingRefusal);
+      await expect(recipeService.update(scope, recipe.id, { expectedRevision: 1, finishing: { topClips: 5 } as never })).rejects.toMatchObject(finishingRefusal);
+      await expect(service.createRule(scope, { name: "Refused rule", rssUrl: "https://feeds.example.test/down.xml", recipeId: plain.id })).rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "automation.autopilot", requiredTier: "pro" } });
+      await expect(service.updateRule(scope, other.id, { recipeId: recipe.id })).rejects.toMatchObject(finishingRefusal);
       expect((await prisma.autopilotRule.findUniqueOrThrow({ where: { id: other.id } })).recipeId).toBe(plain.id);
       // Leaving it alone, or turning it off, is always allowed.
       await expect(service.updateRule(scope, rule.id, { name: "Renamed" })).resolves.toMatchObject({ name: "Renamed" });
       await expect(recipeService.update(scope, recipe.id, { expectedRevision: 1, name: "Finished, renamed" })).resolves.toMatchObject({ revision: 2 });
 
+      feedsRead = 0;
       await onlyDue(rule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 1 });
-      const episode = await prisma.autopilotEpisode.findUniqueOrThrow({ where: { ruleId_episodeId: { ruleId: rule.id, episodeId: "downgraded-episode" } } });
-      expect(await prisma.project.findUniqueOrThrow({ where: { id: episode.projectId! } })).toMatchObject({ sourceType: "rss" });
+      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 0 });
+      expect(feedsRead).toBe(0);
+      expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ status: "paused", pauseKind: "plan", consecutiveFailures: 0, lastError: expect.stringContaining("Autopilot needs the Pro plan") });
+      expect(await prisma.autopilotEpisode.count({ where: { ruleId: rule.id } })).toBe(0);
+      // Paused, it stays readable and editable, and can't be turned back on without the plan.
+      await expect(service.listRules(scope)).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: rule.id, status: "paused", pauseKind: "plan" })]));
+      await expect(service.updateRule(scope, rule.id, { status: "active" })).rejects.toMatchObject({ code: "plan_feature_required" });
       expect((await recipeService.update(scope, recipe.id, { expectedRevision: 2, finishing: null })).finishing).toBeNull();
     });
 
@@ -551,7 +558,8 @@ describeDb("Autopilot database concurrency and recovery", () => {
       await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
       await onlyDue(downgradedRule.id);
       expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 0 });
-      expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: downgradedRule.id } })).toMatchObject({ status: "paused", consecutiveFailures: 0, lastError: expect.stringContaining('Brand Profile "Live brand"') });
+      // Free has no Autopilot, so the plan pause comes first; nothing imports unbranded either way.
+      expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: downgradedRule.id } })).toMatchObject({ status: "paused", pauseKind: "plan", consecutiveFailures: 0 });
       expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
     });
 
@@ -608,6 +616,44 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: viewerRule.id } })).toMatchObject({ status: "paused", consecutiveFailures: 0, lastError: expect.stringContaining("Dana Lee can no longer run this rule") });
     });
 
+    test("the plan's active-rule count bounds create, re-enable, run-now and takeover; a downgrade pauses the newest rules", async () => {
+      const f = await businessFixture("rule-count");
+      let feedsRead = 0;
+      const service = new AutopilotService({ fetchFeed: async () => { feedsRead++; return feedWith()(); } });
+      const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
+      const recipe = await saveRecipe(f, { brandProfileId: null });
+      const rule = (name: string) => service.createRule(scope, { name, rssUrl: "https://feeds.example.test/brand.xml", recipeId: recipe.id });
+      const rules = [];
+      for (const name of ["one", "two", "three", "four", "five"]) rules.push(await rule(name));
+      for (const [index, created] of rules.entries()) await prisma.autopilotRule.update({ where: { id: created.id }, data: { createdAt: new Date(Date.UTC(2026, 0, 1 + index)) } });
+
+      await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "pro" } });
+      await expect(rule("six")).rejects.toMatchObject({ code: "plan_limit_reached", details: { limit: "autopilotRules", used: 5, max: 3, requiredTier: "business" } });
+      // The poller keeps the three oldest and pauses the rest before reading their feeds.
+      feedsRead = 0;
+      for (const created of rules) {
+        await onlyDue(created.id);
+        await service.processDueRules();
+      }
+      const states = await prisma.autopilotRule.findMany({ where: { id: { in: rules.map((created) => created.id) } }, orderBy: { createdAt: "asc" }, select: { status: true, pauseKind: true } });
+      expect(states).toEqual([
+        { status: "active", pauseKind: null }, { status: "active", pauseKind: null }, { status: "active", pauseKind: null },
+        { status: "paused", pauseKind: "plan" }, { status: "paused", pauseKind: "plan" },
+      ]);
+      expect(feedsRead).toBe(3);
+
+      // Every way back on rechecks the count.
+      const paused = rules[4]!.id;
+      await expect(service.updateRule(scope, paused, { status: "active" })).rejects.toMatchObject({ code: "plan_limit_reached" });
+      await expect(service.triggerRuleNow(scope, paused)).rejects.toMatchObject({ code: "plan_limit_reached" });
+      await expect(service.takeOver({ actorUserId: f.owner.id, workspaceId: f.workspace.id }, paused)).rejects.toMatchObject({ code: "plan_limit_reached" });
+      // Editing a paused rule, or pausing an active one, needs no slot; pausing frees one.
+      await expect(service.updateRule(scope, paused, { name: "Renamed while paused" })).resolves.toMatchObject({ status: "paused" });
+      await service.updateRule(scope, rules[0]!.id, { status: "paused" });
+      await expect(service.updateRule(scope, paused, { status: "active" })).resolves.toMatchObject({ status: "active", pauseKind: null });
+      await expect(service.triggerRuleNow(scope, rules[0]!.id)).rejects.toMatchObject({ code: "plan_limit_reached" });
+    });
+
     test("a partial update keeps the schedule the rule already had", async () => {
       const f = await businessFixture("partial-update");
       const service = new AutopilotService({ fetchFeed: feedWith() });
@@ -638,16 +684,18 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect(bound.brandProfileId).toBe(profile.id);
       const unbranded = await saveRecipe(f, { brandProfileId: null }, "Unbranded");
       const rule = await service.createRule(scope, { name: "Rule", rssUrl: "https://feeds.example.test/brand.xml", recipeId: bound.id });
+      const loose = await service.createRule(scope, { name: "Loose", rssUrl: "https://feeds.example.test/brand.xml", recipeId: unbranded.id });
 
       await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
+      const brandRefusal = { code: "plan_feature_required", details: { feature: "brand.profiles" } };
       // Like link intake, an inapplicable default refuses the save instead of storing null.
-      await expect(saveRecipe(f, {}, "Default")).rejects.toBeInstanceOf(BrandAccessError);
-      await expect(saveRecipe(f, { brandProfileId: profile.id }, "Chosen")).rejects.toBeInstanceOf(BrandAccessError);
-      await expect(recipeService.update(scope, unbranded.id, { expectedRevision: 1, brandProfileId: profile.id })).rejects.toBeInstanceOf(BrandAccessError);
+      await expect(saveRecipe(f, {}, "Default")).rejects.toMatchObject(brandRefusal);
+      await expect(saveRecipe(f, { brandProfileId: profile.id }, "Chosen")).rejects.toMatchObject(brandRefusal);
+      await expect(recipeService.update(scope, unbranded.id, { expectedRevision: 1, brandProfileId: profile.id })).rejects.toMatchObject(brandRefusal);
       // A rule can't be created on, or moved to, a Recipe its saver couldn't have saved.
-      await expect(service.createRule(scope, { name: "Pointed", rssUrl: "https://feeds.example.test/brand.xml", recipeId: bound.id })).rejects.toBeInstanceOf(BrandAccessError);
-      const loose = await service.createRule(scope, { name: "Loose", rssUrl: "https://feeds.example.test/brand.xml", recipeId: unbranded.id });
-      await expect(service.updateRule(scope, loose.id, { recipeId: bound.id })).rejects.toBeInstanceOf(BrandAccessError);
+      // On Free, creating any rule is refused by the plan first.
+      await expect(service.createRule(scope, { name: "Pointed", rssUrl: "https://feeds.example.test/brand.xml", recipeId: bound.id })).rejects.toMatchObject({ code: "plan_feature_required" });
+      await expect(service.updateRule(scope, loose.id, { recipeId: bound.id })).rejects.toMatchObject(brandRefusal);
       // Choosing no profile stays possible.
       expect((await saveRecipe(f, { brandProfileId: null }, "None")).brandProfileId).toBeNull();
       expect((await service.updateRule(scope, rule.id, { recipeId: unbranded.id })).recipeId).toBe(unbranded.id);

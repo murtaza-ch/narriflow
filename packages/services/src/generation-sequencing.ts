@@ -65,7 +65,7 @@ export function isQuotaBlockedMidFlight(input: {
   ingestErrorCode: string | null | undefined;
 }): boolean {
   return (
-    input.ingestErrorCode === "processing_quota_exhausted" ||
+    input.ingestErrorCode === "credits_exhausted" ||
     input.ingestErrorCode === "upload_too_long"
   );
 }

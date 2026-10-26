@@ -5,7 +5,7 @@
         "label": "API key",
         "required": true,
         "editable": true,
-        "help": "A Workspace API key (`nf_...`) from Narriflow under Settings, then Developer access. The Workspace needs an active Business plan."
+        "help": "A Workspace API key (`nf_...`) from Narriflow under Settings, then Developer access. The Workspace needs an active Pro or Business plan."
     },
     {
         "name": "baseUrl",

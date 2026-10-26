@@ -92,11 +92,18 @@ describe("MCP tool admission", () => {
     expect(current.calls).toHaveLength(4);
   });
 
-  test("rechecks active Business entitlement and retains status capability denials", async () => {
+  test("rechecks the plan's MCP entitlement and retains status capability denials", async () => {
     const current = fixture();
     await current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID);
     current.actor.pricingTier = "pro";
-    await expect(current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).rejects.toMatchObject({ code: "integration_access_unavailable", kind: "payment_required" });
+    expect((await current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).pricingTier).toBe("pro");
+    for (const tier of ["free", "creator"] as const) {
+      current.actor.pricingTier = tier;
+      await expect(current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).rejects.toMatchObject({
+        code: "plan_feature_required", kind: "payment_required",
+        details: { feature: "integrations.mcp", currentTier: tier, requiredTier: "pro" },
+      });
+    }
     current.actor.pricingTier = "business";
     current.actor.role = "owner";
     current.actor.status = "restricted";
@@ -113,7 +120,7 @@ describe("MCP tool admission", () => {
     expect(current.calls[0]!.userId).toBe(USER_ID);
   });
 
-  test("OAuth discovery lists current memberships without Business and removal disappears on the next call", async () => {
+  test("OAuth discovery lists current memberships without a plan feature and removal disappears on the next call", async () => {
     const current = fixture();
     current.actor.pricingTier = "free";
     current.actor.status = "pending_payment";
@@ -125,7 +132,7 @@ describe("MCP tool admission", () => {
     expect(current.reads).toEqual([`memberships:${USER_ID}`, `memberships:${USER_ID}`]);
   });
 
-  test("key discovery needs no application scope or Business but preserves the content.view role/status check", async () => {
+  test("key discovery needs no application scope or plan feature but preserves the content.view role/status check", async () => {
     const current = fixture();
     current.actor.pricingTier = "free";
     expect(await current.admission.listWorkspaces(key)).toMatchObject([{ workspaceId: WORKSPACE_ID, mcpEnabled: false }]);

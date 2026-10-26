@@ -4,6 +4,7 @@ import { useActionState, useEffect } from "react";
 import { Box, Input, Stack, Text, chakra } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Select } from "@narriflow/ui/components/select";
+import { formatUsdCents, PLAN_CATALOG } from "@narriflow/validators";
 import { createBusinessWorkspaceAction, type CreateWorkspaceState } from "./actions";
 
 const INITIAL_STATE: CreateWorkspaceState = {};
@@ -54,15 +55,15 @@ export function CreateWorkspaceForm() {
             ariaLabel="Billing interval"
             disabled={Boolean(state.workspaceId) || pending}
             items={[
-              { value: "annual", label: "Annual — $312/year" },
-              { value: "monthly", label: "Monthly — $39/month" },
+              { value: "annual", label: `Annual — ${formatUsdCents(PLAN_CATALOG.business.annualPriceCents)}/year` },
+              { value: "monthly", label: `Monthly — ${formatUsdCents(PLAN_CATALOG.business.monthlyPriceCents)}/month` },
             ]}
           />
           {state.workspaceId && state.interval ? (
             <input type="hidden" name="interval" value={state.interval} />
           ) : null}
           <Text fontSize="12px" color="fg.subtle">
-            Includes the owner seat and 1,800 shared processing minutes. Additional Admins and Editors are billed per seat.
+            Includes the owner seat and {PLAN_CATALOG.business.limits.monthlyCredits.toLocaleString("en-US")} shared credits a month. Additional Admins and Editors are billed per seat.
           </Text>
         </Stack>
 

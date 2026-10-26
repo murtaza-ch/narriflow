@@ -3,13 +3,16 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
+import { lockWorkspaceUsage } from "./processing-usage";
 import {
   createBillingCatalog,
   createPrismaWorkspaceBillingStore,
   createWorkspaceBillingModule,
   WorkspaceBillingAttemptLost,
+  type ProviderCheckoutSession,
   type WorkspaceBillingProvider,
 } from "./workspace-billing.service";
+import { workspaceMembershipService } from "./workspace-membership.service";
 
 const databaseUrl = process.env.WORKSPACE_BILLING_TEST_DATABASE_URL;
 const databaseSchema = process.env.WORKSPACE_BILLING_TEST_DATABASE_SCHEMA;
@@ -72,7 +75,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     await pool?.end();
   });
 
-  async function createWorkspace(label: string) {
+  async function createWorkspace(label: string, options?: { team?: boolean }) {
     const suffix = randomUUID();
     const user = await prisma.user.create({
       data: {
@@ -84,7 +87,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       data: {
         name: `Billing ${label}`,
         ownerUserId: user.id,
-        personalOwnerUserId: user.id,
+        personalOwnerUserId: options?.team ? null : user.id,
         members: { create: { userId: user.id, role: "owner" } },
         billingAccount: { create: {} },
       },
@@ -189,59 +192,56 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     ]);
   });
 
-  test("concurrent Checkout starts settle on one durable attempt and provider identity", async () => {
-    const { user, workspace } = await createWorkspace("checkout-race");
-    const providerCustomers = new Map<string, string>();
-    const providerSessions = new Map<
-      string,
-      {
-        sessionId: string;
-        url: string;
-        expiresAt: Date;
-        status: "open";
-        paymentStatus: string;
-        workspaceId: string;
-        attemptId: string;
-      }
-    >();
+  /** A Stripe-like Checkout provider whose create calls honor idempotency keys. */
+  function checkoutProvider(workspaceId: string) {
+    const customers = new Map<string, string>();
+    const sessions = new Map<string, ProviderCheckoutSession>();
     const provider: WorkspaceBillingProvider = {
       verifyDelivery: () => {
         throw new Error("not used");
       },
-      retrieveCurrentState: async () => {
-        throw new Error("not used");
-      },
+      retrieveCurrentState: async (customerId) => ({
+        customerId,
+        ownership: { kind: "verified", workspaceId },
+        subscriptions: [],
+      }),
       findCustomersByWorkspace: async () => [],
       createCustomer: async (input, key) => {
-        const customerId = providerCustomers.get(key) ?? `cus_${input.workspaceId}`;
-        providerCustomers.set(key, customerId);
+        const customerId = customers.get(key) ?? `cus_${input.workspaceId}`;
+        customers.set(key, customerId);
         return { customerId };
       },
       findCheckoutSessionsByAttempt: async ({ attemptId }) =>
-        providerSessions.has(attemptId) ? [providerSessions.get(attemptId)!] : [],
+        [...sessions.values()].filter((session) => session.attemptId === attemptId),
       createCheckoutSession: async (input, key) => {
-        const session = providerSessions.get(input.attemptId) ?? {
+        const replay = [...sessions.values()].find(
+          (session) => session.attemptId === input.attemptId,
+        );
+        if (replay) return replay;
+        const session: ProviderCheckoutSession = {
           sessionId: `cs_${key}`,
-          url: "https://checkout.stripe.test/race",
+          url: `https://checkout.stripe.test/${sessions.size + 1}`,
           expiresAt: new Date("2026-08-28T11:00:00.000Z"),
-          status: "open" as const,
+          status: "open",
           paymentStatus: "unpaid",
           workspaceId: input.workspaceId,
           attemptId: input.attemptId,
         };
-        providerSessions.set(input.attemptId, session);
+        sessions.set(session.sessionId, session);
         return session;
       },
-      retrieveCheckoutSession: async (sessionId) =>
-        [...providerSessions.values()].find(
-          (session) => session.sessionId === sessionId,
-        )!,
+      retrieveCheckoutSession: async (sessionId) => sessions.get(sessionId)!,
     };
-    const store = createPrismaWorkspaceBillingStore();
+    return { provider, customers, sessions };
+  }
+
+  test("concurrent Checkout starts settle on one durable attempt and provider identity", async () => {
+    const { user, workspace } = await createWorkspace("checkout-race");
+    const world = checkoutProvider(workspace.id);
     const billing = createWorkspaceBillingModule({
       catalog,
-      store,
-      provider,
+      store: createPrismaWorkspaceBillingStore(),
+      provider: world.provider,
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
     });
@@ -260,26 +260,152 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     ]);
 
     expect(second).toEqual(first);
+    expect(world.customers.size).toBe(1);
+    expect(world.sessions.size).toBe(1);
+
+    // Two more tabs with their own keys resume the one open session.
+    const [third, fourth] = await Promise.all([
+      billing.startCheckout({ ...input, clientIdempotencyKey: randomUUID() }),
+      billing.startCheckout({ ...input, clientIdempotencyKey: randomUUID() }),
+    ]);
+    expect(third).toEqual(first);
+    expect(fourth).toEqual(first);
     expect(
       await prisma.workspaceCheckoutAttempt.count({
         where: { billingAccount: { workspaceId: workspace.id } },
       }),
     ).toBe(1);
-    expect(providerCustomers.size).toBe(1);
-    expect(providerSessions.size).toBe(1);
+    expect(world.sessions.size).toBe(1);
+  });
 
-    const retry = await billing.startCheckout({
-      ...input,
-      clientIdempotencyKey: randomUUID(),
+  test("concurrent different choices with different keys produce one provider session", async () => {
+    const { user, workspace } = await createWorkspace("checkout-choice-race");
+    const world = checkoutProvider(workspace.id);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store: createPrismaWorkspaceBillingStore(),
+      provider: world.provider,
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
     });
-    expect(retry.kind).toBe("checkout");
+    const start = (targetTier: "creator" | "pro" | "business") =>
+      billing.startCheckout({
+        workspaceId: workspace.id,
+        actorUserId: user.id,
+        clientIdempotencyKey: randomUUID(),
+        targetTier,
+        interval: "monthly",
+        returnDestination: "https://app.test/settings/billing",
+      });
+
+    const results = await Promise.allSettled([
+      start("creator"),
+      start("pro"),
+      start("business"),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    for (const result of results) {
+      if (result.status === "rejected") {
+        expect(result.reason).toMatchObject({ code: "checkout_in_progress" });
+      }
+    }
+    expect(world.sessions.size).toBe(1);
     expect(
       await prisma.workspaceCheckoutAttempt.count({
         where: { billingAccount: { workspaceId: workspace.id } },
       }),
-    ).toBe(2);
-    expect(providerCustomers.size).toBe(1);
-    expect(providerSessions.size).toBe(2);
+    ).toBe(1);
+
+    // A verified expiry frees the slot for the next choice.
+    const [session] = [...world.sessions.values()];
+    world.sessions.set(session!.sessionId, { ...session!, status: "expired", url: null });
+    expect(await start("business")).toMatchObject({ kind: "checkout" });
+    expect(world.sessions.size).toBe(2);
+    expect(
+      await prisma.workspaceCheckoutAttempt.count({
+        where: {
+          billingAccount: { workspaceId: workspace.id },
+          activeBillingAccountId: { not: null },
+        },
+      }),
+    ).toBe(1);
+  });
+
+  test("a stale unbound release and a session bind serialize: exactly one wins", async () => {
+    const { user, workspace } = await createWorkspace("slot-release-race");
+    const store = createPrismaWorkspaceBillingStore();
+    const now = new Date("2026-08-28T10:00:00.000Z");
+    for (let round = 0; round < 6; round += 1) {
+      const prepared = await store.prepareCheckoutAttempt({
+        workspaceId: workspace.id,
+        actorUserId: user.id,
+        clientIdempotencyKey: randomUUID(),
+        targetTier: "pro",
+        interval: "monthly",
+        catalogVersion: "pro:monthly:price_pro_monthly",
+        returnDestination: "https://app.test/settings/billing",
+        now,
+      });
+      expect(prepared.kind).toBe("created");
+      const attemptId = prepared.attempt.id;
+      const sessionId = `cs_release_race_${round}_${randomUUID()}`;
+
+      const [bind, release] = await Promise.allSettled([
+        store.bindCheckoutSession({ attemptId, sessionId, expiresAt: now, now }),
+        store.releaseCheckoutSlot({ attemptId, expectedSessionId: null, now }),
+      ]);
+      const row = await prisma.workspaceCheckoutAttempt.findUniqueOrThrow({
+        where: { id: attemptId },
+      });
+      if (bind.status === "fulfilled") {
+        // The bound holder keeps its slot; the stale release lost.
+        expect(release).toEqual({ status: "fulfilled", value: false });
+        expect(row).toMatchObject({
+          providerSessionId: sessionId,
+          activeBillingAccountId: row.billingAccountId,
+        });
+        // A release that verified the bound session may still free it.
+        expect(
+          await store.releaseCheckoutSlot({ attemptId, expectedSessionId: sessionId, now }),
+        ).toBe(true);
+      } else {
+        expect(release).toEqual({ status: "fulfilled", value: true });
+        expect(bind.reason).toMatchObject({ code: "checkout_attempt_terminal" });
+        expect(row).toMatchObject({ providerSessionId: null, activeBillingAccountId: null });
+      }
+    }
+  });
+
+  test("the schema admits one Checkout slot holder on its own account", async () => {
+    const first = await createWorkspace("slot-schema-first");
+    const second = await createWorkspace("slot-schema-second");
+    const attempt = async (billingAccountId: string, activeBillingAccountId: string) => {
+      const id = randomUUID();
+      return await prisma.workspaceCheckoutAttempt.create({
+        data: {
+          id,
+          billingAccountId,
+          activeBillingAccountId,
+          actorUserId: first.user.id,
+          clientIdempotencyKey: randomUUID(),
+          targetTier: "pro",
+          interval: "monthly",
+          catalogVersion: "pro:monthly:price_pro_monthly",
+          returnDestination: "https://app.test/settings/billing",
+          customerOperationKey: `workspace-customer-${id}`,
+          checkoutOperationKey: `workspace-checkout-${id}`,
+        },
+      });
+    };
+    const firstAccount = first.workspace.billingAccount!.id;
+    const secondAccount = second.workspace.billingAccount!.id;
+
+    await attempt(firstAccount, firstAccount);
+    await expect(attempt(firstAccount, firstAccount)).rejects.toMatchObject({
+      code: "P2002",
+    });
+    await expect(attempt(secondAccount, firstAccount)).rejects.toThrow();
   });
 
   test("accepts one delivery and wakes its account atomically under concurrency", async () => {
@@ -816,5 +942,218 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         where: { id: delivery.id },
       }),
     ).toMatchObject({ status: "accepted" });
+  });
+
+  test("Business to Pro with a member restricts, and removing the member lifts it", async () => {
+    const { user, workspace } = await createWorkspace("team-downgrade", { team: true });
+    const viewer = await prisma.user.create({
+      data: {
+        clerkId: `billing-db-viewer-${randomUUID()}`,
+        primaryEmail: `billing-viewer-${randomUUID()}@example.test`,
+      },
+    });
+    const member = await prisma.workspaceMember.create({
+      data: { workspaceId: workspace.id, userId: viewer.id, role: "viewer" },
+    });
+    await prisma.workspace.update({
+      where: { id: workspace.id },
+      data: { pricingTier: "business" },
+    });
+    await prisma.workspaceBillingAccount.update({
+      where: { workspaceId: workspace.id },
+      data: { providerCustomerId: `cus_team_${workspace.id}` },
+    });
+    let now = new Date("2026-08-28T10:00:00.000Z");
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store: createPrismaWorkspaceBillingStore(),
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: `cus_team_${workspace.id}`,
+          ownership: { kind: "verified", workspaceId: workspace.id },
+          subscriptions: [
+            {
+              id: `sub_team_${workspace.id}`,
+              status: "active",
+              items: [{ id: "si_team", priceId: "price_pro_monthly", quantity: 1 }],
+              createdAt: now,
+              effectiveAt: now,
+              currentPeriodEnd: new Date("2026-09-28T10:00:00.000Z"),
+              trialEnd: null,
+              cancelAtPeriodEnd: false,
+            },
+          ],
+        }),
+      },
+      clock: { now: () => now },
+      diagnostics: { record: () => undefined },
+    });
+
+    expect(await billing.reconcileCurrentState(workspace.id)).toMatchObject({
+      kind: "reconciled",
+      view: { plan: "pro", workspaceAccessStatus: "restricted" },
+    });
+    expect(
+      await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } }),
+    ).toMatchObject({ pricingTier: "pro", status: "restricted" });
+
+    await workspaceMembershipService.removeMember(user.id, workspace.id, member.id);
+    const woken = await prisma.workspaceBillingAccount.findUniqueOrThrow({
+      where: { workspaceId: workspace.id },
+    });
+    expect(woken.nextReconcileAt.getTime()).toBeLessThanOrEqual(Date.now());
+    now = new Date("2026-08-28T10:01:00.000Z");
+    expect(await billing.reconcileCurrentState(workspace.id)).toMatchObject({
+      view: { plan: "pro", workspaceAccessStatus: "active" },
+    });
+  });
+
+  test("below Business only demotion and removal are allowed; any elevation is refused", async () => {
+    const { user: owner, workspace } = await createWorkspace("restricted-roles", {
+      team: true,
+    });
+    const memberUser = async (label: string) =>
+      prisma.user.create({
+        data: {
+          clerkId: `billing-db-${label}-${randomUUID()}`,
+          primaryEmail: `billing-${label}-${randomUUID()}@example.test`,
+        },
+      });
+    const [editorUser, adminUser, viewerUser] = await Promise.all([
+      memberUser("editor"),
+      memberUser("admin"),
+      memberUser("viewer"),
+    ]);
+    const editor = await prisma.workspaceMember.create({
+      data: { workspaceId: workspace.id, userId: editorUser.id, role: "editor" },
+    });
+    const admin = await prisma.workspaceMember.create({
+      data: { workspaceId: workspace.id, userId: adminUser.id, role: "admin" },
+    });
+    const viewer = await prisma.workspaceMember.create({
+      data: { workspaceId: workspace.id, userId: viewerUser.id, role: "viewer" },
+    });
+    // The verified Business -> Pro projection with members left behind.
+    await prisma.workspace.update({
+      where: { id: workspace.id },
+      data: { pricingTier: "pro", status: "restricted" },
+    });
+    await prisma.workspaceBillingAccount.update({
+      where: { workspaceId: workspace.id },
+      data: { desiredAdditionalSeats: 2 },
+    });
+
+    for (const [memberId, role] of [
+      [editor.id, "admin"],
+      [viewer.id, "editor"],
+      [viewer.id, "admin"],
+    ] as const) {
+      await expect(
+        workspaceMembershipService.changeRole(owner.id, workspace.id, memberId, role),
+      ).rejects.toMatchObject({
+        code: "plan_feature_required",
+        details: { feature: "workspace.members", currentTier: "pro" },
+      });
+    }
+    expect(
+      await prisma.workspaceMember.findUniqueOrThrow({ where: { id: editor.id } }),
+    ).toMatchObject({ role: "editor" });
+
+    await workspaceMembershipService.changeRole(owner.id, workspace.id, admin.id, "editor");
+    await workspaceMembershipService.changeRole(owner.id, workspace.id, editor.id, "viewer");
+    await workspaceMembershipService.removeMember(owner.id, workspace.id, viewer.id);
+    expect(
+      await prisma.workspaceMember.findMany({
+        where: { workspaceId: workspace.id, role: { not: "owner" } },
+        select: { id: true, role: true },
+        orderBy: { id: "asc" },
+      }),
+    ).toEqual(
+      [
+        { id: admin.id, role: "editor" },
+        { id: editor.id, role: "viewer" },
+      ].sort((left, right) => left.id.localeCompare(right.id)),
+    );
+    expect(
+      await prisma.workspaceBillingAccount.findUniqueOrThrow({
+        where: { workspaceId: workspace.id },
+      }),
+    ).toMatchObject({ desiredAdditionalSeats: 1 });
+
+    // On Business the same elevation is allowed.
+    await prisma.workspace.update({
+      where: { id: workspace.id },
+      data: { pricingTier: "business", status: "active" },
+    });
+    await expect(
+      workspaceMembershipService.changeRole(owner.id, workspace.id, admin.id, "admin"),
+    ).resolves.toMatchObject({ role: "admin" });
+  });
+
+  test("access projection commits wait behind the Workspace usage lock", async () => {
+    const { workspace } = await createWorkspace("usage-lock");
+    await prisma.workspaceBillingAccount.update({
+      where: { workspaceId: workspace.id },
+      data: { providerCustomerId: `cus_lock_${workspace.id}` },
+    });
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store: createPrismaWorkspaceBillingStore(),
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: `cus_lock_${workspace.id}`,
+          ownership: { kind: "verified", workspaceId: workspace.id },
+          subscriptions: [
+            {
+              id: `sub_lock_${workspace.id}`,
+              status: "active",
+              items: [{ priceId: "price_creator_monthly", quantity: 1 }],
+              createdAt: new Date("2026-08-28T09:00:00.000Z"),
+              effectiveAt: new Date("2026-08-28T09:00:00.000Z"),
+              currentPeriodEnd: new Date("2026-09-28T09:00:00.000Z"),
+              trialEnd: null,
+              cancelAtPeriodEnd: false,
+            },
+          ],
+        }),
+      },
+      clock: { now: () => new Date() },
+      diagnostics: { record: () => undefined },
+    });
+    let releaseLock!: () => void;
+    let lockHeld!: () => void;
+    const held = new Promise<void>((resolve) => {
+      lockHeld = resolve;
+    });
+    const holder = prisma.$transaction(async (tx) => {
+      await lockWorkspaceUsage(tx, workspace.id);
+      lockHeld();
+      await new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+    });
+    await held;
+    let settled = false;
+    const reconciling = billing.reconcileCurrentState(workspace.id).then((result) => {
+      settled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(settled).toBe(false);
+    expect(
+      await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } }),
+    ).toMatchObject({ pricingTier: "free" });
+    releaseLock();
+    await holder;
+    expect(await reconciling).toMatchObject({
+      kind: "reconciled",
+      view: { plan: "creator", workspaceAccessStatus: "active" },
+    });
   });
 });

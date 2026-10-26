@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { type Prisma, PrismaClient } from "@prisma/client";
-import { PROCESSING_CAPACITY_DEFAULTS } from "@narriflow/validators";
+import { processingCapacityFromEnv } from "./processing-usage-runtime";
 import { Pool } from "pg";
 import { freezeGenerationFinishing } from "./generation-finishing";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
@@ -109,7 +109,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     await prisma.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 3, clipDurationSecTarget: 45,
       platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "test", defaultAspectRatio: "1:1",
       finishing: { topClips: 2, minScore: 40, copyPlatforms: ["tiktok"], resolution: "1080p", delivery: "ready_to_review" } } });
-    const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, capacityLimits: PROCESSING_CAPACITY_DEFAULTS, log: () => {} }),
+    const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, capacityLimits: processingCapacityFromEnv({}), log: () => {} }),
       requireRetryActor: async () => {}, sourceBucket: "finishing-test" });
 
     expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
@@ -135,7 +135,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
       await prisma.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 3, clipDurationSecTarget: 45,
         platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "test", defaultAspectRatio: "1:1", autopilotRuleId,
         finishing: { topClips: 2, minScore: 40, copyPlatforms: [], resolution: "1080p", delivery: "ready_to_review" } } });
-      const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, capacityLimits: PROCESSING_CAPACITY_DEFAULTS, log: () => {} }),
+      const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, capacityLimits: processingCapacityFromEnv({}), log: () => {} }),
         requireRetryActor: async () => {}, sourceBucket: "finishing-test" });
       expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
       const run = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "stt" } });
@@ -170,7 +170,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     const run = await prisma.workflowRun.create({ data: { projectId: f.project.id, stage: "stt", status: runStatus, errorCode: runStatus === "failed" ? "transcription_failed" : null,
       idempotencyKey: `other-path:${randomUUID()}`, contentPackId: pack.id } });
     if (existingFinishing) await freeze(f, run.id, existingFinishing);
-    const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, capacityLimits: PROCESSING_CAPACITY_DEFAULTS, log: () => {} }),
+    const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, capacityLimits: processingCapacityFromEnv({}), log: () => {} }),
       requireRetryActor: async () => {}, sourceBucket: "finishing-test" });
     return { f, job, run, lifecycle };
   }
@@ -214,7 +214,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
       periodStart: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)), reservedSeconds: 60, state: "reserved" } });
     await prisma.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 3, clipDurationSecTarget: 45,
       platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "test" } });
-    const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, capacityLimits: PROCESSING_CAPACITY_DEFAULTS, log: () => {} }),
+    const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, capacityLimits: processingCapacityFromEnv({}), log: () => {} }),
       requireRetryActor: async () => {}, sourceBucket: "finishing-test" });
     expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
     expect(await prisma.generationFinishing.count({ where: { projectId: f.project.id } })).toBe(0);

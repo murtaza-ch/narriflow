@@ -31,7 +31,7 @@ export function buildReviewedCensorSegments(input: {
   paddingSec: number;
   createId: () => string;
 }): { segments: CensorSegment[]; applied: CensorSegment[] } {
-  if (!input.canApply) throw new Error("auto_censor_entitlement_required");
+  if (!input.canApply) throw new Error("plan_feature_required");
   const decisions = new Map(input.decisions.map((decision) => [decision.fingerprint, decision]));
   const existingFingerprints = new Set(
     input.existing.flatMap((segment) => segment.suggestionFingerprint ? [segment.suggestionFingerprint] : []),

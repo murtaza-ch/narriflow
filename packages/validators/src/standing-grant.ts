@@ -23,7 +23,7 @@ export const STANDING_GRANT_MAX_WEEKLY_CAP = 100;
 export const STANDING_GRANT_MAX_REVIEWERS = 25;
 
 /** Why a grant is paused. A person's pause is `manual`; the rest are the system's. */
-export const STANDING_GRANT_PAUSE_REASONS = ["manual", "post_failed", "post_needs_attention", "granter_unavailable", "rule_changed"] as const;
+export const STANDING_GRANT_PAUSE_REASONS = ["manual", "post_failed", "post_needs_attention", "granter_unavailable", "rule_changed", "plan_lost"] as const;
 export const standingGrantPauseReasonSchema = z.enum(STANDING_GRANT_PAUSE_REASONS);
 export type StandingGrantPauseReason = z.infer<typeof standingGrantPauseReasonSchema>;
 
@@ -33,6 +33,7 @@ const PAUSE_MESSAGES: Record<StandingGrantPauseReason, string> = {
   post_needs_attention: "A post accepted under this grant needs attention, so it paused.",
   granter_unavailable: "The person who granted this is no longer an Owner or Admin, so it paused.",
   rule_changed: "The Autopilot rule or its Brand Profile's approval rule changed after this was granted, so it paused. Renew it to approve the new settings.",
+  plan_lost: "The Workspace's plan no longer covers this grant, so it paused. It stays paused after a plan change; renew it to turn it back on.",
 };
 
 export function standingGrantPauseMessage(reason: string | null): string | null {

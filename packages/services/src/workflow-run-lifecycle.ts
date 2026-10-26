@@ -25,6 +25,7 @@ import {
 } from "./media-cleanup";
 import { queueExportFinished, queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
+import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 
 export const WORKFLOW_LEASE_DURATION_MS = 2 * 60 * 1000;
@@ -1713,6 +1714,23 @@ export class WorkflowRunLifecycle {
   async markDubProcessing(attempt: WorkflowAttemptRef, dubId: string) {
     return this.transaction(async (tx) => {
       await this.fenceChildMutation(tx, attempt, "dubbing");
+      // No provider call starts without the dub's own live count.
+      const usage = await tx.generatedMediaUsageReservation.findUnique({
+        where: { jobId: dubId },
+        select: { kind: true, status: true },
+      });
+      if (usage?.kind !== "dub" || usage.status !== "reserved") {
+        await tx.clipDub.updateMany({
+          where: { id: dubId, projectId: attempt.projectId, status: "queued" },
+          data: {
+            status: "failed",
+            workflowAttemptId: attempt.attemptId,
+            errorCode: "dub_usage_not_reserved",
+            completedAt: new Date(),
+          },
+        });
+        return { count: 0 };
+      }
       return tx.clipDub.updateMany({
         where: { id: dubId, projectId: attempt.projectId, status: "queued" },
         data: {
@@ -1732,7 +1750,7 @@ export class WorkflowRunLifecycle {
   ) {
     return this.transaction(async (tx) => {
       await this.fenceChildMutation(tx, attempt, "dubbing");
-      return tx.clipDub.updateMany({
+      const completed = await tx.clipDub.updateMany({
         where: {
           id: dubId,
           projectId: attempt.projectId,
@@ -1741,6 +1759,11 @@ export class WorkflowRunLifecycle {
         },
         data,
       });
+      // Usable output and its count commit together.
+      if (completed.count === 1) {
+        await finalizeGenerationUsage(tx, { kind: "dub", jobId: dubId, units: 1 });
+      }
+      return completed;
     });
   }
 
@@ -2364,6 +2387,12 @@ export class WorkflowRunLifecycle {
       succeededCount,
       failedCount,
     });
+    if (failedCount === 0) return;
+    // The run is terminal, so its failed dubs are known failures. A crash
+    // here leaves them to the generation usage sweep.
+    await this.prisma.$transaction((tx) =>
+      releaseFailedDubUsage(tx, { projectId: attempt.projectId, attemptId: attempt.attemptId, reason: "dub_failed" }),
+    );
   }
 
   async completeAggregateStage(
@@ -2728,6 +2757,15 @@ export class WorkflowRunLifecycle {
       }
     }
     if (attempt.stage === "dubbing") {
+      // A requeued dub keeps its count for the retry; a terminal failure returns it.
+      if (!outcome.requeue) {
+        await releaseFailedDubUsage(tx, {
+          projectId: attempt.projectId,
+          attemptId: attempt.attemptId,
+          reason: outcome.errorCode,
+          includeProcessing: true,
+        });
+      }
       await tx.clipDub.updateMany({
         where: {
           projectId: attempt.projectId,

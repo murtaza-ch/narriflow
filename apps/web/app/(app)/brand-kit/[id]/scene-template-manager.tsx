@@ -1,5 +1,6 @@
 "use client";
 
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { Box, Button, Flex, Grid, Input, Stack, Text } from "@chakra-ui/react";
 import { Check, Plus, Trash2, Type } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -24,7 +25,7 @@ export interface SceneTemplateFont {
 	missing: boolean;
 }
 
-export function SceneTemplateManager({ profileId, scenes, fonts, canManageDefaults }: { profileId: string; scenes: SceneTemplateCard[]; fonts: SceneTemplateFont[]; canManageDefaults: boolean }) {
+export function SceneTemplateManager({ profileId, scenes, fonts, canManageDefaults, createRequirement }: { profileId: string; scenes: SceneTemplateCard[]; fonts: SceneTemplateFont[]; canManageDefaults: boolean; /** Why the plan can't create scenes; `null` when it can. Deleting stays available. */ createRequirement: string | null }) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [text, setText] = useState("Opening title");
@@ -66,7 +67,8 @@ export function SceneTemplateManager({ profileId, scenes, fonts, canManageDefaul
             {(["intro", "inline", "outro"] as const).map((value) => <Button key={value} flex="1" size="sm" variant={role === value ? "subtle" : "ghost"} {...(role === value ? { bg: "accent.subtle", color: "accent.fg", _hover: { bg: "accent.subtle" } } : {})} onClick={() => setRole(value)}>{value}</Button>)}
           </Flex>
           <Flex gap="3" align="center"><Text fontSize="13px" color="fg.muted">Duration</Text><Input type="number" min="1" max="30" step="0.5" value={durationSec} onChange={(event) => setDurationSec(Math.min(30, Math.max(1, Number(event.target.value) || 1)))} /></Flex>
-          <Button colorPalette="brand" disabled={!name.trim() || !text.trim() || busy !== null} onClick={create}><Plus size={15} />Save scene</Button>
+          <Button colorPalette="brand" disabled={!name.trim() || !text.trim() || busy !== null || createRequirement !== null} onClick={create}><Plus size={15} />Save scene</Button>
+          <PlanLimitNotice message={createRequirement} actionLabel="See plans." />
           {error ? <Text color="danger.fg" fontSize="12px">{error}</Text> : null}
         </Stack>
 

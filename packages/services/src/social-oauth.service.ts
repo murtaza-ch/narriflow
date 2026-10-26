@@ -16,6 +16,13 @@ import {
 	type SocialPlatform,
 } from "@narriflow/validators";
 import { SOCIAL_PROVIDER_CAPABILITIES } from "./social-publication-config";
+import { planLimits, requireWithinPlanLimit } from "./plan-features";
+import {
+	lockWorkspaceSocialAccounts,
+	publishableSocialAccountIds,
+	readPublishableSocialAccountIds,
+	SOCIAL_DESTINATION_SLOT_WHERE,
+} from "./social-account-eligibility";
 
 const CALLBACK_PATH = "/api/social/oauth/callback";
 const DEFAULT_REDIRECT_PATH = "/settings/social-accounts";
@@ -296,7 +303,7 @@ function toSnapshot(row: {
 	postingSchedule: Prisma.JsonValue | null;
 	createdAt: Date;
 	updatedAt: Date;
-}): SocialAccountSnapshot {
+}, publishingEligible: boolean): SocialAccountSnapshot {
 	return {
 		id: row.id,
 		platform: row.platform as SocialPlatform,
@@ -308,6 +315,7 @@ function toSnapshot(row: {
 		expiresAt: row.expiresAt?.toISOString() ?? null,
 		status: row.status as SocialAccountSnapshot["status"],
 		postingSchedule: parsePostingSchedule(row.postingSchedule),
+		publishingEligible,
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 	};
@@ -317,16 +325,18 @@ export class SocialOAuthService {
 	async listAccounts(
 		scope: ActorScope,
 	): Promise<SocialAccountSnapshot[]> {
-		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
+		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		const prisma = requirePrisma();
 		const rows = await prisma.socialAccount.findMany({
 			where: {
 				workspaceId: scope.workspaceId,
-				status: { not: "revoked" },
+				...SOCIAL_DESTINATION_SLOT_WHERE,
 			},
 			orderBy: [{ platform: "asc" }, { createdAt: "desc" }],
 		});
-		return rows.map(toSnapshot);
+		// Every slot-holding account is listed, so the plan's choice can be made from these rows.
+		const eligible = publishableSocialAccountIds(actor.pricingTier, rows);
+		return rows.map((row) => toSnapshot(row, eligible.has(row.id)));
 	}
 
 	async disconnectAccount(
@@ -638,60 +648,109 @@ export class SocialOAuthService {
 		};
 	}
 
+	/** Saves one connected account; see `saveAccounts`. */
 	private async upsertAccount(
 		scope: SocialCredentialScope,
 		platform: SocialPlatform,
 		input: ConnectedAccountInput,
 		client?: Prisma.TransactionClient,
 	) {
-		const prisma = client ?? requirePrisma();
-		const existing = await prisma.socialAccount.findUnique({
-			where: {
-				workspaceId_platform_providerAccountId: {
-					workspaceId: scope.workspaceId,
-					platform,
-					providerAccountId: input.providerAccountId,
-				},
-			},
-		});
+		const [saved] = await this.saveAccounts(scope, platform, [input], client);
+		return saved!;
+	}
 
-		const encryptedAccessToken = encryptToken(input.accessToken);
-		const encryptedRefreshToken =
-			input.refreshToken === undefined
-				? (existing?.refreshTokenEncrypted ?? null)
-				: input.refreshToken
-					? encryptToken(input.refreshToken)
-					: null;
-
-		const data = {
-			displayName: input.displayName,
-			handle: input.handle ?? null,
-			avatarUrl: input.avatarUrl ?? null,
-			accessTokenEncrypted: encryptedAccessToken,
-			refreshTokenEncrypted: encryptedRefreshToken,
-			scopes: input.scopes,
-			expiresAt: input.expiresAt ?? null,
-			status: "active" as const,
-			metadata: input.metadata ?? Prisma.JsonNull,
-		};
-
-		const row = existing
-			? await prisma.socialAccount.update({
-					where: { id: existing.id },
-					data,
-				})
-			: await prisma.socialAccount.create({
-					data: {
-						userId: scope.credentialOwnerUserId,
-						workspaceId: scope.workspaceId,
-						createdByUserId: scope.actorUserId,
-						platform,
-						providerAccountId: input.providerAccountId,
-						...data,
+	/**
+	 * Saves the destinations one OAuth grant returned, under the Workspace's
+	 * account lock. Reconnecting an account that already holds a slot is free;
+	 * a new or revoked one takes a free slot of the plan's `socialDestinations`.
+	 * Destinations beyond the free slots are skipped, in provider order, and
+	 * the grant is refused only when none could be saved.
+	 */
+	private async saveAccounts(
+		scope: SocialCredentialScope,
+		platform: SocialPlatform,
+		inputs: ConnectedAccountInput[],
+		client?: Prisma.TransactionClient,
+	): Promise<SocialAccountSnapshot[]> {
+		const run = async (tx: Prisma.TransactionClient) => {
+			await lockWorkspaceSocialAccounts(tx, scope.workspaceId);
+			const workspace = await tx.workspace.findUnique({ where: { id: scope.workspaceId }, select: { pricingTier: true } });
+			const tier = workspace?.pricingTier ?? null;
+			const max = planLimits(tier).socialDestinations;
+			let used = await tx.socialAccount.count({ where: { workspaceId: scope.workspaceId, ...SOCIAL_DESTINATION_SLOT_WHERE } });
+			const saved: Parameters<typeof toSnapshot>[0][] = [];
+			let skipped = 0;
+			for (const input of inputs) {
+				const existing = await tx.socialAccount.findUnique({
+					where: {
+						workspaceId_platform_providerAccountId: {
+							workspaceId: scope.workspaceId,
+							platform,
+							providerAccountId: input.providerAccountId,
+						},
 					},
 				});
+				const takesSlot = !existing || existing.status === "revoked";
+				if (takesSlot && used >= max) {
+					skipped += 1;
+					continue;
+				}
+				if (takesSlot) used += 1;
 
-		return toSnapshot(row);
+				const encryptedAccessToken = encryptToken(input.accessToken);
+				const encryptedRefreshToken =
+					input.refreshToken === undefined
+						? (existing?.refreshTokenEncrypted ?? null)
+						: input.refreshToken
+							? encryptToken(input.refreshToken)
+							: null;
+
+				const data = {
+					displayName: input.displayName,
+					handle: input.handle ?? null,
+					avatarUrl: input.avatarUrl ?? null,
+					accessTokenEncrypted: encryptedAccessToken,
+					refreshTokenEncrypted: encryptedRefreshToken,
+					scopes: input.scopes,
+					expiresAt: input.expiresAt ?? null,
+					status: "active" as const,
+					metadata: input.metadata ?? Prisma.JsonNull,
+				};
+
+				const row = existing
+					? await tx.socialAccount.update({
+							where: { id: existing.id },
+							data,
+						})
+					: await tx.socialAccount.create({
+							data: {
+								userId: scope.credentialOwnerUserId,
+								workspaceId: scope.workspaceId,
+								createdByUserId: scope.actorUserId,
+								platform,
+								providerAccountId: input.providerAccountId,
+								...data,
+							},
+						});
+				saved.push(row);
+			}
+			if (skipped > 0) {
+				// Nothing could be saved, so the grant is refused with the plan's limit.
+				if (saved.length === 0) requireWithinPlanLimit(tier, "socialDestinations", used, 1);
+				console.warn(JSON.stringify({
+					level: "warn",
+					message: "social_accounts_skipped_for_plan_limit",
+					workspaceId: scope.workspaceId,
+					platform,
+					saved: saved.length,
+					skipped,
+					max,
+				}));
+			}
+			const { eligible } = await readPublishableSocialAccountIds(tx, scope.workspaceId, tier);
+			return saved.map((row) => toSnapshot(row, eligible.has(row.id)));
+		};
+		return client ? run(client) : requirePrisma().$transaction(run);
 	}
 
 	private tiktokAuthorizationUrl(state: string, redirectUri: string) {
@@ -1000,42 +1059,35 @@ export class SocialOAuthService {
 			}>;
 		};
 
-		const connected: SocialAccountSnapshot[] = [];
+		const destinations: ConnectedAccountInput[] = [];
 		for (const page of pages.data ?? []) {
 			const ig = page.instagram_business_account;
 			if (!ig?.id || !page.access_token) continue;
-			connected.push(
-				await this.upsertAccount(
-					scope,
-					"instagram_reels",
-					{
-						providerAccountId: ig.id,
-						displayName:
-							ig.name || ig.username || page.name || "Instagram account",
-						handle: ig.username ? `@${ig.username}` : null,
-						avatarUrl: ig.profile_picture_url ?? null,
-						accessToken: page.access_token,
-						refreshToken: null,
-						scopes: scopesFrom(shortToken.scope),
-						expiresAt: expiresAtFromSeconds(longToken.expires_in),
-						metadata: {
-							pageId: page.id ?? null,
-							pageName: page.name ?? null,
-							igUserId: ig.id,
-						},
-					},
-
-				),
-			);
+			destinations.push({
+				providerAccountId: ig.id,
+				displayName:
+					ig.name || ig.username || page.name || "Instagram account",
+				handle: ig.username ? `@${ig.username}` : null,
+				avatarUrl: ig.profile_picture_url ?? null,
+				accessToken: page.access_token,
+				refreshToken: null,
+				scopes: scopesFrom(shortToken.scope),
+				expiresAt: expiresAtFromSeconds(longToken.expires_in),
+				metadata: {
+					pageId: page.id ?? null,
+					pageName: page.name ?? null,
+					igUserId: ig.id,
+				},
+			});
 		}
 
-		if (connected.length === 0) {
+		if (destinations.length === 0) {
 			throw new SocialOAuthError(
 				"social_instagram_business_missing",
 				"No Instagram Business or Creator account connected to a Facebook Page was returned",
 			);
 		}
-		return connected;
+		return this.saveAccounts(scope, "instagram_reels", destinations);
 	}
 
 	private async connectFacebook(

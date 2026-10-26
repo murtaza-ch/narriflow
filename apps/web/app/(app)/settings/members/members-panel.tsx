@@ -15,7 +15,8 @@ import {
   revokeInviteAction,
 } from "../actions";
 import {
-  BUSINESS_ADDITIONAL_SEAT_PRICE,
+  BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS,
+  formatUsdCents,
   type WorkspaceBillingView,
 } from "@narriflow/validators";
 import { formatDate } from "@/lib/format";
@@ -148,7 +149,7 @@ export function MembersPanel({
     if (
       currentRole === "viewer" &&
       nextRole !== "viewer" &&
-      !window.confirm(`This role adds a paid seat ($${BUSINESS_ADDITIONAL_SEAT_PRICE.monthlyUsd}/month or $${BUSINESS_ADDITIONAL_SEAT_PRICE.annualUsd}/year). Continue?`)
+      !window.confirm(`This role adds a paid seat (${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.monthly)}/month or ${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.annual)}/year). Continue?`)
     ) return;
     setFeedback(null);
     startTransition(async () => {
@@ -201,7 +202,7 @@ export function MembersPanel({
           )}
           {isBusiness ? (
             <Text fontSize="12px" color="fg.subtle">
-              {role === "viewer" ? "Viewers are free." : `${role === "admin" ? "Admins" : "Editors"} add $${BUSINESS_ADDITIONAL_SEAT_PRICE.monthlyUsd}/month or $${BUSINESS_ADDITIONAL_SEAT_PRICE.annualUsd}/year after acceptance.`}
+              {role === "viewer" ? "Viewers are free." : `${role === "admin" ? "Admins" : "Editors"} add ${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.monthly)}/month or ${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.annual)}/year after acceptance.`}
             </Text>
           ) : null}
           {feedback ? <Text fontSize="12px" color={inviteUrl ? "fg" : "danger.fg"}>{feedback}</Text> : null}

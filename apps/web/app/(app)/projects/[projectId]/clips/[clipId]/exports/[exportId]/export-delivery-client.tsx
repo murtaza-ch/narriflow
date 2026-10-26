@@ -1,5 +1,6 @@
 "use client";
 
+import { PlanLimitNotice } from "../../../../../../_components/plan-limit-notice";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Box, Flex, Grid, HStack, Stack, Text } from "@chakra-ui/react";
@@ -87,9 +88,14 @@ function statusCopy(status: ClipExportSnapshot["status"]) {
 export function ExportDeliveryClient({
 	initialExport,
 	initialSeq,
+	timelineRequirement,
+	canManageBilling,
 }: {
 	initialExport: ClipExportSnapshot;
 	initialSeq: number;
+	/** Why the plan can't download editor timelines, computed server-side; `null` when it can. */
+	timelineRequirement: string | null;
+	canManageBilling: boolean;
 }) {
 	const [data, setData] = useState(initialExport);
 	const [selectedVariantId, setSelectedVariantId] = useState(
@@ -588,7 +594,7 @@ export function ExportDeliveryClient({
 										variant="subtle"
 										size="md"
 										flex="1"
-										disabled={timelineTarget !== null}
+										disabled={timelineTarget !== null || timelineRequirement !== null}
 										onClick={() => void downloadTimeline(format)}
 									>
 										{timelineTarget === format ? <Spinner size="xs" /> : <Film size={16} />}{" "}
@@ -600,12 +606,17 @@ export function ExportDeliveryClient({
 								variant="subtle"
 								size="md"
 								w="full"
-								disabled={timelineTarget !== null}
+								disabled={timelineTarget !== null || timelineRequirement !== null}
 								onClick={() => void downloadTimeline("source")}
 							>
 								{timelineTarget === "source" ? <Spinner size="xs" /> : <Download size={16} />}{" "}
 								Original video
 							</Button>
+							<PlanLimitNotice
+								message={timelineRequirement}
+								actionLabel="See plans."
+								canManageBilling={canManageBilling}
+							/>
 							<Text fontSize="12px" color="fg.muted">
 								Cuts the original video at the clip&apos;s current edit. Put the
 								video beside the timeline before opening it. Scenes and overlays

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	brandApprovalRequiredByDefault,
   deriveReviewRoundStatus,
@@ -10,9 +10,11 @@ import {
   decodeReviewSelection,
   encodeReviewSelection,
   reviewRoundSummary,
+  reviewService,
   validateReviewHandoffSelection,
   type ReviewHandoffExport,
 } from "./review.service";
+import { workspaceService } from "./workspace.service";
 
 describe("review guest security primitives", () => {
   const secret = "s".repeat(64);
@@ -75,6 +77,22 @@ describe("review guest security primitives", () => {
 		expect(brandApprovalRequiredByDefault({ ...snapshot, approvalRule: "none" })).toBe(false);
 		expect(brandApprovalRequiredByDefault(null)).toBe(false);
 	});
+});
+
+describe("Review Room plan boundary", () => {
+  const spies: Array<{ mockRestore(): void }> = [];
+  afterEach(() => { for (const spy of spies.splice(0)) spy.mockRestore(); });
+  test("Pro's integration access does not include Review Rooms", async () => {
+    for (const pricingTier of ["free", "creator", "pro"] as const) {
+      spies.push(spyOn(workspaceService, "requireActor").mockResolvedValue({ actorUserId: "user-1", workspaceId: "workspace-1", workspaceName: "Studio",
+        workspaceOwnerUserId: "user-1", role: "owner", status: "active", pricingTier, isPersonalWorkspace: true } as never));
+      await expect(reviewService.prepareHandoff({ actorUserId: "user-1", workspaceId: "workspace-1" }, [])).rejects.toMatchObject({
+        code: "plan_feature_required", kind: "payment_required", details: { feature: "review.rooms", currentTier: pricingTier, requiredTier: "business" },
+      });
+      await expect(reviewService.createRound({ actorUserId: "user-1", workspaceId: "workspace-1", projectId: "project-1", pricingTier }, {})).rejects.toMatchObject({ code: "plan_feature_required" });
+      spies.pop()?.mockRestore();
+    }
+  });
 });
 
 describe("assistant review handoff", () => {

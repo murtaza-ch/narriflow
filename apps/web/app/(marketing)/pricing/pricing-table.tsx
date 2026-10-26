@@ -7,35 +7,34 @@ import { Check } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import {
-  PRICING_FEATURES,
-  PRICING_TABLE,
+  annualSavingsPercent,
+  formatUsdCents,
+  minimumAnnualSavingsPercent,
+  PLAN_CATALOG,
+  planHighlights,
   type BillingInterval,
   type PaidPricingTier,
   type PricingTier,
 } from "@narriflow/validators";
 
 const TIERS: PricingTier[] = ["free", "creator", "pro", "business"];
-const RECOMMENDED_TIER: PricingTier = "creator";
+const RECOMMENDED_TIER: PricingTier = "pro";
 
 function isPaidTier(tier: PricingTier): tier is PaidPricingTier {
   return tier !== "free";
 }
 
-function monthlyPriceFor(tier: PricingTier, interval: BillingInterval): number {
-  if (!isPaidTier(tier)) return 0;
-  const info = PRICING_TABLE[tier];
-  return interval === "annual" ? info.annualUsd / 12 : info.monthlyUsd;
+function monthlyPriceCentsFor(tier: PricingTier, interval: BillingInterval): number {
+  const plan = PLAN_CATALOG[tier];
+  return interval === "annual" ? Math.round(plan.annualPriceCents / 12) : plan.monthlyPriceCents;
 }
 
-function annualSavingsPercent(tier: PaidPricingTier): number {
-  const info = PRICING_TABLE[tier];
-  return Math.round((1 - info.annualUsd / (info.monthlyUsd * 12)) * 100);
-}
+
 
 /**
  * Comparison bands: four tier columns under drawn rules (accent rule marks
  * the recommended tier), a monthly/annual interval toggle, and feature
- * lists single-sourced from @narriflow/validators.
+ * lists derived from the plan catalog in @narriflow/validators.
  */
 export function PricingTable() {
   const [interval, setInterval] = useState<BillingInterval>("monthly");
@@ -53,7 +52,7 @@ export function PricingTable() {
           onValueChange={(value) => setInterval(value as BillingInterval)}
         />
         <Text fontSize="12px" color="fg.muted">
-          Annual billing saves up to {Math.max(...(["creator", "pro", "business"] as const).map(annualSavingsPercent))}%
+          Annual billing saves {minimumAnnualSavingsPercent()}% or more
         </Text>
       </Flex>
 
@@ -61,8 +60,9 @@ export function PricingTable() {
         {TIERS.map((tier) => {
           const recommended = tier === RECOMMENDED_TIER;
           const paid = isPaidTier(tier);
-          const name = paid ? PRICING_TABLE[tier].name : "Free";
-          const price = monthlyPriceFor(tier, interval);
+          const plan = PLAN_CATALOG[tier];
+          const name = plan.name;
+          const priceCents = monthlyPriceCentsFor(tier, interval);
 
           return (
             <Stack key={tier} gap="4" position="relative" pt="4">
@@ -90,7 +90,7 @@ export function PricingTable() {
               <Box>
                 <Flex align="baseline" gap="1.5">
                   <Text textStyle="data" fontSize="36px" fontWeight="600" color="fg" lineHeight="1">
-                    ${Math.round(price)}
+                    {formatUsdCents(priceCents)}
                   </Text>
                   <Text textStyle="data" fontSize="13px" color="fg.muted">
                     /mo
@@ -99,14 +99,14 @@ export function PricingTable() {
                 <Text textStyle="data" fontSize="12px" color="fg.subtle" mt="2" minH="18px">
                   {paid
                     ? interval === "annual"
-                      ? `billed $${PRICING_TABLE[tier].annualUsd}/yr · save ${annualSavingsPercent(tier)}%`
-                      : `or $${PRICING_TABLE[tier].annualUsd}/yr on annual`
+                      ? `billed ${formatUsdCents(plan.annualPriceCents)}/yr · save ${annualSavingsPercent(tier)}%`
+                      : `or ${formatUsdCents(plan.annualPriceCents)}/yr on annual`
                     : "no card required"}
                 </Text>
               </Box>
 
               <Stack gap="0" flex="1">
-                {PRICING_FEATURES[tier].map((feature) => (
+                {planHighlights(tier).map((feature) => (
                   <Flex
                     key={feature}
                     gap="2.5"

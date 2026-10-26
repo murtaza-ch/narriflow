@@ -1,6 +1,6 @@
 import { Stack } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { billingService, workspaceService } from "@narriflow/services";
+import { billingService, hasFeature, workspaceService } from "@narriflow/services";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { MembersPanel } from "./members-panel";
 
@@ -15,7 +15,7 @@ export default async function MembersSettingsPage() {
       <PageHeader title="Members" />
       <MembersPanel
         actorRole={appUser.workspace.role}
-        isBusiness={billingView.plan === "business"}
+        isBusiness={hasFeature(billingView.plan, "workspace.members")}
         workspaceStatus={appUser.workspace.status}
         billingView={billingView}
         members={data.members.map((member) => ({ ...member, joinedAt: member.joinedAt.toISOString(),

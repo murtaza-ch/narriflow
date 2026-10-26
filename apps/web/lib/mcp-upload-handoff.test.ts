@@ -92,7 +92,7 @@ describe("assistant upload handoff authority", () => {
       await expect(admit(action, { sessionId: "00000000-0000-4000-8000-000000000099" }, h)).rejects.toMatchObject({ code: "mcp_upload_handoff_binding_mismatch" });
     });
   }
-  test("the person's current membership and Business access still decide continuation", async () => {
+  test("the person's current membership and plan access still decide continuation", async () => {
     const removed = harness(1, { requireOwnerActor: async () => { throw Object.assign(new Error("removed"), { code: "workspace_access_denied" }); } });
     await expect(admit("grants", { sessionId }, removed)).rejects.toMatchObject({ code: "workspace_access_denied" });
     await expect(admit("status", { clientIdempotencyKey: key }, removed)).rejects.toMatchObject({ code: "workspace_access_denied" });

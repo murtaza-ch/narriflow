@@ -107,13 +107,17 @@ export {
 	parseBrandFontHeader,
 } from "./brand-font.service";
 export {
+	assertBrandManageAllowed,
 	assertBrandMutationAllowed,
 	assertBrandMutationAllowedWithAnalytics,
+	brandOwnerForWorkspace,
 	brandOwnerStoragePrefix,
 	brandOwnerWhere,
+	isBrandAccessRefusal,
 	resolveBrandOwner,
 	BrandAccessError,
 	type BrandActorScope,
+	type BrandOwner,
 } from "./brand-ownership";
 export {
 	clipService,
@@ -244,7 +248,6 @@ export {
 	dubbingService,
 	DubbingService,
 	DubbingFailureError,
-	DubbingTierError,
 	type DubbingFailureCode,
 } from "./dubbing.service";
 export {
@@ -252,9 +255,17 @@ export {
 	BillingService,
 	BillingError,
 	type BillingErrorCode,
-	hasFeature,
-	type PlanFeature,
 } from "./billing.service";
+export {
+	hasFeature,
+	planLimits,
+	PlanRequirementError,
+	requirePlanFeature,
+	requireWithinPlanLimit,
+	type PlanCountLimit,
+	type PlanFeature,
+	type PlanRequirementCode,
+} from "./plan-features";
 export {
 	createBillingCatalog,
 	createInMemoryWorkspaceBillingStore,
@@ -338,13 +349,13 @@ export {
 } from "./program-rollout";
 export {
 	analyzeSceneDocumentMutation,
+	assertEditorDocumentFeatureDelta,
 	type SceneDocumentMutationAnalysis,
 } from "./scene-document-mutation";
 export {
-	generationAccessForTier,
 	generatedImageCapability,
+	generatedImagePolicy,
 	type GeneratedImageCapability,
-	type GeneratedMediaKind,
 	type GenerationUsagePolicy,
 } from "./generation-usage";
 export {
@@ -352,8 +363,13 @@ export {
 	GeneratedMediaService,
 } from "./generated-media-runtime";
 export {
-	getGeneratedImageUsageSummary,
+	reconcileGenerationUsageReservations,
+	summarizeGenerationUsage,
+	type DubUsageSummary,
 	type GeneratedImageUsageSummary,
+	type GenerationAllowanceSummary,
+	type GenerationUsageKind,
+	type GenerationUsageSummary,
 } from "./generated-media-usage-ledger";
 export {
 	GeneratedMediaJobError,
@@ -362,7 +378,6 @@ export {
 	type GeneratedMediaUsageStatus,
 } from "./generated-media";
 export { purgeExpiredGeneratedMediaPrompts } from "./generated-media-prisma-store";
-export { reconcileOrphanGeneratedMediaReservations } from "./generated-media-usage-ledger";
 export {
 	socialService,
 	SocialService,
@@ -447,19 +462,14 @@ export {
 	ProjectRetentionService,
 	RETENTION_POLICIES,
 	deleteProjectPrefixObjects,
-	getRetentionRuntimeConfig,
 	isProjectAccessible,
-	isRetentionEnforcementActive,
 	projectDeletionHash,
 	retentionAssignmentForNewProject,
 	retentionTransitionForTierChange,
 	type ExpiringProjectNotificationCandidate,
 	type ProjectPrefixDeleteDependencies,
 	type RetentionAssignment,
-	type RetentionMode,
-	type RetentionObserveMetrics,
 	type RetentionPolicyKey,
-	type RetentionRuntimeConfig,
 	type TierRetentionTransition,
 } from "./project-retention.service";
 export {
@@ -571,6 +581,7 @@ export {
 	ProcessingUsage,
 	ProcessingUsageError,
 	isProcessingUsageFailureCode,
+	lockWorkspaceUsage,
 	PROCESSING_USAGE_TRANSACTION,
 	processingUsageFailureCatalog,
 	type ProcessingUsageDependencies,

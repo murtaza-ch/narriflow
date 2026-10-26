@@ -12,8 +12,8 @@ import {
 import { prismaGeneratedMediaStore } from "./generated-media-prisma-store";
 import { generatedMediaPromptProtectionFromEnv } from "./generated-media-prompt-protection";
 import { createProductionGeneratedMediaPublisher } from "./generated-media-production-publisher";
-import { createPrismaGenerationUsageLedger, getGeneratedImageUsageSummary } from "./generated-media-usage-ledger";
-import { generatedImageCapability } from "./generation-usage";
+import { createPrismaGenerationUsageLedger, summarizeGenerationUsage } from "./generated-media-usage-ledger";
+import { assertProgramWriteEnabled } from "./program-rollout";
 import { openAiImageProviderFromEnv } from "./openai-image-provider";
 import { analyticsService } from "./analytics.service";
 import { visualAssetService } from "./visual-asset.service";
@@ -30,15 +30,14 @@ function createProductionModule(environment: NodeJS.ProcessEnv = process.env) {
     store: prismaGeneratedMediaStore,
     provider: openAiImageProviderFromEnv(environment),
     publisher: createProductionGeneratedMediaPublisher(environment),
-    usage: createPrismaGenerationUsageLedger(environment),
+    usage: createPrismaGenerationUsageLedger(),
     promptProtection: generatedMediaPromptProtectionFromEnv(environment),
     ids: randomUUID,
     maxAttempts: boundedInteger(environment.GENERATED_IMAGE_MAX_ATTEMPTS, 4, 1, 10),
     maxPromptCharacters: boundedInteger(environment.GENERATED_IMAGE_MAX_PROMPT_CHARACTERS, 4_000, 64, 20_000),
-    async authorizeAccess(scope) {
-      if (!generatedImageCapability(scope, environment).available) {
-        throw new GeneratedMediaJobError("generated_media_entitlement_required");
-      }
+    async authorizeAccess() {
+      // Plan entitlement and counts are enforced by the module and its ledger.
+      assertProgramWriteEnabled("generated_media", environment);
     },
     async authorizeOrigin(scope, input) {
       const prisma = getPrismaClient();
@@ -139,8 +138,8 @@ export class GeneratedMediaService {
     return jobs.map((job) => generatedMediaPublicJob(job));
   }
 
-  usageSummary(scope: BrandActorScope) {
-    return getGeneratedImageUsageSummary(scope.workspaceId, scope.pricingTier);
+  async usageSummary(scope: BrandActorScope) {
+    return (await summarizeGenerationUsage(scope.workspaceId)).images;
   }
 
   async get(scope: BrandActorScope, id: string, projectId?: string) {

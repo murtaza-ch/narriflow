@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PricingTier, Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
+import { PAID_ACCESS_ENDED_GRACE_DAYS, planLimits } from "@narriflow/validators";
 import {
 	deleteObject,
 	deleteObjects,
@@ -16,14 +17,22 @@ import { getProcessingUsage } from "./processing-usage-runtime";
 import { queueProjectExpiryFinished } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
 
+const HOUR_MS = 60 * 60 * 1000;
+const freeRetentionHours = planLimits("free").projectRetentionHours;
+if (freeRetentionHours === null) {
+	throw new Error("The Free plan must define a Project retention period");
+}
+
+/** Deadline policies stored on Projects. Durations come from the plan catalog. */
 export const RETENTION_POLICIES = {
-	free_project_v1: { durationMs: 72 * 60 * 60 * 1000 },
-	downgrade_to_free_v1: { durationMs: 28 * 24 * 60 * 60 * 1000 },
+	free_project_v1: { durationMs: freeRetentionHours * HOUR_MS },
+	downgrade_to_free_v1: {
+		durationMs: PAID_ACCESS_ENDED_GRACE_DAYS * 24 * HOUR_MS,
+	},
 } as const;
 const PROJECT_PURGE_SETTLEMENT_DELAY_MS = 60_000;
 
 export type RetentionPolicyKey = keyof typeof RETENTION_POLICIES;
-export type RetentionMode = "observe" | "enforce";
 
 export class ProjectExpiredError extends Error {
 	readonly code = "PROJECT_EXPIRED";
@@ -44,70 +53,27 @@ export type TierRetentionTransition =
 	| { kind: "assign_downgrade"; assignment: RetentionAssignment }
 	| { kind: "none" };
 
-export interface RetentionRuntimeConfig {
-	mode: RetentionMode;
-	activationAt: Date | null;
-}
-
-export function getRetentionRuntimeConfig(
-	env: NodeJS.ProcessEnv = process.env,
-): RetentionRuntimeConfig {
-	const mode: RetentionMode =
-		env.PROJECT_RETENTION_MODE?.trim().toLowerCase() === "enforce"
-			? "enforce"
-			: "observe";
-	const rawActivation = env.PROJECT_RETENTION_ENFORCEMENT_STARTED_AT?.trim();
-	const parsed = rawActivation ? new Date(rawActivation) : null;
-	return {
-		mode,
-		activationAt: parsed && Number.isFinite(parsed.getTime()) ? parsed : null,
-	};
-}
-
+/** A new Project on a plan with a retention period gets its deadline at creation. */
 export function retentionAssignmentForNewProject(input: {
 	tier: PricingTier;
 	createdAt: Date;
-	config?: RetentionRuntimeConfig;
 }): RetentionAssignment | null {
-	const config = input.config ?? getRetentionRuntimeConfig();
-	if (
-		input.tier !== "free" ||
-		!isRetentionEnforcementActive(config, input.createdAt)
-	) {
-		return null;
-	}
+	const hours = planLimits(input.tier).projectRetentionHours;
+	if (hours === null) return null;
 	return {
 		retentionPolicyKey: "free_project_v1",
-		expiresAt: new Date(
-			input.createdAt.getTime() + RETENTION_POLICIES.free_project_v1.durationMs,
-		),
+		expiresAt: new Date(input.createdAt.getTime() + hours * HOUR_MS),
 	};
 }
 
-export function isRetentionEnforcementActive(
-	config = getRetentionRuntimeConfig(),
-	now = new Date(),
-): boolean {
-	return Boolean(
-		config.mode === "enforce" &&
-			config.activationAt &&
-			now.getTime() >= config.activationAt.getTime(),
-	);
-}
-
+/** Paid access ending starts the download grace; any paid tier clears unexpired deadlines. */
 export function retentionTransitionForTierChange(input: {
 	previousTier: PricingTier;
 	nextTier: PricingTier;
 	effectiveAt: Date;
-	config?: RetentionRuntimeConfig;
 }): TierRetentionTransition {
 	if (input.nextTier !== "free") return { kind: "clear_unexpired" };
-	if (
-		input.previousTier === "free" ||
-		!isRetentionEnforcementActive(input.config, input.effectiveAt)
-	) {
-		return { kind: "none" };
-	}
+	if (input.previousTier === "free") return { kind: "none" };
 	return {
 		kind: "assign_downgrade",
 		assignment: {
@@ -207,14 +173,6 @@ export interface RetentionMaintenanceResult {
 	receiptsDeleted: number;
 }
 
-export interface RetentionObserveMetrics {
-	windowStartedAt: string;
-	candidatesDue: number;
-	warningsDue: number;
-	activeJobCollisions: number;
-	estimatedSourceBytesReclaimable: string;
-}
-
 interface ExternalDeletionTombstone {
 	projectIdHash: string;
 	retentionPolicyKey: string;
@@ -275,26 +233,10 @@ export class ProjectRetentionService {
 			select: { pricingTier: true },
 		});
 		if (!workspace) throw new Error("Workspace not found");
-		const config = getRetentionRuntimeConfig();
-		const assignment = retentionAssignmentForNewProject({
+		return retentionAssignmentForNewProject({
 			tier: workspace.pricingTier,
 			createdAt,
-			config,
 		});
-		if (workspace.pricingTier === "free" && config.mode === "observe") {
-			console.warn(
-				JSON.stringify({
-					level: "info",
-					message: "project_retention_observed",
-					workspaceId,
-					candidatePolicyKey: "free_project_v1",
-					candidateExpiresAt: new Date(
-						createdAt.getTime() + RETENTION_POLICIES.free_project_v1.durationMs,
-					).toISOString(),
-				}),
-			);
-		}
-		return assignment;
 	}
 
 	async applyWorkspaceTierTransition(
@@ -353,7 +295,7 @@ export class ProjectRetentionService {
 		limit = 100,
 	): Promise<ExpiringProjectNotificationCandidate[]> {
 		const prisma = getPrismaClient();
-		if (!prisma || !isRetentionEnforcementActive(undefined, now)) return [];
+		if (!prisma) return [];
 		const warningWindowEnd = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 		return prisma.project.findMany({
 			where: {
@@ -369,77 +311,6 @@ export class ProjectRetentionService {
 		}) as Promise<ExpiringProjectNotificationCandidate[]>;
 	}
 
-	async getObserveMetrics(
-		now = new Date(),
-	): Promise<RetentionObserveMetrics | null> {
-		const prisma = getPrismaClient();
-		const config = getRetentionRuntimeConfig();
-		if (!prisma || config.mode !== "observe") return null;
-		const rawStart = process.env.PROJECT_RETENTION_OBSERVE_STARTED_AT?.trim();
-		const parsedStart = rawStart ? new Date(rawStart) : null;
-		const windowStartedAt =
-			parsedStart && Number.isFinite(parsedStart.getTime())
-				? parsedStart
-				: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-		const dueCutoff = new Date(
-			now.getTime() - RETENTION_POLICIES.free_project_v1.durationMs,
-		);
-		const warningCutoff = new Date(
-			now.getTime() -
-				(RETENTION_POLICIES.free_project_v1.durationMs - 24 * 60 * 60 * 1000),
-		);
-		const baseWhere: Prisma.ProjectWhereInput = {
-			createdAt: { gte: windowStartedAt },
-			workspace: { pricingTier: "free" },
-		};
-		const [candidatesDue, warningsDue, activeJobCollisions, storage] =
-			await Promise.all([
-				prisma.project.count({
-					where: {
-						...baseWhere,
-						createdAt: { gte: windowStartedAt, lte: dueCutoff },
-					},
-				}),
-				prisma.project.count({
-					where: {
-						...baseWhere,
-						createdAt: { gt: dueCutoff, lte: warningCutoff },
-					},
-				}),
-				prisma.project.count({
-					where: {
-						...baseWhere,
-						createdAt: { gte: windowStartedAt, lte: dueCutoff },
-						OR: [
-							{
-								ingestJobs: { some: { status: { in: ["queued", "running"] } } },
-							},
-							{
-								workflowRuns: {
-									some: { status: { in: ["queued", "running", "waiting"] } },
-								},
-							},
-						],
-					},
-				}),
-				prisma.project.aggregate({
-					where: {
-						...baseWhere,
-						createdAt: { gte: windowStartedAt, lte: dueCutoff },
-					},
-					_sum: { sourceSizeBytes: true },
-				}),
-			]);
-		return {
-			windowStartedAt: windowStartedAt.toISOString(),
-			candidatesDue,
-			warningsDue,
-			activeJobCollisions,
-			estimatedSourceBytesReclaimable:
-				storage._sum.sourceSizeBytes?.toString() ?? "0",
-		};
-	}
-
 	async purgeDueProjects(
 		limit = 10,
 		now = new Date(),
@@ -448,9 +319,6 @@ export class ProjectRetentionService {
 		failed: number;
 		waiting: number;
 	}> {
-		if (!isRetentionEnforcementActive(undefined, now)) {
-			return { purged: 0, failed: 0, waiting: 0 };
-		}
 		const summary = { purged: 0, failed: 0, waiting: 0 };
 		for (let index = 0; index < Math.max(1, Math.min(100, limit)); index += 1) {
 			const claimed = await this.claimDueProject(now);

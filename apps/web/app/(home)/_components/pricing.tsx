@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PRICING_FEATURES, PRICING_TABLE, type PricingTier } from "@narriflow/validators";
+import { minimumAnnualSavingsPercent, PLAN_CATALOG, planHighlights, type PricingTier } from "@narriflow/validators";
 import { type Plan, Plans } from "./plans";
 
 const TIERS: Array<{ tier: PricingTier; blurb: string }> = [
@@ -12,29 +12,27 @@ const TIERS: Array<{ tier: PricingTier; blurb: string }> = [
 /** Plan cards straight from the pricing constants, so the copy matches what billing enforces. */
 export function Pricing() {
   const plans: Plan[] = TIERS.map(({ tier, blurb }) => {
-    const paid = tier === "free" ? null : PRICING_TABLE[tier];
+    const plan = PLAN_CATALOG[tier];
     return {
       tier,
       blurb,
-      name: paid?.name ?? "Free",
-      monthly: paid?.monthlyUsd ?? 0,
-      annualMonthly: paid ? Math.round(paid.annualUsd / 12) : 0,
-      annualTotal: paid?.annualUsd ?? 0,
-      features: PRICING_FEATURES[tier],
+      name: plan.name,
+      monthly: plan.monthlyPriceCents / 100,
+      annualMonthly: plan.annualPriceCents / 1200,
+      annualTotal: plan.annualPriceCents / 100,
+      features: planHighlights(tier),
       featured: tier === "pro",
     };
   });
   // The smallest saving across paid plans, so the badge never overstates it.
-  const savePercent = Math.min(
-    ...Object.values(PRICING_TABLE).map((plan) => Math.floor((1 - plan.annualUsd / (plan.monthlyUsd * 12)) * 100)),
-  );
+  const savePercent = minimumAnnualSavingsPercent();
 
   return (
     <section className="lx-pricing" id="pricing" aria-labelledby="pricing-title">
       <div className="lx-container">
         <div className="lx-pricing__head" data-reveal="">
           <h2 id="pricing-title" className="lx-serif lx-h2">
-            Pay for minutes,
+            Pay for credits,
             <br />
             <span className="lx-dim">not guesswork.</span>
           </h2>

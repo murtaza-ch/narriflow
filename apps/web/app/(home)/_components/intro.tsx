@@ -60,7 +60,7 @@ function Scramble({ words }: { words: string[] }) {
  * in the hero's slot, then stays docked at the bottom of the screen as the
  * input while the scene above it plays, and leaves with the scene.
  */
-export function Intro({ styles, freeMinutes }: { styles: Record<string, CaptionStyle>; freeMinutes: number }) {
+export function Intro({ styles, freeCredits }: { styles: Record<string, CaptionStyle>; freeCredits: number }) {
   return (
     <div className="lx-intro">
       <section className="lx-hero" id="top" aria-labelledby="hero-title">
@@ -81,7 +81,7 @@ export function Intro({ styles, freeMinutes }: { styles: Record<string, CaptionS
         </p>
         <div className="lx-hero__foot lx-container">
           <div className="lx-hero__slot" aria-hidden="true" />
-          <p className="lx-hero__note">Free plan · {freeMinutes} processing minutes a month</p>
+          <p className="lx-hero__note">Free plan · {freeCredits} credits a month</p>
           <div className="lx-hero__publish">
             <span>Publishes to</span>
             <ul>

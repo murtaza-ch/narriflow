@@ -14,7 +14,7 @@ import {
   reviewSelectedVariantIdsSchema,
   type PricingTier,
 } from "@narriflow/validators";
-import { hasFeature } from "./plan-features";
+import { requirePlanFeature } from "./plan-features";
 import type { ActorScope } from "./actor-scope";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
@@ -45,7 +45,6 @@ const REVIEW_FAILURES = {
   review_delivery_configuration_invalid: "unavailable",
   review_download_forbidden: "forbidden",
   review_expiry_invalid: "invalid",
-  review_feature_unavailable: "forbidden",
   review_item_not_found: "missing",
   review_item_stale: "conflict",
   review_items_duplicate: "invalid",
@@ -396,9 +395,7 @@ const reviewRoundSummarySelect = {
 export class ReviewService {
   async prepareHandoff(scope: ActorScope, items: Array<{ exportId: string; variantIds: string[] }>) {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
-    if (!hasFeature(actor.pricingTier, "review.rooms")) {
-      throw new ReviewServiceError("review_feature_unavailable", "Review rooms are not available on this plan");
-    }
+    requirePlanFeature(actor.pricingTier, "review.rooms");
     const rows = await requirePrisma().clipExport.findMany({
       where: { id: { in: items.map((item) => item.exportId) }, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
       select: { id: true, projectId: true, clipId: true, status: true, editorRevision: true, clip: { select: { editorRevision: true } },
@@ -436,9 +433,7 @@ export class ReviewService {
      * round's transaction: it checks the grant and counts its caps, and returns the revision it ran under. */
     options: { grant?: { id: string; admit(tx: Prisma.TransactionClient): Promise<{ revision: number }> }; finishingId?: string } = {},
   ) {
-    if (!hasFeature(scope.pricingTier, "review.rooms")) {
-      throw new ReviewServiceError("review_feature_unavailable", "Review rooms are not available on this plan");
-    }
+    requirePlanFeature(scope.pricingTier, "review.rooms");
     const parsed = createReviewRoundSchema.parse(input);
     if (parsed.expiresAt && new Date(parsed.expiresAt) <= new Date()) {
       throw new ReviewServiceError("review_expiry_invalid", "Review expiry must be in the future");
@@ -555,9 +550,7 @@ export class ReviewService {
     roundId: string,
     input: unknown,
   ) {
-    if (!hasFeature(scope.pricingTier, "review.rooms")) {
-      throw new ReviewServiceError("review_feature_unavailable", "Review rooms are not available on this plan");
-    }
+    requirePlanFeature(scope.pricingTier, "review.rooms");
     const parsed = inviteReviewersSchema.parse(input);
     const requestedEmails = normalizeRecipientEmails(parsed.recipientEmails);
 

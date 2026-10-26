@@ -13,8 +13,8 @@ import { usagePalette } from "./usage-palette";
 import { WorkspaceSwitcher, type WorkspaceMenuPresentation, type WorkspaceSwitcherItem } from "./workspace-switcher";
 
 interface SidebarProps {
-  usedMinutes: number;
-  limitMinutes: number;
+  remainingCredits: number;
+  limitCredits: number;
   activeWorkspaceId: string;
   workspaces: WorkspaceSwitcherItem[];
   canCreate: boolean;
@@ -25,8 +25,8 @@ interface SidebarProps {
 }
 
 export function Sidebar({
-  usedMinutes,
-  limitMinutes,
+  remainingCredits,
+  limitCredits,
   collapsed,
   onToggle,
   activeWorkspaceId,
@@ -35,7 +35,7 @@ export function Sidebar({
   canCreateWorkspace,
   workspaceMenu,
 }: SidebarProps) {
-  const usagePct = limitMinutes > 0 ? Math.min(100, (usedMinutes / limitMinutes) * 100) : 0;
+  const usagePct = limitCredits > 0 ? Math.min(100, ((limitCredits - remainingCredits) / limitCredits) * 100) : 0;
   const palette = usagePalette(usagePct);
 
   return (
@@ -93,7 +93,7 @@ export function Sidebar({
         <Box px="3" pt="1">
           <Flex align="baseline" justify="space-between" gap="2" mb="1.5">
             <Text textStyle="eyebrow" color="fg.muted" whiteSpace="nowrap">
-              Monthly minutes
+              Credits
             </Text>
             <Text
               whiteSpace="nowrap"
@@ -101,14 +101,14 @@ export function Sidebar({
               fontVariantNumeric="tabular-nums"
               color={palette === "accent" ? "fg.muted" : `${palette}.fg`}
             >
-              {Math.round(usedMinutes)}/{Math.round(limitMinutes)} min
+              {remainingCredits.toLocaleString()} of {limitCredits.toLocaleString()} left
             </Text>
           </Flex>
           <Meter
             value={usagePct}
             palette={palette}
             showValue={false}
-            aria-label="Monthly processing minutes used"
+            aria-label="Monthly credits used"
           />
         </Box>
       </Box>}

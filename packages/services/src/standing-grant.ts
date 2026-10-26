@@ -13,7 +13,8 @@ import {
 } from "@narriflow/validators";
 import type { ActorScope } from "./actor-scope";
 import { ExpectedDomainFailureError, type ExpectedDomainFailureCatalog } from "./expected-domain-failure";
-import { hasFeature } from "./plan-features";
+import { hasFeature, requirePlanFeature } from "./plan-features";
+import { requirePublishableSocialAccount } from "./social-account-eligibility";
 import { optedOutReviewers } from "./review-opt-out";
 import { flushWorkspaceEvents, queueWorkspaceEvent } from "./workspace-event";
 
@@ -52,12 +53,27 @@ const failures = {
   standing_grant_duplicate: "conflict",
   standing_grant_not_active: "conflict",
   standing_grant_not_found: "missing",
-  standing_grant_plan_required: "forbidden",
   standing_grant_rule_changed: "conflict",
   standing_grant_rule_not_found: "missing",
   standing_grant_tiktok_excluded: "invalid",
   standing_grant_unavailable: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
+
+/** Publish grants come with Finishing and publishing; review-send grants with Review Rooms. */
+function requireGrantPlan(tier: string, kind: "publish" | "review_send") {
+  if (kind === "publish") {
+    requirePlanFeature(tier, "campaign.operations");
+    requirePlanFeature(tier, "publishing.schedule");
+  } else requirePlanFeature(tier, "review.rooms");
+}
+
+/** Whether the plan still covers a grant of this kind. A grant it doesn't pauses with
+ * `plan_lost`, and only a renewal, which checks the plan again, turns it back on. */
+export function planCoversGrant(tier: string | null | undefined, kind: StandingGrantKind) {
+  return kind === "publish"
+    ? hasFeature(tier, "campaign.operations") && hasFeature(tier, "publishing.schedule")
+    : hasFeature(tier, "review.rooms");
+}
 
 export class StandingGrantError extends ExpectedDomainFailureError<keyof typeof failures> {
   constructor(code: keyof typeof failures, message: string) {
@@ -396,6 +412,27 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
   const log = deps.log ?? ((entry) => console.warn(JSON.stringify(entry)));
   let noticesPausedUntil = 0;
 
+  /** Pauses active grants whose Workspace's plan no longer covers their kind. */
+  async function pauseBeyondPlan(limit: number): Promise<number> {
+    const active = await prisma.standingGrant.findMany({
+      where: { status: "active" },
+      orderBy: { id: "asc" },
+      take: limit * 10,
+      select: { id: true, kind: true, revision: true, workspace: { select: { pricingTier: true } } },
+    });
+    let paused = 0;
+    for (const grant of active) {
+      if (planCoversGrant(grant.workspace.pricingTier, grant.kind)) continue;
+      const done = await prisma.$transaction(async (tx) => {
+        const changed = await pauseInTransaction(tx, { grantId: grant.id, reason: "plan_lost", actorUserId: null, revision: grant.revision });
+        await flushWorkspaceEvents(tx);
+        return changed;
+      });
+      if (done) paused += 1;
+    }
+    return paused;
+  }
+
   async function requireGrantManager(scope: ActorScope) {
     return deps.requireActor(scope.actorUserId, scope.workspaceId, "workspace.manage");
   }
@@ -531,9 +568,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
     async create(scope: ActorScope, input: CreateStandingGrantInput): Promise<{ id: string }> {
       const actor = await requireGrantManager(scope);
       const parsed = createStandingGrantSchema.parse(input);
-      if (parsed.kind === "review_send" && !hasFeature(actor.pricingTier, "review.rooms")) {
-        throw new StandingGrantError("standing_grant_plan_required", "Sending review rounds needs the Business plan.");
-      }
+      requireGrantPlan(actor.pricingTier, parsed.kind);
       const at = now();
       return prisma.$transaction(async (tx) => {
         // The rule's row serializes grants for one rule, so two requests can't both pass the duplicate check.
@@ -549,6 +584,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
           // TikTok needs the creator's own choices on every post, so a grant can never accept for it.
           if (account?.platform === "tiktok") throw new StandingGrantError("standing_grant_tiktok_excluded", "TikTok needs the creator's choices on every post, so it can't hold a standing grant.");
           if (!account || account.status !== "active") throw new StandingGrantError("standing_grant_account_unavailable", "Choose a connected account of this Workspace.");
+          await requirePublishableSocialAccount(tx, { workspaceId: scope.workspaceId, accountId: account.id, tier: actor.pricingTier });
           socialAccountId = account.id;
         }
         if (await duplicateOf(tx, { autopilotRuleId: parsed.autopilotRuleId, kind: parsed.kind, socialAccountId })) {
@@ -589,8 +625,9 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
         if (!(await lockRule(tx, scope.workspaceId, ruleId))) throw new StandingGrantError("standing_grant_closed", "This grant's rule was deleted. Create a new one.");
         const grant = await lockGrant(tx, scope.workspaceId, parsed.grantId);
         if (grant.status === "revoked") throw new StandingGrantError("standing_grant_closed", "This grant was revoked. Create a new one.");
-        if (grant.kind === "review_send" && !hasFeature(actor.pricingTier, "review.rooms")) {
-          throw new StandingGrantError("standing_grant_plan_required", "Sending review rounds needs the Business plan.");
+        requireGrantPlan(actor.pricingTier, grant.kind);
+        if (grant.kind === "publish" && grant.socialAccountId) {
+          await requirePublishableSocialAccount(tx, { workspaceId: scope.workspaceId, accountId: grant.socialAccountId, tier: actor.pricingTier });
         }
         // Renewing a grant that had lapsed must not leave two live grants for one destination.
         if (await duplicateOf(tx, { id: grant.id, autopilotRuleId: ruleId, kind: grant.kind, socialAccountId: grant.socialAccountId })) {
@@ -655,6 +692,8 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
      * its audit line and its one `grant.expired` event, and the posts of grants that
      * ended go back to the proposal inbox. Returns how many grants it expired. */
     async expireDue(limit = 50): Promise<number> {
+      // A downgrade pauses the grants the plan no longer covers, even ones nothing has used since.
+      await pauseBeyondPlan(limit);
       const at = now();
       const due = await prisma.standingGrant.findMany({
         where: { status: { in: ["active", "paused"] }, expiresAt: { lte: at } },

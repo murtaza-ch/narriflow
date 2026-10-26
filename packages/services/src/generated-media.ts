@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { generationAccessForTier } from "./generation-usage";
+import { requirePlanFeature } from "./plan-features";
 import type { BrandActorScope } from "./brand-ownership";
 import { workspaceAllowsCapability } from "@narriflow/validators";
 import {
@@ -94,15 +94,23 @@ export interface GeneratedMediaPublisher {
   }): Promise<GeneratedMediaAsset>;
 }
 
+/**
+ * The Workspace generation count. This module only admits `image` requests;
+ * a dub reserves and finalizes the same ledger inside its Workflow Run
+ * transactions, always as one unit (see `generated-media-usage-ledger.ts`).
+ */
 export interface GenerationUsageLedger {
   reserve(input: {
+    kind: "image";
     jobId: string;
     workspaceId: string;
     actorUserId: string;
-    policy: "trial_metered" | "metered";
     pricingTier: string;
   }): Promise<{ reservationId: string }>;
-  finalize(input: { jobId: string; reservationId: string; images: number }): Promise<void>;
+  /** Images record the provider's delivered image count; a dub always counts one. */
+  finalize(
+    input: { jobId: string; reservationId: string } & ({ kind: "image"; images: number } | { kind: "dub" }),
+  ): Promise<void>;
   release(input: { jobId: string; reservationId: string; reason: string }): Promise<void>;
 }
 
@@ -173,8 +181,6 @@ const generatedMediaJobFailureCatalog = {
   generated_media_cancellation_pending: "conflict",
   generated_media_claim_lost: "conflict",
   generated_media_concurrency_limit_reached: "rate_limited",
-  generated_media_daily_limit_reached: "rate_limited",
-  generated_media_entitlement_required: "forbidden",
   generated_media_forbidden: "forbidden",
   generated_media_idempotency_conflict: "conflict",
   generated_media_idempotency_invalid: "invalid",
@@ -186,7 +192,6 @@ const generatedMediaJobFailureCatalog = {
   generated_media_reconciliation_required: "conflict",
   generated_media_source_cue_invalid: "unprocessable",
   generated_media_source_range_invalid: "unprocessable",
-  generated_media_trial_limit_reached: "rate_limited",
   generated_media_result_not_found: "missing",
   generated_media_usage_reconciliation_required: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -542,6 +547,7 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
     if (current.usageStatus === "reserved") {
       try {
         await dependencies.usage.finalize({
+          kind: "image",
           jobId: current.id,
           reservationId: current.usageReservationId,
           images: current.providerUsageImages ?? outcome.usage.images,
@@ -618,8 +624,7 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
         throw new GeneratedMediaJobError("generated_media_forbidden");
       }
       await dependencies.authorizeAccess?.(scope);
-      const access = generationAccessForTier(scope.pricingTier, "image");
-      if (!access.entitled) throw new GeneratedMediaJobError("generated_media_entitlement_required");
+      requirePlanFeature(scope.pricingTier, "generated.images");
       await dependencies.authorizeOrigin?.(scope, input);
       const fingerprint = requestFingerprint(input, dependencies.promptProtection);
       const existing = await dependencies.store.findByIdempotency(scope.workspaceId, input.idempotencyKey);
@@ -632,10 +637,10 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
 
       const id = ids();
       const reservation = await dependencies.usage.reserve({
+        kind: "image",
         jobId: id,
         workspaceId: scope.workspaceId,
         actorUserId: scope.actorUserId,
-        policy: access.usage,
         pricingTier: scope.pricingTier,
       });
       const timestamp = now();

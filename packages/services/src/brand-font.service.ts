@@ -13,6 +13,7 @@ import {
   type ReusableAssetSoftDeleteInput,
 } from "@narriflow/validators";
 import {
+  assertBrandManageAllowed,
   assertBrandMutationAllowedWithAnalytics,
   brandOwnerStoragePrefix,
   brandOwnerWhere,
@@ -323,11 +324,12 @@ export class BrandFontService {
 	}
 
   async softDelete(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
-    await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
+    assertBrandManageAllowed(scope);
     const parsed = reusableAssetSoftDeleteSchema.parse(input);
     const prisma = this.requirePrisma();
     await withSerializableTransaction(prisma, async (tx) => {
-      const font = await tx.brandFont.findFirst({ where: { id, ...brandOwnerWhere(scope), deletedAt: null }, include: { profiles: { select: { id: true } } } });
+      // Only live profiles hold a font in use; a deleted profile never blocks cleanup.
+      const font = await tx.brandFont.findFirst({ where: { id, ...brandOwnerWhere(scope), deletedAt: null }, include: { profiles: { where: { profile: { deletedAt: null } }, select: { id: true } } } });
       if (!font) throw new BrandFontIntegrityError("brand_font_not_found");
       const templateReference = await tx.sceneTemplate.findFirst({
         where: {

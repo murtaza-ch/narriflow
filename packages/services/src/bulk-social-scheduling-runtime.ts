@@ -15,7 +15,7 @@ import {
 	type BulkScheduleOperation,
 	type BulkScheduleStore,
 } from "./bulk-social-scheduling";
-import { hasFeature } from "./plan-features";
+import { requirePlanFeature } from "./plan-features";
 import { readQueueSlots } from "./publishing-queue.service";
 import { accessibleProjectWhere } from "./project-access";
 import { createProductionSocialPublicationScheduling } from "./social-publication-scheduling-runtime";
@@ -351,11 +351,9 @@ function productionModule() {
 				workspaceId,
 				permission,
 			);
-			if (!replay && bulk && !hasFeature(actor.pricingTier, "campaign.operations")) {
-				throw new BulkSocialSchedulingError(
-					"campaign_schedule_entitlement_required",
-					"Bulk scheduling requires a Pro or Business plan",
-				);
+			if (!replay) {
+				requirePlanFeature(actor.pricingTier, "publishing.schedule");
+				if (bulk) requirePlanFeature(actor.pricingTier, "campaign.operations");
 			}
 			const workspace = await requirePrisma().workspace.findUnique({
 				where: { id: workspaceId },

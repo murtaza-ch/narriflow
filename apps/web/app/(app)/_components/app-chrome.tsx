@@ -29,8 +29,8 @@ interface AppChromeProps {
   firstName: string | null;
   lastName: string | null;
   imageUrl: string | null;
-  usedMinutes: number;
-  limitMinutes: number;
+  remainingCredits: number;
+  limitCredits: number;
   activeWorkspaceId: string;
   workspaceSelectionChanged: boolean;
   workspaceRole: "owner" | "admin" | "editor" | "viewer";
@@ -97,14 +97,13 @@ function DesktopTopBar({
   firstName,
   lastName,
   imageUrl,
-  usedMinutes,
-  limitMinutes,
+  remainingCredits,
   workspaceRole,
   workspaceStatus,
   workspaceTier,
   activeWorkspaceId,
 }: { workspaceName: string } & Pick<AppChromeProps,
-  | "email" | "firstName" | "lastName" | "imageUrl" | "usedMinutes" | "limitMinutes" | "workspaceRole" | "workspaceStatus" | "workspaceTier" | "activeWorkspaceId">) {
+  | "email" | "firstName" | "lastName" | "imageUrl" | "remainingCredits" | "workspaceRole" | "workspaceStatus" | "workspaceTier" | "activeWorkspaceId">) {
   const pathname = usePathname();
   const section = pathname.split("/")[1] ?? "home";
   const title = ({ home: "Home", projects: "Projects", exports: "Exports", calendar: "Calendar", autopilot: "Autopilot", recipes: "Recipes", "brand-kit": "Brand kit", integrations: "Integrations", settings: "Settings", help: "Help", "whats-new": "What's new" } as Record<string, string>)[section] ?? "Workspace";
@@ -113,7 +112,7 @@ function DesktopTopBar({
     <ShellHeader crumbs={pathname.startsWith("/integrations/mcp") ? [workspaceName, title, "AI assistants"] : [workspaceName, title]} display={{ base: "none", lg: "flex" }}>
       <GlobalSearch workspaceId={activeWorkspaceId} />
       <Button variant="ghost" size="sm" asChild>
-        <Link href="/settings/usage"><Gauge size={14} />{Math.round(usedMinutes)}/{Math.round(limitMinutes)} min</Link>
+        <Link href="/settings/usage"><Gauge size={14} />{remainingCredits.toLocaleString()} credits left</Link>
       </Button>
       {canInvite ? (
         <Button variant="subtle" size="sm" asChild>
@@ -140,9 +139,8 @@ function FocusedTopBar({
   firstName,
   lastName,
   imageUrl,
-  usedMinutes,
-  limitMinutes,
-}: Pick<AppChromeProps, "email" | "firstName" | "lastName" | "imageUrl" | "usedMinutes" | "limitMinutes">) {
+  remainingCredits,
+}: Pick<AppChromeProps, "email" | "firstName" | "lastName" | "imageUrl" | "remainingCredits">) {
   return (
     <ShellHeader
       start={
@@ -153,7 +151,7 @@ function FocusedTopBar({
     >
       <Link href="/settings/usage">
         <Text fontSize="13px" color="fg.muted" mr={{ base: "0", sm: "2" }} whiteSpace="nowrap">
-          <chakra.span fontWeight="600" color="fg">{Math.max(0, limitMinutes - usedMinutes).toLocaleString()}</chakra.span> min left
+          <chakra.span fontWeight="600" color="fg">{remainingCredits.toLocaleString()}</chakra.span> credits left
         </Text>
       </Link>
       <ThemeToggle />
@@ -181,8 +179,8 @@ export function AppChrome({
   firstName,
   lastName,
   imageUrl,
-  usedMinutes,
-  limitMinutes,
+  remainingCredits,
+  limitCredits,
   activeWorkspaceId,
   workspaceSelectionChanged,
   workspaceRole,
@@ -230,8 +228,7 @@ export function AppChrome({
       <Flex direction="column" minH="100dvh" p={{ base: "0", lg: "2" }}>
         <ShellPanel>
           <FocusedTopBar
-            usedMinutes={usedMinutes}
-            limitMinutes={limitMinutes}
+            remainingCredits={remainingCredits}
             email={email}
             firstName={firstName}
             lastName={lastName}
@@ -255,8 +252,8 @@ export function AppChrome({
       <Sidebar
         collapsed={collapsed}
         onToggle={() => setCollapsed((value) => !value)}
-        usedMinutes={usedMinutes}
-        limitMinutes={limitMinutes}
+        remainingCredits={remainingCredits}
+        limitCredits={limitCredits}
         activeWorkspaceId={activeWorkspaceId}
         workspaces={workspaces}
         canCreate={workspaceRole !== "viewer" && workspaceStatus === "active"}
@@ -270,8 +267,8 @@ export function AppChrome({
         firstName={firstName}
         imageUrl={imageUrl}
         lastName={lastName}
-        usedMinutes={usedMinutes}
-        limitMinutes={limitMinutes}
+        remainingCredits={remainingCredits}
+        limitCredits={limitCredits}
         activeWorkspaceId={activeWorkspaceId}
         workspaces={workspaces}
         canCreate={workspaceRole !== "viewer" && workspaceStatus === "active"}
@@ -296,8 +293,7 @@ export function AppChrome({
             firstName={firstName}
             lastName={lastName}
             imageUrl={imageUrl}
-            usedMinutes={usedMinutes}
-            limitMinutes={limitMinutes}
+            remainingCredits={remainingCredits}
             workspaceRole={workspaceRole}
             workspaceStatus={workspaceStatus}
             workspaceTier={workspaceTier}

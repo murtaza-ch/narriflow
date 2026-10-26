@@ -22,9 +22,10 @@ export default async function AutomationGrantsPage({ searchParams }: { searchPar
 			<GrantsPanel
 				grants={grants}
 				rules={rules.map(({ id, name }) => ({ id, name }))}
-				// TikTok needs the creator's choices on every post, so it can't hold a grant.
+				// TikTok needs the creator's choices on every post, so it can't hold a grant;
+				// nor can an account the plan doesn't publish to.
 				accounts={accounts
-					.filter((account) => account.status === "active" && account.platform !== "tiktok")
+					.filter((account) => account.status === "active" && account.publishingEligible && account.platform !== "tiktok")
 					.map(({ id, displayName, handle, platform }) => ({ id, label: `${displayName}${handle ? ` (${handle})` : ""}`, platform }))}
 				canManage={workspaceAllowsCapability({ role: appUser.role, status: appUser.status }, "workspace.manage")}
 				reviewAvailable={hasFeature(appUser.pricingTier, "review.rooms")}

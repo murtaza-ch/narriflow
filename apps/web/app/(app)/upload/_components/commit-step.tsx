@@ -23,7 +23,7 @@ import { Input } from "@narriflow/ui/components/input";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
-  processingMinutesFromSeconds,
+  creditsForSourceSeconds,
   type BrandTemplateSummary,
   type GenerationMode,
   type LinkProviderId,
@@ -76,8 +76,8 @@ function ErrorNotice({ message }: { message: string }) {
 
 interface UsageSummary {
   tier: string;
-  remainingMinutes: number;
-  limitMinutes: number;
+  remainingCredits: number;
+  limitCredits: number;
   maxUploadSeconds: number;
 }
 
@@ -215,16 +215,17 @@ export function CommitStep({
   const hasCustomWindow =
     hasKnownDuration && (startSec > 0 || endSec < (durationSec as number));
 
-  const estimatedMinutes = hasKnownDuration
-    ? processingMinutesFromSeconds(durationSec)
+  // The whole source is charged, whatever window is selected.
+  const estimatedCredits = hasKnownDuration
+    ? creditsForSourceSeconds(durationSec)
     : null;
-  const minutesLeft = usageSummary.remainingMinutes;
+  const creditsLeft = usageSummary.remainingCredits;
 
   const overUploadCap =
     hasKnownDuration && (durationSec as number) > usageSummary.maxUploadSeconds;
   // Guidance only; Processing Usage decides at admission and settlement.
   const wouldExceedMonthly =
-    hasKnownDuration && estimatedMinutes !== null && estimatedMinutes > minutesLeft;
+    hasKnownDuration && estimatedCredits !== null && estimatedCredits > creditsLeft;
   const planLimitMessage = overUploadCap
     ? // The per-upload cap is enforced against the full source duration
       // (sourceDurationSeconds), not the trimmed processing window — trimming
@@ -233,7 +234,7 @@ export function CommitStep({
         usageSummary.maxUploadSeconds / 60,
       )}-min per-upload limit on your plan. Upgrade for longer uploads.`
     : wouldExceedMonthly
-      ? `This would put you over your monthly processing limit (${minutesLeft} of ${usageSummary.limitMinutes} min left).`
+      ? `This video needs ${estimatedCredits} credits, but your workspace has ${creditsLeft} of ${usageSummary.limitCredits} left this month.`
       : null;
 
   async function handleCommit() {
@@ -479,8 +480,8 @@ export function CommitStep({
             fontVariantNumeric="tabular-nums"
           >
             {hasKnownDuration
-              ? `Counts ~${estimatedMinutes} min against your plan · ${minutesLeft} of ${usageSummary.limitMinutes} min left`
-              : `Usage confirmed after import · ${minutesLeft} of ${usageSummary.limitMinutes} min left`}
+              ? `Uses ${estimatedCredits} ${estimatedCredits === 1 ? "credit" : "credits"} · ${creditsLeft} of ${usageSummary.limitCredits} credits left`
+              : `Credits confirmed after import · ${creditsLeft} of ${usageSummary.limitCredits} credits left`}
           </Text>
         </Stack>
       </Stack>

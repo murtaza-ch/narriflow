@@ -85,13 +85,13 @@ describe('Submit Video Link', () => {
     });
   });
 
-  it('shows Narriflow\'s message and request reference when the quota is used up', async () => {
-    post('/projects', 402, apiError('processing_minutes_exhausted', 'This Workspace has used its processing minutes.'));
+  it('shows Narriflow\'s message and request reference when the credits are used up', async () => {
+    post('/projects', 402, apiError('credits_exhausted', 'This Workspace has used its credits for this month.'));
     await assert.rejects(run('creates', 'submit_video_link', bundle({ url: 'https://youtu.be/abc' })), (err) => {
       const shown = zapierError(err);
-      assert.equal(shown.code, 'processing_minutes_exhausted');
+      assert.equal(shown.code, 'credits_exhausted');
       assert.equal(shown.status, 402);
-      assert.match(shown.message, /processing minutes.*req_test/);
+      assert.match(shown.message, /credits for this month.*req_test/);
       return true;
     });
   });

@@ -33,7 +33,8 @@ import {
 	BRAND_DEFAULT_CAPTION_PRESET_ID,
 	captionPresetIdSchema,
 	defaultAspectRatioSchema,
-	processingMinutesFromSeconds,
+	planDefinition,
+	planFeatureRequirement,
 	userErrorMessage,
 	workspaceAllowsCapability,
 } from "@narriflow/validators";
@@ -186,6 +187,7 @@ export default async function ProjectDetailPage({
 		reviewRoom,
 		activeWorkspace,
 		finishing,
+		dubAllowance,
 	] = await Promise.all([
 		activeTab === "transcript"
 			? projectService.getTranscriptSnapshot(appUser, projectId)
@@ -221,6 +223,9 @@ export default async function ProjectDetailPage({
 			? workspaceService.getWorkspace(appUser.actorUserId, appUser.workspaceId)
 			: Promise.resolve(null),
 		getProjectFinishing({ workspaceId: appUser.workspaceId, projectId }),
+		activeTab === "dubbing"
+			? dubbingService.getDubbingAllowance(appUser)
+			: Promise.resolve(null),
 	]);
 	const reviewRoomData = reviewRoom
 		? (JSON.parse(JSON.stringify(reviewRoom)) as ReviewRoomData)
@@ -285,15 +290,15 @@ export default async function ProjectDetailPage({
 			// Non-fatal — the dialog degrades to transcript-only.
 		}
 	}
-	// The per-video cap is deterministic, so show it before the click. Minutes
+	// The per-video cap is deterministic, so show it before the click. Credits
 	// are decided by Processing Usage settlement; a refusal is persisted on the
 	// Project and rendered from its typed code. Regeneration is free.
 	const sourceSeconds = snapshot.project.sourceDurationSeconds ?? 0;
 	const planLimitMessage =
 		sourceSeconds > usage.maxUploadSeconds
-			? `This source is ${processingMinutesFromSeconds(sourceSeconds)} min, over the ${Math.round(
+			? `This source is ${Math.ceil(sourceSeconds / 60)} min, over the ${Math.round(
 					usage.maxUploadSeconds / 60,
-				)}-min per-video limit on the ${pricingTier} plan.`
+				)}-min per-video limit on the ${planDefinition(pricingTier).name} plan.`
 			: null;
 	const transcriptReady = transcript?.status === "completed";
 	const transcriptInFlight =
@@ -352,9 +357,9 @@ export default async function ProjectDetailPage({
 		ingestErrorCode: snapshot.project.ingestErrorCode,
 	});
 	const quotaBlockedMessage = quotaBlockedMidFlight
-		? `${usage.remainingMinutes} of ${usage.limitMinutes} processing minutes remain this month on the ${usage.tier} plan, with a ${Math.round(
+		? `${usage.remainingCredits} of ${usage.limitCredits} ${planDefinition(usage.tier).name} credits remain this month, with a ${Math.round(
 				usage.maxUploadSeconds / 60,
-			)}-min per-video limit. Retry after upgrading or when next month's minutes start.`
+			)}-min per-video limit. Retry after upgrading or when credits renew on ${usage.renewsAt.toISOString().slice(0, 10)} (UTC).`
 		: null;
 
 	const { transcribe: transcribeStage, detect: detectStage, render: renderStage } = pipelineStates.processingStages;
@@ -892,7 +897,7 @@ export default async function ProjectDetailPage({
                   market-aligned with Vizard's one-shot clipping model. Failed
                   and zero-clip runs still expose Retry/Re-run detection in
                   the processing panel, and the first detection is Step 02. */}
-										{pricingTier === "free" && hasRenderableClips && (
+										{!hasFeature(pricingTier, "export.noWatermark") && hasRenderableClips && (
 											<Text fontSize="13px" color="fg.muted">
 												Free plan renders are 720p and watermarked.{" "}
 												<Link href="/settings/billing">
@@ -919,7 +924,7 @@ export default async function ProjectDetailPage({
 											clips={clips}
 											projectId={projectId}
 											mode={generationMode}
-											isFreeTier={pricingTier === "free"}
+											isFreeTier={!hasFeature(pricingTier, "export.noWatermark")}
 											can1080pExport={can1080pExport}
 											defaultAspectRatio={clipsDefaultAspectRatio}
 											sourceVideoUrl={sourceVideoUrl}
@@ -948,6 +953,8 @@ export default async function ProjectDetailPage({
 									<ContentSuitePanel
 										projectId={projectId}
 										transcriptReady={transcriptReady}
+										planRequirement={planFeatureRequirement(pricingTier, "content.repurposing")?.message ?? null}
+										canManageBilling={appUser.role === "owner"}
 									/>
 								) : (
 									<EmptyState
@@ -961,7 +968,14 @@ export default async function ProjectDetailPage({
 						{/* DUBBING */}
 						<Tabs.Content value="dubbing" pt="6">
 							{activeTab === "dubbing" ? (
-								<DubbingPanel projectId={projectId} clips={clips} dubs={dubs} />
+								<DubbingPanel
+									projectId={projectId}
+									clips={clips}
+									dubs={dubs}
+									allowance={dubAllowance}
+									planRequirement={planFeatureRequirement(pricingTier, "dubbing")?.message ?? null}
+									canManageBilling={appUser.role === "owner"}
+								/>
 							) : null}
 						</Tabs.Content>
 

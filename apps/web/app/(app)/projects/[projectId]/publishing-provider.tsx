@@ -456,6 +456,7 @@ function PublishingComposer({
 			config.accounts.filter(
 				(a) =>
 					a.status === "active" &&
+					a.publishingEligible &&
 					(a.platform !== "facebook_reels" || config.facebookPublishingEnabled),
 			),
 		[config.accounts, config.facebookPublishingEnabled],

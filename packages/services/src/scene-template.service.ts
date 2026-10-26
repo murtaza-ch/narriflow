@@ -9,9 +9,9 @@ import {
   type SceneBlock,
   type SceneTemplateDefinition,
   type SceneTemplateRole,
-  resolvePricingTier,
 } from "@narriflow/validators";
-import { assertBrandMutationAllowedWithAnalytics, brandOwnerWhere, type BrandActorScope } from "./brand-ownership";
+import { assertBrandManageAllowed, assertBrandMutationAllowedWithAnalytics, brandOwnerWhere, type BrandActorScope } from "./brand-ownership";
+import { requirePlanFeature } from "./plan-features";
 import { assertProgramWriteEnabled } from "./program-rollout";
 import { withSerializableTransaction } from "./serializable-transaction";
 import {
@@ -22,7 +22,6 @@ import {
 const sceneTemplateFailureCatalog = {
   brand_profile_not_found: "missing",
   scene_template_asset_invalid: "unprocessable",
-  scene_template_default_feature_unavailable: "forbidden",
   scene_template_default_role_invalid: "invalid",
   scene_template_font_invalid: "unprocessable",
   scene_template_not_found: "missing",
@@ -98,7 +97,7 @@ export class SceneTemplateService {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
     const input = sceneTemplateCreateSchema.parse(value);
     if (input.makeDefault && !defaultField(input.role)) throw new SceneTemplateError("scene_template_default_role_invalid", "Only intro and outro scenes can be defaults");
-    if (input.makeDefault && resolvePricingTier(scope.pricingTier) !== "business") throw new SceneTemplateError("scene_template_default_feature_unavailable", "Default intro and outro scenes require Business");
+    if (input.makeDefault) requirePlanFeature(scope.pricingTier, "brand.defaultScenes");
     const prisma = requirePrisma();
     return withSerializableTransaction(prisma, async (tx) => {
       const profile = await tx.brandProfile.findFirst({ where: { id: profileId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } });
@@ -115,7 +114,7 @@ export class SceneTemplateService {
     assertProgramWriteEnabled("scene_templates");
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
     const input = sceneTemplateUpdateSchema.parse(value);
-    if (input.makeDefault && resolvePricingTier(scope.pricingTier) !== "business") throw new SceneTemplateError("scene_template_default_feature_unavailable", "Default intro and outro scenes require Business");
+    if (input.makeDefault) requirePlanFeature(scope.pricingTier, "brand.defaultScenes");
     const prisma = requirePrisma();
     return withSerializableTransaction(prisma, async (tx) => {
       const current = await tx.sceneTemplate.findFirst({
@@ -158,7 +157,7 @@ export class SceneTemplateService {
 
   async softDelete(scope: BrandActorScope, profileId: string, templateId: string, value: unknown) {
     assertProgramWriteEnabled("scene_templates");
-    await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
+    assertBrandManageAllowed(scope);
     const input = sceneTemplateDeleteSchema.parse(value);
     const current = await requirePrisma().sceneTemplate.findFirst({
       where: { id: templateId, profileId, profile: { ...brandOwnerWhere(scope), deletedAt: null }, deletedAt: null },

@@ -3,6 +3,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { Box, Stack } from "@chakra-ui/react";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { socialOAuthService } from "@narriflow/services";
+import { planCountRequirement, planLimits } from "@narriflow/validators";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { SocialAccountsPanel } from "./social-accounts-panel";
 
@@ -22,6 +23,8 @@ export default async function SocialAccountsPage({
 		searchParams,
 	]);
 
+	// Every account that isn't revoked holds a slot; reconnecting one is free.
+	const slotsUsed = accounts.filter((account) => account.status !== "revoked").length;
 	const returnTo =
 		params.returnTo &&
 		/^\/projects\/[0-9a-f-]+\?publishClips=[0-9a-f,-]+$/.test(params.returnTo)
@@ -56,6 +59,11 @@ export default async function SocialAccountsPage({
 						appUser.workspace.role === "owner" ||
 						appUser.workspace.role === "admin"
 					}
+					accountLimit={planLimits(appUser.workspace.pricingTier).socialDestinations}
+					connectRequirement={
+						planCountRequirement(appUser.workspace.pricingTier, "socialDestinations", slotsUsed)?.message ?? null
+					}
+					canManageBilling={appUser.workspace.role === "owner"}
 				/>
 			</Box>
 		</Stack>

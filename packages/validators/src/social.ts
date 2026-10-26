@@ -224,6 +224,8 @@ export const socialAccountSnapshotSchema = z.object({
 	expiresAt: z.string().datetime().nullable(),
 	status: socialAccountStatusSchema,
 	postingSchedule: postingScheduleSchema.nullable().default(null),
+	/** Whether the Workspace's plan lets this account publish: the oldest accounts up to the plan's count. */
+	publishingEligible: z.boolean(),
 	createdAt: z.string().datetime(),
 	updatedAt: z.string().datetime(),
 });

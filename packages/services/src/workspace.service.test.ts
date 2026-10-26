@@ -90,16 +90,32 @@ describe("workspace administration failures", () => {
       assertWorkspaceInviteEntitlement({
         collaborationEnabled: true,
         pricingTier: "free",
-        workspaceStatus: "active",
         actorRole: "owner",
         invitedRole: "viewer",
       }),
-    ).toThrow(expect.objectContaining({ code: "workspace_invites_require_business" }));
+    ).toThrow(
+      expect.objectContaining({
+        code: "plan_feature_required",
+        details: expect.objectContaining({
+          feature: "workspace.members",
+          currentTier: "free",
+          requiredTier: "business",
+        }),
+      }),
+    );
+    // A Pro Workspace restricted by leftover members cannot add even a Viewer.
+    expect(() =>
+      assertWorkspaceInviteEntitlement({
+        collaborationEnabled: true,
+        pricingTier: "pro",
+        actorRole: "owner",
+        invitedRole: "viewer",
+      }),
+    ).toThrow(expect.objectContaining({ code: "plan_feature_required" }));
     expect(() =>
       assertWorkspaceInviteEntitlement({
         collaborationEnabled: true,
         pricingTier: "business",
-        workspaceStatus: "active",
         actorRole: "admin",
         invitedRole: "admin",
       }),
@@ -114,7 +130,8 @@ describe("workspace administration failures", () => {
         name: "Automation",
         scopes: ["projects:read"],
       }),
-    ).toThrow(expect.objectContaining({ code: "workspace_api_requires_business" }));
+    ).toThrow(expect.objectContaining({ code: "plan_feature_required", details: expect.objectContaining({ feature: "integrations.api", requiredTier: "pro" }) }));
+    expect(normalizeWorkspaceApiKeyInput("pro", { name: "Automation", scopes: ["projects:read"] })).toMatchObject({ scopes: ["projects:read"] });
     expect(() =>
       normalizeWorkspaceApiKeyInput("business", {
         name: "Automation",

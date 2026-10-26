@@ -160,6 +160,7 @@ export function classifyAuthenticatedRequestFailure(
     };
   }
   if (
+    code === "credits_exhausted" ||
     code.includes("quota") ||
     code.includes("plan") ||
     code.includes("payment")

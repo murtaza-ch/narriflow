@@ -728,6 +728,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         name: "Upload Session DB recovery",
         ownerUserId: user.id,
         personalOwnerUserId: user.id,
+        // Unknown-length uploads each hold a full per-video cap of credits;
+        // Business has room for every session this test opens.
+        pricingTier: "business",
       },
     });
     await prisma.uploadSession.updateMany({

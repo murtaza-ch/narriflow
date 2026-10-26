@@ -16,7 +16,16 @@ import {
 } from "./project.service";
 import { ReviewServiceError } from "./review.service";
 import { SocialServiceError } from "./social.service";
-import { WorkspaceOperationError } from "./workspace.service";
+import { requirePlanFeature } from "./plan-features";
+
+function requirePlanFailure(tier: string, feature: Parameters<typeof requirePlanFeature>[1]) {
+	try {
+		requirePlanFeature(tier, feature);
+	} catch (error) {
+		return error as Error & { kind: string };
+	}
+	throw new Error("expected a plan refusal");
+}
 
 describe("typed domain failure catalogs", () => {
   test.each([
@@ -25,7 +34,7 @@ describe("typed domain failure catalogs", () => {
     [new ReviewServiceError("review_access_invalid", "Invalid review access"), "invalid"],
     [new ReviewServiceError("review_round_closed", "Review round closed"), "conflict"],
     [new ClipEditorDocumentPersistenceError("editor_document_invalid", "Invalid editor document"), "unprocessable"],
-    [new GeneratedMediaJobError("generated_media_daily_limit_reached"), "rate_limited"],
+    [new GeneratedMediaJobError("generated_media_concurrency_limit_reached"), "rate_limited"],
     [new ContentSuiteError("database_unavailable"), "unavailable"],
 		[new AutopilotError("autopilot_rule_not_found"), "missing"],
 		[new AutopilotError("autopilot_rule_limit_reached"), "conflict"],
@@ -39,13 +48,7 @@ describe("typed domain failure catalogs", () => {
 			"conflict",
 		],
 		[new DubbingFailureError("dub_not_found", "Dub not found."), "missing"],
-		[
-			new WorkspaceOperationError(
-				"workspace_api_requires_business",
-				"Workspace API keys require Business",
-			),
-			"payment_required",
-		],
+		[requirePlanFailure("free", "integrations.api"), "payment_required"],
   ] as const)("owns the %s semantic kind", (failure, kind) => {
     expect(failure.kind).toBe(kind);
   });
@@ -66,19 +69,20 @@ describe("typed domain failure catalogs", () => {
 		expect("retryable" in persistenceFailure).toBe(false);
     expect(
       new ProcessingUsageError({
-        code: "processing_quota_exhausted",
-        message: "Monthly processing limit reached",
+        code: "credits_exhausted",
+        message: "Monthly credits used",
         details: {
           tier: "creator",
-          limitMinutes: 600,
-          remainingMinutes: 1,
-          requestedMinutes: 2,
+          limitCredits: 300,
+          remainingCredits: 1,
+          requestedCredits: 2,
+          renewsAt: "2026-11-01T00:00:00.000Z",
         },
       }),
     ).toMatchObject({
-      code: "processing_quota_exhausted",
+      code: "credits_exhausted",
       kind: "payment_required",
-      details: { requestedMinutes: 2 },
+      details: { requestedCredits: 2 },
     });
     expect(
       new ProcessingUsageError({
@@ -88,5 +92,12 @@ describe("typed domain failure catalogs", () => {
         retryAfterSeconds: 60,
       }),
     ).toMatchObject({ kind: "rate_limited", retryAfterSeconds: 60 });
+    expect(
+      new ProcessingUsageError({
+        code: "credits_reservation_released",
+        message: "Retry the import",
+        details: { tier: "free" },
+      }),
+    ).toMatchObject({ kind: "conflict" });
   });
 });

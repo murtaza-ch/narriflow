@@ -20,6 +20,7 @@ const account = {
 	id: id(3),
 	platform: "youtube_shorts",
 	status: "active",
+	publishingEligible: true,
 } as SocialAccountSnapshot;
 const otherAccount = { ...account, id: id(4) };
 const facts: PublishingCompositionFacts = {

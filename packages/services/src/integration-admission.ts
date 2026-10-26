@@ -3,7 +3,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
-import { hasFeature, type PlanFeature } from "./plan-features";
+import { requirePlanFeature, type PlanFeature } from "./plan-features";
 import type { WorkspaceService } from "./workspace.service";
 
 /** A credential calling Narriflow from outside the browser. API keys are bound
@@ -70,17 +70,19 @@ export const INTEGRATION_COMMANDS = {
 
 export type IntegrationCommand = keyof typeof INTEGRATION_COMMANDS;
 
-/** Both surfaces are Business features. */
+/** The plan features each surface needs; the catalog decides which plans have them. */
 export const INTEGRATION_SURFACE_FEATURES = {
   mcp: "integrations.mcp",
   rest: "integrations.api",
 } as const satisfies Record<IntegrationSurface, PlanFeature>;
 
-/** Names the requirement only. Assistant directories forbid upgrade prompts
- * and checkout links in connector responses. */
+/** For a Workspace that is not active (restricted or awaiting payment). A
+ * missing plan feature is a `PlanRequirementError` instead. Names the
+ * requirement only: assistant directories forbid upgrade prompts and checkout
+ * links in connector responses. */
 export const INTEGRATION_ACCESS_MESSAGES = {
-  mcp: "This workspace needs active Business access to use the Narriflow connector",
-  rest: "This workspace needs active Business access to use the Narriflow API",
+  mcp: "This workspace isn't active, so the Narriflow connector can't act in it",
+  rest: "This workspace isn't active, so the Narriflow API can't act in it",
 } as const satisfies Record<IntegrationSurface, string>;
 
 export function operationReadScope(kind: unknown): WorkspaceApiKeyScope {
@@ -142,9 +144,10 @@ export class IntegrationAdmission {
       ? principal.workspaceId
       : options.workspaceId ?? await this.workspace.getPersonalWorkspaceId(principal.userId);
     const actor = await this.workspace.requireActor(principal.userId, workspaceId, policy.capability);
-    if (actor.status !== "active" || !hasFeature(actor.pricingTier, INTEGRATION_SURFACE_FEATURES[options.surface])) {
+    if (actor.status !== "active") {
       throw new IntegrationAdmissionError("integration_access_unavailable", INTEGRATION_ACCESS_MESSAGES[options.surface]);
     }
+    requirePlanFeature(actor.pricingTier, INTEGRATION_SURFACE_FEATURES[options.surface]);
     return actor;
   }
 }

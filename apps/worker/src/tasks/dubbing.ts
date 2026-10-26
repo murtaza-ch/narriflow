@@ -481,7 +481,7 @@ async function processDubbingRunInScratch(
             completedAt: new Date(),
           });
         } catch (error) {
-          if (!(error instanceof WorkflowAttemptLost)) throw error;
+          // Nothing committed: neither the dub nor its count. Remove the upload.
           await Promise.all([
             deleteObject(audioStorageKey).catch(() => {}),
             deleteObject(renderStorageKey).catch(() => {}),

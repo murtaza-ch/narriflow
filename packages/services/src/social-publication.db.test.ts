@@ -102,6 +102,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				name: "Social Publication DB test",
 				ownerUserId: user.id,
 				personalOwnerUserId: user.id,
+				pricingTier: "pro",
 			},
 		});
 		await prisma.workspaceMember.create({
@@ -448,6 +449,36 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: first.id } })).createdByUserId).toBe(editor.id);
 		await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: editor.id } }, data: { role: "viewer" } });
 		await expect(admission.schedule({ ...input, clientIdempotencyKey: randomUUID() })).rejects.toMatchObject({ code: "workspace_access_denied" });
+	});
+
+	test("production admission needs publishing on the plan and an account the plan publishes to; cancelling stays open", async () => {
+		const f = await fixture();
+		const admission = createProductionSocialPublicationScheduling();
+		const input = (accountId: string) => ({
+			actorUserId: f.user.id, workspaceId: f.workspace.id, projectId: f.project.id,
+			clientIdempotencyKey: randomUUID(), clipId: f.clip.id, expectedEditorRevision: f.clip.editorRevision,
+			clipExportId: f.clipExport.id, clipExportVariantId: f.variant.id, accountId,
+			platform: "youtube_shorts" as const, caption: "Plan boundary", aspectRatio: "9:16" as const,
+			resolution: "1080p" as const, scheduledFor: new Date(Date.now() + 3_600_000), providerSettings: {},
+		});
+		const kept = await admission.schedule(input(f.firstAccount.id));
+
+		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
+		await expect(admission.schedule(input(f.firstAccount.id))).rejects.toMatchObject({ code: "plan_feature_required", kind: "payment_required", details: { feature: "publishing.schedule", requiredTier: "creator" } });
+		await expect(admission.cancel({ actorUserId: f.user.id, workspaceId: f.workspace.id, postId: kept.id })).resolves.toMatchObject({ status: "cancelled" });
+
+		// Creator publishes to its 3 oldest accounts; a fourth, newer one is refused, not swapped for another.
+		const newer = [];
+		for (const index of [3, 4]) {
+			newer.push(await prisma.socialAccount.create({ data: {
+				userId: f.user.id, workspaceId: f.workspace.id, createdByUserId: f.user.id, platform: "youtube_shorts",
+				providerAccountId: `youtube:${randomUUID()}:${index}`, displayName: `Account ${index}`, accessTokenEncrypted: "encrypted-test-token",
+				createdAt: new Date(Date.now() + index * 1_000),
+			} }));
+		}
+		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
+		await expect(admission.schedule(input(newer[1]!.id))).rejects.toMatchObject({ code: "plan_limit_reached", details: { limit: "socialDestinations", used: 4, max: 3 } });
+		await expect(admission.schedule(input(newer[0]!.id))).resolves.toMatchObject({ status: "scheduled" });
 	});
 
 	test("expired credential rejection does not mutate the account", async () => {

@@ -6,9 +6,11 @@ import type {
   ProcessingUsageState,
 } from "@prisma/client";
 import {
-  MAX_UPLOAD_LENGTH_SECONDS,
-  MONTHLY_PROCESSING_MINUTE_LIMITS,
-  processingMinutesFromSeconds,
+  creditDebitSeconds,
+  creditsForSourceSeconds,
+  planDefinition,
+  planLimits,
+  processingPeriodEnd,
   processingPeriodStart,
   resolvePricingTier,
   type PricingTier,
@@ -30,9 +32,12 @@ export const PROCESSING_USAGE_TRANSACTION = {
 type Db = Tx | PrismaClient;
 
 export const processingUsageFailureCatalog = {
-  processing_quota_exhausted: "payment_required",
+  credits_exhausted: "payment_required",
   upload_too_long: "unprocessable",
   workspace_processing_capacity_reached: "rate_limited",
+  /** The intake's reservation was released (for example by the stranded
+   * sweep) before settlement; a manual retry re-admits it. */
+  credits_reservation_released: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type ProcessingUsageFailureCode =
@@ -46,12 +51,14 @@ const MAX_REASON_LENGTH = 120;
 export type ProcessingUsageFailureDetails =
   | {
       tier: PricingTier;
-      limitMinutes: number;
-      remainingMinutes: number;
-      requestedMinutes: number | null;
+      limitCredits: number;
+      remainingCredits: number;
+      requestedCredits: number | null;
+      renewsAt: string;
     }
   | { tier: PricingTier; maxSeconds: number; seconds: number }
-  | { tier: PricingTier; inFlight: number; inFlightLimit: number };
+  | { tier: PricingTier; inFlight: number; inFlightLimit: number }
+  | { tier: PricingTier };
 
 export class ProcessingUsageError extends ExpectedDomainFailureError<
   ProcessingUsageFailureCode,
@@ -74,47 +81,62 @@ export function isProcessingUsageFailureCode(
   return Boolean(code && Object.hasOwn(processingUsageFailureCatalog, code));
 }
 
-function quotaExhausted(input: {
+function creditsExhausted(input: {
   tier: PricingTier;
+  periodStart: Date;
   remainingSeconds: number;
   requestedSeconds: number | null;
 }) {
-  const limitMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS[input.tier];
-  const remainingMinutes = Math.max(0, Math.floor(input.remainingSeconds / 60));
-  const requestedMinutes =
+  const plan = planDefinition(input.tier);
+  const limitCredits = plan.limits.monthlyCredits;
+  // Ledger debits are whole credits, so remaining seconds are a multiple of 60.
+  const remainingCredits = Math.max(0, Math.floor(input.remainingSeconds / 60));
+  const requestedCredits =
     input.requestedSeconds === null
       ? null
-      : processingMinutesFromSeconds(input.requestedSeconds);
+      : creditsForSourceSeconds(input.requestedSeconds);
+  const renewsAt = processingPeriodEnd(input.periodStart);
+  const renewal = renewsAt.toISOString().slice(0, 10);
   return new ProcessingUsageError({
-    code: "processing_quota_exhausted",
+    code: "credits_exhausted",
     message:
-      requestedMinutes === null || input.remainingSeconds <= 0
-        ? `The workspace has used its ${limitMinutes} processing minutes for this month on the ${input.tier} plan. Upgrade, or wait for next month's minutes.`
-        : `This video needs ${requestedMinutes} processing minutes, but the workspace has ${remainingMinutes} of ${limitMinutes} left this month on the ${input.tier} plan. Upgrade, or wait for next month's minutes.`,
+      requestedCredits === null || remainingCredits <= 0
+        ? `This workspace has used its ${limitCredits} ${plan.name} credits for this month. Credits renew on ${renewal} (UTC), or upgrade for more.`
+        : `This video needs ${requestedCredits} credits, but the workspace has ${remainingCredits} of ${limitCredits} ${plan.name} credits left this month. Credits renew on ${renewal} (UTC), or upgrade for more.`,
     details: {
       tier: input.tier,
-      limitMinutes,
-      remainingMinutes,
-      requestedMinutes,
+      limitCredits,
+      remainingCredits,
+      requestedCredits,
+      renewsAt: renewsAt.toISOString(),
     },
   });
 }
 
 function tooLong(tier: PricingTier, seconds: number) {
-  const maxSeconds = MAX_UPLOAD_LENGTH_SECONDS[tier];
+  const plan = planDefinition(tier);
+  const maxSeconds = plan.limits.maxSourceSeconds;
   return new ProcessingUsageError({
     code: "upload_too_long",
-    message: `This video is ${processingMinutesFromSeconds(seconds)} min, over the ${Math.round(
+    message: `This video is ${Math.ceil(seconds / 60)} min, over the ${Math.round(
       maxSeconds / 60,
-    )}-min per-video limit on the ${tier} plan. Upgrade for longer videos.`,
+    )}-min per-video limit on the ${plan.name} plan. Upgrade for longer videos.`,
     details: { tier, maxSeconds, seconds },
+  });
+}
+
+function reservationReleased(tier: PricingTier) {
+  return new ProcessingUsageError({
+    code: "credits_reservation_released",
+    message: "This video's credit reservation was released before processing started. Retry the import to reserve credits again.",
+    details: { tier },
   });
 }
 
 function capacityReached(tier: PricingTier, inFlight: number, limit: number) {
   return new ProcessingUsageError({
     code: "workspace_processing_capacity_reached",
-    message: `This workspace already has ${inFlight} of ${limit} videos processing on the ${tier} plan. Try again when one finishes.`,
+    message: `This workspace already has ${inFlight} of ${limit} videos processing on the ${planDefinition(tier).name} plan. Try again when one finishes.`,
     details: { tier, inFlight, inFlightLimit: limit },
     retryAfterSeconds: CAPACITY_RETRY_AFTER_SECONDS,
   });
@@ -161,7 +183,7 @@ function view(row: ProcessingUsageReservation): ProcessingUsageReservationView {
 }
 
 export type ProcessingUsageSettlement =
-  /** The Project's minutes are settled. `charged` is false when an earlier
+  /** The Project's credits are settled. `charged` is false when an earlier
    * speech-to-text admission already settled them. */
   | { outcome: "settled"; charged: boolean; settledSeconds: number }
   /** The reservation was released inside the caller's transaction. The caller
@@ -172,10 +194,14 @@ export type ProcessingUsageSettlement =
 
 export interface ProcessingUsageSummary {
   tier: PricingTier;
-  usedMinutes: number;
-  reservedMinutes: number;
-  limitMinutes: number;
-  remainingMinutes: number;
+  usedCredits: number;
+  reservedCredits: number;
+  limitCredits: number;
+  remainingCredits: number;
+  /** Start of the UTC month these credits belong to. */
+  periodStart: Date;
+  /** When the next month's credits become available (UTC). */
+  renewsAt: Date;
   inFlight: number;
   inFlightLimit: number;
   maxUploadSeconds: number;
@@ -213,13 +239,30 @@ export interface ProcessingUsageDependencies {
 }
 
 /**
- * Processing Usage owns minute admission, reservation sizing, settlement from
+ * Processing Usage owns credit admission, reservation sizing, settlement from
  * the probed duration, release, operator refunds, the usage read model, and
  * Processing Capacity. Every mutation that can change another admission's
  * answer serializes on one transaction-scoped Workspace lock. Lock order is
  * fixed: this Workspace lock first, then any Project generation lock, then
- * row locks. Release only frees minutes, so it is a lock-free compare-and-set.
+ * row locks. Release only frees credits, so it is a lock-free compare-and-set.
+ *
+ * One credit is one started minute of source media. The ledger stores every
+ * debit as whole credits in seconds (multiples of 60); per-video duration caps
+ * compare the source's real seconds before rounding.
  */
+/**
+ * Takes the transaction-scoped Workspace usage lock. Every ledger mutation
+ * takes it first, and Workspace Billing takes it before committing an access
+ * projection change, so an admission cannot interleave with a restriction.
+ * Lock order: this lock, then any Project generation lock, then row locks.
+ */
+export async function lockWorkspaceUsage(tx: Tx, workspaceId: string) {
+  // A distinct key namespace from the Project generation lock, which hashes
+  // the bare Project ID.
+  const key = `processing_usage:${workspaceId}`;
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0)) IS NULL AS "locked"`;
+}
+
 export class ProcessingUsage {
   private readonly now: () => Date;
   private readonly log: (record: ProcessingUsageLogRecord) => void;
@@ -231,11 +274,8 @@ export class ProcessingUsage {
       ((record) => console.warn(JSON.stringify(record)));
   }
 
-  private async lockWorkspace(tx: Tx, workspaceId: string) {
-    // A distinct key namespace from the Project generation lock, which hashes
-    // the bare Project ID.
-    const key = `processing_usage:${workspaceId}`;
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0)) IS NULL AS "locked"`;
+  private lockWorkspace(tx: Tx, workspaceId: string) {
+    return lockWorkspaceUsage(tx, workspaceId);
   }
 
   private async workspaceTier(db: Db, workspaceId: string) {
@@ -270,15 +310,13 @@ export class ProcessingUsage {
     periodStart: Date,
   ) {
     const usage = await this.periodUsage(db, workspaceId, periodStart);
-    return (
-      MONTHLY_PROCESSING_MINUTE_LIMITS[tier] * 60 - usage.settled - usage.reserved
-    );
+    return planLimits(tier).monthlyCredits * 60 - usage.settled - usage.reserved;
   }
 
   /** Videos in flight: unsettled intakes still importing plus Projects with
    * an active Workflow Run or accepted export renders that have no run yet.
    * An ingested intake waiting for its owner to commit setup keeps its
-   * minutes reserved but no longer occupies capacity; it isn't processing. */
+   * credits reserved but no longer occupies capacity; it isn't processing. */
   private async inFlight(db: Db, workspaceId: string) {
     const rows = await db.$queryRaw<Array<{ inFlight: number }>>`
       SELECT (
@@ -326,10 +364,13 @@ export class ProcessingUsage {
     if (existing && existing.state !== "released")
       return { ...view(existing), replayed: true };
 
-    const { tier } = await this.workspaceTier(tx, input.workspaceId);
+    const { tier, status } = await this.workspaceTier(tx, input.workspaceId);
+    // Billing restrictions commit under this same lock, so an admission
+    // authorized before a concurrent restriction cannot slip through.
+    if (status !== "active") throw inactiveWorkspace();
     const periodStart = processingPeriodStart(this.now());
     const declared = knownSeconds(input.declaredSeconds);
-    const maxSeconds = MAX_UPLOAD_LENGTH_SECONDS[tier];
+    const maxSeconds = planLimits(tier).maxSourceSeconds;
     const refuse = (failure: ProcessingUsageError, context: { remainingSeconds?: number; inFlight?: number }) => {
       this.log({
         level: "warn",
@@ -353,9 +394,12 @@ export class ProcessingUsage {
       tier,
       periodStart,
     );
-    if (remainingSeconds <= 0 || (declared !== null && declared > remainingSeconds))
+    if (
+      remainingSeconds <= 0 ||
+      (declared !== null && creditDebitSeconds(declared) > remainingSeconds)
+    )
       throw refuse(
-        quotaExhausted({ tier, remainingSeconds, requestedSeconds: declared }),
+        creditsExhausted({ tier, periodStart, remainingSeconds, requestedSeconds: declared }),
         { remainingSeconds },
       );
     const inFlight = await this.inFlight(tx, input.workspaceId);
@@ -366,7 +410,11 @@ export class ProcessingUsage {
         inFlight,
       });
 
-    const reservedSeconds = declared ?? Math.min(remainingSeconds, maxSeconds);
+    // An unknown duration holds the most this video could cost.
+    const reservedSeconds =
+      declared === null
+        ? Math.min(remainingSeconds, creditDebitSeconds(maxSeconds))
+        : creditDebitSeconds(declared);
     const data = {
       workspaceId: input.workspaceId,
       actorUserId: input.actorUserId,
@@ -412,8 +460,9 @@ export class ProcessingUsage {
     projectId: string;
     seconds: number;
   }): Promise<ProcessingUsageReservationView> {
-    const next = knownSeconds(input.seconds);
-    if (next === null) throw new Error("processing_usage_resize_invalid");
+    const sourceSeconds = knownSeconds(input.seconds);
+    if (sourceSeconds === null) throw new Error("processing_usage_resize_invalid");
+    const next = creditDebitSeconds(sourceSeconds);
     return this.deps.prisma.$transaction(async (tx) => {
       const head = await tx.processingUsageReservation.findUnique({
         where: { projectId: input.projectId },
@@ -434,13 +483,14 @@ export class ProcessingUsage {
         row.periodStart,
       );
       const failure =
-        next > MAX_UPLOAD_LENGTH_SECONDS[tier]
-          ? tooLong(tier, next)
+        sourceSeconds > planLimits(tier).maxSourceSeconds
+          ? tooLong(tier, sourceSeconds)
           : next - row.reservedSeconds > remainingSeconds
-            ? quotaExhausted({
+            ? creditsExhausted({
                 tier,
+                periodStart: row.periodStart,
                 remainingSeconds: remainingSeconds + row.reservedSeconds,
-                requestedSeconds: next,
+                requestedSeconds: sourceSeconds,
               })
             : null;
       if (failure) {
@@ -515,54 +565,23 @@ export class ProcessingUsage {
       return { outcome: "not_ready" };
 
     const { tier } = workspace;
-    if (!row || row.state !== "reserved") {
-      // A measured intake without a live reservation (one accepted before the
-      // ledger existed) is admitted now, for the current period, at its probed
-      // duration, then settled. Capacity isn't checked: it is already ingested.
-      const periodStart = processingPeriodStart(this.now());
-      const remainingSeconds = await this.remainingSeconds(
-        tx,
-        head.workspaceId,
-        tier,
-        periodStart,
-      );
-      const failure =
-        workspace.status !== "active"
-          ? inactiveWorkspace()
-          : seconds > MAX_UPLOAD_LENGTH_SECONDS[tier]
-            ? tooLong(tier, seconds)
-            : seconds > remainingSeconds
-              ? quotaExhausted({ tier, remainingSeconds, requestedSeconds: seconds })
-              : null;
-      if (failure) return { outcome: "refused", failure };
-      const data = {
-        workspaceId: head.workspaceId,
-        intakeKind: row?.intakeKind ?? ("upload" as const),
-        periodStart,
-        reservedSeconds: seconds,
-        settledSeconds: seconds,
-        state: "settled" as const,
-        reason: null,
-        releasedAt: null,
-        settledAt: this.now(),
-      };
-      if (row)
-        await tx.processingUsageReservation.update({ where: { projectId }, data });
-      else
-        await tx.processingUsageReservation.create({ data: { ...data, projectId } });
+    // Every intake reserves at acceptance. A missing row is a defect; a
+    // released one was swept before settlement and needs an explicit retry.
+    if (!row) throw new Error("processing_usage_not_reserved");
+    if (row.state !== "reserved") {
+      const failure = reservationReleased(tier);
       this.log({
-        level: "info",
-        message: "processing_usage_settled",
+        level: "warn",
+        message: "processing_usage_settle_refused",
         intent: "settle",
-        disposition: "admitted_and_settled",
-        workspaceId: head.workspaceId,
+        disposition: "refused",
+        workspaceId: row.workspaceId,
         projectId,
-        previousState: row?.state ?? null,
-        nextState: "settled",
-        settledSeconds: seconds,
-        remainingSeconds: remainingSeconds - seconds,
+        intakeKind: row.intakeKind,
+        previousState: row.state,
+        failureCode: failure.code,
       });
-      return { outcome: "settled", charged: true, settledSeconds: seconds };
+      return { outcome: "refused", failure };
     }
 
     const remainingSeconds = await this.remainingSeconds(
@@ -571,14 +590,16 @@ export class ProcessingUsage {
       tier,
       row.periodStart,
     );
+    const debitSeconds = creditDebitSeconds(seconds);
     const failure =
       workspace.status !== "active"
         ? inactiveWorkspace()
-        : seconds > MAX_UPLOAD_LENGTH_SECONDS[tier]
+        : seconds > planLimits(tier).maxSourceSeconds
           ? tooLong(tier, seconds)
-          : seconds > row.reservedSeconds + remainingSeconds
-            ? quotaExhausted({
+          : debitSeconds > row.reservedSeconds + remainingSeconds
+            ? creditsExhausted({
                 tier,
+                periodStart: row.periodStart,
                 remainingSeconds: row.reservedSeconds + remainingSeconds,
                 requestedSeconds: seconds,
               })
@@ -594,7 +615,7 @@ export class ProcessingUsage {
         intakeKind: row.intakeKind,
         previousState: row.state,
         reservedSeconds: row.reservedSeconds,
-        settledSeconds: seconds,
+        settledSeconds: debitSeconds,
         remainingSeconds,
         failureCode: failure.code,
       });
@@ -603,7 +624,7 @@ export class ProcessingUsage {
     }
     const settled = await tx.processingUsageReservation.updateMany({
       where: { projectId, state: "reserved" },
-      data: { state: "settled", settledSeconds: seconds, settledAt: this.now() },
+      data: { state: "settled", settledSeconds: debitSeconds, settledAt: this.now() },
     });
     if (settled.count !== 1) throw new Error("processing_usage_settlement_lost");
     this.log({
@@ -617,10 +638,10 @@ export class ProcessingUsage {
       previousState: row.state,
       nextState: "settled",
       reservedSeconds: row.reservedSeconds,
-      settledSeconds: seconds,
-      remainingSeconds: remainingSeconds + row.reservedSeconds - seconds,
+      settledSeconds: debitSeconds,
+      remainingSeconds: remainingSeconds + row.reservedSeconds - debitSeconds,
     });
-    return { outcome: "settled", charged: true, settledSeconds: seconds };
+    return { outcome: "settled", charged: true, settledSeconds: debitSeconds };
   }
 
   /** Releases an unsettled reservation in the transaction that settles the
@@ -723,20 +744,21 @@ export class ProcessingUsage {
       this.periodUsage(db, workspaceId, periodStart),
       this.inFlight(db, workspaceId),
     ]);
-    const limitMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
-    const remainingSeconds = Math.max(
-      0,
-      limitMinutes * 60 - usage.settled - usage.reserved,
-    );
+    const limits = planLimits(tier);
+    // Debits are whole credits, so these divisions are exact and the parts sum.
+    const usedCredits = Math.floor(usage.settled / 60);
+    const reservedCredits = Math.floor(usage.reserved / 60);
     return {
       tier,
-      usedMinutes: processingMinutesFromSeconds(usage.settled),
-      reservedMinutes: processingMinutesFromSeconds(usage.reserved),
-      limitMinutes,
-      remainingMinutes: Math.floor(remainingSeconds / 60),
+      usedCredits,
+      reservedCredits,
+      limitCredits: limits.monthlyCredits,
+      remainingCredits: Math.max(0, limits.monthlyCredits - usedCredits - reservedCredits),
+      periodStart,
+      renewsAt: processingPeriodEnd(periodStart),
       inFlight,
       inFlightLimit: this.deps.capacityLimits[tier],
-      maxUploadSeconds: MAX_UPLOAD_LENGTH_SECONDS[tier],
+      maxUploadSeconds: limits.maxSourceSeconds,
     };
   }
 

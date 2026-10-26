@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   assertBrandApplicationAllowed,
+  assertBrandManageAllowed,
   assertBrandMutationAllowed,
+  BrandAccessError,
   brandOwnerStoragePrefix,
+  isBrandAccessRefusal,
   resolveBrandOwner,
 } from "./brand-ownership";
+import { PlanRequirementError } from "./plan-features";
 import {
   assertFinalizedVisualObject,
   assertSceneVisualAssetReferences,
@@ -28,13 +32,16 @@ const personalScope = {
 };
 
 describe("brand ownership", () => {
-  test("stores Creator profiles in personal ownership and Business profiles in workspace ownership", () => {
-    expect(resolveBrandOwner(personalScope)).toEqual({ userId: "owner", workspaceId: null });
-    expect(resolveBrandOwner({ ...personalScope, pricingTier: "business", isPersonalWorkspace: false })).toEqual({ userId: null, workspaceId: "personal-workspace" });
+  test("owns personal branding by the owner and collaborative branding by the Workspace, on every plan", () => {
+    for (const pricingTier of ["free", "creator", "pro", "business"]) {
+      expect(resolveBrandOwner({ ...personalScope, pricingTier })).toEqual({ userId: "owner", workspaceId: null });
+      expect(resolveBrandOwner({ ...personalScope, pricingTier, isPersonalWorkspace: false })).toEqual({ userId: null, workspaceId: "personal-workspace" });
+    }
   });
 
   test("uses non-overlapping tenant upload prefixes", () => {
     expect(brandOwnerStoragePrefix(personalScope, "visual-assets")).toBe("visual-assets/owner/");
+    expect(brandOwnerStoragePrefix({ ...personalScope, pricingTier: "business" }, "visual-assets")).toBe("visual-assets/owner/");
     expect(brandOwnerStoragePrefix({ ...personalScope, pricingTier: "business", isPersonalWorkspace: false }, "brand-fonts")).toBe("workspaces/personal-workspace/brand-fonts/");
   });
 
@@ -42,7 +49,25 @@ describe("brand ownership", () => {
     expect(() => assertBrandMutationAllowed(personalScope, "brand.profiles")).not.toThrow();
     expect(() => assertBrandMutationAllowed({ ...personalScope, role: "viewer" }, "brand.profiles")).toThrow();
     expect(() => assertBrandMutationAllowed({ ...personalScope, status: "restricted" }, "brand.profiles")).toThrow();
-    expect(() => assertBrandMutationAllowed({ ...personalScope, pricingTier: "free" }, "brand.profiles")).toThrow();
+    expect(() => assertBrandMutationAllowed({ ...personalScope, pricingTier: "free" }, "brand.profiles")).toThrow(PlanRequirementError);
+    expect(() => assertBrandMutationAllowed({ ...personalScope, role: "viewer" }, "brand.profiles")).toThrow(BrandAccessError);
+  });
+
+  test("cleanup needs only the brand.manage role, on any plan", () => {
+    expect(() => assertBrandManageAllowed({ ...personalScope, pricingTier: "free" })).not.toThrow();
+    expect(() => assertBrandManageAllowed({ ...personalScope, role: "viewer" })).toThrow(BrandAccessError);
+  });
+
+  test("plan refusals carry the shared code and stay recognizable as brand refusals", () => {
+    try {
+      assertBrandApplicationAllowed({ ...personalScope, pricingTier: "free" });
+      throw new Error("expected refusal");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "plan_feature_required", kind: "payment_required", details: { feature: "brand.profiles", currentTier: "free", requiredTier: "creator" } });
+      expect(isBrandAccessRefusal(error)).toBe(true);
+    }
+    expect(isBrandAccessRefusal(new BrandAccessError("brand_forbidden"))).toBe(true);
+    expect(isBrandAccessRefusal(new PlanRequirementError({ code: "plan_feature_required", message: "x", currentTier: "free", requiredTier: "pro", feature: "automation.autopilot" }))).toBe(false);
   });
 
   test("allows active editors to apply profiles but blocks downgrade and free application", () => {

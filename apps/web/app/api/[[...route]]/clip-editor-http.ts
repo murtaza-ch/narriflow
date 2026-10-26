@@ -18,8 +18,6 @@ import {
   type VisualAssetService,
   clipEditorDocumentPersistence,
 } from "@narriflow/services";
-import { censorDocumentMutationError } from "@/lib/censor-document-mutation";
-import { motionDocumentMutationError } from "@/lib/motion-document-mutation";
 
 export interface ClipEditorHttpDependencies {
   getActor(context: Context): BrandActorScope;
@@ -237,6 +235,8 @@ export function createClipEditorHttpRoutes(
     const parsed = saveEditorDocumentSchema.safeParse(payload);
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400);
 
+    // Plan and rollout rules for the change are enforced by document
+    // persistence; this adapter validates the Scene references it introduces.
     const current = await dependencies.clip.getClipEditorDocument(
       actor,
       projectId,
@@ -245,20 +245,7 @@ export function createClipEditorHttpRoutes(
     const sceneAnalysis = dependencies.analyzeSceneMutation(
       current.document,
       parsed.data.document,
-      actor.pricingTier,
     );
-    const motionError = motionDocumentMutationError(
-      actor.pricingTier,
-      current.document,
-      parsed.data.document,
-    );
-    if (motionError) throw motionError;
-    const censorError = censorDocumentMutationError(
-      actor.pricingTier,
-      current.document,
-      parsed.data.document,
-    );
-    if (censorError) throw censorError;
 
     await validateSceneReferences(
       dependencies,
@@ -302,16 +289,6 @@ export function createClipEditorHttpRoutes(
     const parsed = resetEditorDocumentSchema.safeParse(payload);
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400);
 
-    const current = await dependencies.clip.getClipEditorDocument(
-      actor,
-      projectId,
-      clipId,
-    );
-    dependencies.analyzeSceneMutation(
-      current.document,
-      current.original,
-      actor.pricingTier,
-    );
     const mutation = await dependencies.persistence.mutateDocument({
       actorUserId: actor.actorUserId,
       workspaceId: actor.workspaceId,

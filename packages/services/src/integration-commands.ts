@@ -421,7 +421,7 @@ export async function socialAccountsView(actor: ActorScope) {
   const [accounts, workspace] = await Promise.all([socialOAuthService.listAccounts(actor), workspaceService.getWorkspace(actor.actorUserId, actor.workspaceId)]);
   return {
     accounts: accounts.map((account) => ({ accountId: account.id, platform: account.platform, displayName: account.displayName, handle: account.handle,
-      status: account.status, postingSchedule: account.postingSchedule })),
+      status: account.status, postingSchedule: account.postingSchedule, publishingEligible: account.publishingEligible })),
     timeZone: workspace?.timezone ?? "UTC",
   };
 }

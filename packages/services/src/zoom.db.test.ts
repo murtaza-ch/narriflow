@@ -108,6 +108,21 @@ describeDb("Zoom recording admission and authorization", () => {
     expect(await prisma.project.count({ where: { workspaceId: match.workspace.id } })).toBe(2);
   });
 
+  test("a recording for a rule the plan no longer runs pauses the rule once, imports nothing, and completes the job", async () => {
+    const f = await fixture(), zoom = service();
+    await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
+    const imported = spyOn(projectService, "importZoomRecording");
+    try {
+      await zoom.acceptWebhook(signed(event()));
+      await zoom.processDueNotifications();
+      expect(imported).not.toHaveBeenCalled();
+    } finally { imported.mockRestore(); }
+    expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: f.rule.id } })).toMatchObject({ status: "paused", pauseKind: "plan", lastError: expect.stringContaining("Autopilot needs the Pro plan") });
+    expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
+    expect(await prisma.zoomWebhookJob.findFirstOrThrow({ orderBy: { createdAt: "desc" } })).toMatchObject({ status: "completed" });
+    await expect(new AutopilotService().updateRule(f.scope, f.rule.id, { status: "active" })).rejects.toMatchObject({ code: "plan_feature_required" });
+  });
+
   test("a capacity refusal retries durably without consuming the recording", async () => {
     const f = await fixture(), zoom = service();
     await zoom.acceptWebhook(signed(event()));

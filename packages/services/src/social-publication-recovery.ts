@@ -19,6 +19,8 @@ import { structuredSocialPublicationMetrics } from "./social-publication-observa
 import { emitSocialPostFinished } from "./social-post-finished";
 import { SOCIAL_PROVIDER_API_VERSIONS } from "./social-publication-config";
 import { socialOAuthService } from "./social-oauth.service";
+import { requirePlanFeature } from "./plan-features";
+import { hasCustomThumbnail, requirePublishableSocialAccount } from "./social-account-eligibility";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -766,7 +768,9 @@ export const socialPublicationRecovery = {
       mutation?: IntegrationMutation;
     } & RepublishSocialPublicationInput,
   ) {
-    await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
+    const actor = await workspaceService.requireActor(input.actorUserId, input.workspaceId, "publishing.manage");
+    // Publishing again is a new submission, so it needs the plan; recheck and confirm do not.
+    requirePlanFeature(actor.pricingTier, "publishing.schedule");
     const parsed = republishSocialPublicationSchema.parse({
       reason: input.reason,
       duplicateRiskAcknowledged: input.duplicateRiskAcknowledged,
@@ -785,6 +789,12 @@ export const socialPublicationRecovery = {
           "Publishing again is blocked until the workspace and social account are active",
         );
       }
+      if (post.socialAccountId) {
+        await requirePublishableSocialAccount(tx, { workspaceId: input.workspaceId, accountId: post.socialAccountId, tier: actor.pricingTier });
+      }
+      const frozenSettings = frozen.providerSettings && typeof frozen.providerSettings === "object" && !Array.isArray(frozen.providerSettings)
+        ? (frozen.providerSettings as Prisma.JsonObject) : {};
+      if (hasCustomThumbnail(frozenSettings)) requirePlanFeature(actor.pricingTier, "publishing.customThumbnails");
       const decisionId = randomUUID();
       const nextAttemptId = randomUUID();
       const fencedAttempt = await tx.socialPublicationAttempt.updateMany({

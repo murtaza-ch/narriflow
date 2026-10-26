@@ -20,7 +20,7 @@ export default async function McpPublicationConfirmation({ searchParams }: { sea
   try {
     state = verifyMcpPreparation(query.token, { actorUserId: actorUser.actorUserId });
     const actor = await workspaceService.requireActor(actorUser.actorUserId, state.workspaceId, "publishing.manage");
-    if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) return <Text>Active Business access is required to confirm this publication.</Text>;
+    if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) return <Text>Confirming this publication needs an active workspace on a plan that includes the assistant connector.</Text>;
     const intent = state.intent;
     const [accounts, workspace] = await Promise.all([socialOAuthService.listAccounts(actor), workspaceService.getWorkspace(actorUser.actorUserId, state.workspaceId)]);
     const account = accounts.find((account) => account.id === intent.accountId && account.platform === intent.platform);

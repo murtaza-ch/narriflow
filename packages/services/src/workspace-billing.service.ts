@@ -1,5 +1,7 @@
 import {
   billingHealthSchema,
+  hasFeature,
+  PLAN_CATALOG,
   resolvePricingTier,
   type BillingHealth,
   type BillingInterval,
@@ -7,6 +9,7 @@ import {
   type PricingTier,
 } from "@narriflow/validators";
 import { getPrismaClient } from "@narriflow/db/client";
+import { lockWorkspaceUsage } from "./processing-usage";
 import { projectRetentionService } from "./project-retention.service";
 import { randomUUID } from "node:crypto";
 import {
@@ -56,6 +59,56 @@ export interface BillingCatalog extends BillingCatalogInput {
     | null;
 }
 
+/** Paid tiers in catalog order; Stripe base prices map onto exactly these. */
+export const PAID_PRICING_TIERS = (
+  Object.keys(PLAN_CATALOG) as PricingTier[]
+).filter((tier): tier is PaidPricingTier => tier !== "free");
+export const BILLING_INTERVALS: readonly BillingInterval[] = ["monthly", "annual"];
+
+/**
+ * The one billing access-projection rule. A Workspace awaiting its first
+ * payment is held; a Workspace whose plan does not include team members but
+ * still has non-owner members is restricted (the owner keeps billing, member
+ * cleanup, viewing, and downloads) until the owner upgrades or removes them.
+ * A Workspace without non-owner members is never restricted by this rule.
+ */
+export function projectWorkspaceAccessStatus(input: {
+  tier: PricingTier;
+  hasNonOwnerMembers: boolean;
+  awaitingFirstPayment: boolean;
+}): "active" | "pending_payment" | "restricted" {
+  if (input.awaitingFirstPayment) return "pending_payment";
+  if (input.hasNonOwnerMembers && !hasFeature(input.tier, "workspace.members")) {
+    return "restricted";
+  }
+  return "active";
+}
+
+/** Provider subscription states that can no longer bill or be recovered. */
+const ENDED_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired"]);
+/** Provider states that may grow or shrink a seat item. */
+const SEAT_BILLABLE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "past_due"]);
+/** Unpaid/paused/incomplete subscriptions on Free are recovered in the portal. */
+const PORTAL_RECOVERABLE_SUBSCRIPTION_STATUSES = new Set([
+  "incomplete",
+  "past_due",
+  "unpaid",
+  "paused",
+]);
+/**
+ * A slot holder that has not bound a provider session within this window is
+ * treated as abandoned. Its session URL, if one was ever created, was never
+ * returned, because binding is fenced on holding the slot.
+ */
+const CHECKOUT_PREPARATION_WINDOW_MS = 2 * 60_000;
+/**
+ * An abandoned open Checkout holds the slot until Stripe verifiably expires
+ * it, so keep sessions short. Stripe accepts 30 minutes to 24 hours measured
+ * from its own receipt of the request; the extra minute keeps a request that
+ * arrives late from falling under the 30-minute minimum.
+ */
+const CHECKOUT_SESSION_LIFETIME_MS = 31 * 60_000;
+
 export function createBillingCatalog(input: BillingCatalogInput): BillingCatalog {
   const seen = new Set<string>();
   for (const entry of [...input.basePrices, ...input.seatPrices]) {
@@ -64,8 +117,8 @@ export function createBillingCatalog(input: BillingCatalogInput): BillingCatalog
     }
     seen.add(entry.priceId);
   }
-  for (const tier of ["creator", "pro", "business"] as const) {
-    for (const interval of ["monthly", "annual"] as const) {
+  for (const tier of PAID_PRICING_TIERS) {
+    for (const interval of BILLING_INTERVALS) {
       const matches = input.basePrices.filter(
         (entry) => entry.tier === tier && entry.interval === interval,
       );
@@ -77,7 +130,7 @@ export function createBillingCatalog(input: BillingCatalogInput): BillingCatalog
       }
     }
   }
-  for (const interval of ["monthly", "annual"] as const) {
+  for (const interval of BILLING_INTERVALS) {
     const matches = input.seatPrices.filter((entry) => entry.interval === interval);
     if (matches.length === 0) {
       throw new Error(`Missing seat price for business/${interval}`);
@@ -182,6 +235,8 @@ export interface WorkspaceBillingProvider {
       priceId: string;
       successUrl: string;
       cancelUrl: string;
+      /** When the provider must expire the session if it is not completed. */
+      expiresAt: Date;
     },
     idempotencyKey: string,
   ): Promise<ProviderCheckoutSession>;
@@ -350,6 +405,8 @@ export interface WorkspaceBillingStore {
       itemId: string | null;
       revision: number;
     };
+    /** Seats stay unconverged after a provider failure; retry on the changed cadence. */
+    seatConvergenceFailed?: boolean;
   }): Promise<WorkspaceBillingProjection>;
   commitNoSubscriptionState(input: {
     workspaceId: string;
@@ -380,15 +437,32 @@ export interface WorkspaceBillingStore {
     returnDestination: string;
     now: Date;
   }): Promise<{
-    kind: "created" | "existing" | "conflict";
+    /**
+     * `created` takes the Billing Account's open Checkout slot; `existing` is
+     * this client key's attempt; `conflict` is this key with changed input;
+     * `held` is another key's attempt that holds the slot.
+     */
+    kind: "created" | "existing" | "conflict" | "held";
     attempt: WorkspaceCheckoutAttempt;
   }>;
+  /**
+   * Frees the slot only if this attempt still holds it with exactly the
+   * session binding the caller verified (`null` = still unbound). Returns
+   * false when a concurrent request changed the slot first, so a session bound
+   * meanwhile can never lose its slot to a stale decision.
+   */
+  releaseCheckoutSlot(input: {
+    attemptId: string;
+    expectedSessionId: string | null;
+    now: Date;
+  }): Promise<boolean>;
   bindCheckoutCustomer(input: {
     workspaceId: string;
     attemptId: string;
     customerId: string;
     now: Date;
   }): Promise<void>;
+  /** Fenced: only the attempt holding the slot may bind a session. */
   bindCheckoutSession(input: {
     attemptId: string;
     sessionId: string;
@@ -421,6 +495,9 @@ export interface WorkspaceCheckoutAttempt {
   checkoutOperationKey: string;
   providerSessionId: string | null;
   expiresAt: Date | null;
+  /** Whether this attempt holds the Billing Account's open Checkout slot. */
+  holdsSlot: boolean;
+  createdAt: Date;
 }
 
 const workspaceBillingFailureCatalog = {
@@ -431,6 +508,7 @@ const workspaceBillingFailureCatalog = {
   checkout_attempt_invalid: "invalid",
   checkout_attempt_missing: "missing",
   checkout_attempt_terminal: "conflict",
+  checkout_in_progress: "conflict",
   checkout_not_configured: "unavailable",
   checkout_session_conflict: "conflict",
   customer_identity_conflict: "conflict",
@@ -451,6 +529,7 @@ const workspaceBillingSafeMessages: Record<WorkspaceBillingErrorCode, string> = 
   checkout_attempt_invalid: "The Checkout request is invalid",
   checkout_attempt_missing: "The Checkout request could not be found",
   checkout_attempt_terminal: "The previous Checkout is no longer available. Start a new one safely",
+  checkout_in_progress: "Another Checkout for this workspace is already in progress",
   checkout_not_configured: "Billing is temporarily unavailable",
   checkout_session_conflict: "Checkout ownership could not be verified. Contact support",
   customer_identity_conflict: "The billing account needs support before it can be changed",
@@ -460,9 +539,19 @@ const workspaceBillingSafeMessages: Record<WorkspaceBillingErrorCode, string> = 
   workspace_not_found: "The workspace could not be found",
 };
 
-export class WorkspaceBillingError extends ExpectedDomainFailureError<WorkspaceBillingErrorCode> {
-  constructor(code: WorkspaceBillingErrorCode) {
-    super({ code, kind: workspaceBillingFailureCatalog[code], message: workspaceBillingSafeMessages[code] });
+export type WorkspaceBillingErrorDetails = Record<string, string | null>;
+
+export class WorkspaceBillingError extends ExpectedDomainFailureError<
+  WorkspaceBillingErrorCode,
+  WorkspaceBillingErrorDetails
+> {
+  constructor(code: WorkspaceBillingErrorCode, details?: WorkspaceBillingErrorDetails) {
+    super({
+      code,
+      kind: workspaceBillingFailureCatalog[code],
+      message: workspaceBillingSafeMessages[code],
+      ...(details ? { details } : {}),
+    });
     this.name = "WorkspaceBillingError";
   }
 }
@@ -533,6 +622,17 @@ export function createInMemoryWorkspaceBillingStore(
   );
   const deliveries = new Map<string, string | null>();
   const checkoutAttempts = new Map<string, WorkspaceCheckoutAttempt>();
+  /** Workspace ID -> attempt ID holding the one open Checkout slot. */
+  const checkoutSlots = new Map<string, string>();
+  const attemptView = (attempt: WorkspaceCheckoutAttempt): WorkspaceCheckoutAttempt => ({
+    ...attempt,
+    holdsSlot: checkoutSlots.get(attempt.workspaceId) === attempt.id,
+  });
+  const releaseSlot = (attempt: WorkspaceCheckoutAttempt) => {
+    if (checkoutSlots.get(attempt.workspaceId) === attempt.id) {
+      checkoutSlots.delete(attempt.workspaceId);
+    }
+  };
   const runtime = new Map(
     workspaces.map((workspace) => [
       workspace.workspaceId,
@@ -576,8 +676,16 @@ export function createInMemoryWorkspaceBillingStore(
           existing.interval === input.interval &&
           existing.catalogVersion === input.catalogVersion &&
           existing.returnDestination === input.returnDestination;
-        return { kind: unchanged ? "existing" : "conflict", attempt: existing };
+        return {
+          kind: unchanged ? "existing" : "conflict",
+          attempt: attemptView(existing),
+        };
       }
+      const holderId = checkoutSlots.get(input.workspaceId);
+      const holder = holderId
+        ? [...checkoutAttempts.values()].find((candidate) => candidate.id === holderId)
+        : undefined;
+      if (holder) return { kind: "held", attempt: attemptView(holder) };
       const id = randomUUID();
       const attempt: WorkspaceCheckoutAttempt = {
         id,
@@ -592,11 +700,28 @@ export function createInMemoryWorkspaceBillingStore(
         checkoutOperationKey: `workspace-checkout-${id}`,
         providerSessionId: null,
         expiresAt: null,
+        holdsSlot: true,
+        createdAt: input.now,
       };
       checkoutAttempts.set(input.clientIdempotencyKey, attempt);
+      checkoutSlots.set(input.workspaceId, id);
       const row = rows.get(input.workspaceId);
       if (row) row.latestCheckout = null;
-      return { kind: "created", attempt };
+      return { kind: "created", attempt: attemptView(attempt) };
+    },
+    async releaseCheckoutSlot(input) {
+      const attempt = [...checkoutAttempts.values()].find(
+        (candidate) => candidate.id === input.attemptId,
+      );
+      if (
+        !attempt ||
+        checkoutSlots.get(attempt.workspaceId) !== attempt.id ||
+        attempt.providerSessionId !== input.expectedSessionId
+      ) {
+        return false;
+      }
+      releaseSlot(attempt);
+      return true;
     },
     async bindCheckoutCustomer(input) {
       const row = rows.get(input.workspaceId);
@@ -614,6 +739,9 @@ export function createInMemoryWorkspaceBillingStore(
       );
       if (!attempt) {
         throw new WorkspaceBillingError("checkout_attempt_missing");
+      }
+      if (checkoutSlots.get(attempt.workspaceId) !== attempt.id) {
+        throw new WorkspaceBillingError("checkout_attempt_terminal");
       }
       if (attempt.providerSessionId && attempt.providerSessionId !== input.sessionId) {
         throw new WorkspaceBillingError(
@@ -666,7 +794,14 @@ export function createInMemoryWorkspaceBillingStore(
           ? currentPaymentStatus!
           : input.paymentStatus,
       };
-      return attempt;
+      // An expired or failed session can no longer become a subscription.
+      if (
+        row.latestCheckout.status === "expired" ||
+        row.latestCheckout.paymentStatus === "failed"
+      ) {
+        releaseSlot(attempt);
+      }
+      return attemptView(attempt);
     },
     async acceptDelivery(input) {
       if (deliveries.has(input.delivery.eventId)) {
@@ -791,12 +926,17 @@ export function createInMemoryWorkspaceBillingStore(
       ) {
         throw new WorkspaceBillingAttemptLost();
       }
+      const workspaceStatus = projectWorkspaceAccessStatus({
+        tier: "free",
+        hasNonOwnerMembers: current.hasNonOwnerMembers,
+        awaitingFirstPayment: input.workspaceStatus === "pending_payment",
+      });
       const changed =
-        current.status !== input.workspaceStatus || current.health !== input.health;
+        current.status !== workspaceStatus || current.health !== input.health;
       const next = {
         ...current,
         pricingTier: "free" as const,
-        status: input.workspaceStatus,
+        status: workspaceStatus,
         canonicalSubscriptionId: null,
         interval: null,
         providerStatus: null,
@@ -835,9 +975,14 @@ export function createInMemoryWorkspaceBillingStore(
       if (current.providerCustomerId !== input.expectedCustomerId) {
         throw new Error("Workspace Billing customer mismatch");
       }
+      const workspaceStatus = projectWorkspaceAccessStatus({
+        tier: input.tier,
+        hasNonOwnerMembers: current.hasNonOwnerMembers,
+        awaitingFirstPayment: input.workspaceStatus === "pending_payment",
+      });
       const changed =
         current.pricingTier !== input.tier ||
-        current.status !== input.workspaceStatus ||
+        current.status !== workspaceStatus ||
         current.canonicalSubscriptionId !== input.subscription.id ||
         current.providerStatus !== input.subscription.status ||
         current.health !== input.health ||
@@ -845,7 +990,7 @@ export function createInMemoryWorkspaceBillingStore(
       const next: WorkspaceBillingProjection = {
         ...current,
         pricingTier: input.tier,
-        status: input.workspaceStatus,
+        status: workspaceStatus,
         canonicalSubscriptionId: input.subscription.id,
         interval: input.interval,
         providerStatus: input.subscription.status,
@@ -870,8 +1015,9 @@ export function createInMemoryWorkspaceBillingStore(
         runtimeState.nextReconcileAt = nextVerifiedReconcileAt({
           now: input.now,
           health: input.health,
-          changed,
+          changed: changed || Boolean(input.seatConvergenceFailed),
           seatStillDue:
+            !input.seatConvergenceFailed &&
             input.seat !== undefined &&
             runtimeState.seatRevision !== input.seat.revision,
         });
@@ -998,6 +1144,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         checkoutOperationKey: string;
         providerSessionId: string | null;
         expiresAt: Date | null;
+        activeBillingAccountId: string | null;
+        createdAt: Date;
       }): WorkspaceCheckoutAttempt => {
         if (
           row.targetTier !== "creator" &&
@@ -1026,6 +1174,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           checkoutOperationKey: row.checkoutOperationKey,
           providerSessionId: row.providerSessionId,
           expiresAt: row.expiresAt,
+          holdsSlot: row.activeBillingAccountId !== null,
+          createdAt: row.createdAt,
         };
       };
       const classify = (attempt: WorkspaceCheckoutAttempt) => {
@@ -1053,46 +1203,75 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         checkoutOperationKey: true,
         providerSessionId: true,
         expiresAt: true,
+        activeBillingAccountId: true,
+        createdAt: true,
         billingAccount: { select: { workspaceId: true } },
       } as const;
-      const existing = await prisma.workspaceCheckoutAttempt.findUnique({
-        where: { clientIdempotencyKey: input.clientIdempotencyKey },
-        select,
+      const account = await prisma.workspaceBillingAccount.findUnique({
+        where: { workspaceId: input.workspaceId },
+        select: { id: true },
       });
-      if (existing) return classify(toAttempt(existing));
-      const id = randomUUID();
-      try {
-        const created = await prisma.workspaceCheckoutAttempt.create({
-          data: {
-            id,
-            billingAccount: { connect: { workspaceId: input.workspaceId } },
-            actorUserId: input.actorUserId,
-            clientIdempotencyKey: input.clientIdempotencyKey,
-            targetTier: input.targetTier,
-            interval: input.interval,
-            catalogVersion: input.catalogVersion,
-            returnDestination: input.returnDestination,
-            customerOperationKey: `workspace-customer-${input.workspaceId}`,
-            checkoutOperationKey: `workspace-checkout-${id}`,
-          },
+      if (!account) throw new WorkspaceBillingError("workspace_not_found");
+      // The unique slot column admits one holder. A lost insert race (on the
+      // client key or the slot) re-reads; it never creates a second holder.
+      for (let pass = 0; pass < 3; pass += 1) {
+        const existing = await prisma.workspaceCheckoutAttempt.findUnique({
+          where: { clientIdempotencyKey: input.clientIdempotencyKey },
           select,
         });
-        return { kind: "created" as const, attempt: toAttempt(created) };
-      } catch (error) {
-        if (
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          error.code === "P2002"
-        ) {
-          const raced = await prisma.workspaceCheckoutAttempt.findUnique({
-            where: { clientIdempotencyKey: input.clientIdempotencyKey },
+        if (existing) return classify(toAttempt(existing));
+        const holder = await prisma.workspaceCheckoutAttempt.findUnique({
+          where: { activeBillingAccountId: account.id },
+          select,
+        });
+        if (holder) return { kind: "held" as const, attempt: toAttempt(holder) };
+        const id = randomUUID();
+        try {
+          const created = await prisma.workspaceCheckoutAttempt.create({
+            data: {
+              id,
+              billingAccountId: account.id,
+              activeBillingAccountId: account.id,
+              actorUserId: input.actorUserId,
+              clientIdempotencyKey: input.clientIdempotencyKey,
+              targetTier: input.targetTier,
+              interval: input.interval,
+              catalogVersion: input.catalogVersion,
+              returnDestination: input.returnDestination,
+              customerOperationKey: `workspace-customer-${input.workspaceId}`,
+              checkoutOperationKey: `workspace-checkout-${id}`,
+              createdAt: input.now,
+            },
             select,
           });
-          if (raced) return classify(toAttempt(raced));
+          return { kind: "created" as const, attempt: toAttempt(created) };
+        } catch (error) {
+          if (
+            !(
+              error &&
+              typeof error === "object" &&
+              "code" in error &&
+              error.code === "P2002"
+            )
+          ) {
+            throw error;
+          }
         }
-        throw error;
       }
+      throw new WorkspaceBillingError("checkout_in_progress");
+    },
+    async releaseCheckoutSlot(input) {
+      // One conditional row update: it serializes with bindCheckoutSession on
+      // the same row, so exactly one of a bind and a stale release wins.
+      const released = await prisma.workspaceCheckoutAttempt.updateMany({
+        where: {
+          id: input.attemptId,
+          activeBillingAccountId: { not: null },
+          providerSessionId: input.expectedSessionId,
+        },
+        data: { activeBillingAccountId: null },
+      });
+      return released.count === 1;
     },
     async bindCheckoutCustomer(input) {
       await prisma.$transaction(async (tx) => {
@@ -1125,14 +1304,32 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       });
     },
     async bindCheckoutSession(input) {
-      await prisma.workspaceCheckoutAttempt.update({
-        where: { id: input.attemptId },
+      const bound = await prisma.workspaceCheckoutAttempt.updateMany({
+        where: {
+          id: input.attemptId,
+          activeBillingAccountId: { not: null },
+          OR: [
+            { providerSessionId: null },
+            { providerSessionId: input.sessionId },
+          ],
+        },
         data: {
           providerSessionId: input.sessionId,
           providerPhase: "session_bound",
           expiresAt: input.expiresAt,
         },
       });
+      if (bound.count === 1) return;
+      const attempt = await prisma.workspaceCheckoutAttempt.findUnique({
+        where: { id: input.attemptId },
+        select: { activeBillingAccountId: true },
+      });
+      if (!attempt) throw new WorkspaceBillingError("checkout_attempt_missing");
+      throw new WorkspaceBillingError(
+        attempt.activeBillingAccountId
+          ? "checkout_session_conflict"
+          : "checkout_attempt_terminal",
+      );
     },
     async recordCheckoutState(input) {
       return prisma.$transaction(async (tx) => {
@@ -1150,6 +1347,9 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             checkoutOperationKey: true,
             providerSessionId: true,
             expiresAt: true,
+            paymentStatus: true,
+            activeBillingAccountId: true,
+            createdAt: true,
             billingAccount: {
               select: {
                 id: true,
@@ -1229,6 +1429,19 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             "checkout_session_conflict",
           );
         }
+        const recordedPaymentStatus = preservesEstablishedOutcome
+          ? attempt.paymentStatus
+          : input.paymentStatus;
+        // An expired or failed session can no longer become a subscription.
+        const releasesSlot =
+          attempt.activeBillingAccountId !== null &&
+          (input.status === "expired" || recordedPaymentStatus === "failed");
+        if (releasesSlot) {
+          await tx.workspaceCheckoutAttempt.update({
+            where: { id: attempt.id },
+            data: { activeBillingAccountId: null },
+          });
+        }
         if (input.wakeReconciliation && !preservesEstablishedOutcome) {
           await tx.workspaceBillingAccount.update({
             where: { id: attempt.billingAccount.id },
@@ -1252,6 +1465,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           checkoutOperationKey: attempt.checkoutOperationKey,
           providerSessionId: attempt.providerSessionId,
           expiresAt: attempt.expiresAt,
+          holdsSlot: attempt.activeBillingAccountId !== null && !releasesSlot,
+          createdAt: attempt.createdAt,
         };
       });
     },
@@ -1511,6 +1726,10 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
     },
     async commitNoSubscriptionState(input) {
       return prisma.$transaction(async (tx) => {
+        // Access projection changes share the Workspace usage lock so a
+        // concurrent intake reservation observes either the old or new status.
+        // Lock order: usage lock, then Project rows, then billing rows.
+        await lockWorkspaceUsage(tx, input.workspaceId);
         const row = await tx.workspace.findUnique({
           where: { id: input.workspaceId },
           select: {
@@ -1528,9 +1747,14 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           },
         });
         if (!row?.billingAccount) throw new Error("Workspace not found");
+        const workspaceStatus = projectWorkspaceAccessStatus({
+          tier: "free",
+          hasNonOwnerMembers: row.members.length > 0,
+          awaitingFirstPayment: input.workspaceStatus === "pending_payment",
+        });
         const stateChanged =
           row.pricingTier !== "free" ||
-          row.status !== input.workspaceStatus ||
+          row.status !== workspaceStatus ||
           row.billingAccount.health !== input.health;
         const fenced = await tx.workspaceBillingAccount.updateMany({
           where: {
@@ -1563,7 +1787,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         if (fenced.count !== 1) throw new WorkspaceBillingAttemptLost();
         await tx.workspace.update({
           where: { id: input.workspaceId },
-          data: { pricingTier: "free", status: input.workspaceStatus },
+          data: { pricingTier: "free", status: workspaceStatus },
         });
         const account = await tx.workspaceBillingAccount.findUniqueOrThrow({
           where: { workspaceId: input.workspaceId },
@@ -1594,7 +1818,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           personal: Boolean(row.personalOwnerUserId),
           hasNonOwnerMembers: row.members.length > 0,
           pricingTier: "free",
-          status: input.workspaceStatus,
+          status: workspaceStatus,
           providerCustomerId: account.providerCustomerId,
           canonicalSubscriptionId: null,
           interval: null,
@@ -1617,6 +1841,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
     },
     async commitVerifiedState(input) {
       return prisma.$transaction(async (tx) => {
+        // Same lock order as commitNoSubscriptionState: usage lock first.
+        await lockWorkspaceUsage(tx, input.workspaceId);
         const row = await tx.workspace.findUnique({
           where: { id: input.workspaceId },
           select: {
@@ -1650,6 +1876,11 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           });
           if (fenced.count !== 1) throw new WorkspaceBillingAttemptLost();
         }
+        const workspaceStatus = projectWorkspaceAccessStatus({
+          tier: input.tier,
+          hasNonOwnerMembers: row.members.length > 0,
+          awaitingFirstPayment: input.workspaceStatus === "pending_payment",
+        });
 
         const currentDesiredSeats = input.seat
           ? await tx.workspaceMember.count({
@@ -1666,7 +1897,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         );
         const stateChanged =
           row.pricingTier !== input.tier ||
-          row.status !== input.workspaceStatus ||
+          row.status !== workspaceStatus ||
           row.billingAccount.canonicalSubscriptionId !== input.subscription.id ||
           row.billingAccount.billingInterval !== input.interval ||
           row.billingAccount.providerStatus !== input.subscription.status ||
@@ -1697,7 +1928,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
 
         await tx.workspace.update({
           where: { id: row.id },
-          data: { pricingTier: input.tier, status: input.workspaceStatus },
+          data: { pricingTier: input.tier, status: workspaceStatus },
         });
         const account = await tx.workspaceBillingAccount.update({
           where: { workspaceId: row.id },
@@ -1716,8 +1947,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             nextReconcileAt: nextVerifiedReconcileAt({
               now: input.now,
               health: input.health,
-              changed: stateChanged,
-              seatStillDue,
+              changed: stateChanged || Boolean(input.seatConvergenceFailed),
+              seatStillDue: seatStillDue && !input.seatConvergenceFailed,
             }),
             reconcileAttemptId: null,
             leaseExpiresAt: null,
@@ -1746,7 +1977,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
               previousTier: row.pricingTier,
               nextTier: input.tier,
               previousStatus: row.status,
-              nextStatus: input.workspaceStatus,
+              nextStatus: workspaceStatus,
               providerStatus: input.subscription.status,
               reason: "provider_current_state_verified",
               effectiveAt: input.effectiveAt,
@@ -1771,7 +2002,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           personal: Boolean(row.personalOwnerUserId),
           hasNonOwnerMembers: row.members.length > 0,
           pricingTier: input.tier,
-          status: input.workspaceStatus,
+          status: workspaceStatus,
           providerCustomerId: account.providerCustomerId,
           canonicalSubscriptionId: account.canonicalSubscriptionId,
           interval: input.interval,
@@ -1878,7 +2109,13 @@ function billingView(row: WorkspaceBillingProjection): WorkspaceBillingView {
       }
       if (row.health === "retrying") return ["retry"];
       if (row.health === "activating") return [];
-      if (row.pricingTier === "free") return ["start_checkout"];
+      if (row.pricingTier === "free") {
+        // A subscription that can still bill is recovered, never replaced.
+        return row.providerStatus &&
+          PORTAL_RECOVERABLE_SUBSCRIPTION_STATUSES.has(row.providerStatus)
+          ? ["open_portal"]
+          : ["start_checkout"];
+      }
       return ["open_portal"];
     })(),
   };
@@ -1929,13 +2166,11 @@ export function createWorkspaceBillingModule(dependencies: {
     }
     const settleNoSubscription = async (activating: boolean) => {
       if (!attemptId) throw new WorkspaceBillingAttemptLost();
-      const workspaceStatus = activating
-        ? "pending_payment"
-        : current.status === "pending_payment"
-          ? "pending_payment"
-          : !current.personal && current.hasNonOwnerMembers
-            ? "restricted"
-            : "active";
+      const workspaceStatus = projectWorkspaceAccessStatus({
+        tier: "free",
+        hasNonOwnerMembers: current.hasNonOwnerMembers,
+        awaitingFirstPayment: activating || current.status === "pending_payment",
+      });
       const settled = await dependencies.store.commitNoSubscriptionState({
         workspaceId,
         attemptId,
@@ -2163,7 +2398,7 @@ export function createWorkspaceBillingModule(dependencies: {
     }
     const mapped = mappedItems[0]!;
     let tier: PricingTier;
-    let workspaceStatus: WorkspaceBillingProjection["status"];
+    let awaitingFirstPayment = false;
     let health: WorkspaceBillingHealth;
     let attentionReason: string | null = null;
     let firstPastDueAt: Date | null = null;
@@ -2173,19 +2408,13 @@ export function createWorkspaceBillingModule(dependencies: {
       case "active":
       case "trialing":
         tier = mapped.tier;
-        workspaceStatus = "active";
         health = "current";
         break;
       case "incomplete":
         tier = "free";
         // Only a Workspace awaiting its first payment is held. An existing
         // Free Workspace keeps working while its upgrade payment completes.
-        workspaceStatus =
-          current.status === "pending_payment"
-            ? "pending_payment"
-            : !current.personal && current.hasNonOwnerMembers
-              ? "restricted"
-              : "active";
+        awaitingFirstPayment = current.status === "pending_payment";
         health = "activating";
         break;
       case "past_due": {
@@ -2196,10 +2425,6 @@ export function createWorkspaceBillingModule(dependencies: {
         const withinGrace =
           dependencies.clock.now().getTime() < graceDeadlineAt.getTime();
         tier = withinGrace ? current.pricingTier : "free";
-        workspaceStatus =
-          tier === "free" && !current.personal && current.hasNonOwnerMembers
-            ? "restricted"
-            : "active";
         health = "payment_action_required";
         effectiveAt = withinGrace ? firstPastDueAt : graceDeadlineAt;
         break;
@@ -2209,10 +2434,6 @@ export function createWorkspaceBillingModule(dependencies: {
       case "incomplete_expired":
       case "canceled":
         tier = "free";
-        workspaceStatus =
-          !current.personal && current.hasNonOwnerMembers
-            ? "restricted"
-            : "active";
         health = "current";
         break;
       default:
@@ -2225,7 +2446,17 @@ export function createWorkspaceBillingModule(dependencies: {
       health = "attention_required";
       attentionReason = "multiple_entitlement_subscriptions";
     }
+    const workspaceStatus = projectWorkspaceAccessStatus({
+      tier,
+      hasNonOwnerMembers: current.hasNonOwnerMembers,
+      awaitingFirstPayment,
+    });
+    // Seats converge only on a subscription that can still bill, and a seat
+    // failure never blocks committing the verified projection: otherwise an
+    // ended plan, or the durable start of past-due grace, could wait forever
+    // behind a seat change the provider keeps rejecting.
     let providerSeatMutation = false;
+    let seatConvergenceFailed = false;
     let seat:
       | {
           desired: number;
@@ -2234,7 +2465,11 @@ export function createWorkspaceBillingModule(dependencies: {
           revision: number;
         }
       | undefined;
-    if (mapped.tier === "business" && !hasSubscriptionConflict) {
+    if (
+      mapped.tier === "business" &&
+      !hasSubscriptionConflict &&
+      SEAT_BILLABLE_SUBSCRIPTION_STATUSES.has(subscription.status)
+    ) {
       const desired = await dependencies.store.readDesiredSeatState(workspaceId);
       const providerSeat = selectedItems.seatItems[0]?.item;
       let observed = providerSeat?.quantity ?? 0;
@@ -2243,66 +2478,81 @@ export function createWorkspaceBillingModule(dependencies: {
         return unresolved("seat_item_identity_missing");
       }
       if (observed !== desired.desired) {
-        const operationKey = `workspace-seat-${workspaceId}-${desired.revision}`;
-        if (!providerSeat && desired.desired > 0) {
-          if (!dependencies.provider.createSeatItem) {
-            throw new WorkspaceBillingError(
-              "seat_provider_not_configured",
+        try {
+          // A returning subscription or an interval change must never replay an
+          // earlier provider operation for the same membership revision.
+          const operationKey = `workspace-seat-${workspaceId}-${subscription.id}-${mapped.interval}-${desired.revision}`;
+          if (!providerSeat && desired.desired > 0) {
+            if (!dependencies.provider.createSeatItem) {
+              throw new WorkspaceBillingError(
+                "seat_provider_not_configured",
+              );
+            }
+            const created = await callProvider("create_seat_item", () =>
+              dependencies.provider.createSeatItem!(
+                {
+                  subscriptionId: subscription.id,
+                  priceId:
+                    dependencies.catalog.seatPrices.find(
+                      (candidate) => candidate.interval === mapped.interval,
+                    )?.priceId ?? "",
+                  quantity: desired.desired,
+                  prorationBehavior: "create_prorations",
+                },
+                operationKey,
+              ),
             );
-          }
-          const created = await callProvider("create_seat_item", () =>
-            dependencies.provider.createSeatItem!(
-              {
-                subscriptionId: subscription.id,
-                priceId:
-                  dependencies.catalog.seatPrices.find(
-                    (candidate) => candidate.interval === mapped.interval,
-                  )?.priceId ?? "",
-                quantity: desired.desired,
-                prorationBehavior: "create_prorations",
-              },
-              operationKey,
-            ),
-          );
-          providerSeatMutation = true;
-          itemId = created.itemId;
-          observed = desired.desired;
-        } else if (providerSeat && desired.desired === 0) {
-          if (!dependencies.provider.deleteSeatItem) {
-            throw new WorkspaceBillingError(
-              "seat_provider_not_configured",
+            providerSeatMutation = true;
+            itemId = created.itemId;
+            observed = desired.desired;
+          } else if (providerSeat && desired.desired === 0) {
+            if (!dependencies.provider.deleteSeatItem) {
+              throw new WorkspaceBillingError(
+                "seat_provider_not_configured",
+              );
+            }
+            await callProvider("delete_seat_item", () =>
+              dependencies.provider.deleteSeatItem!(
+                {
+                  itemId: providerSeat.id!,
+                  prorationBehavior: "create_prorations",
+                },
+                operationKey,
+              ),
             );
-          }
-          await callProvider("delete_seat_item", () =>
-            dependencies.provider.deleteSeatItem!(
-              {
-                itemId: providerSeat.id!,
-                prorationBehavior: "create_prorations",
-              },
-              operationKey,
-            ),
-          );
-          providerSeatMutation = true;
-          itemId = null;
-          observed = 0;
-        } else if (providerSeat) {
-          if (!dependencies.provider.updateSeatItem) {
-            throw new WorkspaceBillingError(
-              "seat_provider_not_configured",
+            providerSeatMutation = true;
+            itemId = null;
+            observed = 0;
+          } else if (providerSeat) {
+            if (!dependencies.provider.updateSeatItem) {
+              throw new WorkspaceBillingError(
+                "seat_provider_not_configured",
+              );
+            }
+            await callProvider("update_seat_item", () =>
+              dependencies.provider.updateSeatItem!(
+                {
+                  itemId: providerSeat.id!,
+                  quantity: desired.desired,
+                  prorationBehavior: "create_prorations",
+                },
+                operationKey,
+              ),
             );
+            providerSeatMutation = true;
+            observed = desired.desired;
           }
-          await callProvider("update_seat_item", () =>
-            dependencies.provider.updateSeatItem!(
-              {
-                itemId: providerSeat.id!,
-                quantity: desired.desired,
-                prorationBehavior: "create_prorations",
-              },
-              operationKey,
-            ),
-          );
-          providerSeatMutation = true;
-          observed = desired.desired;
+        } catch (error) {
+          if (error instanceof WorkspaceBillingError) throw error;
+          seatConvergenceFailed = true;
+          dependencies.diagnostics.record({
+            level: "warn",
+            message: "workspace_billing_seat_convergence_failed",
+            workspaceId,
+            phase: "seat_convergence",
+            desiredAdditionalSeats: desired.desired,
+            synchronizedAdditionalSeats: observed,
+          });
         }
       }
       seat = {
@@ -2329,6 +2579,7 @@ export function createWorkspaceBillingModule(dependencies: {
         now: dependencies.clock.now(),
         attemptId,
         seat,
+        seatConvergenceFailed,
       });
     } catch (error) {
       if (error instanceof WorkspaceBillingAttemptLost && providerSeatMutation) {
@@ -2483,144 +2734,271 @@ export function createWorkspaceBillingModule(dependencies: {
         );
       }
       const catalogVersion = `${input.targetTier}:${input.interval}:${price.priceId}`;
-      const prepared = await dependencies.store.prepareCheckoutAttempt({
-        ...input,
-        catalogVersion,
-        now: dependencies.clock.now(),
-      });
-      if (prepared.kind === "conflict") {
-        throw new WorkspaceBillingError(
-          "checkout_attempt_conflict",
-        );
-      }
-      dependencies.diagnostics.record({
-        level: "info",
-        message: "workspace_billing_checkout_prepared",
-        workspaceId: input.workspaceId,
-        phase: "checkout_attempt",
-        disposition: prepared.kind,
-        targetPlan: input.targetTier,
-        interval: input.interval,
-      });
       const provider = checkoutProvider();
-      const attempt = prepared.attempt;
-      if (attempt.providerSessionId) {
-        const session = await callProvider("retrieve_checkout", () =>
-          provider.retrieveCheckoutSession!(attempt.providerSessionId!),
+      const inProgress = (attempt: WorkspaceCheckoutAttempt) =>
+        new WorkspaceBillingError("checkout_in_progress", {
+          tier: attempt.targetTier,
+          interval: attempt.interval,
+          expiresAt: attempt.expiresAt?.toISOString() ?? null,
+        });
+
+      /**
+       * Retrieves current provider subscriptions before any subscription
+       * Checkout is offered. The projected Free tier is not evidence: past-due
+       * after grace, unpaid, paused, and incomplete subscriptions can still
+       * bill, so they route to the portal. Only verified ended subscriptions
+       * allow a new Checkout.
+       */
+      const requireNoBillableSubscription = async (
+        customerId: string,
+        attempt: WorkspaceCheckoutAttempt,
+      ) => {
+        const state = await callProvider("retrieve_current_state", () =>
+          provider.retrieveCurrentState(customerId),
         );
         if (
-          (session.workspaceId && session.workspaceId !== input.workspaceId) ||
-          (session.attemptId && session.attemptId !== attempt.id)
+          state.customerId !== customerId ||
+          state.ownership.kind !== "verified" ||
+          state.ownership.workspaceId !== input.workspaceId
         ) {
+          throw new WorkspaceBillingError("customer_identity_conflict");
+        }
+        const billable = state.subscriptions.filter(
+          (subscription) => !ENDED_SUBSCRIPTION_STATUSES.has(subscription.status),
+        );
+        if (billable.length === 0) return;
+        if (!attempt.providerSessionId) {
+          // Frees an unbound preparation only; if a concurrent request bound a
+          // session meanwhile, that holder keeps the slot.
+          await dependencies.store.releaseCheckoutSlot({
+            attemptId: attempt.id,
+            expectedSessionId: null,
+            now: dependencies.clock.now(),
+          });
+        }
+        dependencies.diagnostics.record({
+          level: "info",
+          message: "workspace_billing_checkout_portal_required",
+          workspaceId: input.workspaceId,
+          phase: "checkout_attempt",
+          subscriptionStatuses: [...new Set(billable.map((item) => item.status))],
+        });
+        throw new WorkspaceBillingError("billing_portal_required");
+      };
+
+      // Two passes: a slot freed by verified provider state is taken once.
+      for (let pass = 0; pass < 2; pass += 1) {
+        const prepared = await dependencies.store.prepareCheckoutAttempt({
+          ...input,
+          catalogVersion,
+          now: dependencies.clock.now(),
+        });
+        if (prepared.kind === "conflict") {
+          throw new WorkspaceBillingError(
+            "checkout_attempt_conflict",
+          );
+        }
+        const attempt = prepared.attempt;
+        dependencies.diagnostics.record({
+          level: "info",
+          message: "workspace_billing_checkout_prepared",
+          workspaceId: input.workspaceId,
+          phase: "checkout_attempt",
+          disposition: prepared.kind,
+          targetPlan: input.targetTier,
+          interval: input.interval,
+        });
+        // A key whose attempt lost the slot can never hand out a session again.
+        if (prepared.kind === "existing" && !attempt.holdsSlot) {
+          throw new WorkspaceBillingError("checkout_attempt_terminal");
+        }
+        const sameChoice = attempt.catalogVersion === catalogVersion;
+
+        if (attempt.providerSessionId) {
+          const session = await callProvider("retrieve_checkout", () =>
+            provider.retrieveCheckoutSession!(attempt.providerSessionId!),
+          );
+          if (
+            (session.workspaceId && session.workspaceId !== input.workspaceId) ||
+            (session.attemptId && session.attemptId !== attempt.id)
+          ) {
+            throw new WorkspaceBillingError(
+              "checkout_session_conflict",
+            );
+          }
+          if (session.status === "expired" || session.paymentStatus === "failed") {
+            // Recording the verified outcome frees the slot.
+            await dependencies.store.recordCheckoutState({
+              workspaceId: input.workspaceId,
+              sessionId: session.sessionId,
+              providerAttemptId: session.attemptId,
+              status: session.status,
+              paymentStatus: session.paymentStatus,
+              source: "reconciliation",
+              wakeReconciliation: false,
+              now: dependencies.clock.now(),
+            });
+            if (prepared.kind === "held") continue;
+            throw new WorkspaceBillingError("checkout_attempt_terminal");
+          }
+          if (session.status === "complete") {
+            // A completed Checkout awaiting reconciliation is never replaced.
+            if (current.health === "activating" || !current.providerCustomerId) {
+              throw inProgress(attempt);
+            }
+            await requireNoBillableSubscription(current.providerCustomerId, attempt);
+            // Its subscription has verifiably ended; a returning customer may
+            // start again.
+            const released = await dependencies.store.releaseCheckoutSlot({
+              attemptId: attempt.id,
+              expectedSessionId: attempt.providerSessionId,
+              now: dependencies.clock.now(),
+            });
+            if (prepared.kind === "held" || !released) continue;
+            throw new WorkspaceBillingError("checkout_attempt_terminal");
+          }
+          if (!sameChoice) throw inProgress(attempt);
+          // A bound session implies a bound customer; a concurrent request may
+          // have bound both after this request read the projection.
+          const customerId =
+            current.providerCustomerId ??
+            (await dependencies.store.readProjection(input.workspaceId))
+              ?.providerCustomerId;
+          if (!customerId) {
+            throw new WorkspaceBillingError("billing_customer_missing");
+          }
+          await requireNoBillableSubscription(customerId, attempt);
+          const destination = checkoutDestination(session);
+          dependencies.diagnostics.record({
+            level: "info",
+            message: "workspace_billing_checkout_ready",
+            workspaceId: input.workspaceId,
+            phase: "checkout_session",
+            disposition: prepared.kind === "held" ? "resumed" : "replayed",
+            durationMs: dependencies.clock.now().getTime() - startedAt.getTime(),
+          });
+          return destination;
+        }
+
+        if (!sameChoice) {
+          // Another choice is still being prepared. After the preparation
+          // window it is abandoned: its session, if any, was never handed out.
+          if (
+            dependencies.clock.now().getTime() - attempt.createdAt.getTime() <
+            CHECKOUT_PREPARATION_WINDOW_MS
+          ) {
+            throw inProgress(attempt);
+          }
+          // Lost to a concurrent bind or release: the next pass re-reads the
+          // holder and resumes it or refuses with checkout_in_progress.
+          await dependencies.store.releaseCheckoutSlot({
+            attemptId: attempt.id,
+            expectedSessionId: null,
+            now: dependencies.clock.now(),
+          });
+          continue;
+        }
+
+        let customerId = current.providerCustomerId;
+        if (!customerId) {
+          const matches = await callProvider("find_customers", () =>
+            provider.findCustomersByWorkspace!(input.workspaceId),
+          );
+          if (matches.length > 1) {
+            await dependencies.store.scheduleRetry({
+              workspaceId: input.workspaceId,
+              now: dependencies.clock.now(),
+              nextReconcileAt: new Date(
+                dependencies.clock.now().getTime() + 6 * 60 * 60 * 1000,
+              ),
+              reason: "multiple_provider_customers",
+              health: "attention_required",
+            });
+            throw new WorkspaceBillingError(
+              "customer_identity_conflict",
+            );
+          }
+          const recoveredCustomer = matches[0]?.customerId;
+          customerId =
+            recoveredCustomer ??
+            (
+              await callProvider("create_customer", () =>
+                provider.createCustomer!(
+                  {
+                    workspaceId: input.workspaceId,
+                    actorUserId: input.actorUserId,
+                  },
+                  attempt.customerOperationKey,
+                ),
+              )
+            ).customerId;
+          dependencies.diagnostics.record({
+            level: "info",
+            message: "workspace_billing_customer_resolved",
+            workspaceId: input.workspaceId,
+            phase: "customer_provisioning",
+            disposition: recoveredCustomer ? "recovered" : "created",
+          });
+          await dependencies.store.bindCheckoutCustomer({
+            workspaceId: input.workspaceId,
+            attemptId: attempt.id,
+            customerId,
+            now: dependencies.clock.now(),
+          });
+        }
+        await requireNoBillableSubscription(customerId, attempt);
+
+        const recovered = provider.findCheckoutSessionsByAttempt
+          ? await callProvider("find_checkouts", () =>
+              provider.findCheckoutSessionsByAttempt!({
+                attemptId: attempt.id,
+                customerId,
+              }),
+            )
+          : undefined;
+        if (recovered && recovered.length > 1) {
           throw new WorkspaceBillingError(
             "checkout_session_conflict",
           );
         }
+        const session =
+          recovered?.[0] ??
+          (await callProvider("create_checkout", () =>
+            provider.createCheckoutSession!(
+              {
+                attemptId: attempt.id,
+                workspaceId: input.workspaceId,
+                actorUserId: input.actorUserId,
+                customerId,
+                priceId: price.priceId,
+                successUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=return&session_id={CHECKOUT_SESSION_ID}`,
+                cancelUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=cancelled`,
+                expiresAt: new Date(
+                  dependencies.clock.now().getTime() + CHECKOUT_SESSION_LIFETIME_MS,
+                ),
+              },
+              attempt.checkoutOperationKey,
+            ),
+          ));
+        // Fenced on the slot: a session URL is only returned to its holder.
+        await dependencies.store.bindCheckoutSession({
+          attemptId: attempt.id,
+          sessionId: session.sessionId,
+          expiresAt: session.expiresAt,
+          now: dependencies.clock.now(),
+        });
         const destination = checkoutDestination(session);
         dependencies.diagnostics.record({
           level: "info",
           message: "workspace_billing_checkout_ready",
           workspaceId: input.workspaceId,
           phase: "checkout_session",
-          disposition: "replayed",
+          disposition: recovered?.[0] ? "recovered" : "created",
           durationMs: dependencies.clock.now().getTime() - startedAt.getTime(),
         });
         return destination;
       }
-
-      let customerId = current.providerCustomerId;
-      if (!customerId) {
-        const matches = await callProvider("find_customers", () =>
-          provider.findCustomersByWorkspace!(input.workspaceId),
-        );
-        if (matches.length > 1) {
-          await dependencies.store.scheduleRetry({
-            workspaceId: input.workspaceId,
-            now: dependencies.clock.now(),
-            nextReconcileAt: new Date(
-              dependencies.clock.now().getTime() + 6 * 60 * 60 * 1000,
-            ),
-            reason: "multiple_provider_customers",
-            health: "attention_required",
-          });
-          throw new WorkspaceBillingError(
-            "customer_identity_conflict",
-          );
-        }
-        const recoveredCustomer = matches[0]?.customerId;
-        customerId =
-          recoveredCustomer ??
-          (
-            await callProvider("create_customer", () =>
-              provider.createCustomer!(
-                {
-                  workspaceId: input.workspaceId,
-                  actorUserId: input.actorUserId,
-                },
-                attempt.customerOperationKey,
-              ),
-            )
-          ).customerId;
-        dependencies.diagnostics.record({
-          level: "info",
-          message: "workspace_billing_customer_resolved",
-          workspaceId: input.workspaceId,
-          phase: "customer_provisioning",
-          disposition: recoveredCustomer ? "recovered" : "created",
-        });
-        await dependencies.store.bindCheckoutCustomer({
-          workspaceId: input.workspaceId,
-          attemptId: attempt.id,
-          customerId,
-          now: dependencies.clock.now(),
-        });
-      }
-
-      const recovered = provider.findCheckoutSessionsByAttempt
-        ? await callProvider("find_checkouts", () =>
-            provider.findCheckoutSessionsByAttempt!({
-              attemptId: attempt.id,
-              customerId,
-            }),
-          )
-        : undefined;
-      if (recovered && recovered.length > 1) {
-        throw new WorkspaceBillingError(
-          "checkout_session_conflict",
-        );
-      }
-      const session =
-        recovered?.[0] ??
-        (await callProvider("create_checkout", () =>
-          provider.createCheckoutSession!(
-            {
-              attemptId: attempt.id,
-              workspaceId: input.workspaceId,
-              actorUserId: input.actorUserId,
-              customerId,
-              priceId: price.priceId,
-              successUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=return&session_id={CHECKOUT_SESSION_ID}`,
-              cancelUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=cancelled`,
-            },
-            attempt.checkoutOperationKey,
-          ),
-        ));
-      await dependencies.store.bindCheckoutSession({
-        attemptId: attempt.id,
-        sessionId: session.sessionId,
-        expiresAt: session.expiresAt,
-        now: dependencies.clock.now(),
-      });
-      const destination = checkoutDestination(session);
-      dependencies.diagnostics.record({
-        level: "info",
-        message: "workspace_billing_checkout_ready",
-        workspaceId: input.workspaceId,
-        phase: "checkout_session",
-        disposition: recovered?.[0] ? "recovered" : "created",
-        durationMs: dependencies.clock.now().getTime() - startedAt.getTime(),
-      });
-      return destination;
+      throw new WorkspaceBillingError("checkout_in_progress");
     },
     async observeCheckoutReturn(input: {
       workspaceId: string;

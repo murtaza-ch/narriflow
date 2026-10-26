@@ -34,6 +34,7 @@ const accounts: SocialAccountSnapshot[] = [
     handle: null,
     avatarUrl: null,
     status: "active",
+    publishingEligible: true,
     scopes: [],
     expiresAt: null,
     createdAt: "2026-10-04T00:00:00.000Z",

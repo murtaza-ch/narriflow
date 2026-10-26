@@ -37,6 +37,7 @@ import {
 import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
 import { workspaceService } from "./workspace.service";
+import { assertEditorDocumentFeatureDelta } from "./scene-document-mutation";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -491,7 +492,12 @@ function safeRecord(
 }
 
 export function createClipEditorDocumentPersistence(input: {
-  authorize(scope: ActorScope, capability: "content.view" | "content.edit"): Promise<void>;
+  /** Admits the actor and returns the Workspace's plan, which bounds the
+   * paid content a mutation may add (`assertEditorDocumentFeatureDelta`). */
+  authorize(
+    scope: ActorScope,
+    capability: "content.view" | "content.edit",
+  ): Promise<{ pricingTier: string }>;
   store: ClipEditorDocumentStore;
   diagnostics?: ClipEditorDocumentDiagnostics;
   now?: () => Date;
@@ -512,7 +518,7 @@ export function createClipEditorDocumentPersistence(input: {
   async function mutateDocument(
     request: ClipEditorDocumentScope & { intent: ClipEditorDocumentMutationIntent },
   ): Promise<ClipEditorDocumentMutationResult> {
-    await input.authorize(request, "content.edit");
+    const { pricingTier } = await input.authorize(request, "content.edit");
     const startedAt = now().getTime();
     const baseRevision =
       request.intent.kind === "replace" || request.intent.kind === "reset"
@@ -590,6 +596,7 @@ export function createClipEditorDocumentPersistence(input: {
       let next: EditorDocument | null;
       try {
         next = planNextDocument(state, request.intent);
+        if (next !== null) assertEditorDocumentFeatureDelta(pricingTier, state.document, next);
       } catch (error) {
         record({
           attempt: attempt + 1,
@@ -748,7 +755,7 @@ export function createClipEditorDocumentPersistence(input: {
       excludeClipId?: string;
       intent: ClipEditorProjectSelectionIntent;
     }): Promise<{ updated: number }> {
-      await input.authorize(request, "content.edit");
+      const { pricingTier } = await input.authorize(request, "content.edit");
       const startedAt = now().getTime();
       const mutationKind =
         request.intent.kind === "set_caption_preset"
@@ -763,6 +770,7 @@ export function createClipEditorDocumentPersistence(input: {
         const documents = states.flatMap((state) => {
           const nextDocument = planProjectSelectionDocument(state, request.intent);
           if (editorDocumentsEqual(state.document, nextDocument)) return [];
+          assertEditorDocumentFeatureDelta(pricingTier, state.document, nextDocument);
           return [
             {
               scope: {
@@ -1453,7 +1461,7 @@ const structuredDiagnostics: ClipEditorDocumentDiagnostics = {
 };
 
 export const clipEditorDocumentPersistence = createClipEditorDocumentPersistence({
-  authorize: async (scope, capability) => { await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability); },
+  authorize: (scope, capability) => workspaceService.requireActor(scope.actorUserId, scope.workspaceId, capability),
   store: prismaClipEditorDocumentStore,
   diagnostics: structuredDiagnostics,
 });

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { PAID_ACCESS_ENDED_GRACE_DAYS, planLimits } from "@narriflow/validators";
 import {
   RETENTION_POLICIES,
   ProjectRetentionService,
@@ -9,40 +10,30 @@ import {
   retentionTransitionForTierChange,
 } from "./project-retention.service";
 
-const ACTIVATION = new Date("2026-08-20T00:00:00.000Z");
-
 describe("project retention policy", () => {
-  test("observe mode never persists a deadline", () => {
-    expect(
-      retentionAssignmentForNewProject({
-        tier: "free",
-        createdAt: new Date("2026-08-21T00:00:00.000Z"),
-        config: { mode: "observe", activationAt: ACTIVATION },
-      }),
-    ).toBeNull();
-  });
-
-  test("grandfathers projects created before activation", () => {
-    expect(
-      retentionAssignmentForNewProject({
-        tier: "free",
-        createdAt: new Date(ACTIVATION.getTime() - 1),
-        config: { mode: "enforce", activationAt: ACTIVATION },
-      }),
-    ).toBeNull();
-  });
-
-  test("persists an exact 72-hour deadline for a post-activation Free project", () => {
+  test("a new Free project gets the catalog's 72-hour deadline without any configuration", () => {
     const createdAt = new Date("2026-08-21T05:06:07.008Z");
-    const assignment = retentionAssignmentForNewProject({
-      tier: "free",
-      createdAt,
-      config: { mode: "enforce", activationAt: ACTIVATION },
-    });
+    const assignment = retentionAssignmentForNewProject({ tier: "free", createdAt });
     expect(assignment?.retentionPolicyKey).toBe("free_project_v1");
-    expect(assignment?.expiresAt.getTime()).toBe(
-      createdAt.getTime() + RETENTION_POLICIES.free_project_v1.durationMs,
+    expect(assignment?.expiresAt.getTime()).toBe(createdAt.getTime() + 72 * 60 * 60 * 1000);
+    expect(RETENTION_POLICIES.free_project_v1.durationMs).toBe(
+      (planLimits("free").projectRetentionHours ?? 0) * 60 * 60 * 1000,
     );
+  });
+
+  test("a Free deadline is assigned even when legacy retention variables say observe", async () => {
+    const prior = process.env.PROJECT_RETENTION_MODE;
+    process.env.PROJECT_RETENTION_MODE = "observe";
+    try {
+      const createdAt = new Date("2026-08-21T00:00:00.000Z");
+      expect(await new ProjectRetentionService().assignmentForWorkspace("workspace-1", createdAt)).toEqual({
+        retentionPolicyKey: "free_project_v1",
+        expiresAt: new Date(createdAt.getTime() + RETENTION_POLICIES.free_project_v1.durationMs),
+      });
+    } finally {
+      if (prior === undefined) delete process.env.PROJECT_RETENTION_MODE;
+      else process.env.PROJECT_RETENTION_MODE = prior;
+    }
   });
 
   test("paid projects never receive the Free deadline", () => {
@@ -50,7 +41,6 @@ describe("project retention policy", () => {
       retentionAssignmentForNewProject({
         tier: "creator",
         createdAt: new Date("2026-08-21T00:00:00.000Z"),
-        config: { mode: "enforce", activationAt: ACTIVATION },
       }),
     ).toBeNull();
   });
@@ -61,7 +51,6 @@ describe("project retention policy", () => {
       previousTier: "creator",
       nextTier: "free",
       effectiveAt,
-      config: { mode: "enforce", activationAt: ACTIVATION },
     });
     expect(transition.kind).toBe("assign_downgrade");
     if (transition.kind !== "assign_downgrade") return;
@@ -80,7 +69,6 @@ describe("project retention policy", () => {
         previousTier: "free",
         nextTier: "creator",
         effectiveAt: new Date("2026-08-25T10:00:00.000Z"),
-        config: { mode: "enforce", activationAt: ACTIVATION },
       }),
     ).toEqual({ kind: "clear_unexpired" });
   });
@@ -144,13 +132,15 @@ describe("project retention policy", () => {
     ).toEqual(observedAt);
   });
 
-  test("observe mode does not assign downgrade deadlines", () => {
+  test("the paid-to-Free grace is the catalog's 28 days", () => {
+    expect(RETENTION_POLICIES.downgrade_to_free_v1.durationMs).toBe(
+      PAID_ACCESS_ENDED_GRACE_DAYS * 24 * 60 * 60 * 1000,
+    );
     expect(
       retentionTransitionForTierChange({
-        previousTier: "pro",
+        previousTier: "free",
         nextTier: "free",
         effectiveAt: new Date("2026-08-25T10:00:00.000Z"),
-        config: { mode: "observe", activationAt: ACTIVATION },
       }),
     ).toEqual({ kind: "none" });
   });

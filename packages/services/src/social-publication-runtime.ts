@@ -28,6 +28,7 @@ import {
 	presignDownloadUrl,
 } from "./r2-storage";
 import { socialOAuthService } from "./social-oauth.service";
+import { publicationPlanRefusal } from "./social-account-eligibility";
 import { structuredSocialPublicationMetrics } from "./social-publication-observability";
 import { createYouTubeReceiptEnricher } from "./youtube-receipt-enrichment";
 
@@ -276,6 +277,13 @@ export function createProductionSocialPublicationRuntime(
 		platforms,
 		credentials: {
 			load: (accountId) => socialOAuthService.getPublishAccount(accountId),
+		},
+		planEligibility: {
+			refusal: (input) => {
+				const prisma = getPrismaClient();
+				if (!prisma) throw new Error("Database client unavailable");
+				return publicationPlanRefusal(prisma, input);
+			},
 		},
 		checkpointCipher: createPublicationCheckpointCipher(config.checkpointKey),
 		clock: { now: () => new Date() },

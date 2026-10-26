@@ -756,7 +756,7 @@ function terminalFreshUploadAllowed(session: UploadSessionRecord) {
   if (session.status === "aborted" || session.status === "expired") return true;
   if (session.status !== "failed") return false;
   switch (session.failureCode) {
-    case "processing_quota_exhausted":
+    case "credits_exhausted":
     case "upload_too_long":
     case "workspace_processing_capacity_reached":
     case "upload_admission_failed":

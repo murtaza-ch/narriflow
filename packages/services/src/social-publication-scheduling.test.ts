@@ -92,6 +92,7 @@ function makePorts(overrides: Partial<PublicationFreezePorts> = {}): Publication
 		projectExists: async () => true,
 		readClip: async () => ({ editorRevision: 7 }),
 		readAccount: async () => ({ workspaceId: "workspace-1", platform: "youtube_shorts", status: "active", expiresAt: null, canRefresh: false }),
+		requirePublishableAccount: async () => {},
 		readExport: async () => readyExport,
 		createExport: async () => "export-1",
 		tiktokOptions: async () => ({ inboxEnabled: true, directEnabled: true, privacyOptions: ["PUBLIC"], commentDisabled: false, duetDisabled: false, stitchDisabled: false, maximumDurationSec: 60 }),
@@ -368,12 +369,12 @@ test("immediate admission survives elapsed queue time while scheduled admission 
 	expect(await scheduling.schedule(immediate)).toEqual(admitted);
 });
 
-function policyHarness(ports: Partial<PublicationFreezePorts> = {}, review: typeof authorizeReview = authorizeReview) {
+function policyHarness(ports: Partial<PublicationFreezePorts> = {}, review: typeof authorizeReview = authorizeReview, pricingTier = actor.pricingTier) {
 	let authorizations = 0;
 	const store = createInMemoryPublicationSchedulingStore();
 	const module = createSocialPublicationScheduling({
 		store,
-		authorize: async () => { authorizations += 1; return actor; },
+		authorize: async () => { authorizations += 1; return { ...actor, pricingTier }; },
 		authorizeReview: review,
 		freezePorts: makePorts(ports),
 		createId: () => "social-post-1",
@@ -383,6 +384,22 @@ function policyHarness(ports: Partial<PublicationFreezePorts> = {}, review: type
 }
 
 describe("publication freeze policy through admission", () => {
+	test("a custom thumbnail needs a plan with custom thumbnails; the post without one schedules on Creator", async () => {
+		const thumbnail = { assetId: "cover", fingerprint: "a".repeat(64), source: "uploaded" as const, sourceTimeMs: null };
+		const creator = policyHarness({}, authorizeReview, "creator");
+		await expect(creator.module.schedule({ ...baseInput, thumbnail })).rejects.toMatchObject({
+			code: "plan_feature_required", kind: "payment_required", details: { feature: "publishing.customThumbnails", currentTier: "creator", requiredTier: "pro" },
+		});
+		expect(await creator.store.count()).toBe(0);
+		await expect(creator.module.schedule(baseInput)).resolves.toMatchObject({ status: "scheduled" });
+		const pro = policyHarness({}, authorizeReview, "pro");
+		await expect(pro.module.schedule({ ...baseInput, thumbnail })).resolves.toMatchObject({ frozen: { providerSettings: { thumbnailAssetId: "cover" } } });
+	});
+
+	test("publishing needs the plan feature", async () => {
+		await expect(policyHarness({}, authorizeReview, "free").module.schedule(baseInput)).rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "publishing.schedule" } });
+	});
+
 	test("new publication acceptance pauses during admission outages while durable replay succeeds", async () => {
 		const h = policyHarness();
 		let guardCalls = 0;

@@ -10,12 +10,11 @@ describe("userErrorMessage", () => {
   });
 
   test("returns friendly copy for a known code", () => {
-    expect(userErrorMessage("processing_quota_exhausted")).toBe(
-      USER_ERROR_MESSAGES.processing_quota_exhausted,
+    expect(userErrorMessage("credits_exhausted")).toBe(
+      USER_ERROR_MESSAGES.credits_exhausted,
     );
-    expect(userErrorMessage("processing_quota_exhausted")).toContain(
-      "processing minutes",
-    );
+    expect(userErrorMessage("credits_exhausted")).toContain("credits");
+    expect(userErrorMessage("credits_reservation_released")).toContain("Retry the import");
   });
 
   test("explains how to recover from exhausted OpenAI credits", () => {
@@ -41,15 +40,13 @@ describe("userErrorMessage", () => {
     expect(contention).not.toBe(invalid);
   });
 
-  test("returns friendly copy for the tier-gate codes", () => {
-    expect(userErrorMessage("requires_pro_plan")).toBe(
-      USER_ERROR_MESSAGES.requires_pro_plan,
+  test("returns friendly copy for the shared plan refusals", () => {
+    expect(userErrorMessage("plan_feature_required")).toBe(
+      USER_ERROR_MESSAGES.plan_feature_required,
     );
-    expect(userErrorMessage("requires_pro_plan")).toContain("Pro");
-    expect(userErrorMessage("requires_creator_plan")).toBe(
-      USER_ERROR_MESSAGES.requires_creator_plan,
+    expect(userErrorMessage("plan_limit_reached")).toBe(
+      USER_ERROR_MESSAGES.plan_limit_reached,
     );
-    expect(userErrorMessage("requires_creator_plan")).toContain("Creator");
   });
 
   test("returns friendly copy for the social OAuth codes", () => {
@@ -116,7 +113,7 @@ describe("userErrorMessage", () => {
   });
 
   test("distinguishes explicitly supported codes from generic fallback copy", () => {
-    expect(hasUserErrorMessage("processing_quota_exhausted")).toBe(true);
+    expect(hasUserErrorMessage("credits_exhausted")).toBe(true);
     expect(hasUserErrorMessage("P2024")).toBe(false);
   });
 

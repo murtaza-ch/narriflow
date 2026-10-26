@@ -9,6 +9,8 @@ import {
   autoCensorWordId,
   detectAutoCensorSuggestions,
   isCensorSegmentStale,
+  lowestTierWithFeature,
+  PLAN_CATALOG,
   type AutoCensorSuggestion,
   type AutoCensorTreatment,
   type CensorSegment,
@@ -323,14 +325,14 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
         message: "auto_censor_apply_failed",
         code,
       }));
-      const entitlementRequired = code === "auto_censor_entitlement_required";
+      const entitlementRequired = code === "plan_feature_required";
       toaster.create({
         type: "error",
         title: entitlementRequired
           ? "Upgrade to apply Auto Censor"
           : "Auto Censor was not applied",
         description: entitlementRequired
-          ? "Scanning is included. Applying edits is available on Creator and above."
+          ? `Scanning is included. Applying edits is available on ${PLAN_CATALOG[lowestTierWithFeature("editor.censoring") ?? "creator"].name} and above.`
           : process.env.NODE_ENV === "development"
             ? code
             : "Your review is unchanged. Try again.",

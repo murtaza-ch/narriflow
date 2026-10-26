@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { CAPTION_PRESETS, MONTHLY_PROCESSING_MINUTE_LIMITS } from "@narriflow/validators";
+import { CAPTION_PRESETS, planLimits } from "@narriflow/validators";
 import { Brand } from "./_components/brand";
 import { CaptionLab } from "./_components/caption-lab";
 import { buildCaptionStyles, type CaptionStyle } from "./_components/caption-styles";
@@ -36,7 +36,7 @@ function pick(styles: Record<string, CaptionStyle>, ids: readonly string[]) {
 
 export default function HomePage() {
   const styles = buildCaptionStyles();
-  const freeMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS.free;
+  const freeCredits = planLimits("free").monthlyCredits;
   const clipStyles = pick(styles, CLIPS.map((clip) => clip.presetId));
   const introStyles = pick(styles, [
     ...CLIPS.map((clip) => clip.presetId),
@@ -48,7 +48,7 @@ export default function HomePage() {
     <LandingShell className={`lx ${landingSerif.variable}`}>
       <Nav />
       <main>
-        <Intro styles={introStyles} freeMinutes={freeMinutes} />
+        <Intro styles={introStyles} freeCredits={freeCredits} />
         <ClipWall styles={clipStyles} />
         <HowItWorks styles={pick(styles, [])} />
         <Rank />
@@ -57,9 +57,9 @@ export default function HomePage() {
         <Features />
         <Pricing />
         <Faq />
-        <Closing styles={introStyles} freeMinutes={freeMinutes} />
+        <Closing styles={introStyles} freeCredits={freeCredits} />
       </main>
-      <Footer freeMinutes={freeMinutes} />
+      <Footer freeCredits={freeCredits} />
     </LandingShell>
   );
 }

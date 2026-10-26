@@ -18,7 +18,7 @@ let Panel: typeof import("./social-accounts-panel").SocialAccountsPanel;
 let ChakraProvider: typeof import("@chakra-ui/react").ChakraProvider;
 let system: typeof import("@narriflow/ui/theme").system;
 let root: Root;
-const account: SocialAccountSnapshot = { id: "one", platform: "youtube_shorts", providerAccountId: "channel", displayName: "My channel", handle: "@channel", avatarUrl: null, scopes: [], expiresAt: null, status: "active", createdAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:00:00Z" };
+const account: SocialAccountSnapshot = { id: "one", platform: "youtube_shorts", providerAccountId: "channel", displayName: "My channel", handle: "@channel", avatarUrl: null, scopes: [], expiresAt: null, status: "active", publishingEligible: true, createdAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:00:00Z" };
 
 beforeAll(async () => {
   Object.assign(globalThis, { window: browser, document: browser.document, navigator: browser.navigator, HTMLElement: browser.HTMLElement, Element: browser.Element, Node: browser.Node, Event: browser.Event, MutationObserver: browser.MutationObserver, ResizeObserver: browser.ResizeObserver, getComputedStyle: browser.getComputedStyle.bind(browser), requestAnimationFrame: (cb: FrameRequestCallback) => browser.setTimeout(() => cb(0), 0), cancelAnimationFrame: (id: number) => browser.clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true });
@@ -31,7 +31,7 @@ async function render(overrides: Partial<Parameters<typeof Panel>[0]> = {}) {
   const container = browser.document.createElement("div");
   browser.document.body.append(container);
   root = createRoot(container as unknown as HTMLElement);
-  await act(async () => { root.render(<ChakraProvider value={system}><Panel accounts={[]} connectedCount={null} errorCode={null} facebookSelectionToken={null} canManage {...overrides} /></ChakraProvider>); });
+  await act(async () => { root.render(<ChakraProvider value={system}><Panel accounts={[]} connectedCount={null} errorCode={null} facebookSelectionToken={null} canManage accountLimit={3} connectRequirement={null} canManageBilling {...overrides} /></ChakraProvider>); });
   return container;
 }
 async function settle() { await act(async () => { await browser.happyDOM.waitUntilComplete(); }); }

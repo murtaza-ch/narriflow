@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { generatedImageCapability, generationAccessForTier } from "./generation-usage";
+import { generatedImageCapability, generatedImagePolicy } from "./generation-usage";
 
 const scope = {
   actorUserId: "user-1",
@@ -12,23 +12,10 @@ const scope = {
 };
 
 describe("generation access", () => {
-  test("separates entitlement from metered usage settlement", () => {
-    expect(generationAccessForTier("free", "image")).toEqual({
-      entitled: true,
-      usage: "trial_metered",
-    });
-    expect(generationAccessForTier("creator", "image")).toEqual({
-      entitled: true,
-      usage: "metered",
-    });
-    expect(generationAccessForTier("creator", "video")).toEqual({
-      entitled: false,
-      usage: "metered",
-    });
-    expect(generationAccessForTier("pro", "video")).toEqual({
-      entitled: true,
-      usage: "metered",
-    });
+  test("Free meters the lifetime image sample; paid plans meter by month", () => {
+    expect(generatedImagePolicy("free")).toBe("trial_metered");
+    expect(generatedImagePolicy("creator")).toBe("metered");
+    expect(generatedImagePolicy("business")).toBe("metered");
   });
 
   test("admits entitled plans when the production write group is enabled", () => {

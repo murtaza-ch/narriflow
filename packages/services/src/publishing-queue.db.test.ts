@@ -61,7 +61,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 	async function fixture(options: { platform?: "youtube_shorts" | "tiktok" | "x"; schedule?: typeof EVERY_DAY | null } = {}) {
 		const suffix = randomUUID();
 		const user = await prisma.user.create({ data: { clerkId: `queue-db-test:${suffix}`, primaryEmail: `queue-${suffix}@example.test` } });
-		const workspace = await prisma.workspace.create({ data: { name: "Queue DB test", ownerUserId: user.id, personalOwnerUserId: user.id } });
+		const workspace = await prisma.workspace.create({ data: { name: "Queue DB test", ownerUserId: user.id, personalOwnerUserId: user.id, pricingTier: "pro" } });
 		await prisma.workspaceMember.create({ data: { workspaceId: workspace.id, userId: user.id, role: "owner" } });
 		const project = await prisma.project.create({
 			data: { title: "Queue fixture", sourceMediaUrl: "r2://test/source.mp4", workspaceId: workspace.id, createdByUserId: user.id },

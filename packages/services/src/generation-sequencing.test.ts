@@ -162,12 +162,14 @@ describe("concurrent run-claim simulation (both callers converge on one run)", (
 
 describe("isQuotaBlockedMidFlight (typed refusal, never usage arithmetic)", () => {
   test("shows for persisted Processing Usage refusals", () => {
-    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "processing_quota_exhausted" })).toBe(true);
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "credits_exhausted" })).toBe(true);
     expect(isQuotaBlockedMidFlight({ ingestErrorCode: "upload_too_long" })).toBe(true);
   });
 
   test("ignores other failures and healthy projects", () => {
     expect(isQuotaBlockedMidFlight({ ingestErrorCode: "media_duration_unavailable" })).toBe(false);
+    // A released reservation needs a retry, not more credits.
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "credits_reservation_released" })).toBe(false);
     expect(isQuotaBlockedMidFlight({ ingestErrorCode: null })).toBe(false);
   });
 });

@@ -26,6 +26,8 @@ import { accessibleProjectWhere } from "./project-access";
 import type { PublicationSlotQueue } from "./social-publication-scheduling";
 import { socialPublicationScheduling } from "./social-publication-scheduling-runtime";
 import { workspaceService } from "./workspace.service";
+import { requirePlanFeature } from "./plan-features";
+import { readPublishableSocialAccountIds, requirePublishableSocialAccount, socialAccountBeyondPlanError } from "./social-account-eligibility";
 import { flushWorkspaceEvents, queueWorkspaceEvent } from "./workspace-event";
 
 /** The Publishing Queue: weekly posting slots on each Social Account, and
@@ -179,9 +181,11 @@ export interface AcceptedProposal {
 export const publishingQueue = {
 	/** Replaces the account's weekly slots; an empty schedule clears them. */
 	async setPostingSchedule(scope: ActorScope, accountId: string, schedule: PostingSchedule | null): Promise<PostingSchedule | null> {
-		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
+		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
 		const saved = schedule ? postingScheduleSchema.parse(schedule) : null;
 		const normalized = saved && saved.slots.length > 0 ? sortedPostingSchedule(saved) : null;
+		// Clearing a schedule stays possible on any plan.
+		if (normalized) requirePlanFeature(actor.pricingTier, "publishing.schedule");
 		const updated = await requirePrisma().socialAccount.updateMany({
 			where: { id: accountId, workspaceId: scope.workspaceId, status: { not: "revoked" } },
 			data: { postingSchedule: normalized ?? Prisma.DbNull },
@@ -202,12 +206,13 @@ export const publishingQueue = {
 			copyGenerationId?: string;
 		},
 	): Promise<{ proposal: SocialPostProposalView; replayed: boolean }> {
+		let tier: string | null = null;
 		const accepted = await getOperationReceiptExecutor().execute<SocialPostProposalView>({
 			identity: { workspaceId: scope.workspaceId, actorUserId: scope.actorUserId, command: "propose_social_post", clientIdempotencyKey: options.mutation.clientIdempotencyKey },
 			// The source stays out of the request: the same key through another transport replays.
 			input: { clipId: input.clipId, exportId: input.exportId, socialAccountId: input.socialAccountId, caption: input.caption ?? null },
 			authorize: async () => {
-				await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
+				tier = (await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage")).pricingTier;
 			},
 			beforeAccept: options.mutation.beforeAccept,
 			mutate: async (tx) => {
@@ -216,6 +221,7 @@ export const publishingQueue = {
 					select: { id: true, platform: true },
 				});
 				if (!account) throw new PublishingQueueError("social_account_unavailable", "Connect this account again, or choose another. List the Workspace's accounts for current IDs.");
+				await requirePublishableSocialAccount(tx, { workspaceId: scope.workspaceId, accountId: account.id, tier });
 				const exported = await tx.clipExport.findFirst({
 					where: { id: input.exportId, clipId: input.clipId, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
 					select: {
@@ -376,7 +382,7 @@ export const publishingQueue = {
 		/** A Standing Grant accepting for a person who isn't there: it is checked, and its caps counted, under the account lock. */
 		options: { grant?: PublicationSlotQueue["grant"] } = {},
 	): Promise<AcceptedProposal> {
-		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
+		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
 		const prisma = requirePrisma();
 		const acceptKey = proposalAcceptKey(proposalId);
 		const already = await prisma.socialPost.findUnique({
@@ -386,6 +392,8 @@ export const publishingQueue = {
 		if (already?.scheduledFor && already.clipId && already.status !== "cancelled") {
 			return { socialPostId: already.id, projectId: already.projectId, clipId: already.clipId, platform: already.platform, status: already.status, scheduledFor: already.scheduledFor.toISOString(), replayed: true };
 		}
+		// Scheduling checks this again with the account; asking first spares the work below.
+		requirePlanFeature(actor.pricingTier, "publishing.schedule");
 		const row = await prisma.socialPost.findFirst({
 			where: { id: proposalId, ...proposalWhere(scope.workspaceId) },
 			select: {
@@ -460,7 +468,8 @@ export const publishingQueue = {
 	 * slot. TikTok proposals are skipped: each needs its creator's choices.
 	 * A proposal that can't be accepted is reported and the rest go on. */
 	async acceptAll(scope: ActorScope, options: { limit?: number; after?: string | null } = {}) {
-		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
+		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
+		requirePlanFeature(actor.pricingTier, "publishing.schedule");
 		const prisma = requirePrisma();
 		// A call takes one batch. `after` is the last proposal the previous call tried, so
 		// proposals that can't be accepted are not tried again and never starve the rest.
@@ -491,12 +500,35 @@ export const publishingQueue = {
 		return { accepted, skippedTikTok, failed, remaining, nextCursor: remaining > 0 ? (rows.at(-1)?.id ?? null) : null };
 	},
 
-	/** Whether the Workspace's accounts are active, for settings that name them. */
+	/** The named accounts that are active and that the Workspace's plan lets publish, for settings that name them. */
 	async activeAccounts(workspaceId: string, accountIds: string[]): Promise<Array<{ id: string; platform: SocialPlatform }>> {
 		if (accountIds.length === 0) return [];
-		return requirePrisma().socialAccount.findMany({ where: { id: { in: accountIds }, workspaceId, status: "active" }, select: { id: true, platform: true }, orderBy: { id: "asc" } });
+		const prisma = requirePrisma();
+		const [accounts, workspace] = await Promise.all([
+			readActiveAccounts(workspaceId, accountIds),
+			prisma.workspace.findUnique({ where: { id: workspaceId }, select: { pricingTier: true } }),
+		]);
+		const { eligible } = await readPublishableSocialAccountIds(prisma, workspaceId, workspace?.pricingTier);
+		return accounts.filter((account) => eligible.has(account.id));
 	},
 };
+
+/** Says why some named accounts can't take queue posts: not active, or not publishable on the plan. */
+async function refuseUnusableQueueAccounts(workspaceId: string, accountIds: string[]): Promise<never> {
+	const active = await readActiveAccounts(workspaceId, accountIds);
+	if (active.length !== new Set(accountIds).size) {
+		throw new PublishingQueueError("social_account_unavailable", "Choose connected accounts of this Workspace for the queue. Reconnect or remove any account that's no longer active.");
+	}
+	const prisma = requirePrisma();
+	const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { pricingTier: true } });
+	requirePlanFeature(workspace?.pricingTier, "publishing.schedule");
+	const { used } = await readPublishableSocialAccountIds(prisma, workspaceId, workspace?.pricingTier);
+	throw socialAccountBeyondPlanError(workspace?.pricingTier, used);
+}
+
+function readActiveAccounts(workspaceId: string, accountIds: string[]) {
+	return requirePrisma().socialAccount.findMany({ where: { id: { in: accountIds }, workspaceId, status: "active" }, select: { id: true, platform: true }, orderBy: { id: "asc" } });
+}
 
 /** Finishing and Autopilot name queue accounts in their settings. Refuses the
  * settings when any is not an active account of the Workspace; called when the
@@ -504,9 +536,7 @@ export const publishingQueue = {
 export async function assertQueueAccounts(workspaceId: string, accountIds: readonly string[], aspectRatios?: readonly string[]): Promise<void> {
 	if (accountIds.length === 0) return;
 	const active = await publishingQueue.activeAccounts(workspaceId, [...accountIds]);
-	if (active.length !== new Set(accountIds).size) {
-		throw new PublishingQueueError("social_account_unavailable", "Choose connected accounts of this Workspace for the queue. Reconnect or remove any account that's no longer active.");
-	}
+	if (active.length !== new Set(accountIds).size) await refuseUnusableQueueAccounts(workspaceId, [...accountIds]);
 	// An export of formats the platform can't take would only fail later, one clip at a time.
 	for (const account of active) {
 		const accepted: readonly string[] = SOCIAL_PROVIDER_CAPABILITIES[account.platform].aspectRatios;

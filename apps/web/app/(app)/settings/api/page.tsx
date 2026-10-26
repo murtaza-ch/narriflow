@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Flex, Stack, Text } from "@chakra-ui/react";
 import { ArrowRight, ArrowUpRight, CircleAlert } from "lucide-react";
 import { callbackSigningSecrets, webhookSubscriptions, workspaceService } from "@narriflow/services";
+import { hasFeature, lowestTierWithFeature, PLAN_CATALOG } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
@@ -23,11 +24,12 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 export default async function ApiSettingsPage() {
   const appUser = await admitWorkspacePage("api.manage");
-  const isBusiness = appUser.workspace.pricingTier === "business";
+  const hasApi = hasFeature(appUser.workspace.pricingTier, "integrations.api");
+  const apiPlan = PLAN_CATALOG[lowestTierWithFeature("integrations.api") ?? "business"].name;
   const [keys, signing, webhooks] = await Promise.all([
     workspaceService.listApiKeys(appUser.actorUserId, appUser.workspaceId),
     callbackSigningSecrets.status(appUser.workspaceId),
-    isBusiness ? webhookSubscriptions.list({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId }) : [],
+    hasApi ? webhookSubscriptions.list({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId }) : [],
   ]);
   const apiBase = `${process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000"}/api/v1`;
 
@@ -43,12 +45,12 @@ export default async function ApiSettingsPage() {
                 <ArrowUpRight size={16} />
               </a>
             </Button>
-            {isBusiness ? <CreateKeyDialog /> : null}
+            {hasApi ? <CreateKeyDialog /> : null}
           </>
         }
       />
 
-      {!isBusiness ? (
+      {!hasApi ? (
         <Flex
           align={{ base: "flex-start", md: "center" }}
           justify="space-between"
@@ -61,7 +63,7 @@ export default async function ApiSettingsPage() {
         >
           <Flex align="flex-start" gap="2.5" color="fg.muted">
             <CircleAlert size={16} style={{ marginTop: 2, flexShrink: 0 }} />
-            <Text fontSize="13px">API keys, callbacks and webhooks need the Business plan.</Text>
+            <Text fontSize="13px">{`API keys, callbacks and webhooks need the ${apiPlan} plan.`}</Text>
           </Flex>
           <Button asChild size="sm" variant="subtle" flexShrink={0}>
             <Link href="/settings/billing">
@@ -79,16 +81,16 @@ export default async function ApiSettingsPage() {
         />
       </section>
 
-      {isBusiness ? <ApiQuickstart apiBase={apiBase} /> : null}
+      {hasApi ? <ApiQuickstart apiBase={apiBase} /> : null}
 
-      {isBusiness ? (
+      {hasApi ? (
         <section id="callbacks">
           <SectionTitle>Callbacks</SectionTitle>
           <CallbackSecretPanel status={signing} />
         </section>
       ) : null}
 
-      {isBusiness ? (
+      {hasApi ? (
         <section id="webhooks">
           <Flex align="center" justify="space-between" mb="3" gap="3">
             <Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted">

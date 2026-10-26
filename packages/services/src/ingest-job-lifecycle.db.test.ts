@@ -23,7 +23,8 @@ import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { autoTriggerIdempotencyKey } from "./generation-sequencing";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { ProcessingUsage } from "./processing-usage";
-import { PROCESSING_CAPACITY_DEFAULTS } from "@narriflow/validators";
+import { processingCapacityFromEnv } from "./processing-usage-runtime";
+import { creditDebitSeconds } from "@narriflow/validators";
 
 const url = process.env.WORKFLOW_TEST_DATABASE_URL;
 const schema = process.env.WORKFLOW_TEST_DATABASE_SCHEMA;
@@ -60,7 +61,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
   ): IngestJobLifecycleDependencies["usage"] {
     const real = new ProcessingUsage({
       prisma,
-      capacityLimits: PROCESSING_CAPACITY_DEFAULTS,
+      capacityLimits: processingCapacityFromEnv({}),
       log: () => {},
     });
     return {
@@ -96,8 +97,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         workspaceId,
         intakeKind: "link",
         periodStart: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
-        reservedSeconds: seconds,
-        settledSeconds: state === "settled" ? seconds : null,
+        // The ledger debits whole credits of the source's length.
+        reservedSeconds: creditDebitSeconds(seconds),
+        settledSeconds: state === "settled" ? creditDebitSeconds(seconds) : null,
         state,
       },
     });
@@ -490,7 +492,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     await committedPack(project.id);
     await reservation(project.id, workspace.id);
     // The probed source exceeds the Free per-video cap.
-    await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 31 * 60 } });
+    await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 61 * 60 } });
     const module = lifecycle();
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
     expect(

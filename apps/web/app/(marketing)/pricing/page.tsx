@@ -2,13 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { MONTHLY_PROCESSING_MINUTE_LIMITS } from "@narriflow/validators";
+import { planLimits } from "@narriflow/validators";
+import { PlanComparison } from "./plan-comparison";
 import { PricingTable } from "./pricing-table";
 
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Processing-minute plans for real clipping workloads. Start free, upgrade when you need more source minutes.",
+    "Credit plans for real clipping workloads. One credit is one minute of source video. Start free, upgrade when you need more.",
 };
 
 export default function PricingPage() {
@@ -26,13 +27,17 @@ export default function PricingPage() {
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
           eyebrow="Pricing"
-          title="Processing-minute plans for real clipping workloads."
-          description={`Free includes ${MONTHLY_PROCESSING_MINUTE_LIMITS.free} minutes to test the workflow. Upgrade when you need more source minutes, no watermark, and production export capacity.`}
+          title="Credit plans for real clipping workloads."
+          description={`Free includes ${planLimits("free").monthlyCredits} credits a month to test the workflow. Upgrade for more credits, watermark-free 1080p exports, publishing, and automation.`}
         />
       </Box>
 
       <Box animation="fade-up" animationDelay="120ms" animationFillMode="backwards">
         <PricingTable />
+      </Box>
+
+      <Box animation="fade-up" animationDelay="160ms" animationFillMode="backwards">
+        <PlanComparison />
       </Box>
 
       <Flex
@@ -48,7 +53,7 @@ export default function PricingPage() {
         animationFillMode="backwards"
       >
         <Text fontSize="13px" color="fg.muted">
-          One processing minute = one minute of source media, across every tier.
+          One credit = one started minute of source video, on every plan. Credits renew on the 1st of each month (UTC) and don't roll over.
         </Text>
         <Link href="/settings/billing">
           <Text

@@ -268,7 +268,7 @@ describe("Clip Editor HTTP routes", () => {
     });
   });
 
-  test("resets through the existing Scene Block policy and reset intent", async () => {
+  test("resets through the reset intent, which persistence checks against the plan", async () => {
     const { value, calls } = dependencies();
 
     const response = await app(value).request(
@@ -276,7 +276,7 @@ describe("Clip Editor HTTP routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(calls.scenePolicy).toHaveLength(1);
+    expect(calls.scenePolicy).toEqual([]);
     expect(calls.mutations[0]).toMatchObject({
       intent: { kind: "reset", baseRevision: 7 },
     });

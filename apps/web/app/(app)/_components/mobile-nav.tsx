@@ -24,8 +24,8 @@ interface MobileNavProps {
   firstName: string | null;
   lastName: string | null;
   imageUrl: string | null;
-  usedMinutes: number;
-  limitMinutes: number;
+  remainingCredits: number;
+  limitCredits: number;
   activeWorkspaceId: string;
   workspaces: WorkspaceSwitcherItem[];
   canCreate: boolean;
@@ -38,8 +38,8 @@ export function MobileNav({
   firstName,
   lastName,
   imageUrl,
-  usedMinutes,
-  limitMinutes,
+  remainingCredits,
+  limitCredits,
   activeWorkspaceId,
   workspaces,
   canCreate,
@@ -54,7 +54,7 @@ export function MobileNav({
 
   const displayName = getDisplayName(firstName, lastName);
   const initials = getInitials(firstName, lastName, email);
-  const usagePct = limitMinutes > 0 ? Math.min(100, (usedMinutes / limitMinutes) * 100) : 0;
+  const usagePct = limitCredits > 0 ? Math.min(100, ((limitCredits - remainingCredits) / limitCredits) * 100) : 0;
   const palette = usagePalette(usagePct);
 
   // Close the drawer whenever navigation lands on a new route.
@@ -189,14 +189,14 @@ export function MobileNav({
                       fontVariantNumeric="tabular-nums"
                       color={palette === "accent" ? "fg.muted" : `${palette}.fg`}
                     >
-                      {Math.round(usedMinutes)}/{Math.round(limitMinutes)} min
+                      {remainingCredits.toLocaleString()} of {limitCredits.toLocaleString()} left
                     </Text>
                   </Flex>
                   <Meter
                     value={usagePct}
                     palette={palette}
                     showValue={false}
-                    aria-label="Monthly processing minutes used"
+                    aria-label="Monthly credits used"
                   />
                 </Box>
                 <Flex align="center" gap="2.5" mb="3">

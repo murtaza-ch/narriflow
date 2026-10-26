@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { editorDocumentSchema } from "@narriflow/validators";
+import { brandOwnerForWorkspace } from "./brand-ownership";
 import {
-  assertMotionExportEntitlement,
+  assertClipExportDocumentAllowed,
   assertSceneExportReferenceRows,
   buildClipExportFingerprint,
   clipExportDownloadFileName,
@@ -9,7 +10,6 @@ import {
   deriveClipExportAggregate,
   hashClipShareToken,
   resolveClipExportOutput,
-  sceneExportOwnerWhere,
 } from "./clip-export.service";
 
 describe("clip export motion entitlement", () => {
@@ -27,15 +27,42 @@ describe("clip export motion entitlement", () => {
   });
 
   test("blocks a frozen motion snapshot after a workspace downgrades", () => {
-    expect(() => assertMotionExportEntitlement("free", motionDocument)).toThrow(
-      expect.objectContaining({ code: "motion_feature_unavailable" }),
+    expect(() => assertClipExportDocumentAllowed("free", motionDocument)).toThrow(
+      expect.objectContaining({
+        code: "plan_feature_required",
+        kind: "payment_required",
+        details: expect.objectContaining({ feature: "editor.motion", requiredTier: "creator" }),
+      }),
     );
   });
 
   test("allows the same frozen snapshot on an entitled tier", () => {
     expect(() =>
-      assertMotionExportEntitlement("creator", motionDocument),
+      assertClipExportDocumentAllowed("creator", motionDocument),
     ).not.toThrow();
+  });
+
+  test("refuses enabled Auto Censor segments that no longer match the transcript", () => {
+    const segment = {
+      schemaVersion: 1,
+      id: "50000000-0000-4000-8000-000000000001",
+      sourceWordIds: ["word:gone"],
+      sourceStartSec: 1,
+      sourceEndSec: 1.4,
+      treatment: "beep",
+      paddingSec: 0.06,
+      beepSettings: { frequencyHz: 1_000, levelDb: -8 },
+      captionMaskPolicy: null,
+      suggestionFingerprint: "e".repeat(64),
+      policyVersion: "auto-censor-v1",
+      enabled: true,
+    };
+    const stale = editorDocumentSchema.parse({ ...motionDocument, studioEdits: {}, censorSegments: [segment] });
+    expect(() => assertClipExportDocumentAllowed("pro", stale)).toThrow(
+      expect.objectContaining({ code: "censor_segments_stale", details: { staleCount: 1 } }),
+    );
+    const disabled = editorDocumentSchema.parse({ ...motionDocument, studioEdits: {}, censorSegments: [{ ...segment, enabled: false }] });
+    expect(() => assertClipExportDocumentAllowed("free", disabled)).not.toThrow();
   });
 });
 
@@ -147,17 +174,11 @@ describe("clip export storage and sharing", () => {
     expect(() => assertSceneExportReferenceRows(document, visuals, [])).toThrow("unavailable Brand font");
   });
 
-  test("uses personal Brand ownership for Creator exports and workspace ownership for Business", () => {
-    expect(sceneExportOwnerWhere({
-
-      workspaceId: "personal-workspace",
-      workspace: { personalOwnerUserId: "owner", pricingTier: "creator" },
-    })).toEqual({ userId: "owner", workspaceId: null });
-    expect(sceneExportOwnerWhere({
-
-      workspaceId: "shared-workspace",
-      workspace: { personalOwnerUserId: null, pricingTier: "business" },
-    })).toEqual({ workspaceId: "shared-workspace" });
+  test("resolves Scene asset ownership from the Workspace kind, never its plan", () => {
+    expect(brandOwnerForWorkspace({ id: "personal-workspace", personalOwnerUserId: "owner" }))
+      .toEqual({ userId: "owner", workspaceId: null });
+    expect(brandOwnerForWorkspace({ id: "shared-workspace", personalOwnerUserId: null }))
+      .toEqual({ userId: null, workspaceId: "shared-workspace" });
   });
 
   test("builds a safe, descriptive download filename", () => {

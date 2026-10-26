@@ -47,7 +47,7 @@ function clipRow(project: Record<string, unknown> = {}) {
 describe("clip timelines", () => {
   test("export returns the timeline text, SRT, and an expiring source grant under the name the timeline uses, with a URL-free audit log", async () => {
     row = clipRow();
-    const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({} as never);
+    const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "pro" } as never);
     const logs: string[] = [];
     const warn = spyOn(console, "warn").mockImplementation((line: unknown) => { logs.push(String(line)); });
     try {
@@ -77,7 +77,7 @@ describe("clip timelines", () => {
 
   test("archive is a ZIP of the timeline and the SRT; the source is not in it", async () => {
     row = clipRow();
-    const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({} as never);
+    const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "pro" } as never);
     try {
       const archive = await clipTimelineService.archive(scope, PROJECT, CLIP, "edl");
       expect(archive.fileName).toBe("Big-Idea-v4-edl.zip");
@@ -93,7 +93,7 @@ describe("clip timelines", () => {
 
   test("issues the source grant alone for the web page's separate download", async () => {
     row = clipRow({ sourceProbe: null });
-    const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({} as never);
+    const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "pro" } as never);
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const source = await clipTimelineService.issueSourceGrant(scope, PROJECT, CLIP, { credentialKind: "session" });
@@ -103,7 +103,7 @@ describe("clip timelines", () => {
   });
 
   test("refuses a missing clip, a purged source, an unmeasured source, and a member without download access", async () => {
-    const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({} as never);
+    const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "pro" } as never);
     try {
       row = null;
       await expect(clipTimelineService.export(scope, PROJECT, CLIP, "edl", { credentialKind: "api_key" })).rejects.toMatchObject({ code: "clip_not_found", kind: "missing" });
@@ -116,6 +116,17 @@ describe("clip timelines", () => {
       actor.mockRejectedValue(new Error("forbidden"));
       row = clipRow();
       await expect(clipTimelineService.export(scope, PROJECT, CLIP, "edl", { credentialKind: "api_key" })).rejects.toThrow("forbidden");
+    } finally { actor.mockRestore(); }
+  });
+
+  test("refuses timelines and source grants below Pro with the shared plan refusal", async () => {
+    row = clipRow();
+    const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "creator" } as never);
+    try {
+      const refusal = { code: "plan_feature_required", kind: "payment_required", details: { feature: "export.timelines", currentTier: "creator", requiredTier: "pro" } };
+      await expect(clipTimelineService.export(scope, PROJECT, CLIP, "edl", { credentialKind: "api_key" })).rejects.toMatchObject(refusal);
+      await expect(clipTimelineService.archive(scope, PROJECT, CLIP, "edl")).rejects.toMatchObject(refusal);
+      await expect(clipTimelineService.issueSourceGrant(scope, PROJECT, CLIP, { credentialKind: "session" })).rejects.toMatchObject(refusal);
     } finally { actor.mockRestore(); }
   });
 });

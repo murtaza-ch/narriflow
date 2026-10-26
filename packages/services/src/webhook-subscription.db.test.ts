@@ -11,6 +11,7 @@ import {
   createWebhookDeliveryProcessor,
   createWebhookSubscriptions,
   WEBHOOK_IDLE_POLL_MS,
+  WEBHOOK_PLAN_HOLD_MS,
   WEBHOOK_TEST_INTERVAL_MS,
   type WebhookDisabledNotice,
   type WebhookNoticeResult,
@@ -188,6 +189,70 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(JSON.stringify(logs)).not.toContain("secret-token");
     expect(JSON.stringify(logs)).not.toContain("completed");
     expect(logs.filter((entry) => entry.message === "webhook_delivery_attempt")).toHaveLength(3);
+  });
+
+  test("a Workspace without API access is held, never starves others, and resumes from its cursor when access returns", async () => {
+    await reset();
+    const held = await workspace();
+    const other = await workspace();
+    const heldHook = await subscribe(held.actor, "/held");
+    const otherHook = await subscribe(other.actor, "/other");
+    await emit(held.workspaceId, "while-entitled");
+    expect(await processor().deliver()).toBe(1);
+    // Both caught up and idle; make them due again for the next tick.
+    await prisma.webhookSubscription.updateMany({ where: { id: { in: [heldHook.webhookId, otherHook.webhookId] } }, data: { nextAttemptAt: clock } });
+
+    await prisma.workspace.update({ where: { id: held.workspaceId }, data: { pricingTier: "creator" } });
+    await emit(held.workspaceId, "after-downgrade");
+    await emit(other.workspaceId, "other-workspace");
+    received.length = 0;
+    expect(await processor().deliver()).toBe(1);
+    expect(received.map((request) => request.path)).toEqual(["/other"]);
+    const onHold = await row(heldHook.webhookId);
+    expect(onHold).toMatchObject({ status: "active", lastDeliveredSeq: 1n, consecutiveFailures: 0, leaseOwner: null });
+    expect(onHold.nextAttemptAt.getTime() - clock.getTime()).toBe(WEBHOOK_PLAN_HOLD_MS);
+    expect(logs.some((entry) => entry.message === "webhook_delivery_held" && entry.webhookId === heldHook.webhookId)).toBe(true);
+
+    // Restored: the next look after the hold sends what waited, from the cursor.
+    await prisma.workspace.update({ where: { id: held.workspaceId }, data: { pricingTier: "pro" } });
+    advance(WEBHOOK_PLAN_HOLD_MS);
+    received.length = 0;
+    expect(await processor().deliver()).toBe(1);
+    expect(operationIds(received.map((request) => verify(held.secret, request)))).toEqual(["after-downgrade"]);
+    expect(await row(heldHook.webhookId)).toMatchObject({ lastDeliveredSeq: 2n, status: "active" });
+  });
+
+  test("a restricted Workspace is held even when its plan includes API access, as API admission refuses it", async () => {
+    await reset();
+    const { actor, workspaceId, secret } = await workspace();
+    const created = await subscribe(actor, "/restricted");
+    await prisma.workspace.update({ where: { id: workspaceId }, data: { pricingTier: "pro", status: "restricted" } });
+    await emit(workspaceId, "while-restricted");
+    expect(await processor().deliver()).toBe(0);
+    expect(received).toHaveLength(0);
+    const onHold = await row(created.webhookId);
+    expect(onHold).toMatchObject({ status: "active", lastDeliveredSeq: 0n, consecutiveFailures: 0, leaseOwner: null });
+    expect(onHold.nextAttemptAt.getTime() - clock.getTime()).toBe(WEBHOOK_PLAN_HOLD_MS);
+
+    await prisma.workspace.update({ where: { id: workspaceId }, data: { status: "active" } });
+    advance(WEBHOOK_PLAN_HOLD_MS);
+    expect(await processor().deliver()).toBe(1);
+    expect(operationIds(received.map((request) => verify(secret, request)))).toEqual(["while-restricted"]);
+  });
+
+  test("losing API access mid-page stops before the next POST and keeps the cursor", async () => {
+    await reset();
+    const { actor, workspaceId } = await workspace();
+    const created = await subscribe(actor, "/mid-page");
+    await emit(workspaceId, "sent");
+    await emit(workspaceId, "held");
+    onRequest = async () => {
+      onRequest = null;
+      await prisma.workspace.update({ where: { id: workspaceId }, data: { pricingTier: "free" } });
+    };
+    expect(await processor().deliver()).toBe(1);
+    expect(received).toHaveLength(1);
+    expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 1n, consecutiveFailures: 0, status: "active", leaseOwner: null });
   });
 
   test("retries a failed event with the same id after the callback backoff, and sends what follows only after it", async () => {

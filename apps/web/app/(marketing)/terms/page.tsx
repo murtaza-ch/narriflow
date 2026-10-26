@@ -13,7 +13,7 @@ const LAST_UPDATED = formatDate(new Date(2026, 6, 7));
 const SECTIONS = [
   {
     title: "The service",
-    body: "Narriflow turns long-form recordings into short captioned clips and repurposed content, and can publish to social accounts you connect. Plans are metered in processing minutes — one minute of source media consumes one processing minute.",
+    body: "Narriflow turns long-form recordings into short captioned clips and repurposed content, and can publish to social accounts you connect. Plans are metered in credits: each started minute of source media consumes one credit.",
   },
   {
     title: "Your content",
@@ -25,7 +25,7 @@ const SECTIONS = [
   },
   {
     title: "Billing",
-    body: "Paid plans renew monthly or annually until cancelled. Quota resets each billing period; unused minutes do not roll over. You can cancel any time from billing settings, effective at the end of the current period.",
+    body: "Paid plans renew monthly or annually until cancelled. Credits renew on the first day of each calendar month (UTC), separately from the billing date; unused credits do not roll over. You can cancel any time from billing settings, effective at the end of the current period.",
   },
   {
     title: "Warranty and liability",

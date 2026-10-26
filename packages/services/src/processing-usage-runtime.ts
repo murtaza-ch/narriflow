@@ -1,17 +1,20 @@
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-  PROCESSING_CAPACITY_DEFAULTS,
+  planLimits,
   pricingTierSchema,
   type PricingTier,
 } from "@narriflow/validators";
 import { ProcessingUsage } from "./processing-usage";
 
-/** Validated Processing Capacity per tier, overridable with
- * PROCESSING_CAPACITY_FREE, _CREATOR, _PRO, and _BUSINESS. */
+/** Validated Processing Capacity per tier: the plan catalog's value, with an
+ * operational override through PROCESSING_CAPACITY_FREE, _CREATOR, _PRO, and
+ * _BUSINESS. The usage summary reports the resolved value. */
 export function processingCapacityFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): Readonly<Record<PricingTier, number>> {
-  const limits = { ...PROCESSING_CAPACITY_DEFAULTS };
+  const limits = Object.fromEntries(
+    pricingTierSchema.options.map((tier) => [tier, planLimits(tier).processingCapacity]),
+  ) as Record<PricingTier, number>;
   for (const tier of pricingTierSchema.options) {
     const name = `PROCESSING_CAPACITY_${tier.toUpperCase()}`;
     const raw = env[name]?.trim();

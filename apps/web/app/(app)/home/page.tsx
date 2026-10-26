@@ -1,6 +1,5 @@
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
-import { isRetentionEnforcementActive, workspaceLibraryService,
-} from "@narriflow/services";
+import { workspaceLibraryService } from "@narriflow/services";
 import { DashboardView } from "./dashboard-view";
 
 const RECENT_PROJECTS_LIMIT = 8;
@@ -28,7 +27,7 @@ export default async function HomePage() {
           appUser.workspace.status === "active"
         }
         showRetentionBanner={
-          appUser.workspace.pricingTier === "free" && isRetentionEnforcementActive()
+          appUser.workspace.pricingTier === "free"
         }
     />
   );

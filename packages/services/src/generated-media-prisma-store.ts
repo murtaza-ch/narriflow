@@ -104,11 +104,19 @@ export const prismaGeneratedMediaStore: GeneratedMediaStore = {
     try {
       const prisma = requirePrisma();
       const row = await withSerializableTransaction(prisma, async (tx) => {
-        const reservation = await tx.generatedMediaUsageReservation.findUnique({
-          where: { id: input.usageReservationId },
-          select: { jobId: true, status: true },
+        // Attach the reservation to its job: same image count, same Workspace,
+        // still reserved. An attached reservation is never treated as an orphan.
+        const attached = await tx.generatedMediaUsageReservation.updateMany({
+          where: {
+            id: input.usageReservationId,
+            jobId: input.id,
+            kind: "image",
+            workspaceId: input.scope.workspaceId,
+            status: "reserved",
+          },
+          data: { attachedAt: input.createdAt },
         });
-        if (reservation?.jobId !== input.id || reservation.status !== "reserved") {
+        if (attached.count !== 1) {
           throw new GeneratedMediaJobError("generated_media_usage_reconciliation_required");
         }
         return tx.generatedMediaJob.create({

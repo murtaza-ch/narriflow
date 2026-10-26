@@ -10,6 +10,7 @@ import { readSocialPublishingOptionsForAccount } from "./social-publishing-optio
 import { isSocialProviderPublishingEnabled, socialPublicationCapabilityVersion } from "./social-publication-config";
 import { reviewApprovalGate } from "./review-approval-gate.prisma";
 import { workspaceService } from "./workspace.service";
+import { requirePublishableSocialAccount } from "./social-account-eligibility";
 import { createSocialPublicationScheduling, PublicationIntentConflictError, PublicationIntentStateError, type PublicationIntent, type PublicationSchedulingStore } from "./social-publication-scheduling";
 
 const publicationIntentInclude = {
@@ -420,6 +421,8 @@ export function createProductionSocialPublicationScheduling() {
 				return row ? { workspaceId: row.workspaceId, platform: row.platform, status: row.status,
 					expiresAt: row.expiresAt, canRefresh: Boolean(row.refreshTokenEncrypted) } : null;
 			},
+			requirePublishableAccount: ({ workspaceId, accountId, tier }) =>
+				requirePublishableSocialAccount(requirePrisma(), { workspaceId, accountId, tier }),
 			async readExport(exportId) {
 				const row = await requirePrisma().clipExport.findUnique({
 					where: { id: exportId },

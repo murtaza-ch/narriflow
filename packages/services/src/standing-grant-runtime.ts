@@ -4,12 +4,13 @@ import type { ActorScope } from "./actor-scope";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { publishingQueue } from "./publishing-queue.service";
 import { brandApprovalRequiredByDefault, reviewDeliverySecret, reviewService } from "./review.service";
-import { hasFeature } from "./plan-features";
+import { PlanRequirementError } from "./plan-features";
 import { createReviewerOptOut, optedOutReviewers } from "./review-opt-out";
 import {
   createStandingGrants,
   findCoveringGrant,
   grantAdmission,
+  planCoversGrant,
   StandingGrantError,
   type GrantNoticeResult,
   type GrantPausedNotice,
@@ -106,13 +107,17 @@ export async function acceptProposalUnderGrant(input: { finishingId: string; wor
   if (!grant) return "no_grant";
   // The grant acts for its granter, who must still be an Owner or Admin.
   const granter = grant.grantedByUserId;
-  const granterOk = granter ? await requireActor(granter, input.workspaceId, "workspace.manage").then(() => true, (error) => {
-    if (error instanceof ExpectedDomainFailureError) return false;
+  const granterActor = granter ? await requireActor(granter, input.workspaceId, "workspace.manage").catch((error) => {
+    if (error instanceof ExpectedDomainFailureError) return null;
     throw error;
-  }) : false;
-  if (!granter || !granterOk) {
+  }) : null;
+  if (!granter || !granterActor) {
     await service().pauseBySystem(grant.id, "granter_unavailable", grant.revision);
     return "granter_unavailable";
+  }
+  if (!planCoversGrant(granterActor.pricingTier, "publish")) {
+    await service().pauseBySystem(grant.id, "plan_lost", grant.revision);
+    return "plan_lost";
   }
   try {
     await publishingQueue.accept({ actorUserId: granter, workspaceId: input.workspaceId }, input.proposalId, {}, { grant: grantAdmission(grant.id, "publish") });
@@ -122,6 +127,8 @@ export async function acceptProposalUnderGrant(input: { finishingId: string; wor
     if (error instanceof StandingGrantError && error.code === "standing_grant_rule_changed") {
       await service().pauseBySystem(grant.id, "rule_changed", grant.revision);
     }
+    // The account is beyond the plan's count, or the plan lost a feature: pause rather than retry each run.
+    if (error instanceof PlanRequirementError) await service().pauseBySystem(grant.id, "plan_lost", grant.revision);
     if (error instanceof ExpectedDomainFailureError) return error.code;
     throw error;
   }
@@ -148,7 +155,11 @@ export async function sendReviewRoundUnderGrant(input: { finishingId: string; wo
     await service().pauseBySystem(grant.id, "granter_unavailable", grant.revision);
     return { sent: false, reason: "review_not_sent_granter" };
   }
-  if (!hasFeature(actor.pricingTier, "review.rooms")) return { sent: false, reason: "review_not_sent_plan" };
+  if (!planCoversGrant(actor.pricingTier, "review_send")) {
+    // Paused, so a later upgrade doesn't resume automatic client sends without a renewal.
+    await service().pauseBySystem(grant.id, "plan_lost", grant.revision);
+    return { sent: false, reason: "review_not_sent_plan" };
+  }
 
   const [project, exports] = await Promise.all([
     prisma.project.findFirst({ where: { id: input.projectId, workspaceId: input.workspaceId }, select: { title: true, brandProfileSnapshot: true } }),

@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { admitProjectPage } from "@/lib/authenticated-request-page";
 import { clipExportService, getLastWorkflowSeq } from "@narriflow/services";
+import { planFeatureRequirement } from "@narriflow/validators";
 import { ExportDeliveryClient } from "./export-delivery-client";
 
 export default async function ClipExportPage({
@@ -16,6 +17,11 @@ export default async function ClipExportPage({
   ]);
   if (!exported) notFound();
   return (
-    <ExportDeliveryClient initialExport={exported} initialSeq={initialSeq} />
+    <ExportDeliveryClient
+      initialExport={exported}
+      initialSeq={initialSeq}
+      timelineRequirement={planFeatureRequirement(appUser.pricingTier, "export.timelines")?.message ?? null}
+      canManageBilling={appUser.role === "owner"}
+    />
   );
 }

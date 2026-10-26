@@ -2,13 +2,18 @@ import { Box, Flex, Grid, Image, Stack, Text } from "@chakra-ui/react";
 import { ArrowRight, AudioLines, Check, ImageIcon, Type } from "lucide-react";
 import Link from "next/link";
 import { brandProfileService, brandTemplateService, hasFeature, isProgramWriteEnabled } from "@narriflow/services";
-import { workspaceAllowsCapability } from "@narriflow/validators";
+import {
+  planCountRequirement,
+  planFeatureRequirement,
+  workspaceAllowsCapability,
+} from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { TemplateGallery } from "./_components/template-gallery";
 import { BrandProfileDefaultButton } from "./_components/brand-profile-default-button";
+import { PlanLimitNotice } from "../_components/plan-limit-notice";
 
 export default async function BrandKitPage() {
   const actor = await admitWorkspacePage("content.view");
@@ -26,10 +31,22 @@ export default async function BrandKitPage() {
     brandProfileService.getDefaultId(scope),
     brandTemplateService.list(actor),
   ]);
-  const canManage = workspaceAllowsCapability(
+  const mayManageBrand = workspaceAllowsCapability(
     { role: actor.role, status: actor.status },
     "brand.manage",
-  ) && hasFeature(actor.pricingTier, "brand.profiles") && isProgramWriteEnabled("brand_profiles");
+  );
+  const canManage = mayManageBrand && hasFeature(actor.pricingTier, "brand.profiles") && isProgramWriteEnabled("brand_profiles");
+  // Plan boundaries shown before the user starts, with the same copy the services refuse with.
+  const profileRequirement = mayManageBrand
+    ? (planCountRequirement(actor.pricingTier, "brandProfiles", profiles.length)?.message ?? null)
+    : null;
+  const styleRequirement = mayManageBrand
+    ? (planFeatureRequirement(actor.pricingTier, "brand.customTemplates")?.message ??
+      planCountRequirement(actor.pricingTier, "brandTemplates", templates.mine.length)?.message ??
+      null)
+    : null;
+  const canCreateProfile = canManage && profileRequirement === null;
+  const canManageBilling = actor.role === "owner";
 
   return (
     <Stack gap="10">
@@ -37,8 +54,9 @@ export default async function BrandKitPage() {
         <PageHeader
           title="Brand kit"
           description="Manage your brand colors, fonts, assets, and caption styles."
-          actions={canManage ? <Button asChild><Link href="/brand-kit/new">New profile</Link></Button> : undefined}
+          actions={canCreateProfile ? <Button asChild><Link href="/brand-kit/new">New profile</Link></Button> : undefined}
         />
+        <PlanLimitNotice message={profileRequirement} actionLabel="See plans." canManageBilling={canManageBilling} />
       </Box>
 
       <Box animation="fade-up" animationFillMode="backwards" style={{ animationDelay: "90ms" }}>
@@ -47,7 +65,7 @@ export default async function BrandKitPage() {
             icon={<ImageIcon size={20} />}
             title="No Brand Profiles yet"
             description="Save your brand colors, styles, and assets."
-            action={canManage ? <Button size="sm" variant="subtle" asChild><Link href="/brand-kit/new">New profile</Link></Button> : undefined}
+            action={canCreateProfile ? <Button size="sm" variant="subtle" asChild><Link href="/brand-kit/new">New profile</Link></Button> : undefined}
           />
         ) : (
           <Grid templateColumns={{ base: "1fr", lg: "repeat(2, minmax(0, 1fr))" }} gap="5">
@@ -119,7 +137,8 @@ export default async function BrandKitPage() {
       </Box>
 
       <Box as="section">
-        <Flex justify="space-between" align="center" mb="5"><Text fontSize="16px" fontWeight="500">Style library</Text><Button size="sm" variant="subtle" asChild><Link href="/brand-kit/styles/new">New style</Link></Button></Flex>
+        <Flex justify="space-between" align="center" mb={styleRequirement ? "2" : "5"}><Text fontSize="16px" fontWeight="500">Style library</Text>{mayManageBrand && styleRequirement === null ? <Button size="sm" variant="subtle" asChild><Link href="/brand-kit/styles/new">New style</Link></Button> : null}</Flex>
+        {styleRequirement ? <Box mb="5"><PlanLimitNotice message={styleRequirement} actionLabel="See plans." canManageBilling={canManageBilling} /></Box> : null}
         <TemplateGallery builtIns={templates.builtIns} mine={templates.mine.filter((template) => !profiles.some((profile) => profile.templates.some((style) => style.id === template.id)))} defaultId={templates.defaultId} />
       </Box>
     </Stack>

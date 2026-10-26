@@ -24,7 +24,7 @@ Authorization: Bearer nf_…
 
 <Steps>
   <Step title="Open Developer access">
-    In the app, go to **Settings → Developer access**. You need the Owner, Admin or Editor role, and the Workspace must be on an active Business plan.
+    In the app, go to **Settings → Developer access**. You need the Owner, Admin or Editor role, and the Workspace must be active and on the Pro or Business plan.
   </Step>
   <Step title="Create a key">
     Name the key and choose its permissions. A new key can read projects, exports, usage, Autopilot and publishing. Each write permission is opt-in.
@@ -50,11 +50,17 @@ A key acts only in its own Workspace, with its scopes and with its creator's cur
 
 `GET /operations/{id}` needs `projects:read` for imports and generations, and `exports:read` for exports. `POST /operations/{id}/callback/redeliver` needs `processing:write` or `exports:write` the same way. `GET /events` also needs `publishing:read` to include `social_post.proposed` and `social_post.finished` events; without it they are left out. A missing scope returns `403 scope_required` and names the scope.
 
-## Plan and processing minutes
+## Plan and credits
 
-The API needs an active Business plan. Other plans get `402 integration_access_unavailable`.
+The API needs an active Workspace on the Pro or Business plan. Other plans get `402 plan_feature_required`, with `details` naming the feature, the current tier and the required tier. An inactive Workspace gets `402 integration_access_unavailable`. A command whose own feature the plan lacks, such as review rooms on Pro, or that goes past a plan limit, returns `402 plan_feature_required` or `402 plan_limit_reached` the same way.
 
-Importing, uploading and generating use the Workspace's processing minutes, exactly as in the app. `GET /workspace` returns the minutes used, reserved and remaining this UTC month, the videos in flight, and the per-video length limit.
+Importing and uploading use the Workspace's credits, exactly as in the app. `GET /workspace` returns `usedCredits`, `reservedCredits`, `remainingCredits` and `limitCredits` for this UTC month, `periodStart` and `renewsAt`, the videos in flight, and the per-video length limit. New imports are refused with `429 workspace_processing_capacity_reached` while the plan's number of videos is already importing or processing; retry after the `Retry-After` delay.
+
+- One credit is one started minute of source video, counted per video. Narriflow measures the video's length to the nearest second, so a 1-second video uses 1 credit, 60 seconds uses 1, and 61 seconds uses 2. The whole video counts, even when you process only part of it.
+- Credits are reserved when Narriflow accepts the video and settled from its real length before transcription. A video that never starts processing gives its credits back.
+- Credits renew at 00:00 UTC on the first of each month (`renewsAt`). Unused credits don't roll over.
+- Retrying or regenerating the same Project is free. Importing the same video again as a new Project uses credits again.
+- A video that needs more credits than are left is refused with `402 credits_exhausted`.
 
 ## Idempotency
 
@@ -89,7 +95,7 @@ Errors share one shape.
 | --- | --- |
 | 400 | The request is invalid, or `Idempotency-Key` is missing or malformed. |
 | 401 | The key is missing, invalid or revoked. |
-| 402 | The Workspace needs Business, or its processing minutes are used up. |
+| 402 | The plan doesn't include the feature or limit (`plan_feature_required`, `plan_limit_reached`), the Workspace isn't active, or its credits are used up. |
 | 403 | The key lacks a scope, or your role or Workspace does not allow the action. |
 | 404 | The resource does not exist in the key's Workspace. |
 | 409 | A conflict, including an idempotency key reused with different input. |

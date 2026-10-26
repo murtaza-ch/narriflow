@@ -149,7 +149,6 @@ const ASSISTED_SOCIAL_COPY_FAILURES = {
 	assisted_copy_generation_in_progress: "conflict",
 	assisted_copy_generation_not_found: "missing",
 	assisted_copy_generation_failed: "unavailable",
-	assisted_copy_entitlement_required: "forbidden",
 	assisted_copy_idempotency_conflict: "conflict",
 	assisted_copy_input_invalid: "invalid",
 	assisted_copy_locked_content_missing: "invalid",

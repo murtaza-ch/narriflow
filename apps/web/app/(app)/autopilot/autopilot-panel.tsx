@@ -3,6 +3,7 @@
 import { useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { PlanLimitNotice } from "../_components/plan-limit-notice";
 import { Box, chakra, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import {
   AlertTriangle,
@@ -212,7 +213,12 @@ export function AutopilotPanel({
   zoomConnections = [],
   canConnectZoom = false,
   zoomNotice,
+  newRuleRequirement = null,
+  canManageBilling = false,
 }: {
+  /** Why the plan can't add another active rule, computed server-side; `null` when it can. */
+  newRuleRequirement?: string | null;
+  canManageBilling?: boolean;
   zoomEnabled?: boolean;
   zoomConnections?: ZoomConnectionSnapshot[];
   canConnectZoom?: boolean;
@@ -444,12 +450,13 @@ export function AutopilotPanel({
         <PageHeader
           title="Autopilot"
           actions={
-            <Button onClick={() => setDialogOpen(true)}>
+            <Button onClick={() => setDialogOpen(true)} disabled={newRuleRequirement !== null}>
               <Plus size={15} strokeWidth={2} aria-hidden />
               New rule
             </Button>
           }
         />
+        <PlanLimitNotice message={newRuleRequirement} actionLabel="See plans." canManageBilling={canManageBilling} />
       </Box>
 
       {zoomEnabled ? <ZoomConnections connections={zoomConnections} canConnect={canConnectZoom} notice={zoomNotice} /> : null}
@@ -476,6 +483,7 @@ export function AutopilotPanel({
                 textUnderlineOffset="3px"
                 _hover={{ color: "fg" }}
                 onClick={() => setDialogOpen(true)}
+                disabled={newRuleRequirement !== null}
               >
                 Create your first rule
               </Button>

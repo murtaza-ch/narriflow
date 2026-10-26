@@ -8,7 +8,7 @@ By default every post and every review round waits for a person's click. An auto
 
 There are two kinds:
 
-- **Post to an account.** Posts that the rule's Finishing proposes to an account's [publishing queue](/docs/publishing-queue) are accepted into that account's next free slot.
+- **Post to an account.** Posts that the rule's Finishing proposes to an account's [publishing queue](/docs/publishing-queue) are accepted into that account's next free slot. This needs the Pro plan or above, like Finishing.
 - **Send review rounds.** When the rule's Finishing ends, its finished clips are sent to named reviewers as one review round. This needs the Business plan, like every review round.
 
 Only Owners and Admins can create, renew, pause or revoke a grant. Everyone else can see what is granted and what went out under it, and how many reviewers a review grant has, but not their addresses.
@@ -44,7 +44,7 @@ A grant only supplies the click. Everything else a person's click would face sti
 - **The clip.** If it changed after the export, the proposal waits.
 - **The account.** If it needs reconnecting, the proposal waits.
 - **TikTok.** TikTok needs the creator's choices on every post, so a TikTok account can't hold a grant. Its proposals always wait for you.
-- **The plan.** If the Workspace drops below Business, review rounds are not sent. Finishing ends with the reason, and the clips are ready to review.
+- **The plan.** If the Workspace drops below Pro, Finishing is skipped, so nothing is proposed or accepted. Below Business, review rounds are not sent. Finishing ends with the reason, and the clips are ready to review. A post grant only accepts into an account the plan publishes to. When the plan stops covering a grant, it pauses with `plan_lost` and stays paused after an upgrade; an Owner or Admin renews it to turn it back on.
 - **Where the settings came from.** Only the rule's own import is covered. If an API key or assistant asks for finishing on a Project the rule imported, that request's finishing is never accepted or sent under the rule's grants.
 
 Every review email a grant sends ends with a link, "Stop automated review requests from" the Workspace, that works without signing in. A reviewer who follows it and confirms is skipped by every grant in that Workspace from then on, and the grant's card lists who opted out. If nobody is left, no round is sent. Someone in the Workspace can still invite them to a review by hand.
@@ -70,6 +70,6 @@ Demoting or removing the person a grant acts for pauses their grants at once.
 
 ## Watch grants from your tools
 
-Two [events](/docs/api/events) report a grant stopping. `grant.paused` has the `reason` `manual`, `post_failed`, `post_needs_attention`, `granter_unavailable` or `rule_changed`. `grant.expired` fires once when the expiry passes. Both carry only IDs: the grant, its kind and its rule (`null` if the rule was deleted). They need no scope beyond reading events, and you can send them to a [webhook](/docs/api/webhooks).
+Two [events](/docs/api/events) report a grant stopping. `grant.paused` has the `reason` `manual`, `post_failed`, `post_needs_attention`, `granter_unavailable`, `rule_changed` or `plan_lost`. `grant.expired` fires once when the expiry passes. Both carry only IDs: the grant, its kind and its rule (`null` if the rule was deleted). They need no scope beyond reading events, and you can send them to a [webhook](/docs/api/webhooks).
 
 Grants are managed in the app. The API and assistants can read their events but can't create, renew or revoke a grant, because that authority belongs to a person.

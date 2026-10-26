@@ -13,7 +13,7 @@ import { socialPublicationRecovery } from "./social-publication-recovery";
 import { emitSocialPostFinished } from "./social-post-finished";
 import { socialOAuthService } from "./social-oauth.service";
 import { createStandingGrants, ruleFingerprint } from "./standing-grant";
-import { acceptProposalUnderGrant, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
+import { acceptProposalUnderGrant, getStandingGrantMaintenance, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
 import { workspaceMembershipService } from "./workspace-membership.service";
 import { workspaceService } from "./workspace.service";
 import { listWorkspaceEvents } from "./workspace-event";
@@ -79,7 +79,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 	});
 
 	/** A Workspace whose Autopilot rule imported a Project with a finished export, a YouTube account that has slots, and a TikTok account. */
-	async function fixture(options: { tier?: "business" | "free" } = {}) {
+	async function fixture(options: { tier?: "business" | "pro" | "creator" | "free" } = {}) {
 		const suffix = randomUUID();
 		const user = (role: string) => prisma.user.create({ data: { clerkId: `grant-db-${role}:${suffix}`, primaryEmail: `${role}-${suffix}@example.test`, emailVerifiedAt: new Date() } });
 		const [owner, editor, admin] = [await user("owner"), await user("editor"), await user("admin")];
@@ -216,9 +216,27 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect(seen.find((grant) => grant.id === id)).toMatchObject({ status: "active", usedDay: 0, usedWeek: 0, ruleName: "Weekly show", history: [{ kind: "created", actorName: expect.any(String) }] });
 	});
 
-	test("a review-send grant needs Business", async () => {
-		const f = await fixture({ tier: "free" });
-		await expect(reviewGrant(f)).rejects.toMatchObject({ code: "standing_grant_plan_required" });
+	test("the maintenance sweep pauses grants the plan no longer covers, and an upgrade leaves them paused", async () => {
+		const f = await fixture({ tier: "pro" });
+		const { id } = await publishGrant(f);
+		await getStandingGrantMaintenance(() => null).expireDue();
+		expect(await grantRow(id)).toMatchObject({ status: "active" });
+		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
+		await getStandingGrantMaintenance(() => null).expireDue();
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "plan_lost" });
+		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "pro" } });
+		await getStandingGrantMaintenance(() => null).expireDue();
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "plan_lost" });
+		await expect(standingGrants.renew(scope(f), { grantId: id, ...renewTerms })).resolves.toBeUndefined();
+		expect(await grantRow(id)).toMatchObject({ status: "active" });
+	});
+
+	test("a review-send grant needs Business, and a publish grant needs Pro and an account the plan publishes to", async () => {
+		const pro = await fixture({ tier: "pro" });
+		await expect(reviewGrant(pro)).rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "review.rooms", requiredTier: "business" } });
+		await expect(publishGrant(pro)).resolves.toBeDefined();
+		const creator = await fixture({ tier: "creator" });
+		await expect(publishGrant(creator)).rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "campaign.operations", requiredTier: "pro" } });
 	});
 
 	test("members see that reviewers exist but not who they are, and every grant gets its own usage", async () => {
@@ -854,13 +872,20 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect(await sendReviewRoundUnderGrant({ ...base, finishingId: approvalFinishing.id })).toEqual({ sent: true });
 		expect(await prisma.reviewRound.findUniqueOrThrow({ where: { finishingId: approvalFinishing.id } })).toMatchObject({ approvalRequired: true });
 
-		// A downgrade since the grant was made skips the step with a reason.
+		// A downgrade since the grant was made skips the step with a reason and pauses the grant.
 		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "pro" } });
 		const downgraded = await finishingFor(f);
 		expect(await sendReviewRoundUnderGrant({ ...base, finishingId: downgraded.id })).toEqual({ sent: false, reason: "review_not_sent_plan" });
 		expect(await prisma.reviewRound.count({ where: { finishingId: downgraded.id } })).toBe(0);
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "plan_lost", pauseNoticePending: true });
 
+		// Upgrading again doesn't resume automatic client sends; the Owner renews it.
 		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "business" } });
+		expect(await sendReviewRoundUnderGrant({ ...base, finishingId: (await finishingFor(f)).id })).toEqual({ sent: false, reason: "review_not_sent_no_grant" });
+		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "plan_lost" });
+		await standingGrants.renew(scope(f), { grantId: id, ...renewTerms });
+		expect(await grantRow(id)).toMatchObject({ status: "active", pausedReason: null });
+
 		await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: f.owner.id } }, data: { role: "editor" } });
 		expect(await sendReviewRoundUnderGrant({ ...base, finishingId: (await finishingFor(f)).id })).toEqual({ sent: false, reason: "review_not_sent_granter" });
 		expect(await grantRow(id)).toMatchObject({ status: "paused", pausedReason: "granter_unavailable" });

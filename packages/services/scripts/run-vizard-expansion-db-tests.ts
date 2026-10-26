@@ -33,34 +33,37 @@ try {
   } finally {
     client.release();
   }
-  const child = Bun.spawn([process.execPath, "test", "packages/services/src/vizard-expansion.db.test.ts", "packages/services/src/autopilot.db.test.ts", "packages/services/src/zoom.db.test.ts"], {
-    cwd: root,
-    env: {
-      ...process.env,
-      ALLOW_VIZARD_EXPANSION_DB_TESTS: "1",
-      DATABASE_URL: databaseUrl,
-      VIZARD_EXPANSION_TEST_DATABASE_URL: databaseUrl,
-      VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
-      NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS: "1",
-      NARRIFLOW_WRITES_CAMPAIGN_RENDER: "1",
-      NARRIFLOW_WRITES_CAMPAIGN_EXPORTS: "1",
-      NARRIFLOW_WRITES_CAMPAIGN_CREATIVE: "1",
-      REVIEW_ACCESS_SECRET: "vizard-expansion-review-delivery-secret-for-tests",
-      NARRIFLOW_WRITES_BRAND_PROFILES: "1",
-      NARRIFLOW_WRITES_BRAND_KIT_PROJECTION: "1",
-      NARRIFLOW_WRITES_SCENE_TEMPLATES: "1",
-      SOCIAL_TOKEN_ENCRYPTION_KEY: "vizard-expansion-test-encryption-key-not-a-secret",
-      ZOOM_CLIENT_ID: "zoom-test-client",
-      ZOOM_CLIENT_SECRET: "zoom-test-secret",
-      ZOOM_WEBHOOK_SECRET_TOKEN: "zoom-test-webhook",
-      META_CLIENT_ID: "vizard-meta-client",
-      META_CLIENT_SECRET: "vizard-meta-secret",
-    },
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const exitCode = await child.exited;
-  if (exitCode !== 0) throw new Error(`Vizard expansion DB tests failed with exit code ${exitCode}`);
+  const env = {
+    ...process.env,
+    ALLOW_VIZARD_EXPANSION_DB_TESTS: "1",
+    DATABASE_URL: databaseUrl,
+    VIZARD_EXPANSION_TEST_DATABASE_URL: databaseUrl,
+    VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
+    NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS: "1",
+    NARRIFLOW_WRITES_CAMPAIGN_RENDER: "1",
+    NARRIFLOW_WRITES_CAMPAIGN_EXPORTS: "1",
+    NARRIFLOW_WRITES_CAMPAIGN_CREATIVE: "1",
+    REVIEW_ACCESS_SECRET: "vizard-expansion-review-delivery-secret-for-tests",
+    NARRIFLOW_WRITES_BRAND_PROFILES: "1",
+    NARRIFLOW_WRITES_BRAND_KIT_PROJECTION: "1",
+    NARRIFLOW_WRITES_SCENE_TEMPLATES: "1",
+    SOCIAL_TOKEN_ENCRYPTION_KEY: "vizard-expansion-test-encryption-key-not-a-secret",
+    ZOOM_CLIENT_ID: "zoom-test-client",
+    ZOOM_CLIENT_SECRET: "zoom-test-secret",
+    ZOOM_WEBHOOK_SECRET_TOKEN: "zoom-test-webhook",
+    META_CLIENT_ID: "vizard-meta-client",
+    META_CLIENT_SECRET: "vizard-meta-secret",
+  };
+  // Each group runs in its own process: the Workflow Run lifecycle singleton
+  // binds to the first Prisma client a process creates.
+  for (const files of [
+    ["packages/services/src/generation-usage.db.test.ts"],
+    ["packages/services/src/vizard-expansion.db.test.ts", "packages/services/src/autopilot.db.test.ts", "packages/services/src/zoom.db.test.ts"],
+  ]) {
+    const child = Bun.spawn([process.execPath, "test", ...files], { cwd: root, env, stdout: "inherit", stderr: "inherit" });
+    const exitCode = await child.exited;
+    if (exitCode !== 0) throw new Error(`Vizard expansion DB tests failed with exit code ${exitCode}`);
+  }
 } finally {
   await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
   await pool.end();

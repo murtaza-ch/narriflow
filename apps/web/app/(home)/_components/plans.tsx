@@ -22,7 +22,7 @@ export function Plans({ plans, savePercent }: { plans: Plan[]; savePercent: numb
   return (
     <>
       <div className="lx-pricing__bar" data-reveal="">
-        <span>Prices in USD. One processing minute is one minute of source video.</span>
+        <span>Prices in USD. One credit is one minute of source video; credits renew monthly.</span>
         <label className="lx-switch">
           <span>Monthly</span>
           <input type="checkbox" role="switch" aria-checked={annual} checked={annual} onChange={(event) => setAnnual(event.target.checked)} />

@@ -4,7 +4,7 @@ import { ArrowRight, Braces, Plus, Webhook } from "lucide-react";
 import { callbackSigningSecrets, socialOAuthService, workspaceAllowsCapability, workspaceService } from "@narriflow/services";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import type { SocialAccountSnapshot, SocialPlatform } from "@narriflow/validators";
+import { hasFeature, lowestTierWithFeature, PLAN_CATALOG, type SocialAccountSnapshot, type SocialPlatform } from "@narriflow/validators";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { docsUrl } from "@/lib/docs-url";
 import { type AssistantBrand, BrandTile } from "./_components/brand-tile";
@@ -132,7 +132,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export default async function IntegrationsPage() {
   const appUser = await admitWorkspacePage("content.view");
   const { workspace } = appUser;
-  const isBusiness = workspace.pricingTier === "business";
+  const hasMcp = hasFeature(workspace.pricingTier, "integrations.mcp");
+  const hasApi = hasFeature(workspace.pricingTier, "integrations.api");
+  const apiPlan = `${PLAN_CATALOG[lowestTierWithFeature("integrations.api") ?? "business"].name} plan`;
   const canManageApi = workspaceAllowsCapability(workspace, "api.manage");
   const canManageSocial = workspaceAllowsCapability(workspace, "social.manage");
   const [accounts, keys, signing] = await Promise.all([
@@ -172,9 +174,9 @@ export default async function IntegrationsPage() {
               <Text as="h2" fontSize="18px" fontWeight="500" letterSpacing="-0.01em">
                 Use Narriflow from your AI assistant
               </Text>
-              {!isBusiness ? (
+              {!hasMcp ? (
                 <Text as="span" fontSize="12px" color="fg.muted" bg="bg.soft" px="2" py="0.5" borderRadius="full">
-                  Business
+                  {PLAN_CATALOG[lowestTierWithFeature("integrations.mcp") ?? "business"].name}
                 </Text>
               ) : null}
             </Flex>
@@ -231,7 +233,7 @@ export default async function IntegrationsPage() {
           }
           name="REST API"
           tone={keys?.length ? "on" : "off"}
-          status={!isBusiness ? "Business plan" : keys ? (keys.length ? `${keys.length} ${keys.length === 1 ? "key" : "keys"}` : "No keys yet") : "Workspace API keys"}
+          status={!hasApi ? apiPlan : keys ? (keys.length ? `${keys.length} ${keys.length === 1 ? "key" : "keys"}` : "No keys yet") : "Workspace API keys"}
         />
         <IntegrationTile
           href={canManageApi ? "/settings/api#callbacks" : docsUrl("api/callbacks")}
@@ -243,7 +245,7 @@ export default async function IntegrationsPage() {
           }
           name="Webhooks"
           tone={signing?.current ? "on" : "off"}
-          status={!isBusiness ? "Business plan" : signing ? (signing.current ? "Signing secret set" : "Not set up") : "Completion callbacks"}
+          status={!hasApi ? apiPlan : signing ? (signing.current ? "Signing secret set" : "Not set up") : "Completion callbacks"}
         />
       </Section>
     </Stack>

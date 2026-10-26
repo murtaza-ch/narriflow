@@ -16,7 +16,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <Stack gap="1.5"><Text fontSize="13px" fontWeight="500" color="fg">{label}</Text>{children}</Stack>;
 }
 
-export function BrandProfileCreateForm() {
+export function BrandProfileCreateForm({ governanceAvailable }: { governanceAvailable: boolean }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [name, setName] = useState("");
@@ -74,7 +74,7 @@ export function BrandProfileCreateForm() {
           <Grid templateColumns="repeat(3, 1fr)" gap="3">
             {[{ label: "Primary", value: primaryColor, set: setPrimaryColor }, { label: "Secondary", value: secondaryColor, set: setSecondaryColor }, { label: "Signal", value: accentColor, set: setAccentColor }].map((color) => <Field key={color.label} label={color.label}><Input type="color" aria-label={color.label} value={color.value} onChange={(event) => color.set(event.currentTarget.value.toUpperCase())} p="1" /></Field>)}
           </Grid>
-          <Field label="Publishing rule"><Select ariaLabel="Publishing rule" items={[{ label: "Direct publish", value: "none" }, { label: "Approval required", value: "approval_required" }]} value={approvalRule} onValueChange={setApprovalRule} /></Field>
+          {governanceAvailable ? <Field label="Publishing rule"><Select ariaLabel="Publishing rule" items={[{ label: "Direct publish", value: "none" }, { label: "Approval required", value: "approval_required" }]} value={approvalRule} onValueChange={setApprovalRule} /></Field> : null}
         </Stack>
         <Stack gap="5">
           <Text fontSize="16px" fontWeight="500">Voice</Text>

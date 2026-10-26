@@ -6,9 +6,12 @@ import {
   type EditorDocument,
   type SceneBlock,
 } from "@narriflow/validators";
-import { ClipActionError } from "./clip.service";
+import { PlanRequirementError } from "./plan-features";
 import { ProgramWriteDisabledError } from "./program-rollout";
-import { analyzeSceneDocumentMutation } from "./scene-document-mutation";
+import {
+  analyzeSceneDocumentMutation,
+  assertEditorDocumentFeatureDelta,
+} from "./scene-document-mutation";
 
 const SCENE_ID = "10000000-0000-4000-8000-000000000001";
 const SECOND_SCENE_ID = "10000000-0000-4000-8000-000000000002";
@@ -100,25 +103,45 @@ describe("analyzeSceneDocumentMutation", () => {
   test("returns no Scene Block work for an unchanged document", () => {
     const current = baseDocument();
 
-    expect(analyzeSceneDocumentMutation(current, current, "free")).toEqual({
+    expect(analyzeSceneDocumentMutation(current, current)).toEqual({
       changedSceneBlocks: [],
       introducedSceneReferences: [],
       introducedVisualAssetIds: [],
     });
   });
 
-  test("rejects a Scene Block change when the workspace lacks the entitlement", () => {
+  test("rejects adding or changing a Scene Block when the workspace lacks the entitlement", () => {
     const current = baseDocument();
     const next = { ...current, sceneBlocks: [colorScene()] };
 
-    expect(() => analyzeSceneDocumentMutation(current, next, "free")).toThrow(
-      ClipActionError,
+    expect(() => assertEditorDocumentFeatureDelta("free", current, next)).toThrow(
+      PlanRequirementError,
     );
     try {
-      analyzeSceneDocumentMutation(current, next, "free");
+      assertEditorDocumentFeatureDelta("free", current, next);
     } catch (error) {
-      expect(error).toMatchObject({ code: "scene_feature_unavailable" });
+      expect(error).toMatchObject({
+        code: "plan_feature_required",
+        kind: "payment_required",
+        details: { feature: "brand.scenes", currentTier: "free", requiredTier: "creator" },
+      });
     }
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", next, {
+        ...next,
+        sceneBlocks: [colorScene(SCENE_ID, { durationSec: 4 })],
+      }),
+    ).toThrow(PlanRequirementError);
+  });
+
+  test("lets a downgraded Free workspace delete a Scene Block", () => {
+    enableSceneWrites();
+    const current = { ...baseDocument(), sceneBlocks: [colorScene(), imageScene(SECOND_SCENE_ID)] };
+
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", current, { ...current, sceneBlocks: [current.sceneBlocks[0]!] }),
+    ).not.toThrow();
+    expect(() => assertEditorDocumentFeatureDelta("free", current, baseDocument())).not.toThrow();
   });
 
   test.each([
@@ -161,10 +184,10 @@ describe("analyzeSceneDocumentMutation", () => {
     const current = baseDocument();
 
     try {
-      analyzeSceneDocumentMutation(
+      assertEditorDocumentFeatureDelta(
+        "creator",
         current,
         { ...current, sceneBlocks: [scene] },
-        "creator",
       );
       throw new Error("Expected Scene Block mutation to be rejected");
     } catch (error) {
@@ -184,21 +207,60 @@ describe("analyzeSceneDocumentMutation", () => {
     const introduced = imageScene(SECOND_SCENE_ID, SECOND_VISUAL_ASSET_ID);
     const next = { ...current, sceneBlocks: [restyled, introduced] };
 
-    const analysis = analyzeSceneDocumentMutation(current, next, "creator");
+    const analysis = analyzeSceneDocumentMutation(current, next);
 
     expect(analysis.changedSceneBlocks).toEqual([restyled, introduced]);
     expect(analysis.introducedSceneReferences).toEqual([introduced]);
   });
 
-  test("includes removed Scene Blocks in policy without returning them for reference checks", () => {
+  test("lets a Scene Block be deleted while its rollout is disabled, without returning it for reference checks", () => {
     enableSceneWrites();
     const removed = colorScene();
-    const current = { ...baseDocument(), sceneBlocks: [removed] };
+    const kept = colorScene(SECOND_SCENE_ID, { content: { kind: "color", color: "#000000" } });
+    const current = { ...baseDocument(), sceneBlocks: [removed, kept] };
+    expect(analyzeSceneDocumentMutation(current, baseDocument()).changedSceneBlocks).toEqual([]);
     process.env.NARRIFLOW_WRITES_SCENE_CARDS = "0";
 
     expect(() =>
-      analyzeSceneDocumentMutation(current, baseDocument(), "creator"),
+      assertEditorDocumentFeatureDelta("creator", current, baseDocument()),
+    ).not.toThrow();
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", current, { ...current, sceneBlocks: [kept] }),
+    ).not.toThrow();
+    // Content that remains and changes is still checked.
+    expect(() =>
+      assertEditorDocumentFeatureDelta("creator", current, {
+        ...current,
+        sceneBlocks: [{ ...kept, durationSec: 4 }],
+      }),
     ).toThrow(ProgramWriteDisabledError);
+  });
+
+  test("lets a downgraded Free workspace turn a saved Scene's motion off, but not change it otherwise", () => {
+    enableSceneWrites();
+    const animated = colorScene(SCENE_ID, { motion: { entrance: "fade", exit: "fade", durationSec: 0.5 } });
+    const current = { ...baseDocument(), sceneBlocks: [animated] };
+    const stopped = { ...animated, motion: { entrance: "none" as const, exit: "none" as const, durationSec: 0.5 } };
+
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", current, { ...current, sceneBlocks: [stopped] }),
+    ).not.toThrow();
+    process.env.NARRIFLOW_WRITES_SCENE_CARDS = "0";
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", current, { ...current, sceneBlocks: [stopped] }),
+    ).not.toThrow();
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", current, {
+        ...current,
+        sceneBlocks: [{ ...stopped, durationSec: 4 }],
+      }),
+    ).toThrow(PlanRequirementError);
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", current, {
+        ...current,
+        sceneBlocks: [{ ...animated, motion: { entrance: "fade", exit: "none", durationSec: 0.5 } }],
+      }),
+    ).toThrow(PlanRequirementError);
   });
 
   test("deduplicates newly introduced visual assets across scenes and B-roll", () => {
@@ -230,7 +292,7 @@ describe("analyzeSceneDocumentMutation", () => {
     });
 
     expect(
-      analyzeSceneDocumentMutation(current, next, "creator")
+      analyzeSceneDocumentMutation(current, next)
         .introducedVisualAssetIds,
     ).toEqual([VISUAL_ASSET_ID, SECOND_VISUAL_ASSET_ID]);
   });
@@ -247,7 +309,7 @@ describe("analyzeSceneDocumentMutation", () => {
     };
 
     expect(
-      analyzeSceneDocumentMutation(current, next, "creator")
+      analyzeSceneDocumentMutation(current, next)
         .introducedVisualAssetIds,
     ).toEqual([SECOND_VISUAL_ASSET_ID]);
   });
@@ -260,7 +322,7 @@ describe("analyzeSceneDocumentMutation", () => {
     };
 
     expect(
-      analyzeSceneDocumentMutation(current, baseDocument(), "creator")
+      analyzeSceneDocumentMutation(current, baseDocument())
         .introducedVisualAssetIds,
     ).toEqual([]);
   });
@@ -286,8 +348,89 @@ describe("analyzeSceneDocumentMutation", () => {
       analyzeSceneDocumentMutation(
         current,
         { ...current, sceneBlocks: [nextScene] },
-        "creator",
       ).introducedSceneReferences,
     ).toEqual([nextScene]);
+  });
+});
+
+describe("assertEditorDocumentFeatureDelta motion", () => {
+  const transitioned = (document: EditorDocument, type: "fade" | "wipe-left" = "fade") => ({
+    ...document,
+    studioEdits: { ...document.studioEdits, transition: { type, durationSec: 0.4 } },
+  });
+
+  test("gates enabling or changing active motion on Free", () => {
+    const current = baseDocument();
+    expect(() => assertEditorDocumentFeatureDelta("free", current, transitioned(current))).toThrow(
+      expect.objectContaining({ code: "plan_feature_required", details: expect.objectContaining({ feature: "editor.motion" }) }),
+    );
+    expect(() => assertEditorDocumentFeatureDelta("creator", current, transitioned(current))).not.toThrow();
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", transitioned(current), transitioned(current, "wipe-left")),
+    ).toThrow(PlanRequirementError);
+  });
+
+  test("lets a downgraded workspace remove or disable active motion", () => {
+    const none = baseDocument();
+    expect(() => assertEditorDocumentFeatureDelta("free", transitioned(none), none)).not.toThrow();
+    const motion = {
+      schemaVersion: 1 as const,
+      id: "50000000-0000-4000-8000-000000000001",
+      target: { kind: "broll" as const },
+      startSec: 0,
+      endSec: 2,
+      entrance: "pan-left" as const,
+      exit: "ken-burns-out" as const,
+      durationSec: 0.5,
+      enabled: true,
+    };
+    const animated = { ...none, mediaMotions: [motion] };
+    expect(() => assertEditorDocumentFeatureDelta("free", none, animated)).toThrow(PlanRequirementError);
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", animated, { ...animated, mediaMotions: [{ ...motion, enabled: false }] }),
+    ).not.toThrow();
+  });
+});
+
+describe("assertEditorDocumentFeatureDelta censor", () => {
+  function documentWithCensor(): EditorDocument {
+    return editorDocumentSchema.parse({
+      ...baseDocument(),
+      censorSegments: [{
+        schemaVersion: 1,
+        id: "50000000-0000-4000-8000-000000000001",
+        sourceWordIds: ["word:one"],
+        sourceStartSec: 1,
+        sourceEndSec: 1.4,
+        treatment: "beep",
+        paddingSec: 0.06,
+        beepSettings: { frequencyHz: 1_000, levelDb: -8 },
+        captionMaskPolicy: null,
+        suggestionFingerprint: "e".repeat(64),
+        policyVersion: "auto-censor-v1",
+        enabled: true,
+      }],
+    });
+  }
+
+  test("lets a downgraded workspace disable or remove an existing censor", () => {
+    const current = documentWithCensor();
+    expect(() => assertEditorDocumentFeatureDelta("free", current, {
+      ...current,
+      censorSegments: [{ ...current.censorSegments[0]!, enabled: false }],
+    })).not.toThrow();
+    expect(() => assertEditorDocumentFeatureDelta("free", current, { ...current, censorSegments: [] })).not.toThrow();
+  });
+
+  test("still gates creating, enabling, or editing an enabled censor", () => {
+    const current = documentWithCensor();
+    const disabled = { ...current, censorSegments: [{ ...current.censorSegments[0]!, enabled: false }] };
+    const refusal = expect.objectContaining({ code: "plan_feature_required", details: expect.objectContaining({ feature: "editor.censoring" }) });
+    expect(() => assertEditorDocumentFeatureDelta("free", disabled, current)).toThrow(refusal);
+    expect(() => assertEditorDocumentFeatureDelta("free", baseDocument(), current)).toThrow(refusal);
+    expect(() => assertEditorDocumentFeatureDelta("free", current, {
+      ...current,
+      censorSegments: [{ ...current.censorSegments[0]!, paddingSec: 0.1 }],
+    })).toThrow(refusal);
   });
 });

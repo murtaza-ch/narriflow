@@ -15,7 +15,7 @@ const TOOLS: Array<{ group: string; items: string[] }> = [
     "List the workspaces you belong to and which can use the connector.",
     "List projects, clips ranked by virality, and your Brand Profiles.",
     "Read one clip's timing, scores, and current edit version.",
-    "Read your workspace's processing minutes.",
+    "Read your workspace's remaining credits.",
   ] },
   { group: "Create clips", items: [
     "Submit a supported video link, or upload a file through Narriflow's upload page or command-line helper, choosing a Brand Profile and generation settings.",
@@ -60,7 +60,7 @@ export default function ConnectorPage() {
 
       <Stack gap="8">
         <Section title="Who can use it">
-          <Body>The connector works with workspaces on an active Business plan. It acts as you, in any workspace where your current role allows the action, and every change names its workspace explicitly. Processing a video uses that workspace's minutes, exactly as it does in Narriflow.</Body>
+          <Body>The connector works with workspaces on an active Pro or Business plan. It acts as you, in any workspace where your current role allows the action, and every change names its workspace explicitly. Processing a video uses that workspace's credits, exactly as it does in Narriflow.</Body>
         </Section>
 
         <Section title="Connect">

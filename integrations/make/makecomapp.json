@@ -53,7 +53,7 @@
             },
             "submitVideoLink": {
                 "label": "Submit a video link",
-                "description": "Imports a video from a link and generates clips. Uses processing minutes from the Workspace.",
+                "description": "Imports a video from a link and generates clips. Uses credits from the Workspace.",
                 "moduleType": "action",
                 "actionCrud": "create",
                 "connection": "narriflow",
@@ -67,7 +67,7 @@
             },
             "generateClips": {
                 "label": "Generate clips",
-                "description": "Generates clips for an imported project. Uses processing minutes from the Workspace.",
+                "description": "Generates clips for an imported project. Its credits were reserved at import; generating again is free.",
                 "moduleType": "action",
                 "actionCrud": "create",
                 "connection": "narriflow",

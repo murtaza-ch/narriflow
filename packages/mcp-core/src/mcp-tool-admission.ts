@@ -124,10 +124,11 @@ const failureRetryGuidance = {
  * code and limit details still travel with the failure. */
 export function mcpFailureMessage(error: { code: string; message: string; details?: unknown }) {
   const details = (error.details && typeof error.details === "object" ? error.details : {}) as Record<string, unknown>;
-  if (error.code === "processing_quota_exhausted") {
-    return typeof details.requestedMinutes === "number" && typeof details.remainingMinutes === "number" && details.remainingMinutes > 0
-      ? `This video needs ${details.requestedMinutes} processing minutes, but the workspace has ${details.remainingMinutes} of ${details.limitMinutes} left this month.`
-      : `The workspace has used its ${details.limitMinutes ?? "monthly"} processing minutes for this month. Minutes renew next month.`;
+  if (error.code === "credits_exhausted") {
+    const renewal = typeof details.renewsAt === "string" ? ` Credits renew on ${details.renewsAt.slice(0, 10)} (UTC).` : "";
+    return typeof details.requestedCredits === "number" && typeof details.remainingCredits === "number" && details.remainingCredits > 0
+      ? `This video needs ${details.requestedCredits} credits, but the workspace has ${details.remainingCredits} of ${details.limitCredits} left this month.${renewal}`
+      : `The workspace has used its ${details.limitCredits ?? "monthly"} credits for this month.${renewal}`;
   }
   if (error.code === "upload_too_long" && typeof details.maxSeconds === "number") {
     return `This video is longer than the workspace's ${Math.round(details.maxSeconds / 60)}-minute per-video limit.`;

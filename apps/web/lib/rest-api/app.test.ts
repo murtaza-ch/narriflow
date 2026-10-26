@@ -108,11 +108,11 @@ describe("REST v1 authentication and admission", () => {
   });
 
   test("derives the Workspace from the key and rechecks the key creator's membership", async () => {
-    const usage = spy(projectService, "getUsageSummary").mockResolvedValue({ tier: "business", usedMinutes: 1, reservedMinutes: 0, limitMinutes: 1800, remainingMinutes: 1799, inFlight: 0, inFlightLimit: 5, maxUploadSeconds: 14_400 } as never);
+    const usage = spy(projectService, "getUsageSummary").mockResolvedValue({ tier: "business", usedCredits: 1, reservedCredits: 2, limitCredits: 1800, remainingCredits: 1797, periodStart: new Date("2026-10-01T00:00:00.000Z"), renewsAt: new Date("2026-11-01T00:00:00.000Z"), inFlight: 0, inFlightLimit: 20, maxUploadSeconds: 10_800 } as never);
     const { call, requireActor } = harness();
     const response = await call("/workspace");
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ workspace: { workspaceId: WORKSPACE_ID, name: "Studio", role: "editor", pricingTier: "business" }, usage: { remainingMinutes: 1799 } });
+    expect(await response.json()).toMatchObject({ workspace: { workspaceId: WORKSPACE_ID, name: "Studio", role: "editor", pricingTier: "business" }, usage: { remainingCredits: 1797, reservedCredits: 2, renewsAt: "2026-11-01T00:00:00.000Z" } });
     expect(requireActor).toHaveBeenCalledWith(USER_ID, WORKSPACE_ID, "content.view");
     expect(usage).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }));
   });
@@ -133,12 +133,18 @@ describe("REST v1 authentication and admission", () => {
     expect(await response.json()).toMatchObject({ error: "workspace_access_denied" });
   });
 
-  test("API access stays a Business feature", async () => {
-    for (const restricted of [actor({ pricingTier: "pro" }), actor({ status: "suspended" as never })]) {
-      const response = await harness({ actor: restricted }).call("/brand-profiles");
+  test("API access follows the plan catalog: Pro and above, on an active Workspace", async () => {
+    for (const tier of ["free", "creator"] as const) {
+      const response = await harness({ actor: actor({ pricingTier: tier }) }).call("/brand-profiles");
       expect(response.status).toBe(402);
-      expect(await response.json()).toMatchObject({ error: "integration_access_unavailable", message: "This workspace needs active Business access to use the Narriflow API" });
+      expect(await response.json()).toMatchObject({ error: "plan_feature_required", details: { feature: "integrations.api", currentTier: tier, requiredTier: "pro" } });
     }
+    const inactive = await harness({ actor: actor({ status: "suspended" as never }) }).call("/brand-profiles");
+    expect(inactive.status).toBe(402);
+    expect(await inactive.json()).toMatchObject({ error: "integration_access_unavailable", message: "This workspace isn't active, so the Narriflow API can't act in it" });
+    spy(projectService, "getUsageSummary").mockResolvedValue({ tier: "pro", usedCredits: 0, reservedCredits: 0, limitCredits: 900, remainingCredits: 900, periodStart: new Date("2026-10-01T00:00:00.000Z"), renewsAt: new Date("2026-11-01T00:00:00.000Z"), inFlight: 0, inFlightLimit: 10, maxUploadSeconds: 10_800 } as never);
+    const pro = await harness({ actor: actor({ pricingTier: "pro" }) }).call("/workspace");
+    expect(pro.status).toBe(200);
   });
 });
 

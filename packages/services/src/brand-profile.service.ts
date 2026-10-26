@@ -20,11 +20,14 @@ import {
 } from "@narriflow/validators";
 import {
   assertBrandApplicationAllowed,
+  assertBrandManageAllowed,
   assertBrandMutationAllowedWithAnalytics,
   brandOwnerWhere,
+  lockBrandOwner,
   resolveBrandOwner,
   type BrandActorScope,
 } from "./brand-ownership";
+import { hasFeature, requirePlanFeature, requireWithinPlanLimit } from "./plan-features";
 import { analyticsService } from "./analytics.service";
 import { assertProgramWriteEnabled } from "./program-rollout";
 import { headObject, presignDownloadUrl } from "./r2-storage";
@@ -216,6 +219,18 @@ async function requireOwnedLogoAssets(
   return uniqueIds;
 }
 
+/** Approval governance is a Business feature. Keeping an existing rule is
+ * always allowed, so a downgrade never forces a profile change. */
+function assertApprovalRuleAllowed(
+  scope: BrandActorScope,
+  next: string | undefined,
+  current: string | null,
+) {
+  if (next === "approval_required" && current !== "approval_required") {
+    requirePlanFeature(scope.pricingTier, "brand.governance");
+  }
+}
+
 async function recordBrandEvent(
   scope: BrandActorScope,
   input: Parameters<typeof analyticsService.recordBrandProgramEvent>[0],
@@ -391,9 +406,13 @@ export class BrandProfileService {
   async create(scope: BrandActorScope, input: BrandProfileCreateInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = brandProfileCreateSchema.parse(input);
+    assertApprovalRuleAllowed(scope, parsed.approvalRule, null);
     const prisma = this.requirePrisma();
     const owner = resolveBrandOwner(scope);
     const created = await prisma.$transaction(async (tx) => {
+      await lockBrandOwner(tx, "brand-profiles", owner);
+      const active = await tx.brandProfile.count({ where: { ...brandOwnerWhere(scope), deletedAt: null } });
+      requireWithinPlanLimit(scope.pricingTier, "brandProfiles", active);
       const identity = parsed.identity ?? brandVisualIdentitySchema.parse({});
       const logoAssetIds = await requireOwnedLogoAssets(tx, scope, identity);
       let template: BrandTemplate | null = null;
@@ -446,9 +465,10 @@ export class BrandProfileService {
     const prisma = this.requirePrisma();
     const current = await prisma.brandProfile.findFirst({
       where: { id, ...brandOwnerWhere(scope), deletedAt: null },
-      select: { visualIdentity: true },
+      select: { visualIdentity: true, approvalRule: true },
     });
     if (!current) throw new BrandProfileNotFoundError();
+    assertApprovalRuleAllowed(scope, parsed.approvalRule, current.approvalRule);
     const currentIdentity = brandVisualIdentitySchema.parse(current.visualIdentity);
     const nextLogoAssetIds = parsed.identity
       ? await requireOwnedLogoAssets(prisma, scope, parsed.identity)
@@ -562,13 +582,21 @@ export class BrandProfileService {
   }
 
   async softDelete(scope: BrandActorScope, id: string, input: BrandProfileSoftDeleteInput) {
-    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
+    assertBrandManageAllowed(scope);
     const parsed = brandProfileSoftDeleteSchema.parse(input);
     const prisma = this.requirePrisma();
     const profile = await prisma.brandProfile.findFirst({ where: { id, revision: parsed.revision, ...brandOwnerWhere(scope), deletedAt: null }, include: { defaultForUsers: { select: { id: true } }, defaultForWorkspaces: { select: { id: true } } } });
     if (!profile) throw new BrandProfileNotFoundError();
-    if (profile.defaultForUsers.length || profile.defaultForWorkspaces.length) throw new BrandProfileReferenceError();
-    await prisma.brandProfile.update({ where: { id }, data: { deletedAt: new Date(), revision: { increment: 1 }, updatedByUserId: scope.actorUserId } });
+    const isDefault = profile.defaultForUsers.length > 0 || profile.defaultForWorkspaces.length > 0;
+    // A plan that can't choose another default can still delete its profile.
+    if (isDefault && hasFeature(scope.pricingTier, "brand.profiles")) throw new BrandProfileReferenceError();
+    await prisma.$transaction(async (tx) => {
+      if (isDefault) {
+        await tx.user.updateMany({ where: { defaultBrandProfileId: id }, data: { defaultBrandProfileId: null } });
+        await tx.workspace.updateMany({ where: { defaultBrandProfileId: id }, data: { defaultBrandProfileId: null } });
+      }
+      await tx.brandProfile.update({ where: { id }, data: { deletedAt: new Date(), revision: { increment: 1 }, updatedByUserId: scope.actorUserId } });
+    });
   }
 
   async resolveForProject(scope: BrandActorScope, input: { profileId: string; templateId?: string | null }) {

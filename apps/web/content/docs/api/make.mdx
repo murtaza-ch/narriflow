@@ -13,7 +13,7 @@ The Narriflow app for Make covers the same ground as the [REST API](/docs/api/in
 
 <Steps>
   <Step title="Create an API key">
-    In Narriflow, open **Settings → Developer access** and create a key. Turn on the permissions your scenarios need, from the table below. The Workspace must be on an active Business plan.
+    In Narriflow, open **Settings → Developer access** and create a key. Turn on the permissions your scenarios need, from the table below. The Workspace must be active and on the Pro or Business plan.
   </Step>
   <Step title="Install the app">
     Open the invite link while signed in to Make and confirm the installation in your organization.
@@ -59,7 +59,7 @@ The first time you add the module, **Choose where to start** lists the newest 10
 
 | Module | What it does |
 | --- | --- |
-| Submit a video link | Imports a video from a link and generates clips. Optional: project title, Brand Profile, number of clips, clip length, specific moments, and **Finish automatically** (export the best clips and write copy). Returns the Project ID, Operation ID and Review URL. Uses processing minutes. |
+| Submit a video link | Imports a video from a link and generates clips. Optional: project title, Brand Profile, number of clips, clip length, specific moments, and **Finish automatically** (export the best clips and write copy). Returns the Project ID, Operation ID and Review URL. Uses credits. |
 | Generate clips | Generates clips for a Project ID, with the same settings. **Generate again** replaces clips the project already has. |
 | Export a clip | Exports a Clip ID in the formats and resolution you choose, as the clip looks when the module runs. Returns the Export ID. Watch events for the export to finish. |
 | Propose a social post | Adds an export to a social account's Publishing Queue as a draft, with your caption or the latest copy Narriflow wrote. Nothing is published until a person accepts it in Narriflow. Returns the Proposal ID and the queue link. |
@@ -93,7 +93,8 @@ Turn on **Finish automatically** in Submit a video link or an Autopilot rule so 
 | --- | --- |
 | `scope_required` | The key lacks the permission the message names. Turn it on for the key, or create a new key, then reconnect. |
 | The scenario stops and asks you to reconnect | Narriflow refused the key as missing, invalid or revoked. Create a key and reconnect. |
-| `integration_access_unavailable` | The Workspace needs an active Business plan. |
+| `plan_feature_required` | The Workspace's plan doesn't include the API. It needs Pro or Business. |
+| `integration_access_unavailable` | The Workspace isn't active, for example while a payment is overdue. |
 | Social post events fail, naming `publishing:read` | The key lacks that permission, so Narriflow hides events about posts from it. |
 | A module returns an earlier result and **Replay of an earlier identical request** is true | The same Run key and inputs were used before. Change an input, or map a new Run key. |
 | The connection test fails with a URL message | **Narriflow URL** must be an `https://` origin. Leave it as `https://app.narriflow.com` unless Narriflow gave you a development address. |

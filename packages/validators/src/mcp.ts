@@ -75,7 +75,8 @@ export const mcpWorkspaceSchema = z.strictObject({ workspaceId: id, name: z.stri
 export const mcpProgressSchema = z.strictObject({ status: z.enum(["ready", "processing", "queued", "failed"]), label: z.string().max(200), active: z.boolean(), stage: z.string().max(100).nullable(), percent: z.number().min(0).max(100).nullable() });
 export const mcpAutopilotRuleSchema = z.strictObject({ ruleId: id, workspaceId: id, name: z.string().max(120), rssUrl: link, status: autopilotStatusSchema, recipeId: id, recipeName: z.string().max(120), pausedReason: text.nullable(), intervalMinutes: z.number().int().positive(), maxEpisodesPerRun: z.number().int().positive(), nextRunAt: date, lastCheckedAt: date.nullable(), lastSuccessAt: date.nullable(), importedEpisodeCount: z.number().int().nonnegative() });
 export const mcpAccountSchema = z.strictObject({ accountId: id, platform: socialPlatformSchema, displayName: z.string().max(500), handle: z.string().max(500).nullable(), status: z.enum(["active", "expired", "revoked"]),
-  postingSchedule: postingScheduleSchema.nullable().describe("Weekly slots a person's accepted proposals fill; null when the account has none") });
+  postingSchedule: postingScheduleSchema.nullable().describe("Weekly slots a person's accepted proposals fill; null when the account has none"),
+  publishingEligible: z.boolean().describe("Whether the workspace's plan lets this account publish. Plans publish to their oldest connected accounts up to the plan's count") });
 export const mcpPublicationSchema = z.strictObject({ socialPostId: id, projectId: id, clipId: id.nullable(), accountId: id.nullable(), platform: socialPlatformSchema, deliveryMode: socialDeliveryModeSchema, status: socialPostStatusSchema, caption: z.string().max(5_000), scheduledFor: date.nullable(), postedAt: date.nullable(), externalUrl: link.nullable(), errorCode: z.string().max(200).nullable(), latestMetrics: socialPostMetricsSnapshotSchema.nullable(), allowedActions: z.array(z.enum(["cancel", "recheck", "confirm_published", "publish_again", "reconnect_account", "schedule_again"])), reviewUrl: link });
 export const mcpPublicationRecoverySchema = z.strictObject({ socialPostId: id, projectId: id, platform: socialPlatformSchema, status: socialPostStatusSchema, scheduledFor: date.nullable(), postedAt: date.nullable(), externalUrl: link.nullable(), errorCode: z.string().max(200).nullable(), latestMetrics: socialPostMetricsSnapshotSchema.nullable(), allowedActions: mcpPublicationSchema.shape.allowedActions, attempts: z.array(z.strictObject({ attemptId: id, attemptNumber: z.number().int().positive(), phase: z.string().max(60), outcome: z.string().max(60).nullable(), failureCode: z.string().max(200).nullable(), startedAt: date.nullable(), terminalAt: date.nullable(), decisions: z.array(z.strictObject({ kind: z.string().max(100), reason: z.string().max(500), evidenceKind: z.string().max(100).nullable(), ownershipValidated: z.boolean(), createdAt: date })) })), reviewUrl: link });
 export const mcpPublishingOptionsResultSchema = z.strictObject({ accountId: id, platform: socialPlatformSchema, directEnabled: z.boolean(), inboxEnabled: z.boolean(), privacyOptions: z.array(z.string().max(100)).max(50), commentDisabled: z.boolean(), duetDisabled: z.boolean(), stitchDisabled: z.boolean(), maximumDurationSec: z.number().nonnegative(), textLimit: z.number().int().nonnegative(), aspectRatios: z.array(clipAspectRatioSchema), confirmationRequired: z.literal(true) });
@@ -96,10 +97,12 @@ export const mcpProjectsResultSchema = z.strictObject({ items: z.array(projectVi
 export const mcpProjectResultSchema = z.strictObject({ project: projectViewSchema.nullable(), progress: mcpProgressSchema.nullable() });
 export const mcpWorkspaceUsageResultSchema = z.strictObject({
   tier: z.string().max(30),
-  usedMinutes: z.number().int().nonnegative().describe("Settled processing minutes this UTC month"),
-  reservedMinutes: z.number().int().nonnegative().describe("Minutes reserved for videos still importing"),
-  limitMinutes: z.number().int().nonnegative(),
-  remainingMinutes: z.number().int().nonnegative(),
+  usedCredits: z.number().int().nonnegative().describe("Credits settled this UTC month. One credit is one started minute of source video, per video"),
+  reservedCredits: z.number().int().nonnegative().describe("Credits held for videos still importing"),
+  limitCredits: z.number().int().nonnegative().describe("Credits the plan includes each UTC month"),
+  remainingCredits: z.number().int().nonnegative().describe("Credits available for new videos this month"),
+  periodStart: date.describe("Start of the UTC month these credits belong to"),
+  renewsAt: date.describe("When the next month's credits become available (UTC); unused credits don't roll over"),
   inFlight: z.number().int().nonnegative().describe("Videos currently processing"),
   inFlightLimit: z.number().int().positive().describe("Videos the plan may process at once"),
   maxUploadSeconds: z.number().int().nonnegative().describe("Per-video duration limit"),

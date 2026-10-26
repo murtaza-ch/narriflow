@@ -12,7 +12,14 @@ import {
   BrandProfileService,
   brandProfileService,
 } from "./brand-profile.service";
-import { BrandAccessError } from "./brand-ownership";
+import {
+  BrandAccessError,
+  brandOwnerForWorkspace,
+  brandOwnerWhere,
+  brandOwnerWhereFor,
+  resolveBrandOwner,
+} from "./brand-ownership";
+import { PlanRequirementError } from "./plan-features";
 import { brandTemplateService } from "./brand-template.service";
 import { brandFontService } from "./brand-font.service";
 import { projectService } from "./project.service";
@@ -111,7 +118,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
         { ...first.scope, pricingTier: "free" },
         { profileId: profile.id },
       ),
-    ).rejects.toBeInstanceOf(BrandAccessError);
+    ).rejects.toBeInstanceOf(PlanRequirementError);
     await expect(
       brandProfileService.resolveForProject(
         { ...first.scope, status: "restricted" },
@@ -207,7 +214,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     const gone = await prisma.brandProfile.findFirstOrThrow({ where: { workspaceId: f.workspace.id, slug: "gone" } });
     await expect(projectService.importResolvedRssEpisodes(scope, { rssUrl: "https://feeds.example.test/show.xml", episodes: [episode("gone")], brandProfileId: gone.id }, settings)).rejects.toBeInstanceOf(BrandProfileNotFoundError);
     await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
-    await expect(projectService.importResolvedRssEpisodes(scope, { rssUrl: "https://feeds.example.test/show.xml", episodes: [episode("downgraded")], brandProfileId: client.id }, settings)).rejects.toBeInstanceOf(BrandAccessError);
+    await expect(projectService.importResolvedRssEpisodes(scope, { rssUrl: "https://feeds.example.test/show.xml", episodes: [episode("downgraded")], brandProfileId: client.id }, settings)).rejects.toBeInstanceOf(PlanRequirementError);
     expect(await rssProjects()).toBe(before);
   });
 
@@ -424,7 +431,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
         { ...fixture.scope, pricingTier: "free" },
         { name: "Blocked", slug: "blocked" },
       ),
-    ).rejects.toBeInstanceOf(BrandAccessError);
+    ).rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.profiles" } });
     expect(
       await prisma.programAnalyticsEvent.count({
         where: {
@@ -745,4 +752,218 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(objectReads).toBe(1);
   });
 
+  async function setTier<T extends { workspace: { id: string }; scope: { pricingTier: string } }>(f: T, tier: "free" | "creator" | "pro" | "business"): Promise<T> {
+    await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: tier } });
+    return { ...f, scope: { ...f.scope, pricingTier: tier } };
+  }
+
+  test("a personal Workspace keeps the same branding across Creator, Business, and Pro", async () => {
+    let f = await workspaceFixture("tier-stable", true);
+    const profile = await brandProfileService.create(f.scope, { name: "Stable", slug: "stable" });
+    await brandProfileService.setDefault(f.scope, profile.id);
+    const asset = await prisma.visualAsset.create({ data: {
+      ...resolveBrandOwner(f.scope),
+      createdByUserId: f.user.id,
+      title: "Scene image",
+      kind: "image",
+      storageKey: `visual-assets/${f.user.id}/${randomUUID()}.png`,
+      contentType: "image/png",
+      sizeBytes: BigInt(128),
+      width: 10,
+      height: 10,
+      fingerprint: randomUUID().replaceAll("-", "").padEnd(64, "0"),
+    } });
+    expect(await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).toMatchObject({ userId: f.user.id, workspaceId: null });
+    for (const tier of ["business", "pro", "creator"] as const) {
+      f = await setTier(f, tier);
+      expect((await brandProfileService.list(f.scope)).map((row) => row.id)).toEqual([profile.id]);
+      expect(await brandProfileService.getDefaultId(f.scope)).toBe(profile.id);
+      expect((await brandProfileService.resolveForProject(f.scope, { profileId: profile.id })).profileId).toBe(profile.id);
+      // Export and render resolve Scene assets from the Workspace kind alone.
+      const exportOwner = brandOwnerWhereFor(brandOwnerForWorkspace({ id: f.workspace.id, personalOwnerUserId: f.workspace.personalOwnerUserId }));
+      expect(await prisma.visualAsset.count({ where: { id: asset.id, ...exportOwner } })).toBe(1);
+      expect(await prisma.visualAsset.count({ where: { id: asset.id, ...brandOwnerWhere(f.scope) } })).toBe(1);
+    }
+  });
+
+  test("the ownership migration moves personal-Business rows and their default to the owner", async () => {
+    const f = await workspaceFixture("ownership-migration", true);
+    const workspaceOwned = await prisma.brandProfile.create({ data: {
+      workspaceId: f.workspace.id, createdByUserId: f.user.id, updatedByUserId: f.user.id,
+      name: "Old rule", slug: "same", visualIdentity: {}, voiceGuidance: {},
+    } });
+    const userOwned = await prisma.brandProfile.create({ data: {
+      userId: f.user.id, createdByUserId: f.user.id, updatedByUserId: f.user.id,
+      name: "Kept", slug: "same", visualIdentity: {}, voiceGuidance: {},
+    } });
+    const asset = await prisma.visualAsset.create({ data: {
+      workspaceId: f.workspace.id, createdByUserId: f.user.id, title: "Old rule asset", kind: "image",
+      storageKey: `workspaces/${f.workspace.id}/visual-assets/${randomUUID()}.png`, contentType: "image/png",
+      sizeBytes: BigInt(1), width: 1, height: 1, fingerprint: randomUUID(),
+    } });
+    await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "business", defaultBrandProfileId: workspaceOwned.id } });
+    const shared = await workspaceFixture("ownership-migration-shared");
+    const sharedProfile = await brandProfileService.create(shared.scope, { name: "Shared", slug: "shared" });
+
+    const sql = await Bun.file(new URL("../../db/prisma/migrations/20261026000003_brand_owner_by_workspace_kind/migration.sql", import.meta.url)).text();
+    const client = await pool.connect();
+    try {
+      if (databaseSchema) await client.query(`SET search_path TO "${databaseSchema}"`);
+      await client.query(sql);
+      await client.query(sql);
+    } finally {
+      client.release();
+    }
+
+    const moved = await prisma.brandProfile.findUniqueOrThrow({ where: { id: workspaceOwned.id } });
+    expect(moved).toMatchObject({ userId: f.user.id, workspaceId: null });
+    expect(moved.slug).toBe(`same-${workspaceOwned.id.slice(0, 8)}`);
+    expect(await prisma.brandProfile.findUniqueOrThrow({ where: { id: userOwned.id } })).toMatchObject({ slug: "same" });
+    expect(await prisma.visualAsset.findUniqueOrThrow({ where: { id: asset.id } })).toMatchObject({ userId: f.user.id, workspaceId: null });
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: f.user.id } })).defaultBrandProfileId).toBe(workspaceOwned.id);
+    expect((await prisma.workspace.findUniqueOrThrow({ where: { id: f.workspace.id } })).defaultBrandProfileId).toBeNull();
+    expect(await prisma.brandProfile.findUniqueOrThrow({ where: { id: sharedProfile.id } })).toMatchObject({ userId: null, workspaceId: shared.workspace.id });
+    expect((await brandProfileService.list({ ...f.scope, pricingTier: "business" })).map((row) => row.id).sort()).toEqual([userOwned.id, workspaceOwned.id].sort());
+  });
+
+  test("admits exactly one of two concurrent creations for the last Brand Profile slot", async () => {
+    const f = await workspaceFixture("profile-last-slot", true);
+    const results = await Promise.allSettled([
+      brandProfileService.create(f.scope, { name: "One", slug: "one" }),
+      brandProfileService.create(f.scope, { name: "Two", slug: "two" }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const refused = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+    expect(refused.reason).toMatchObject({
+      code: "plan_limit_reached",
+      kind: "payment_required",
+      details: { limit: "brandProfiles", used: 1, max: 1, currentTier: "creator", requiredTier: "pro" },
+    });
+    expect(await prisma.brandProfile.count({ where: { userId: f.user.id, deletedAt: null } })).toBe(1);
+  });
+
+  test("over the profile limit after a downgrade, profiles stay visible, editable, and removable", async () => {
+    let f = await workspaceFixture("profile-over-limit", true);
+    f = await setTier(f, "pro");
+    const first = await brandProfileService.create(f.scope, { name: "First", slug: "first" });
+    const second = await brandProfileService.create(f.scope, { name: "Second", slug: "second" });
+    await brandProfileService.setDefault(f.scope, first.id);
+    f = await setTier(f, "creator");
+    expect((await brandProfileService.list(f.scope)).map((row) => row.id).sort()).toEqual([first.id, second.id].sort());
+    await expect(brandProfileService.create(f.scope, { name: "Third", slug: "third" })).rejects.toMatchObject({ code: "plan_limit_reached", details: { used: 2, max: 1 } });
+    const renamed = await brandProfileService.update(f.scope, second.id, { revision: second.revision, name: "Second renamed" });
+    expect(renamed.name).toBe("Second renamed");
+    await brandProfileService.softDelete(f.scope, second.id, { revision: renamed.revision });
+    // On Free no default can be chosen, so deleting the default clears it.
+    f = await setTier(f, "free");
+    await brandProfileService.softDelete(f.scope, first.id, { revision: first.revision });
+    expect(await brandProfileService.list(f.scope)).toEqual([]);
+    expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
+  });
+
+  test("a downgraded Free Workspace can delete a profile and then its font and asset", async () => {
+    let f = await workspaceFixture("free-cleanup", true);
+    const profile = await brandProfileService.create(f.scope, { name: "Cleanup", slug: "cleanup" });
+    const owner = resolveBrandOwner(f.scope);
+    const font = await prisma.brandFont.create({ data: {
+      ...owner, licenseConfirmedByUserId: f.user.id, family: "Acme", style: "normal", weight: 400, format: "ttf",
+      storageKey: `brand-fonts/${f.user.id}/${randomUUID()}.ttf`, sizeBytes: BigInt(1), fingerprint: randomUUID(), licenseConfirmedAt: new Date(),
+    } });
+    const asset = await prisma.visualAsset.create({ data: {
+      ...owner, createdByUserId: f.user.id, title: "Logo", kind: "image", storageKey: `visual-assets/${f.user.id}/${randomUUID()}.png`,
+      contentType: "image/png", sizeBytes: BigInt(1), width: 1, height: 1, fingerprint: randomUUID(),
+    } });
+    await prisma.brandProfileFont.create({ data: { profileId: profile.id, fontId: font.id, role: "display", position: 0 } });
+    await prisma.brandProfileAsset.create({ data: { profileId: profile.id, assetId: asset.id, role: "logo", position: 0 } });
+    f = await setTier(f, "free");
+    await expect(brandFontService.softDelete(f.scope, font.id, {})).rejects.toMatchObject({ code: "brand_font_in_use" });
+    await brandProfileService.softDelete(f.scope, profile.id, { revision: profile.revision });
+    await brandFontService.softDelete(f.scope, font.id, {});
+    await visualAssetService.softDelete(f.scope, asset.id, {});
+    expect((await prisma.brandFont.findUniqueOrThrow({ where: { id: font.id } })).deletedAt).not.toBeNull();
+    expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: asset.id } })).deletedAt).not.toBeNull();
+  });
+
+  test("approval governance needs Business, and a downgrade keeps an existing rule", async () => {
+    let f = await workspaceFixture("governance", true);
+    await expect(brandProfileService.create(f.scope, { name: "Governed", slug: "governed", approvalRule: "approval_required" }))
+      .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.governance", currentTier: "creator", requiredTier: "business" } });
+    const plain = await brandProfileService.create(f.scope, { name: "Plain", slug: "plain" });
+    await expect(brandProfileService.update(f.scope, plain.id, { revision: plain.revision, approvalRule: "approval_required" }))
+      .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.governance" } });
+    f = await setTier(f, "business");
+    const governed = await brandProfileService.update(f.scope, plain.id, { revision: plain.revision, approvalRule: "approval_required" });
+    f = await setTier(f, "creator");
+    const kept = await brandProfileService.update(f.scope, plain.id, { revision: governed.revision, name: "Still governed", approvalRule: "approval_required" });
+    expect(kept.approvalRule).toBe("approval_required");
+    const cleared = await brandProfileService.update(f.scope, plain.id, { revision: kept.revision, approvalRule: "none" });
+    expect(cleared.approvalRule).toBe("none");
+  });
+
+  test("custom Brand Templates need a paid plan, count per Workspace, and stay removable", async () => {
+    const f = await workspaceFixture("templates", true);
+    const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
+    const builtIn = await prisma.brandTemplate.create({ data: { name: "Built-in", isBuiltIn: true, builtInKey: `builtin-${randomUUID()}`, captionPreset: DEFAULT_CAPTION_PRESET } });
+    const input = { name: "Mine", captionPreset: DEFAULT_CAPTION_PRESET };
+    await setTier(f, "free");
+    const refusal = { code: "plan_feature_required", details: { feature: "brand.customTemplates", requiredTier: "creator" } };
+    await expect(brandTemplateService.create(scope, input as never)).rejects.toMatchObject(refusal);
+    await expect(brandTemplateService.duplicate(scope, builtIn.id)).rejects.toMatchObject(refusal);
+    await expect(brandTemplateService.presignLogoUpload(scope, { contentType: "image/png" } as never)).rejects.toMatchObject(refusal);
+    // Built-ins stay free to choose and apply.
+    await brandTemplateService.setDefault(scope, builtIn.id);
+    expect((await brandTemplateService.resolveSnapshotForUser(f.user.id, builtIn.id, scope))?.templateId).toBe(builtIn.id);
+
+    await setTier(f, "creator");
+    const made = [
+      await brandTemplateService.create(scope, input as never),
+      await brandTemplateService.duplicate(scope, builtIn.id),
+    ];
+    const race = await Promise.allSettled([
+      brandTemplateService.create(scope, { ...input, name: "Race A" } as never),
+      brandTemplateService.duplicate(scope, made[0]!.id, "Race B"),
+    ]);
+    expect(race.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect((race.find((result) => result.status === "rejected") as PromiseRejectedResult).reason)
+      .toMatchObject({ code: "plan_limit_reached", details: { limit: "brandTemplates", used: 3, max: 3, requiredTier: "pro" } });
+    const updated = await brandTemplateService.update(scope, made[0]!.id, { name: "Renamed" } as never);
+    expect(updated.name).toBe("Renamed");
+    await brandTemplateService.setDefault(scope, made[0]!.id);
+
+    await setTier(f, "free");
+    // Applying a custom template, requested or as the default, needs the plan again.
+    await expect(brandTemplateService.resolveSnapshotForUser(f.user.id, made[1]!.id, scope)).rejects.toMatchObject(refusal);
+    await expect(brandTemplateService.resolveSnapshotForUser(f.user.id, null, scope)).rejects.toMatchObject(refusal);
+    await expect(brandTemplateService.update(scope, made[0]!.id, { name: "No" } as never)).rejects.toMatchObject(refusal);
+    expect((await brandTemplateService.list(scope)).mine).toHaveLength(3);
+    for (const template of (await brandTemplateService.list(scope)).mine) await brandTemplateService.softDelete(scope, template.id);
+    expect((await brandTemplateService.list(scope)).mine).toEqual([]);
+  });
+
+  test("default intro and outro Scenes need Business, and Scene Templates stay removable on Free", async () => {
+    const prior = process.env.NARRIFLOW_WRITES_SCENE_TEMPLATES;
+    process.env.NARRIFLOW_WRITES_SCENE_TEMPLATES = "1";
+    try {
+      let f = await workspaceFixture("default-scenes", true);
+      f = await setTier(f, "pro");
+      const profile = await brandProfileService.create(f.scope, { name: "Scenes", slug: "scenes" });
+      const definition = {
+        schemaVersion: 1,
+        durationSec: 2,
+        content: { kind: "color", color: "#1D4ED8" },
+        motion: { entrance: "none", exit: "none", durationSec: 0.5 },
+      };
+      await expect(sceneTemplateService.create(f.scope, profile.id, { name: "Intro", role: "intro", definition, makeDefault: true }))
+        .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.defaultScenes", currentTier: "pro", requiredTier: "business" } });
+      const intro = await sceneTemplateService.create(f.scope, profile.id, { name: "Intro", role: "intro", definition });
+      f = await setTier(f, "free");
+      await expect(sceneTemplateService.create(f.scope, profile.id, { name: "Another", role: "inline", definition }))
+        .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.scenes" } });
+      await sceneTemplateService.softDelete(f.scope, profile.id, intro.id, { expectedRevision: intro.revision });
+      expect(await sceneTemplateService.list(f.scope, profile.id)).toEqual([]);
+    } finally {
+      if (prior === undefined) delete process.env.NARRIFLOW_WRITES_SCENE_TEMPLATES;
+      else process.env.NARRIFLOW_WRITES_SCENE_TEMPLATES = prior;
+    }
+  });
 });

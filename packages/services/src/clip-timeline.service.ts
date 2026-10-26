@@ -4,6 +4,7 @@ import type { ActorScope } from "./actor-scope";
 import { clipTimelineFiles, clipTimelineSource } from "./clip-timeline";
 import { ClipTimelineError } from "./timeline-export";
 import { accessibleProjectWhere } from "./project-access";
+import { requirePlanFeature } from "./plan-features";
 import { presignDownloadUrl } from "./r2-storage";
 import { storeZip } from "./store-zip";
 import { workspaceService } from "./workspace.service";
@@ -16,8 +17,11 @@ function requirePrisma() {
   return prisma;
 }
 
+/** Editor Timelines and their source grants are a Pro feature on every surface
+ * (browser, REST, MCP). Already-issued grants keep working until they expire. */
 async function loadClip(scope: ActorScope, projectId: string, clipId: string) {
-  await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.download");
+  const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.download");
+  requirePlanFeature(actor.pricingTier, "export.timelines");
   const clip = await requirePrisma().clip.findFirst({
     where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
     include: { project: { select: { title: true, sourceStorageKey: true, sourceSizeBytes: true, sourceDurationSeconds: true, sourceProbe: true } } },

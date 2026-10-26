@@ -24,6 +24,7 @@ import {
   type TextOutputType,
 } from "@narriflow/validators";
 import { PanelHeader } from "./panel-header";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 
 /** What each output is, shown before and while it is written. */
 const OUTPUT_DETAILS: Record<TextOutputType, { icon: ReactNode; description: string }> = {
@@ -293,9 +294,14 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
 export function ContentSuitePanel({
   projectId,
   transcriptReady,
+  planRequirement,
+  canManageBilling,
 }: {
   projectId: string;
   transcriptReady: boolean;
+  /** Why the plan can't generate, computed server-side; `null` when it can. */
+  planRequirement: string | null;
+  canManageBilling: boolean;
 }) {
   const [assets, setAssets] = useState<ContentAsset[]>([]);
   const [loading, setLoading] = useState(true);
@@ -382,7 +388,7 @@ export function ContentSuitePanel({
             size="sm"
             variant={assets.length > 0 ? "subtle" : "solid"}
             onClick={generate}
-            disabled={generating || loading}
+            disabled={generating || loading || planRequirement !== null}
           >
             {generating ? <Spinner size="xs" /> : <Sparkles size={14} />}
             {generating
@@ -393,6 +399,8 @@ export function ContentSuitePanel({
           </Button>
         }
       />
+
+      <PlanLimitNotice message={planRequirement} actionLabel="See plans." canManageBilling={canManageBilling} />
 
       {error ? (
         <Flex

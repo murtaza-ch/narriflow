@@ -17,3 +17,15 @@ We rejected deriving usage from Projects because deletion refunded it; a stored 
 ## Consequences
 
 The usage read model reports settled, reserved, and remaining minutes, capacity in use, and the per-video cap, and every surface renders it. Upload sources are pinned before probing so the settled duration describes the processed bytes (see the 2026-10-07 amendment to [ADR 0005](0005-upload-session-intake.md)). A worker sweep releases reservations stranded by crashes but never touches completed intakes waiting for their generation handoff. A manual retry re-admits a released reservation into the current period with fresh checks. The calendar UTC month remains the contract; a billing-anchor period would be a separate decision.
+
+## Amendment 2026-10-26: credits
+
+The allowance is now sold as credits. The domain stays Processing Usage, and its ledger, lock namespace, and seconds columns are unchanged; credits are a unit on top of them.
+
+- **Whole-credit debits.** One credit is one started minute of a source, counted per video: `max(1, ceil(seconds / 60))`. Reserve, resize, and settle store debits as whole credits in seconds, so `reservedSeconds` and `settledSeconds` are always non-negative multiples of 60, enforced by database checks. The per-video length cap compares the source's real seconds before rounding. The whole source is charged even when only a window is processed. Monthly allowances come from the plan catalog in `packages/validators/src/pricing.ts`.
+- **Read model.** The summary reports `usedCredits`, `reservedCredits`, `limitCredits`, and `remainingCredits`, which sum to the limit until a downgrade puts the Workspace over it (remaining then clamps to zero), plus `periodStart` and `renewsAt`, the next 00:00 UTC on the first. Credits don't roll over. The exhausted refusal is `credits_exhausted`, with credit-named details and `renewsAt`.
+- **No implicit admission.** Settlement no longer admits an intake that has no live reservation. A missing row is a defect and throws; a released one is refused with `credits_reservation_released` and recovers through the manual retry, which re-admits through reserve with fresh checks.
+- **Inactive Workspaces are refused at reserve.** Reserve checks the Workspace status under the usage lock, so a new intake can't be admitted for a restricted or unpaid Workspace. Settlement still refuses one too.
+- **Billing shares the lock.** `lockWorkspaceUsage` is exported, and Workspace Billing takes it before committing an access-projection change, so an admission cannot interleave with a restriction. Lock order is unchanged: usage lock, Project generation lock, row locks.
+
+Retrying or regenerating the same Project is free; a new import of the same source is a new Project and is charged again.

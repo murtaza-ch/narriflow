@@ -12,7 +12,7 @@ export const autopilotInitialImportModeSchema = z.enum([
   "latest",
 ]);
 
-export const autopilotPauseKindSchema = z.enum(["acting_member", "brand_profile", "zoom_connection"]);
+export const autopilotPauseKindSchema = z.enum(["acting_member", "brand_profile", "zoom_connection", "plan"]);
 export const autopilotSourceKindSchema = z.enum(["rss", "zoom"]);
 
 // Create and update share these fields. Defaults live only on the create

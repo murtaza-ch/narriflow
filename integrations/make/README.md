@@ -136,7 +136,7 @@ the rest are **Actions**.
 
 ### First live pass
 
-Connect with a Business Workspace's key, build a scenario with each module, and check:
+Connect with a Pro or Business Workspace's key, build a scenario with each module, and check:
 
 - The connection test names the Workspace, and a revoked key stops a scenario with a
   reconnect prompt.
@@ -188,7 +188,7 @@ demand. Make's current review process (developers.make.com, App review) works li
 - **Test scenarios.** One scenario that runs every module without errors, plus one that
   produces an error, with execution logs that hold no personal data. Re-run them right
   before the request: log retention is short and the reviewer cannot see old logs.
-  Give the reviewers a Workspace on the Business plan, since the API refuses other plans.
+  Give the reviewers a Workspace on the Pro or Business plan, since the API refuses other plans.
 - **Review.** Submit the form (API documentation link and scenario links), then Make's
   automatic review (beta) sends a PDF of issues, then a QA engineer reviews by hand. Each
   fix needs fresh logs.

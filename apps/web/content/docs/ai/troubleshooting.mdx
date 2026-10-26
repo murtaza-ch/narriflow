@@ -21,14 +21,16 @@ If the client reports an issuer or redirect mismatch, email support@narriflow.co
 
 Run `narriflow_list_workspaces` first, then check each of these.
 
-- The Workspace is on an active Business plan. The list shows `mcpEnabled` for each Workspace.
+- The Workspace is active and on the Pro or Business plan. The list shows `mcpEnabled` for each Workspace.
 - You pass the `workspaceId` that the list returned.
 - Your role allows the action. Viewers can read but cannot start work.
 - The connection has the scope the tool needs. [Tools](/docs/ai/tools) lists the scope for each one.
 
 | Error | Meaning |
 | --- | --- |
-| `integration_access_unavailable` | The Workspace needs active Business access. |
+| `plan_feature_required` | The Workspace's plan doesn't include the connector, or the tool's feature. `details` names the feature and the plan that has it. |
+| `plan_limit_reached` | The action goes past a plan limit, such as connected social accounts or active Autopilot rules. `details` gives the limit and how many are used. |
+| `integration_access_unavailable` | The Workspace isn't active, for example while a payment is overdue. |
 | `workspace_access_denied` | You are not a member of that Workspace, or your role does not allow the action. |
 | `scope_required` | The connection lacks a scope. The error names it. |
 | `workspace_boundary_violation` | An API key was used for a different Workspace than its own. |
@@ -41,7 +43,8 @@ Your connection has read scopes only. Disconnect, then connect again and approve
 
 | Error | What to do |
 | --- | --- |
-| `processing_quota_exhausted` | The Workspace used its processing minutes for the month. Wait for the next UTC month or change the plan. |
+| `credits_exhausted` | The Workspace doesn't have enough credits left this month for this video. Credits renew at 00:00 UTC on the first of the month; or change the plan. |
+| `credits_reservation_released` | The video's credits were released before processing started. Retry the import. |
 | `workspace_processing_capacity_reached` | The Workspace has too many videos processing. Retry in a minute. |
 | `upload_too_long` | The video is longer than the plan allows. Trim it and try again. |
 

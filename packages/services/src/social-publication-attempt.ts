@@ -12,6 +12,7 @@ import type {
 } from "./social-publication-platform";
 import { PublicationPlatformExecutionError } from "./social-publication-platform";
 import { emitSocialPostFinished } from "./social-post-finished";
+import { hasCustomThumbnail } from "./social-account-eligibility";
 import type { FrozenPublicationState } from "./social-publication-scheduling";
 import type { SocialPublicationMetrics } from "./social-publication-observability";
 
@@ -32,6 +33,9 @@ export type PublicationAttemptOutcome =
 	| "pending"
 	| "failed"
 	| "unknown";
+
+/** Plan refusals the worker records on a post it did not submit. */
+export type PublicationPlanRefusal = "publication_plan_required" | "publication_account_beyond_plan" | "publication_thumbnail_plan_required";
 
 export type OwnedPublicationAttempt = {
 	attemptId: string;
@@ -266,6 +270,11 @@ export function createSocialPublicationAttempt(dependencies: {
 	credentials: {
 		load(accountId: string): Promise<PublishSocialAccount | null>;
 	};
+	/** Why the Workspace's current plan does not let this post go out, if so. Read
+	 * before the first provider submission only; submitted work always reconciles. */
+	planEligibility: {
+		refusal(input: { workspaceId: string; socialAccountId: string | null; customThumbnail: boolean }): Promise<PublicationPlanRefusal | null>;
+	};
 	checkpointCipher: {
 		seal(value: Prisma.JsonObject): string;
 		open(value: string): Prisma.JsonObject;
@@ -404,6 +413,43 @@ export function createSocialPublicationAttempt(dependencies: {
 					);
 				}
 			};
+			const notYetSubmitted =
+				loaded.attempt.phase !== "submission_started" &&
+				loaded.attempt.phase !== "processing" &&
+				loaded.attempt.phase !== "reconciling";
+			if (notYetSubmitted) {
+				// A downgrade since scheduling ends the post here, as an outcome the
+				// person can act on, before anything reaches the provider.
+				const refusal = await dependencies.planEligibility.refusal({
+					workspaceId: loaded.socialPost.workspaceId,
+					socialAccountId: loaded.frozen.socialAccountId,
+					customThumbnail: hasCustomThumbnail(loaded.frozen.providerSettings),
+				});
+				if (refusal) {
+					const settled = await dependencies.store.settleFailed({
+						owned: input.attempt,
+						code: refusal,
+						phase: "preparation",
+						disposition: "permanent",
+						retryAfterMs: null,
+						submissionMayHaveStarted: false,
+						now: dependencies.clock.now(),
+						retry: dependencies.retry,
+						processingDeadlineMs: dependencies.processingDeadlineMs,
+						reconciliationDeadlineMs: dependencies.reconciliationDeadlineMs,
+					});
+					recordDiagnostic({
+						level: "warn",
+						message: "social_publication_plan_ineligible",
+						phase: settled.kind,
+						operation: "plan_eligibility",
+						outcome: settled.kind,
+						disposition: "permanent",
+						errorCode: refusal,
+					});
+					return settled;
+				}
+			}
 			let platform: PublicationPlatform;
 			let account: PublishSocialAccount | null;
 			try {

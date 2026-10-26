@@ -1,6 +1,6 @@
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { autopilotService, hasFeature, recipeService, standingGrants, zoomConfigured, zoomService } from "@narriflow/services";
-import { workspaceAllowsCapability } from "@narriflow/validators";
+import { planCountRequirement, workspaceAllowsCapability } from "@narriflow/validators";
 import { AutopilotPanel } from "./autopilot-panel";
 
 export default async function AutopilotPage({ searchParams }: { searchParams: Promise<{ zoom?: string }> }) {
@@ -14,8 +14,12 @@ export default async function AutopilotPage({ searchParams }: { searchParams: Pr
     searchParams,
   ]);
 
+  // Active and running rules hold a slot; paused or failed ones don't.
+  const activeRules = rules.filter((rule) => rule.status === "active" || rule.status === "running").length;
   return (
     <AutopilotPanel
+      newRuleRequirement={planCountRequirement(appUser.pricingTier, "autopilotRules", activeRules)?.message ?? null}
+      canManageBilling={appUser.role === "owner"}
       initialRules={rules}
       recipes={recipes}
       zoomEnabled={zoomEnabled}

@@ -17,7 +17,7 @@ export default async function McpUploadHandoffPage({ searchParams }: { searchPar
   try {
     const state = verifyMcpUploadHandoff(token ?? "", { actorUserId: user.actorUserId, allowExpired: true });
     const actor = await workspaceService.requireActor(user.actorUserId, state.workspaceId, "processing.consume");
-    if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) return <Text>Active Business access is required for this upload.</Text>;
+    if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) return <Text>This upload needs an active workspace on a plan that includes the assistant connector.</Text>;
     // An expired handoff can only resume this person's existing upload; the
     // upload route refuses a new open after expiry.
     const resumeOnly = Date.now() >= state.expiresAtMs;

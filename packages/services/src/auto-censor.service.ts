@@ -18,7 +18,6 @@ import { hasFeature } from "./plan-features";
 import { isProgramWriteEnabled } from "./program-rollout";
 
 const autoCensorFailureCatalog = {
-  auto_censor_entitlement_required: "payment_required",
   auto_censor_forbidden: "forbidden",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
@@ -29,10 +28,7 @@ export class AutoCensorAccessError extends ExpectedDomainFailureError<AutoCensor
     super({
       code,
       kind: autoCensorFailureCatalog[code],
-      message:
-        code === "auto_censor_forbidden"
-          ? "Auto Censor editing is not allowed"
-          : "This plan does not include Auto Censor",
+      message: "Auto Censor editing is not allowed",
     });
     this.name = "AutoCensorAccessError";
   }

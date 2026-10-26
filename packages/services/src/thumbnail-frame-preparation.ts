@@ -79,7 +79,6 @@ const THUMBNAIL_PREPARATION_FAILURES = {
   thumbnail_claim_lost: "conflict",
   thumbnail_export_changed: "conflict",
   thumbnail_export_mismatch: "conflict",
-  thumbnail_entitlement_required: "forbidden",
   thumbnail_extraction_failed: "unavailable",
   thumbnail_extraction_invalid: "unprocessable",
   thumbnail_fingerprint_invalid: "invalid",

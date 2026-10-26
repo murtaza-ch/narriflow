@@ -15,7 +15,9 @@ import type {
   ClipSnapshot,
 } from "@narriflow/validators";
 import { userErrorMessage } from "@narriflow/validators";
+import type { DubUsageSummary } from "@narriflow/services";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 
 const languageOptions = [
   { value: "es", label: "Spanish" },
@@ -101,10 +103,18 @@ export function DubbingPanel({
   projectId,
   clips,
   dubs,
+  allowance,
+  planRequirement,
+  canManageBilling,
 }: {
   projectId: string;
   clips: ClipSnapshot[];
   dubs: ClipDubSnapshot[];
+  /** This month's dub allowance; `null` while unavailable. */
+  allowance: DubUsageSummary | null;
+  /** Why the plan can't dub, computed server-side; `null` when it can. */
+  planRequirement: string | null;
+  canManageBilling: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -219,6 +229,23 @@ export function DubbingPanel({
   }
 
   const busy = isPending || submitting;
+  // Show the plan boundary before the user fills in the form, not after.
+  const renewsOn = allowance?.renewsAt
+    ? new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(
+        new Date(allowance.renewsAt),
+      )
+    : null;
+  const blockedMessage =
+    planRequirement ??
+    (allowance && allowance.remaining <= 0
+      ? `This workspace has used its ${allowance.limit} dubs for this month.${renewsOn ? ` They renew on ${renewsOn} (UTC).` : ""}`
+      : null);
+  const clipTooLong =
+    !blockedMessage &&
+    allowance !== null &&
+    selectedClip !== null &&
+    allowance.maxClipSeconds > 0 &&
+    selectedClip.durationSec > allowance.maxClipSeconds;
 
   return (
     <Stack gap="6">
@@ -333,15 +360,44 @@ export function DubbingPanel({
               Render a clip first. Dubs narrate over a finished render.
             </Text>
           )}
-          <Button
-            size="sm"
-            disabled={busy || !selectedClip || aspectRatios.length === 0}
-            onClick={requestDub}
-          >
-            {busy ? <Spinner size="xs" /> : <Mic2 size={14} />}
-            {busy ? "Queueing" : "Generate dub"}
-          </Button>
+          <Flex align="center" gap="3">
+            {allowance && !blockedMessage ? (
+              <Text fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums">
+                {allowance.remaining} of {allowance.limit} dubs left this month
+              </Text>
+            ) : null}
+            <Button
+              size="sm"
+              disabled={
+                busy ||
+                !selectedClip ||
+                aspectRatios.length === 0 ||
+                blockedMessage !== null ||
+                clipTooLong
+              }
+              onClick={requestDub}
+            >
+              {busy ? <Spinner size="xs" /> : <Mic2 size={14} />}
+              {busy ? "Queueing" : "Generate dub"}
+            </Button>
+          </Flex>
         </Flex>
+        {blockedMessage || clipTooLong ? (
+          <Box px="5" pb="5" mt="-3">
+            {blockedMessage ? (
+              <PlanLimitNotice
+                message={blockedMessage}
+                actionLabel="See plans."
+                canManageBilling={canManageBilling}
+              />
+            ) : (
+              <Text fontSize="xs" color="warning.fg">
+                Dubs work on clips up to {Math.round((allowance?.maxClipSeconds ?? 0) / 60)} minutes. Trim this clip
+                first.
+              </Text>
+            )}
+          </Box>
+        ) : null}
       </Box>
 
       {message ? (

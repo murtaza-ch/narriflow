@@ -14,7 +14,7 @@ import {
 	createOpenAiAssistedCopyModerator,
 	createOpenAiAssistedCopyProvider,
 } from "./openai-assisted-copy-provider";
-import { hasFeature } from "./plan-features";
+import { requirePlanFeature } from "./plan-features";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
 
@@ -234,12 +234,7 @@ function productionModule(environment: NodeJS.ProcessEnv = process.env) {
 				workspaceId,
 				permission,
 			);
-			if (!hasFeature(actor.pricingTier, "publishing.assistedCopy")) {
-				throw new AssistedSocialCopyError(
-					"assisted_copy_entitlement_required",
-					"Assisted copy requires a Creator, Pro, or Business plan",
-				);
-			}
+			requirePlanFeature(actor.pricingTier, "publishing.assistedCopy");
 		},
 		async loadContext({ workspaceId, projectId, clipId }) {
 			const project = await requirePrisma().project.findFirst({

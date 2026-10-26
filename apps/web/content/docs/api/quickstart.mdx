@@ -86,16 +86,16 @@ def wait_for(operation_id):
 
 <Steps>
   <Step title="Check your key">
-    `GET /workspace` returns the Workspace the key belongs to, its plan, and the processing minutes you have left.
+    `GET /workspace` returns the Workspace the key belongs to, its plan, and the credits you have left this month.
 
     <CodeGroup>
 
     ```typescript TypeScript
     const { workspace, usage } = await api<{
       workspace: { name: string };
-      usage: { remainingMinutes: number };
+      usage: { remainingCredits: number; renewsAt: string };
     }>("/workspace");
-    console.log(workspace.name, usage.remainingMinutes);
+    console.log(workspace.name, usage.remainingCredits, usage.renewsAt);
     ```
 
     ```bash cURL
@@ -104,7 +104,7 @@ def wait_for(operation_id):
 
     ```python Python
     info = api("GET", "/workspace")
-    print(info["workspace"]["name"], info["usage"]["remainingMinutes"])
+    print(info["workspace"]["name"], info["usage"]["remainingCredits"], info["usage"]["renewsAt"])
     ```
 
     </CodeGroup>

@@ -157,6 +157,8 @@ A webhook is disabled, and Narriflow emails the person who created it, when:
 
 `GET /webhooks` shows each webhook's `status`, `disabledReason`, `lastDeliveredSeq`, `consecutiveFailures`, `lastAttemptAt`, `lastResponseStatus` and `lastDeliveredAt`. It never returns the URL, only its host.
 
+While the Workspace's plan doesn't include the API, Narriflow holds its webhooks instead: nothing is sent, the webhook stays enabled, and its cursor and failure count stay where they were. Delivery resumes within 15 minutes of the plan including the API again, from the last event you acknowledged. If the hold lasted more than 30 days, older events have expired and the webhook is disabled with `cursor_expired`. Completion callbacks for work Narriflow already accepted are still delivered.
+
 To resume, fix the endpoint and select **Re-enable** in Settings, or call `POST /webhooks/{id}/enable`. Delivery continues from the last event you acknowledged. Events older than 30 days are gone, so if the webhook was disabled that long, it continues from the oldest event Narriflow still keeps. To find what you missed, re-sync from the list endpoints.
 
 To change a webhook's URL or event types, delete it and create a new one with `DELETE /webhooks/{id}`.

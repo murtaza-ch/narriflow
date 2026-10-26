@@ -35,7 +35,7 @@ export default defineCreate({
   noun: 'Clip Generation',
   display: {
     label: 'Generate Clips',
-    description: 'Generates clips for an imported project. Uses processing minutes from the Workspace.',
+    description: 'Generates clips for an imported project. Its credits were reserved at import; generating again is free.',
   },
   operation: {
     inputFields,

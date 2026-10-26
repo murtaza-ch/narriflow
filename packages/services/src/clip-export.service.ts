@@ -19,11 +19,14 @@ import {
   type EditorDocument,
   type PricingTier,
   clipSourceEdgeSec,
+  isCensorSegmentStale,
   resolvePricingTier,
 } from "@narriflow/validators";
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
 export { deriveClipExportAggregate } from "./clip-export-aggregate";
-import { hasFeature } from "./billing.service";
+import { hasFeature, requirePlanFeature } from "./plan-features";
+import { brandOwnerForWorkspace, brandOwnerWhereFor } from "./brand-ownership";
+import { analyticsService } from "./analytics.service";
 import { accessibleProjectWhere } from "./project-access";
 import { headObject, presignDownloadUrl } from "./r2-storage";
 import { clipExportSubtitleFiles } from "./clip-export-subtitles";
@@ -56,7 +59,6 @@ const clipExportFailureCatalog = {
   export_not_found: "missing",
   export_not_ready: "conflict",
   export_snapshot_missing: "unprocessable",
-  motion_feature_unavailable: "forbidden",
   scene_asset_unavailable: "unprocessable",
   scene_font_unavailable: "unprocessable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -83,17 +85,28 @@ export class ClipExportRevisionConflictError extends ClipExportError {
   }
 }
 
-export function assertMotionExportEntitlement(
+export function staleCensorSegmentCount(document: EditorDocument): number {
+  return document.censorSegments.filter(
+    (segment) => segment.enabled && isCensorSegmentStale(segment, document.transcriptSlice),
+  ).length;
+}
+
+/**
+ * What a document must satisfy before a new export or an export retry is
+ * accepted, on every surface: motion needs a plan with motion, and enabled
+ * Auto Censor segments must still match the transcript.
+ */
+export function assertClipExportDocumentAllowed(
   pricingTier: PricingTier,
   document: EditorDocument,
 ): void {
-  if (
-    !hasFeature(pricingTier, "editor.motion") &&
-    editorDocumentUsesMotion(document)
-  ) {
+  if (editorDocumentUsesMotion(document)) requirePlanFeature(pricingTier, "editor.motion");
+  const staleCount = staleCensorSegmentCount(document);
+  if (staleCount > 0) {
     throw new ClipExportError(
-      "motion_feature_unavailable",
-      "Motion export is available on Creator and above",
+      "censor_segments_stale",
+      "Review stale Auto Censor segments before exporting",
+      { staleCount },
     );
   }
 }
@@ -399,22 +412,9 @@ const exportInclude = {
   variants: { orderBy: { createdAt: "asc" as const } },
 };
 
-type SceneExportOwner =
-  | { workspaceId: string }
-  | { userId: string; workspaceId: null };
-
-export function sceneExportOwnerWhere(input: {
-  workspaceId: string;
-  workspace: { personalOwnerUserId: string | null; pricingTier: string };
-}): SceneExportOwner {
-  return input.workspace.personalOwnerUserId && input.workspace.pricingTier !== "business"
-    ? { userId: input.workspace.personalOwnerUserId, workspaceId: null }
-    : { workspaceId: input.workspaceId };
-}
-
 async function assertSceneExportAvailability(
   document: EditorDocument,
-  owner: SceneExportOwner,
+  owner: { workspaceId: string } | { userId: string },
 ): Promise<void> {
   const visualReferences = [...new Map(document.sceneBlocks.flatMap((scene) =>
     scene.content.kind === "image" || scene.content.kind === "video"
@@ -572,12 +572,28 @@ export class ClipExportService {
         durationSec: clipSourceEdgeSec(clip.project),
         wholeSource: clip.wholeSource,
       });
+      // `mutate` fences this revision under the Clip lock before accepting.
+      try {
+        assertClipExportDocumentAllowed(tier, document);
+      } catch (error) {
+        if (error instanceof ClipExportError && error.code === "censor_segments_stale") {
+          await analyticsService
+            .recordProjectEvent({
+              projectId,
+              clipId,
+              type: "auto_censor_export_notice",
+              metadata: { staleCount: staleCensorSegmentCount(document) },
+            })
+            .catch(() => undefined);
+        }
+        throw error;
+      }
       await assertSceneExportAvailability(
         document,
-        sceneExportOwnerWhere({
-          workspaceId: clip.project.workspaceId,
-          workspace: clip.project.workspace,
-        }),
+        brandOwnerWhereFor(brandOwnerForWorkspace({
+          id: clip.project.workspaceId,
+          personalOwnerUserId: clip.project.workspace.personalOwnerUserId,
+        })),
       );
 
       output = resolveClipExportOutput(tier, input.resolution);
@@ -844,16 +860,16 @@ export class ClipExportService {
       frozenSnapshot,
       clipSourceEdgeSec(owned.project),
     );
-    assertMotionExportEntitlement(
+    assertClipExportDocumentAllowed(
       resolvePricingTier(owned.project.workspace?.pricingTier),
       frozenDocument,
     );
     await assertSceneExportAvailability(
       frozenDocument,
-      sceneExportOwnerWhere({
-        workspaceId: owned.project.workspaceId,
-        workspace: owned.project.workspace,
-      }),
+      brandOwnerWhereFor(brandOwnerForWorkspace({
+        id: owned.project.workspaceId,
+        personalOwnerUserId: owned.project.workspace.personalOwnerUserId,
+      })),
     );
 
     await prisma.$transaction(async (tx) => {

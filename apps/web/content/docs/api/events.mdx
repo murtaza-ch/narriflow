@@ -123,7 +123,7 @@ A newest page holds at most `limit` events (200 at most), so a poll interval in 
 
 `social_post.finished` has the `state` `posted`, `sent_to_inbox` (TikTok inbox delivery), `failed` or `needs_attention`. A post that needed attention and was later confirmed produces a second event, `posted`. A post that is rechecked and needs attention again produces another `needs_attention`. Reading `social_post.proposed` and `social_post.finished` events needs the `publishing:read` scope on top of `projects:read`. Without it, they are left out of every page.
 
-`grant.paused` has the `reason` `manual`, `post_failed`, `post_needs_attention`, `granter_unavailable` or `rule_changed`. `autopilotRuleId` is `null` if the rule was deleted. A grant pauses at most once per revision, so renewing it and a later failure give another event. `grant.expired` comes once when the expiry passes. Neither names an account, a post or a reviewer.
+`grant.paused` has the `reason` `manual`, `post_failed`, `post_needs_attention`, `granter_unavailable`, `rule_changed` or `plan_lost`. `autopilotRuleId` is `null` if the rule was deleted. A grant pauses at most once per revision, so renewing it and a later failure give another event. `grant.expired` comes once when the expiry passes. Neither names an account, a post or a reviewer.
 
 ## Delivery guarantees
 

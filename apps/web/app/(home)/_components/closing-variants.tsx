@@ -20,7 +20,7 @@ const VARIANTS = [
 ] as const;
 
 type Variant = (typeof VARIANTS)[number]["id"];
-type Props = { styles: Record<string, CaptionStyle>; freeMinutes: number };
+type Props = { styles: Record<string, CaptionStyle>; freeCredits: number };
 
 const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -47,13 +47,13 @@ function Title({ first, second }: { first: string; second: string }) {
   );
 }
 
-function Note({ freeMinutes }: { freeMinutes: number }) {
-  return <p className="lx-close__note">Free plan · {freeMinutes} processing minutes a month</p>;
+function Note({ freeCredits }: { freeCredits: number }) {
+  return <p className="lx-close__note">Free plan · {freeCredits} credits a month</p>;
 }
 
 /* ---------- 1. Any link: the field types real links and each one's clips slide out ---------- */
 
-function AnyLink({ styles, freeMinutes }: Props) {
+function AnyLink({ styles, freeCredits }: Props) {
   const [ref, onScreen] = useOnScreen<HTMLDivElement>(0.4);
   const [demo, setDemo] = useState(0);
   const [typed, setTyped] = useState("");
@@ -111,7 +111,7 @@ function AnyLink({ styles, freeMinutes }: Props) {
           </li>
         ))}
       </ol>
-      <Note freeMinutes={freeMinutes} />
+      <Note freeCredits={freeCredits} />
     </div>
   );
 }
@@ -120,7 +120,7 @@ function AnyLink({ styles, freeMinutes }: Props) {
 
 const FEED = DEMOS.flatMap((demo) => demo.cuts);
 
-function Feed({ styles, freeMinutes }: Props) {
+function Feed({ styles, freeCredits }: Props) {
   const [ref, onScreen] = useOnScreen<HTMLDivElement>(0.4);
   const [index, setIndex] = useState(0);
   const [held, setHeld] = useState(false);
@@ -139,7 +139,7 @@ function Feed({ styles, freeMinutes }: Props) {
       <div className="lx-feed__copy">
         <Title first="Your feed," second="already cut." />
         <LinkForm />
-        <Note freeMinutes={freeMinutes} />
+        <Note freeCredits={freeCredits} />
       </div>
       <div
         className="lx-feed"
@@ -192,7 +192,7 @@ function Feed({ styles, freeMinutes }: Props) {
 
 const EPISODE = DEMOS[0]!;
 
-function Compare({ styles, freeMinutes }: Props) {
+function Compare({ styles, freeCredits }: Props) {
   const [ref, onScreen] = useOnScreen<HTMLDivElement>(0.45);
   const stage = useRef<HTMLDivElement>(null);
   const handle = useRef<HTMLDivElement>(null);
@@ -289,7 +289,7 @@ function Compare({ styles, freeMinutes }: Props) {
       </div>
       <div className="lx-compare__cta">
         <LinkForm />
-        <Note freeMinutes={freeMinutes} />
+        <Note freeCredits={freeCredits} />
       </div>
     </div>
   );
@@ -299,7 +299,7 @@ function Compare({ styles, freeMinutes }: Props) {
 
 const HAND = [DEMOS[1]!.cuts[0]!, DEMOS[0]!.cuts[1]!, DEMOS[0]!.cuts[0]!, DEMOS[0]!.cuts[2]!, DEMOS[3]!.cuts[0]!];
 
-function Fan({ styles, freeMinutes }: Props) {
+function Fan({ styles, freeCredits }: Props) {
   const [ref, onScreen] = useOnScreen<HTMLDivElement>(0.45);
   const [wide, setWide] = useState(false);
   const state = wide ? "wide" : onScreen ? "open" : "closed";
@@ -336,7 +336,7 @@ function Fan({ styles, freeMinutes }: Props) {
           <LinkForm />
         </div>
       </div>
-      <Note freeMinutes={freeMinutes} />
+      <Note freeCredits={freeCredits} />
     </div>
   );
 }

@@ -25,7 +25,6 @@ import {
 	EDITOR_DOCUMENT_VERSION,
 	getCaptionPresetById,
   getEffectiveClipTiming,
-  editorDocumentUsesMotion,
   isBrandDefaultCaptionPresetId,
   parseClipAutoLayoutAnalysis,
   parseClipSplitLayoutAnalysis,
@@ -80,7 +79,8 @@ import {
   type ClipPreviewPeaks,
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
-import { hasFeature } from "./billing.service";
+import { hasFeature } from "./plan-features";
+import { assertClipExportDocumentAllowed } from "./clip-export.service";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
 import type { ActorScope } from "./actor-scope";
@@ -457,13 +457,10 @@ const clipActionFailureCatalog = {
   clip_source_missing: "conflict",
   clip_storage_delete_incomplete: "unavailable",
   clip_title_suggestion_failed: "unavailable",
-  censor_feature_unavailable: "forbidden",
   editor_boundaries_invalid: "unprocessable",
   editor_document_empty_timeline: "unprocessable",
-  motion_feature_unavailable: "forbidden",
 	no_clips_available: "unprocessable",
   openai_not_configured: "unavailable",
-  scene_feature_unavailable: "forbidden",
 	project_not_found: "missing",
 	transcript_not_ready: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -482,13 +479,10 @@ const clipActionSafeMessages: Record<ClipActionFailureCode, string> = {
   clip_source_missing: "Generate clips for this project before creating one from its transcript",
   clip_storage_delete_incomplete: "Clip storage cleanup is temporarily unavailable",
   clip_title_suggestion_failed: "Title suggestions are temporarily unavailable",
-  censor_feature_unavailable: "Auto Censor is available on Creator and above",
   editor_boundaries_invalid: "Choose valid clip boundaries",
   editor_document_empty_timeline: "The clip timeline cannot be empty",
-  motion_feature_unavailable: "Motion export is available on Creator and above",
 	no_clips_available: "No clips are available for rendering",
   openai_not_configured: "Title suggestions are temporarily unavailable",
-  scene_feature_unavailable: "Scene editing is not available on this plan",
 	project_not_found: "Project not found",
 	transcript_not_ready: "The transcript is not ready",
 };
@@ -2174,16 +2168,12 @@ export class ClipService {
         })
       )?.pricingTier,
     );
-    if (
-      !hasFeature(workspaceTier, "editor.motion") &&
-      clipsToRender.some((clip) =>
-        editorDocumentUsesMotion(
-          decodeClipEditorDocumentFromStorage(clip, { durationSec: null, wholeSource: clip.wholeSource }),
-        ),
-      )
-    ) {
-      throw new ClipActionError(
-        "motion_feature_unavailable",
+    // The same document admission as a versioned export: no motion below
+    // Creator and no stale Auto Censor segments, checked before any render row.
+    for (const clip of clipsToRender) {
+      assertClipExportDocumentAllowed(
+        workspaceTier,
+        decodeClipEditorDocumentFromStorage(clip, { durationSec: null, wholeSource: clip.wholeSource }),
       );
     }
 

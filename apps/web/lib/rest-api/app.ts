@@ -111,11 +111,14 @@ type Env = { Variables: { requestId: string; principal: IntegrationPrincipal; li
 type RestContext = Context<Env>;
 
 const security = [{ bearerAuth: [] }];
+/** The usage read model as JSON: credit period dates become ISO strings. */
+const usageView = (usage: Awaited<ReturnType<typeof projectService.getUsageSummary>>) =>
+  ({ ...usage, periodStart: usage.periodStart.toISOString(), renewsAt: usage.renewsAt.toISOString() });
 const json = <T>(schema: T, description: string) => ({ description, content: { "application/json": { schema } } });
 const errors = {
   400: json(schemas.restErrorSchema, "Invalid request"),
   401: json(schemas.restErrorSchema, "Missing or invalid API key"),
-  402: json(schemas.restErrorSchema, "The Workspace needs active Business access"),
+  402: json(schemas.restErrorSchema, "Plan or billing refusal. `plan_feature_required` and `plan_limit_reached` name the feature or limit, the current tier, and the required tier in `details`; `credits_exhausted` reports the month's credits; `integration_access_unavailable` means the Workspace isn't active"),
   403: json(schemas.restErrorSchema, "Scope, role, or Workspace boundary refusal"),
   404: json(schemas.restErrorSchema, "Not found"),
   409: json(schemas.restErrorSchema, "Conflict, including an idempotency key reused with different input"),
@@ -276,11 +279,11 @@ export function createRestApi(dependencies: RestApiDependencies) {
   };
 
   return app
-    .openapi(route({ method: "get", path: "/workspace", summary: "Get the key's Workspace, plan, and processing usage", tags: ["Workspace"],
+    .openapi(route({ method: "get", path: "/workspace", summary: "Get the key's Workspace, plan, and credit usage", tags: ["Workspace"],
       responses: { 200: json(schemas.workspaceResultSchema, "Workspace and usage") } }), async (c) => {
       const actor = await admit(c, "GET /workspace");
       return c.json({ workspace: { workspaceId: actor.workspaceId, name: actor.workspaceName, role: actor.role, status: actor.status, pricingTier: actor.pricingTier },
-        usage: await projectService.getUsageSummary(actor) }, 200);
+        usage: usageView(await projectService.getUsageSummary(actor)) }, 200);
     })
     .openapi(route({ method: "get", path: "/brand-profiles", summary: "List Brand Profiles", tags: ["Workspace"],
       responses: { 200: json(schemas.brandProfilesResultSchema, "Brand Profiles") } }), async (c) => {

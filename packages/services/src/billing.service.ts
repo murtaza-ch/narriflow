@@ -3,8 +3,8 @@ import {
   type BillingInterval,
   type PaidPricingTier,
 } from "@narriflow/validators";
-export { hasFeature, type PlanFeature } from "./plan-features";
 import {
+  BILLING_INTERVALS,
   createBillingCatalog,
   createPrismaWorkspaceBillingStore,
   createWorkspaceBillingModule,
@@ -12,7 +12,9 @@ import {
   type ProviderCurrentState,
   type ProviderCheckoutSession,
   type ProviderSubscription,
+  type WorkspaceBillingErrorDetails,
   type WorkspaceBillingProvider,
+  PAID_PRICING_TIERS,
   WorkspaceBillingError,
 } from "./workspace-billing.service";
 import {
@@ -30,6 +32,7 @@ const billingFailureCatalog = {
   checkout_attempt_missing: "missing",
   checkout_attempt_terminal: "conflict",
   checkout_collection_unbounded: "unavailable",
+  checkout_in_progress: "conflict",
   checkout_not_configured: "unavailable",
   checkout_payment_collection_unbounded: "unavailable",
   checkout_session_conflict: "conflict",
@@ -59,6 +62,7 @@ const billingSafeMessages: Record<BillingErrorCode, string> = {
   checkout_attempt_missing: "The Checkout request could not be found",
   checkout_attempt_terminal: "The previous Checkout is no longer available. Start a new one safely",
   checkout_collection_unbounded: "Billing is temporarily unavailable",
+  checkout_in_progress: "Another Checkout for this workspace is already in progress",
   checkout_not_configured: "Billing is temporarily unavailable",
   checkout_payment_collection_unbounded: "Billing is temporarily unavailable",
   checkout_session_conflict: "Checkout ownership could not be verified. Contact support",
@@ -76,9 +80,17 @@ const billingSafeMessages: Record<BillingErrorCode, string> = {
   workspace_not_found: "The workspace could not be found",
 };
 
-export class BillingError extends ExpectedDomainFailureError<BillingErrorCode> {
-  constructor(code: BillingErrorCode) {
-    super({ code, kind: billingFailureCatalog[code], message: billingSafeMessages[code] });
+export class BillingError extends ExpectedDomainFailureError<
+  BillingErrorCode,
+  WorkspaceBillingErrorDetails
+> {
+  constructor(code: BillingErrorCode, details?: WorkspaceBillingErrorDetails) {
+    super({
+      code,
+      kind: billingFailureCatalog[code],
+      message: billingSafeMessages[code],
+      ...(details ? { details } : {}),
+    });
     this.name = "BillingError";
   }
 }
@@ -104,20 +116,13 @@ function getStripe(): Stripe {
   return stripeClient;
 }
 
-const PAID_TIERS: PaidPricingTier[] = ["creator", "pro", "business"];
-const INTERVALS: BillingInterval[] = ["monthly", "annual"];
 const stripeContractAccess = Symbol("workspace-billing-stripe-contract-access");
 
 /**
- * Plan-gated capabilities (vizard-parity Phase C export options). Both
- * features currently draw the same free/paid line, but they're modeled as
- * two distinct flags — not one "isPaid" bit — because they're independently
- * meaningful product decisions (a future tier could ship 1080p without
- * dropping the watermark, or vice versa) and because call sites should say
- * what they're checking, not why. All new plan-gating must go through
- * `hasFeature` — no bare `tier === "free"` checks.
+ * Resolves the configured Stripe price id for a catalog tier + interval:
+ * `STRIPE_PRICE_<TIER>_<INTERVAL>`. Amounts live in `PLAN_CATALOG`; Stripe
+ * prices must match them (see docs/runbooks/workspace-billing.md).
  */
-/** Resolves the configured Stripe price id for a tier + interval (env-driven). */
 function priceIdFor(
   tier: PaidPricingTier,
   interval: BillingInterval,
@@ -128,14 +133,15 @@ function priceIdFor(
   );
 }
 
+/** `STRIPE_PRICE_BUSINESS_SEAT_<INTERVAL>`, matching `BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS`. */
 function seatPriceIdFor(interval: BillingInterval): string | null {
   return process.env[`STRIPE_PRICE_BUSINESS_SEAT_${interval.toUpperCase()}`] ?? null;
 }
 
 function catalogFromEnvironment(): BillingCatalog {
   return createBillingCatalog({
-    basePrices: PAID_TIERS.flatMap((tier) =>
-      INTERVALS.map((interval) => ({
+    basePrices: PAID_PRICING_TIERS.flatMap((tier) =>
+      BILLING_INTERVALS.map((interval) => ({
         priceId:
           priceIdFor(tier, interval) ??
           (() => {
@@ -147,7 +153,7 @@ function catalogFromEnvironment(): BillingCatalog {
         interval,
       })),
     ),
-    seatPrices: INTERVALS.map((interval) => ({
+    seatPrices: BILLING_INTERVALS.map((interval) => ({
       priceId:
         seatPriceIdFor(interval) ??
         (() => {
@@ -207,7 +213,7 @@ export class BillingService {
 
   /** Paid tiers that have at least one price id configured (so the UI can hide unset ones). */
   configuredTiers(): PaidPricingTier[] {
-    return PAID_TIERS.filter(
+    return PAID_PRICING_TIERS.filter(
       (tier) => priceIdFor(tier, "monthly") || priceIdFor(tier, "annual"),
     );
   }
@@ -379,6 +385,7 @@ export class BillingService {
               line_items: [{ price: input.priceId, quantity: 1 }],
               success_url: input.successUrl,
               cancel_url: input.cancelUrl,
+              expires_at: Math.floor(input.expiresAt.getTime() / 1000),
               client_reference_id: input.workspaceId,
               allow_promotion_codes: true,
               metadata: {
@@ -698,7 +705,7 @@ export class BillingService {
       return await operation();
     } catch (error) {
       if (error instanceof WorkspaceBillingError) {
-        throw new BillingError(error.code);
+        throw new BillingError(error.code, error.details);
       }
       throw error;
     }

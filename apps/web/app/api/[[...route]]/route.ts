@@ -47,7 +47,6 @@ import {
 	createClipFromSelectionSchema,
 	userErrorMessage,
 	resolvePricingTier,
-	isCensorSegmentStale,
 	workspaceAllowsCapability,
 	type CreateExportBundleInput,
 	type CreateReviewRoundInput,
@@ -59,7 +58,6 @@ import {
 	type ApplyProjectBrandProfileSelectedInput,
 	type ApplyStyleSelectedInput,
 	type PreviewCampaignEditorActionInput,
-	type CensorSegment,
 	type CreateClipFromSelection,
 } from "@narriflow/validators";
 import {
@@ -76,13 +74,13 @@ import {
 	clipEditorDocumentPersistence,
 	clipExportService,
 	clipTimelineService,
-	ClipExportError,
 	contentSuiteService,
 	dubbingService,
 	librarySearchService,
 	projectService,
 	socialOAuthService,
 	SocialOAuthError,
+	PlanRequirementError,
 	socialService,
 	acceptTikTokPublicationWebhook,
 	TikTokPublicationWebhookError,
@@ -99,14 +97,12 @@ import {
 	visualAssetService,
 	brandFontService,
 	analyzeSceneDocumentMutation,
-	autoCensorService,
 	thumbnailFramePreparationService,
 } from "@narriflow/services";
 import {
 	resolveCanonicalAppOrigin,
 	safeSocialRedirectPath,
 } from "@/lib/safe-redirect";
-import { motionDocumentExportError } from "@/lib/motion-document-mutation";
 import { createUploadSessionHttpRoutes } from "./upload-session-http";
 import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
@@ -1278,34 +1274,6 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
 	}
 
-	const editor = await clipService.getClipEditorDocument(
-		appUser,
-		c.req.param("id"),
-		c.req.param("clipId"),
-	);
-	const staleCount = editor.document.censorSegments.filter(
-		(segment: CensorSegment) =>
-			segment.enabled &&
-			isCensorSegmentStale(segment, editor.document.transcriptSlice),
-	).length;
-	const motionError = motionDocumentExportError(
-		appUser.pricingTier,
-		editor.document,
-	);
-	if (motionError) throw motionError;
-	if (staleCount > 0) {
-		await autoCensorService
-			.recordEvent(appUser, c.req.param("id"), c.req.param("clipId"), {
-				type: "auto_censor_export_notice",
-				staleCount,
-			})
-			.catch(() => undefined);
-		throw new ClipExportError(
-			"censor_segments_stale",
-			"Review stale Auto Censor segments before exporting",
-			{ staleCount },
-		);
-	}
 	const result = await clipExportService.create(
 		appUser,
 		c.req.param("id"),
@@ -1605,7 +1573,7 @@ app.get("/social/oauth/callback", async (c) => {
 	} catch (error) {
 		redirect.searchParams.set(
 			"error",
-			error instanceof SocialOAuthError
+			error instanceof SocialOAuthError || error instanceof PlanRequirementError
 				? error.code
 				: "social_oauth_callback_failed",
 		);
@@ -1660,6 +1628,9 @@ app.post("/social/oauth/facebook-selection/:token", async (c) => {
 		const account = await socialOAuthService.completeFacebookPageSelection(appUser, token, payload.pageId);
 		return c.json({ account }, 201);
 	} catch (error) {
+		if (error instanceof PlanRequirementError) {
+			return c.json({ error: error.code, message: error.message, details: error.details }, 402);
+		}
 		const code =
 			error instanceof SocialOAuthError
 				? error.code

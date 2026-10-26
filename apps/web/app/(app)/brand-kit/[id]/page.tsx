@@ -3,7 +3,7 @@ import { ArrowLeft, AudioLines, ImageIcon, LayoutTemplate, MessageSquareText, Sh
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { brandProfileService, BrandProfileNotFoundError, sceneTemplateService } from "@narriflow/services";
-import { sceneTemplateDefinitionSchema } from "@narriflow/validators";
+import { hasFeature, planFeatureRequirement, sceneTemplateDefinitionSchema } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { MediaWell } from "@narriflow/ui/components/media-well";
@@ -68,7 +68,7 @@ export default async function BrandProfilePage({ params, searchParams }: {
         {section === "identity" && <IdentitySection profile={profile} />}
         {section === "styles" && <StylesSection profile={profile} selectedTemplateId={query.template} />}
         {section === "assets" && <AssetsSection profile={profile} />}
-        {section === "scenes" && <ScenesSection profileId={profile.id} scenes={sceneCards} fonts={profile.fonts} canManageDefaults={actor.pricingTier === "business"} />}
+        {section === "scenes" && <ScenesSection profileId={profile.id} scenes={sceneCards} fonts={profile.fonts} canManageDefaults={hasFeature(actor.pricingTier, "brand.defaultScenes")} createRequirement={planFeatureRequirement(actor.pricingTier, "brand.scenes")?.message ?? null} />}
         {section === "audio" && <AudioSection profile={profile} />}
         {section === "voice" && <VoiceSection profile={profile} />}
       </Box>
@@ -161,11 +161,11 @@ function AssetsSection({ profile }: { profile: Profile }) {
   );
 }
 
-function ScenesSection({ profileId, scenes, fonts, canManageDefaults }: { profileId: string; scenes: SceneTemplateCard[]; fonts: Profile["fonts"]; canManageDefaults: boolean }) {
+function ScenesSection({ profileId, scenes, fonts, canManageDefaults, createRequirement }: { profileId: string; scenes: SceneTemplateCard[]; fonts: Profile["fonts"]; canManageDefaults: boolean; createRequirement: string | null }) {
   return (
     <Stack gap="7">
       <SectionHeader icon={<Type size={18} />} title="Scene templates" />
-      <SceneTemplateManager profileId={profileId} scenes={scenes} fonts={fonts.map((font) => ({ id: font.id, family: font.family, fingerprint: font.fingerprint, missing: font.missing }))} canManageDefaults={canManageDefaults} />
+      <SceneTemplateManager profileId={profileId} scenes={scenes} fonts={fonts.map((font) => ({ id: font.id, family: font.family, fingerprint: font.fingerprint, missing: font.missing }))} canManageDefaults={canManageDefaults} createRequirement={createRequirement} />
     </Stack>
   );
 }

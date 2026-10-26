@@ -29,7 +29,8 @@ describe("ingest recovery action", () => {
       "ingest_retries_exhausted",
       "worker_stalled",
       "media_duration_unavailable",
-      "processing_quota_exhausted",
+      "credits_exhausted",
+      "credits_reservation_released",
       "workspace_processing_capacity_reached",
       "drive_token_expired",
     ]) {

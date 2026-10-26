@@ -13,7 +13,8 @@ import { Pool } from "pg";
 import {
   contentPackSchema,
   parseStoredContentPack,
-  PROCESSING_CAPACITY_DEFAULTS,
+  PLAN_CATALOG,
+  pricingTierSchema,
 } from "@narriflow/validators";
 import { createDriveTokenCipher, createGoogleDriveFileReader, DriveSourceError } from "./drive-source";
 import { projectRetentionService } from "./project-retention.service";
@@ -59,6 +60,9 @@ const CONTENT_PACK = {
   defaultAspectRatio: "9:16",
 } as const;
 const STORED_PACK = parseStoredContentPack(contentPackSchema.parse(CONTENT_PACK));
+const CATALOG_CAPACITY = Object.fromEntries(
+  pricingTierSchema.options.map((tier) => [tier, PLAN_CATALOG[tier].limits.processingCapacity]),
+) as Record<PricingTier, number>;
 
 async function refusal(promise: Promise<unknown>) {
   try {
@@ -104,7 +108,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
   function usage(capacity: Partial<Record<PricingTier, number>> = {}) {
     return new ProcessingUsage({
       prisma,
-      capacityLimits: { ...PROCESSING_CAPACITY_DEFAULTS, ...capacity },
+      capacityLimits: { ...CATALOG_CAPACITY, ...capacity },
       now: () => clock,
       log: () => {},
     });
@@ -230,34 +234,88 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(await module.reconcileStranded()).toBe(0);
   });
 
-  test("sizes reservations from declared facts, the per-video cap, and the remaining allowance", async () => {
-    clock = new Date();
+  test("sizes reservations from declared facts, the per-video cap, and the remaining credits", async () => {
+    clock = new Date("2026-10-15T12:00:00.000Z");
     const { workspace: ws } = await workspace("free");
     const module = usage({ free: 10 });
     expect((await reserve(module, ws.id, { declaredSeconds: 599.2 })).reservedSeconds).toBe(600);
-    const tooLong = await refusal(reserve(module, ws.id, { declaredSeconds: 31 * 60 }));
-    expect(tooLong).toMatchObject({ code: "upload_too_long", kind: "unprocessable", details: { maxSeconds: 1800 } });
+    const tooLong = await refusal(reserve(module, ws.id, { declaredSeconds: 61 * 60 }));
+    expect(tooLong).toMatchObject({ code: "upload_too_long", kind: "unprocessable", details: { maxSeconds: 3600 } });
     await filler(ws.id, 1500);
     const over = await refusal(reserve(module, ws.id, { declaredSeconds: 26 * 60 }));
     expect(over).toMatchObject({
-      code: "processing_quota_exhausted",
+      code: "credits_exhausted",
       kind: "payment_required",
-      details: { remainingMinutes: 25, requestedMinutes: 26, limitMinutes: 60 },
+      details: {
+        remainingCredits: 25,
+        requestedCredits: 26,
+        limitCredits: 60,
+        renewsAt: "2026-11-01T00:00:00.000Z",
+      },
     });
+    // 25 minutes and 0.5 s is 26 started minutes.
+    expect((await refusal(reserve(module, ws.id, { declaredSeconds: 25 * 60 + 0.5 }))).code).toBe("credits_exhausted");
     expect((await reserve(module, ws.id, { declaredSeconds: 25 * 60 })).reservedSeconds).toBe(1500);
-    expect((await refusal(reserve(module, ws.id))).code).toBe("processing_quota_exhausted");
+    expect((await refusal(reserve(module, ws.id))).code).toBe("credits_exhausted");
 
     const fresh = (await workspace("free")).workspace;
     // Unknown duration reserves the authorized upper bound.
-    expect((await reserve(module, fresh.id)).reservedSeconds).toBe(1800);
+    expect((await reserve(module, fresh.id)).reservedSeconds).toBe(3600);
     expect(await module.summarize(fresh.id)).toMatchObject({
-      usedMinutes: 0,
-      reservedMinutes: 30,
-      remainingMinutes: 30,
+      usedCredits: 0,
+      reservedCredits: 60,
+      remainingCredits: 0,
       inFlight: 1,
       inFlightLimit: 10,
-      maxUploadSeconds: 1800,
+      maxUploadSeconds: 3600,
     });
+  });
+
+  test("every started minute of a source is one whole credit", async () => {
+    clock = new Date();
+    const { workspace: ws } = await workspace("creator");
+    const module = usage({ creator: 100 });
+    for (const [declaredSeconds, debit] of [[1, 60], [59.99, 60], [60, 60], [60.01, 120], [30 * 60, 1800]] as const)
+      expect([declaredSeconds, (await reserve(module, ws.id, { declaredSeconds })).reservedSeconds]).toEqual([declaredSeconds, debit]);
+    // A better duration fact resizes to whole credits too.
+    const projectId = randomUUID();
+    await reserve(module, ws.id, { projectId, declaredSeconds: 600 });
+    expect((await module.resize({ projectId, seconds: 60.01 })).reservedSeconds).toBe(120);
+    const rows = await prisma.processingUsageReservation.findMany({ where: { workspaceId: ws.id } });
+    for (const usageRow of rows) expect(usageRow.reservedSeconds % 60).toBe(0);
+  });
+
+  test("sixty 1-second sources use sixty credits", async () => {
+    clock = new Date();
+    const { workspace: ws } = await workspace("free");
+    const module = usage();
+    for (let index = 0; index < 60; index += 1) {
+      const project = await measuredProject(ws.id, 1);
+      await reserve(module, ws.id, { projectId: project.id, declaredSeconds: 1 });
+      expect(await settle(module, project.id)).toEqual({ outcome: "settled", charged: true, settledSeconds: 60 });
+    }
+    expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 60, reservedCredits: 0, remainingCredits: 0 });
+    expect((await refusal(reserve(module, ws.id, { declaredSeconds: 1 }))).code).toBe("credits_exhausted");
+  });
+
+  test("the summary's credit parts sum to the limit and renew on the next UTC month", async () => {
+    clock = new Date("2026-12-15T08:30:00.000Z");
+    const { workspace: ws } = await workspace("creator");
+    const module = usage();
+    const settled = await measuredProject(ws.id, 90);
+    await reserve(module, ws.id, { projectId: settled.id, declaredSeconds: 90 });
+    await settle(module, settled.id);
+    await reserve(module, ws.id, { declaredSeconds: 61 });
+    const summary = await module.summarize(ws.id);
+    expect(summary).toMatchObject({
+      tier: "creator",
+      usedCredits: 2,
+      reservedCredits: 2,
+      limitCredits: PLAN_CATALOG.creator.limits.monthlyCredits,
+      periodStart: new Date("2026-12-01T00:00:00.000Z"),
+      renewsAt: new Date("2027-01-01T00:00:00.000Z"),
+    });
+    expect(summary.usedCredits + summary.reservedCredits + summary.remainingCredits).toBe(summary.limitCredits);
   });
 
   test("a repeated admission for the same Project returns the original reservation", async () => {
@@ -288,14 +346,14 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(refused).toHaveLength(8);
     for (const error of refused) {
       expect(error).toBeInstanceOf(ProcessingUsageError);
-      expect(error.code).toBe("processing_quota_exhausted");
+      expect(error.code).toBe("credits_exhausted");
     }
     const total = await prisma.processingUsageReservation.aggregate({
       where: { workspaceId: ws.id, state: "reserved" },
       _sum: { reservedSeconds: true },
     });
     expect(total._sum.reservedSeconds).toBe(3600);
-    expect((await module.summarize(ws.id)).remainingMinutes).toBe(0);
+    expect((await module.summarize(ws.id)).remainingCredits).toBe(0);
   });
 
   test("parallel admissions admit exactly the Processing Capacity, with retry guidance", async () => {
@@ -349,7 +407,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect((await reserve(module, ws.id, { declaredSeconds: 60 })).state).toBe("reserved");
   });
 
-  test("an ingested intake awaiting setup keeps its minutes but frees capacity", async () => {
+  test("an ingested intake awaiting setup keeps its credits but frees capacity", async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("pro");
     const module = usage({ pro: 1 });
@@ -360,23 +418,32 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       where: { id: awaiting.id },
       data: { ingestStatus: "ready", sourceDurationSeconds: 600 },
     });
-    expect(await module.summarize(ws.id)).toMatchObject({ inFlight: 0, reservedMinutes: 10 });
+    expect(await module.summarize(ws.id)).toMatchObject({ inFlight: 0, reservedCredits: 10 });
     expect((await reserve(module, ws.id, { declaredSeconds: 60 })).state).toBe("reserved");
   });
 
-  test("settlement admits a measured intake that predates the ledger", async () => {
+  test("settlement requires a live reservation and never admits on its own", async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("free");
     const module = usage();
-    const legacy = await measuredProject(ws.id, 600);
-    expect(await settle(module, legacy.id)).toEqual({ outcome: "settled", charged: true, settledSeconds: 600 });
-    expect((await row(legacy.id)).periodStart.getTime()).toBe(
-      Date.UTC(clock.getUTCFullYear(), clock.getUTCMonth(), 1),
-    );
-    const tooLong = await measuredProject(ws.id, 31 * 60);
-    const refused = await settle(module, tooLong.id);
-    expect(refused.outcome === "refused" && refused.failure.code).toBe("upload_too_long");
-    expect(await prisma.processingUsageReservation.count({ where: { projectId: tooLong.id } })).toBe(0);
+    const unreserved = await measuredProject(ws.id, 600);
+    await expect(settle(module, unreserved.id)).rejects.toThrow("processing_usage_not_reserved");
+    expect(await prisma.processingUsageReservation.count({ where: { projectId: unreserved.id } })).toBe(0);
+
+    const swept = await measuredProject(ws.id, 600);
+    await reserve(module, ws.id, { projectId: swept.id, declaredSeconds: 600 });
+    await prisma.$transaction((tx) => module.release(tx, { projectId: swept.id, reason: "reconciled_ingest_terminal" }));
+    const refused = await settle(module, swept.id);
+    expect(refused.outcome === "refused" && refused.failure).toMatchObject({
+      code: "credits_reservation_released",
+      kind: "conflict",
+    });
+    expect(await row(swept.id)).toMatchObject({
+      state: "released",
+      reason: "reconciled_ingest_terminal",
+      settledSeconds: null,
+    });
+    expect((await module.summarize(ws.id)).usedCredits).toBe(0);
   });
 
   test("resize shrinks, grows from the remaining allowance, or refuses without changing the row", async () => {
@@ -386,40 +453,43 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     const projectId = randomUUID();
     await reserve(module, ws.id, { projectId });
     expect((await module.resize({ projectId, seconds: 600 })).reservedSeconds).toBe(600);
-    expect((await module.summarize(ws.id)).remainingMinutes).toBe(50);
+    expect((await module.summarize(ws.id)).remainingCredits).toBe(50);
     expect((await module.resize({ projectId, seconds: 1200 })).reservedSeconds).toBe(1200);
-    expect((await refusal(module.resize({ projectId, seconds: 1801 }))).code).toBe("upload_too_long");
+    expect((await refusal(module.resize({ projectId, seconds: 3601 }))).code).toBe("upload_too_long");
     await filler(ws.id, 2100);
-    // 3600 - 1200 - 2100 leaves 300 seconds to grow into.
+    // 3600 - 1200 - 2100 leaves 5 credits to grow into; 1501 s needs 26 credits.
     const exhausted = await refusal(module.resize({ projectId, seconds: 1501 }));
     expect(exhausted).toMatchObject({
-      code: "processing_quota_exhausted",
-      details: { remainingMinutes: 25, requestedMinutes: 26 },
+      code: "credits_exhausted",
+      details: { remainingCredits: 25, requestedCredits: 26 },
     });
     expect((await row(projectId)).reservedSeconds).toBe(1200);
     expect((await module.resize({ projectId, seconds: 1500 })).reservedSeconds).toBe(1500);
   });
 
-  test("settlement charges the probed duration once, at the boundary, and refuses what can't fit", async () => {
+  test("settlement charges the probed duration's whole credits once, at the boundary, and refuses what can't fit", async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("free");
     const module = usage({ free: 10 });
 
+    // 500 s is 9 credits.
     const shorter = await measuredProject(ws.id, 500);
     await reserve(module, ws.id, { projectId: shorter.id, declaredSeconds: 600 });
-    expect(await settle(module, shorter.id)).toEqual({ outcome: "settled", charged: true, settledSeconds: 500 });
-    expect(await settle(module, shorter.id)).toEqual({ outcome: "settled", charged: false, settledSeconds: 500 });
+    expect(await settle(module, shorter.id)).toEqual({ outcome: "settled", charged: true, settledSeconds: 540 });
+    expect(await settle(module, shorter.id)).toEqual({ outcome: "settled", charged: false, settledSeconds: 540 });
 
+    // 700 s is 12 credits, more than its 10-credit reservation.
     const longer = await measuredProject(ws.id, 700);
     await reserve(module, ws.id, { projectId: longer.id, declaredSeconds: 600 });
-    expect((await settle(module, longer.id)).outcome).toBe("settled");
+    expect(await settle(module, longer.id)).toMatchObject({ outcome: "settled", settledSeconds: 720 });
 
-    // 3600 - 500 - 700 = 2400 remain. Reserve 600 and leave exactly 1000 more.
+    // 60 - 9 - 12 = 39 credits remain. 1600 s is 27 credits: its 10-credit
+    // reservation plus another intake's 12 leaves exactly 17 more.
     const boundary = await measuredProject(ws.id, 1600);
     await reserve(module, ws.id, { projectId: boundary.id, declaredSeconds: 600 });
-    await reserve(module, ws.id, { declaredSeconds: 800 });
-    expect(await settle(module, boundary.id)).toMatchObject({ outcome: "settled", settledSeconds: 1600 });
-    expect(await module.summarize(ws.id)).toMatchObject({ usedMinutes: 47, reservedMinutes: 14, remainingMinutes: 0 });
+    await reserve(module, ws.id, { declaredSeconds: 720 });
+    expect(await settle(module, boundary.id)).toMatchObject({ outcome: "settled", settledSeconds: 1620 });
+    expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 48, reservedCredits: 12, remainingCredits: 0 });
 
     const refused = await measuredProject(ws.id, 61);
     await prisma.processingUsageReservation.create({
@@ -431,11 +501,12 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
         reservedSeconds: 60,
       },
     });
+    // 61 s is 2 credits; its 1-credit reservation can't grow.
     const outcome = await settle(module, refused.id);
     expect(outcome.outcome).toBe("refused");
     if (outcome.outcome === "refused")
-      expect(outcome.failure.code).toBe("processing_quota_exhausted");
-    expect(await row(refused.id)).toMatchObject({ state: "released", reason: "processing_quota_exhausted" });
+      expect(outcome.failure.code).toBe("credits_exhausted");
+    expect(await row(refused.id)).toMatchObject({ state: "released", reason: "credits_exhausted" });
 
     const pending = await measuredProject(ws.id, 60, { ingestStatus: "queued" });
     await prisma.processingUsageReservation.update({
@@ -464,6 +535,13 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     const refused = await settle(module, restricted.id);
     expect(refused.outcome === "refused" && refused.failure.code).toBe("project_access_denied");
     expect((await row(restricted.id)).state).toBe("released");
+
+    // A restricted Workspace admits nothing new; replays and the ledger stay intact.
+    expect(await refusal(reserve(module, ws.id, { declaredSeconds: 60 }))).toMatchObject({
+      code: "project_access_denied",
+      kind: "forbidden",
+    });
+    expect(await prisma.processingUsageReservation.count({ where: { workspaceId: ws.id, state: "reserved" } })).toBe(0);
   });
 
   test("no speech-to-text Workflow Run exists without settled usage", async () => {
@@ -502,25 +580,40 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     clock = new Date("2026-02-01T00:00:05.000Z");
     expect((await settle(module, project.id)).outcome).toBe("settled");
     expect((await row(project.id)).periodStart.toISOString()).toBe("2026-01-01T00:00:00.000Z");
-    expect(await module.summarize(ws.id)).toMatchObject({ usedMinutes: 0, remainingMinutes: 60 });
+    expect(await module.summarize(ws.id)).toMatchObject({
+      usedCredits: 0,
+      remainingCredits: 60,
+      periodStart: new Date("2026-02-01T00:00:00.000Z"),
+      renewsAt: new Date("2026-03-01T00:00:00.000Z"),
+    });
     clock = new Date("2026-01-15T00:00:00.000Z");
-    expect(await module.summarize(ws.id)).toMatchObject({ usedMinutes: 10, remainingMinutes: 50 });
+    expect(await module.summarize(ws.id)).toMatchObject({
+      usedCredits: 10,
+      remainingCredits: 50,
+      renewsAt: new Date("2026-02-01T00:00:00.000Z"),
+    });
 
     clock = new Date("2026-02-10T00:00:00.000Z");
     await filler(ws.id, 3600);
-    expect((await refusal(reserve(module, ws.id))).code).toBe("processing_quota_exhausted");
+    expect((await refusal(reserve(module, ws.id))).code).toBe("credits_exhausted");
     await prisma.workspace.update({ where: { id: ws.id }, data: { pricingTier: "creator" } });
-    expect((await reserve(module, ws.id)).reservedSeconds).toBe(90 * 60);
+    expect((await reserve(module, ws.id)).reservedSeconds).toBe(120 * 60);
     expect(await module.summarize(ws.id)).toMatchObject({
       tier: "creator",
-      limitMinutes: 600,
-      maxUploadSeconds: 90 * 60,
+      usedCredits: 0,
+      reservedCredits: 180,
+      limitCredits: 300,
+      remainingCredits: 120,
+      maxUploadSeconds: 120 * 60,
       inFlightLimit: 5,
     });
-    for (const [tier, limitMinutes] of [["pro", 1800], ["business", 1800]] as const) {
+    for (const [tier, limitCredits, maxUploadSeconds] of [["pro", 900, 10_800], ["business", 1800, 10_800]] as const) {
       await prisma.workspace.update({ where: { id: ws.id }, data: { pricingTier: tier } });
-      expect((await module.summarize(ws.id)).limitMinutes).toBe(limitMinutes);
+      expect(await module.summarize(ws.id)).toMatchObject({ limitCredits, maxUploadSeconds, reservedCredits: 180 });
     }
+    // A downgrade below what's already held clamps what's left at zero.
+    await prisma.workspace.update({ where: { id: ws.id }, data: { pricingTier: "free" } });
+    expect(await module.summarize(ws.id)).toMatchObject({ limitCredits: 60, reservedCredits: 180, remainingCredits: 0 });
   });
 
   test("settled usage survives Project deletion and actor removal; refunds are audited", async () => {
@@ -552,7 +645,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     const refunded = await module.refund({ projectId: project.id, actorUserId: operator, reason: "duplicate charge" });
     expect(refunded.state).toBe("refunded");
     expect(await row(project.id)).toMatchObject({ refundedByUserId: operator, reason: "duplicate charge" });
-    expect((await module.summarize(ws.id)).usedMinutes).toBe(0);
+    expect((await module.summarize(ws.id)).usedCredits).toBe(0);
     const reserved = await reserve(module, ws.id, { declaredSeconds: 60 });
     expect(
       (await refusal(module.refund({ projectId: reserved.projectId, actorUserId: operator, reason: "no" }))).code,
@@ -580,7 +673,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     });
     const blocker = await filler(ws.id, 3000);
     const retry = () => ingest.retry({ projectId: project.id, workspaceId: ws.id, actorUserId: user.id });
-    expect((await refusal(retry())).code).toBe("processing_quota_exhausted");
+    expect((await refusal(retry())).code).toBe("credits_exhausted");
     expect(await prisma.ingestJob.count({ where: { projectId: project.id } })).toBe(1);
     expect((await row(project.id)).state).toBe("released");
 
@@ -598,22 +691,23 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
   test("link and RSS intake reserve in their acceptance transactions", async () => {
     clock = new Date();
     const { workspace: ws, scope } = await workspace("free");
+    const rss = await projectService.importResolvedRssEpisodes(scope, {
+      rssUrl: "https://example.test/feed.xml",
+      episodes: [
+        { id: "a", title: "A", enclosureUrl: "https://example.test/a.mp3", durationSeconds: 40 * 60 },
+        { id: "b", title: "B", enclosureUrl: "https://example.test/b.mp3", durationSeconds: 30 * 60 },
+      ],
+    });
+    // 20 credits remain after the first: the second is reported, not admitted.
+    expect(rss.count).toBe(1);
+    expect(rss.notAdmitted).toEqual([{ episodeId: "b", code: "credits_exhausted" }]);
+
+    // A link of unknown length holds what's left, up to the per-video cap.
     const link = await projectService.queueLinkIngest(scope, {
       url: "https://www.dropbox.com/s/abc/video.mp4",
       commitToken: randomUUID(),
     });
-    expect(await row(link.project.id)).toMatchObject({ state: "reserved", intakeKind: "link", reservedSeconds: 1800 });
-
-    const rss = await projectService.importResolvedRssEpisodes(scope, {
-      rssUrl: "https://example.test/feed.xml",
-      episodes: [
-        { id: "a", title: "A", enclosureUrl: "https://example.test/a.mp3", durationSeconds: 20 * 60 },
-        { id: "b", title: "B", enclosureUrl: "https://example.test/b.mp3", durationSeconds: 20 * 60 },
-      ],
-    });
-    // 30 minutes remain: one episode fits, the other is reported, not admitted.
-    expect(rss.count).toBe(1);
-    expect(rss.notAdmitted).toEqual([{ episodeId: "b", code: "processing_quota_exhausted" }]);
+    expect(await row(link.project.id)).toMatchObject({ state: "reserved", intakeKind: "link", reservedSeconds: 1200 });
     await expect(
       projectService.queueLinkIngest(scope, { url: "https://www.dropbox.com/s/def/video.mp4", commitToken: randomUUID() }),
     ).rejects.toBeInstanceOf(ProcessingUsageError);
@@ -689,7 +783,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     // Drive's duration is checked under the tier's per-video cap, and a file
     // Drive refuses creates nothing.
     await expect(
-      projectService.queueDriveIngest(scope, { fileId, accessToken }, { files: files(31 * 60) }),
+      projectService.queueDriveIngest(scope, { fileId, accessToken }, { files: files(61 * 60) }),
     ).rejects.toBeInstanceOf(ProcessingUsageError);
     const expired = new DriveSourceError("drive_token_expired");
     expect(
@@ -719,7 +813,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     };
     const input = { fileId, accessToken: "ya29.reader-token" };
 
-    // Two hours exceeds the free tier's 30-minute per-video limit.
+    // Two hours exceeds the free tier's 60-minute per-video limit.
     expect(
       await refusal(projectService.queueDriveIngest(scope, input, { files: drive("7200000") })),
     ).toMatchObject({ code: "upload_too_long" });
@@ -805,10 +899,10 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     await filler(ws.id, 2400);
     const tooLong = await ready(1500, 300);
     const browser = await refusal(projectService.triggerGeneration(scope, tooLong.id, request, randomUUID()));
-    expect(browser.code).toBe("processing_quota_exhausted");
+    expect(browser.code).toBe("credits_exhausted");
     expect(await prisma.project.findUniqueOrThrow({ where: { id: tooLong.id } })).toMatchObject({
       ingestStatus: "failed",
-      ingestErrorCode: "processing_quota_exhausted",
+      ingestErrorCode: "credits_exhausted",
     });
     expect((await row(tooLong.id)).state).toBe("released");
     expect(
@@ -822,21 +916,21 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
         mutation: { clientIdempotencyKey: randomUUID() },
       }),
     );
-    expect(viaMcp.code).toBe("processing_quota_exhausted");
+    expect(viaMcp.code).toBe("credits_exhausted");
     const replayKey = randomUUID();
     const replay = await refusal(
       projectService.triggerGeneration(scope, mcp.id, request, randomUUID(), {
         mutation: { clientIdempotencyKey: replayKey },
       }),
     );
-    expect(replay).toMatchObject({ code: "processing_quota_exhausted", kind: "payment_required" });
+    expect(replay).toMatchObject({ code: "credits_exhausted", kind: "payment_required" });
     expect((await row(mcp.id)).state).toBe("released");
     expect(
       (await prisma.project.findUniqueOrThrow({ where: { id: mcp.id } })).ingestErrorCode,
-    ).toBe("processing_quota_exhausted");
+    ).toBe("credits_exhausted");
   });
 
-  test("Upload Session open reserves declared minutes and terminal compensation releases them", async () => {
+  test("Upload Session open reserves declared credits and terminal compensation releases them", async () => {
     clock = new Date();
     const { workspace: ws, user } = await workspace("free");
     const storage: UploadSessionStorage = {
@@ -871,7 +965,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
         generation: { languageCode: "en", contentPack: CONTENT_PACK },
         declaredDurationSeconds,
       });
-    const refused = await refusal(open(31 * 60));
+    const refused = await refusal(open(61 * 60));
     expect(refused.code).toBe("upload_too_long");
     expect(
       await prisma.uploadSession.findFirstOrThrow({ where: { workspaceId: ws.id } }),

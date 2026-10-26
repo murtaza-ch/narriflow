@@ -2,7 +2,7 @@ import { zoomService } from "./zoom.service";
 import { ZoomError } from "./zoom";
 import { workspaceService, WorkspaceOperationError } from "./workspace.service";
 import { BrandProfileMembershipError, BrandProfileMissingAssetError, BrandProfileNotFoundError } from "./brand-profile.service";
-import { BrandAccessError } from "./brand-ownership";
+import { isBrandAccessRefusal } from "./brand-ownership";
 import { ProgramWriteDisabledError } from "./program-rollout";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
@@ -27,6 +27,8 @@ import { projectService } from "./project.service";
 import { lockLiveRecipe, recipeService, type ResolvedRecipe } from "./recipe.service";
 import { pauseGrantsWhoseRuleChanged, returnGrantPosts, revokeGrantsInTransaction } from "./standing-grant";
 import { flushWorkspaceEvents } from "./workspace-event";
+import { requirePlanFeature } from "./plan-features";
+import { autopilotPlanPauseReason, holdsAutopilotSlot, lockWorkspaceAutopilotRules, requireAutopilotRuleSlot } from "./autopilot-plan";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -140,7 +142,7 @@ function isBrandProfileRefusal(error: unknown) {
     error instanceof BrandProfileNotFoundError ||
     error instanceof BrandProfileMissingAssetError ||
     error instanceof BrandProfileMembershipError ||
-    error instanceof BrandAccessError ||
+    isBrandAccessRefusal(error) ||
     error instanceof ProgramWriteDisabledError
   );
 }
@@ -247,7 +249,9 @@ export class AutopilotService {
     /** The calling API key or connection, when there is one (the browser has none). */
     credential?: { scopes: readonly string[] },
   ): Promise<AutopilotRuleSnapshot> {
-    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
+    const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
+    // Refused before the feed is fetched; the slot count is checked again with the write.
+    requirePlanFeature(actor.pricingTier, "automation.autopilot");
     const parsed = autopilotRuleInputSchema.parse(input);
     let feed: Awaited<ReturnType<typeof fetchRssFeed>> | null = null;
     const prepare = async () => {
@@ -261,7 +265,8 @@ export class AutopilotService {
     const prisma = requirePrisma();
     const create = async (tx: Prisma.TransactionClient) => {
       // Serialize the workspace rule budget with its write, including distinct keys.
-      await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id" = ${scope.workspaceId}::uuid FOR UPDATE`;
+      await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
+      await requireAutopilotRuleSlot(tx, { workspaceId: scope.workspaceId, tier: actor.pricingTier });
       if (
         (await tx.autopilotRule.count({
           where: { workspaceId: scope.workspaceId },
@@ -340,8 +345,10 @@ export class AutopilotService {
     input: AutopilotRuleUpdate,
     credential?: { scopes: readonly string[] },
   ): Promise<AutopilotRuleSnapshot> {
-    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
+    const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const parsed = autopilotRuleUpdateSchema.parse(input);
+    // A new source is new automation; renaming or pausing a rule needs no plan.
+    if (parsed.rssUrl || parsed.zoomConnectionId) requirePlanFeature(actor.pricingTier, "automation.autopilot");
     const prisma = requirePrisma();
     const existing = await prisma.autopilotRule.findFirst({
       where: {
@@ -366,6 +373,8 @@ export class AutopilotService {
     const futureOnly = mode === "future_only";
     const head = feed?.episodes[0] ?? null;
     const row = await prisma.$transaction(async (tx) => {
+      // The Workspace's rules first, so a resume counts active rules with its write.
+      await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
       if (parsed.recipeId !== undefined) await lockLiveRecipe(tx, scope.workspaceId, parsed.recipeId);
       // Revoke against the current row: a worker may claim after the initial read.
       const current = await tx.autopilotRule.update({
@@ -373,6 +382,9 @@ export class AutopilotService {
         data: { claimToken: null, leaseExpiresAt: null },
         select: { status: true, pauseKind: true, zoomConnectionId: true },
       });
+      const resumes = !holdsAutopilotSlot(current.status) && (parsed.status === "active" ||
+        (current.status === "paused" && current.pauseKind === "brand_profile" && parsed.recipeId !== undefined));
+      if (resumes) await requireAutopilotRuleSlot(tx, { workspaceId: scope.workspaceId, tier: actor.pricingTier, ruleId });
       if (existing.sourceKind === "zoom" && (parsed.zoomConnectionId !== undefined || parsed.status === "active")) {
         const connectionId = parsed.zoomConnectionId ?? current.zoomConnectionId;
         if (!connectionId) throw new ZoomError("zoom_connection_unavailable");
@@ -472,9 +484,12 @@ export class AutopilotService {
     ruleId: string,
     mutation?: IntegrationMutation,
   ): Promise<AutopilotRuleSnapshot> {
-    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
+    const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
+    // Running a rule now is new automation, and turns a paused rule back on.
+    requirePlanFeature(actor.pricingTier, "automation.autopilot");
     const prisma = requirePrisma();
     const trigger = async (tx: Prisma.TransactionClient) => {
+      await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
       // A worker claim must remain visible before deciding to reset the rule.
       await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid FOR UPDATE`;
       const existing = await tx.autopilotRule.findFirst({
@@ -492,6 +507,9 @@ export class AutopilotService {
         existing.leaseExpiresAt > new Date()
       ) {
         return toSnapshot(existing);
+      }
+      if (!holdsAutopilotSlot(existing.status)) {
+        await requireAutopilotRuleSlot(tx, { workspaceId: scope.workspaceId, tier: actor.pricingTier, ruleId });
       }
 
       const row = await tx.autopilotRule.update({
@@ -545,15 +563,20 @@ export class AutopilotService {
    * it, clearing any pause reason. */
   async takeOver(scope: ActorScope, ruleId: string): Promise<AutopilotRuleSnapshot> {
     // Only Owners and Admins hold workspace.manage; both can process media.
-    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "workspace.manage");
+    const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "workspace.manage");
     if (!UUID_PATTERN.test(ruleId)) throw new AutopilotError("autopilot_rule_not_found");
+    requirePlanFeature(actor.pricingTier, "automation.autopilot");
     return requirePrisma().$transaction(async (tx) => {
+      await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
       await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid FOR UPDATE`;
       const existing = await tx.autopilotRule.findFirst({
         where: { id: ruleId, workspaceId: scope.workspaceId },
-        select: { id: true, sourceKind: true, zoomConnectionId: true },
+        select: { id: true, sourceKind: true, zoomConnectionId: true, status: true },
       });
       if (!existing) throw new AutopilotError("autopilot_rule_not_found");
+      if (!holdsAutopilotSlot(existing.status)) {
+        await requireAutopilotRuleSlot(tx, { workspaceId: scope.workspaceId, tier: actor.pricingTier, ruleId });
+      }
       if (existing.sourceKind === "zoom") await zoomService.requireConnection(scope, existing.zoomConnectionId!);
       // Revoke any live claim as updateRule does: a run that already judged
       // the previous member unavailable must not pause the rule on the new one.
@@ -745,6 +768,12 @@ export class AutopilotService {
     const rule = await prisma.autopilotRule.findFirst({ where: this.claimWhere(claim), include: { recipe: true } });
     if (!rule) throw new AutopilotClaimLost(claim.ruleId, "read");
 
+    // Before any fetch or import: a rule the plan no longer runs pauses once, and spends nothing.
+    const planReason = await autopilotPlanPauseReason(prisma, rule);
+    if (planReason) {
+      await this.pauseClaim(claim, "plan", planReason);
+      return { imported: 0 };
+    }
     const scope = await this.actingScope(rule);
     if (!scope) {
       await this.pauseClaim(claim, "acting_member", await this.actingMemberLostReason(rule));

@@ -2,15 +2,89 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import Stripe from "stripe";
 import {
+  BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS,
+  PLAN_CATALOG,
+} from "@narriflow/validators";
+import {
   WORKSPACE_BILLING_STRIPE_API_VERSION,
 } from "./billing.service";
 import { createWorkspaceBillingStripeContractHarness } from "./workspace-billing.stripe-test-support";
+import { BILLING_INTERVALS, PAID_PRICING_TIERS } from "./workspace-billing.service";
 
 const enabled = process.env.RUN_STRIPE_SANDBOX_CONTRACTS === "1";
 const sandboxDescribe = enabled ? describe : describe.skip;
 setDefaultTimeout(120_000);
 
 sandboxDescribe("Workspace Billing Stripe sandbox", () => {
+  test("configured prices and portal match the plan catalog (read-only)", async () => {
+    const key = process.env.STRIPE_SECRET_KEY ?? "";
+    if (!key.startsWith("sk_test_")) {
+      throw new Error("Workspace Billing sandbox contracts require an sk_test_ key");
+    }
+    const stripe = new Stripe(key, {
+      apiVersion: WORKSPACE_BILLING_STRIPE_API_VERSION,
+      maxNetworkRetries: 0,
+      timeout: 10_000,
+    });
+    const stripeInterval = { monthly: "month", annual: "year" } as const;
+    const planProducts = new Set<string>();
+    for (const tier of PAID_PRICING_TIERS) {
+      for (const interval of BILLING_INTERVALS) {
+        const priceId =
+          process.env[`STRIPE_PRICE_${tier.toUpperCase()}_${interval.toUpperCase()}`];
+        if (!priceId) throw new Error(`Missing ${tier}/${interval} price`);
+        const price = await stripe.prices.retrieve(priceId);
+        expect({
+          active: price.active,
+          currency: price.currency,
+          unitAmount: price.unit_amount,
+          interval: price.recurring?.interval,
+          usageType: price.recurring?.usage_type,
+        }).toEqual({
+          active: true,
+          currency: "usd",
+          unitAmount:
+            interval === "monthly"
+              ? PLAN_CATALOG[tier].monthlyPriceCents
+              : PLAN_CATALOG[tier].annualPriceCents,
+          interval: stripeInterval[interval],
+          usageType: "licensed",
+        });
+        planProducts.add(typeof price.product === "string" ? price.product : price.product.id);
+      }
+    }
+    // One plans product, so the portal can schedule every downgrade.
+    expect(planProducts.size).toBe(1);
+    for (const interval of BILLING_INTERVALS) {
+      const priceId = process.env[`STRIPE_PRICE_BUSINESS_SEAT_${interval.toUpperCase()}`];
+      if (!priceId) throw new Error(`Missing seat/${interval} price`);
+      const price = await stripe.prices.retrieve(priceId);
+      expect(price.unit_amount).toBe(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS[interval]);
+      expect(price.recurring?.interval).toBe(stripeInterval[interval]);
+      expect(planProducts.has(
+        typeof price.product === "string" ? price.product : price.product.id,
+      )).toBe(false);
+    }
+
+    const portalId = process.env.STRIPE_PORTAL_CONFIGURATION_ID;
+    if (!portalId?.startsWith("bpc_")) {
+      throw new Error("STRIPE_PORTAL_CONFIGURATION_ID is required");
+    }
+    const portal = await stripe.billingPortal.configurations.retrieve(portalId);
+    const update = portal.features.subscription_update;
+    expect(portal.active).toBe(true);
+    expect(update.enabled).toBe(true);
+    expect(update.proration_behavior).toBe("always_invoice");
+    expect(update.default_allowed_updates).not.toContain("quantity");
+    expect(
+      update.schedule_at_period_end.conditions.map((condition) => condition.type).sort(),
+    ).toEqual(["decreasing_item_amount", "shortening_interval"]);
+    expect((update.products ?? []).map((product) => product.product)).toEqual([
+      ...planProducts,
+    ]);
+    expect(portal.features.subscription_cancel.mode).toBe("at_period_end");
+  });
+
   test("replays customer and Checkout operations and exercises portal and seat contracts", async () => {
     const key = process.env.STRIPE_SECRET_KEY ?? "";
     if (!key.startsWith("sk_test_")) {
@@ -72,6 +146,7 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
         priceId: checkoutPrice,
         successUrl: "https://app.narriflow.test/settings/billing?checkout=return",
         cancelUrl: "https://app.narriflow.test/settings/billing?checkout=cancelled",
+        expiresAt: new Date(Math.floor(Date.now() / 1000) * 1000 + 31 * 60_000),
       };
       const firstCheckout = await adapter.createCheckoutSession!(
         checkoutInput,
@@ -88,6 +163,7 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
         paymentStatus: "unpaid",
         workspaceId,
         attemptId: checkoutInput.attemptId,
+        expiresAt: checkoutInput.expiresAt,
       });
       expect(
         await adapter.findCheckoutSessionsByAttempt!({

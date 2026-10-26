@@ -5,6 +5,7 @@ import type { BrandActorScope } from "./brand-ownership";
 import { ThumbnailPreparationError, validateThumbnailSelection, validateProviderThumbnailAsset, type ThumbnailSelection } from "./thumbnail-frame-preparation";
 import type { ReviewApprovalPrincipal, ReviewApprovalResult } from "./review-approval-gate";
 import { ExpectedDomainFailureError, type ExpectedDomainFailureCatalog } from "./expected-domain-failure";
+import { requirePlanFeature } from "./plan-features";
 
 export type FrozenPublicationState = {
 	deliveryMode?: import("@narriflow/validators").SocialDeliveryMode;
@@ -120,6 +121,8 @@ export interface PublicationFreezePorts {
 		expiresAt: Date | null;
 		canRefresh: boolean;
 	} | null>;
+	/** Refuses an account the Workspace's plan does not let publish; see `requirePublishableSocialAccount`. */
+	requirePublishableAccount(input: { workspaceId: string; accountId: string; tier: string }): Promise<void>;
 	readExport(exportId: string): Promise<PublicationExportFacts | null>;
 	createExport(input: SchedulePublicationInput): Promise<string>;
 	tiktokOptions(input: { workspaceId: string; accountId: string }): Promise<{
@@ -299,6 +302,7 @@ async function freezePublication(
 		if (!socialAccountCanPublishAt(account, now)) {
 			throw new PublicationIntentStateError("social_account_expired", "The selected social account token has expired");
 		}
+		await ports.requirePublishableAccount({ workspaceId: input.workspaceId, accountId: input.accountId, tier: actor.pricingTier });
 	}
 	const deliveryMode = input.deliveryMode ?? "direct";
 	const providerSettings: Prisma.JsonObject = {
@@ -315,6 +319,8 @@ async function freezePublication(
 	}
 	let thumbnailAssetId: string | null = null;
 	if (input.thumbnail) {
+		// Every thumbnail a post carries, uploaded, generated or a chosen frame, is a custom thumbnail.
+		requirePlanFeature(actor.pricingTier, "publishing.customThumbnails");
 		const normalized = validateThumbnailSelection({ platform: input.platform, selection: input.thumbnail });
 		const asset = await ports.readThumbnailAsset({ actor, selection: input.thumbnail });
 		if (!asset) throw new ThumbnailPreparationError("thumbnail_asset_unavailable", "The selected thumbnail is missing or was deleted");
@@ -454,6 +460,8 @@ export function createSocialPublicationScheduling(dependencies: {
 							"Choose a future publish time",
 						);
 					}
+					// New publishing needs the plan; replays above and cancellation do not.
+					requirePlanFeature(actor.pricingTier, "publishing.schedule");
 					await input.beforeAccept?.();
 					const frozen = await freezePublication(input, actor, dependencies.freezePorts, dependencies.now());
 					const review = await dependencies.authorizeReview({

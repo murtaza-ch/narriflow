@@ -3,11 +3,11 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
-import { buildGenerationContentPack, MAX_RECIPES_PER_WORKSPACE, type FinishingSettingsInput } from "@narriflow/validators";
+import { buildGenerationContentPack, creditDebitSeconds, MAX_RECIPES_PER_WORKSPACE, processingPeriodStart, type FinishingSettingsInput } from "@narriflow/validators";
 import { AutopilotService } from "./autopilot.service";
 import { generateClips, submitVideo } from "./integration-commands";
 import { OperationIdempotencyConflictError } from "./operation-receipt";
-import { onRecipeContentChanged, RecipeError, recipeService } from "./recipe.service";
+import { onRecipeContentChanged, recipeService } from "./recipe.service";
 
 const databaseUrl = process.env.INTEGRATION_TEST_DATABASE_URL;
 const schema = process.env.INTEGRATION_TEST_DATABASE_SCHEMA;
@@ -110,9 +110,10 @@ describeDb("Recipes on PostgreSQL", () => {
 
     test("finishing needs the plan that runs it, at Recipe save as at rule save; a Workspace holds a bounded number", async () => {
       const creator = await workspace("creator");
-      await expect(recipeService.create(creator.scope, input("Finished", 10, FINISHING))).rejects.toMatchObject({ code: "recipe_finishing_plan_required" });
+      const finishingRefusal = { code: "plan_feature_required", kind: "payment_required", details: { feature: "campaign.operations", currentTier: "creator", requiredTier: "pro" } };
+      await expect(recipeService.create(creator.scope, input("Finished", 10, FINISHING))).rejects.toMatchObject(finishingRefusal);
       const plain = await recipeService.create(creator.scope, input("Plain"));
-      await expect(recipeService.update(creator.scope, plain.id, { expectedRevision: 1, finishing: FINISHING })).rejects.toBeInstanceOf(RecipeError);
+      await expect(recipeService.update(creator.scope, plain.id, { expectedRevision: 1, finishing: FINISHING })).rejects.toMatchObject(finishingRefusal);
       expect((await recipeService.get(creator.scope, plain.id)).revision).toBe(1);
 
       const owner = await workspace();
@@ -251,6 +252,9 @@ describeDb("Recipes on PostgreSQL", () => {
       const owner = await workspace();
       const recipe = await recipeService.create(owner.scope, input("Generate", 6, FINISHING));
       const project = await prisma.project.create({ data: { workspaceId: owner.workspaceId, createdByUserId: owner.user.id, title: "Ready", sourceMediaUrl: "https://example.test/ready.mp4", sourceDurationSeconds: 60, ingestStatus: "ready" } });
+      // Every accepted intake holds a credit reservation until speech-to-text settles it.
+      await prisma.processingUsageReservation.create({ data: { projectId: project.id, workspaceId: owner.workspaceId, actorUserId: owner.user.id, intakeKind: "upload",
+        periodStart: processingPeriodStart(new Date()), reservedSeconds: creditDebitSeconds(60) } });
       const key = `rest-${randomUUID()}`;
       const generate = () => generateClips(owner.scope, { projectId: project.id, recipeId: recipe.id, forceRegenerate: false }, { clientIdempotencyKey: key }, CREDENTIAL);
 

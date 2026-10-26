@@ -8,6 +8,7 @@ import {
 	createSocialPublicationAttempt,
 	PublicationClaimLostError,
 	type PublicationAttemptSeed,
+	type PublicationPlanRefusal,
 } from "./social-publication-attempt";
 import type { PublishSocialAccount } from "./social-oauth.service";
 
@@ -79,6 +80,7 @@ function createAttemptHarness(
 	credentialsLoad: (
 		accountId: string,
 	) => Promise<PublishSocialAccount | null> = async () => null,
+	planRefusal: PublicationPlanRefusal | null = null,
 ) {
 	const store = createInMemorySocialPublicationAttemptStore([attemptSeed]);
 	const diagnostics: Array<Record<string, unknown>> = [];
@@ -93,6 +95,7 @@ function createAttemptHarness(
 			[attemptSeed.frozen.platform]: platform,
 		}),
 		credentials: { load: credentialsLoad },
+		planEligibility: { refusal: async () => planRefusal },
 		checkpointCipher: {
 			seal: (value) => `sealed:${JSON.stringify(value)}`,
 			open: (value) => JSON.parse(value.slice("sealed:".length)),
@@ -169,6 +172,63 @@ describe("Social Publication Attempt", () => {
 				errorCode: "social_account_reconnect_required",
 			},
 		});
+	});
+
+	test("a post the plan no longer allows ends before any provider call, as an actionable outcome", async () => {
+		let providerCalls = 0;
+		const platform = createDeterministicPublicationPlatform([
+			{ kind: "accepted", receipt: { receiptId: "must-not-submit", platformPostId: "must-not-submit", externalUrl: null } },
+		]);
+		const counted = {
+			...platform,
+			async publish(...args: Parameters<typeof platform.publish>) {
+				providerCalls += 1;
+				return platform.publish(...args);
+			},
+		};
+		for (const refusal of ["publication_plan_required", "publication_account_beyond_plan", "publication_thumbnail_plan_required"] as const) {
+			providerCalls = 0;
+			const { attempt, store } = createAttemptHarness(counted, seed, 12, {}, async () => null, refusal);
+			const result = await attempt.execute({
+				attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+				signal: new AbortController().signal,
+			});
+			expect(result).toMatchObject({ kind: "failed", code: refusal });
+			expect(providerCalls).toBe(0);
+			expect(await store.inspect("attempt-1")).toMatchObject({
+				socialPost: { status: "failed", errorCode: refusal },
+			});
+		}
+	});
+
+	test("work already submitted still reconciles after the plan is lost", async () => {
+		let publishCalls = 0;
+		let reconcileCalls = 0;
+		const platform = {
+			capabilities: createDeterministicPublicationPlatform([]).capabilities,
+			async publish() {
+				publishCalls += 1;
+				throw new Error("must not publish");
+			},
+			async reconcile() {
+				reconcileCalls += 1;
+				return { kind: "accepted" as const, receipt: { receiptId: "receipt-1", platformPostId: "post-1", externalUrl: null } };
+			},
+		};
+		const submittedSeed: PublicationAttemptSeed = {
+			...seed,
+			socialPost: { ...seed.socialPost, status: "processing" },
+			attempt: { ...seed.attempt, phase: "processing", outcome: "pending" },
+			checkpointKind: "provider_processing",
+			sealedCheckpoint: 'sealed:{"operationId":"provider-operation-1"}',
+		};
+		const { attempt } = createAttemptHarness(platform, submittedSeed, 12, {}, async () => null, "publication_plan_required");
+		await expect(attempt.execute({
+			attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+			signal: new AbortController().signal,
+		})).resolves.toMatchObject({ kind: "posted" });
+		expect(publishCalls).toBe(0);
+		expect(reconcileCalls).toBe(1);
 	});
 
 	test("atomically settles accepted evidence and replays without another provider call", async () => {

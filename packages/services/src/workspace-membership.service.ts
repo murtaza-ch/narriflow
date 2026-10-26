@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Prisma, WorkspaceRole } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 
+import { requirePlanFeature } from "./plan-features";
 import { pauseGrantsOfGranter } from "./standing-grant";
 import {
   WorkspaceOperationError,
@@ -20,9 +21,34 @@ function isBillable(role: WorkspaceRole) {
   return role === "admin" || role === "editor";
 }
 
-async function requireBillableAdditionAllowed(
+const ROLE_RANK: Record<WorkspaceRole, number> = {
+  viewer: 0,
+  editor: 1,
+  admin: 2,
+  owner: 3,
+};
+
+/**
+ * Whether a role change grants more privilege. Below the team-members plan
+ * only cleanup is allowed: removals and demotions. Any elevation, with or
+ * without a seat change, needs the plan.
+ */
+export function isWorkspaceRoleElevation(
+  from: WorkspaceRole,
+  to: WorkspaceRole,
+): boolean {
+  return ROLE_RANK[to] > ROLE_RANK[from];
+}
+
+/**
+ * Re-checked inside the writing transaction: a new member or a role
+ * elevation needs a plan with team members and an active Workspace; adding a
+ * billable seat also needs billing that can take a seat change.
+ */
+async function requireMemberGrowthAllowed(
   tx: Prisma.TransactionClient,
   workspaceId: string,
+  input: { addsSeat: boolean },
 ) {
   const workspace = await tx.workspace.findUnique({
     where: { id: workspaceId },
@@ -32,19 +58,28 @@ async function requireBillableAdditionAllowed(
       billingAccount: { select: { health: true } },
     },
   });
-  if (
-    !workspace ||
-    workspace.status !== "active" ||
-    workspace.pricingTier !== "business"
-  ) {
+  if (!workspace) {
     throw new WorkspaceOperationError(
-      "workspace_paid_members_unavailable",
-      "This workspace cannot add paid members right now",
+      "workspace_members_unavailable",
+      "This workspace cannot accept members right now",
     );
   }
+  requirePlanFeature(workspace.pricingTier, "workspace.members");
+  if (workspace.status !== "active") {
+    throw input.addsSeat
+      ? new WorkspaceOperationError(
+          "workspace_paid_members_unavailable",
+          "This workspace cannot add paid members right now",
+        )
+      : new WorkspaceOperationError(
+          "workspace_members_unavailable",
+          "This workspace cannot accept members right now",
+        );
+  }
   if (
-    workspace.billingAccount?.health === "attention_required" ||
-    workspace.billingAccount?.health === "payment_action_required"
+    input.addsSeat &&
+    (workspace.billingAccount?.health === "attention_required" ||
+      workspace.billingAccount?.health === "payment_action_required")
   ) {
     throw new WorkspaceOperationError(
       "workspace_billing_action_required",
@@ -53,16 +88,27 @@ async function requireBillableAdditionAllowed(
   }
 }
 
-async function markSeatCountChanged(
+/**
+ * Every membership change wakes Workspace Billing: billable changes converge
+ * seats, and any change can lift or apply the below-Business member
+ * restriction in the access projection.
+ */
+async function markMembershipChanged(
   tx: Prisma.TransactionClient,
   workspaceId: string,
-  delta: number,
+  seatDelta: number,
 ) {
-  if (delta === 0) return;
+  if (seatDelta === 0) {
+    await tx.workspaceBillingAccount.updateMany({
+      where: { workspaceId },
+      data: { nextReconcileAt: new Date() },
+    });
+    return;
+  }
   await tx.workspaceBillingAccount.update({
     where: { workspaceId },
     data: {
-      desiredAdditionalSeats: { increment: delta },
+      desiredAdditionalSeats: { increment: seatDelta },
       seatRevision: { increment: 1 },
       nextReconcileAt: new Date(),
     },
@@ -98,11 +144,8 @@ export class WorkspaceMembershipService {
         "Sign in with the email address this invitation was sent to",
       );
     }
-    if (
-      (invite.workspace.pricingTier !== "business" ||
-        invite.workspace.status !== "active") &&
-      !(invite.role === "viewer" && invite.workspace.status === "restricted")
-    ) {
+    requirePlanFeature(invite.workspace.pricingTier, "workspace.members");
+    if (invite.workspace.status !== "active") {
       throw new WorkspaceOperationError(
         "workspace_members_unavailable",
         "This workspace cannot accept members right now",
@@ -132,9 +175,9 @@ export class WorkspaceMembershipService {
           "This invitation is no longer available",
         );
       }
-      if (isBillable(fresh.role)) {
-        await requireBillableAdditionAllowed(tx, invite.workspaceId);
-      }
+      await requireMemberGrowthAllowed(tx, invite.workspaceId, {
+        addsSeat: isBillable(fresh.role),
+      });
       const created = await tx.workspaceMember.create({
         data: { workspaceId: invite.workspaceId, userId, role: fresh.role },
       });
@@ -142,7 +185,7 @@ export class WorkspaceMembershipService {
         where: { id: invite.id },
         data: { acceptedAt: new Date() },
       });
-      await markSeatCountChanged(
+      await markMembershipChanged(
         tx,
         invite.workspaceId,
         isBillable(fresh.role) ? 1 : 0,
@@ -194,12 +237,14 @@ export class WorkspaceMembershipService {
       }
       if (member.role === nextRole) return member;
       const delta = Number(isBillable(nextRole)) - Number(isBillable(member.role));
-      if (delta > 0) await requireBillableAdditionAllowed(tx, workspaceId);
+      if (isWorkspaceRoleElevation(member.role, nextRole)) {
+        await requireMemberGrowthAllowed(tx, workspaceId, { addsSeat: delta > 0 });
+      }
       const updated = await tx.workspaceMember.update({
         where: { id: member.id },
         data: { role: nextRole },
       });
-      await markSeatCountChanged(tx, workspaceId, delta);
+      await markMembershipChanged(tx, workspaceId, delta);
       // A grant acts for a person who manages the Workspace. Demoted below Admin, theirs pause now,
       // not at the next delivery.
       if (nextRole !== "admin") await pauseGrantsOfGranter(tx, { workspaceId, userId: member.userId });
@@ -229,7 +274,7 @@ export class WorkspaceMembershipService {
         );
       }
       await tx.workspaceMember.delete({ where: { id: member.id } });
-      await markSeatCountChanged(tx, workspaceId, isBillable(member.role) ? -1 : 0);
+      await markMembershipChanged(tx, workspaceId, isBillable(member.role) ? -1 : 0);
       await pauseGrantsOfGranter(tx, { workspaceId, userId: member.userId });
       await flushWorkspaceEvents(tx);
     });

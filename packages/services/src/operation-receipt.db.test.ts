@@ -12,8 +12,10 @@ import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import {
 	contentPackSchema,
+	creditDebitSeconds,
 	parseStoredContentPack,
 	PLATFORM_PLAYBOOK_VERSION,
+	processingPeriodStart,
 } from "@narriflow/validators";
 import { captionedVideoGenerationContext, captionedVideoSettings } from "./integration-commands";
 import {
@@ -50,6 +52,21 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		clipDurationSecTarget: 30,
 		platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION,
 	});
+	/** The credit reservation every accepted intake holds before speech-to-text settles it. */
+	const reserveUsage = (project: {
+		id: string;
+		sourceDurationSeconds: number | null;
+	}) =>
+		prisma.processingUsageReservation.create({
+			data: {
+				projectId: project.id,
+				workspaceId,
+				actorUserId,
+				intakeKind: "upload",
+				periodStart: processingPeriodStart(new Date()),
+				reservedSeconds: creditDebitSeconds(project.sourceDurationSeconds ?? 0),
+			},
+		});
 	const createClip = (projectId: string, workflowRunId: string) =>
 		prisma.clip.create({
 			data: {
@@ -390,6 +407,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				ingestStatus: "ready",
 			},
 		});
+		await reserveUsage(project);
 		const scope = { actorUserId, workspaceId };
 		const key = randomUUID();
 		const request = {
@@ -470,6 +488,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				ingestStatus: "ready",
 			},
 		});
+		await reserveUsage(project);
 		const scope = { actorUserId, workspaceId };
 		const request = {
 			contentPack: pack,

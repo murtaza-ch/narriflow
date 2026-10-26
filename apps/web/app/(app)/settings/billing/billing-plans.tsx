@@ -8,9 +8,12 @@ import { CircleAlert, RefreshCw } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import {
-  MAX_UPLOAD_LENGTH_SECONDS,
-  MONTHLY_PROCESSING_MINUTE_LIMITS,
-  PRICING_TABLE,
+  formatUsdCents,
+  hasFeature,
+  lowestTierWithFeature,
+  minimumAnnualSavingsPercent,
+  PLAN_CATALOG,
+  planHighlights,
   workspaceBillingViewSchema,
   type BillingInterval,
   type PaidPricingTier,
@@ -162,12 +165,15 @@ export function BillingPlans({
     const payload = (await response.json().catch(() => ({}))) as {
       url?: string;
       error?: string;
+      message?: string;
     };
     if (!response.ok || !payload.url) {
       const actionError = new Error(
         payload.error === "billing_portal_required"
-          ? "Manage this plan in the billing portal."
-          : "The billing action could not be opened. Try again.",
+          ? "This workspace already has a subscription. Manage it in the billing portal."
+          : payload.error === "checkout_in_progress"
+            ? "A Checkout for a different plan is already open for this workspace. Finish it, or wait about 30 minutes for it to expire, then try again."
+            : "The billing action could not be opened. Try again.",
       );
       Object.assign(actionError, { code: payload.error });
       throw actionError;
@@ -322,21 +328,27 @@ export function BillingPlans({
         <Stack gap="5">
           <Flex align="center" justify="space-between" gap="3" wrap="wrap">
             <Text textStyle="eyebrow" color="fg.muted">Choose a plan</Text>
-            <SegmentedControl size="sm" aria-label="Billing interval" items={[{ label: "Monthly", value: "monthly" }, { label: "Annual · save ~33%", value: "annual" }]} value={interval} onValueChange={(value) => setInterval(value as BillingInterval)} />
+            <SegmentedControl size="sm" aria-label="Billing interval" items={[{ label: "Monthly", value: "monthly" }, { label: `Annual · save ${minimumAnnualSavingsPercent()}%+`, value: "annual" }]} value={interval} onValueChange={(value) => setInterval(value as BillingInterval)} />
           </Flex>
           <Grid layerStyle="band" templateColumns={{ base: "1fr", md: `repeat(${Math.min(3, availableTiers.length)}, minmax(0, 1fr))` }} gap="3">
             {availableTiers.map((tier) => {
-              const info = PRICING_TABLE[tier];
-              const perMonth = interval === "annual" ? String(Math.round(info.annualUsd / 12)) : String(info.monthlyUsd);
+              const info = PLAN_CATALOG[tier];
+              const perMonth = formatUsdCents(
+                interval === "annual" ? Math.round(info.annualPriceCents / 12) : info.monthlyPriceCents,
+              );
               return (
                 <Stack key={tier} gap="4" p="5" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card">
                   <Flex align="baseline" justify="space-between" gap="2">
                     <Text textStyle="title" fontSize="16px">{info.name}</Text>
-                    {tier === "creator" ? <Text fontSize="12px" fontWeight="500" color="accent.fg">Recommended</Text> : null}
+                    {tier === "pro" ? <Text fontSize="12px" fontWeight="500" color="accent.fg">Recommended</Text> : null}
                   </Flex>
-                  <Flex align="baseline" gap="1"><Text fontWeight="500" fontVariantNumeric="tabular-nums" fontSize="28px">${perMonth}</Text><Text fontSize="13px" color="fg.muted">/mo</Text></Flex>
-                  <Text fontSize="13px" color="fg.muted">{MONTHLY_PROCESSING_MINUTE_LIMITS[tier]} processing min/mo · uploads up to {MAX_UPLOAD_LENGTH_SECONDS[tier] / 60} min</Text>
-                  <Button size="sm" variant={tier === "creator" ? "solid" : "subtle"} loading={busy === tier} disabled={busy !== null} onClick={() => checkout(tier)}>
+                  <Flex align="baseline" gap="1"><Text fontWeight="500" fontVariantNumeric="tabular-nums" fontSize="28px">{perMonth}</Text><Text fontSize="13px" color="fg.muted">/mo</Text></Flex>
+                  <Stack as="ul" gap="1" listStyleType="none">
+                    {planHighlights(tier).map((highlight) => (
+                      <Text as="li" key={highlight} fontSize="13px" color="fg.muted">{highlight}</Text>
+                    ))}
+                  </Stack>
+                  <Button size="sm" variant={tier === "pro" ? "solid" : "subtle"} loading={busy === tier} disabled={busy !== null} onClick={() => checkout(tier)}>
                     Continue with {info.name}
                   </Button>
                 </Stack>
@@ -348,7 +360,17 @@ export function BillingPlans({
 
       {!canManageBilling ? <Text fontSize="12px" color="fg.subtle">Only the workspace owner can change the subscription or payment method.</Text> : null}
       {inlineError ? <Text role="alert" fontSize="12px" color="danger.fg" tabIndex={-1}>{inlineError}</Text> : null}
-      {view.plan !== "business" ? <Text fontSize="13px" color="fg.muted">Business adds shared workspaces, API and MCP access. <Link href="/integrations/mcp" style={{ textDecoration: "underline" }}>Review integration access</Link></Text> : null}
+      {!hasFeature(view.plan, "integrations.api") ? (
+        <Text fontSize="13px" color="fg.muted">
+          {PLAN_CATALOG[lowestTierWithFeature("integrations.api") ?? "pro"].name} adds the REST API, MCP and webhooks; Business adds team members and client review.{" "}
+          <Link href="/pricing" style={{ textDecoration: "underline" }}>Compare plans</Link>
+        </Text>
+      ) : !hasFeature(view.plan, "workspace.members") ? (
+        <Text fontSize="13px" color="fg.muted">
+          Business adds team members, shared brand approval, and client review rooms.{" "}
+          <Link href="/pricing" style={{ textDecoration: "underline" }}>Compare plans</Link>
+        </Text>
+      ) : null}
     </Stack>
   );
 }

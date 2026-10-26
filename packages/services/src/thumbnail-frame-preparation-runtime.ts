@@ -9,7 +9,7 @@ import {
   type ThumbnailFrameStore,
 } from "./thumbnail-frame-preparation";
 import { brandOwnerStoragePrefix, brandOwnerWhere } from "./brand-ownership";
-import { hasFeature } from "./plan-features";
+import { requirePlanFeature } from "./plan-features";
 import {
   headObject,
   presignDownloadUrl,
@@ -354,12 +354,7 @@ function productionModule() {
     store: prismaThumbnailFrameStore,
     authorize: async ({ actorUserId, workspaceId, permission }) => {
       const actor = await workspaceService.requireActor(actorUserId, workspaceId, permission);
-      if (!hasFeature(actor.pricingTier, "publishing.customThumbnails")) {
-        throw new ThumbnailPreparationError(
-          "thumbnail_entitlement_required",
-          "Custom thumbnails require a Pro or Business plan",
-        );
-      }
+      requirePlanFeature(actor.pricingTier, "publishing.customThumbnails");
     },
     async resolveSource({ workspaceId, projectId, clipId, exportVariantId }) {
       const variant = await requirePrisma().clipExportVariant.findFirst({

@@ -2530,13 +2530,14 @@ describe("Upload Session", () => {
     const harness = createInMemoryUploadSessionHarness();
     harness.failQuota(
       new ProcessingUsageError({
-        code: "processing_quota_exhausted",
-        message: "No minutes left",
+        code: "credits_exhausted",
+        message: "No credits left",
         details: {
           tier: "free",
-          limitMinutes: 60,
-          remainingMinutes: 0,
-          requestedMinutes: null,
+          limitCredits: 60,
+          remainingCredits: 0,
+          requestedCredits: null,
+          renewsAt: "2026-11-01T00:00:00.000Z",
         },
       }),
     );
@@ -2565,7 +2566,7 @@ describe("Upload Session", () => {
     expect(harness.facts.providerInitiations).toHaveLength(0);
     expect(harness.facts.sessions[0]).toMatchObject({
       status: "failed",
-      failureCode: "processing_quota_exhausted",
+      failureCode: "credits_exhausted",
     });
   });
 

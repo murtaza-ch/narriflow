@@ -128,7 +128,7 @@ Invitees open the link, accept, and connect with a Workspace API key (see the
 users guide for the permissions each step needs). To test on dev, invitees set
 `Narriflow URL` to the dev deployment.
 
-Do a first live pass before inviting anyone: connect with a Business Workspace's
+Do a first live pass before inviting anyone: connect with a Pro or Business Workspace's
 key, build a Zap for each trigger and action, and confirm the Zap editor shows
 sample data from the trigger tests.
 
@@ -139,7 +139,7 @@ owner's approval. Zapier's current publishing checklist governs; expect to need:
 
 - Listing details: name, description, category, a logo, and the support and
   documentation URLs (the users guide is the documentation).
-- A review account with sample data for Zapier's reviewers, and a Business plan
+- A review account with sample data for Zapier's reviewers, and a Pro or Business plan
   on it, since the API refuses other plans.
 - A period of private use first, then `npx zapier-platform promote <version>` and
   Zapier's review. Zapier prefers OAuth for public apps; this app uses an API

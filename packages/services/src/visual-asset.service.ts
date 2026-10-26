@@ -18,6 +18,7 @@ import {
   type VisualAssetUploadInput,
 } from "@narriflow/validators";
 import {
+  assertBrandManageAllowed,
   assertBrandMutationAllowedWithAnalytics,
   BrandAccessError,
   brandOwnerStoragePrefix,
@@ -495,7 +496,7 @@ export class VisualAssetService {
   }
 
   async softDelete(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
-    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
+    assertBrandManageAllowed(scope);
     return this.softDeleteOwned(scope, id, input, false);
   }
 
@@ -518,8 +519,9 @@ export class VisualAssetService {
       const asset = await tx.visualAsset.findFirst({
         where: { id, ...brandOwnerWhere(scope), deletedAt: null },
         include: {
-          profiles: true,
-          sceneTemplates: { where: { deletedAt: null }, select: { id: true } },
+          // Only live profiles hold an asset in use; a deleted profile never blocks cleanup.
+          profiles: { where: { profile: { deletedAt: null } } },
+          sceneTemplates: { where: { deletedAt: null, profile: { deletedAt: null } }, select: { id: true } },
         },
       });
       if (!asset) throw new VisualAssetIntegrityError("visual_asset_not_found");

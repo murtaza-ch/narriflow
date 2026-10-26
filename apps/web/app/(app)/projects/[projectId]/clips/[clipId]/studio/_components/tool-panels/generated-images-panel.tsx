@@ -88,10 +88,7 @@ function jobStatusCopy(job: GeneratedJob) {
 
 function generatedMediaErrorCopy(code: string | null | undefined, fallback: string) {
   const copy: Record<string, string> = {
-    generated_media_trial_limit_reached: "Your image trial has already been used.",
-    generated_media_daily_limit_reached: "Your workspace has reached today's image limit.",
     generated_media_concurrency_limit_reached: "Too many images are already being generated. Try again when one finishes.",
-    generated_media_entitlement_required: "Image generation is not enabled for this workspace.",
     generated_media_retry_exhausted: "The image service could not complete this frame after several attempts.",
     generated_media_rejected: "This prompt could not be generated. Edit it and try again.",
     program_write_disabled: "New image generation is temporarily paused.",
@@ -220,7 +217,7 @@ export function GeneratedImagesPanel() {
           sourceCueAtSec: origin === "broll_cue" ? cue?.atSec ?? null : null,
       });
       const payload = await response.json() as GeneratedJob & { error?: string; message?: string };
-      if (!response.ok) throw new Error(generatedMediaErrorCopy(payload.error, "Image generation could not start"));
+      if (!response.ok) throw new Error(generatedMediaErrorCopy(payload.error, payload.message ?? "Image generation could not start"));
       setJobs((current) => [payload, ...current.filter((job) => job.id !== payload.id)]);
       setPrompt("");
       toaster.create({ type: "success", title: "Frame queued", description: "You can leave Studio—this job will keep running." });
@@ -356,7 +353,7 @@ export function GeneratedImagesPanel() {
         <Flex align="center" justify="space-between">
           <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">Generate a still</Text>
           <Text fontFamily="mono" fontSize="11px" color="studio.fgMuted">
-            {usage ? `${usage.remaining}/${usage.dailyLimit} remaining` : "Usage loading"}
+            {usage ? `${usage.remaining}/${usage.limit} remaining` : "Usage loading"}
           </Text>
         </Flex>
 

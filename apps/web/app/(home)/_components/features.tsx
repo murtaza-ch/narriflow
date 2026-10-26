@@ -1,4 +1,11 @@
 import type { CSSProperties, ReactNode } from "react";
+import { lowestTierWithFeature, PLAN_CATALOG, type PlanFeature } from "@narriflow/validators";
+
+/** The cheapest plan that includes `feature`, so feature tags follow the catalog. */
+function planName(feature: PlanFeature): string {
+  const tier = lowestTierWithFeature(feature);
+  return tier ? PLAN_CATALOG[tier].name : "";
+}
 
 function Card({ title, body, tag, children }: { title: string; body: string; tag?: string; children: ReactNode }) {
   return (
@@ -131,16 +138,16 @@ export function Features() {
         </h2>
       </div>
       <div className="lx-feats">
-        <Card title="Voiceover dubbing" tag="Pro" body="Give a clip a second life in another language without re-recording it.">
+        <Card title="Voiceover dubbing" tag={planName("dubbing")} body="Give a clip a second life in another language without re-recording it.">
           <DubArt />
         </Card>
-        <Card title="Repurpose the transcript" body="Turn an episode into a blog post, an X thread, a LinkedIn post and show notes.">
+        <Card title="Repurpose the transcript" tag={planName("content.repurposing")} body="Turn an episode into a blog post, an X thread, a LinkedIn post and show notes.">
           <SuiteArt />
         </Card>
-        <Card title="Autopilot for your feed" body="New podcast episodes are clipped as they arrive and wait for your review.">
+        <Card title="Autopilot for your feed" tag={planName("automation.autopilot")} body="New podcast episodes are clipped as they arrive and wait for your review.">
           <AutopilotArt />
         </Card>
-        <Card title="API and AI assistants" tag="Business" body="Scoped API keys with signed callbacks, plus a connector for Claude, ChatGPT and Codex.">
+        <Card title="API and AI assistants" tag={planName("integrations.api")} body="Scoped API keys with signed callbacks, plus a connector for Claude, ChatGPT and Codex.">
           <ApiArt />
         </Card>
       </div>

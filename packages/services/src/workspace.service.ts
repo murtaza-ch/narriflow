@@ -10,7 +10,7 @@ import {
   type WorkspaceApiKeyScope,
   type WorkspaceCapability,
 } from "@narriflow/validators";
-import { hasFeature } from "./plan-features";
+import { requirePlanFeature } from "./plan-features";
 import {
 	ExpectedDomainFailureError,
 	type ExpectedDomainFailureCatalog,
@@ -48,7 +48,6 @@ export const workspaceOperationFailureCatalog = {
 	workspace_name_invalid: "invalid",
 	workspace_timezone_invalid: "invalid",
 	workspace_collaboration_disabled: "forbidden",
-	workspace_invites_require_business: "payment_required",
 	workspace_admin_invite_owner_required: "forbidden",
 	workspace_access_denied: "forbidden",
 	workspace_avatar_invalid: "invalid",
@@ -56,7 +55,6 @@ export const workspaceOperationFailureCatalog = {
 	workspace_invite_email_invalid: "invalid",
 	workspace_member_already_exists: "conflict",
 	workspace_invite_unavailable: "unavailable",
-	workspace_api_requires_business: "payment_required",
 	workspace_api_name_required: "invalid",
 	workspace_api_scope_invalid: "invalid",
 	workspace_paid_members_unavailable: "unavailable",
@@ -93,7 +91,6 @@ export class WorkspaceOperationError extends ExpectedDomainFailureError<Workspac
 export function assertWorkspaceInviteEntitlement(input: {
   collaborationEnabled: boolean;
   pricingTier: PricingTier;
-  workspaceStatus: WorkspaceStatus;
   actorRole: WorkspaceRole;
   invitedRole: Exclude<WorkspaceRole, "owner">;
 }): void {
@@ -103,15 +100,9 @@ export function assertWorkspaceInviteEntitlement(input: {
       "Workspace collaboration is not enabled for this account",
     );
   }
-  if (
-    input.pricingTier !== "business" &&
-    !(input.workspaceStatus === "restricted" && input.invitedRole === "viewer")
-  ) {
-    throw new WorkspaceOperationError(
-      "workspace_invites_require_business",
-      "Workspace invitations require the Business plan",
-    );
-  }
+  // Any new member, Viewers included, needs a plan with team members. A
+  // restricted Workspace below that plan can only remove or demote members.
+  requirePlanFeature(input.pricingTier, "workspace.members");
   if (input.invitedRole === "admin" && input.actorRole !== "owner") {
     throw new WorkspaceOperationError(
       "workspace_admin_invite_owner_required",
@@ -124,12 +115,7 @@ export function normalizeWorkspaceApiKeyInput(
   pricingTier: PricingTier,
   input: { name: string; scopes?: string[] },
 ): { name: string; scopes: WorkspaceApiKeyScope[] } {
-  if (!hasFeature(pricingTier, "integrations.api")) {
-    throw new WorkspaceOperationError(
-      "workspace_api_requires_business",
-      "Workspace API keys require Business",
-    );
-  }
+  requirePlanFeature(pricingTier, "integrations.api");
   const name = input.name.trim().slice(0, 80);
   if (!name) {
     throw new WorkspaceOperationError(
@@ -485,7 +471,6 @@ export class WorkspaceService {
     assertWorkspaceInviteEntitlement({
       collaborationEnabled,
       pricingTier: actor.pricingTier,
-      workspaceStatus: actor.status,
       actorRole: actor.role,
       invitedRole: input.role,
     });

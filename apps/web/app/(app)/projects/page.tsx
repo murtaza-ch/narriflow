@@ -7,7 +7,6 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import {
-  isRetentionEnforcementActive,
   type ProjectListSort,
   type ProjectListSourceFilter,
   type ProjectListStatusFilter,
@@ -199,7 +198,7 @@ async function ProjectsData({
     appUser.workspace.role !== "viewer" &&
     appUser.workspace.status === "active";
   const retentionBanner =
-    appUser.workspace.pricingTier === "free" && isRetentionEnforcementActive()
+    appUser.workspace.pricingTier === "free"
       ? (
       <RetentionBanner />
     ) : null;

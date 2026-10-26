@@ -24,7 +24,7 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 import { requireQueueDeliveryScope } from "./integration-admission";
-import { hasFeature } from "./plan-features";
+import { requirePlanFeature } from "./plan-features";
 import { assertFinishingQueue } from "./publishing-queue.service";
 import { pauseGrantsWhoseRuleChanged } from "./standing-grant";
 import { workspaceService } from "./workspace.service";
@@ -36,7 +36,6 @@ const recipeFailureCatalog = {
   recipe_in_use: "conflict",
   recipe_limit_reached: "conflict",
   recipe_settings_invalid: "conflict",
-  recipe_finishing_plan_required: "forbidden",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type RecipeFailureCode = keyof typeof recipeFailureCatalog;
@@ -47,7 +46,6 @@ const recipeFailureMessages: Record<RecipeFailureCode, string> = {
   recipe_in_use: "An Autopilot rule imports with this Recipe. Move the rule to another Recipe or delete it first.",
   recipe_limit_reached: `A Workspace can have ${MAX_RECIPES_PER_WORKSPACE} Recipes. Delete one you no longer use.`,
   recipe_settings_invalid: "This Recipe holds settings Narriflow no longer accepts, such as an unsupported language. Open it in Narriflow, correct the settings, and save it.",
-  recipe_finishing_plan_required: "Finishing needs the Pro plan or above. Turn it off to save this Recipe.",
 };
 
 export class RecipeError extends ExpectedDomainFailureError<RecipeFailureCode> {
@@ -178,9 +176,7 @@ export class RecipeService {
    * its saver couldn't have chosen. */
   async requireUsable(scope: ActorScope, recipe: Pick<ResolvedRecipe, "brandProfileId" | "finishing">) {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
-    if (recipe.finishing && !hasFeature(actor.pricingTier, "campaign.operations")) {
-      throw new RecipeError("recipe_finishing_plan_required");
-    }
+    if (recipe.finishing) requirePlanFeature(actor.pricingTier, "campaign.operations");
     await assertFinishingQueue(scope, recipe.finishing);
     if (recipe.brandProfileId) await brandProfileService.requireApplicableId(actor, recipe.brandProfileId);
   }

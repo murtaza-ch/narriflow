@@ -3,6 +3,7 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { billingService, projectService } from "@narriflow/services";
+import { planDefinition } from "@narriflow/validators";
 import { BillingPlans } from "./billing-plans";
 
 function reveal(index: number) {
@@ -25,15 +26,17 @@ export default async function BillingPage({
     searchParams,
   ]);
   const tier = billingView.plan;
-  const { usedMinutes, limitMinutes } = usage;
-  // Minutes reserved for videos still importing are spoken for.
+  const { usedCredits, reservedCredits, limitCredits } = usage;
+  // Credits reserved for videos still importing are spoken for.
   const pct = Math.min(
     100,
-    Math.round(
-      ((usedMinutes + usage.reservedMinutes) / Math.max(1, limitMinutes)) * 100,
-    ),
+    Math.round(((usedCredits + reservedCredits) / Math.max(1, limitCredits)) * 100),
   );
-  const remaining = usage.remainingMinutes;
+  const renewsOn = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(usage.renewsAt);
 
   return (
     <Stack gap="8">
@@ -47,18 +50,15 @@ export default async function BillingPage({
         <StatBand columns={3}>
           <StatBand.Item
             label="Current plan"
-            value={
-              <Text as="span" textTransform="capitalize">
-                {tier}
-              </Text>
-            }
+            value={planDefinition(tier).name}
           />
           <StatBand.Item
-            label="Used this month"
-            value={usedMinutes}
+            label="Credits used this month"
+            value={usedCredits + reservedCredits}
             suffix={
               <Text fontSize="13px" color="fg.muted" fontVariantNumeric="tabular-nums">
-                / {limitMinutes} min
+                / {limitCredits}
+                {reservedCredits > 0 ? ` · ${reservedCredits} reserved` : ""}
               </Text>
             }
             meter={pct}
@@ -67,11 +67,11 @@ export default async function BillingPage({
             }
           />
           <StatBand.Item
-            label="Remaining"
-            value={remaining}
+            label="Credits remaining"
+            value={usage.remainingCredits}
             suffix={
               <Text fontSize="13px" color="fg.muted">
-                min
+                renew {renewsOn} (UTC)
               </Text>
             }
           />

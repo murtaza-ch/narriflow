@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { sendEmail } from "@narriflow/email";
 import {
-  assertCompletionCallbackUrl, callbackSigningSecrets, hasFeature, performanceService, webhookSubscriptions, WorkspaceOperationError, workspaceMembershipService, workspaceService,
+  assertCompletionCallbackUrl, callbackSigningSecrets, performanceService, requirePlanFeature, webhookSubscriptions, workspaceMembershipService, workspaceService,
 } from "@narriflow/services";
 import {
   executeWorkspaceAction,
@@ -288,20 +288,16 @@ export async function revokeApiKeyAction(keyId: string) {
  * secret is returned once; the previous one keeps signing for 24 hours. */
 export async function rotateCallbackSigningSecretAction() {
   return executeWorkspaceAction("api.manage", async (appUser) => {
-    if (!hasFeature(appUser.workspace.pricingTier, "integrations.api")) {
-      throw new WorkspaceOperationError("workspace_api_requires_business", "Callback signing secrets require Business");
-    }
+    requirePlanFeature(appUser.workspace.pricingTier, "integrations.api");
     const rotated = await callbackSigningSecrets.rotate(appUser.workspaceId);
     revalidatePath("/settings/api");
     return { ok: true as const, secret: rotated.secret, createdAt: rotated.createdAt };
   });
 }
 
-/** Webhook actions share REST's rules: Business, then the service's own refusals. */
+/** Webhook actions share REST's rules: the plan's API access, then the service's own refusals. */
 async function webhookOperation<T extends object>(appUser: BrowserActorScope, fallback: string, run: (actor: { actorUserId: string; workspaceId: string }) => Promise<T>) {
-  if (!hasFeature(appUser.workspace.pricingTier, "integrations.api")) {
-    throw new WorkspaceOperationError("workspace_api_requires_business", "Webhooks require Business");
-  }
+  requirePlanFeature(appUser.workspace.pricingTier, "integrations.api");
   try {
     const result = await run({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId });
     revalidatePath("/settings/api");
