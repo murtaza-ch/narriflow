@@ -22,23 +22,36 @@ export function formatBillingChangeDate(value: string): string {
   }).format(new Date(value));
 }
 
-export function planChangeQuotePresentation(quote: PlanChangeQuote) {
+/**
+ * The confirmation copy for a quote. A new change replaces any change already
+ * scheduled, so the owner is told before confirming rather than finding out later.
+ */
+export function planChangeQuotePresentation(
+  quote: PlanChangeQuote,
+  scheduled?: { tier: WorkspaceBillingView["plan"]; effectiveAt: string | null } | null,
+) {
   const name = PLAN_CATALOG[quote.tier].name;
+  const replaces = scheduled
+    ? ` This replaces your scheduled switch to ${PLAN_CATALOG[scheduled.tier].name}${scheduled.effectiveAt ? ` on ${formatBillingChangeDate(scheduled.effectiveAt)}` : ""}.`
+    : "";
   if (quote.kind === "scheduled") {
     return {
       title: `Switch to ${name}`,
-      body: `Your current plan stays active until ${formatBillingChangeDate(quote.effectiveAt)} UTC. The new plan starts then. No payment is collected today.`,
+      body: `Your current plan stays active until ${formatBillingChangeDate(quote.effectiveAt)} UTC. The new plan starts then. No payment is collected today.${replaces}`,
       action: "Schedule plan change",
       due: formatUsdCents(0),
     };
   }
+  // Stripe never asks for a negative amount: unused-time credit beyond the
+  // upgrade's cost goes to the account balance, so nothing is due today.
+  const due = Math.max(0, quote.amountDue);
   return {
     title: `Switch to ${name}`,
-    body: quote.amountDue < 0
-      ? `A credit of ${formatUsdCents(-quote.amountDue)} will be applied to your billing balance. Your plan changes after Stripe confirms the update.`
-      : "Stripe applies unused-time credits and any prorated charges. The new plan starts after payment succeeds.",
-    action: quote.amountDue > 0 ? `Pay ${formatUsdCents(quote.amountDue)} and upgrade now` : "Confirm plan change",
-    due: formatUsdCents(Math.max(0, quote.amountDue)),
+    body: (due > 0
+      ? "Stripe credits your unused time and charges the difference now. The new plan starts as soon as payment succeeds."
+      : "Your unused time covers the change, so nothing is due today. The new plan starts as soon as Stripe confirms it.") + replaces,
+    action: due > 0 ? `Pay ${formatUsdCents(due)} and upgrade now` : "Upgrade now",
+    due: formatUsdCents(due),
   };
 }
 

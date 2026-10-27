@@ -91,7 +91,9 @@ export function BillingPlans({
     workspaceAccessStatus: initialView.workspaceAccessStatus,
   });
   const status = billingStatusPresentation(view);
-  const quotePresentation = quote ? planChangeQuotePresentation(quote) : null;
+  const quotePresentation = quote
+    ? planChangeQuotePresentation(quote, view.planChange?.state === "scheduled" ? view.planChange : null)
+    : null;
   const mayStartCheckout = canStartBillingCheckout({
     view,
     canManageBilling,
@@ -341,7 +343,7 @@ export function BillingPlans({
             return;
           }
         }
-        setInlineNotice("Your current plan remains active. Open the billing portal to complete payment for the plan change.");
+        setInlineNotice("Your current plan remains active. Use Complete payment below to finish the upgrade.");
       } else if (result.kind === "scheduled" && result.effectiveAt) {
         setInlineNotice(`Your plan change is scheduled for ${formatBillingChangeDate(result.effectiveAt)} UTC. Your current plan stays active until then.`);
       } else {
@@ -361,14 +363,36 @@ export function BillingPlans({
     setInlineError(null);
     setInlineNotice(null);
     try {
+      const pending = view.planChange?.state === "pending_payment";
       planChangeResultSchema.parse(await postPlanChange("cancel"));
-      setInlineNotice("The scheduled plan change was removed. Your current plan will continue.");
+      // The view may be stale (the upgrade could have been paid in another tab),
+      // so say what was asked and let the refreshed status show the outcome.
+      setInlineNotice(pending
+        ? "Keeping your current plan. Any unpaid upgrade is cancelled; the status above is up to date."
+        : "The scheduled plan change was removed. Your current plan will continue.");
       await refreshAfterPlanChange();
     } catch (error) {
       setInlineError(error instanceof Error ? error.message : "The scheduled change could not be removed.");
       restoreActionOriginAfterError();
     } finally {
       setBusy(null);
+    }
+  }
+
+  /** Opens Stripe's hosted invoice for the upgrade that is awaiting payment. */
+  async function completePlanChangePayment() {
+    rememberActionOrigin();
+    setBusy("complete-payment");
+    setInlineError(null);
+    try {
+      const { url } = (await postPlanChange("payment")) as { url?: string | null };
+      const paymentUrl = url ? stripeInvoicePaymentUrl(url) : null;
+      if (!paymentUrl) throw new Error("This upgrade no longer needs payment. Refresh billing status to see the current plan.");
+      window.location.assign(paymentUrl);
+    } catch (error) {
+      setInlineError(error instanceof Error ? error.message : "The payment page could not be opened.");
+      setBusy(null);
+      restoreActionOriginAfterError();
     }
   }
 
@@ -466,7 +490,20 @@ export function BillingPlans({
           {canManageBilling ? <Button size="sm" variant="subtle" loading={busy === "cancel-change"} disabled={busy !== null} onClick={keepCurrentPlan}>Keep current plan</Button> : null}
         </Flex>
       ) : view.planChange?.state === "pending_payment" ? (
-        <Text role="status" fontSize="13px" color="fg.muted">The switch to {PLAN_CATALOG[view.planChange.tier].name} is awaiting payment. Your current plan remains active. {canManageBilling ? "Open the billing portal to finish or review the invoice." : "The workspace owner can finish or review the invoice."}</Text>
+        <Flex gap="4" align={{ base: "flex-start", md: "center" }} justify="space-between" direction={{ base: "column", md: "row" }} p="5" bg="bg.soft" borderRadius="l3">
+          <Stack gap="1" role="status">
+            <Text textStyle="title" fontSize="16px">Upgrade to {PLAN_CATALOG[view.planChange.tier].name} is awaiting payment</Text>
+            <Text fontSize="13px" color="fg.muted">
+              Your current plan stays active. {canManageBilling ? "Finish paying to switch now, or keep your current plan. Unpaid upgrades are cancelled automatically within a day." : "The workspace owner can finish the payment or keep the current plan."}
+            </Text>
+          </Stack>
+          {canManageBilling ? (
+            <Flex gap="2" flexShrink={0}>
+              <Button size="sm" variant="subtle" loading={busy === "cancel-change"} disabled={busy !== null} onClick={keepCurrentPlan}>Keep current plan</Button>
+              <Button size="sm" variant="solid" loading={busy === "complete-payment"} disabled={busy !== null} onClick={completePlanChangePayment}>Complete payment</Button>
+            </Flex>
+          ) : null}
+        </Flex>
       ) : null}
 
       {mayStartCheckout || mayChangePlan ? (

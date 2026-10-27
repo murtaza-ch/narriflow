@@ -97,6 +97,29 @@ sandbox("Workspace plan changes Stripe sandbox", () => {
     });
   }
 
+  test("keeping the current plan voids a declined upgrade's invoice and discards the pending update", async () => {
+    const { stripe, provider } = setup();
+    const f = await fixture(stripe, process.env.STRIPE_PRICE_CREATOR_MONTHLY!);
+    try {
+      const method = await stripe.paymentMethods.attach("pm_card_chargeCustomerFail", { customer: f.customer.id });
+      await stripe.subscriptions.update(f.subscription.id, { default_payment_method: method.id });
+      const source = await provider.retrievePlanChangeSubscription!(f.subscription.id);
+      const result = await provider.applyPlanChange!({ workspaceId: f.workspaceId, subscription: source, items: [{ id: source.items[0]!.id, priceId: process.env.STRIPE_PRICE_PRO_MONTHLY!, quantity: 1 }], kind: "immediate", prorationDate: Math.floor(Date.now() / 1000), quoteId: randomUUID() });
+      expect(result.kind).toBe("pending_payment");
+      const pending = await provider.retrievePlanChangeSubscription!(f.subscription.id);
+      expect(pending.pending).not.toBeNull();
+      const invoiceId = (await stripe.subscriptions.retrieve(f.subscription.id)).latest_invoice as string;
+      await provider.cancelPendingPlanChange!({ workspaceId: f.workspaceId, subscription: pending });
+      const after = await stripe.subscriptions.retrieve(f.subscription.id);
+      expect(after.pending_update).toBeNull();
+      expect(after.status).toBe("active");
+      expect(after.items.data[0]?.price.id).toBe(process.env.STRIPE_PRICE_CREATOR_MONTHLY);
+      expect((await stripe.invoices.retrieve(invoiceId)).status).toBe("void");
+      // With nothing outstanding, a new plan change is allowed again.
+      await expect(provider.retrievePlanChangeSubscription!(f.subscription.id)).resolves.toMatchObject({ pending: null });
+    } finally { await f.cleanup(); }
+  });
+
   test("Business interval changes preserve seats and removed seats cannot return at renewal", async () => {
     const { stripe, provider } = setup();
     const f = await fixture(stripe, process.env.STRIPE_PRICE_BUSINESS_MONTHLY!, true, process.env.STRIPE_PRICE_BUSINESS_SEAT_MONTHLY!);

@@ -36,6 +36,8 @@ export interface WorkspacePlanChangeProvider {
   previewPlanChange?(input: { subscriptionId: string; customerId: string; items: PlanChangeItem[]; prorationDate: number }): Promise<{ amountDue: number; currency: string }>;
   applyPlanChange?(input: { workspaceId: string; subscription: PlanChangeSubscription; items: PlanChangeItem[]; kind: "immediate" | "scheduled"; prorationDate: number; quoteId: string; recovering?: boolean }): Promise<PlanChangeResult>;
   cancelScheduledPlanChange?(input: { workspaceId: string; subscription: PlanChangeSubscription }): Promise<void>;
+  /** Abandon an upgrade still awaiting payment by voiding its invoice; Stripe then discards the pending update. */
+  cancelPendingPlanChange?(input: { workspaceId: string; subscription: PlanChangeSubscription }): Promise<void>;
   synchronizeScheduledSeats?(input: { workspaceId: string; subscriptionId: string; desired: number; revision: number }): Promise<void>;
   finalizeCompletedPlanChangeSchedule?(input: { workspaceId: string; subscriptionId: string }): Promise<void>;
 }
@@ -183,25 +185,46 @@ export function createWorkspacePlanChanges(dependencies: {
         if (!(await store.renewClaim({ workspaceId: input.workspaceId, attemptId: input.attemptId, now: clock.now(), leaseMs: Math.max(catalog.worker.leaseMs, 120_000) }))) throw new WorkspaceBillingAttemptLost();
       };
       await renew();
-      if ((await store.readBillingActor({ workspaceId: input.workspaceId, actorUserId: quote.actorUserId }))?.role !== "owner") throw new WorkspaceBillingError("billing_forbidden");
       try {
+        if ((await store.readBillingActor({ workspaceId: input.workspaceId, actorUserId: quote.actorUserId }))?.role !== "owner") throw new WorkspaceBillingError("billing_forbidden");
         await confirmQuote(quote, renew, true);
         return "recovered";
       } catch (error) {
-        if (error instanceof WorkspaceBillingError && error.code === "plan_change_quote_expired") return "expired";
-        throw error;
+        // A confirmed change that can no longer be completed safely (expired quote,
+        // changed source, cancelling or past-due subscription, new owner) ends here,
+        // so reconciliation always goes on to apply the provider's current state.
+        // Outages and lost claims propagate to the usual retry.
+        if (!(error instanceof WorkspaceBillingError)) throw error;
+        await store.markPlanChangeQuote({ workspaceId: input.workspaceId, id: quote.public.id, phase: "expired" });
+        return "expired";
       }
     },
+    /**
+     * "Keep current plan": undo a scheduled downgrade, or abandon an upgrade that
+     * is still awaiting payment. Either way the owner stays on the plan they pay for.
+     */
     async cancelScheduledPlanChange(input: { workspaceId: string; actorUserId: string }): Promise<PlanChangeResult> {
       return exclusive(input, true, async (renew) => {
         if (await store.readConfirmingPlanChangeQuote(input.workspaceId)) throw new WorkspaceBillingError("plan_change_busy");
         const { subscription } = await current(input.workspaceId);
+        if (subscription.pending) {
+          if (!provider.cancelPendingPlanChange) throw new WorkspaceBillingError("plan_change_not_configured");
+          await renew();
+          await provider.cancelPendingPlanChange({ workspaceId: input.workspaceId, subscription });
+          return { kind: "unchanged", effectiveAt: null };
+        }
         if (!subscription.schedule) return { kind: "unchanged", effectiveAt: null };
         if (!provider.cancelScheduledPlanChange) throw new WorkspaceBillingError("plan_change_not_configured");
         await renew();
         await provider.cancelScheduledPlanChange({ workspaceId: input.workspaceId, subscription });
         return { kind: "unchanged", effectiveAt: null };
       });
+    },
+    /** The owner's link to finish paying for an upgrade that is awaiting payment, or null when none is. */
+    async readPendingPlanChangePayment(input: { workspaceId: string; actorUserId: string }): Promise<{ url: string | null }> {
+      if ((await store.readBillingActor(input))?.role !== "owner") throw new WorkspaceBillingError("billing_forbidden");
+      const { subscription } = await current(input.workspaceId);
+      return { url: subscription.pending?.paymentUrl ?? null };
     },
   };
 }

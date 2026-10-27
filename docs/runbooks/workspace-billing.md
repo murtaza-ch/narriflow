@@ -73,22 +73,30 @@ Keep sandbox and live completely separate: distinct keys, endpoint, signing secr
 
 Use one **Narriflow plans** product containing the six fixed USD base prices and one separate **Narriflow Business additional seat** product containing the two seat prices. Stripe charges the subscription; Narriflow reserves and settles monthly processing credits. Annual payment does not grant an annual credit pool. Product and price metadata are diagnostic; configured price IDs own the mapping.
 
+Processing Capacity is also a catalog limit: Free/Creator/Pro/Business allow 2/5/10/20 videos in flight. Admission, usage summaries, and the public comparison read the same catalog value in web and worker. There are no environment overrides for this limit. Worker concurrency settings control execution separately.
+
+Source credits and length caps use the probed duration: 60.01 seconds costs 2 credits, and a source a fraction over its plan's length cap is refused. Ingest ceilings the integer source-duration column while retaining the exact probe for media timing.
+
+Credits reset on the UTC calendar month, not the Stripe renewal date. There is no per-renewal credit grant: a purchase on October 31 can use October's allowance and then November's before Stripe renews. Seats do not multiply credits. An operator refund is a source-credit correction, never a Stripe money refund.
+
+AI image and dub allowances are counted separately from credits. A known failure or cancellation before usable delivery releases the reservation; an unknown provider outcome keeps it reserved pending reconciliation. Free's lifetime image sample counts only requests admitted under the sample policy, so paid image history is never mistaken for trial use, and downgrading cannot grant a second sample. Fonts and Scene Templates keep their feature gates without count limits.
+
 The dedicated portal configuration must be active, disable `subscription_update`, allow payment-method updates and invoice history, cancel at period end, and return to the app's `/settings/billing`. Never expose seat quantity editing. Do not configure all six base prices in one portal catalog: Stripe rejects duplicate product/billing-interval choices. Plan changes belong to Workspace Billing, including subscriptions with separate seat items.
 
 ### Plan-change policy
 
 The owner previews a change before confirming a ten-minute quote. The immutable quote records the selected plan/interval, verified subscription items and paid period, current membership seat count, fixed proration timestamp, and actual USD amount due. A durable attempt identifies each Stripe mutation. Reusing a client key with changed input is refused; stale quotes require fresh review. Plan changes and seat reconciliation share the Billing Account claim, without holding a database transaction across Stripe calls.
 
-- Higher tiers and same-tier monthly-to-annual changes are immediate upgrades. `payment_behavior=pending_if_incomplete` and `proration_behavior=always_invoice` keep existing subscription items until payment succeeds. A decline or unfinished 3DS returns the verified hosted invoice for recovery. Pending payment never grants the target tier or resets this month's credit usage.
+- Higher tiers and same-tier monthly-to-annual changes are immediate upgrades. `payment_behavior=pending_if_incomplete` and `proration_behavior=always_invoice` keep existing subscription items until payment succeeds. A decline or unfinished 3DS returns the verified hosted invoice for recovery. Pending payment never grants the target tier or resets this month's credit usage. While an upgrade awaits payment, the owner sees **Complete payment** (the verified hosted invoice) and **Keep current plan**, which voids that invoice so Stripe discards the pending update. An unpaid pending update also expires on its own within 23 hours; Stripe then voids its invoice.
 - Lower tiers and same-tier annual-to-monthly changes are scheduled at the verified current period end. The two-phase Subscription Schedule keeps the existing paid phase, applies the target phase without proration, then releases into ordinary renewal.
 - The owner can keep the current plan by releasing a Narriflow-owned schedule. Releasing does not cancel the subscription. Foreign schedules require support. Remove a scheduled change before using portal cancellation, because Stripe's portal does not cancel scheduled subscriptions.
 - Once the final target phase begins, reconciliation releases its owned schedule; portal admission also performs this safe finalization. The underlying subscription keeps running and can be canceled normally.
 - Business future phases use the target interval's seat price. Reconciliation updates both current and future phases from committed membership so removed seats cannot return at renewal. Future phases below Business omit seats. Existing below-Business membership restrictions apply only after the lower tier actually takes effect.
-- Recover past-due/unpaid invoices and pending cancellation before another plan change. The catalog creates no trials; manually created trial subscriptions must finish or be repaired before this flow. An in-progress upgrade invoice must be paid or resolved before a replacement is submitted.
+- Recover past-due/unpaid invoices and pending cancellation before another plan change. "Outstanding" follows Stripe: a finalized, unpaid (`open` or `uncollectible`) invoice. A renewal invoice in its normal hour-long `draft` window does not block a change. The catalog creates no trials; manually created trial subscriptions must finish or be repaired before this flow. An in-progress upgrade invoice must be paid or resolved before a replacement is submitted.
 
 Checkout creates only a first subscription. Entitlements come only from fresh current-state reconciliation, never the confirmed quote, redirect, invoice URL, or webhook payload.
 
-Reconciliation resumes an interrupted confirming attempt with its original quote and Stripe operation keys, including a schedule attached before ownership metadata was bound. It does not adopt foreign schedules. An unapplied expired upgrade requires a new quote, and owner/source/amount conflicts preserve access and require attention. A new browser request cannot bypass a confirming attempt.
+Reconciliation resumes an interrupted confirming attempt with its original quote and Stripe operation keys, including a schedule attached before ownership metadata was bound. It does not adopt foreign schedules. Recovery is best effort: when the attempt can no longer be completed safely (expired quote, changed source or amount, cancelling or past-due subscription, new owner, foreign schedule) it is marked expired and reconciliation applies the provider's current state, so entitlements never wait on it. Stripe outages, rate limits and network failures are retried rather than treated as conflicts. A new browser request cannot bypass a confirming attempt.
 
 ### Stripe test-mode verification
 
@@ -108,6 +116,7 @@ Then verify isolated Stripe test customers and, where the paid-period boundary m
 5. Replace or undo a schedule; then cancel/reactivate in the portal. Never cancel an operator-owned schedule.
 6. Business seats: schedule an interval change, change membership, and verify both phases' quantities. A downgrade removes future seats and the existing access restriction applies at transition if non-owner members remain.
 7. Repeat requests, lose a provider response, use concurrent tabs, change seats after a quote, and submit an expired quote. Confirm immutable input, one provider mutation, and recovery without optimistic access.
+8. Before a live launch, verify tax and promotion codes: Checkout allows promotion codes, and plan changes keep existing discounts and tax rates.
 
 ## Access and recovery policy
 
@@ -119,6 +128,7 @@ Then verify isolated Stripe test customers and, where the paid-period boundary m
 - A Workspace without non-owner members is never restricted by plan: a personal Workspace returns to active Free after paid access ends.
 - Any Workspace whose plan lacks `workspace.members` (everything below Business) and still has non-owner members, Viewers included, is restricted. This covers a Business-to-Pro or Business-to-Creator change as well as paid access ending. The owner retains billing, viewing, downloads, demotions, and removals. Processing, publishing, API/MCP, editing, and every new member (Viewers included) stop until the owner upgrades or removes the members. One rule, `projectWorkspaceAccessStatus`, decides this in the same transaction that commits the projection, and every membership change wakes reconciliation so a removal lifts the restriction promptly.
 - New members and invitations require `workspace.members`; below Business they are refused with `plan_feature_required` (HTTP 402).
+- After a downgrade, versioned exports keep their accepted output settings, image and dub requests with durable reservations finish under their accepted grant, and accepted branding or censoring is never silently stripped.
 
 ### Checkout admission
 

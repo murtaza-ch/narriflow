@@ -47,6 +47,7 @@ function dependencies(overrides: Record<string, unknown> = {}) {
     previewPlanChange: async () => ({ quote }),
     confirmPlanChange: async () => ({ kind: "applied" as const, effectiveAt: quote.effectiveAt }),
     cancelScheduledPlanChange: async () => ({ kind: "unchanged" as const, effectiveAt: null }),
+    readPendingPlanChangePayment: async () => ({ url: null }),
     readBillingState: async () => view,
     reconcileCurrentState: async () => ({ kind: "reconciled" as const, view }),
     ...overrides,
@@ -174,9 +175,10 @@ describe("Workspace Billing HTTP routes", () => {
       previewPlanChange: async () => { calls += 1; return { quote }; },
       confirmPlanChange: async () => { calls += 1; return { kind: "applied" as const, effectiveAt: null }; },
       cancelScheduledPlanChange: async () => { calls += 1; return { kind: "unchanged" as const, effectiveAt: null }; },
+      readPendingPlanChangePayment: async () => { calls += 1; return { url: null }; },
     }));
     app.onError((_error, c) => c.json({ error: "billing_forbidden" }, 403));
-    for (const path of ["preview", "confirm", "cancel"]) {
+    for (const path of ["preview", "confirm", "cancel", "payment"]) {
       expect((await app.request(`/plan-change/${path}`, { method: "POST" })).status).toBe(403);
     }
     expect(calls).toBe(0);

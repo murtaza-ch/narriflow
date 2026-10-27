@@ -913,6 +913,7 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
 	{ method: "POST", path: "/billing/plan-change/preview", capability: "billing.manage" },
 	{ method: "POST", path: "/billing/plan-change/confirm", capability: "billing.manage" },
 	{ method: "POST", path: "/billing/plan-change/cancel", capability: "billing.manage" },
+	{ method: "POST", path: "/billing/plan-change/payment", capability: "billing.manage" },
 	{ method: "GET", path: "/billing/state", capability: "content.view" },
 	{ method: "POST", path: "/billing/reconcile", capability: "billing.manage" },
 ] as const;

@@ -106,7 +106,6 @@ function normalizeSubscription(subscription: Stripe.Subscription, catalog: Billi
   }
   const schedule = expandedSchedule(subscription);
   const phase = schedule && futurePhase(schedule);
-  const invoice = subscription.latest_invoice && typeof subscription.latest_invoice !== "string" ? subscription.latest_invoice : null;
   const pending = pendingItems(subscription);
   return {
     id: subscription.id,
@@ -116,7 +115,7 @@ function normalizeSubscription(subscription: Stripe.Subscription, catalog: Billi
     periodStart: Math.min(...starts),
     periodEnd: Math.min(...ends),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
-    pending: subscription.pending_update ? { items: pending ?? [], paymentUrl: invoice?.hosted_invoice_url ?? null } : null,
+    pending: subscription.pending_update ? { items: pending ?? [], paymentUrl: pendingUpdateInvoice(subscription)?.hosted_invoice_url ?? null } : null,
     schedule: schedule ? {
       id: schedule.id,
       owned: ownsSchedule(schedule, subscription.metadata.workspaceId ?? ""),
@@ -221,33 +220,62 @@ function updateItems(source: PlanChangeItem[], target: PlanChangeItem[], catalog
   return result;
 }
 
+/**
+ * The invoice a pending upgrade created, or null. Only an update invoice
+ * belongs to the upgrade; a renewal invoice is never paid or voided on its behalf.
+ */
+function pendingUpdateInvoice(subscription: Stripe.Subscription): Stripe.Invoice | null {
+  const invoice = subscription.latest_invoice;
+  return invoice && typeof invoice !== "string" && invoice.billing_reason === "subscription_update" ? invoice : null;
+}
+
 function pendingResult(subscription: Stripe.Subscription) {
-  const invoice = subscription.latest_invoice && typeof subscription.latest_invoice !== "string" ? subscription.latest_invoice : null;
+  const invoice = pendingUpdateInvoice(subscription);
   return { kind: "pending_payment" as const, effectiveAt: null, ...(invoice?.hosted_invoice_url ? { paymentUrl: invoice.hosted_invoice_url } : {}) };
 }
 
+/**
+ * Plan changes need an active subscription with nothing outstanding. Stripe
+ * counts an invoice as outstanding once it is finalized and unpaid (`open` or
+ * `uncollectible`). A renewal invoice spends about an hour as a `draft` before
+ * Stripe finalizes and charges it; that is a normal part of every renewal, not
+ * a payment problem, so it doesn't block a change.
+ */
 function requireReadySubscription(subscription: Stripe.Subscription): void {
   const invoice = subscription.latest_invoice;
   if (subscription.status !== "active" || subscription.cancel_at_period_end || subscription.collection_method !== "charge_automatically" ||
-    typeof invoice === "string" || (invoice && ["draft", "open", "uncollectible"].includes(invoice.status ?? ""))) {
+    typeof invoice === "string" || (invoice && ["open", "uncollectible"].includes(invoice.status ?? ""))) {
     throw new WorkspaceBillingError("plan_change_recovery_required");
   }
+}
+
+/**
+ * Stripe refusing this request (invalid against the subscription, card, or a
+ * reused key) means the plan change conflicts. Outages, rate limits and network
+ * failures propagate instead, so reconciliation retries them shortly rather
+ * than ending an owner's confirmed change.
+ */
+function planChangeFailure(error: unknown, code: "plan_change_conflict" | "plan_change_schedule_conflict" | "plan_change_recovery_required"): never {
+  if (error instanceof WorkspaceBillingError) throw error;
+  const type = (error as { type?: unknown } | null)?.type;
+  if (type === "StripeInvalidRequestError" || type === "StripeCardError" || type === "StripeIdempotencyError") throw new WorkspaceBillingError(code);
+  throw error;
 }
 
 export function createStripePlanChangeProvider(stripe: Stripe, catalog: BillingCatalog): WorkspacePlanChangeProvider {
   const retrieve = async (id: string) => {
     try {
       return await stripe.subscriptions.retrieve(id, { expand: ["latest_invoice", "schedule"] });
-    } catch {
-      throw new WorkspaceBillingError("plan_change_conflict");
+    } catch (error) {
+      planChangeFailure(error, "plan_change_conflict");
     }
   };
   const release = async (schedule: Stripe.SubscriptionSchedule, workspaceId: string) => {
     if (!ownsSchedule(schedule, workspaceId)) throw new WorkspaceBillingError("plan_change_schedule_conflict");
     try {
       await stripe.subscriptionSchedules.release(schedule.id, { preserve_cancel_date: true }, { idempotencyKey: `narriflow_plan_release_${schedule.id}` });
-    } catch {
-      throw new WorkspaceBillingError("plan_change_conflict");
+    } catch (error) {
+      planChangeFailure(error, "plan_change_conflict");
     }
   };
 
@@ -270,7 +298,7 @@ export function createStripePlanChangeProvider(stripe: Stripe, catalog: BillingC
           proration_date: input.prorationDate,
           proration_behavior: "always_invoice",
         },
-      }).catch(() => { throw new WorkspaceBillingError("plan_change_conflict"); });
+      }).catch((error) => planChangeFailure(error, "plan_change_conflict"));
       if (invoice.currency !== "usd" || !Number.isSafeInteger(invoice.amount_due)) throw new WorkspaceBillingError("plan_change_conflict");
       return { amountDue: invoice.amount_due, currency: invoice.currency };
     },
@@ -309,7 +337,8 @@ export function createStripePlanChangeProvider(stripe: Stripe, catalog: BillingC
           const current = await retrieve(subscription.id);
           if (current.pending_update && itemsEqual(pendingItems(current) ?? [], input.items)) return pendingResult(current);
           if (itemsEqual(subscriptionItems(current), input.items)) return { kind: "applied", effectiveAt: null };
-          throw new WorkspaceBillingError("plan_change_recovery_required");
+          // Not applied: an outage is retried under the same idempotency key; a refusal ends the attempt.
+          planChangeFailure(error, "plan_change_recovery_required");
         }
       }
 
@@ -323,8 +352,8 @@ export function createStripePlanChangeProvider(stripe: Stripe, catalog: BillingC
         let created: Stripe.SubscriptionSchedule;
         try {
           created = await stripe.subscriptionSchedules.create({ from_subscription: subscription.id }, { idempotencyKey: `narriflow_plan_schedule_${input.quoteId}` });
-        } catch {
-          throw new WorkspaceBillingError("plan_change_schedule_conflict");
+        } catch (error) {
+          planChangeFailure(error, "plan_change_schedule_conflict");
         }
         if (schedule && schedule.id !== created.id) throw new WorkspaceBillingError("plan_change_schedule_conflict");
         schedule = created;
@@ -352,12 +381,12 @@ export function createStripePlanChangeProvider(stripe: Stripe, catalog: BillingC
           proration_behavior: "none",
           phases: [current, target],
         }, { idempotencyKey: `narriflow_plan_schedule_apply_${input.quoteId}` });
-      } catch {
+      } catch (error) {
         const observed = await retrieve(subscription.id).catch(() => null);
         const attached = observed ? expandedSchedule(observed) : null;
         const future = attached && futurePhase(attached);
         if (!attached || !ownsSchedule(attached, input.workspaceId) || attached.metadata?.quoteId !== input.quoteId || !future || !itemsEqual(phaseItems(future), input.items)) {
-          throw new WorkspaceBillingError("plan_change_conflict");
+          planChangeFailure(error, "plan_change_conflict");
         }
       }
       return { kind: "scheduled", effectiveAt: new Date(actual.periodEnd * 1_000).toISOString() };
@@ -367,6 +396,16 @@ export function createStripePlanChangeProvider(stripe: Stripe, catalog: BillingC
       if (objectId(subscription.customer) !== input.subscription.customerId || subscription.metadata.workspaceId !== input.workspaceId) throw new WorkspaceBillingError("plan_change_conflict");
       const schedule = expandedSchedule(subscription);
       if (schedule) await release(schedule, input.workspaceId);
+    },
+    async cancelPendingPlanChange(input) {
+      const subscription = await retrieve(input.subscription.id);
+      if (objectId(subscription.customer) !== input.subscription.customerId || subscription.metadata.workspaceId !== input.workspaceId) throw new WorkspaceBillingError("plan_change_conflict");
+      if (!subscription.pending_update) return;
+      // Stripe's documented way to cancel a pending update: void the invoice it created.
+      const invoice = pendingUpdateInvoice(subscription);
+      if (!invoice || invoice.status !== "open") throw new WorkspaceBillingError("plan_change_conflict");
+      await stripe.invoices.voidInvoice(invoice.id!, {}, { idempotencyKey: `narriflow_plan_pending_void_${invoice.id}` })
+        .catch((error) => planChangeFailure(error, "plan_change_conflict"));
     },
     async finalizeCompletedPlanChangeSchedule(input) {
       const subscription = await retrieve(input.subscriptionId);
@@ -401,7 +440,7 @@ export function createStripePlanChangeProvider(stripe: Stripe, catalog: BillingC
       if (!changed) return;
       const fingerprint = createHash("sha256").update(JSON.stringify(phases)).digest("hex").slice(0, 20);
       await stripe.subscriptionSchedules.update(schedule.id, { phases, proration_behavior: "none" }, { idempotencyKey: `narriflow_plan_seats_${schedule.id}_${input.revision}_${fingerprint}` })
-        .catch(() => { throw new WorkspaceBillingError("plan_change_conflict"); });
+        .catch((error) => planChangeFailure(error, "plan_change_conflict"));
     },
   };
 }

@@ -180,6 +180,7 @@ app.route(
 		previewPlanChange: (input) => billingService.previewPlanChange(input),
 		confirmPlanChange: (input) => billingService.confirmPlanChange(input),
 		cancelScheduledPlanChange: (input) => billingService.cancelScheduledPlanChange(input),
+		readPendingPlanChangePayment: (input) => billingService.readPendingPlanChangePayment(input),
 		readBillingState: (workspaceId) =>
 			billingService.readBillingState(workspaceId),
 		reconcileCurrentState: (workspaceId) =>
@@ -1819,15 +1820,18 @@ app.get("/brand-templates/:id/logo-url", async (c) => {
 });
 
 // Music/SFX library (docs/plans/vizard-parity.md "Music/SFX library").
-// Mirrors the brand-templates logo presign/finalize shape immediately above:
-// presign against R2, verify ownership on finalize, serve playback through a
-// short-lived presigned download URL.
+// List paginated metadata; verify uploads before finalizing and sign playback on demand.
 app.get("/audio-assets", async (c) => {
 	const appUser = authenticatedHonoActor(c);
 
 	const parsed = listAudioAssetsQuerySchema.safeParse({
 		kind: c.req.query("kind"),
 		mood: c.req.query("mood") ?? undefined,
+		search: c.req.query("search"),
+		scope: c.req.query("scope"),
+		favorited: c.req.query("favorited"),
+		limit: c.req.query("limit"),
+		offset: c.req.query("offset"),
 	});
 	if (!parsed.success) {
 		return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);

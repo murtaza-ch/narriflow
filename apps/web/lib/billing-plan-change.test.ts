@@ -19,7 +19,7 @@ describe("plan change review", () => {
   test("names the exact prorated charge before payment and preserves payment gating", () => {
     expect(planChangeQuotePresentation(quote)).toMatchObject({
       title: "Switch to Pro", due: "$7.45", action: "Pay $7.45 and upgrade now",
-      body: expect.stringContaining("after payment succeeds"),
+      body: expect.stringContaining("as soon as payment succeeds"),
     });
   });
 
@@ -30,10 +30,16 @@ describe("plan change review", () => {
     });
   });
 
-  test("an invoice credit is not presented as a negative payment", () => {
-    expect(planChangeQuotePresentation({ ...quote, amountDue: -1234 })).toMatchObject({
-      due: "$0", action: "Confirm plan change", body: expect.stringContaining("credit of $12.34"),
+  test("a change covered by unused time asks for nothing today", () => {
+    expect(planChangeQuotePresentation({ ...quote, amountDue: 0 })).toMatchObject({
+      due: "$0", action: "Upgrade now", body: expect.stringContaining("nothing is due today"),
     });
+  });
+
+  test("a new change says it replaces the one already scheduled", () => {
+    const scheduled = { tier: "creator" as const, effectiveAt: "2027-10-27T00:00:00.000Z" };
+    expect(planChangeQuotePresentation(quote, scheduled).body).toContain("This replaces your scheduled switch to Creator on Oct 27, 2027.");
+    expect(planChangeQuotePresentation(quote).body).not.toContain("replaces");
   });
 
   test("only healthy paid owners can start changes, including a team restricted by its tier", () => {

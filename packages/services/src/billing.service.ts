@@ -791,6 +791,10 @@ export class BillingService {
     return this.callWorkspaceBilling(() => this.workspaceBillingModule().cancelScheduledPlanChange({ workspaceId: input.workspaceId, actorUserId: input.userId }));
   }
 
+  readPendingPlanChangePayment(input: { userId: string; workspaceId: string }) {
+    return this.callWorkspaceBilling(() => this.workspaceBillingModule().readPendingPlanChangePayment({ workspaceId: input.workspaceId, actorUserId: input.userId }));
+  }
+
   /** Verifies and durably accepts a Stripe delivery without reconciling inline. */
   async handleWebhook(
     rawBody: string,

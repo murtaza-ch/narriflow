@@ -207,9 +207,14 @@ describe("BillingPlans", () => {
         ...paid,
         planChange: { state: "pending_payment", tier: "business", interval: "monthly", effectiveAt: null },
       });
-      expect(markup).toContain("switch to Business is awaiting payment");
-      expect(markup).toContain("Your current plan remains active");
+      expect(markup).toContain("Upgrade to Business is awaiting payment");
+      expect(markup).toContain("Your current plan stays active");
+      expect(markup).toContain("Complete payment");
+      expect(markup).toContain("Keep current plan");
       expect(markup).not.toContain("Review Business");
+      const viewer = render({ ...paid, planChange: { state: "pending_payment", tier: "business", interval: "monthly", effectiveAt: null } }, false);
+      expect(viewer).not.toContain("Complete payment");
+      expect(viewer).toContain("The workspace owner can finish the payment");
     });
   });
 });

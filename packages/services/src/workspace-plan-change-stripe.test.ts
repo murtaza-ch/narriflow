@@ -59,14 +59,22 @@ function fixture(initial = raw()) {
         }));
         if (state.decline) {
           state.subscription.pending_update = { subscription_items: target } as unknown as Stripe.Subscription.PendingUpdate;
-          state.subscription.latest_invoice = { id: "invoice", status: "open", hosted_invoice_url: "https://invoice.stripe.com/recovery" } as Stripe.Invoice;
+          state.subscription.latest_invoice = { id: "invoice", status: "open", billing_reason: "subscription_update", hosted_invoice_url: "https://invoice.stripe.com/recovery" } as Stripe.Invoice;
           state.subscription.items.data = current;
         } else state.subscription.items.data = target as Stripe.SubscriptionItem[];
         if (state.throwAfterPending) throw new Error("Provider authentication failure containing private details");
         return structuredClone(state.subscription);
       },
     },
-    invoices: { createPreview: async (params: unknown) => { calls.push({ method: "preview", params }); return { amount_due: 2399, currency: "usd" }; } },
+    invoices: {
+      createPreview: async (params: unknown) => { calls.push({ method: "preview", params }); return { amount_due: 2399, currency: "usd" }; },
+      voidInvoice: async (id: string, params: unknown, options: Stripe.RequestOptions) => {
+        calls.push({ method: "void", id, params, options });
+        state.subscription.pending_update = null;
+        state.subscription.latest_invoice = { id, status: "void", hosted_invoice_url: null } as unknown as Stripe.Invoice;
+        return { id, status: "void" };
+      },
+    },
     subscriptionSchedules: {
       create: async (params: { from_subscription: string }, options: Stripe.RequestOptions) => {
         calls.push({ method: "schedule_create", params, options });
@@ -97,7 +105,7 @@ function fixture(initial = raw()) {
     },
   } as unknown as Stripe;
   const provider = createStripePlanChangeProvider(stripe, catalog);
-  return { state, calls, provider };
+  return { state, calls, provider, stripe };
 }
 
 async function applyInput(value: ReturnType<typeof fixture>, items: PlanChangeItem[], kind: "immediate" | "scheduled" = "immediate") {
@@ -105,6 +113,52 @@ async function applyInput(value: ReturnType<typeof fixture>, items: PlanChangeIt
 }
 
 describe("Stripe plan change contracts", () => {
+  test("a renewal invoice still in draft doesn't block a change; an outstanding one does", async () => {
+    const draft = fixture();
+    draft.state.subscription.latest_invoice = { id: "renewal", status: "draft", hosted_invoice_url: null } as unknown as Stripe.Invoice;
+    await expect(draft.provider.retrievePlanChangeSubscription!("subscription")).resolves.toMatchObject({ id: "subscription" });
+    for (const status of ["open", "uncollectible"] as const) {
+      const outstanding = fixture();
+      outstanding.state.subscription.latest_invoice = { id: "renewal", status, hosted_invoice_url: "https://invoice.stripe.com/x" } as unknown as Stripe.Invoice;
+      await expect(outstanding.provider.retrievePlanChangeSubscription!("subscription")).rejects.toMatchObject({ code: "plan_change_recovery_required" });
+    }
+  });
+
+  test("abandoning a pending upgrade voids only its open invoice, once", async () => {
+    const value = fixture();
+    value.state.decline = true;
+    const input = await applyInput(value, [{ id: "base_item", priceId: "business_monthly", quantity: 1 }]);
+    expect((await value.provider.applyPlanChange!(input)).kind).toBe("pending_payment");
+    const pending = await value.provider.retrievePlanChangeSubscription!("subscription");
+    await value.provider.cancelPendingPlanChange!({ workspaceId, subscription: pending });
+    const voided = value.calls.filter((call) => call.method === "void");
+    expect(voided).toHaveLength(1);
+    expect(voided[0]?.options).toEqual({ idempotencyKey: "narriflow_plan_pending_void_invoice" });
+    // Nothing pending any more: a repeat is a no-op.
+    await value.provider.cancelPendingPlanChange!({ workspaceId, subscription: pending });
+    expect(value.calls.filter((call) => call.method === "void")).toHaveLength(1);
+    expect(value.state.subscription.items.data[0]?.price.id).toBe("pro_monthly");
+  });
+
+  test("a renewal invoice is never voided or offered as the upgrade's payment", async () => {
+    const value = fixture();
+    value.state.subscription.pending_update = { subscription_items: [] } as unknown as Stripe.Subscription.PendingUpdate;
+    value.state.subscription.latest_invoice = { id: "renewal", status: "open", billing_reason: "subscription_cycle", hosted_invoice_url: "https://invoice.stripe.com/renewal" } as unknown as Stripe.Invoice;
+    const pending = await value.provider.retrievePlanChangeSubscription!("subscription");
+    expect(pending.pending?.paymentUrl).toBeNull();
+    await expect(value.provider.cancelPendingPlanChange!({ workspaceId, subscription: pending })).rejects.toMatchObject({ code: "plan_change_conflict" });
+    expect(value.calls.filter((call) => call.method === "void")).toHaveLength(0);
+  });
+
+  test("only Stripe's refusals read as conflicts; outages propagate for retry", async () => {
+    const refused = fixture();
+    refused.stripe.subscriptions.retrieve = (async () => { throw Object.assign(new Error("No such subscription"), { type: "StripeInvalidRequestError" }); }) as never;
+    await expect(refused.provider.retrievePlanChangeSubscription!("subscription")).rejects.toMatchObject({ code: "plan_change_conflict" });
+    const outage = fixture();
+    outage.stripe.subscriptions.retrieve = (async () => { throw Object.assign(new Error("Stripe is unavailable"), { type: "StripeAPIError" }); }) as never;
+    await expect(outage.provider.retrievePlanChangeSubscription!("subscription")).rejects.toThrow("Stripe is unavailable");
+  });
+
   test("preview names existing items and uses the same fixed proration date", async () => {
     const value = fixture(raw([{ id: "base_item", priceId: "business_monthly", quantity: 1 }, { id: "seat_item", priceId: "seat_monthly", quantity: 4 }]));
     const result = await value.provider.previewPlanChange!({ subscriptionId: "subscription", customerId: "customer", items: [{ id: "base_item", priceId: "pro_monthly", quantity: 1 }], prorationDate: start + 60 });
@@ -174,7 +228,8 @@ describe("Stripe plan change contracts", () => {
     const value = fixture();
     const input = await applyInput(value, [{ id: "base_item", priceId: "creator_monthly", quantity: 1 }], "scheduled");
     value.state.failScheduleUpdate = true;
-    await expect(value.provider.applyPlanChange!(input)).rejects.toMatchObject({ code: "plan_change_conflict" });
+    // A timeout is transient: it propagates for retry instead of reading as a conflict.
+    await expect(value.provider.applyPlanChange!(input)).rejects.toThrow("Transient provider timeout");
     expect((value.state.subscription.schedule as Stripe.SubscriptionSchedule).metadata).toEqual({});
     expect(await value.provider.applyPlanChange!({ ...input, recovering: true })).toMatchObject({ kind: "scheduled" });
     const creates = value.calls.filter((call) => call.method === "schedule_create");

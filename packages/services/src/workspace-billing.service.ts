@@ -2242,11 +2242,10 @@ export function createWorkspaceBillingModule(dependencies: {
       throw new WorkspaceBillingError("workspace_not_found");
     }
     if (attemptId) {
-      try {
-        await planChanges.recoverConfirmingPlanChange({ workspaceId, attemptId });
-      } catch (error) {
-        if (!(error instanceof WorkspaceBillingError)) throw error;
-        return { kind: "unresolved", reason: error.code, view: billingView(current) };
+      // Best effort: entitlements follow the provider whether or not an
+      // interrupted plan change can still be resumed.
+      if ((await planChanges.recoverConfirmingPlanChange({ workspaceId, attemptId })) === "expired") {
+        dependencies.diagnostics.record({ level: "warn", message: "workspace_billing_plan_change_abandoned", workspaceId, phase: "plan_change_recovery" });
       }
     }
     const settleNoSubscription = async (activating: boolean) => {
@@ -2641,7 +2640,9 @@ export function createWorkspaceBillingModule(dependencies: {
           });
         }
       }
-      if (subscription.planChange?.state === "scheduled") {
+      // The schedule update can't prorate, so it only follows a live seat change
+      // that has already been billed; a failed one is retried first.
+      if (subscription.planChange?.state === "scheduled" && !seatConvergenceFailed) {
         try {
           if (!dependencies.provider.synchronizeScheduledSeats) throw new WorkspaceBillingError("plan_change_not_configured");
           providerSeatMutation = true;
@@ -2659,7 +2660,14 @@ export function createWorkspaceBillingModule(dependencies: {
       };
     }
     if (subscription.planScheduleId && !subscription.planChange && dependencies.provider.finalizeCompletedPlanChangeSchedule) {
-      await dependencies.provider.finalizeCompletedPlanChangeSchedule({ workspaceId, subscriptionId: subscription.id });
+      // Releasing a finished schedule keeps portal cancellation available; it
+      // must never stop the verified state from being committed.
+      try {
+        await dependencies.provider.finalizeCompletedPlanChangeSchedule({ workspaceId, subscriptionId: subscription.id });
+      } catch (error) {
+        if (error instanceof WorkspaceBillingAttemptLost) throw error;
+        dependencies.diagnostics.record({ level: "warn", message: "workspace_billing_schedule_release_failed", workspaceId, phase: "projection" });
+      }
     }
     let settled: WorkspaceBillingProjection;
     try {
@@ -3169,7 +3177,11 @@ export function createWorkspaceBillingModule(dependencies: {
         );
       }
       if (current.canonicalSubscriptionId && dependencies.provider.finalizeCompletedPlanChangeSchedule) {
-        await dependencies.provider.finalizeCompletedPlanChangeSchedule({ workspaceId: input.workspaceId, subscriptionId: current.canonicalSubscriptionId });
+        // Best effort: the portal is also where payment is recovered, so a failed
+        // release must not make it unavailable.
+        await dependencies.provider.finalizeCompletedPlanChangeSchedule({ workspaceId: input.workspaceId, subscriptionId: current.canonicalSubscriptionId }).catch(() => {
+          dependencies.diagnostics.record({ level: "warn", message: "workspace_billing_schedule_release_failed", workspaceId: input.workspaceId, phase: "portal" });
+        });
       }
       const portal = await callProvider("create_portal", () =>
         dependencies.provider.createPortalSession!({

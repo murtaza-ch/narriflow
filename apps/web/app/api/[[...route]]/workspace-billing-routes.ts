@@ -55,6 +55,10 @@ interface WorkspaceBillingHttpDependencies {
     userId: string;
     workspaceId: string;
   }): Promise<PlanChangeResult>;
+  readPendingPlanChangePayment(input: {
+    userId: string;
+    workspaceId: string;
+  }): Promise<{ url: string | null }>;
   readBillingState(workspaceId: string): Promise<WorkspaceBillingView>;
   reconcileCurrentState(workspaceId: string): Promise<{
     kind: "reconciled" | "unresolved";
@@ -159,6 +163,14 @@ export function createWorkspaceBillingHttpRoutes(
       userId: actor.actorUserId,
       workspaceId: actor.workspaceId,
       quoteId: parsed.data.quoteId,
+    }), 200);
+  });
+
+  app.post("/plan-change/payment", async (c) => {
+    const actor = await dependencies.getActor(c);
+    return c.json(await dependencies.readPendingPlanChangePayment({
+      userId: actor.actorUserId,
+      workspaceId: actor.workspaceId,
     }), 200);
   });
 

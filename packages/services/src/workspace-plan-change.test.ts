@@ -34,6 +34,7 @@ function fixture(price = "pro_monthly", desiredAdditionalSeats = 0) {
       return { kind: "pending_payment", paymentUrl: source.pending.paymentUrl!, effectiveAt: null };
     },
     cancelScheduledPlanChange: async () => { source.schedule = null; },
+    cancelPendingPlanChange: async () => { source.pending = null; },
   };
   const module = () => createWorkspaceBillingModule({ catalog, store, provider, clock: { now: () => now.value }, diagnostics: { record: () => undefined } });
   const billing = module();
@@ -65,7 +66,7 @@ function scheduleRecoveryFixture() {
         createKeys.push(key);
         const previous = creates.get(key);
         if (previous) return structuredClone(previous);
-        if (raw.schedule) throw new Error("Subscription already has another schedule");
+        if (raw.schedule) throw Object.assign(new Error("Subscription already has another schedule"), { type: "StripeInvalidRequestError" });
         const schedule = { id: "schedule_created_once", metadata: {}, status: "active", current_phase: { start_date: phase.start_date, end_date: phase.end_date }, phases: [structuredClone(phase)] } as unknown as Stripe.SubscriptionSchedule;
         raw.schedule = schedule;
         creates.set(key, structuredClone(schedule));
@@ -207,7 +208,8 @@ describe("Workspace plan changes", () => {
   test("a new worker finishes an unbound schedule after the browser forgets its quote", async () => {
     const f = scheduleRecoveryFixture();
     const { quote } = await f.billing.previewPlanChange({ ...f.input, targetTier: "creator" });
-    await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toMatchObject({ code: "plan_change_conflict" });
+    // A lost response is transient: the owner sees a retryable failure and the worker finishes it.
+    await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Response lost before binding the schedule");
     expect((f.raw.schedule as Stripe.SubscriptionSchedule).metadata).toEqual({});
     await expect(f.billing.previewPlanChange({ ...f.input, clientIdempotencyKey: randomUUID(), targetTier: "creator" })).rejects.toMatchObject({ code: "plan_change_busy" });
     let nestedClaims = 0;
@@ -232,15 +234,17 @@ describe("Workspace plan changes", () => {
   test("worker recovery cannot adopt an unrelated schedule with a different provider identity", async () => {
     const f = scheduleRecoveryFixture();
     const { quote } = await f.billing.previewPlanChange({ ...f.input, targetTier: "creator" });
-    await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toMatchObject({ code: "plan_change_conflict" });
+    await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Response lost before binding the schedule");
     const foreign = { ...(f.raw.schedule as Stripe.SubscriptionSchedule), id: "schedule_foreign", metadata: { app: "another_app", workspaceId: f.workspaceId } };
     f.raw.schedule = foreign;
     const worker = f.module();
-    expect(await worker.reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 0, unresolved: 1 });
+    // The confirmed change ends without touching the foreign schedule, and entitlements still reconcile.
+    expect(await worker.reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1, unresolved: 0 });
     expect((f.raw.schedule as Stripe.SubscriptionSchedule).id).toBe("schedule_foreign");
     expect((f.raw.schedule as Stripe.SubscriptionSchedule).metadata).toEqual(foreign.metadata);
     expect(f.updateCalls()).toBe(1);
-    expect(await worker.readBillingState(f.workspaceId)).toMatchObject({ plan: "pro", health: "attention_required" });
+    expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("expired");
+    expect(await worker.readBillingState(f.workspaceId)).toMatchObject({ plan: "pro", health: "current" });
   });
 
   test("a worker expires an unapplied immediate attempt instead of charging an old quote", async () => {
@@ -266,20 +270,59 @@ describe("Workspace plan changes", () => {
     const { quote } = await f.billing.previewPlanChange(f.input);
     await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Provider unavailable");
     f.provider.previewPlanChange = async () => ({ amountDue: 1400, currency: "usd" });
-    expect(await f.module().reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 0, unresolved: 1 });
+    // The owner reviewed a different amount, so the change ends instead of charging it.
+    expect(await f.module().reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1, unresolved: 0 });
     expect(applyCalls).toBe(1);
-    expect((await f.store.readProjection(f.workspaceId))?.health).toBe("attention_required");
+    expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("expired");
+    expect((await f.store.readProjection(f.workspaceId))?.health).toBe("current");
   });
 
-  test("a worker preserves access and requires attention when an unfinished attempt's source period changes", async () => {
+  test("a worker ends an unfinished attempt whose source period changed and keeps the provider's plan", async () => {
     const f = fixture();
     f.provider.applyPlanChange = async () => { throw new Error("Provider unavailable before update"); };
     const { quote } = await f.billing.previewPlanChange({ ...f.input, targetTier: "creator" });
     await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Provider unavailable");
     f.source.periodEnd += 30 * 86400;
-    expect(await f.module().reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 0, unresolved: 1 });
+    expect(await f.module().reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1, unresolved: 0 });
+    expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("expired");
     expect((await f.store.readProjection(f.workspaceId))?.pricingTier).toBe("pro");
-    expect((await f.store.readProjection(f.workspaceId))?.health).toBe("attention_required");
+    expect((await f.store.readProjection(f.workspaceId))?.health).toBe("current");
+  });
+
+  test("an owner can finish or abandon an upgrade that is awaiting payment", async () => {
+    const f = fixture();
+    const { quote } = await f.billing.previewPlanChange(f.input);
+    expect((await f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).kind).toBe("pending_payment");
+    expect(await f.billing.readPendingPlanChangePayment(f.input)).toEqual({ url: "https://invoice.stripe.com/i/test" });
+    await expect(f.billing.readPendingPlanChangePayment({ ...f.input, actorUserId: randomUUID() })).rejects.toMatchObject({ code: "billing_forbidden" });
+    // "Keep current plan" voids the pending invoice; the subscription keeps its paid plan.
+    expect(await f.billing.cancelScheduledPlanChange(f.input)).toEqual({ kind: "unchanged", effectiveAt: null });
+    expect(f.source.pending).toBeNull();
+    expect(f.source.items[0]?.priceId).toBe("pro_monthly");
+    expect(await f.billing.readPendingPlanChangePayment(f.input)).toEqual({ url: null });
+  });
+
+  test("a stuck confirming attempt never blocks applying a provider cancellation", async () => {
+    const f = fixture();
+    f.provider.applyPlanChange = async () => { throw new Error("Provider unavailable before update"); };
+    const { quote } = await f.billing.previewPlanChange({ ...f.input, targetTier: "creator" });
+    await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Provider unavailable");
+    f.source.status = "canceled";
+    f.now.value = new Date("2026-10-27T18:30:00Z");
+    await f.module().reconcileDueAccounts();
+    expect((await f.store.readProjection(f.workspaceId))?.pricingTier).toBe("free");
+    expect(await f.store.readConfirmingPlanChangeQuote(f.workspaceId)).toBeNull();
+  });
+
+  test("a stuck immediate attempt expires even when the subscription is now cancelling", async () => {
+    const f = fixture();
+    f.provider.applyPlanChange = async () => { throw new Error("Provider unavailable before update"); };
+    const { quote } = await f.billing.previewPlanChange(f.input);
+    await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Provider unavailable");
+    f.source.cancelAtPeriodEnd = true;
+    f.now.value = new Date("2026-10-27T12:11:00Z");
+    expect(await f.module().reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1 });
+    expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("expired");
   });
 
   test("a worker observes an already pending payment without repeating the accepted upgrade", async () => {
