@@ -162,6 +162,20 @@ describeDb("Zoom recording admission and authorization", () => {
     expect(await prisma.zoomOAuthState.count({ where: { stateHash: state } })).toBe(0);
   });
 
+  test("connecting Zoom needs the plan that runs Autopilot; existing connections stay readable and disconnectable", async () => {
+    const f = await fixture(), zoom = service();
+    await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
+    await expect(zoom.createAuthorizationUrl(f.scope, "https://narriflow.test")).rejects.toMatchObject({
+      code: "plan_feature_required",
+      kind: "payment_required",
+      details: expect.objectContaining({ feature: "automation.autopilot", currentTier: "creator", requiredTier: "pro" }),
+    });
+    expect(await prisma.zoomOAuthState.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
+    expect(await zoom.listConnections(f.scope)).toMatchObject([{ id: f.connection.id, revoked: false, canDisconnect: true }]);
+    await zoom.disconnect(f.scope, f.connection.id);
+    expect((await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } })).revokedAt).not.toBeNull();
+  });
+
   test("two workers rotate one expired refresh token under the connection lock", async () => {
     const f = await fixture(), zoom = service();
     const project = await prisma.project.create({ data: { workspaceId: f.workspace.id, createdByUserId: f.user.id, title: "Download", sourceMediaUrl: "zoom:recording", sourceType: "zoom" } });

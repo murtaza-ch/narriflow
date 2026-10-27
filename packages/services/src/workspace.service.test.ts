@@ -89,6 +89,7 @@ describe("workspace administration failures", () => {
     expect(() =>
       assertWorkspaceInviteEntitlement({
         pricingTier: "free",
+        status: "active",
         actorRole: "owner",
         invitedRole: "viewer",
       }),
@@ -106,6 +107,7 @@ describe("workspace administration failures", () => {
     expect(() =>
       assertWorkspaceInviteEntitlement({
         pricingTier: "pro",
+        status: "restricted",
         actorRole: "owner",
         invitedRole: "viewer",
       }),
@@ -113,12 +115,32 @@ describe("workspace administration failures", () => {
     expect(() =>
       assertWorkspaceInviteEntitlement({
         pricingTier: "business",
+        status: "active",
         actorRole: "admin",
         invitedRole: "admin",
       }),
     ).toThrow(
       expect.objectContaining({ code: "workspace_admin_invite_owner_required" }),
     );
+    // Membership growth needs an active Workspace, as accepting an invitation does.
+    for (const status of ["restricted", "pending_payment"] as const) {
+      expect(() =>
+        assertWorkspaceInviteEntitlement({
+          pricingTier: "business",
+          status,
+          actorRole: "owner",
+          invitedRole: "viewer",
+        }),
+      ).toThrow(expect.objectContaining({ code: "workspace_members_unavailable" }));
+    }
+    expect(() =>
+      assertWorkspaceInviteEntitlement({
+        pricingTier: "business",
+        status: "active",
+        actorRole: "owner",
+        invitedRole: "viewer",
+      }),
+    ).not.toThrow();
   });
 
   test("uses stable codes for invalid API-key scope and plan refusal", () => {

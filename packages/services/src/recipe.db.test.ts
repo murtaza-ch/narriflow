@@ -7,7 +7,8 @@ import { buildGenerationContentPack, creditDebitSeconds, MAX_RECIPES_PER_WORKSPA
 import { AutopilotService } from "./autopilot.service";
 import { generateClips, submitVideo } from "./integration-commands";
 import { OperationIdempotencyConflictError } from "./operation-receipt";
-import { onRecipeContentChanged, recipeService } from "./recipe.service";
+import { onRecipeContentChanged } from "./recipe-content-change";
+import { recipeService } from "./recipe.service";
 
 const databaseUrl = process.env.INTEGRATION_TEST_DATABASE_URL;
 const schema = process.env.INTEGRATION_TEST_DATABASE_SCHEMA;
@@ -38,7 +39,7 @@ describeDb("Recipes on PostgreSQL", () => {
     await pool?.end();
   });
 
-  async function workspace(pricingTier: "business" | "creator" = "business") {
+  async function workspace(pricingTier: "business" | "pro" | "creator" = "business") {
     const user = await prisma.user.create({ data: { clerkId: `recipe:${randomUUID()}` } });
     const created = await prisma.workspace.create({ data: { name: "Recipes", ownerUserId: user.id, pricingTier, members: { create: { userId: user.id, role: "owner" } } } });
     return { user, workspaceId: created.id, scope: { actorUserId: user.id, workspaceId: created.id } };
@@ -106,6 +107,21 @@ describeDb("Recipes on PostgreSQL", () => {
       expect((await recipeService.list(viewerScope)).map((entry) => entry.id)).toEqual([recipe.id]);
       await expect(recipeService.create(viewerScope, input("Nope"))).rejects.toThrow();
       await expect(recipeService.delete(viewerScope, recipe.id)).rejects.toThrow();
+    });
+
+    test("review-round delivery needs Review Rooms at save; a Recipe saved before a downgrade still renames", async () => {
+      const review = { ...FINISHING, delivery: "send_review_round" } as const satisfies FinishingSettingsInput;
+      const refusal = { code: "plan_feature_required", kind: "payment_required", details: { feature: "review.rooms", currentTier: "pro", requiredTier: "business" } };
+      const pro = await workspace("pro");
+      await expect(recipeService.create(pro.scope, input("Review", 10, review))).rejects.toMatchObject(refusal);
+      const ready = await recipeService.create(pro.scope, input("Ready", 10, FINISHING));
+      await expect(recipeService.update(pro.scope, ready.id, { expectedRevision: 1, finishing: review })).rejects.toMatchObject(refusal);
+      expect((await recipeService.get(pro.scope, ready.id)).finishing).toMatchObject({ delivery: "ready_to_review" });
+
+      const business = await workspace();
+      const saved = await recipeService.create(business.scope, input("Client review", 10, review));
+      await prisma.workspace.update({ where: { id: business.workspaceId }, data: { pricingTier: "pro" } });
+      expect(await recipeService.update(business.scope, saved.id, { expectedRevision: 1, name: "Client review (renamed)" })).toMatchObject({ revision: 2, finishing: expect.objectContaining({ delivery: "send_review_round" }) });
     });
 
     test("finishing needs the plan that runs it, at Recipe save as at rule save; a Workspace holds a bounded number", async () => {

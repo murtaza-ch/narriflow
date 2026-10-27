@@ -13,6 +13,7 @@ import { flushWorkspaceEvents } from "./workspace-event";
 import { BrandProfileMembershipError, BrandProfileMissingAssetError, BrandProfileNotFoundError } from "./brand-profile.service";
 import { isBrandAccessRefusal } from "./brand-ownership";
 import { autopilotPlanPauseReason } from "./autopilot-plan";
+import { requirePlanFeature } from "./plan-features";
 
 function db() { const prisma = getPrismaClient(); if (!prisma) throw new Error("Database client unavailable"); return prisma; }
 
@@ -43,7 +44,10 @@ export class ZoomService {
   }
 
   async createAuthorizationUrl(scope: ActorScope, origin: string) {
-    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
+    const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
+    // A connection only feeds Autopilot rules, so connecting needs the plan that runs them.
+    // Existing connections stay listable and disconnectable after a downgrade.
+    requirePlanFeature(actor.pricingTier, "automation.autopilot");
     const config = this.config();
     const state = randomBytes(32).toString("base64url");
     const redirectUri = new URL(ZOOM_CALLBACK_PATH, origin).href;

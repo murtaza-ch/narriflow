@@ -64,7 +64,7 @@ function rule(overrides: Partial<AutopilotRuleSnapshot>): AutopilotRuleSnapshot 
   };
 }
 
-function render(rules: AutopilotRuleSnapshot[], canTakeOver: boolean, finishingAvailable = true, recipes = [recipe()], grants: AutopilotRuleGrant[] = []) {
+function render(rules: AutopilotRuleSnapshot[], canTakeOver: boolean, finishingAvailable = true, recipes = [recipe()], grants: AutopilotRuleGrant[] = [], extra: Partial<Parameters<typeof AutopilotPanel>[0]> = {}) {
   return renderToStaticMarkup(
     <ChakraProvider value={system}>
       <AutopilotPanel
@@ -73,6 +73,7 @@ function render(rules: AutopilotRuleSnapshot[], canTakeOver: boolean, finishingA
         canTakeOver={canTakeOver}
         finishingAvailable={finishingAvailable}
         grants={grants}
+        {...extra}
       />
     </ChakraProvider>,
   );
@@ -89,6 +90,16 @@ describe("Autopilot panel ownership and Recipe", () => {
     expect(html).toContain("When a recording completes");
     expect(html).not.toContain("Run now");
     expect(html).not.toContain("Zoom recordings</");
+  });
+  test("below Pro, Connect Zoom opens the upgrade dialog; existing connections stay listed and disconnectable", () => {
+    const connection = { id: "00000000-0000-4000-8000-0000000000d1", userId: "u1", displayName: "Dana on Zoom", revoked: false, canDisconnect: true };
+    const creator = render([], true, false, undefined, [], { zoomEnabled: true, canConnectZoom: true, autopilotIncluded: false, zoomConnections: [connection] });
+    expect(creator).toContain("(needs Pro)");
+    expect(creator).not.toContain('href="/api/zoom/oauth/start"');
+    expect(creator).toContain("Dana on Zoom");
+    expect(creator).toContain("Disconnect");
+    const pro = render([], true, true, undefined, [], { zoomEnabled: true, canConnectZoom: true, autopilotIncluded: true });
+    expect(pro).toContain('href="/api/zoom/oauth/start"');
   });
   test("a paused rule shows its reason, and only Owners and Admins get Take over", () => {
     const paused = rule({ status: "paused", pauseKind: "acting_member", lastError: PAUSE_REASON });
@@ -192,6 +203,21 @@ describe("Autopilot panel ownership and Recipe", () => {
     expect(render([rule({})], false)).not.toContain("automation grant");
   });
 
+  test("viewers read rules without controls; members who can't edit get no create action", () => {
+    const viewer = render([rule({})], false, true, undefined, [], { canEdit: false, canRun: false });
+    expect(viewer).toContain("Weekly show");
+    for (const text of ["New rule", "Run now", "Edit rule Weekly show", "Delete rule Weekly show", "Weekly show — enabled"]) expect(viewer).not.toContain(text);
+    expect(render([], false, true, undefined, [], { canEdit: false })).not.toContain("Create your first rule");
+  });
+
+  test("at the top plan's limit the reason names how to make room; below it New rule offers the upgrade", () => {
+    const business = render([rule({})], true, true, undefined, [], { newRuleRequirement: "This plan includes 10 active Autopilot rules.", newRuleUpgradeTier: null });
+    expect(business).toContain("Pause or delete a rule to create another.");
+    expect(business).not.toContain("(needs");
+    const pro = render([rule({})], true, true, undefined, [], { newRuleRequirement: "This plan includes 3 active Autopilot rules. Business includes more.", newRuleUpgradeTier: "business" });
+    expect(pro).toContain("(needs Business)");
+    expect(pro).not.toContain("Pause or delete");
+  });
 });
 
 describe("Finishing fields", () => {
@@ -211,11 +237,21 @@ describe("Finishing fields", () => {
     expect(on).not.toContain("needs the Pro plan");
   });
 
-  test("below Pro the switch is disabled and the reason is shown, even for a Recipe that had it on", () => {
+  test("below Pro the switch offers the upgrade and the reason is shown, even for a Recipe that had it on", () => {
     const creator = fields(EMPTY_FINISHING_DRAFT, false);
     expect(creator).toContain("Finishing needs the Pro plan. Videos still import and generate clips without it.");
-    expect(creator).toContain("disabled");
+    expect(creator).toContain('aria-label="Needs Pro"');
+    expect(creator).not.toMatch(/<input[^>]*aria-label="Finish new clips automatically"[^>]*disabled/);
     // A downgraded Recipe's saved settings stay hidden until the plan returns.
     expect(fields({ ...EMPTY_FINISHING_DRAFT, enabled: true }, false)).not.toContain("Top clips");
+  });
+
+  test("with no connected account the queue option says how to get one; review rounds name their plan", () => {
+    const on = fields({ ...EMPTY_FINISHING_DRAFT, enabled: true }, true);
+    expect(on).toContain('href="/settings/social-accounts"');
+    expect(on).not.toContain("Propose posts to my publishing queue");
+    // The test has no plan context, so it reads as Free: review rounds need Business.
+    expect(on).toContain("Review rounds need the Business plan");
+    expect(on).toContain('aria-label="Needs Business"');
   });
 });

@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { Stack, Text } from "@chakra-ui/react";
 import { verifyMcpUploadHandoff } from "@narriflow/mcp-core";
-import { hasFeature, integrationUploadSessionKey, isExpectedDomainFailure, recipeService, workspaceService } from "@narriflow/services";
+import { integrationUploadSessionKey, isExpectedDomainFailure, recipeService, workspaceService } from "@narriflow/services";
 import { buildGenerationContext } from "@narriflow/validators";
 import { getPrismaClient } from "@narriflow/db/client";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
+import { ConnectorUnavailable, connectorUnavailableReason } from "../connector-unavailable";
 import { admitSignedInPage } from "@/lib/authenticated-request-page";
 import { McpUploadPicker } from "./upload-picker";
 
@@ -16,8 +17,11 @@ export default async function McpUploadHandoffPage({ searchParams }: { searchPar
   const user = await admitSignedInPage(`/integrations/mcp/upload?intent=${encodeURIComponent(token ?? "")}`);
   try {
     const state = verifyMcpUploadHandoff(token ?? "", { actorUserId: user.actorUserId, allowExpired: true });
+    // Read the membership before admitting the upload, so a viewer or a paused or
+    // downgraded Workspace is told why instead of seeing an expired handoff.
+    const member = await workspaceService.findActor(user.actorUserId, state.workspaceId);
+    if (member && connectorUnavailableReason(member, "processing.consume")) return <ConnectorUnavailable workspace={member} capability="processing.consume" action="Uploading for your assistant" />;
     const actor = await workspaceService.requireActor(user.actorUserId, state.workspaceId, "processing.consume");
-    if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) return <Text>This upload needs an active workspace on a plan that includes the assistant connector.</Text>;
     // An expired handoff can only resume this person's existing upload; the
     // upload route refuses a new open after expiry.
     const resumeOnly = Date.now() >= state.expiresAtMs;

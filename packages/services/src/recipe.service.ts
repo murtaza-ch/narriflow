@@ -26,7 +26,7 @@ import {
 import { requireQueueDeliveryScope } from "./integration-admission";
 import { requirePlanFeature } from "./plan-features";
 import { assertFinishingQueue } from "./publishing-queue.service";
-import { pauseGrantsWhoseRuleChanged } from "./standing-grant";
+import { onRecipeContentChanged } from "./recipe-content-change";
 import { workspaceService } from "./workspace.service";
 import { flushWorkspaceEvents } from "./workspace-event";
 
@@ -133,20 +133,6 @@ export async function lockLiveRecipe(tx: Prisma.TransactionClient, workspaceId: 
   if (rows.length === 0) throw new RecipeError("recipe_not_found");
 }
 
-/** Runs inside every Recipe save that changes what new work would use (not a
- * rename), with the rules that use the Recipe, in the save's transaction. It
- * pauses the active Standing Grants that cover those rules (`rule_changed`), so
- * a Recipe edit never widens what a grant authorized. Lock order is the
- * Recipe row (the save's own write), then each rule's row in id order, then its
- * grants, as in `AutopilotService.updateRule`. The caller flushes the audit
- * and notice events as its last write. */
-export async function onRecipeContentChanged(tx: Prisma.TransactionClient, _recipeId: string, changedRuleIds: readonly string[]): Promise<void> {
-  if (changedRuleIds.length === 0) return;
-  const ids = [...changedRuleIds].sort();
-  await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ANY(${ids}::uuid[]) ORDER BY "id" FOR UPDATE`;
-  for (const ruleId of ids) await pauseGrantsWhoseRuleChanged(tx, ruleId);
-}
-
 export class RecipeService {
   async list(scope: ActorScope): Promise<RecipeSnapshot[]> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
@@ -177,6 +163,10 @@ export class RecipeService {
   async requireUsable(scope: ActorScope, recipe: Pick<ResolvedRecipe, "brandProfileId" | "finishing">) {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     if (recipe.finishing) requirePlanFeature(actor.pricingTier, "campaign.operations");
+    // Review Rounds are what the standing grant sends; below Review Rooms the
+    // step could only be skipped. A Recipe saved before a downgrade still runs
+    // and ends ready to review with `review_not_sent_plan`.
+    if (recipe.finishing?.delivery === "send_review_round") requirePlanFeature(actor.pricingTier, "review.rooms");
     await assertFinishingQueue(scope, recipe.finishing);
     if (recipe.brandProfileId) await brandProfileService.requireApplicableId(actor, recipe.brandProfileId);
   }
@@ -256,7 +246,7 @@ export class RecipeService {
       if (updated.count !== 1) throw new RecipeError("recipe_revision_conflict");
       if (contentChanged) {
         const rules = await tx.autopilotRule.findMany({ where: { recipeId }, select: { id: true } });
-        await onRecipeContentChanged(tx, recipeId, rules.map((rule) => rule.id));
+        await onRecipeContentChanged(tx, rules.map((rule) => rule.id));
         // Counter last: the events grants queued are written after every lock.
         await flushWorkspaceEvents(tx);
       }

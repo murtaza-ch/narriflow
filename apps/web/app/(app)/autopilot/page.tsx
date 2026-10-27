@@ -29,6 +29,9 @@ export default async function AutopilotPage({ searchParams }: { searchParams: Pr
       zoomConnections={connections}
       zoomNotice={query.zoom}
       canConnectZoom={workspaceAllowsCapability({ role: appUser.role, status: appUser.status }, "content.edit")}
+      canEdit={workspaceAllowsCapability({ role: appUser.role, status: appUser.status }, "content.edit")}
+      canRun={workspaceAllowsCapability({ role: appUser.role, status: appUser.status }, "processing.consume")}
+      workspaceStatus={appUser.status}
       canTakeOver={workspaceAllowsCapability(
         { role: appUser.role, status: appUser.status },
         "workspace.manage",

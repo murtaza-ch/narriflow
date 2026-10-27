@@ -42,6 +42,7 @@ export default async function McpIntegrationPage() {
   const upgrade = featureUpgradePrompt(workspace.pricingTier, "integrations.mcp", "Upgrade to connect your AI assistant");
   const isEligible = hasPlan && workspace.status === "active";
   const canManageApi = workspaceAllowsCapability(workspace, "api.manage");
+  const canManageBilling = workspaceAllowsCapability(workspace, "billing.manage");
 
   const status = !hasPlan
     ? { ready: false, label: `Needs the ${requiredPlan} plan` }
@@ -52,11 +53,11 @@ export default async function McpIntegrationPage() {
         : { ready: false, label: configuration.label };
 
   const blocker = !hasPlan
-    ? workspace.role === "owner"
+    ? canManageBilling
       ? `Upgrade to ${requiredPlan} to connect an assistant. You can read the setup now.`
       : `Ask the workspace owner to upgrade to ${requiredPlan} to connect an assistant.`
     : !isEligible
-      ? `This workspace is ${workspace.status.replace("_", " ")}. Tools stay off until it's active.`
+      ? `This workspace is ${workspace.status.replace("_", " ")}. Tools stay off until it's active.${canManageBilling ? "" : " Ask the workspace owner to fix billing."}`
       : !configuration.verified
         ? configuration.description
         : null;
@@ -77,12 +78,12 @@ export default async function McpIntegrationPage() {
         <Text fontSize="13px">{blocker}</Text>
       </Flex>
       {!hasPlan ? (
-        upgrade && workspace.role === "owner" ? (
+        upgrade && canManageBilling ? (
           <LockedButton size="sm" variant="subtle" flexShrink={0} prompt={upgrade}>
             Upgrade
           </LockedButton>
         ) : null
-      ) : !isEligible ? (
+      ) : !isEligible && canManageBilling ? (
         <Button asChild size="sm" variant="subtle" flexShrink={0}>
           <Link href="/settings/billing">
             Open billing

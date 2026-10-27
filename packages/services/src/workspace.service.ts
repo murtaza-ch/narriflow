@@ -88,12 +88,20 @@ export class WorkspaceOperationError extends ExpectedDomainFailureError<Workspac
 
 export function assertWorkspaceInviteEntitlement(input: {
   pricingTier: PricingTier;
+  status: WorkspaceStatus;
   actorRole: WorkspaceRole;
   invitedRole: Exclude<WorkspaceRole, "owner">;
 }): void {
-  // Any new member, Viewers included, needs a plan with team members. A
-  // restricted Workspace below that plan can only remove or demote members.
+  // Any new member, Viewers included, needs a plan with team members and an
+  // active Workspace, as accepting does. A restricted owner keeps
+  // `members.invite` only to remove, demote and revoke.
   requirePlanFeature(input.pricingTier, "workspace.members");
+  if (input.status !== "active") {
+    throw new WorkspaceOperationError(
+      "workspace_members_unavailable",
+      "This workspace cannot accept members right now",
+    );
+  }
   if (input.invitedRole === "admin" && input.actorRole !== "owner") {
     throw new WorkspaceOperationError(
       "workspace_admin_invite_owner_required",
@@ -215,11 +223,13 @@ export class WorkspaceService {
     return workspace;
   }
 
-  async requireActor(
-    userId: string,
-    workspaceId: string,
-    capability: WorkspaceCapability = "content.view",
-  ): Promise<WorkspaceActorContext> {
+  /**
+   * The member's role and the Workspace's state and plan, with no capability
+   * check, or null for a non-member. For pages that explain why an action is
+   * unavailable (role, status, plan) instead of refusing outright; anything
+   * that acts goes through `requireActor`.
+   */
+  async findActor(userId: string, workspaceId: string): Promise<WorkspaceActorContext | null> {
     const membership = await requiredPrisma().workspaceMember.findUnique({
       where: { workspaceId_userId: { workspaceId, userId } },
       select: {
@@ -237,14 +247,8 @@ export class WorkspaceService {
         },
       },
     });
-    if (!membership || membership.user.deletedAt) {
-      throw new WorkspaceOperationError(
-        "workspace_access_denied",
-        "You do not have access to this Workspace",
-      );
-    }
-
-    const context: WorkspaceActorContext = {
+    if (!membership || membership.user.deletedAt) return null;
+    return {
       actorUserId: userId,
       workspaceId: membership.workspace.id,
       workspaceName: membership.workspace.name,
@@ -254,6 +258,20 @@ export class WorkspaceService {
       pricingTier: membership.workspace.pricingTier,
 			isPersonalWorkspace: membership.workspace.personalOwnerUserId !== null,
     };
+  }
+
+  async requireActor(
+    userId: string,
+    workspaceId: string,
+    capability: WorkspaceCapability = "content.view",
+  ): Promise<WorkspaceActorContext> {
+    const context = await this.findActor(userId, workspaceId);
+    if (!context) {
+      throw new WorkspaceOperationError(
+        "workspace_access_denied",
+        "You do not have access to this Workspace",
+      );
+    }
     if (!workspaceAllowsCapability(context, capability)) {
       throw new WorkspaceOperationError(
         "workspace_access_denied",
@@ -443,6 +461,7 @@ export class WorkspaceService {
     const actor = await this.requireActor(userId, workspaceId, "members.invite");
     assertWorkspaceInviteEntitlement({
       pricingTier: actor.pricingTier,
+      status: actor.status,
       actorRole: actor.role,
       invitedRole: input.role,
     });

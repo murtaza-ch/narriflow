@@ -4,9 +4,9 @@ import { useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PlanLimitNotice } from "../_components/plan-limit-notice";
-import { LockedButton, UpgradeHero } from "../_components/upgrade";
+import { LockedButton, UpgradeHero, useUpgrade, type UpgradePrompt } from "../_components/upgrade";
 import { AutopilotVisual } from "../_components/upgrade-visuals";
-import { lowestTierWithFeature, planUpgradeHighlight, type PricingTier } from "@narriflow/validators";
+import { lowestTierWithFeature, planUpgradeHighlight, type PricingTier, type WorkspaceAccessStatus } from "@narriflow/validators";
 import { Box, chakra, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import {
   AlertTriangle,
@@ -220,7 +220,15 @@ export function AutopilotPanel({
   newRuleUpgradeTier = null,
   autopilotIncluded = true,
   canManageBilling = false,
+  canEdit = true,
+  canRun = true,
+  workspaceStatus = "active",
 }: {
+  /** Editors and up in an active Workspace create, change, pause and delete rules. */
+  canEdit?: boolean;
+  /** Running a rule now spends processing. */
+  canRun?: boolean;
+  workspaceStatus?: WorkspaceAccessStatus;
   /** Why the plan can't add another active rule, computed server-side; `null` when it can. */
   newRuleRequirement?: string | null;
   /** The cheapest plan that allows another active rule; `null` on the top plan. */
@@ -245,6 +253,26 @@ export function AutopilotPanel({
   const [, startTransition] = useTransition();
   const autopilotTier = lowestTierWithFeature("automation.autopilot");
   const { confirm, dialog: confirmDialog } = useConfirm();
+  const { openUpgrade } = useUpgrade();
+  // Turning a rule on takes a slot, exactly like a new rule.
+  const slotUpgrade: UpgradePrompt | null =
+    newRuleRequirement && newRuleUpgradeTier
+      ? {
+          tier: newRuleUpgradeTier,
+          headline: autopilotIncluded ? "Upgrade to run more Autopilot rules" : "Upgrade to turn on Autopilot",
+          highlight: planUpgradeHighlight(newRuleUpgradeTier, "autopilotRules"),
+          canManageBilling,
+        }
+      : null;
+  const liveZoomConnections = zoomConnections.filter((entry) => !entry.revoked);
+
+  /** Explains a resume or run the plan has no slot for, instead of letting it fail. */
+  function refuseForSlot(): boolean {
+    if (!newRuleRequirement) return false;
+    if (slotUpgrade) openUpgrade(slotUpgrade);
+    else toaster.create({ type: "info", title: "No free Autopilot slot", description: `${newRuleRequirement} Pause or delete a rule to make room.` });
+    return true;
+  }
 
   // New-rule dialog state
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -356,6 +384,7 @@ export function AutopilotPanel({
   }
 
   async function toggleRule(rule: AutopilotRuleSnapshot, enabled: boolean) {
+    if (enabled && refuseForSlot()) return;
     setRulePending(rule.id, "toggle");
     const error = await request(`/api/autopilot/rules/${rule.id}`, {
       method: "PATCH",
@@ -380,6 +409,8 @@ export function AutopilotPanel({
   }
 
   async function takeOver(rule: AutopilotRuleSnapshot) {
+    // Taking over resumes the paused rule, so it needs a slot too.
+    if (refuseForSlot()) return;
     setRulePending(rule.id, "takeover");
     const error = await request(`/api/autopilot/rules/${rule.id}/take-over`, {
       method: "POST",
@@ -402,6 +433,8 @@ export function AutopilotPanel({
   }
 
   async function runNow(rule: AutopilotRuleSnapshot) {
+    // Running turns a paused rule back on; with no Autopilot at all, nothing runs.
+    if ((!autopilotIncluded || rule.status === "paused" || rule.status === "failed") && refuseForSlot()) return;
     setRulePending(rule.id, "run");
     const error = await request(`/api/autopilot/rules/${rule.id}/run-now`, {
       method: "POST",
@@ -460,15 +493,8 @@ export function AutopilotPanel({
         <PageHeader
           title="Autopilot"
           actions={
-            newRuleRequirement && newRuleUpgradeTier ? (
-              <LockedButton
-                prompt={{
-                  tier: newRuleUpgradeTier,
-                  headline: autopilotIncluded ? "Upgrade to run more Autopilot rules" : "Upgrade to turn on Autopilot",
-                  highlight: planUpgradeHighlight(newRuleUpgradeTier, "autopilotRules"),
-                  canManageBilling,
-                }}
-              >
+            !canEdit ? undefined : slotUpgrade ? (
+              <LockedButton prompt={slotUpgrade}>
                 <Plus size={15} strokeWidth={2} aria-hidden />
                 New rule
               </LockedButton>
@@ -481,10 +507,11 @@ export function AutopilotPanel({
           }
         />
         {/* No plan raises this ceiling: explain how to make room instead of offering an upgrade. */}
-        {newRuleUpgradeTier || !newRuleRequirement ? null : (
-          <PlanLimitNotice message={`${newRuleRequirement} Delete a rule to create another.`} upgrade={null} />
+        {!canEdit || newRuleUpgradeTier || !newRuleRequirement ? null : (
+          <PlanLimitNotice message={`${newRuleRequirement} Pause or delete a rule to create another.`} upgrade={null} />
         )}
       </Box>
+
 
       {!autopilotIncluded ? (
         <UpgradeHero
@@ -501,7 +528,19 @@ export function AutopilotPanel({
         />
       ) : null}
 
-      {zoomEnabled ? <ZoomConnections connections={zoomConnections} canConnect={canConnectZoom} notice={zoomNotice} /> : null}
+      {zoomEnabled ? <ZoomConnections
+          connections={zoomConnections}
+          canConnect={canConnectZoom}
+          askToConnect={!canConnectZoom && workspaceStatus === "active"}
+          // Connecting needs the plan that runs the rules it feeds; the server refuses it otherwise.
+          connectUpgrade={autopilotIncluded ? null : {
+            tier: autopilotTier,
+            headline: "Upgrade to clip Zoom recordings",
+            highlight: autopilotTier ? planUpgradeHighlight(autopilotTier, "automation.autopilot") : undefined,
+            canManageBilling,
+          }}
+          notice={zoomNotice}
+        /> : null}
 
       <Box
         as="section"
@@ -516,7 +555,7 @@ export function AutopilotPanel({
             description={zoomEnabled ? "Add an RSS feed or Zoom connection to clip new recordings automatically." : "Add an RSS feed to clip new episodes automatically."}
             action={
               /* Header owns the solid CTA — this is a quiet accent link. */
-              <Button
+              !canEdit ? undefined : <Button
                 variant="plain"
                 size="sm"
                 color="fg.accent"
@@ -705,8 +744,8 @@ export function AutopilotPanel({
                       ) : null}
                     </Box>
 
-                    <Flex gap="2" align="center" flexShrink={0}>
-                      <Switch
+                    {canEdit || canRun ? <Flex gap="2" align="center" flexShrink={0}>
+                      {canEdit ? <Switch
                         size="sm"
                         checked={enabled}
                         disabled={pending !== undefined}
@@ -718,8 +757,8 @@ export function AutopilotPanel({
                             enabled ? "enabled" : "paused"
                           }`,
                         }}
-                      />
-                      {rule.sourceKind === "rss" ? <Button
+                      /> : null}
+                      {canRun && rule.sourceKind === "rss" ? <Button
                         size="sm"
                         variant="subtle"
                         loading={pending === "run"}
@@ -729,6 +768,7 @@ export function AutopilotPanel({
                         <RotateCw size={12} strokeWidth={2} aria-hidden />
                         Run now
                       </Button> : null}
+                      {canEdit ? <>
                       <IconButton
                         size="xs"
                         variant="ghost"
@@ -749,7 +789,8 @@ export function AutopilotPanel({
                       >
                         <Trash2 size={13} strokeWidth={1.75} />
                       </IconButton>
-                    </Flex>
+                      </> : null}
+                    </Flex> : null}
                   </Flex>
                 </Box>
               );
@@ -824,7 +865,22 @@ export function AutopilotPanel({
                         size="sm"
                       />
                     </Field> : <Stack gap="3">
-                      <Select label="Zoom connection" items={zoomConnections.filter((entry) => !entry.revoked).map((entry) => ({ label: entry.displayName, value: entry.id }))} value={zoomConnectionId || undefined} onValueChange={setZoomConnectionId} placeholder="Choose a connected member" size="sm" />
+                      {liveZoomConnections.length === 0 ? (
+                        <Box bg="bg.subtle" borderRadius="l2" px="3" py="2.5">
+                          <Text fontSize="12.5px" color="fg.muted">
+                            Zoom rules watch a connected Zoom account.{" "}
+                            {canConnectZoom ? (
+                              <chakra.span asChild color="fg.accent" fontWeight="600" textDecoration="underline" textUnderlineOffset="3px">
+                                <a href="/api/zoom/oauth/start">Connect Zoom first</a>
+                              </chakra.span>
+                            ) : (
+                              "Ask a workspace editor or admin to connect Zoom."
+                            )}
+                          </Text>
+                        </Box>
+                      ) : (
+                        <Select label="Zoom connection" items={liveZoomConnections.map((entry) => ({ label: entry.displayName, value: entry.id }))} value={zoomConnectionId || undefined} onValueChange={setZoomConnectionId} placeholder="Choose a connected member" size="sm" />
+                      )}
                       <Field label="Topic contains (optional)" htmlFor="autopilot-zoom-topic"><Input id="autopilot-zoom-topic" value={zoomTopicFilter} onChange={(event) => setZoomTopicFilter(event.target.value)} maxLength={200} size="sm" /></Field>
                       <Text fontSize="12px" color="fg.muted">Watches future cloud recordings hosted by this Zoom user. Topic matching ignores letter case. Shared screen with speaker view is preferred.</Text>
                     </Stack>}
