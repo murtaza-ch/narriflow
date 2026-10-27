@@ -61,6 +61,7 @@ export function CreditsMenu({
   renewsAt,
   tier,
   canManageBilling,
+  askOwner = false,
 }: {
   remainingCredits: number;
   usedCredits: number;
@@ -69,7 +70,10 @@ export function CreditsMenu({
   renewsAt: string;
   tier: PricingTier;
   canManageBilling: boolean;
+  /** Not the owner: when a bigger plan would help, say who can get one. */
+  askOwner?: boolean;
 }) {
+  const askOwnerTier = askOwner ? creditsUpgradeTier(tier, usedCredits + reservedCredits) : null;
   const upgradeTier = canManageBilling ? creditsUpgradeTier(tier, usedCredits + reservedCredits) : null;
   const { pct, palette, status, usage } = creditsPresentation({ usedCredits, reservedCredits, limitCredits });
   const refreshesOn = new Intl.DateTimeFormat("en-US", {
@@ -125,6 +129,11 @@ export function CreditsMenu({
                   </Text>
                   {status ? (
                     <Text mt="0.5" fontSize="12px" fontWeight="500" color={`${palette}.fg`}>{status}</Text>
+                  ) : null}
+                  {status && askOwnerTier ? (
+                    <Text mt="0.5" fontSize="12px" color="fg.muted">
+                      Ask the workspace owner to upgrade to {PLAN_CATALOG[askOwnerTier].name} for more credits.
+                    </Text>
                   ) : null}
                 </Box>
                 {upgradeTier ? (

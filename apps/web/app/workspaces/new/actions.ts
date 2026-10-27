@@ -54,7 +54,7 @@ export async function createBusinessWorkspaceAction(
       const interval: BillingInterval = input.interval;
       if (!billingService.isCheckoutConfigured("business", interval)) {
         return {
-          error: `Business ${interval} checkout is not configured.`,
+          error: `Business ${interval} checkout is temporarily unavailable. Try again later.`,
           errorCode: "checkout_not_configured",
           workspaceId: input.workspaceId,
           workspaceName: input.name,

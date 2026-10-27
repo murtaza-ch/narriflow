@@ -6,7 +6,9 @@ import { Box, Flex, Image, Menu, Portal, Text } from "@chakra-ui/react";
 import Link from "next/link";
 import { BadgeDollarSign, CreditCard, LogOut, UserRound } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import { toaster } from "@narriflow/ui/components/toaster";
 import { getDisplayName, getInitials } from "@/lib/account-display";
+import { useUpgrade } from "./upgrade";
 
 interface AccountMenuProps {
   firstName: string | null;
@@ -64,6 +66,10 @@ export function AccountMenu({
   const { signOut } = useClerk();
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [isOpeningPortal, setIsOpeningPortal] = useState(false);
+  // The Stripe portal is the owner's, and exists once a subscription has
+  // started; before that, "Billing" is where the plan is chosen.
+  const { canManageBilling, billingMode } = useUpgrade();
+  const showPortal = canManageBilling && billingMode !== "checkout";
 
   const displayName = useMemo(() => getDisplayName(firstName, lastName), [firstName, lastName]);
   const initials = useMemo(
@@ -89,6 +95,8 @@ export function AccountMenu({
       const body = (await response.json()) as { url?: string; message?: string };
       if (!response.ok || !body.url) throw new Error(body.message ?? "Billing portal unavailable");
       window.location.assign(body.url);
+    } catch {
+      toaster.create({ type: "error", title: "The billing portal could not be opened", description: "Open Billing to manage your plan." });
     } finally {
       setIsOpeningPortal(false);
     }
@@ -131,7 +139,7 @@ export function AccountMenu({
                 </Link>
               </Menu.Item>
             ))}
-            <Menu.Item
+            {showPortal ? <Menu.Item
               value="payment-billing"
               closeOnSelect={false}
               disabled={isOpeningPortal}
@@ -139,7 +147,7 @@ export function AccountMenu({
             >
               {isOpeningPortal ? <Spinner size="xs" /> : <CreditCard size={14} />}
               {isOpeningPortal ? "Opening billing…" : "Payment & billing"}
-            </Menu.Item>
+            </Menu.Item> : null}
             <Menu.Separator />
             <Menu.Item
               value="sign-out"

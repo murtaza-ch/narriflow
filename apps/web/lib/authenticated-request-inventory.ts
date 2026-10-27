@@ -961,12 +961,7 @@ const signedInAction = (
 
 export const browserSessionServerActions: readonly ServerActionSurface[] = [
 	signedInAction("app/(app)/integrations/mcp/confirm/actions.ts", "confirmMcpPublication"),
-	action(
-		"app/(app)/_actions/workspace.ts",
-		"switchWorkspaceAction",
-		"workspace",
-		"content.view",
-	),
+	signedInAction("app/(app)/_actions/workspace.ts", "switchWorkspaceAction"),
 
 	action(
 		"app/(app)/calendar/actions.ts",
@@ -1321,6 +1316,7 @@ export const browserSessionPages: readonly PageSurface[] = [
 	page("app/(app)/settings/layout.tsx"),
 	page("app/(app)/upload/page.tsx", "workspace", "processing.consume"),
 	signedInPage("app/workspaces/new/page.tsx"),
+	signedInPage("app/workspace-unavailable/page.tsx"),
 	signedInPage("app/invite/[token]/page.tsx"),
 	signedInPage("app/auth/continue/page.tsx"),
 ];

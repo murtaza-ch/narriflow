@@ -20,6 +20,7 @@ import { GlobalSearch } from "./global-search";
 import { CreditsMenu } from "./credits-menu";
 import { LockedButton } from "./upgrade";
 import { ShellHeader, ShellPanel } from "./shell-panel";
+import { WorkspaceStatusNotice } from "./workspace-status-notice";
 import type { WorkspaceMenuPresentation, WorkspaceSwitcherItem } from "./workspace-switcher";
 import { switchWorkspaceAction } from "../_actions/workspace";
 import {
@@ -142,11 +143,6 @@ function DesktopTopBar({
           <UserPlus size={14} />Invite
         </LockedButton>
       ) : null}
-      {workspaceStatus === "pending_payment" && canManageBilling ? (
-        <Button variant="subtle" size="sm" asChild>
-          <Link href="/settings/billing">Complete setup</Link>
-        </Button>
-      ) : null}
       <CreditsMenu
         remainingCredits={remainingCredits}
         usedCredits={usedCredits}
@@ -155,6 +151,7 @@ function DesktopTopBar({
         renewsAt={creditsRenewAt}
         tier={workspaceTier}
         canManageBilling={canManageBilling && workspaceStatus === "active"}
+        askOwner={!canManageBilling}
       />
       <ThemeToggle />
       <AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />
@@ -192,6 +189,7 @@ function FocusedTopBar({
         renewsAt={creditsRenewAt}
         tier={workspaceTier}
         canManageBilling={workspaceRole === "owner" && workspaceStatus === "active"}
+        askOwner={workspaceRole !== "owner"}
       />
       <ThemeToggle />
       <AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />
@@ -251,6 +249,7 @@ export function AppChrome({
         themeToggle={<ThemeToggle />}
       >
         {workspaceSelectionChanged ? <WorkspaceChangedNotice workspaceId={activeWorkspaceId} /> : null}
+        <WorkspaceStatusNotice status={workspaceStatus} role={workspaceRole} pathname={pathname} />
         {children}
       </SettingsChrome>
     );
@@ -260,6 +259,7 @@ export function AppChrome({
     return (
       <ProjectWorkspace account={<AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />} themeToggle={<ThemeToggle />}>
         {workspaceSelectionChanged ? <WorkspaceChangedNotice workspaceId={activeWorkspaceId} /> : null}
+        <WorkspaceStatusNotice status={workspaceStatus} role={workspaceRole} pathname={pathname} />
         {children}
       </ProjectWorkspace>
     );
@@ -286,6 +286,7 @@ export function AppChrome({
           {workspaceSelectionChanged ? (
             <WorkspaceChangedNotice workspaceId={activeWorkspaceId} />
           ) : null}
+          <WorkspaceStatusNotice status={workspaceStatus} role={workspaceRole} pathname={pathname} />
           <Box as="main" flex="1" w="full" maxW="1400px" mx="auto" px={{ base: "4", md: "10" }} py={{ base: "5", md: "6" }}>
             {children}
           </Box>
@@ -356,6 +357,7 @@ export function AppChrome({
           {workspaceSelectionChanged ? (
             <WorkspaceChangedNotice workspaceId={activeWorkspaceId} />
           ) : null}
+          <WorkspaceStatusNotice status={workspaceStatus} role={workspaceRole} pathname={pathname} />
 
           {/* Page content */}
           <Box as="main" flex="1" w="full" maxW="1400px" mx="auto" px={{ base: "4", md: "10" }} py={{ base: "6", md: "10" }}>

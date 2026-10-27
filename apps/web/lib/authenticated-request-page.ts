@@ -32,10 +32,13 @@ function recoveryDestination(
       `/projects?requestFailure=active_workspace_mismatch&workspaceId=${encodeURIComponent(workspaceId)}&workspaceName=${encodeURIComponent(workspaceName)}&returnTo=${encodeURIComponent(projectId ? `/projects/${projectId}` : "/projects")}`,
     );
   }
+  // A paused workspace: the owner goes to billing; other members go to a page
+  // outside the app shell, because /home would refuse them again (a loop).
   const destination =
-    failure.code === "workspace_restricted" &&
-    failure.details?.ownerCanResolve === true
-      ? "/settings/billing"
+    failure.code === "workspace_restricted"
+      ? failure.details?.ownerCanResolve === true
+        ? "/settings/billing"
+        : "/workspace-unavailable"
       : "/home";
   redirect(
     `${destination}?requestFailure=${encodeURIComponent(failure.code)}&requestId=${encodeURIComponent(failure.requestId)}`,
