@@ -31,7 +31,9 @@ export function ToolArtwork({ kind }: { kind: string }) {
   </div>;
 }
 
-export function HeroExperience({ canCreate }: { canCreate: boolean }) {
+export type ReadOnlyReason = "viewer" | "paused" | null;
+
+export function HeroExperience({ canCreate, readOnlyReason = null }: { canCreate: boolean; readOnlyReason?: ReadOnlyReason }) {
   const [paused, setPaused] = useState(false);
   return (
     <section className={styles.experience} data-paused={paused}>
@@ -48,7 +50,14 @@ export function HeroExperience({ canCreate }: { canCreate: boolean }) {
                 <Link href="/upload?source=rss"><Rss size={15} />Import a podcast</Link>
               </div>
             </div>
-          ) : <p className={styles.description}>This workspace is read-only for your current role or subscription state.</p>}
+          ) : (
+            // A paused workspace is explained, with its way out, by the shell's status notice.
+            <p className={styles.description}>
+              {readOnlyReason === "viewer"
+                ? "Viewers can watch and download. Ask a workspace owner or admin for editor access to import videos."
+                : "Imports are paused while this workspace's billing is resolved."}
+            </p>
+          )}
         </div>
         <button className={styles.motionToggle} type="button" aria-label={paused ? "Play hero animation" : "Pause hero animation"} onClick={() => setPaused(!paused)}>
           {paused ? <Play size={12} /> : <Pause size={12} />}

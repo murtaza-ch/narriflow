@@ -31,7 +31,7 @@ async function render(overrides: Partial<Parameters<typeof Panel>[0]> = {}) {
   const container = browser.document.createElement("div");
   browser.document.body.append(container);
   root = createRoot(container as unknown as HTMLElement);
-  await act(async () => { root.render(<ChakraProvider value={system}><Panel accounts={[]} connectedCount={null} errorCode={null} facebookSelectionToken={null} canManage accountLimit={3} connectRequirement={null} connectUpgrade={null} canManageBilling {...overrides} /></ChakraProvider>); });
+  await act(async () => { root.render(<ChakraProvider value={system}><Panel accounts={[]} connectedCount={null} errorCode={null} facebookSelectionToken={null} canManage access={{ role: "owner", status: "active" }} accountLimit={3} connectRequirement={null} connectUpgrade={null} canManageBilling {...overrides} /></ChakraProvider>); });
   return container;
 }
 async function settle() { await act(async () => { await browser.happyDOM.waitUntilComplete(); }); }
@@ -52,11 +52,18 @@ test("a connected Facebook Page shows publishing as coming soon", async () => {
   expect(card?.textContent).toContain("Publishing coming soon");
 });
 test("multiple profiles precede add cards and read-only users cannot manage", async () => {
-  const dom = await render({ accounts: [account, { ...account, id: "two", displayName: "Second channel", status: "expired" }], canManage: false });
+  const dom = await render({ accounts: [account, { ...account, id: "two", displayName: "Second channel", status: "expired" }], canManage: false, access: { role: "viewer", status: "active" } });
   expect(dom.textContent).toContain("Second channel");
   expect(dom.textContent).toContain("expired");
   expect(dom.textContent.indexOf("Second channel")).toBeLessThan(dom.textContent.indexOf("Add an account"));
   expect(dom.querySelectorAll("a, button").length).toBe(0);
+  expect(dom.textContent).toContain("Ask a workspace owner or admin to connect a social account.");
+});
+test("a restricted owner is sent to billing instead of told to ask an admin", async () => {
+  const dom = await render({ canManage: false, access: { role: "owner", status: "restricted" } });
+  expect(dom.textContent).toContain("Fix billing to connect a social account.");
+  expect(dom.textContent).not.toContain("Ask a workspace owner");
+  expect([...dom.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual(["/settings/billing"]);
 });
 test("failed provider avatars fall back to the profile initial", async () => {
   const dom = await render({ accounts: [{ ...account, avatarUrl: "https://images.example.test/broken.jpg" }] });

@@ -9,6 +9,7 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   clipAspectRatioOptions,
+  planFeatureRequirement,
   userErrorMessage,
   type ClipAspectRatio,
   type ClipRenderResolution,
@@ -25,6 +26,9 @@ import {
 import { AlertTriangle, Check, ChevronDown } from "lucide-react";
 import { retryIngestFormAction } from "../actions";
 import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { useUpgrade } from "../../_components/upgrade";
 
 /** Preselects exactly the given aspect ratio (falling back to 9:16 when
  *  none is provided) — never a hardcoded 9:16 regardless of what the
@@ -80,6 +84,7 @@ export function RenderClipsButton({
   onQueued?(): void;
 }) {
   const router = useRouter();
+  const { currentTier } = useUpgrade();
   const [isPending, startTransition] = useTransition();
   const [isOpen, setIsOpen] = useState(false);
   const [selection, setSelection] = useState<Record<ClipAspectRatio, boolean>>(
@@ -234,13 +239,10 @@ export function RenderClipsButton({
                   }
                 />
                 {!can1080pExport ? (
-                  <Text fontSize="12px" color="fg.muted" mt="1">
-                    1080p exports and watermark-free renders need a paid plan.{" "}
-                    <ChakraLink asChild color="accent.fg" textUnderlineOffset="3px">
-                      <Link href="/settings/billing">Upgrade</Link>
-                    </ChakraLink>
-                    .
-                  </Text>
+                  <PlanLimitNotice
+                    message={planFeatureRequirement(currentTier, "export.1080p")?.message ?? null}
+                    upgrade={featureUpgradePrompt(currentTier, "export.1080p", "Upgrade to export in 1080p")}
+                  />
                 ) : null}
               </Box>
 

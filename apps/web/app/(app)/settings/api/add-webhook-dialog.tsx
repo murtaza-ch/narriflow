@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Field, Input, Stack, Text } from "@chakra-ui/react";
+import { Field, Flex, Input, Stack, Text } from "@chakra-ui/react";
 import { Plus } from "lucide-react";
 import { WORKSPACE_EVENT_TYPES, type WorkspaceEventType } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
@@ -60,12 +60,16 @@ export function AddWebhookDialog({ disabledReason }: { disabledReason: string | 
       }}
       placement="center"
     >
-      <Dialog.Trigger asChild>
-        <Button size="sm" disabled={Boolean(disabledReason)} title={disabledReason ?? undefined}>
-          <Plus size={16} />
-          Add webhook
-        </Button>
-      </Dialog.Trigger>
+      <Flex align="center" gap="3">
+        {/* The prerequisite stays visible next to the button, not only in a tooltip. */}
+        {disabledReason ? <Text fontSize="12px" color="fg.muted">{disabledReason}</Text> : null}
+        <Dialog.Trigger asChild>
+          <Button size="sm" disabled={Boolean(disabledReason)}>
+            <Plus size={16} />
+            Add webhook
+          </Button>
+        </Dialog.Trigger>
+      </Flex>
       <Portal>
         <Dialog.Backdrop />
         <Dialog.Positioner>

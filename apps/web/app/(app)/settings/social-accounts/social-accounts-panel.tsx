@@ -3,13 +3,15 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
-import type { UpgradePrompt } from "../../_components/upgrade";
+import { AccessNote, type WorkspaceAccess } from "../_components/access-note";
+import { UpgradeGem, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { Box, Flex, Image, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { Trash2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
+	PLAN_CATALOG,
 	SOCIAL_PROVIDER_CAPABILITIES,
 	userErrorMessage,
 	type SocialAccountSnapshot,
@@ -137,6 +139,7 @@ export function SocialAccountsPanel({
 	errorCode,
 	facebookSelectionToken,
 	canManage,
+	access,
 	returnTo,
 	accountLimit,
 	connectRequirement,
@@ -148,6 +151,8 @@ export function SocialAccountsPanel({
 	errorCode: string | null;
 	facebookSelectionToken: string | null;
 	canManage: boolean;
+	/** Who is looking, so a member who can't connect is told why (role or billing). */
+	access: WorkspaceAccess;
 	returnTo?: string;
 	/** Connected accounts the plan allows to publish. */
 	accountLimit: number;
@@ -158,6 +163,7 @@ export function SocialAccountsPanel({
 	canManageBilling: boolean;
 }) {
 	const mayConnect = canManage && connectRequirement === null;
+	const { openUpgrade } = useUpgrade();
 	const router = useRouter();
 	const [isPending, startTransition] = useTransition();
 	const [disconnecting, setDisconnecting] = useState<string | null>(null);
@@ -473,11 +479,13 @@ export function SocialAccountsPanel({
 						? "Add an account"
 						: "Connect your first social account"}
 				</Text>
-				<Text fontSize="13px" color="fg.muted">
-					{canManage
-						? "Sign in to the social account you want to add, then choose a platform below."
-						: "Ask a workspace owner or admin to connect a social account."}
-				</Text>
+				{canManage ? (
+					<Text fontSize="13px" color="fg.muted">
+						Sign in to the social account you want to add, then choose a platform below.
+					</Text>
+				) : (
+					<AccessNote access={access} capability="social.manage" action="connect a social account" />
+				)}
 				{accountLimit > 0 ? (
 					<Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
 						Your plan publishes to {accountLimit} connected account{accountLimit === 1 ? "" : "s"}. Disconnect one to make room for another.
@@ -541,6 +549,34 @@ export function SocialAccountsPanel({
 							>
 								{content}
 							</a>
+						</Box>
+					) : canManage && connectUpgrade?.tier ? (
+						// At the plan's account limit the tile explains the upgrade instead of greying out.
+						<Box
+							key={platform}
+							asChild
+							position="relative"
+							bg="bg.soft"
+							borderRadius="l2"
+							textAlign="start"
+							cursor="pointer"
+							transition="background 120ms ease"
+							_hover={{ bg: "bg.softHover" }}
+							_focusVisible={{
+								outline: "2px solid",
+								outlineColor: "accent.solid",
+								outlineOffset: "3px",
+							}}
+						>
+							<button
+								type="button"
+								aria-haspopup="dialog"
+								aria-label={`Connect ${platformLabels[platform]} account (needs ${PLAN_CATALOG[connectUpgrade.tier].name})`}
+								onClick={() => openUpgrade(connectUpgrade)}
+							>
+								<Box position="absolute" top="2.5" insetEnd="2.5"><UpgradeGem label={`Needs ${PLAN_CATALOG[connectUpgrade.tier].name}`} /></Box>
+								{content}
+							</button>
 						</Box>
 					) : (
 						<Box

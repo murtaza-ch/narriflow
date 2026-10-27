@@ -903,7 +903,7 @@ export function CampaignCommandBar({
   function commandItem(
     action: CampaignAvailableAction,
     promptKey: keyof CampaignUpgradePrompts,
-    item: { value: string; label: string; icon: ReactNode; onSelect: () => void; disabled?: boolean },
+    item: { value: string; label: string; icon: ReactNode; onSelect: () => void; disabled?: boolean; hint?: ReactNode },
   ): ActionMenuItem[] {
     if (state.availableActions.includes(action)) return [item];
     const prompt = upgradePrompts[promptKey];
@@ -952,6 +952,11 @@ export function CampaignCommandBar({
           label: "Build download ZIP",
           icon: <Archive size={14} />,
           disabled: state.readyItems.length === 0,
+          // The ZIP freezes finished exports, so say what it is waiting for.
+          hint:
+            state.readyItems.length === 0 ? (
+              <Text as="span" fontSize="12px" color="fg.subtle">Render first</Text>
+            ) : undefined,
           onSelect: openBundlePreview,
         });
 

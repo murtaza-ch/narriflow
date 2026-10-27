@@ -155,6 +155,7 @@ async function render(
 		assistedCopyEnabled?: boolean;
 		assistedCopyUpgrade?: { tier: "creator"; headline: string };
 		campaignSchedulingEnabled?: boolean;
+		publishingUpgrade?: { tier: "creator"; headline: string };
 		revision?: number;
 		inbox?: boolean;
 	} = {},
@@ -236,6 +237,7 @@ async function render(
 					canOverrideReview
 
 					canPublish
+					publishingUpgrade={options.publishingUpgrade ?? null}
 				>
 					<Entry />
 				</Provider>
@@ -288,6 +290,13 @@ test("a multi-post plan lock opens the shared dialog without submitting or losin
 	expect(browser.document.querySelector('a[href="/settings/billing?plan=pro#plans"]')).not.toBeNull();
 	expect((caption as HTMLTextAreaElement).value).toBe("Keep this publishing draft");
 	expect(requests.filter((request) => request.url.endsWith("/schedule"))).toHaveLength(0);
+});
+test("a plan without publishing opens the shared dialog instead of the composer", async () => {
+	await render({ publishingUpgrade: { tier: "creator", headline: "Upgrade to publish your clips" } });
+	await click("Exact clip");
+	expect([...browser.document.querySelectorAll('[role="dialog"]')].at(-1)?.textContent).toContain("Upgrade to publish your clips");
+	expect(browser.document.querySelector('textarea[aria-label="Description"]')).toBeNull();
+	expect(requests.filter((request) => request.url.endsWith("exports/current"))).toHaveLength(0);
 });
 test("opens the exact clip, auto-selects the sole account and generates missing copy", async () => {
 	await render();

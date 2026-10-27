@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { Box, chakra, Flex, Stack, Text } from "@chakra-ui/react";
 import { Check, Inbox, X } from "lucide-react";
 import type { ProposalInboxItem } from "@narriflow/services";
 import type { SocialPostProposalSource } from "@narriflow/validators";
@@ -15,6 +15,7 @@ import { Textarea } from "@narriflow/ui/components/textarea";
 import { SocialPlatformMark } from "@/lib/social-platform-mark";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
 import {
 	acceptAllProposalsAction,
 	acceptProposalAction,
@@ -142,15 +143,33 @@ function TikTokAcceptance({
 	);
 }
 
+/** What stops a proposal being accepted, as the way to fix it. */
+function BlockedReason({ proposal }: { proposal: ProposalInboxItem }) {
+	const [href, label] =
+		proposal.accountStatus !== "active"
+			? ["/settings/social-accounts", "Reconnect this account"]
+			: ["#posting-schedule", "Add posting slots to this account"];
+	return (
+		<>
+			<chakra.span asChild color="fg" fontWeight="500" textDecoration="underline" textUnderlineOffset="3px">
+				<Link href={href}>{label}</Link>
+			</chakra.span>{" "}
+			to accept
+		</>
+	);
+}
+
 function ProposalCard({
 	proposal,
 	timeZone,
 	canManage,
+	scheduleUpgrade,
 	onResult,
 }: {
 	proposal: ProposalInboxItem;
 	timeZone: string;
 	canManage: boolean;
+	scheduleUpgrade: UpgradePrompt | null;
 	onResult: (notice: Notice | null) => void;
 }) {
 	const router = useRouter();
@@ -158,7 +177,7 @@ function ProposalCard({
 	const [caption, setCaption] = useState(proposal.caption);
 	const [choosing, setChoosing] = useState(false);
 	const isTikTok = proposal.platform === "tiktok";
-	const blocked = proposal.accountStatus !== "active" ? "Reconnect this account to accept" : !proposal.hasPostingSchedule ? "Add posting slots to this account to accept" : null;
+	const blocked = proposal.accountStatus !== "active" || !proposal.hasPostingSchedule;
 
 	function run(task: () => Promise<unknown>, fallback: string, success?: string) {
 		onResult(null);
@@ -197,7 +216,7 @@ function ProposalCard({
 			/>
 			<Flex align="center" justify="space-between" gap="3" wrap="wrap">
 				<Text fontSize="13px" color="fg.muted">
-					{blocked ?? (isTikTok ? "TikTok asks for your choices when you accept" : proposal.nextSlot ? `Next free slot: ${slotLabel(proposal.nextSlot, timeZone)}` : "No free slot in the next year")}
+					{blocked ? <BlockedReason proposal={proposal} /> : (isTikTok ? "TikTok asks for your choices when you accept" : proposal.nextSlot ? `Next free slot: ${slotLabel(proposal.nextSlot, timeZone)}` : "No free slot in the next year")}
 				</Text>
 				{canManage ? (
 					<Flex gap="2">
@@ -205,10 +224,15 @@ function ProposalCard({
 							<X size={14} />
 							Reject
 						</Button>
-						{!choosing ? (
+						{scheduleUpgrade?.tier ? (
+							<LockedButton size="sm" prompt={scheduleUpgrade}>
+								<Check size={14} />
+								Accept
+							</LockedButton>
+						) : !choosing ? (
 							<Button
 								size="sm"
-								disabled={pending || Boolean(blocked) || (!isTikTok && !proposal.nextSlot)}
+								disabled={pending || blocked || (!isTikTok && !proposal.nextSlot)}
 								onClick={() => (isTikTok ? setChoosing(true) : run(() => acceptProposalAction(proposal.proposalId, {}), "The proposal could not be accepted.", "Added to the queue."))}
 							>
 								<Check size={14} />
@@ -230,7 +254,18 @@ function ProposalCard({
 	);
 }
 
-export function ProposalsInbox({ proposals, timeZone, canManage }: { proposals: ProposalInboxItem[]; timeZone: string; canManage: boolean }) {
+export function ProposalsInbox({
+	proposals,
+	timeZone,
+	canManage,
+	scheduleUpgrade = null,
+}: {
+	proposals: ProposalInboxItem[];
+	timeZone: string;
+	canManage: boolean;
+	/** Set when the plan can't schedule: accepting then offers the upgrade. */
+	scheduleUpgrade?: UpgradePrompt | null;
+}) {
 	const router = useRouter();
 	const [notice, setNotice] = useState<Notice | null>(null);
 	const [pending, startTransition] = useTransition();
@@ -274,6 +309,13 @@ export function ProposalsInbox({ proposals, timeZone, canManage }: { proposals: 
 				icon={<Inbox />}
 				title="Nothing waiting to be accepted"
 				description="Posts proposed by Finishing, the API, or your assistants wait here until you accept them into a slot."
+				action={
+					canManage ? (
+						<Button asChild variant="subtle" size="sm">
+							<Link href="/recipes">Set up Finishing</Link>
+						</Button>
+					) : undefined
+				}
 			/>
 		);
 	}
@@ -284,11 +326,15 @@ export function ProposalsInbox({ proposals, timeZone, canManage }: { proposals: 
 				<Text fontSize="13px" color="fg.muted">
 					{proposals.length} waiting{tiktokCount > 0 ? `, ${tiktokCount} for TikTok` : ""}
 				</Text>
-				{canManage && acceptable.length > 1 ? (
+				{!canManage || acceptable.length <= 1 ? null : scheduleUpgrade?.tier ? (
+					<LockedButton size="sm" variant="subtle" prompt={scheduleUpgrade}>
+						Accept all{tiktokCount > 0 ? " except TikTok" : ""}
+					</LockedButton>
+				) : (
 					<Button size="sm" variant="subtle" disabled={pending} onClick={acceptAll}>
 						Accept all{tiktokCount > 0 ? " except TikTok" : ""}
 					</Button>
-				) : null}
+				)}
 			</Flex>
 			{notice ? (
 				<Box bg={notice.tone === "error" ? "danger.subtle" : "bg.soft"} borderRadius="l2" px="3.5" py="2.5" role={notice.tone === "error" ? "alert" : "status"}>
@@ -296,7 +342,7 @@ export function ProposalsInbox({ proposals, timeZone, canManage }: { proposals: 
 				</Box>
 			) : null}
 			{proposals.map((proposal) => (
-				<ProposalCard key={proposal.proposalId} proposal={proposal} timeZone={timeZone} canManage={canManage} onResult={setNotice} />
+				<ProposalCard key={proposal.proposalId} proposal={proposal} timeZone={timeZone} canManage={canManage} scheduleUpgrade={scheduleUpgrade} onResult={setNotice} />
 			))}
 		</Stack>
 	);

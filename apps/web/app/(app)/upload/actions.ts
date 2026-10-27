@@ -205,7 +205,7 @@ function finalizeErrorCode(error: unknown): string {
 
 export type FinalizeLinkConfigureResult =
   | { ok: true; started: boolean; ingestStatus: string; workflowRunId?: string }
-  | { ok: false; code: string; message: string };
+  | { ok: false; code: string; message: string; details?: Record<string, unknown> };
 
 /**
  * Step 2 (Configure) CTA: commits the final ContentPack and attempts the
@@ -224,13 +224,18 @@ export async function finalizeLinkConfigureAction(input: {
     revalidatePath(`/projects/${parsedInput.projectId}`);
     return { ok: true, ...result };
   } catch (error) {
+    // Same refusal shape as Commit, so Configure can offer the plan that admits the source.
     const code = finalizeErrorCode(error);
+    const usage = error as ProcessingUsageError;
+    const details = boundedExpectedDomainFailureDetails(usage.details);
     return {
       ok: false,
       code,
       message:
-        userErrorMessage(code) ??
+        usage.message ||
+        userErrorMessage(code) ||
         "Could not start clip generation. Please try again.",
+      ...(details ? { details } : {}),
     };
   }
   });

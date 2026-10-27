@@ -56,6 +56,9 @@ describe("Recipes panel", () => {
   test("a Recipe an Autopilot rule uses can't be deleted; an unused one can", () => {
     const used = render([recipe({ ruleCount: 1 })]);
     expect(used).toMatch(/<button[^>]*aria-label="Delete Recipe Weekly show"[^>]*disabled/);
+    // The reason is visible text, not just a tooltip, and the rules are a link away.
+    expect(used).toContain("move it to another Recipe to delete this one");
+    expect(used).toContain('href="/autopilot"');
     const unused = render([recipe({ ruleCount: 0 })]);
     expect(unused).not.toMatch(/<button[^>]*aria-label="Delete Recipe Weekly show"[^>]*disabled/);
     expect(unused).toContain("Not used by an Autopilot rule");

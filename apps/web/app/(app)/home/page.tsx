@@ -1,6 +1,6 @@
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { workspaceLibraryService } from "@narriflow/services";
-import { planLimits, resolvePricingTier } from "@narriflow/validators";
+import { planLimits, resolvePricingTier, workspaceAllowsCapability } from "@narriflow/validators";
 import { DashboardView } from "./dashboard-view";
 
 const RECENT_PROJECTS_LIMIT = 8;
@@ -23,9 +23,9 @@ export default async function HomePage() {
     <DashboardView
         greeting={greeting}
         items={recentProjects.items}
-        canCreate={
-          appUser.workspace.role !== "viewer" &&
-          appUser.workspace.status === "active"
+        canCreate={workspaceAllowsCapability(appUser.workspace, "content.edit")}
+        readOnlyReason={
+          appUser.workspace.role === "viewer" ? "viewer" : appUser.workspace.status === "active" ? null : "paused"
         }
         canManageBilling={appUser.workspace.role === "owner"}
         showRetentionBanner={

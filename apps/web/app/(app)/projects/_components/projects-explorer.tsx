@@ -21,6 +21,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Folder, FolderInput, Inbox, Search, TriangleAlert } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
@@ -471,11 +472,15 @@ export function ProjectsExplorer({
         <EmptyState
           icon={<Inbox size={20} strokeWidth={1.5} />}
           title={folderName && !hasActiveFilters ? "This folder is empty" : "No projects match your filters"}
-          description={folderName && !hasActiveFilters ? "Move a project here or start a new upload." : "Try another search or clear filters."}
+          description={folderName && !hasActiveFilters ? (canEdit ? "Move a project here from All projects." : "Nothing is in this folder yet.") : "Try another search or clear filters."}
           action={
             hasActiveFilters ? (
               <Button size="sm" variant="subtle" onClick={clearFilters}>
                 Clear filters
+              </Button>
+            ) : folderName ? (
+              <Button size="sm" variant="subtle" asChild>
+                <Link href="/projects">All projects</Link>
               </Button>
             ) : undefined
           }
@@ -498,6 +503,7 @@ export function ProjectsExplorer({
                 project={project}
                 priority={index < 4}
                 selectable={canEdit}
+                canDelete={canEdit}
                 selected={selectedIds.includes(project.id)}
                 onSelectedChange={(selected) => setProjectSelected(project.id, selected)}
               />

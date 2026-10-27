@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
+import { Button } from "@narriflow/ui/components/button";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import {
 	AlertTriangle,
@@ -196,6 +198,11 @@ export function AnalyticsPanel({
 					icon={<BarChart3 />}
 					title="No activity yet"
 					description="Render, download or post a clip and the counts start here."
+					action={
+						<Button asChild size="sm" variant="subtle">
+							<Link href={`/projects/${analytics.projectId}`}>Go to clips</Link>
+						</Button>
+					}
 				/>
 			</Stack>
 		);

@@ -2,9 +2,12 @@
 
 import { Box, Flex, Text } from "@chakra-ui/react";
 import Link from "next/link";
-import type { BrandTemplateSummary } from "@narriflow/validators";
+import { PLAN_CATALOG, type BrandTemplateSummary } from "@narriflow/validators";
 import { ExternalLink } from "lucide-react";
 import { Select } from "@narriflow/ui/components/select";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { useUpgrade } from "../../_components/upgrade";
 
 /** Sentinel for the "no template" option — the kit Select needs a non-empty value. */
 const SYSTEM_DEFAULT_VALUE = "__system_default__";
@@ -36,6 +39,9 @@ export function BrandTemplatePicker({
   onProfileChange = () => undefined,
   profileOnly = false,
 }: BrandTemplatePickerProps) {
+  const { currentTier } = useUpgrade();
+  // A plan without Brand Profiles explains the empty profile list instead of leaving it bare.
+  const profileUpgrade = profiles.length === 0 ? featureUpgradePrompt(currentTier, "brand.profiles", "Upgrade to build your brand kit") : null;
   const activeProfile = profiles.find((profile) => profile.id === profileValue) ?? null;
   const profileTemplateIds = new Set(activeProfile?.templates.map((template) => template.id) ?? []);
   const compatibleMine = activeProfile ? mine.filter((template) => profileTemplateIds.has(template.id)) : mine;
@@ -101,6 +107,13 @@ export function BrandTemplatePicker({
           />
         )}
       </Flex>
+
+      {profileUpgrade?.tier ? (
+        <PlanLimitNotice
+          message={`Brand Profiles need the ${PLAN_CATALOG[profileUpgrade.tier].name} plan.`}
+          upgrade={profileUpgrade}
+        />
+      ) : null}
 
       {value && !profileOnly && (
         <BrandTemplatePreview

@@ -104,8 +104,10 @@ type Config = {
 	canUploadVisualAssets: boolean;
 	can1080pExport: boolean;
 	canOverrideReview: boolean;
-
+	/** Role and workspace status allow publishing (`publishing.manage`). */
 	canPublish: boolean;
+	/** What unlocks publishing; `null` when the plan already publishes. */
+	publishingUpgrade: UpgradePrompt | null;
 };
 type PublishingContextValue = {
 	posts: SocialPostSnapshot[];
@@ -158,6 +160,7 @@ export function ProjectPosts() {
 				loadOlderPosts={c.loadOlderPosts}
 				nextCursor={c.nextPostsCursor}
 				compose={c.compose}
+				canManage={c.config.canPublish}
 				filterable
 			/>
 		</Stack>
@@ -228,9 +231,15 @@ export function PublishingProvider({
 			window.removeEventListener("focus", tick);
 		};
 	}, [posts, refresh]);
+	const { openUpgrade } = useUpgrade();
 	const compose = useCallback(
 		(next: string[], preferred?: string) => {
 			if (!config.canPublish) return;
+			// Every way in (row, selection, deep link, schedule again) explains the plan first.
+			if (config.publishingUpgrade) {
+				openUpgrade(config.publishingUpgrade);
+				return;
+			}
 			triggerRef.current =
 				document.activeElement instanceof HTMLElement
 					? document.activeElement
@@ -244,6 +253,8 @@ export function PublishingProvider({
 		[
 			config.clips,
 			config.canPublish,
+			config.publishingUpgrade,
+			openUpgrade,
 			session,
 			config.accounts,
 			config.workspaceTimezone,
@@ -397,6 +408,7 @@ export function PublishingProvider({
 										loadOlderPosts={loadOlderPosts}
 										nextCursor={nextPostsCursor}
 										compose={compose}
+										canManage={config.canPublish}
 									/>
 								</Drawer.Body>
 							)}

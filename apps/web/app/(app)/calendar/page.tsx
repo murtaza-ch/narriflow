@@ -19,6 +19,8 @@ import {
 import { cancelWorkspacePostAction } from "./actions";
 import { CalendarLiveRefresh } from "./calendar-live-refresh";
 import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
+import { LockedButton } from "../_components/upgrade";
 
 type CalendarView = "month" | "week" | "list";
 
@@ -187,13 +189,16 @@ export default async function CalendarPage({
 	]);
 	const timezone = workspace?.timezone ?? "UTC";
 	const todayKey = dateKey(new Date(), timezone);
+	// Mirrors `publishing.manage`: editors and up, in an active Workspace.
 	const canPublish =
 		appUser.workspace.status === "active" &&
 		appUser.workspace.role !== "viewer";
-	const canEdit =
-		appUser.workspace.role !== "viewer" &&
-		(appUser.workspace.status === "active" ||
-			appUser.workspace.role === "owner");
+	// Publishing (and so scheduling) starts on Creator; below it the action offers the upgrade.
+	const publishUpgrade = featureUpgradePrompt(
+		appUser.workspace.pricingTier,
+		"publishing.schedule",
+		"Upgrade to schedule posts",
+	);
 	const visiblePosts = posts.filter((post) => {
 		if (!post.scheduledFor) return false;
 		const key = dateKey(post.scheduledFor, timezone);
@@ -229,14 +234,19 @@ export default async function CalendarPage({
 								{proposalCount > 0 ? `Queue · ${proposalCount} to review` : "Queue"}
 							</Link>
 						</Button>
-						{canPublish ? (
+						{!canPublish ? null : publishUpgrade ? (
+							<LockedButton prompt={publishUpgrade}>
+								<Plus size={14} />
+								Schedule post
+							</LockedButton>
+						) : (
 							<Button asChild>
 								<Link href="/calendar/new">
 									<Plus size={14} />
 									Schedule post
 								</Link>
 							</Button>
-						) : null}
+						)}
 					</>
 				}
 			/>
@@ -373,11 +383,13 @@ export default async function CalendarPage({
 					title="No scheduled posts"
 					description="Schedule a clip from a project to add it to your calendar."
 					action={
-						canPublish ? (
+						!canPublish ? undefined : publishUpgrade ? (
+							<LockedButton prompt={publishUpgrade}>Schedule a post</LockedButton>
+						) : (
 							<Button asChild>
 								<Link href="/calendar/new">Schedule a post</Link>
 							</Button>
-						) : undefined
+						)
 					}
 				/>
 			) : view === "list" ? (
@@ -419,7 +431,7 @@ export default async function CalendarPage({
 											: feedback.detail}
 									</Text>
 								</Stack>
-								{canEdit &&
+								{canPublish &&
 								(post.status === "preparing_video" ||
 									post.status === "scheduled") ? (
 									<AuthenticatedActionForm

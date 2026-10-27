@@ -38,9 +38,11 @@ import {
 	lowestTierWithFeature,
 	planDefinition,
 	planFeatureRequirement,
+	planUpgradeHighlight,
 	userErrorMessage,
 	workspaceAllowsCapability,
 } from "@narriflow/validators";
+import { projectViewOnlyNote } from "./project-access";
 import { FinishingStatus } from "./finishing-status";
 import { ProjectEvents } from "./project-events";
 import { SourceIcon } from "./source-icon";
@@ -64,7 +66,7 @@ import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-
 import { DeleteProjectButton } from "../_components/delete-project-button";
 import { ProjectExpiration } from "../_components/project-expiration";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
-import { UpgradeBanner } from "../../_components/upgrade";
+import { LockedButton, UpgradeBanner, type UpgradePrompt } from "../../_components/upgrade";
 import { TranscriptPanel } from "./transcript-panel";
 import { ClipsPanel } from "./clips-panel";
 import { deriveCampaignActionPlan } from "./campaign-command-state";
@@ -255,14 +257,31 @@ export default async function ProjectDetailPage({
 	// `pricingTier === "free"` check — so the render popover's resolution
 	// picker degrades exactly the way the worker's render-time gate does.
 	const can1080pExport = hasFeature(pricingTier, "export.1080p");
+	// Every project mutation needs `content.edit` (or a capability granted with
+	// it); without it the page explains why once and leaves out the controls.
+	const access = { role: appUser.role, status: appUser.status };
+	const canEdit = workspaceAllowsCapability(access, "content.edit");
+	const viewOnlyNote = projectViewOnlyNote(access);
+	// The same rule the service applies when branding is applied: in a shared
+	// Workspace it also needs the plan with team members.
+	const brandRequirement = brandPlanRequirement(
+		{ pricingTier, isPersonalWorkspace: appUser.isPersonalWorkspace },
+		"brand.profiles",
+	);
+	const brandApplyUpgrade: UpgradePrompt | null = brandRequirement?.requiredTier
+		? {
+				tier: brandRequirement.requiredTier,
+				headline: "Upgrade to brand your clips",
+				highlight: planUpgradeHighlight(brandRequirement.requiredTier, "brand.profiles"),
+			}
+		: null;
+	const publishingUpgrade = featureUpgradePrompt(
+		pricingTier,
+		"publishing.schedule",
+		"Upgrade to publish your clips",
+	);
 	const { availability: campaignActionAvailability, upgradePrompts: campaignUpgradePrompts } =
-		deriveCampaignActionPlan({
-			pricingTier,
-			brandRequirement: brandPlanRequirement(
-				{ pricingTier, isPersonalWorkspace: appUser.isPersonalWorkspace },
-				"brand.profiles",
-			),
-		});
+		deriveCampaignActionPlan({ pricingTier, brandRequirement });
 	const contentSuiteUpgrade = featureUpgradePrompt(
 		pricingTier,
 		"content.repurposing",
@@ -279,12 +298,7 @@ export default async function ProjectDetailPage({
 		: dubAllowance && dubAllowance.remaining <= 0
 			? dubAllowanceUpgrade
 			: null;
-	const canApplyBrandProfile =
-		hasFeature(pricingTier, "brand.profiles") &&
-		workspaceAllowsCapability(
-			{ role: appUser.role, status: appUser.status },
-			"content.edit",
-		);
+	const canApplyBrandProfile = canEdit && brandRequirement === null;
 
 	const isIngestReady = snapshot.project.ingestStatus === "ready";
 	const isIngestFailed = snapshot.project.ingestStatus === "failed";
@@ -569,11 +583,13 @@ export default async function ProjectDetailPage({
 									}}
 								/>
 							) : null}
-							<DeleteProjectButton
-								projectId={projectId}
-								projectTitle={snapshot.project.title}
-								variant="menu"
-							/>
+							{canEdit ? (
+								<DeleteProjectButton
+									projectId={projectId}
+									projectTitle={snapshot.project.title}
+									variant="menu"
+								/>
+							) : null}
 						</Flex>
 					</Flex>
 
@@ -642,7 +658,7 @@ export default async function ProjectDetailPage({
 												{userErrorMessage(snapshot.project.ingestErrorCode)}
 											</Text>
 										</Flex>
-										{isIngestFailed &&
+										{canEdit && isIngestFailed &&
 											ingestRecoveryAction(
 												snapshot.project.ingestErrorCode,
 												ingestFromDrivePicker,
@@ -653,7 +669,7 @@ export default async function ProjectDetailPage({
 													limitReachedMessage={`Retry limit reached (${snapshot.ingestAttemptCount}/${MAX_INGEST_RETRY_ATTEMPTS}). This source keeps failing to import.`}
 												/>
 											)}
-										{isIngestFailed &&
+										{canEdit && isIngestFailed &&
 											ingestRecoveryAction(
 												snapshot.project.ingestErrorCode,
 												ingestFromDrivePicker,
@@ -717,22 +733,55 @@ export default async function ProjectDetailPage({
 												size="sm"
 												disabled={!canApplyBrandProfile}
 											/>
-											<ActionSubmitButton
-												type="submit"
-												size="sm"
-												variant="subtle"
-												pendingLabel="Applying…"
-												disabled={!canApplyBrandProfile}
-											>
-												Apply
-											</ActionSubmitButton>
+											{!canEdit ? null : brandApplyUpgrade ? (
+												<LockedButton type="button" size="sm" variant="subtle" prompt={brandApplyUpgrade}>
+													Apply
+												</LockedButton>
+											) : (
+												<ActionSubmitButton
+													type="submit"
+													size="sm"
+													variant="subtle"
+													pendingLabel="Applying…"
+													disabled={!canApplyBrandProfile}
+												>
+													Apply
+												</ActionSubmitButton>
+											)}
 										</Flex>
 									</Flex>
+									{canEdit && brandRequirement && !brandApplyUpgrade ? (
+										<Text fontSize="xs" color="fg.muted" mt="2">
+											{brandRequirement.message}
+										</Text>
+									) : null}
 								</AuthenticatedActionForm>
 							</Box>
 						) : null}
 					</Collapsible.Content>
 				</Collapsible.Root>
+				{viewOnlyNote ? (
+					<Flex
+						data-project-view-only
+						align={{ base: "flex-start", sm: "center" }}
+						gap="3"
+						wrap="wrap"
+						px="4"
+						py="3"
+						bg="bg.soft"
+						borderRadius="l3"
+					>
+						<Flex align="center" gap="2" flex="1" minW="0" color="fg.muted">
+							<Info size={14} aria-hidden />
+							<Text fontSize="sm">{viewOnlyNote.message}</Text>
+						</Flex>
+						{viewOnlyNote.billingAction ? (
+							<Button size="sm" variant="subtle" asChild>
+								<Link href="/settings/billing">{viewOnlyNote.billingAction}</Link>
+							</Button>
+						) : null}
+					</Flex>
+				) : null}
 				{/* Workspace tabs — URL-driven (?tab=); SSE stream shared via
           ProjectEventsProvider so the Clips-tab processing checklist and the
           Activity tab consume the same EventSource (no second connection). */}
@@ -747,10 +796,8 @@ export default async function ProjectDetailPage({
 					workspaceTimezone={activeWorkspace?.timezone ?? "UTC"}
 					can1080pExport={can1080pExport}
 					canOverrideReview={canOverrideReview}
-					canPublish={workspaceAllowsCapability(
-						{ role: appUser.role, status: appUser.status },
-						"publishing.manage",
-					)}
+					canPublish={workspaceAllowsCapability(access, "publishing.manage")}
+					publishingUpgrade={publishingUpgrade}
 
 					assistedCopyEnabled={hasFeature(
 						pricingTier,
@@ -849,6 +896,7 @@ export default async function ProjectDetailPage({
 										quotaUpgrade={quotaUpgrade}
 										advancedSettingsProps={advancedSettingsProps}
 										defaultSourceLanguageCode={snapshot.project.languageCode}
+										canEdit={canEdit}
 									/>
 								) : !transcriptReady ? (
 									<AuthenticatedActionForm
@@ -893,29 +941,33 @@ export default async function ProjectDetailPage({
 														upgrade={sourceCredits ? uploadLengthUpgradePrompt(pricingTier, sourceSeconds, sourceCredits) : null}
 													/>
 												</Box>
-												<ActionSubmitButton
-													pendingLabel="Starting…"
-													disabled={
-														!isIngestReady ||
-														transcriptInFlight ||
-														planLimitMessage !== null
-													}
-													type="submit"
-													size="sm"
-													flexShrink={0}
-												>
-													{transcriptInFlight
-														? "Transcribing…"
-														: "Start transcription"}
-												</ActionSubmitButton>
+												{canEdit ? (
+													<ActionSubmitButton
+														pendingLabel="Starting…"
+														disabled={
+															!isIngestReady ||
+															transcriptInFlight ||
+															planLimitMessage !== null
+														}
+														type="submit"
+														size="sm"
+														flexShrink={0}
+													>
+														{transcriptInFlight
+															? "Transcribing…"
+															: "Start transcription"}
+													</ActionSubmitButton>
+												) : null}
 											</Flex>
-											<AdvancedClipSettings
-												{...advancedSettingsProps}
-												sourceLanguageEditable={true}
-												defaultSourceLanguageCode={
-													snapshot.project.languageCode
-												}
-											/>
+											{canEdit ? (
+												<AdvancedClipSettings
+													{...advancedSettingsProps}
+													sourceLanguageEditable={true}
+													defaultSourceLanguageCode={
+														snapshot.project.languageCode
+													}
+												/>
+											) : null}
 										</Stack>
 									</AuthenticatedActionForm>
 								) : clips.length === 0 ? (
@@ -942,22 +994,26 @@ export default async function ProjectDetailPage({
 														virality.
 													</Text>
 												</Box>
-												<ActionSubmitButton
-													pendingLabel="Starting…"
-													size="sm"
-													flexShrink={0}
-													disabled={detectionInFlight}
-												>
-													{detectionInFlight ? "Detecting…" : "Detect clips"}
-												</ActionSubmitButton>
+												{canEdit ? (
+													<ActionSubmitButton
+														pendingLabel="Starting…"
+														size="sm"
+														flexShrink={0}
+														disabled={detectionInFlight}
+													>
+														{detectionInFlight ? "Detecting…" : "Detect clips"}
+													</ActionSubmitButton>
+												) : null}
 											</Flex>
-											<AdvancedClipSettings
-												{...advancedSettingsProps}
-												sourceLanguageEditable={false}
-												defaultSourceLanguageCode={
-													snapshot.project.languageCode
-												}
-											/>
+											{canEdit ? (
+												<AdvancedClipSettings
+													{...advancedSettingsProps}
+													sourceLanguageEditable={false}
+													defaultSourceLanguageCode={
+														snapshot.project.languageCode
+													}
+												/>
+											) : null}
 										</Stack>
 									</AuthenticatedActionForm>
 								) : (
@@ -987,6 +1043,7 @@ export default async function ProjectDetailPage({
 											sourceVideoUrl={sourceVideoUrl}
 											actionAvailability={campaignActionAvailability}
 											upgradePrompts={campaignUpgradePrompts}
+											canEdit={canEdit}
 										/>
 									</Stack>
 								)
@@ -1012,11 +1069,21 @@ export default async function ProjectDetailPage({
 										transcriptReady={transcriptReady}
 										planRequirement={planFeatureRequirement(pricingTier, "content.repurposing")?.message ?? null}
 										upgrade={contentSuiteUpgrade}
+										canEdit={canEdit}
 									/>
 								) : (
 									<EmptyState
 										title="Transcript required"
-										description="Complete transcription to generate posts and show notes."
+										description={
+											transcriptInFlight
+												? "Transcription is running. Posts and show notes can be written once it finishes."
+												: "Complete transcription to generate posts and show notes."
+										}
+										action={
+											<Button size="sm" variant="subtle" asChild>
+												<Link href={`/projects/${projectId}`}>Go to clips</Link>
+											</Button>
+										}
 									/>
 								)
 							) : null}
@@ -1032,6 +1099,7 @@ export default async function ProjectDetailPage({
 									allowance={dubAllowance}
 									planRequirement={planFeatureRequirement(pricingTier, "dubbing")?.message ?? null}
 									upgrade={dubbingUpgrade}
+									canEdit={canEdit}
 								/>
 							) : null}
 						</Tabs.Content>

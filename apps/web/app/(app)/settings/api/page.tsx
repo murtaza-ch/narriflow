@@ -88,7 +88,7 @@ export default async function ApiSettingsPage() {
             <Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted">
               Webhooks
             </Text>
-            <AddWebhookDialog disabledReason={signing.current ? null : "Create a callback signing secret first"} />
+            <AddWebhookDialog disabledReason={signing.current ? null : "Create a callback signing secret above first."} />
           </Flex>
           <WebhooksPanel webhooks={webhooks} />
         </section>

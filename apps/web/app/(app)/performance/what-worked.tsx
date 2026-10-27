@@ -3,6 +3,7 @@ import { Box, Grid, Stack, Text } from "@chakra-ui/react";
 import { TrendingUp } from "lucide-react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
+import { Button } from "@narriflow/ui/components/button";
 import type { GuidanceView, PerformanceGroup, PerformanceSummary } from "@narriflow/services";
 import {
 	PERFORMANCE_GUIDANCE_DIMENSIONS,
@@ -244,12 +245,17 @@ function Summary({ summary, guidance }: { summary: PerformanceSummary; guidance:
 	);
 }
 
+/** The empty page's next step: post a clip, connect an account first, or ask someone who can. */
+export type EmptyNextStep = "publish" | "connect" | "ask" | null;
+
 export function WhatWorked({
 	summary,
 	guidance,
+	emptyNextStep = null,
 }: {
 	summary: PerformanceSummary;
 	guidance: GuidanceView;
+	emptyNextStep?: EmptyNextStep;
 }) {
 	const empty = summary.measuredVideos === 0 && summary.waitingVideos === 0;
 	return (
@@ -262,7 +268,20 @@ export function WhatWorked({
 				<EmptyState
 					icon={<TrendingUp />}
 					title="No posts measured yet"
-					description="Publish a clip to YouTube Shorts or TikTok. Its 7-day reading arrives a week later."
+					description={`Publish a clip to YouTube Shorts or TikTok. Its 7-day reading arrives a week later.${
+						emptyNextStep === "ask" ? " Ask a workspace owner or admin to connect one of those accounts." : ""
+					}`}
+					action={
+						emptyNextStep === "publish" ? (
+							<Button size="sm" variant="subtle" asChild>
+								<Link href="/projects">Browse projects</Link>
+							</Button>
+						) : emptyNextStep === "connect" ? (
+							<Button size="sm" variant="subtle" asChild>
+								<Link href="/settings/social-accounts">Connect an account</Link>
+							</Button>
+						) : undefined
+					}
 				/>
 			) : (
 				<Summary summary={summary} guidance={guidance} />

@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, ArrowRight, Download, Languages, Mic2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
@@ -18,7 +19,7 @@ import { userErrorMessage } from "@narriflow/validators";
 import type { DubUsageSummary } from "@narriflow/services";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
-import { useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
+import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { upgradePromptFromFailure, type BrowserRequestFailure } from "@/lib/authenticated-request-browser";
 
 const languageOptions = [
@@ -108,6 +109,7 @@ export function DubbingPanel({
   allowance,
   planRequirement,
   upgrade,
+  canEdit,
 }: {
   projectId: string;
   clips: ClipSnapshot[];
@@ -118,6 +120,8 @@ export function DubbingPanel({
   planRequirement: string | null;
   /** What an upgrade would add; `null` when no plan lifts the block (top-tier allowance: it renews). */
   upgrade: UpgradePrompt | null;
+  /** Role and workspace status allow new dubs; otherwise only finished dubs show. */
+  canEdit: boolean;
 }) {
   const router = useRouter();
   const { openUpgrade } = useUpgrade();
@@ -261,6 +265,7 @@ export function DubbingPanel({
       />
 
       {/* Composer */}
+      {canEdit ? (
       <Box
         bg="bg.panel"
         borderWidth="1px"
@@ -362,7 +367,10 @@ export function DubbingPanel({
             </Flex>
           ) : (
             <Text fontSize="13px" color="fg.muted">
-              Render a clip first. Dubs narrate over a finished render.
+              Render a clip first. Dubs narrate over a finished render.{" "}
+              <Link href={`/projects/${projectId}`} style={{ textDecoration: "underline", textUnderlineOffset: "3px" }}>
+                Go to clips
+              </Link>
             </Text>
           )}
           <Flex align="center" gap="3">
@@ -371,20 +379,28 @@ export function DubbingPanel({
                 {allowance.remaining} of {allowance.limit} dubs left this month
               </Text>
             ) : null}
-            <Button
-              size="sm"
-              disabled={
-                busy ||
-                !selectedClip ||
-                aspectRatios.length === 0 ||
-                blockedMessage !== null ||
-                clipTooLong
-              }
-              onClick={requestDub}
-            >
-              {busy ? <Spinner size="xs" /> : <Mic2 size={14} />}
-              {busy ? "Queueing" : "Generate dub"}
-            </Button>
+            {blockedMessage && upgrade?.tier ? (
+              // A plan lock stays clickable and explains the upgrade, like every other locked action.
+              <LockedButton size="sm" prompt={upgrade}>
+                <Mic2 size={14} />
+                Generate dub
+              </LockedButton>
+            ) : (
+              <Button
+                size="sm"
+                disabled={
+                  busy ||
+                  !selectedClip ||
+                  aspectRatios.length === 0 ||
+                  blockedMessage !== null ||
+                  clipTooLong
+                }
+                onClick={requestDub}
+              >
+                {busy ? <Spinner size="xs" /> : <Mic2 size={14} />}
+                {busy ? "Queueing" : "Generate dub"}
+              </Button>
+            )}
           </Flex>
         </Flex>
         {blockedMessage || clipTooLong ? (
@@ -400,6 +416,7 @@ export function DubbingPanel({
           </Box>
         ) : null}
       </Box>
+      ) : null}
 
       {message ? (
         <Flex
@@ -513,7 +530,11 @@ export function DubbingPanel({
         <EmptyState
           icon={<Mic2 />}
           title="No dubs yet"
-          description="Pick a rendered clip, choose a language and a voice, and generate. Each dub comes with a video and a narration-only audio file."
+          description={
+            canEdit
+              ? "Pick a rendered clip, choose a language and a voice, and generate. Each dub comes with a video and a narration-only audio file."
+              : "Voiceover dubs made from this project's clips show up here."
+          }
         />
       )}
     </Stack>

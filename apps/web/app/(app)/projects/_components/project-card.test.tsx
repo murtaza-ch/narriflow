@@ -25,15 +25,21 @@ function project(expiresAt: string | null): ProjectListItem {
   } as unknown as ProjectListItem;
 }
 
-function render(item: ProjectListItem) {
+function render(item: ProjectListItem, canDelete = false) {
   return renderToStaticMarkup(
     <ChakraProvider value={system}>
-      <ProjectCard project={item} />
+      <ProjectCard project={item} canDelete={canDelete} />
     </ChakraProvider>,
   );
 }
 
 describe("ProjectCard", () => {
+  test("offers delete only to members who can edit", () => {
+    expect(render(project(null), true)).toContain(`Delete &quot;Founder interview&quot;`);
+    expect(render(project(null))).not.toContain("Delete &quot;");
+  });
+
+
   test("shows the project's own deletion deadline as an absolute UTC label before mount", () => {
     const markup = render(project("2026-08-22T03:00:00.000Z"));
     expect(markup).toContain("Expires Aug 22 at 03:00 UTC");

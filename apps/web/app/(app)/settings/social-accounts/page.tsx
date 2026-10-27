@@ -3,7 +3,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { Box, Stack } from "@chakra-ui/react";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { socialOAuthService } from "@narriflow/services";
-import { planCountRequirement, planLimits, planUpgradeHighlight } from "@narriflow/validators";
+import { planCountRequirement, planLimits, planUpgradeHighlight, workspaceAllowsCapability } from "@narriflow/validators";
 import { UpgradeHero } from "../../_components/upgrade";
 import { SocialVisual } from "../../_components/upgrade-visuals";
 import { PageHeader } from "@narriflow/ui/components/page-header";
@@ -74,10 +74,9 @@ export default async function SocialAccountsPage({
 					connectedCount={params.connected ? Number(params.connected) : null}
 					errorCode={params.error ?? null}
 					facebookSelectionToken={params.facebook_selection ?? null}
-					canManage={
-						appUser.workspace.role === "owner" ||
-						appUser.workspace.role === "admin"
-					}
+					// The capability connecting and disconnecting admit with (active owners and admins).
+					canManage={workspaceAllowsCapability(appUser.workspace, "social.manage")}
+					access={{ role: appUser.workspace.role, status: appUser.workspace.status }}
 					accountLimit={accountLimit}
 					connectRequirement={connectRequirement?.message ?? null}
 					connectUpgrade={

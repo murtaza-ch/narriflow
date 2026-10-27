@@ -66,6 +66,21 @@ describe("What worked", () => {
 		expect(markup).not.toContain("Median views");
 	});
 
+	test("the empty page names the next step for who is looking", () => {
+		const empty = summarizePerformance([], 0);
+		const page = (emptyNextStep: "publish" | "connect" | "ask" | null) =>
+			renderToStaticMarkup(
+				<ChakraProvider value={system}>
+					<WhatWorked summary={empty} guidance={noGuidance} emptyNextStep={emptyNextStep} />
+				</ChakraProvider>,
+			);
+		expect(page("connect")).toContain('href="/settings/social-accounts"');
+		expect(page("publish")).toContain('href="/projects"');
+		expect(page("ask")).toContain("Ask a workspace owner or admin to connect");
+		expect(page(null)).not.toContain('href="/settings/social-accounts"');
+		expect(page(null)).not.toContain("Ask a workspace owner");
+	});
+
 	test("a video still waiting for its 7-day reading is not an empty page", () => {
 		const markup = render(summarizePerformance([], 2));
 		expect(markup).not.toContain("No posts measured yet");

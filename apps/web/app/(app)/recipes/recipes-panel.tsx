@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition, type ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Box, chakra, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, BookMarked, Copy, Pencil, Plus, Trash2, X } from "lucide-react";
@@ -131,6 +132,7 @@ export function RecipesPanel({
         />
       </Box>
 
+
       <Box as="section" animation="fade-up" animationDelay="80ms" animationFillMode="backwards">
         {initialRecipes.length === 0 ? (
           <EmptyState
@@ -170,7 +172,17 @@ export function RecipesPanel({
                       </Text>
                     ) : null}
                     <Text mt="1.5" fontSize="12px" color="fg.subtle">
-                      {recipe.ruleCount === 0 ? "Not used by an Autopilot rule" : `Used by ${recipe.ruleCount} Autopilot rule${recipe.ruleCount === 1 ? "" : "s"}`}
+                      {recipe.ruleCount === 0 ? (
+                        "Not used by an Autopilot rule"
+                      ) : (
+                        <>
+                          <chakra.span asChild textDecoration="underline" textUnderlineOffset="3px">
+                            <Link href="/autopilot">{`Used by ${recipe.ruleCount} Autopilot rule${recipe.ruleCount === 1 ? "" : "s"}`}</Link>
+                          </chakra.span>
+                          {/* Says why Delete is off, where touch users can read it. */}
+                          {canEdit ? ` · move ${recipe.ruleCount === 1 ? "it" : "them"} to another Recipe to delete this one` : ""}
+                        </>
+                      )}
                     </Text>
                   </Box>
                   {canEdit ? (

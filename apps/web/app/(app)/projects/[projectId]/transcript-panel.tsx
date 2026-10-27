@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { AlertTriangle, Download, FileText, Search } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
@@ -112,6 +113,11 @@ export function TranscriptPanel({
 				icon={<FileText size={22} aria-hidden />}
 				title="No transcript yet"
 				description="When the video is transcribed, you can read it here and download subtitle files."
+				action={
+					<Button asChild size="sm" variant="subtle">
+						<Link href={`/projects/${projectId}`}>Go to clips</Link>
+					</Button>
+				}
 			/>
 		);
 	}

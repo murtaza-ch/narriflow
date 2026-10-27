@@ -21,8 +21,11 @@ import {
   formatUsdCents,
   lowestTierWithFeature,
   planUpgradeHighlight,
+  workspaceAllowsCapability,
   type WorkspaceBillingView,
 } from "@narriflow/validators";
+import Link from "next/link";
+import { AccessNote } from "../_components/access-note";
 import { formatDate } from "@/lib/format";
 import { shouldShowSeatSyncStatus } from "@/lib/billing-view-model";
 import {
@@ -31,6 +34,14 @@ import {
 } from "@/lib/authenticated-request-browser";
 
 type Role = "owner" | "admin" | "editor" | "viewer";
+
+function BillingLink() {
+  return (
+    <Link href="/settings/billing">
+      <Text as="span" color="fg.accent" textDecoration="underline" textUnderlineOffset="3px">Go to billing</Text>
+    </Link>
+  );
+}
 
 export function MembersPanel({
   members,
@@ -66,9 +77,9 @@ export function MembersPanel({
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const inviteEmailRef = useRef<HTMLInputElement>(null);
-  const canManageMembers =
-    (actorRole === "owner" || actorRole === "admin") &&
-    (workspaceStatus === "active" || actorRole === "owner");
+  // The capability every member action admits with: a pending workspace's
+  // owner can't manage members yet, a restricted one can remove or demote.
+  const canManageMembers = workspaceAllowsCapability({ role: actorRole, status: workspaceStatus }, "members.invite");
   // Every invitation, Viewers included, needs the team entitlement and an
   // active workspace; a restricted workspace can only remove or demote members.
   const canInviteViewer =
@@ -179,7 +190,12 @@ export function MembersPanel({
   return (
     <Stack gap="8">
       {!isBusiness ? (
-        workspaceStatus === "restricted" ? null : (
+        workspaceStatus === "restricted" ? (
+          <Text fontSize="13px" color="fg.muted">
+            Billing needs attention before you can add a team.{" "}
+            {actorRole === "owner" ? <BillingLink /> : "Ask the workspace owner to fix billing."}
+          </Text>
+        ) : (
         <UpgradeHero
           title="Bring your team into one workspace"
           points={["Invite admins and editors, and add viewers for free.", "Share brand approval rules and client review rooms."]}
@@ -193,6 +209,8 @@ export function MembersPanel({
           }}
         />
         )
+      ) : !canManageMembers ? (
+        <AccessNote access={{ role: actorRole, status: workspaceStatus }} capability="members.invite" action="invite members" />
       ) : (
       <Box as="form" onSubmit={submitInvite} borderRadius="l3" bg="bg.panel" borderWidth="1px" borderColor="border.card" p="6">
         <Stack gap="4">
@@ -215,15 +233,24 @@ export function MembersPanel({
               </Stack>
               <Button type="submit" size="sm" disabled={!(role === "viewer" ? canInviteViewer : canAddBillable) || pending}>{pending ? <Spinner size="xs" /> : <Mail size={14} />}Send invite</Button>
           </Flex>
-          {isBusiness && workspaceStatus !== "active" ? (
+          {workspaceStatus !== "active" ? (
             <Text fontSize="12px" color="fg.subtle">
-              Invitations are unavailable until billing is active. You can still remove or change members.
+              Invitations are unavailable until billing is active. You can still remove or change members.{" "}
+              <BillingLink />
             </Text>
-          ) : isBusiness ? (
+          ) : !canAddBillable ? (
+            <Text fontSize="12px" color="fg.subtle">
+              {actorRole === "owner" ? (
+                <>Admins and editors are paid seats, so they wait until billing is current. <BillingLink /></>
+              ) : (
+                "Admins and editors are paid seats, so they wait until billing is current. Ask the workspace owner to update billing."
+              )}
+            </Text>
+          ) : (
             <Text fontSize="12px" color="fg.subtle">
               {role === "viewer" ? "Viewers are free." : `${role === "admin" ? "Admins" : "Editors"} add ${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.monthly)}/month or ${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.annual)}/year after acceptance.`}
             </Text>
-          ) : null}
+          )}
           {feedback ? <Text fontSize="12px" color={inviteUrl ? "fg" : "danger.fg"}>{feedback}</Text> : null}
           {inviteUrl ? (
             <Flex gap="2"><Input value={inviteUrl} readOnly fontSize="12px" /><Button type="button" variant="subtle" size="sm" onClick={() => navigator.clipboard.writeText(inviteUrl)}><Copy size={14} />Copy</Button></Flex>

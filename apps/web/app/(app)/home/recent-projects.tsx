@@ -22,7 +22,7 @@ export function RecentProjects({
         <EmptyState
           icon={<FolderOpen size={20} />}
           title="No projects yet"
-          description="Your imported videos and clips will appear here."
+          description={canCreate ? "Your imported videos and clips will appear here." : "Videos your team imports will appear here."}
           action={
             canCreate ? (
               <Button asChild>
@@ -34,7 +34,7 @@ export function RecentProjects({
       ) : (
         <SimpleGrid columns={{ base: 1, sm: 2, xl: 3 }} gap="5">
           {items.map((project, index) => (
-            <ProjectCard key={project.id} project={project} priority={index < 3} />
+            <ProjectCard key={project.id} project={project} priority={index < 3} canDelete={canCreate} />
           ))}
         </SimpleGrid>
       )}

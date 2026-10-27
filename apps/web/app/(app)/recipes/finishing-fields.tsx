@@ -1,14 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import { Box, chakra, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { NumberInput } from "@narriflow/ui/components/number-input";
 import { Switch } from "@narriflow/ui/components/switch";
-import { clipAspectRatioOptions, socialPlatformSchema, type ClipAspectRatio, type SocialPlatform } from "@narriflow/validators";
+import { clipAspectRatioOptions, PLAN_CATALOG, socialPlatformSchema, type ClipAspectRatio, type SocialPlatform } from "@narriflow/validators";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 import { PlanLimitNotice } from "../_components/plan-limit-notice";
-import { useUpgrade } from "../_components/upgrade";
+import { UpgradeGem, useUpgrade } from "../_components/upgrade";
 import type { FinishingDraft } from "./finishing-form";
 
 function toggle<T>(values: T[], value: T, on: boolean): T[] {
@@ -31,8 +32,11 @@ export function FinishingFields({
   /** Connected accounts a finished clip can be proposed to. */
   queueAccounts?: Array<{ id: string; platform: SocialPlatform; displayName: string }>;
 }) {
-  const { currentTier } = useUpgrade();
+  const { currentTier, openUpgrade } = useUpgrade();
   const set = (patch: Partial<FinishingDraft>) => onChange({ ...draft, ...patch });
+  const upgrade = available ? null : featureUpgradePrompt(currentTier, "campaign.operations", "Upgrade to finish clips automatically");
+  // Review rounds go out under a Business grant; below it the switch explains the upgrade.
+  const reviewUpgrade = featureUpgradePrompt(currentTier, "review.rooms", "Upgrade to send review rounds");
   return (
     <Stack gap="3">
       <Flex align="center" justify="space-between" gap="4">
@@ -44,19 +48,29 @@ export function FinishingFields({
             Export the best clips and write copy, then leave them ready to review.
           </Text>
         </Box>
-        <Switch
-          size="sm"
-          checked={draft.enabled && available}
-          disabled={!available && !draft.enabled}
-          onCheckedChange={(enabled) => set({ enabled })}
-          inputProps={{ "aria-label": "Finish new clips automatically" }}
-        />
+        <Flex align="center" gap="2" flexShrink={0}>
+          {upgrade?.tier ? <UpgradeGem label={`Needs ${PLAN_CATALOG[upgrade.tier].name}`} /> : null}
+          <Switch
+            size="sm"
+            checked={draft.enabled && available}
+            // Below Pro the switch stays clickable and explains the upgrade instead of greying out.
+            disabled={!available && !draft.enabled && !upgrade?.tier}
+            onCheckedChange={(enabled) => {
+              if (enabled && !available) {
+                if (upgrade) openUpgrade(upgrade);
+                return;
+              }
+              set({ enabled });
+            }}
+            inputProps={{ "aria-label": "Finish new clips automatically" }}
+          />
+        </Flex>
       </Flex>
 
       {!available ? (
         <PlanLimitNotice
           message="Finishing needs the Pro plan. Videos still import and generate clips without it."
-          upgrade={featureUpgradePrompt(currentTier, "campaign.operations", "Upgrade to finish clips automatically")}
+          upgrade={upgrade}
         />
       ) : null}
 
@@ -127,7 +141,14 @@ export function FinishingFields({
             </Flex>
           </Stack>
 
-          {queueAccounts.length > 0 || draft.delivery === "propose_to_queue" ? (
+          {queueAccounts.length === 0 && draft.delivery !== "propose_to_queue" ? (
+            <Text fontSize="12px" color="fg.muted">
+              <chakra.span asChild color="fg" fontWeight="500" textDecoration="underline" textUnderlineOffset="3px">
+                <Link href="/settings/social-accounts">Connect a social account</Link>
+              </chakra.span>{" "}
+              to propose finished clips to your publishing queue.
+            </Text>
+          ) : (
             <Stack gap="2">
               <Flex align="center" justify="space-between" gap="4">
                 <Box minW="0">
@@ -160,7 +181,7 @@ export function FinishingFields({
                 </Flex>
               ) : null}
             </Stack>
-          ) : null}
+          )}
 
           <Flex align="center" justify="space-between" gap="4">
             <Box minW="0">
@@ -168,15 +189,34 @@ export function FinishingFields({
                 Send a review round to the grant's reviewers
               </Text>
               <Text fontSize="12px" color="fg.muted">
-                Sends the finished clips to the reviewers an automation grant names, once per episode. It needs an active grant for this rule and the Business plan; without them the clips wait for you.
+                Sends the finished clips to the reviewers an automation grant names, once per episode.{" "}
+                {reviewUpgrade?.tier ? (
+                  `Review rounds need the ${PLAN_CATALOG[reviewUpgrade.tier].name} plan; without it the clips wait for you.`
+                ) : (
+                  <>
+                    It needs an active grant for the rule; without one the clips wait for you.{" "}
+                    <chakra.span asChild color="fg" fontWeight="500" textDecoration="underline" textUnderlineOffset="3px">
+                      <Link href="/settings/automation-grants">Manage grants</Link>
+                    </chakra.span>
+                  </>
+                )}
               </Text>
             </Box>
-            <Switch
-              size="sm"
-              checked={draft.delivery === "send_review_round"}
-              onCheckedChange={(on) => set({ delivery: on ? "send_review_round" : "ready_to_review", queueAccountIds: [] })}
-              inputProps={{ "aria-label": "Send a review round to the grant's reviewers" }}
-            />
+            <Flex align="center" gap="2" flexShrink={0}>
+              {reviewUpgrade?.tier ? <UpgradeGem label={`Needs ${PLAN_CATALOG[reviewUpgrade.tier].name}`} /> : null}
+              <Switch
+                size="sm"
+                checked={draft.delivery === "send_review_round"}
+                onCheckedChange={(on) => {
+                  if (on && reviewUpgrade?.tier) {
+                    openUpgrade(reviewUpgrade);
+                    return;
+                  }
+                  set({ delivery: on ? "send_review_round" : "ready_to_review", queueAccountIds: [] });
+                }}
+                inputProps={{ "aria-label": "Send a review round to the grant's reviewers" }}
+              />
+            </Flex>
           </Flex>
         </Stack>
       ) : null}

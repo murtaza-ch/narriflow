@@ -19,6 +19,7 @@ export function SourceSetupFlow({
   metadata,
   mode,
   canContinue,
+  blockedReason = null,
   locked,
   onChangeSource,
   configuration,
@@ -32,6 +33,8 @@ export function SourceSetupFlow({
   metadata: ReactNode;
   mode: GenerationMode;
   canContinue: boolean;
+  /** What Continue is waiting for, shown under it while it can't be pressed. */
+  blockedReason?: string | null;
   locked: boolean;
   onChangeSource: () => void;
   configuration: (
@@ -156,7 +159,9 @@ export function SourceSetupFlow({
               <ArrowRight size={16} />
             </Button>
             <Text fontSize="12px" color="fg.subtle" textAlign="center">
-              Your upload starts after you confirm your settings.
+              {!canContinue && !locked && blockedReason
+                ? blockedReason
+                : "Your upload starts after you confirm your settings."}
             </Text>
           </>
         )}

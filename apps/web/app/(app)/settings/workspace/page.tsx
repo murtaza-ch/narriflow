@@ -8,6 +8,8 @@ import { updatePerformanceGuidanceAction, updateWorkspaceAction } from "../actio
 import { PerformanceGuidanceField } from "./performance-guidance-field";
 import { WorkspaceAvatarControl } from "./workspace-avatar-control";
 import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
+import { workspaceAllowsCapability } from "@narriflow/validators";
+import { AccessNote } from "../_components/access-note";
 
 const TIMEZONE_ITEMS = ["UTC", ...Intl.supportedValuesOf("timeZone")].map((timezone) => ({
   value: timezone,
@@ -25,13 +27,12 @@ export default async function WorkspaceSettingsPage() {
     appUser.actorUserId,
     [appUser.workspaceId,
   ]);
-  const canManage =
-    appUser.workspace.role === "owner" ||
-    (appUser.workspace.role === "admin" &&
-      appUser.workspace.status === "active");
+  // The same capability the save actions and avatar routes admit with.
+  const canManage = workspaceAllowsCapability(appUser.workspace, "workspace.manage");
   return (
     <Stack gap="8">
       <PageHeader title="Workspace settings" />
+      <AccessNote access={appUser.workspace} capability="workspace.manage" action="change workspace settings" mt="-4" />
       <Box borderRadius="l3" bg="bg.panel" borderWidth="1px" borderColor="border.card" p="6">
         <AuthenticatedActionForm action={updateWorkspaceAction}>
           <Stack gap="3" maxW="520px">

@@ -18,7 +18,9 @@ import {
   finalizeLinkConfigureAction,
   saveGenerationDraftAction,
 } from "../actions";
-import { isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { isAuthenticatedActionFailure, upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+import type { UpgradePrompt } from "../../_components/upgrade";
+import { UploadRefusalUpgrade } from "./upload-session-status";
 import {
   buildLinkContentPack,
   type LinkConfigureState,
@@ -88,6 +90,8 @@ export function ConfigureStep({
 
   const [ctaPhase, setCtaPhase] = useState<CtaPhase>("idle");
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
+  // Set when Processing Usage refused generation for credits or length and a plan would admit it.
+  const [finalizeUpgrade, setFinalizeUpgrade] = useState<UpgradePrompt | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
   const [saveDraftError, setSaveDraftError] = useState<string | null>(null);
   const [displayTitle, setDisplayTitle] = useState(title);
@@ -172,6 +176,7 @@ export function ConfigureStep({
   async function submitFinalize() {
     setCtaPhase("submitting");
     setFinalizeError(null);
+    setFinalizeUpgrade(null);
 
     const contentPack = currentContentPack;
 
@@ -184,6 +189,7 @@ export function ConfigureStep({
     if (!result.ok) {
       setCtaPhase("idle");
       setFinalizeError(result.message);
+      setFinalizeUpgrade(upgradePromptFromFailure(result));
       return;
     }
     if (result.started) {
@@ -272,6 +278,7 @@ export function ConfigureStep({
                 </Text>
               </Flex>
             )}
+            {finalizeError && finalizeUpgrade && <UploadRefusalUpgrade prompt={finalizeUpgrade} />}
             <Button
               onClick={submitFinalize}
               disabled={ctaPhase !== "idle"}

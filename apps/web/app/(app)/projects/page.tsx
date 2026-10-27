@@ -13,7 +13,7 @@ import {
 } from "@narriflow/services";
 import { ProjectsExplorer } from "./_components/projects-explorer";
 import { ProjectsGridSkeleton } from "./_components/projects-skeleton";
-import { planLimits, resolvePricingTier } from "@narriflow/validators";
+import { planLimits, resolvePricingTier, workspaceAllowsCapability } from "@narriflow/validators";
 import { RetentionBanner } from "./_components/retention-banner";
 import { FoldersPanel } from "./_components/folders-panel";
 import { workspaceLibraryService } from "@narriflow/services";
@@ -126,13 +126,9 @@ async function ProjectsHeader({
     admitWorkspacePage("content.view"),
     searchParams,
   ]);
-  const canEdit =
-    appUser.workspace.role !== "viewer" &&
-    (appUser.workspace.status === "active" ||
-      appUser.workspace.role === "owner");
-  const canCreate =
-    appUser.workspace.role !== "viewer" &&
-    appUser.workspace.status === "active";
+  // Mirrors the folder, move and delete actions' own `content.edit` check.
+  const canEdit = workspaceAllowsCapability(appUser.workspace, "content.edit");
+  const canCreate = workspaceAllowsCapability(appUser.workspace, "processing.consume");
   const activeFolder = params.folder
     ? (await workspaceLibraryService.listFolders(
         appUser,
@@ -191,13 +187,9 @@ async function ProjectsData({
   const activeFolder = params.folder
     ? folders.find((folder) => folder.id === params.folder)
     : undefined;
-  const canEdit =
-    appUser.workspace.role !== "viewer" &&
-    (appUser.workspace.status === "active" ||
-      appUser.workspace.role === "owner");
-  const canCreate =
-    appUser.workspace.role !== "viewer" &&
-    appUser.workspace.status === "active";
+  // Mirrors the folder, move and delete actions' own `content.edit` check.
+  const canEdit = workspaceAllowsCapability(appUser.workspace, "content.edit");
+  const canCreate = workspaceAllowsCapability(appUser.workspace, "processing.consume");
   const retentionBanner =
     planLimits(resolvePricingTier(appUser.workspace.pricingTier)).projectRetentionHours !== null
       ? (
@@ -215,6 +207,7 @@ async function ProjectsData({
         <EmptyState
           icon={<FolderOpen size={20} strokeWidth={1.5} />}
           title="No projects yet"
+          description={canCreate ? undefined : "Videos your team imports will appear here."}
           action={canCreate ? (
             <Button size="sm" variant="subtle" asChild>
               <Link href="/upload">Start upload</Link>

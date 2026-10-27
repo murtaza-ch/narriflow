@@ -3,21 +3,23 @@ import { Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { ArrowRight, Bot } from "lucide-react";
 import type { ProjectListItem } from "@narriflow/services";
-import { HeroExperience } from "./hero-experience";
+import { HeroExperience, type ReadOnlyReason } from "./hero-experience";
 import { RetentionBanner } from "../projects/_components/retention-banner";
 import { CreationTools } from "./creation-tools";
 import { RecentProjects } from "./recent-projects";
 
-export function DashboardView({ items, canCreate, showRetentionBanner, canManageBilling }: {
+export function DashboardView({ items, canCreate, readOnlyReason = null, showRetentionBanner, canManageBilling }: {
   greeting: string;
   items: ProjectListItem[];
   canCreate: boolean;
+  /** Why this member can't import: their role, or a paused (unpaid) workspace. */
+  readOnlyReason?: ReadOnlyReason;
   showRetentionBanner: boolean;
   canManageBilling: boolean;
 }) {
   return <Stack gap={{ base: "8", md: "10" }}>
     {showRetentionBanner && <RetentionBanner canManageBilling={canManageBilling} />}
-    <HeroExperience canCreate={canCreate} />
+    <HeroExperience canCreate={canCreate} readOnlyReason={readOnlyReason} />
     {canCreate && <CreationTools items={items} />}
     <RecentProjects items={items} canCreate={canCreate} />
     {canCreate && <Flex as="section" align={{ base: "flex-start", md: "center" }} gap="4" p={{ base: "5", md: "6" }} bg="bg.panel" borderWidth="1px" borderColor="border.card" borderRadius="l3" direction={{ base: "column", md: "row" }}>

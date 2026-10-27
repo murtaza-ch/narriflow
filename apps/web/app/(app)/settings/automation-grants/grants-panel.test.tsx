@@ -43,10 +43,10 @@ function grant(overrides: Partial<StandingGrantView>): StandingGrantView {
 	};
 }
 
-function render(grants: StandingGrantView[], canManage: boolean) {
+function render(grants: StandingGrantView[], canManage: boolean, access?: { role: "owner" | "admin" | "editor" | "viewer"; status: "active" | "pending_payment" | "restricted" }) {
 	return renderToStaticMarkup(
 		<ChakraProvider value={system}>
-			<GrantsPanel grants={grants} rules={[{ id: RULE_ID, name: "Weekly show" }]} accounts={[]} canManage={canManage} reviewAvailable initialRuleId={null} />
+			<GrantsPanel grants={grants} rules={[{ id: RULE_ID, name: "Weekly show" }]} accounts={[]} canManage={canManage} reviewAvailable access={access} initialRuleId={null} />
 		</ChakraProvider>,
 	);
 }
@@ -80,6 +80,13 @@ describe("Automation grants panel", () => {
 		expect(member).not.toContain("grant actions");
 		expect(member).toContain("Only Owners and Admins can grant");
 		expect(member).toContain("Weekly show");
+	});
+
+	test("a restricted owner is told to fix billing, not that only owners may grant", () => {
+		const html = render([grant({})], false, { role: "owner", status: "restricted" });
+		expect(html).toContain("Fix billing to manage grants.");
+		expect(html).toContain('href="/settings/billing"');
+		expect(html).not.toContain("Only Owners and Admins can grant");
 	});
 
 	test("with no grants it says everything waits for a click", () => {

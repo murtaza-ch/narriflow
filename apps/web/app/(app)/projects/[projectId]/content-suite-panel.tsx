@@ -25,7 +25,7 @@ import {
 } from "@narriflow/validators";
 import { PanelHeader } from "./panel-header";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
-import { useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
+import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 
 /** What each output is, shown before and while it is written. */
@@ -298,6 +298,7 @@ export function ContentSuitePanel({
   transcriptReady,
   planRequirement,
   upgrade,
+  canEdit,
 }: {
   projectId: string;
   transcriptReady: boolean;
@@ -305,6 +306,8 @@ export function ContentSuitePanel({
   planRequirement: string | null;
   /** The plan that unlocks generation; `null` when the plan already allows it. */
   upgrade: UpgradePrompt | null;
+  /** Role and workspace status allow generating; otherwise written assets are read-only. */
+  canEdit: boolean;
 }) {
   const { openUpgrade } = useUpgrade();
   const [assets, setAssets] = useState<ContentAsset[]>([]);
@@ -392,23 +395,30 @@ export function ContentSuitePanel({
         title="Repurpose"
         description="Write a blog post, an X thread, a LinkedIn post, show notes and quote cards from this transcript in one go."
         actions={
-          <Button
-            size="sm"
-            variant={assets.length > 0 ? "subtle" : "solid"}
-            onClick={generate}
-            disabled={generating || loading || planRequirement !== null}
-          >
-            {generating ? <Spinner size="xs" /> : <Sparkles size={14} />}
-            {generating
-              ? "Generating…"
-              : assets.length > 0
-                ? "Regenerate"
-                : "Generate assets"}
-          </Button>
+          !canEdit ? null : planRequirement !== null && upgrade?.tier ? (
+            <LockedButton size="sm" variant={assets.length > 0 ? "subtle" : "solid"} prompt={upgrade}>
+              <Sparkles size={14} />
+              {assets.length > 0 ? "Regenerate" : "Generate assets"}
+            </LockedButton>
+          ) : (
+            <Button
+              size="sm"
+              variant={assets.length > 0 ? "subtle" : "solid"}
+              onClick={generate}
+              disabled={generating || loading || planRequirement !== null}
+            >
+              {generating ? <Spinner size="xs" /> : <Sparkles size={14} />}
+              {generating
+                ? "Generating…"
+                : assets.length > 0
+                  ? "Regenerate"
+                  : "Generate assets"}
+            </Button>
+          )
         }
       />
 
-      <PlanLimitNotice message={planRequirement} upgrade={upgrade} />
+      {canEdit ? <PlanLimitNotice message={planRequirement} upgrade={upgrade} /> : null}
 
       {error ? (
         <Flex

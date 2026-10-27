@@ -16,6 +16,8 @@ interface ProjectCardProps {
   project: ProjectListItem;
   priority?: boolean;
   selectable?: boolean;
+  /** Members who can't edit never see a delete that would be refused. */
+  canDelete?: boolean;
   selected?: boolean;
   onSelectedChange?: (selected: boolean) => void;
 }
@@ -68,6 +70,7 @@ export function ProjectCard({
   project,
   priority = false,
   selectable = false,
+  canDelete = false,
   selected = false,
   onSelectedChange,
 }: ProjectCardProps) {
@@ -167,11 +170,13 @@ export function ProjectCard({
           />
         </Box>
       ) : null}
-      <DeleteProjectButton
-        projectId={project.id}
-        projectTitle={project.title}
-        variant="icon"
-      />
+      {canDelete ? (
+        <DeleteProjectButton
+          projectId={project.id}
+          projectTitle={project.title}
+          variant="icon"
+        />
+      ) : null}
     </Box>
   );
 }

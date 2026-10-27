@@ -542,6 +542,7 @@ export function BillingPlans({
       ) : null}
 
       {!canManageBilling ? <Text fontSize="12px" color="fg.subtle">Only the workspace owner can change the subscription or payment method.</Text> : null}
+      {canManageBilling && !isConfigured ? <Text fontSize="12px" color="fg.subtle">Plan changes are temporarily unavailable. Try again later.</Text> : null}
       {inlineNotice ? <Text role="status" fontSize="13px" color="fg.muted">{inlineNotice}</Text> : null}
       {inlineError && !quote ? <Text role="alert" fontSize="12px" color="danger.fg" tabIndex={-1}>{inlineError}</Text> : null}
       <Dialog.Root open={quote !== null} onOpenChange={({ open }) => { if (!open && busy !== "confirm") setQuote(null); }} placement="center" closeOnEscape={busy !== "confirm"} closeOnInteractOutside={busy !== "confirm"} finalFocusEl={() => actionOriginRef.current}>

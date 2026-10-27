@@ -13,8 +13,12 @@ import {
 	type StandingGrantKind,
 	type StandingGrantStatus,
 	type StandingGrantView,
+	PLAN_CATALOG,
 } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
+import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { AccessNote, type WorkspaceAccess } from "../_components/access-note";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { CloseButton, Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
@@ -154,6 +158,7 @@ function GrantDialog({
 	rules,
 	accounts,
 	reviewAvailable,
+	reviewUpgrade,
 	initialRuleId,
 	onClose,
 }: {
@@ -162,6 +167,7 @@ function GrantDialog({
 	rules: GrantRuleOption[];
 	accounts: GrantAccountOption[];
 	reviewAvailable: boolean;
+	reviewUpgrade: UpgradePrompt | null;
 	initialRuleId: string | null;
 	onClose: () => void;
 }) {
@@ -238,7 +244,12 @@ function GrantDialog({
 														{ value: "review_send", label: "Send review rounds", disabled: !reviewAvailable },
 													]}
 												/>
-												{!reviewAvailable ? <Field.HelperText>Sending review rounds needs the Business plan.</Field.HelperText> : null}
+												{!reviewAvailable ? (
+													<PlanLimitNotice
+														message={`Sending review rounds needs the ${reviewUpgrade?.tier ? PLAN_CATALOG[reviewUpgrade.tier].name : "Business"} plan.`}
+														upgrade={reviewUpgrade}
+													/>
+												) : null}
 											</Field.Root>
 										</>
 									)}
@@ -253,7 +264,17 @@ function GrantDialog({
 												placeholder="Choose an account"
 											/>
 											<Field.HelperText>
-												Proposed posts for this rule go into the account's next free slot. TikTok can't be chosen: it needs the creator's choices on every post.
+												{accounts.length === 0 ? (
+													<>
+														No connected account can hold a grant yet.{" "}
+														<Link href="/settings/social-accounts">
+															<Text as="span" color="fg.accent" textDecoration="underline" textUnderlineOffset="3px">Connect an account</Text>
+														</Link>
+														{" "}first. TikTok can't hold one: it needs the creator's choices on every post.
+													</>
+												) : (
+													"Proposed posts for this rule go into the account's next free slot. TikTok can't be chosen: it needs the creator's choices on every post."
+												)}
 											</Field.HelperText>
 										</Field.Root>
 									) : null}
@@ -314,6 +335,9 @@ export function GrantsPanel({
 	accounts,
 	canManage,
 	reviewAvailable,
+	autopilotUpgrade = null,
+	reviewUpgrade = null,
+	access,
 	initialRuleId,
 }: {
 	grants: StandingGrantView[];
@@ -321,6 +345,12 @@ export function GrantsPanel({
 	accounts: GrantAccountOption[];
 	canManage: boolean;
 	reviewAvailable: boolean;
+	/** Set when the plan lacks Autopilot: grants then need an upgrade, not a disabled button. */
+	autopilotUpgrade?: UpgradePrompt | null;
+	/** The plan that adds review rounds, when this one lacks them. */
+	reviewUpgrade?: UpgradePrompt | null;
+	/** Who is looking, so a billing hold reads as billing rather than a role. */
+	access?: WorkspaceAccess;
 	initialRuleId: string | null;
 }) {
 	const router = useRouter();
@@ -348,21 +378,39 @@ export function GrantsPanel({
 		if (confirmed) run(() => revokeStandingGrantAction(grant.id), "The grant could not be revoked.");
 	}
 
-	const createButton = canManage ? (
-		<Button size="sm" onClick={() => setEditing({ grant: null })} disabled={rules.length === 0}>
+	// Never a dead button: a plan without Autopilot offers the upgrade, and a
+	// plan with Autopilot but no rules points to where rules are made.
+	const createButton = !canManage ? null : autopilotUpgrade?.tier ? (
+		<LockedButton size="sm" prompt={autopilotUpgrade}>
+			<Plus size={16} />
+			New grant
+		</LockedButton>
+	) : rules.length === 0 ? (
+		<Button size="sm" asChild>
+			<Link href="/autopilot">
+				<Plus size={16} />
+				Create a rule
+			</Link>
+		</Button>
+	) : (
+		<Button size="sm" onClick={() => setEditing({ grant: null })}>
 			<Plus size={16} />
 			New grant
 		</Button>
-	) : null;
+	);
 
 	return (
 		<Stack gap="4">
 			<Flex justify="space-between" align="center" gap="4" wrap="wrap">
-				<Text fontSize="13px" color="fg.muted" maxW="640px">
-					{canManage
-						? "Only Owners and Admins can grant, renew, pause or revoke. A grant never overrides a Brand Profile that requires approval."
-						: "Only Owners and Admins can grant, renew, pause or revoke. You can see what is granted and what went out."}
-				</Text>
+				{!canManage && access && access.status !== "active" && access.role !== "editor" && access.role !== "viewer" ? (
+					<AccessNote access={access} capability="workspace.manage" action="manage grants" maxW="640px" />
+				) : (
+					<Text fontSize="13px" color="fg.muted" maxW="640px">
+						{canManage
+							? "Only Owners and Admins can grant, renew, pause or revoke. A grant never overrides a Brand Profile that requires approval."
+							: "Only Owners and Admins can grant, renew, pause or revoke. You can see what is granted and what went out."}
+					</Text>
+				)}
 				{createButton}
 			</Flex>
 
@@ -371,7 +419,9 @@ export function GrantsPanel({
 					icon={<ShieldCheck />}
 					title="No automation grants"
 					description={
-						rules.length === 0
+						autopilotUpgrade?.tier
+							? "Grants let an Autopilot rule publish without a click. Autopilot needs the Pro plan."
+							: rules.length === 0
 							? "Grants belong to an Autopilot rule. Create a rule first."
 							: "Without a grant, every post and every review round waits for a person's click."
 					}
@@ -449,6 +499,7 @@ export function GrantsPanel({
 					rules={rules}
 					accounts={accounts}
 					reviewAvailable={reviewAvailable}
+					reviewUpgrade={reviewUpgrade}
 					initialRuleId={initialRuleId}
 					onClose={() => setEditing(null)}
 				/>

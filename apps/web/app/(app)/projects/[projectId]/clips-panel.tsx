@@ -20,6 +20,7 @@ import {
 } from "@chakra-ui/react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
+import { LockedButton } from "../../_components/upgrade";
 import { Select } from "@narriflow/ui/components/select";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
@@ -102,6 +103,7 @@ export function ClipsPanel({
 	sourceVideoUrl,
 	actionAvailability,
 	upgradePrompts,
+	canEdit,
 }: {
 	clips: ClipSnapshot[];
 	projectId: string;
@@ -124,6 +126,8 @@ export function ClipsPanel({
 	defaultAspectRatio: ClipAspectRatio;
 	actionAvailability: CampaignActionAvailability;
 	upgradePrompts: CampaignUpgradePrompts;
+	/** Role and workspace status allow changes; otherwise selection and batch actions are hidden. */
+	canEdit: boolean;
 }) {
 	const [categoryFilter, setCategoryFilter] = useState("all");
 	const [durationFilter, setDurationFilter] = useState("all");
@@ -333,6 +337,7 @@ export function ClipsPanel({
 						selected={false}
 						onToggleSelect={() => {}}
 						sourceVideoUrl={sourceVideoUrl}
+						canEdit={canEdit}
 					/>
 				</Box>
 			</Box>
@@ -463,6 +468,7 @@ export function ClipsPanel({
 
 					{/* Selection is project-scoped and the command bar owns the view's
               one solid, state-aware campaign action. */}
+					{canEdit ? (
 					<Flex align="center" gap="2" flexShrink={0}>
 						<Checkbox
 							checked={allVisibleSelected}
@@ -475,22 +481,26 @@ export function ClipsPanel({
 									: "Select all"}
 							</Text>
 						</Checkbox>
-						{selectedIds.size > 0 && (
-							<Button
-								size="sm"
-								variant="subtle"
-								disabled={!publishing.config.canPublish}
-								onClick={() =>
-									publishing.compose(
-										sortedClips
-											.filter((clip) => selectedIds.has(clip.id))
-											.map((clip) => clip.id),
-									)
-								}
-							>
-								Publish selected
-							</Button>
-						)}
+						{selectedIds.size > 0 &&
+							(publishing.config.publishingUpgrade ? (
+								<LockedButton size="sm" variant="subtle" prompt={publishing.config.publishingUpgrade}>
+									Publish selected
+								</LockedButton>
+							) : (
+								<Button
+									size="sm"
+									variant="subtle"
+									onClick={() =>
+										publishing.compose(
+											sortedClips
+												.filter((clip) => selectedIds.has(clip.id))
+												.map((clip) => clip.id),
+										)
+									}
+								>
+									Publish selected
+								</Button>
+							))}
 						<CampaignCommandBar
 							projectId={projectId}
 							state={campaignState}
@@ -501,6 +511,7 @@ export function ClipsPanel({
 							onClear={clearSelection}
 						/>
 					</Flex>
+					) : null}
 				</Flex>
 
 				{filteredClips.length === 0 ? (
@@ -602,9 +613,10 @@ export function ClipsPanel({
 										projectId={projectId}
 										rank={ranks.get(clip.id) ?? null}
 										compact={false}
-										selected={selectedIds.has(clip.id)}
+										selected={canEdit && selectedIds.has(clip.id)}
 										onToggleSelect={toggleSelect}
 										sourceVideoUrl={sourceVideoUrl}
+										canEdit={canEdit}
 									/>
 								</Box>
 							))}

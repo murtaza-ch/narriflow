@@ -4,9 +4,12 @@ import { useState } from "react";
 import Link from "next/link";
 import { Box, Dialog, Flex, Heading, Portal, SimpleGrid, Stack, Text, Tooltip } from "@chakra-ui/react";
 import { ArrowUpRight, Clapperboard, X } from "lucide-react";
+import { PLAN_CATALOG } from "@narriflow/validators";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import type { ProjectListItem } from "@narriflow/services";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
+import { UpgradeGem, useUpgrade } from "../_components/upgrade";
 
 import { ToolArtwork, tiltScene, resetScene } from "./hero-experience";
 import styles from "./hero-experience.module.css";
@@ -24,21 +27,29 @@ const tools = [
     title: "Repurpose",
     description: "Create posts and summaries",
     tab: "repurpose",
+    feature: "content.repurposing",
+    headline: "Upgrade to repurpose your videos",
   },
   {
     art: "dubbing",
     title: "Dubbing",
     description: "Translate voice and captions",
     tab: "dubbing",
+    feature: "dubbing",
+    headline: "Upgrade to dub your videos",
   },
 ] as const;
 
 export function CreationTools({ items }: { items: ProjectListItem[] }) {
   const [selected, setSelected] = useState<"repurpose" | "dubbing" | null>(null);
+  const { currentTier, openUpgrade } = useUpgrade();
   return (
     <>
       <SimpleGrid as="section" aria-label="Creation tools" columns={{ base: 2, xl: 4 }} gap="3">
         {tools.map((tool) => {
+          // A tool the plan lacks opens the upgrade instead of a project picker
+          // that would only lead to a locked panel.
+          const upgrade = "feature" in tool ? featureUpgradePrompt(currentTier, tool.feature, tool.headline) : null;
           const content = (
             <>
               <ToolArtwork kind={tool.art} />
@@ -47,9 +58,13 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
                   {tool.title}
                 </Heading>
               </Stack>
-              <Box color="fg.subtle" display={{ base: "none", md: "block" }}>
-                <ArrowUpRight size={14} />
-              </Box>
+              {upgrade?.tier ? (
+                <UpgradeGem label={`Needs ${PLAN_CATALOG[upgrade.tier].name}`} />
+              ) : (
+                <Box color="fg.subtle" display={{ base: "none", md: "block" }}>
+                  <ArrowUpRight size={14} />
+                </Box>
+              )}
             </>
           );
           const cardProps = {
@@ -80,7 +95,8 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
                     {...cardProps}
                     as="button"
                     cursor="pointer"
-                    onClick={() => setSelected(tool.tab)}
+                    aria-haspopup="dialog"
+                    onClick={() => (upgrade?.tier ? openUpgrade(upgrade) : setSelected(tool.tab))}
                   >
                     {content}
                   </Flex>

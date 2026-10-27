@@ -11,6 +11,9 @@ import { userErrorMessage } from "@narriflow/validators";
 import { retryIngestFormAction } from "../../projects/actions";
 import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
 import { ingestRecoveryLabel } from "@/lib/project-state";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { useUpgrade } from "../../_components/upgrade";
+import { quotaRefusalRecovery } from "../_lib/quota-refusal";
 
 type RetryState = { ok: boolean; error: string | null };
 const initialState: RetryState = { ok: true, error: null };
@@ -43,6 +46,9 @@ export function RetryImportBand({
   saveDraftError: string | null;
 }) {
   const router = useRouter();
+  const { currentTier } = useUpgrade();
+  // A credits or length refusal reads true for this plan and says whether a higher one helps.
+  const quota = quotaRefusalRecovery(currentTier, errorCode);
   const [state, formAction, isPending] = useActionState<RetryState, FormData>(
     async (_previous, formData) => {
       const result = await retryIngestFormAction(formData);
@@ -76,9 +82,10 @@ export function RetryImportBand({
             <AlertTriangle size={14} strokeWidth={2} />
           </Box>
           <Text fontSize="13px" color="danger.fg" fontWeight="500">
-            {userErrorMessage(errorCode) ?? "This import failed."}
+            {quota?.message ?? userErrorMessage(errorCode) ?? "This import failed."}
           </Text>
         </Flex>
+        {quota?.higherPlanNote ? <PlanLimitNotice message={quota.higherPlanNote} actionLabel="See plans" /> : null}
         <form action={formAction}>
           <input type="hidden" name="projectId" value={projectId} />
           <Flex align="center" gap="3" wrap="wrap">

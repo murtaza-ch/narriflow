@@ -38,6 +38,7 @@ export interface UploadUsageSummary {
   remainingCredits: number;
   limitCredits: number;
   maxUploadSeconds: number;
+  renewsAt: Date | string;
 }
 
 interface LinkImportFlowProps {

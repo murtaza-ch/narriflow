@@ -92,6 +92,8 @@ export function ExportDeliveryClient({
 	initialSeq,
 	timelineRequirement,
 	timelineUpgrade,
+	canEdit,
+	publishingUpgrade,
 }: {
 	initialExport: ClipExportSnapshot;
 	initialSeq: number;
@@ -99,6 +101,10 @@ export function ExportDeliveryClient({
 	timelineRequirement: string | null;
 	/** The plan that unlocks timelines; `null` when the plan already allows them. */
 	timelineUpgrade: UpgradePrompt | null;
+	/** Role and workspace status allow links, retries and publishing; downloads stay open to every member. */
+	canEdit: boolean;
+	/** What unlocks publishing; `null` when the plan already publishes. */
+	publishingUpgrade: UpgradePrompt | null;
 }) {
 	const { openUpgrade } = useUpgrade();
 	const [data, setData] = useState(initialExport);
@@ -572,27 +578,37 @@ export function ExportDeliveryClient({
 								</Button>
 							))}
 						</Flex>
-						<Button
-							variant="subtle"
-							size="md"
-							w="full"
-							disabled={!hasReady || action === "share"}
-							onClick={() => void createShareLink()}
-						>
-							{action === "share" ? (
-								<Spinner size="xs" />
-							) : (
-								<Link2 size={16} />
-							)}
-							Create 7-day private link
-						</Button>
-						<Button asChild variant="subtle" size="md" w="full" disabled={!hasReady}>
-							<Link
-								href={`/projects/${data.projectId}?publishClip=${data.clipId}&publishExport=${data.id}`}
-							>
-								<ExternalLink size={16} /> Publish to social
-							</Link>
-						</Button>
+						{canEdit ? (
+							<>
+								<Button
+									variant="subtle"
+									size="md"
+									w="full"
+									disabled={!hasReady || action === "share"}
+									onClick={() => void createShareLink()}
+								>
+									{action === "share" ? (
+										<Spinner size="xs" />
+									) : (
+										<Link2 size={16} />
+									)}
+									Create 7-day private link
+								</Button>
+								{publishingUpgrade ? (
+									<LockedButton variant="subtle" size="md" w="full" prompt={publishingUpgrade}>
+										<ExternalLink size={16} /> Publish to social
+									</LockedButton>
+								) : (
+									<Button asChild variant="subtle" size="md" w="full" disabled={!hasReady}>
+										<Link
+											href={`/projects/${data.projectId}?publishClip=${data.clipId}&publishExport=${data.id}`}
+										>
+											<ExternalLink size={16} /> Publish to social
+										</Link>
+									</Button>
+								)}
+							</>
+						) : null}
 						<Stack gap="2" mt="2">
 							<Text textStyle="eyebrow" color="fg.muted">
 								Edit in your own editor
@@ -652,7 +668,7 @@ export function ExportDeliveryClient({
 								</Flex>
 							) : null}
 						</Stack>
-						{hasFailed ? (
+						{hasFailed && canEdit ? (
 							<Button
 								variant="subtle"
 								size="md"
@@ -688,14 +704,16 @@ export function ExportDeliveryClient({
 									>
 										<Copy size={14} /> Copy again
 									</Button>
-									<Button
-										size="sm"
-										variant="ghost"
-										disabled={action === "revoke"}
-										onClick={() => void revokeLinks()}
-									>
-										Revoke all
-									</Button>
+									{canEdit ? (
+										<Button
+											size="sm"
+											variant="ghost"
+											disabled={action === "revoke"}
+											onClick={() => void revokeLinks()}
+										>
+											Revoke all
+										</Button>
+									) : null}
 								</Flex>
 							</Box>
 						) : null}

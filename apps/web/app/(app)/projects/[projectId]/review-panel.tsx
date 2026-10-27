@@ -340,7 +340,12 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
         title="Review history"
         description="Quick shares start from the project header. Come here to send another round with a passcode or expiry, and to read every comment."
         // While the empty-state explainer shows, its button is the one entry point.
-        actions={canManage && (data.rounds.length > 0 || creating) ? <Button size="sm" colorPalette="brand" variant={creating ? "subtle" : "solid"} onClick={startRound} disabled={creating || data.candidates.length === 0}>
+        actions={canManage && (data.rounds.length > 0 || creating) ? reviewUpgrade && !creating ? (
+          // The plan is the first thing in the way, so say so before the form is filled in.
+          <LockedButton size="sm" prompt={reviewUpgrade}>
+            <Send size={14} /> New round
+          </LockedButton>
+        ) : <Button size="sm" colorPalette="brand" variant={creating ? "subtle" : "solid"} onClick={startRound} disabled={creating || data.candidates.length === 0}>
           <Send size={14} /> New round
         </Button> : null}
       />
@@ -439,10 +444,16 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
               ))}
             </Flex>
             <Flex align="center" gap="3" wrap="wrap">
-              <Button size="sm" onClick={startRound} disabled={data.candidates.length === 0}>
-                <Send size={14} /> Start a review round
-              </Button>
-              {data.candidates.length === 0 ? (
+              {reviewUpgrade ? (
+                <LockedButton size="sm" prompt={reviewUpgrade}>
+                  <Send size={14} /> Start a review round
+                </LockedButton>
+              ) : (
+                <Button size="sm" onClick={startRound} disabled={data.candidates.length === 0}>
+                  <Send size={14} /> Start a review round
+                </Button>
+              )}
+              {!reviewUpgrade && data.candidates.length === 0 ? (
                 <Text fontSize="12px" color="fg.subtle">Export a clip first. Rounds share finished exports.</Text>
               ) : null}
             </Flex>

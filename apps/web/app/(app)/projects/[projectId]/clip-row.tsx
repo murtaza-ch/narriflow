@@ -36,6 +36,7 @@ import {
 	loadClipPreview,
 } from "@/lib/clip-media";
 import { ClipActionsMenu } from "./clip-actions-menu";
+import { LockedButton } from "../../_components/upgrade";
 
 /** Width/height of the tallest preview format — the media stage's shape. */
 const PREVIEW_STAGE_RATIO = Math.min(
@@ -291,6 +292,8 @@ export interface ClipRowProps {
 	/** Presigned source video for the Trim/Extend preview pane; null once the
 	 *  source is purged (the dialog degrades to transcript-only). */
 	sourceVideoUrl: string | null;
+	/** Role and workspace status allow changes; otherwise the row only views and downloads. */
+	canEdit: boolean;
 }
 
 export function ClipRow({
@@ -300,6 +303,7 @@ export function ClipRow({
 	selected,
 	onToggleSelect,
 	sourceVideoUrl,
+	canEdit,
 }: ClipRowProps) {
 	const publishing = usePublishing();
 	const clipPosts = publishing.posts.filter((post) => post.clipId === clip.id);
@@ -557,7 +561,7 @@ export function ClipRow({
 	// Gallery cards pin selection and score to the card's top corners, either
 	// side of the centred preview. Desk rows put the preview at the card's
 	// left edge, so there they ride on the footage instead.
-	const selectBox = !isCaptionOnly && (
+	const selectBox = !isCaptionOnly && canEdit && (
 		<Box
 			position="absolute"
 			top={isGallery ? "4" : "2"}
@@ -814,12 +818,14 @@ export function ClipRow({
                   Offered on the caption-only row too: it is a real clip with a
                   real title and a real rendered file, so it renames, duplicates
                   and deletes exactly like any other. */}
-						<ClipActionsMenu
-							projectId={clip.projectId}
-							clipId={clip.id}
-							title={clip.title}
-							fallbackTitle={isCaptionOnly ? "Captioned video" : clip.hookText}
-						/>
+						{canEdit ? (
+							<ClipActionsMenu
+								projectId={clip.projectId}
+								clipId={clip.id}
+								title={clip.title}
+								fallbackTitle={isCaptionOnly ? "Captioned video" : clip.hookText}
+							/>
+						) : null}
 					</Flex>
 
 					{(!isCaptionOnly || clip.transcriptSlice.length > 0) && (
@@ -971,13 +977,15 @@ export function ClipRow({
               Trim/Extend closes the row as an icon. */}
 					<Stack gap="2" pt="4" mt="auto" data-clip-actions>
 						<Flex gap="2" align="center">
-							<Button
-								size="sm"
-								disabled={!publishing.config.canPublish}
-								onClick={() => publishing.compose([clip.id])}
-							>
-								Publish
-							</Button>
+							{!canEdit ? null : publishing.config.publishingUpgrade ? (
+								<LockedButton size="sm" prompt={publishing.config.publishingUpgrade}>
+									Publish
+								</LockedButton>
+							) : (
+								<Button size="sm" onClick={() => publishing.compose([clip.id])}>
+									Publish
+								</Button>
+							)}
 							<Button size="sm" variant="subtle" asChild>
 								<Link href={studioHref}>
 									<Pencil size={16} />
@@ -998,7 +1006,7 @@ export function ClipRow({
 										Download
 									</a>
 								</Button>
-							) : (
+							) : !canEdit ? null : (
 								<Button
 									size="sm"
 									variant="subtle"
@@ -1009,16 +1017,18 @@ export function ClipRow({
 									{selectedStatus === "failed" ? "Retry render" : "Render"}
 								</Button>
 							)}
-							<IconButton
-								size="sm"
-								variant="ghost"
-								ms="auto"
-								aria-label="Trim or extend clip"
-								title="Trim / Extend"
-								onClick={() => setEditingBoundaries(true)}
-							>
-								<Scissors size={16} />
-							</IconButton>
+							{canEdit ? (
+								<IconButton
+									size="sm"
+									variant="ghost"
+									ms="auto"
+									aria-label="Trim or extend clip"
+									title="Trim / Extend"
+									onClick={() => setEditingBoundaries(true)}
+								>
+									<Scissors size={16} />
+								</IconButton>
+							) : null}
 						</Flex>
 						{clipPosts.length > 0 && (
 							<Flex align="center" gap="2" minW="0">

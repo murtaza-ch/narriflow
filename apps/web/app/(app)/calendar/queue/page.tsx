@@ -5,7 +5,9 @@ import { publishingQueue, socialOAuthService, workspaceService } from "@narriflo
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PageHeader } from "@narriflow/ui/components/page-header";
+import { workspaceAllowsCapability } from "@narriflow/validators";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { PostingScheduleEditor } from "./posting-schedule-editor";
 import { ProposalsInbox } from "./proposals-inbox";
 
@@ -25,7 +27,11 @@ export default async function PublishingQueuePage() {
 		workspaceService.getWorkspace(appUser.actorUserId, appUser.workspaceId),
 	]);
 	const timeZone = workspace?.timezone ?? "UTC";
-	const canManage = appUser.workspace.status === "active" && appUser.workspace.role !== "viewer";
+	const canManage = workspaceAllowsCapability(appUser.workspace, "publishing.manage");
+	// Owners and Admins connect accounts; everyone else is told whom to ask.
+	const canConnect = workspaceAllowsCapability(appUser.workspace, "social.manage");
+	// Posting slots and accepting into them need scheduling, which starts on Creator.
+	const scheduleUpgrade = featureUpgradePrompt(appUser.workspace.pricingTier, "publishing.schedule", "Upgrade to schedule posts");
 
 	return (
 		<Stack gap="8">
@@ -43,23 +49,29 @@ export default async function PublishingQueuePage() {
 			/>
 			<section>
 				<SectionTitle>Proposed posts</SectionTitle>
-				<ProposalsInbox proposals={proposals} timeZone={timeZone} canManage={canManage} />
+				<ProposalsInbox proposals={proposals} timeZone={timeZone} canManage={canManage} scheduleUpgrade={scheduleUpgrade} />
 			</section>
-			<section>
+			<section id="posting-schedule">
 				<SectionTitle>Posting schedule</SectionTitle>
 				{accounts.length === 0 ? (
 					<EmptyState
 						icon={<CalendarDays />}
 						title="No connected accounts"
-						description="Connect a social account in Settings, then give it weekly posting slots."
+						description={
+							canConnect
+								? "Connect a social account, then give it weekly posting slots."
+								: "Ask a workspace owner or admin to connect a social account."
+						}
 						action={
-							<Button asChild>
-								<Link href="/settings/social-accounts">Connect an account</Link>
-							</Button>
+							canConnect ? (
+								<Button asChild>
+									<Link href="/settings/social-accounts">Connect an account</Link>
+								</Button>
+							) : undefined
 						}
 					/>
 				) : (
-					<PostingScheduleEditor accounts={accounts} timeZone={timeZone} canManage={canManage} />
+					<PostingScheduleEditor accounts={accounts} timeZone={timeZone} canManage={canManage} scheduleUpgrade={scheduleUpgrade} />
 				)}
 			</section>
 		</Stack>

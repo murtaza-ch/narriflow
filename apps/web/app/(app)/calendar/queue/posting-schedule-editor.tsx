@@ -5,6 +5,7 @@ import { useState, useTransition } from "react";
 import { Box, Flex, IconButton, Stack, Text } from "@chakra-ui/react";
 import { Plus, X } from "lucide-react";
 import {
+	PLAN_CATALOG,
 	POSTING_SCHEDULE_MAX_SLOTS,
 	POSTING_WEEKDAYS,
 	sortedPostingSchedule,
@@ -16,6 +17,8 @@ import { Button } from "@narriflow/ui/components/button";
 import { TimePicker } from "@narriflow/ui/components/time-picker";
 import { SocialPlatformMark } from "@/lib/social-platform-mark";
 import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
 import { savePostingScheduleAction } from "./actions";
 
 const WEEKDAY_LABELS: Record<PostingWeekday, string> = {
@@ -34,7 +37,7 @@ function twelveHour(time: string) {
 	return `${hour % 12 === 0 ? 12 : hour % 12}:${minutes} ${hour < 12 ? "AM" : "PM"}`;
 }
 
-function AccountSchedule({ account, canManage }: { account: SocialAccountSnapshot; canManage: boolean }) {
+function AccountSchedule({ account, canManage, scheduleUpgrade }: { account: SocialAccountSnapshot; canManage: boolean; scheduleUpgrade: UpgradePrompt | null }) {
 	const router = useRouter();
 	const [pending, startTransition] = useTransition();
 	const [slots, setSlots] = useState(account.postingSchedule?.slots ?? []);
@@ -124,9 +127,16 @@ function AccountSchedule({ account, canManage }: { account: SocialAccountSnapsho
 			</Stack>
 			{canManage ? (
 				<Flex align="center" gap="2" wrap="wrap">
-					<Button size="sm" disabled={!dirty || pending} onClick={() => save(slots.length > 0 ? { slots } : null)}>
-						Save schedule
-					</Button>
+					{/* Clearing slots works on any plan; saving new ones offers the upgrade. */}
+					{scheduleUpgrade?.tier && slots.length > 0 ? (
+						<LockedButton size="sm" disabled={!dirty} prompt={scheduleUpgrade}>
+							Save schedule
+						</LockedButton>
+					) : (
+						<Button size="sm" disabled={!dirty || pending} onClick={() => save(slots.length > 0 ? { slots } : null)}>
+							Save schedule
+						</Button>
+					)}
 					{dirty ? (
 						<Button size="sm" variant="ghost" disabled={pending} onClick={() => setSlots(account.postingSchedule?.slots ?? [])}>
 							Discard changes
@@ -139,14 +149,28 @@ function AccountSchedule({ account, canManage }: { account: SocialAccountSnapsho
 	);
 }
 
-export function PostingScheduleEditor({ accounts, timeZone, canManage }: { accounts: SocialAccountSnapshot[]; timeZone: string; canManage: boolean }) {
+export function PostingScheduleEditor({
+	accounts,
+	timeZone,
+	canManage,
+	scheduleUpgrade = null,
+}: {
+	accounts: SocialAccountSnapshot[];
+	timeZone: string;
+	canManage: boolean;
+	/** Set when the plan can't schedule: saving slots then offers the upgrade. */
+	scheduleUpgrade?: UpgradePrompt | null;
+}) {
 	return (
 		<Stack gap="3">
 			<Text fontSize="13px" color="fg.muted">
 				Slots are in your Workspace time zone ({timeZone}). An accepted post takes the account&apos;s next free slot.
 			</Text>
+			{canManage && scheduleUpgrade?.tier ? (
+				<PlanLimitNotice message={`Posting slots need the ${PLAN_CATALOG[scheduleUpgrade.tier].name} plan.`} upgrade={scheduleUpgrade} />
+			) : null}
 			{accounts.map((account) => (
-				<AccountSchedule key={`${account.id}:${JSON.stringify(account.postingSchedule)}`} account={account} canManage={canManage} />
+				<AccountSchedule key={`${account.id}:${JSON.stringify(account.postingSchedule)}`} account={account} canManage={canManage} scheduleUpgrade={scheduleUpgrade} />
 			))}
 		</Stack>
 	);

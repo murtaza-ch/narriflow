@@ -58,6 +58,9 @@ import {
   uploadLengthUpgradePrompt,
 } from "@/lib/authenticated-request-browser";
 
+/** Credits renew at midnight UTC, so the date is read in UTC. */
+const RENEWAL_DATE = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
 /** Failure notice: Labeled danger panel with an icon. */
 function ErrorNotice({ message }: { message: string }) {
   return (
@@ -89,6 +92,8 @@ interface UsageSummary {
   remainingCredits: number;
   limitCredits: number;
   maxUploadSeconds: number;
+  /** When this month's credits renew. */
+  renewsAt: Date | string;
 }
 
 export interface CommitStepResult {
@@ -261,7 +266,10 @@ export function CommitStep({
         usageSummary.maxUploadSeconds / 60,
       )}-min per-upload limit on your plan.${planLimitUpgrade ? "" : " Choose a shorter video."}`
     : wouldExceedMonthly
-      ? `This video needs ${estimatedCredits} credits, but your workspace has ${creditsLeft} of ${usageSummary.limitCredits} left this month.`
+      ? `This video needs ${estimatedCredits} credits, but your workspace has ${creditsLeft} of ${usageSummary.limitCredits} left this month.${
+          // No plan holds more: the next step is the renewal date.
+          planLimitUpgrade ? "" : ` Credits renew ${RENEWAL_DATE.format(new Date(usageSummary.renewsAt))}.`
+        }`
       : null;
 
   async function handleCommit() {

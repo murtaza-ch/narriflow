@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { Box, Flex, NativeSelect, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, Check, LayoutTemplate, Palette, Sparkles } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
@@ -543,10 +544,7 @@ export function CampaignEditorActionPreview({
             ) : null}
           </Flex>
         ) : (
-          <Flex p="3" gap="2" borderStartWidth="3px" borderStartColor="warning.solid" bg="warning.subtle">
-            <AlertTriangle size={14} />
-            <Text fontSize="xs">Choose a Project Brand Profile before using this action.</Text>
-          </Flex>
+          <BrandKitPrerequisite>Choose a Project Brand Profile before using this action.</BrandKitPrerequisite>
         )
       ) : null}
 
@@ -581,10 +579,7 @@ export function CampaignEditorActionPreview({
               <ColorPair primary={selectedStyle.primaryColor} secondary={selectedStyle.secondaryColor} />
             </Flex>
           ) : (
-            <Flex p="3" gap="2" borderStartWidth="3px" borderStartColor="warning.solid" bg="warning.subtle">
-              <AlertTriangle size={14} />
-              <Text fontSize="xs">Add a style to the Project Brand Profile before using this action.</Text>
-            </Flex>
+            <BrandKitPrerequisite>Add a style to the Project Brand Profile before using this action.</BrandKitPrerequisite>
           )}
         </Stack>
       ) : null}
@@ -637,14 +632,11 @@ export function CampaignEditorActionPreview({
               </Text>
             </Flex>
           ) : (
-            <Flex p="3" gap="2" borderStartWidth="3px" borderStartColor="warning.solid" bg="warning.subtle">
-              <AlertTriangle size={14} />
-              <Text fontSize="xs">
-                {catalog?.profile
-                  ? `Add an ${placement === "start" ? "intro" : "outro"} Scene Template before using this action.`
-                  : "Choose a Project Brand Profile before using this action."}
-              </Text>
-            </Flex>
+            <BrandKitPrerequisite>
+              {catalog?.profile
+                ? `Add an ${placement === "start" ? "intro" : "outro"} Scene Template before using this action.`
+                : "Choose a Project Brand Profile before using this action."}
+            </BrandKitPrerequisite>
           )}
         </Stack>
       ) : null}
@@ -703,5 +695,18 @@ export function CampaignEditorActionPreview({
         </Button>
       )}
     </Stack>
+  );
+}
+
+/** A missing brand prerequisite, with the way to where it's made. */
+function BrandKitPrerequisite({ children }: { children: ReactNode }) {
+  return (
+    <Flex p="3" gap="2" align="center" borderStartWidth="3px" borderStartColor="warning.solid" bg="warning.subtle">
+      <AlertTriangle size={14} />
+      <Text fontSize="xs" flex="1">{children}</Text>
+      <Button size="xs" variant="ghost" asChild>
+        <Link href="/brand-kit">Open Brand Kit</Link>
+      </Button>
+    </Flex>
   );
 }

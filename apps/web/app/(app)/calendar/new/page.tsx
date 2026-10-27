@@ -48,7 +48,14 @@ export default async function NewCalendarPostPage({ searchParams }: { searchPara
 				<EmptyState
 					icon={<Film />}
 					title={params.q ? "No clips match your search" : "No clips to schedule yet"}
-					description={params.q ? undefined : "Create a project and a clip to schedule your first post."}
+					description={params.q ? undefined : "Import a video and generate clips to schedule your first post."}
+					action={
+						params.q ? undefined : (
+							<Button asChild>
+								<Link href="/upload">Import a video</Link>
+							</Button>
+						)
+					}
 				/>
 			)}
 			{(params.cursor || nextCursor) && <Flex gap="2">{params.cursor && <Button size="sm" variant="subtle" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}`}>Newest clips</Link></Button>}{nextCursor && <Button size="sm" variant="subtle" asChild><Link href={`/calendar/new?q=${encodeURIComponent(params.q ?? "")}&cursor=${encodeURIComponent(nextCursor)}`}>Next</Link></Button>}</Flex>}
