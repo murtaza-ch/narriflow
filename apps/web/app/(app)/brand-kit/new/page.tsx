@@ -1,7 +1,7 @@
-import { Box, Stack, Text } from "@chakra-ui/react";
+import { Box, Stack } from "@chakra-ui/react";
 import Link from "next/link";
-import { brandProfileService, isProgramWriteEnabled } from "@narriflow/services";
-import { hasFeature, planCountRequirement } from "@narriflow/validators";
+import { brandCountRequirement, brandProfileService } from "@narriflow/services";
+import { hasFeature, planUpgradeHighlight } from "@narriflow/validators";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
@@ -10,7 +10,6 @@ import { BrandProfileCreateForm } from "../_components/brand-profile-create-form
 
 export default async function NewBrandProfilePage() {
   const actor = await admitWorkspacePage("brand.manage");
-  const enabled = isProgramWriteEnabled("brand_profiles");
   const profiles = await brandProfileService.list({
     actorUserId: actor.actorUserId,
     workspaceId: actor.workspaceId,
@@ -20,7 +19,14 @@ export default async function NewBrandProfilePage() {
     pricingTier: actor.pricingTier,
     isPersonalWorkspace: actor.isPersonalWorkspace,
   });
-  const requirement = planCountRequirement(actor.pricingTier, "brandProfiles", profiles.length)?.message ?? null;
+  const requirement = brandCountRequirement(actor, "brand.profiles", "brandProfiles", profiles.length);
+  const upgrade = requirement?.requiredTier
+    ? {
+        tier: requirement.requiredTier,
+        headline: "Upgrade to build a Brand Profile",
+        highlight: planUpgradeHighlight(requirement.requiredTier, "brandProfiles"),
+      }
+    : null;
   return (
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
@@ -31,12 +37,8 @@ export default async function NewBrandProfilePage() {
         />
       </Box>
       {requirement ? (
-        <PlanLimitNotice message={requirement} actionLabel="See plans." canManageBilling={actor.role === "owner"} />
-      ) : enabled ? <BrandProfileCreateForm governanceAvailable={hasFeature(actor.pricingTier, "brand.governance")} /> : (
-        <Box bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="7">
-          <Text fontSize="14px">Brand Profile creation is paused. Existing profiles and projects remain readable.</Text>
-        </Box>
-      )}
+        <PlanLimitNotice message={requirement.message} upgrade={upgrade} canManageBilling={actor.role === "owner"} />
+      ) : <BrandProfileCreateForm governanceAvailable={hasFeature(actor.pricingTier, "brand.governance")} />}
     </Stack>
   );
 }

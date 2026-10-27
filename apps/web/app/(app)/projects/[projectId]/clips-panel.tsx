@@ -26,7 +26,10 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Filter, LayoutGrid, PanelsTopLeft } from "lucide-react";
 import { computeClipRanks } from "@/lib/project-state";
 import { ClipRow } from "./clip-row";
-import { CampaignCommandBar } from "./campaign-command-bar";
+import {
+	CampaignCommandBar,
+	type CampaignUpgradePrompts,
+} from "./campaign-command-bar";
 import {
 	deriveCampaignCommandState,
 	type CampaignActionAvailability,
@@ -98,7 +101,7 @@ export function ClipsPanel({
 	defaultAspectRatio,
 	sourceVideoUrl,
 	actionAvailability,
-	campaignOperationsEnabled = false,
+	upgradePrompts,
 }: {
 	clips: ClipSnapshot[];
 	projectId: string;
@@ -120,7 +123,7 @@ export function ClipsPanel({
 	 *  this value (see the RenderClipsButton call below). */
 	defaultAspectRatio: ClipAspectRatio;
 	actionAvailability: CampaignActionAvailability;
-	campaignOperationsEnabled?: boolean;
+	upgradePrompts: CampaignUpgradePrompts;
 }) {
 	const [categoryFilter, setCategoryFilter] = useState("all");
 	const [durationFilter, setDurationFilter] = useState("all");
@@ -494,7 +497,7 @@ export function ClipsPanel({
 							defaultAspectRatio={defaultAspectRatio}
 							isFreeTier={isFreeTier}
 							can1080pExport={can1080pExport}
-							campaignOperationsEnabled={campaignOperationsEnabled}
+							upgradePrompts={upgradePrompts}
 							onClear={clearSelection}
 						/>
 					</Flex>

@@ -34,7 +34,7 @@ export async function analyzeClipAutoLayout(params: {
   const owner = new LayoutEvidence({
     source: { identity: sourceIdentity, hasVideo: original.hasVideo, width: original.width || 1, height: original.height || 1 },
     clip: { id: clip.id, startSec: clip.startSec, endSec: clip.endSec, deletedRanges: clip.deletedRanges, utterances: clip.transcriptSlice, editorRevision: clip.editorRevision, previewStorageKey: clip.previewStorageKey },
-    durable: {}, enabled: { automatic: config.layoutEngineEnabled, screen: false, split: false }, hasBroll: false, pipMotionThreshold: config.pipMotionThreshold, signal,
+    durable: {}, enabled: { automatic: true, screen: false, split: false }, hasBroll: false, pipMotionThreshold: config.pipMotionThreshold, signal,
     sceneSource: { path: params.originalSourcePath, startSec: clip.startSec },
     getSegment: async () => {
       const offset = clip.startSec - clip.previewStartSec;
@@ -65,7 +65,6 @@ export async function processPendingAutoLayoutAnalyses(options: {
   storage?: { presignDownloadUrl: typeof presignDownloadUrl; downloadObjectToFile: typeof downloadObjectToFile };
 } = {}): Promise<number> {
   const config = options.config ?? parseWorkerRenderConfig();
-  if (!config.autoLayoutAnalysisEnabled || !config.layoutEngineEnabled) return 0;
   const limit = options.limit ?? config.autoLayoutBatchSize;
   const signal = options.signal ?? new AbortController().signal;
   const workerProcess = options.workerProcess ?? productionWorkerProcessModule;

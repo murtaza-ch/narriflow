@@ -7,7 +7,6 @@ import { pauseGrantsOfGranter } from "./standing-grant";
 import {
   WorkspaceOperationError,
   workspaceService,
-  workspacesV1EnabledForUser,
 } from "./workspace.service";
 import { flushWorkspaceEvents } from "./workspace-event";
 
@@ -19,6 +18,15 @@ function requiredPrisma() {
 
 function isBillable(role: WorkspaceRole) {
   return role === "admin" || role === "editor";
+}
+
+async function lockWorkspaceMember(tx: Prisma.TransactionClient, workspaceId: string, memberId: string) {
+  // Read the role only after the previous change commits, so its seat delta
+  // cannot be applied twice by requests changing or removing the same member.
+  await tx.$queryRaw`
+    SELECT id FROM "WorkspaceMember"
+    WHERE id = ${memberId}::uuid AND "workspaceId" = ${workspaceId}::uuid
+    FOR UPDATE`;
 }
 
 const ROLE_RANK: Record<WorkspaceRole, number> = {
@@ -117,12 +125,6 @@ async function markMembershipChanged(
 
 export class WorkspaceMembershipService {
   async acceptInvite(userId: string, rawToken: string) {
-    if (!workspacesV1EnabledForUser(userId)) {
-      throw new WorkspaceOperationError(
-        "workspace_collaboration_disabled",
-        "Workspace collaboration is not enabled for this account",
-      );
-    }
     const prisma = requiredPrisma();
     const tokenHash = createHash("sha256").update(rawToken).digest("hex");
     const invite = await prisma.workspaceInvite.findUnique({
@@ -214,6 +216,7 @@ export class WorkspaceMembershipService {
     }
     const prisma = requiredPrisma();
     return prisma.$transaction(async (tx) => {
+      await lockWorkspaceMember(tx, workspaceId, memberId);
       const member = await tx.workspaceMember.findFirst({
         where: { id: memberId, workspaceId },
       });
@@ -257,6 +260,7 @@ export class WorkspaceMembershipService {
     const actor = await workspaceService.requireActor(actorUserId, workspaceId, "members.invite");
     const prisma = requiredPrisma();
     await prisma.$transaction(async (tx) => {
+      await lockWorkspaceMember(tx, workspaceId, memberId);
       const member = await tx.workspaceMember.findFirst({
         where: { id: memberId, workspaceId },
       });

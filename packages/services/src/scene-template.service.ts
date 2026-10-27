@@ -12,7 +12,6 @@ import {
 } from "@narriflow/validators";
 import { assertBrandManageAllowed, assertBrandMutationAllowedWithAnalytics, brandOwnerWhere, type BrandActorScope } from "./brand-ownership";
 import { requirePlanFeature } from "./plan-features";
-import { assertProgramWriteEnabled } from "./program-rollout";
 import { withSerializableTransaction } from "./serializable-transaction";
 import {
   ExpectedDomainFailureError,
@@ -93,7 +92,7 @@ export class SceneTemplateService {
   }
 
   async create(scope: BrandActorScope, profileId: string, value: unknown) {
-    assertProgramWriteEnabled("scene_templates");
+
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
     const input = sceneTemplateCreateSchema.parse(value);
     if (input.makeDefault && !defaultField(input.role)) throw new SceneTemplateError("scene_template_default_role_invalid", "Only intro and outro scenes can be defaults");
@@ -111,7 +110,7 @@ export class SceneTemplateService {
   }
 
   async update(scope: BrandActorScope, profileId: string, templateId: string, value: unknown) {
-    assertProgramWriteEnabled("scene_templates");
+
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
     const input = sceneTemplateUpdateSchema.parse(value);
     if (input.makeDefault) requirePlanFeature(scope.pricingTier, "brand.defaultScenes");
@@ -156,7 +155,7 @@ export class SceneTemplateService {
   }
 
   async softDelete(scope: BrandActorScope, profileId: string, templateId: string, value: unknown) {
-    assertProgramWriteEnabled("scene_templates");
+
     assertBrandManageAllowed(scope);
     const input = sceneTemplateDeleteSchema.parse(value);
     const current = await requirePrisma().sceneTemplate.findFirst({

@@ -6,6 +6,8 @@ import { hasFeature, lowestTierWithFeature, PLAN_CATALOG, resolvePricingTier } f
 import { Button } from "@narriflow/ui/components/button";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { docsUrl } from "@/lib/docs-url";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
+import { LockedButton } from "../../_components/upgrade";
 import { inspectMcpConfiguration } from "@/lib/mcp-configuration";
 import { AssistantSetup, PromptCards } from "./assistant-setup";
 
@@ -37,6 +39,7 @@ export default async function McpIntegrationPage() {
   const hasPlan = hasFeature(workspace.pricingTier, "integrations.mcp");
   const requiredPlan = PLAN_CATALOG[lowestTierWithFeature("integrations.mcp") ?? "business"].name;
   const currentPlan = PLAN_CATALOG[resolvePricingTier(workspace.pricingTier)].name;
+  const upgrade = featureUpgradePrompt(workspace.pricingTier, "integrations.mcp", "Upgrade to connect your AI assistant");
   const isEligible = hasPlan && workspace.status === "active";
   const canManageApi = workspaceAllowsCapability(workspace, "api.manage");
 
@@ -73,10 +76,16 @@ export default async function McpIntegrationPage() {
         <CircleAlert size={16} style={{ marginTop: 2, flexShrink: 0 }} />
         <Text fontSize="13px">{blocker}</Text>
       </Flex>
-      {!isEligible ? (
+      {!hasPlan ? (
+        upgrade && workspace.role === "owner" ? (
+          <LockedButton size="sm" variant="subtle" flexShrink={0} prompt={upgrade}>
+            Upgrade
+          </LockedButton>
+        ) : null
+      ) : !isEligible ? (
         <Button asChild size="sm" variant="subtle" flexShrink={0}>
           <Link href="/settings/billing">
-            {hasPlan ? "Open billing" : "View plans"}
+            Open billing
             <ArrowRight size={16} />
           </Link>
         </Button>

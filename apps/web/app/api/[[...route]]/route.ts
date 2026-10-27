@@ -177,6 +177,9 @@ app.route(
 		observeCheckoutReturn: (input) =>
 			billingService.observeCheckoutReturn(input),
 		openPortal: (input) => billingService.openPortal(input),
+		previewPlanChange: (input) => billingService.previewPlanChange(input),
+		confirmPlanChange: (input) => billingService.confirmPlanChange(input),
+		cancelScheduledPlanChange: (input) => billingService.cancelScheduledPlanChange(input),
 		readBillingState: (workspaceId) =>
 			billingService.readBillingState(workspaceId),
 		reconcileCurrentState: (workspaceId) =>

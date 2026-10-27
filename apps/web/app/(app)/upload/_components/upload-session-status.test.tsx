@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
 import { renderToStaticMarkup } from "react-dom/server";
+import { UpgradeProvider } from "../../_components/upgrade";
 import type { UploadSessionBrowserSnapshot } from "../_lib/upload-session-browser";
 import {
   focusUploadSessionStatusForPhase,
@@ -21,6 +22,7 @@ function snapshot(
     etaSeconds: 53,
     message: "Uploading bytes to secure storage.",
     failureCode: null,
+    upgrade: null,
     canPause: true,
     canResume: false,
     canDiscard: true,
@@ -139,5 +141,38 @@ describe("Upload Session React status", () => {
     expect(markup).toContain('role="alert"');
     expect(markup).toContain("Failed");
     expect(markup).toContain("Your saved session is unchanged.");
+  });
+
+  test("offers the plan that admits a refused upload to the owner and guidance to others", () => {
+    const refused = snapshot({
+      phase: "failed",
+      message: "This video needs 40 credits, but the workspace has 10 of 60 Free credits left this month.",
+      failureCode: "credits_exhausted",
+      upgrade: {
+        tier: "creator",
+        headline: "Upgrade to Creator for more credits",
+        highlight: "300 credits a month",
+      },
+      canPause: false,
+      canDiscard: false,
+    });
+    const member = render(<UploadSessionStatusPanel snapshot={refused} />);
+    expect(member).toContain("Creator includes 300 credits a month.");
+    expect(member).toContain("Ask the workspace owner to upgrade.");
+    expect(member).not.toContain("See Creator");
+
+    const owner = render(
+      <UpgradeProvider currentTier="free" billingMode="checkout" canManageBilling>
+        <UploadSessionStatusPanel snapshot={refused} />
+      </UpgradeProvider>,
+    );
+    expect(owner).toContain("See Creator");
+    expect(owner).not.toContain("Ask the workspace owner");
+
+    const nothingToBuy = render(
+      <UploadSessionStatusPanel snapshot={{ ...refused, upgrade: null }} />,
+    );
+    expect(nothingToBuy).not.toContain("Ask the workspace owner");
+    expect(nothingToBuy).not.toContain("See Creator");
   });
 });

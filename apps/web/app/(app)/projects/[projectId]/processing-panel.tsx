@@ -22,6 +22,7 @@ import {
   mergeStageWithLiveEvent,
 } from "@/lib/project-state";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import type { UpgradePrompt } from "../../_components/upgrade";
 import {
   queueTranscriptionFormAction,
   regenerateClipsFormAction,
@@ -177,6 +178,8 @@ export interface ProcessingPanelProps {
   mode: "clip" | "caption_only";
   workflowRunId: string | null;
   quotaBlockedMessage: string | null;
+  /** The plan that would clear the quota block; `null` when none does (the top plan). */
+  quotaUpgrade: UpgradePrompt | null;
   advancedSettingsProps: {
     sourceDurationSec: number | null;
     defaultProcessingStartSec: number | null;
@@ -340,7 +343,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
           borderRadius="l2"
           overflow="hidden"
         >
-          <PlanLimitNotice message={props.quotaBlockedMessage} />
+          <PlanLimitNotice message={props.quotaBlockedMessage} upgrade={props.quotaUpgrade} />
         </Box>
       )}
 

@@ -5,8 +5,11 @@ import { Check } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Meter } from "@narriflow/ui/components/meter";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import { PLAN_CATALOG } from "@narriflow/validators";
 import { formatDuration, formatTransferRate } from "@/lib/format";
 import type { RefObject } from "react";
+import type { UpgradePrompt } from "../../_components/upgrade";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import type { UploadSessionBrowserSnapshot } from "../_lib/upload-session-browser";
 
 type UploadStage = "prepare" | "upload" | "finalize";
@@ -16,6 +19,22 @@ const UPLOAD_STAGES: { id: UploadStage; label: string }[] = [
   { id: "upload", label: "Upload" },
   { id: "finalize", label: "Finalize" },
 ];
+
+/**
+ * What a refused intake offers: the plan that admits it, opened in the shared
+ * upgrade dialog by the owner, or whom to ask. It sends nothing, and the chosen
+ * source and any saved Upload Session stay exactly as they are.
+ */
+export function UploadRefusalUpgrade({ prompt }: { prompt: UpgradePrompt }) {
+  const plan = prompt.tier ? PLAN_CATALOG[prompt.tier] : null;
+  if (!plan) return null;
+  const offer = prompt.highlight
+    ? `${plan.name} includes ${prompt.highlight.charAt(0).toLowerCase()}${prompt.highlight.slice(1)}.`
+    : `${plan.name} lifts this limit.`;
+  return (
+    <PlanLimitNotice message={offer} upgrade={prompt} actionLabel={`See ${plan.name}`} />
+  );
+}
 
 export function focusUploadSessionStatusForPhase(
   phase: UploadSessionBrowserSnapshot["phase"],
@@ -168,6 +187,9 @@ export function UploadSessionStatusPanel({
         <Text fontSize="13px" color="fg.muted" lineHeight="1.5">
           {snapshot.message}
         </Text>
+        {snapshot.phase === "failed" && snapshot.upgrade && (
+          <UploadRefusalUpgrade prompt={snapshot.upgrade} />
+        )}
         {snapshot.phase === "paused" && (
           <Text fontSize="12px" color="fg.subtle">
             Your saved title, brand, language, and generation settings remain

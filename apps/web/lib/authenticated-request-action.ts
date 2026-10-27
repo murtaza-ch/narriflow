@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { WorkspaceCapability } from "@narriflow/validators";
+import { boundedExpectedDomainFailureDetails } from "@narriflow/services";
 import { hasUserErrorMessage, userErrorMessage } from "@narriflow/validators";
 import type { ZodType } from "zod";
 import {
@@ -81,9 +82,21 @@ export function authenticatedActionResultError(
       : null;
   const message = errorCode ? userErrorMessage(errorCode) : null;
   if (!errorCode || !hasUserErrorMessage(errorCode) || !message) throw error;
+  // Keep the safe structured details (plan requirement, credits, length) so the
+  // caller can open the upgrade dialog without losing its input.
+  const details = boundedExpectedDomainFailureDetails(
+    "details" in (error as object) ? (error as { details?: unknown }).details : undefined,
+  );
+  const retryAfterSeconds =
+    "retryAfterSeconds" in (error as object) &&
+    typeof (error as { retryAfterSeconds?: unknown }).retryAfterSeconds === "number"
+      ? (error as { retryAfterSeconds: number }).retryAfterSeconds
+      : undefined;
   return {
     message: message ?? fallback,
     errorCode,
+    ...(details ? { details } : {}),
+    ...(retryAfterSeconds ? { retryAfterSeconds } : {}),
   };
 }
 

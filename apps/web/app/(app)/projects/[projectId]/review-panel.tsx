@@ -28,6 +28,9 @@ import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PanelHeader } from "./panel-header";
 import { formatDateTime, formatDuration, formatTimecode } from "@/lib/format";
 import { restoreCampaignSelection } from "./campaign-selection";
+import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+import { LockedButton, useUpgrade } from "../../_components/upgrade";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 
 type Variant = { id: string; aspectRatio: string; durationSec: number | null };
 type CandidateExport = { id: string; editorRevision: number; createdAt: string; variants: Variant[] };
@@ -143,6 +146,8 @@ function parseRecipients(value: string) {
 
 export function ReviewPanel({ projectId, initialData, canManage, preselection = null }: { projectId: string; initialData: ReviewRoomData; canManage: boolean; preselection?: ReviewPreselection | null }) {
   const router = useRouter();
+  const { openUpgrade, currentTier } = useUpgrade();
+  const reviewUpgrade = featureUpgradePrompt(currentTier, "review.rooms", "Upgrade to share projects for client review");
   const [data, setData] = useState(initialData);
   const [activeRoundId, setActiveRoundId] = useState(initialData.rounds[0]?.id ?? null);
   // An assistant's review handoff opens the composer with its checked exports;
@@ -208,7 +213,11 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.message || "Review action could not be completed");
+      if (!response.ok) {
+        const prompt = upgradePromptFromFailure(payload);
+        if (prompt) openUpgrade(prompt);
+        throw new Error(payload.message || "Review action could not be completed");
+      }
       await refresh();
       router.refresh();
       return payload;
@@ -393,7 +402,16 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
               <Stack gap="1.5"><chakra.label htmlFor="review-recipients" fontSize="12px" fontWeight="650">Notification recipients</chakra.label><Textarea id="review-recipients" value={recipientText} rows={2} placeholder="client@example.com, producer@example.com" onChange={(event) => setRecipientText(event.target.value)} /><Text fontSize="12px" color="fg.subtle">{recipients.length === 0 ? "The private link will only be copied, not emailed." : `${recipients.length} recipient${recipients.length === 1 ? "" : "s"}`}</Text></Stack>
               <Flex gap="3" direction={{ base: "column", sm: "row" }}><Stack gap="1.5" flex="1"><chakra.label htmlFor="review-expiry" fontSize="12px" fontWeight="650">Expires</chakra.label><Input id="review-expiry" type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></Stack><Stack gap="1.5" flex="1"><chakra.label htmlFor="review-passcode" fontSize="12px" fontWeight="650">Passcode</chakra.label><Input id="review-passcode" type="password" minLength={6} maxLength={128} value={passcode} placeholder="Optional" onChange={(event) => setPasscode(event.target.value)} /></Stack></Flex>
               <Stack gap="2"><Checkbox checked={allowDownloads} onCheckedChange={setAllowDownloads}>Allow downloads</Checkbox><Checkbox checked={approvalRequired} onCheckedChange={setApprovalRequired}>Clips need approval before they publish</Checkbox><Text fontSize="12px" color="fg.subtle">{data.project.approvalRequiredByDefault ? "Your Brand Profile turns this on by default." : "Your Brand Profile leaves this off by default."} You can't change it after sending.</Text></Stack>
-              <Box pt="4"><Button w="full" colorPalette="brand" onClick={() => void createRound()} disabled={busy || Object.keys(selections).length === 0}>{busy ? <RefreshCw size={14} /> : <Send size={14} />}{busy ? " Sending…" : `Send round with ${Object.keys(selections).length} clip${Object.keys(selections).length === 1 ? "" : "s"}`}</Button><Text fontSize="12px" color="fg.subtle" mt="2">Sending locks these exact exports. Earlier feedback stays as it is.</Text></Box>
+              <Box pt="4">
+                {reviewUpgrade ? (
+                  <LockedButton w="full" prompt={reviewUpgrade} disabled={busy || Object.keys(selections).length === 0}>
+                    <Send size={14} /> Send round with {Object.keys(selections).length} clip{Object.keys(selections).length === 1 ? "" : "s"}
+                  </LockedButton>
+                ) : (
+                  <Button w="full" colorPalette="brand" onClick={() => void createRound()} disabled={busy || Object.keys(selections).length === 0}>{busy ? <RefreshCw size={14} /> : <Send size={14} />}{busy ? " Sending…" : `Send round with ${Object.keys(selections).length} clip${Object.keys(selections).length === 1 ? "" : "s"}`}</Button>
+                )}
+                <Text fontSize="12px" color="fg.subtle" mt="2">Sending locks these exact exports. Earlier feedback stays as it is.</Text>
+              </Box>
             </Stack>
           </Flex>
         </Box>

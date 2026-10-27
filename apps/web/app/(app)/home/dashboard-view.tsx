@@ -8,14 +8,15 @@ import { RetentionBanner } from "../projects/_components/retention-banner";
 import { CreationTools } from "./creation-tools";
 import { RecentProjects } from "./recent-projects";
 
-export function DashboardView({ items, canCreate, showRetentionBanner }: {
+export function DashboardView({ items, canCreate, showRetentionBanner, canManageBilling }: {
   greeting: string;
   items: ProjectListItem[];
   canCreate: boolean;
   showRetentionBanner: boolean;
+  canManageBilling: boolean;
 }) {
   return <Stack gap={{ base: "8", md: "10" }}>
-    {showRetentionBanner && <RetentionBanner />}
+    {showRetentionBanner && <RetentionBanner canManageBilling={canManageBilling} />}
     <HeroExperience canCreate={canCreate} />
     {canCreate && <CreationTools items={items} />}
     <RecentProjects items={items} canCreate={canCreate} />

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Box, Flex, Image, Menu, Portal, Stack, Text } from "@chakra-ui/react";
 import { Building2, Check, ChevronDown, Plus, Settings, Users, Share2, Braces, Gem } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import { PLAN_CATALOG, resolvePricingTier } from "@narriflow/validators";
 import { switchWorkspaceAction } from "../_actions/workspace";
 import {
   authenticatedActionResultMessage,
@@ -30,12 +31,10 @@ export interface WorkspaceSwitcherItem {
 export function WorkspaceSwitcher({
   activeWorkspaceId,
   items,
-  canCreateWorkspace = false,
   presentation,
 }: {
   activeWorkspaceId: string;
   items: WorkspaceSwitcherItem[];
-  canCreateWorkspace?: boolean;
   presentation: WorkspaceMenuPresentation;
 }) {
   const router = useRouter();
@@ -99,8 +98,11 @@ export function WorkspaceSwitcher({
               <Text fontSize="14px" fontWeight="500" truncate>
                 {active?.name ?? "Workspace"}
               </Text>
-              <Text fontSize="12px" color="fg.subtle" textTransform="capitalize">
-                {active?.role ?? "member"}
+              {/* Neutral on purpose: gold means "plan required", not "plan you have". */}
+              <Text fontSize="12px" color="fg.subtle" truncate>
+                <Text as="span" textTransform="capitalize">{active?.role ?? "member"}</Text>
+                {" · "}
+                {PLAN_CATALOG[resolvePricingTier(presentation.tier)].name}
               </Text>
             </Stack>
             {isPending ? <Spinner size="xs" /> : <ChevronDown size={14} />}
@@ -162,11 +164,9 @@ export function WorkspaceSwitcher({
               </Menu.Item>
             ))}
             <Menu.Separator />
-            {canCreateWorkspace ? (
-              <Menu.Item value="new-workspace" asChild>
-                <Link href="/workspaces/new"><Plus size={14} />New Business workspace</Link>
-              </Menu.Item>
-            ) : null}
+            <Menu.Item value="new-workspace" asChild>
+              <Link href="/workspaces/new"><Plus size={14} />New Business workspace</Link>
+            </Menu.Item>
           </Menu.Content>
         </Menu.Positioner>
       </Portal>

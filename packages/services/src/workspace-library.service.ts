@@ -583,6 +583,7 @@ export class WorkspaceLibraryService {
 		const rows = await requiredPrisma().clipExport.findMany({
 			where: {
 				workspaceId: scope.workspaceId,
+				project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
 				AND: libraryContinuation(filters.cursor),
 				...(filters.status === "processing"
 					? {

@@ -629,6 +629,72 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(logs.find((entry) => entry.message === "webhook_delivery_stopped")).toMatchObject({ webhookId: created.webhookId, seq: 1 });
   });
 
+  test("webhook admission rechecks retry backoff after discovering a due subscription", async () => {
+    await reset();
+    const { actor, workspaceId } = await workspace();
+    const created = await subscribe(actor, "/deferred-after-discovery");
+    await emit(workspaceId, "one");
+    const deferredUntil = new Date(clock.getTime() + 60_000);
+    let deferred = false;
+    const client = new Proxy(prisma, {
+      get(target, property) {
+        const value = Reflect.get(target, property);
+        if (property !== "webhookSubscription") return typeof value === "function" ? value.bind(target) : value;
+        return new Proxy(target.webhookSubscription, {
+          get(delegate, method) {
+            const member = Reflect.get(delegate, method);
+            if (method !== "findMany") return typeof member === "function" ? member.bind(delegate) : member;
+            return async (args: Parameters<typeof delegate.findMany>[0]) => {
+              const candidates = await delegate.findMany(args);
+              if (!deferred && candidates.some((candidate) => candidate.id === created.webhookId)) {
+                deferred = true;
+                await prisma.webhookSubscription.update({ where: { id: created.webhookId }, data: { nextAttemptAt: deferredUntil } });
+              }
+              return candidates;
+            };
+          },
+        });
+      },
+    });
+    expect(await processor(undefined, undefined, client).deliver()).toBe(0);
+    expect(received).toHaveLength(0);
+    expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 0n, nextAttemptAt: deferredUntil });
+  });
+
+  test("an older webhook execution cannot disable a newer claim by the same worker", async () => {
+    await reset();
+    const { actor, workspaceId } = await workspace();
+    const created = await subscribe(actor, "/same-worker");
+    await emit(workspaceId, "one");
+    let resumeOld!: () => void;
+    let resumeNew!: () => void;
+    const oldGate = new Promise<void>((resolve) => { resumeOld = resolve; });
+    const newGate = new Promise<void>((resolve) => { resumeNew = resolve; });
+    let stalePosts = 0;
+    const old = createWebhookDeliveryProcessor({
+      prisma: stalled(oldGate), leaseOwner: "shared-worker", now, cipher,
+      resolver: publicResolver, log: () => {},
+      transport: async () => { stalePosts += 1; return new Response(null, { status: 410 }); },
+    }).deliver();
+    await until(async () => (await row(created.webhookId)).leaseOwner?.startsWith("shared-worker") === true);
+    const firstExpiry = (await row(created.webhookId)).leaseExpiresAt!;
+    advance(61_000);
+    const fresh = processor("shared-worker", undefined, stalled(newGate)).deliver();
+    await until(async () => (await row(created.webhookId)).leaseExpiresAt!.getTime() > firstExpiry.getTime());
+    try {
+      resumeOld();
+      expect(await old).toBe(0);
+      expect(stalePosts).toBe(0);
+      expect((await row(created.webhookId)).status).toBe("active");
+      resumeNew();
+      expect(await fresh).toBe(1);
+      expect(await row(created.webhookId)).toMatchObject({ status: "active", lastDeliveredSeq: 1n });
+    } finally {
+      resumeOld(); resumeNew();
+      await Promise.allSettled([old, fresh]);
+    }
+  });
+
   test("a worker does not POST an event the cursor has already passed, even while it still holds the lease", async () => {
     await reset();
     const { actor, workspaceId } = await workspace();

@@ -1,5 +1,6 @@
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { workspaceLibraryService } from "@narriflow/services";
+import { planLimits, resolvePricingTier } from "@narriflow/validators";
 import { DashboardView } from "./dashboard-view";
 
 const RECENT_PROJECTS_LIMIT = 8;
@@ -26,8 +27,9 @@ export default async function HomePage() {
           appUser.workspace.role !== "viewer" &&
           appUser.workspace.status === "active"
         }
+        canManageBilling={appUser.workspace.role === "owner"}
         showRetentionBanner={
-          appUser.workspace.pricingTier === "free"
+          planLimits(resolvePricingTier(appUser.workspace.pricingTier)).projectRetentionHours !== null
         }
     />
   );

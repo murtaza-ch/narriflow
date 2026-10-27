@@ -9,10 +9,12 @@ interface NavLinkProps {
   href: string
   icon?: ReactNode
   collapsed?: boolean
+  /** Trailing marker, e.g. the gem on a feature the plan doesn't include. */
+  badge?: ReactNode
   children: ReactNode
 }
 
-export function NavLink({ href, icon, children, collapsed = false }: NavLinkProps) {
+export function NavLink({ href, icon, children, badge, collapsed = false }: NavLinkProps) {
   const pathname = usePathname()
   const isActive =
     pathname === href || (href !== "/settings" && pathname.startsWith(href + "/"))
@@ -61,6 +63,7 @@ export function NavLink({ href, icon, children, collapsed = false }: NavLinkProp
       >
         {icon}
         {!collapsed && <Text>{children}</Text>}
+        {!collapsed && badge}
       </HStack>
     </Link>
   )

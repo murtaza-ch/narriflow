@@ -4,10 +4,12 @@ import { Box, Button, Flex, Input, NativeSelect, Stack, Text } from "@chakra-ui/
 import { chipProps, softButtonProps, softFieldProps } from "./panel-ui";
 import { Copy, Image as ImageIcon, MoveLeft, MoveRight, Play, Trash2, Type, Video } from "lucide-react";
 import { useMemo, useState } from "react";
-import { sourceToEdited, SYSTEM_SCENE_FONT_FAMILIES, type SceneBlock, type SceneContent, type SceneMotion } from "@narriflow/validators";
+import { PLAN_CATALOG, sourceToEdited, SYSTEM_SCENE_FONT_FAMILIES, type SceneBlock, type SceneContent, type SceneMotion } from "@narriflow/validators";
 import { usePlaybackTime } from "../playback-clock";
 import { sceneTextContent } from "../scene-fonts";
+import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "../studio-shell";
+import { StudioLockGem } from "../studio-lock-gem";
 
 function sceneLabel(content: SceneContent) {
   if (content.kind === "text") return content.text;
@@ -33,8 +35,12 @@ export function ScenesPanel() {
     "seekTo",
     "trimSceneBlock",
     "updateSceneMotion",
+    "upgradePrompts",
     "visualAssets",
   );
+  const { openUpgrade } = useUpgrade();
+  const canCreateScenes = Object.values(studio.sceneWriteCapabilities).some(Boolean);
+  const scenesLock = canCreateScenes ? null : studio.upgradePrompts.scenes;
   const playhead = usePlaybackTime(studio.playbackClock);
   const [placement, setPlacement] = useState<"start" | "playhead" | "transcript" | "end">("playhead");
   const [text, setText] = useState("New chapter");
@@ -99,6 +105,16 @@ export function ScenesPanel() {
         <Text mt="2" fontSize="12px" color="studio.timecode" fontVariantNumeric="tabular-nums">{anchorSec.toFixed(2)}s</Text>
       </Box>}
 
+      {scenesLock?.tier && <Box>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">Quick scene</Text>
+        <Flex gap="2">
+          <Input size="sm" h="40px" fontSize="14px" placeholder="New chapter" value={text} onChange={(event) => setText(event.target.value.slice(0, 500))} aria-label="Scene text" {...softFieldProps} />
+          <Button h="40px" {...softButtonProps} aria-label="Insert text scene (plan upgrade needed)" aria-haspopup="dialog" onClick={() => openUpgrade(scenesLock)}><Type size={15} /><StudioLockGem tier={scenesLock.tier} /></Button>
+          <Button h="40px" {...softButtonProps} aria-label="Insert color scene (plan upgrade needed)" aria-haspopup="dialog" onClick={() => openUpgrade(scenesLock)}>Color<StudioLockGem tier={scenesLock.tier} /></Button>
+        </Flex>
+        <Text mt="2" fontSize="12px" color="studio.fgSubtle">Scenes need {PLAN_CATALOG[scenesLock.tier].name}.</Text>
+      </Box>}
+
       {studio.sceneWriteCapabilities.cards && <Box>
         <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">Quick scene</Text>
         <Flex gap="2">
@@ -146,7 +162,7 @@ export function ScenesPanel() {
       <Box>
         <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">Timeline scenes</Text>
         {studio.sceneBlocks.length === 0 ? (
-          <Box bg="studio.subtle" borderRadius="10px" p="4"><Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Add an opening card, visual insert or reusable brand scene.</Text></Box>
+          <Box bg="studio.subtle" borderRadius="10px" p="4"><Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">{canCreateScenes ? "Add an opening card, visual insert or reusable brand scene." : scenesLock ? "Scenes add opening cards, visual inserts and reusable brand scenes." : "Scene creation is temporarily unavailable."}</Text></Box>
         ) : (
           <Stack gap="2">
 						{studio.sceneBlocks.map((scene, index) => {
@@ -206,7 +222,7 @@ export function ScenesPanel() {
           </Stack>
         )}
       </Box>
-      {!Object.values(studio.sceneWriteCapabilities).some(Boolean) && studio.sceneBlocks.length > 0 && (
+      {!canCreateScenes && studio.sceneBlocks.length > 0 && (
         <Box bg="studio.subtle" borderRadius="10px" p="4"><Text fontSize="13px" color="studio.fgMuted">Scene editing is read-only. Existing scenes remain in preview and exports.</Text></Box>
       )}
     </Stack>

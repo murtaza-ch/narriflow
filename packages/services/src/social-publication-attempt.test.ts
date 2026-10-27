@@ -123,6 +123,48 @@ function createAttemptHarness(
 }
 
 describe("Social Publication Attempt", () => {
+	test.each([null, "social_account_expired", "social_account_missing"])("a credential failure after submission preserves recoverability unless reconnect is required: %s", async (code) => {
+		const accountSeed: PublicationAttemptSeed = {
+			...seed,
+			frozen: { ...seed.frozen, socialAccountId: "account-1" },
+			attempt: { ...seed.attempt, phase: "reconciling" },
+		};
+		let unavailable = true;
+		let reconciled = 0;
+		const platform: ReturnType<typeof createDeterministicPublicationPlatform> = {
+			...createDeterministicPublicationPlatform([]),
+			async publish() { throw new Error("An existing submission must never be resubmitted"); },
+			async reconcile(_input, operation) {
+				reconciled += 1;
+				expect(operation).toEqual({ kind: "youtube_upload", state: { session: "existing-operation" } });
+				return { kind: "accepted", receipt: { receiptId: "recovered-receipt", platformPostId: "recovered-post", externalUrl: null } };
+			},
+		};
+		const { attempt, store } = createAttemptHarness(platform, accountSeed, 12, {}, async () => {
+			if (unavailable) throw Object.assign(new Error("credential lookup failed"), code ? { code } : {});
+			return null;
+		});
+		await store.checkpoint({
+			owned: { attemptId: "attempt-1", claimId: "claim-1" },
+			operationKind: "youtube_upload",
+			sealedState: 'sealed:{"session":"existing-operation"}',
+			now: new Date("2026-08-28T10:00:00Z"),
+		});
+		const result = await attempt.execute({ attempt: { attemptId: "attempt-1", claimId: "claim-1" }, signal: new AbortController().signal });
+		expect(result.kind).toBe(code ? "needs_attention" : "reconciling");
+		expect(await store.inspect("attempt-1")).toMatchObject({
+			attempt: { phase: code ? "needs_attention" : "reconciling", providerCallCount: 0 },
+			receipt: null,
+		});
+		if (code === null) {
+			unavailable = false;
+			await store.takeOver("attempt-1", { ...seed.claim, id: "recovered-claim" });
+			expect(await attempt.execute({ attempt: { attemptId: "attempt-1", claimId: "recovered-claim" }, signal: new AbortController().signal }))
+				.toMatchObject({ kind: "posted", attemptId: "attempt-1" });
+			expect(reconciled).toBe(1);
+		}
+	});
+
 	test("projects expired credentials as a reconnect action instead of retrying", async () => {
 		let providerCalls = 0;
 		const platform = createDeterministicPublicationPlatform([

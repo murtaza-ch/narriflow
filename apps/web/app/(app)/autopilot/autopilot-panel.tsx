@@ -4,6 +4,9 @@ import { useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PlanLimitNotice } from "../_components/plan-limit-notice";
+import { LockedButton, UpgradeHero } from "../_components/upgrade";
+import { AutopilotVisual } from "../_components/upgrade-visuals";
+import { lowestTierWithFeature, planUpgradeHighlight, type PricingTier } from "@narriflow/validators";
 import { Box, chakra, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import {
   AlertTriangle,
@@ -214,10 +217,16 @@ export function AutopilotPanel({
   canConnectZoom = false,
   zoomNotice,
   newRuleRequirement = null,
+  newRuleUpgradeTier = null,
+  autopilotIncluded = true,
   canManageBilling = false,
 }: {
   /** Why the plan can't add another active rule, computed server-side; `null` when it can. */
   newRuleRequirement?: string | null;
+  /** The cheapest plan that allows another active rule; `null` on the top plan. */
+  newRuleUpgradeTier?: PricingTier | null;
+  /** Whether the plan includes Autopilot at all; when it doesn't, the page leads with an upgrade banner. */
+  autopilotIncluded?: boolean;
   canManageBilling?: boolean;
   zoomEnabled?: boolean;
   zoomConnections?: ZoomConnectionSnapshot[];
@@ -234,6 +243,7 @@ export function AutopilotPanel({
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
+  const autopilotTier = lowestTierWithFeature("automation.autopilot");
   const { confirm, dialog: confirmDialog } = useConfirm();
 
   // New-rule dialog state
@@ -450,14 +460,46 @@ export function AutopilotPanel({
         <PageHeader
           title="Autopilot"
           actions={
-            <Button onClick={() => setDialogOpen(true)} disabled={newRuleRequirement !== null}>
-              <Plus size={15} strokeWidth={2} aria-hidden />
-              New rule
-            </Button>
+            newRuleRequirement && newRuleUpgradeTier ? (
+              <LockedButton
+                prompt={{
+                  tier: newRuleUpgradeTier,
+                  headline: autopilotIncluded ? "Upgrade to run more Autopilot rules" : "Upgrade to turn on Autopilot",
+                  highlight: planUpgradeHighlight(newRuleUpgradeTier, "autopilotRules"),
+                  canManageBilling,
+                }}
+              >
+                <Plus size={15} strokeWidth={2} aria-hidden />
+                New rule
+              </LockedButton>
+            ) : (
+              <Button onClick={() => setDialogOpen(true)} disabled={newRuleRequirement !== null}>
+                <Plus size={15} strokeWidth={2} aria-hidden />
+                New rule
+              </Button>
+            )
           }
         />
-        <PlanLimitNotice message={newRuleRequirement} actionLabel="See plans." canManageBilling={canManageBilling} />
+        {/* No plan raises this ceiling: explain how to make room instead of offering an upgrade. */}
+        {newRuleUpgradeTier || !newRuleRequirement ? null : (
+          <PlanLimitNotice message={`${newRuleRequirement} Delete a rule to create another.`} upgrade={null} />
+        )}
       </Box>
+
+      {!autopilotIncluded ? (
+        <UpgradeHero
+          title="Clip new episodes automatically"
+          points={[zoomEnabled ? "Watch an RSS feed or Zoom account for new recordings." : "Watch an RSS feed for new episodes.", "Every new recording becomes captioned clips, ready to schedule."]}
+          ctaLabel="Upgrade to turn on Autopilot"
+          visual={<AutopilotVisual />}
+          prompt={{
+            tier: autopilotTier,
+            headline: "Upgrade to turn on Autopilot",
+            highlight: autopilotTier ? planUpgradeHighlight(autopilotTier, "autopilotRules") : undefined,
+            canManageBilling,
+          }}
+        />
+      ) : null}
 
       {zoomEnabled ? <ZoomConnections connections={zoomConnections} canConnect={canConnectZoom} notice={zoomNotice} /> : null}
 
@@ -467,7 +509,7 @@ export function AutopilotPanel({
         animationDelay="80ms"
         animationFillMode="backwards"
       >
-        {initialRules.length === 0 ? (
+        {initialRules.length === 0 && !autopilotIncluded ? null : initialRules.length === 0 ? (
           <EmptyState
             icon={<Rss size={20} strokeWidth={1.75} />}
             title="No autopilot rules yet"

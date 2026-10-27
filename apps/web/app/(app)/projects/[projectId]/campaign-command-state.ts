@@ -1,11 +1,18 @@
-import type {
-  ApplyMotionSelectedInput,
-  ApplyProjectBrandProfileSelectedInput,
-  ApplySceneTemplateInput,
-  ApplyStyleSelectedInput,
-  ClipAspectRatio,
-  ClipSnapshot,
+import {
+  hasFeature,
+  planFeatureRequirement,
+  planUpgradeHighlight,
+  PRICING_TIER_ORDER,
+  type ApplyMotionSelectedInput,
+  type ApplyProjectBrandProfileSelectedInput,
+  type ApplySceneTemplateInput,
+  type ApplyStyleSelectedInput,
+  type ClipAspectRatio,
+  type ClipSnapshot,
+  type PricingTier,
 } from "@narriflow/validators";
+import type { UpgradePrompt } from "@/app/(app)/_components/upgrade";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 
 export type CampaignPrimaryAction =
   | "prepare_exports"
@@ -20,11 +27,98 @@ export type CampaignAvailableAction =
   | "apply_scene_template"
   | "apply_motion";
 
+/**
+ * Plan-locked campaign commands stay visible and open the upgrade dialog.
+ */
+export type CampaignActionAccess = "enabled" | "plan_locked";
+
 export type CampaignActionAvailability = Readonly<{
-  exports: boolean;
-  creative: boolean;
-  motion: boolean;
+  exports: CampaignActionAccess;
+  creative: CampaignActionAccess;
+  motion: CampaignActionAccess;
 }>;
+
+export function campaignActionAccess(
+  entitled: boolean,
+): CampaignActionAccess {
+  return entitled ? "enabled" : "plan_locked";
+}
+
+/**
+ * Availability and upgrade prompt for each campaign command group. Creative
+ * commands (brand profile, style, scene template) also pass the shared-
+ * Workspace branding policy the service enforces, so `brandRequirement`
+ * (`brandPlanRequirement(scope, "brand.profiles")`) joins the campaign plan
+ * requirement there. Motion and export bundles keep their own requirements.
+ * A prompt offers the highest tier any unmet requirement needs, and none when
+ * a requirement has no qualifying plan.
+ */
+export function deriveCampaignActionPlan(input: {
+  pricingTier: string;
+  brandRequirement: { requiredTier: PricingTier | null } | null;
+}): {
+  availability: CampaignActionAvailability;
+  upgradePrompts: Record<keyof CampaignActionAvailability, UpgradePrompt | null>;
+} {
+  const { pricingTier, brandRequirement } = input;
+  const campaignOperations = hasFeature(pricingTier, "campaign.operations");
+  const creativeHeadline = "Upgrade to apply changes across clips";
+  const campaignRequirement = planFeatureRequirement(
+    pricingTier,
+    "campaign.operations",
+  );
+  const unmet = [
+    campaignRequirement && {
+      gate: "campaign.operations" as const,
+      tier: campaignRequirement.requiredTier,
+    },
+    brandRequirement && {
+      gate: "brand.profiles" as const,
+      tier: brandRequirement.requiredTier,
+    },
+  ].filter((requirement) => requirement !== null);
+  let creativePrompt: UpgradePrompt | null = null;
+  if (unmet.length > 0 && unmet.every((requirement) => requirement.tier)) {
+    const highest = unmet.reduce((best, next) =>
+      PRICING_TIER_ORDER.indexOf(next.tier as PricingTier) >
+      PRICING_TIER_ORDER.indexOf(best.tier as PricingTier)
+        ? next
+        : best,
+    );
+    const tier = highest.tier as PricingTier;
+    creativePrompt = {
+      tier,
+      headline: creativeHeadline,
+      highlight: planUpgradeHighlight(tier, highest.gate),
+    };
+  }
+  return {
+    availability: {
+      exports: campaignActionAccess(
+        campaignOperations && hasFeature(pricingTier, "export.bundles"),
+      ),
+      creative: campaignActionAccess(
+        campaignOperations && brandRequirement === null,
+      ),
+      motion: campaignActionAccess(
+        campaignOperations && hasFeature(pricingTier, "editor.motion"),
+      ),
+    },
+    upgradePrompts: {
+      exports: featureUpgradePrompt(
+        pricingTier,
+        ["campaign.operations", "export.bundles"],
+        "Upgrade to build export bundles",
+      ),
+      creative: creativePrompt,
+      motion: featureUpgradePrompt(
+        pricingTier,
+        ["campaign.operations", "editor.motion"],
+        "Upgrade to apply motion across clips",
+      ),
+    },
+  };
+}
 
 type CampaignClip = Pick<
   ClipSnapshot,
@@ -47,7 +141,10 @@ export interface CampaignCommandState {
     hasManualBroll: boolean;
   }>;
   primary: CampaignPrimaryAction | null;
+  /** Commands that run. */
   availableActions: CampaignAvailableAction[];
+  /** Commands that exist but need a higher plan: shown with a gem, they open the upgrade dialog. */
+  lockedActions: CampaignAvailableAction[];
   readyItems: Array<{ clipId: string; expectedEditorRevision: number }>;
   attentionItems: Array<{
     clipId: string;
@@ -253,19 +350,29 @@ export function deriveCampaignCommandState(input: {
     if (ready) readyItems.push(item);
     else attentionItems.push({ ...item, code: "export_required" });
   }
+  const { exports, creative, motion } = input.actionAvailability;
   const availableActions: CampaignAvailableAction[] = [
     "render_selected",
-    ...(input.actionAvailability.exports ? (["export_bundle"] as const) : []),
-    ...(input.actionAvailability.creative
+    ...(exports === "enabled" ? (["export_bundle"] as const) : []),
+    ...(creative === "enabled"
       ? ([
           "apply_brand_profile",
           "apply_style",
           "apply_scene_template",
         ] as const)
       : []),
-    ...(input.actionAvailability.creative && input.actionAvailability.motion
-      ? (["apply_motion"] as const)
+    ...(motion === "enabled" ? (["apply_motion"] as const) : []),
+  ];
+  const lockedActions: CampaignAvailableAction[] = [
+    ...(exports === "plan_locked" ? (["export_bundle"] as const) : []),
+    ...(creative === "plan_locked"
+      ? ([
+          "apply_brand_profile",
+          "apply_style",
+          "apply_scene_template",
+        ] as const)
       : []),
+    ...(motion === "plan_locked" ? (["apply_motion"] as const) : []),
   ];
   return {
     selectedCount: selected.length,
@@ -284,6 +391,7 @@ export function deriveCampaignCommandState(input: {
             ? "export_bundle"
             : "render_selected",
     availableActions,
+    lockedActions,
     readyItems,
     attentionItems,
   };

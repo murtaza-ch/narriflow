@@ -39,14 +39,14 @@ try {
     DATABASE_URL: databaseUrl,
     VIZARD_EXPANSION_TEST_DATABASE_URL: databaseUrl,
     VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
-    NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS: "1",
-    NARRIFLOW_WRITES_CAMPAIGN_RENDER: "1",
-    NARRIFLOW_WRITES_CAMPAIGN_EXPORTS: "1",
-    NARRIFLOW_WRITES_CAMPAIGN_CREATIVE: "1",
+
+
+
+
     REVIEW_ACCESS_SECRET: "vizard-expansion-review-delivery-secret-for-tests",
-    NARRIFLOW_WRITES_BRAND_PROFILES: "1",
-    NARRIFLOW_WRITES_BRAND_KIT_PROJECTION: "1",
-    NARRIFLOW_WRITES_SCENE_TEMPLATES: "1",
+
+
+
     SOCIAL_TOKEN_ENCRYPTION_KEY: "vizard-expansion-test-encryption-key-not-a-secret",
     ZOOM_CLIENT_ID: "zoom-test-client",
     ZOOM_CLIENT_SECRET: "zoom-test-secret",
@@ -58,6 +58,8 @@ try {
   // binds to the first Prisma client a process creates.
   for (const files of [
     ["packages/services/src/generation-usage.db.test.ts"],
+    ["packages/services/src/review-access.db.test.ts"],
+    ["packages/services/src/workspace-membership.db.test.ts"],
     ["packages/services/src/vizard-expansion.db.test.ts", "packages/services/src/autopilot.db.test.ts", "packages/services/src/zoom.db.test.ts"],
   ]) {
     const child = Bun.spawn([process.execPath, "test", ...files], { cwd: root, env, stdout: "inherit", stderr: "inherit" });

@@ -235,6 +235,78 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ state: "delivered", attempts: 1, lastResponseStatus: 200 });
   });
 
+  test("callbacks claim their lease when delivery starts, rather than while waiting in a batch", async () => {
+    const previousClock = clock;
+    const rows = await Promise.all(Array.from({ length: 8 }, () => pendingRow("pending")));
+    const remainingLeases: number[] = [];
+    try {
+      const worker = processor(async (_url, request) => {
+        const row = await prisma.completionCallback.findUniqueOrThrow({ where: { eventId: request.headers.get("webhook-id")! } });
+        remainingLeases.push(row.leaseExpiresAt!.getTime() - clock.getTime());
+        clock = new Date(clock.getTime() + 9_000);
+        return new Response(null, { status: 200 });
+      });
+      expect(await worker.deliver(8)).toBe(8);
+      expect(remainingLeases).toHaveLength(8);
+      expect(remainingLeases.every((remaining) => remaining > 0)).toBe(true);
+    } finally {
+      await prisma.completionCallback.deleteMany({ where: { id: { in: rows.map((row) => row.id) } } });
+      clock = previousClock;
+    }
+  });
+
+  test("an expired callback claim cannot acknowledge a delivery", async () => {
+    const previousClock = clock;
+    const row = await pendingRow("pending");
+    try {
+      const worker = processor(async () => {
+        clock = new Date(clock.getTime() + 60_001);
+        return new Response(null, { status: 200 });
+      });
+      expect(await worker.deliver()).toBe(0);
+      expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: row.id } }))
+        .toMatchObject({ state: "pending", attempts: 0, deliveredAt: null });
+      expect(await processor(receiver([200]).transport).deliver()).toBe(1);
+    } finally {
+      await prisma.completionCallback.delete({ where: { id: row.id } });
+      clock = previousClock;
+    }
+  });
+
+  test("an old callback execution cannot cancel a new claim by the same worker", async () => {
+    const previousClock = clock;
+    const row = await pendingRow("pending");
+    let releaseOld!: () => void;
+    let releaseNew!: () => void;
+    let oldStarted!: () => void;
+    let newStarted!: () => void;
+    const oldReady = new Promise<void>((resolve) => { oldStarted = resolve; });
+    const newReady = new Promise<void>((resolve) => { newStarted = resolve; });
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    const newGate = new Promise<void>((resolve) => { releaseNew = resolve; });
+    const old = processor(async () => { oldStarted(); await oldGate; return new Response(null, { status: 410 }); }, "same-worker").deliver();
+    await oldReady;
+    clock = new Date(clock.getTime() + 60_001);
+    const fresh = processor(async () => { newStarted(); await newGate; return new Response(null, { status: 200 }); }, "same-worker").deliver();
+    await newReady;
+    const freshClaim = await prisma.completionCallback.findUniqueOrThrow({ where: { id: row.id } });
+    try {
+      releaseOld();
+      expect(await old).toBe(0);
+      expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: row.id } }))
+        .toMatchObject({ state: "pending", leaseOwner: freshClaim.leaseOwner });
+      releaseNew();
+      expect(await fresh).toBe(1);
+      expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: row.id } }))
+        .toMatchObject({ state: "delivered", attempts: 1, lastResponseStatus: 200 });
+    } finally {
+      releaseOld(); releaseNew();
+      await Promise.allSettled([old, fresh]);
+      await prisma.completionCallback.delete({ where: { id: row.id } });
+      clock = previousClock;
+    }
+  });
+
   test("rotation keeps the previous secret signing during the overlap, then retires it", async () => {
     const before = currentSecret;
     const rotated = (await secrets().rotate(workspaceId)).secret;

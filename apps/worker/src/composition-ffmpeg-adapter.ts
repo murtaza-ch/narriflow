@@ -302,6 +302,12 @@ export function compileCompositionPlanSceneAudio(input: {
 	}
 	let sourceIndex = 0;
 	const outputs: string[] = [];
+	// Source controls belong to the source scenes. Inserted videos carry their
+	// own gain/mute settings and must not inherit the source track's controls.
+	const sourceGain = buildSourceGainFilter({
+		source: input.plan.audioSchedule.source,
+		censors: [],
+	});
 	target.scenes.forEach((scene, index) => {
 		const duration = scene.endSec - scene.startSec;
 		const output = `[composition_scene_audio_${index}]`;
@@ -323,7 +329,7 @@ export function compileCompositionPlanSceneAudio(input: {
 					: sourceLabels[sourceIndex]!;
 			sourceIndex += 1;
 			parts.push(
-				`${source}atrim=start=${scene.sourceRange!.startSec.toFixed(3)}:end=${scene.sourceRange!.endSec.toFixed(3)},asetpts=PTS-STARTPTS${output}`,
+				`${source}atrim=start=${scene.sourceRange!.startSec.toFixed(3)}:end=${scene.sourceRange!.endSec.toFixed(3)},asetpts=PTS-STARTPTS${sourceGain ? `,${sourceGain}` : ""},apad,atrim=duration=${duration.toFixed(3)}${output}`,
 			);
 			return;
 		}
@@ -575,8 +581,11 @@ function textLayerFilter(
 	const box = value.backgroundColor
 		? `:box=1:boxcolor=0x${value.backgroundColor.slice(1)}@${value.backgroundOpacity.toFixed(3)}:boxborderw=10`
 		: "";
+	// drawtext parses Fontconfig patterns through fontfile; font only accepts
+	// a family name. Match Studio's 800/500 weight request on available faces.
+	const fontPattern = `${value.fontName}:weight=${value.bold ? "extrabold" : "medium"}`;
 	return (
-		`drawtext=font=${escapeFilterOptionValue(value.fontName)}` +
+		`drawtext=fontfile=${escapeFilterOptionValue(fontPattern)}` +
 		`:${drawtextLiteralText(value.text)}` +
 		`:fontsize=${Math.round(value.fontSize)}` +
 		`:fontcolor=0x${value.color.slice(1)}` +
@@ -2038,7 +2047,7 @@ function buildAudioFadeChain(
  * they always have.
  */
 function buildSourceGainFilter(
-	audio: BoundCompositionAudioRenderRequest,
+	audio: Pick<BoundCompositionAudioRenderRequest, "source" | "censors">,
 ): string | null {
 	const sourceAudio = audio.source;
 	const censorWindows = audio.censors
@@ -2531,7 +2540,7 @@ function buildSingleVideoArgs(params: {
 	}
 
 	const audioForRender = sceneDialogueLabel
-		? { ...params.audio, source: { ...params.audio.source, available: true } }
+		? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
 		: params.audio;
 	const hasMixedAudio =
 		Boolean(params.audio.music) ||
@@ -2813,7 +2822,7 @@ function buildBrollVideoArgs(params: {
 	}
 
 	const audioForRender = sceneDialogueLabel
-		? { ...params.audio, source: { ...params.audio.source, available: true } }
+		? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
 		: params.audio;
 	const hasMixedAudio =
 		Boolean(params.audio.music) ||
@@ -2966,6 +2975,9 @@ function buildAudiogramArgs(params: {
 		Boolean(params.audio.music) ||
 		params.audio.soundEffects.length > 0 ||
 		params.audio.censors.some((censor) => censor.treatment === "beep");
+	const audioForRender = hasInsertedScenes
+		? { ...params.audio, source: { ...params.audio.source, available: true, gain: 1, muted: false } }
+		: params.audio;
 
 	const plannedLogo = plannedTarget.visualLayers.find(
 		(layer) => layer.kind === "logo",
@@ -3018,7 +3030,7 @@ function buildAudiogramArgs(params: {
 		dialogueAudioLabel = sceneAudio.outputLabel;
 		if (!hasMusicOrSfx) {
 			chain.push(
-				`${dialogueAudioLabel}${buildDialogueAudioFilter(params.audio)}[outa]`,
+				`${dialogueAudioLabel}${buildDialogueAudioFilter(audioForRender)}[outa]`,
 			);
 		}
 	} else {
@@ -3094,7 +3106,7 @@ function buildAudiogramArgs(params: {
 	if (hasMusicOrSfx) {
 		chain.push(
 			buildAudioMixFilter({
-				audio: params.audio,
+				audio: audioForRender,
 				clipDurationSec: outputDurationSec,
 				dialogueInputRef: dialogueAudioLabel,
 				musicInputIndex: params.audio.music ? musicInputIndex : null,

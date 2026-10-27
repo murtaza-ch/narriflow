@@ -1,21 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import {
   Box,
   Flex,
-  Link as ChakraLink,
   Popover,
   Portal,
   Stack,
   Text,
 } from "@chakra-ui/react";
-import { Check, ChevronDown, Download, LockKeyhole } from "lucide-react";
+import { Check, ChevronDown, Download } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { clipAspectRatioOptions } from "@narriflow/validators";
+import { useUpgrade, type UpgradePrompt } from "@/app/(app)/_components/upgrade";
 import { useStudio, type AspectRatio } from "./studio-shell";
+import { StudioLockGem } from "./studio-lock-gem";
+import { resolutionAction } from "./studio-upgrade";
 import {
   canSubmitStudioExport,
   studioExportBlockReason,
@@ -31,6 +32,54 @@ function defaultSelection(aspectRatio: AspectRatio): Record<AspectRatio, boolean
   };
 }
 
+/**
+ * 720p / 1080p. A locked 1080p stays visible with a gem and never becomes the
+ * selection: choosing it opens the upgrade dialog instead.
+ */
+export function ResolutionChoices({
+  can1080pExport,
+  prompt,
+  resolution,
+  onSelect,
+  onUpgrade,
+}: {
+  can1080pExport: boolean;
+  prompt: UpgradePrompt | null;
+  resolution: "720p" | "1080p";
+  onSelect: (value: "720p" | "1080p") => void;
+  onUpgrade: (prompt: UpgradePrompt) => void;
+}) {
+  return (
+    <Flex gap="2" role="group" aria-label="Export resolution">
+      {(["720p", "1080p"] as const).map((value) => {
+        const action = resolutionAction(value, can1080pExport);
+        const lockedPrompt = action === "upgrade" ? prompt : null;
+        return (
+          <Flex
+            key={value}
+            as="button"
+            align="center"
+            justify="center"
+            gap="1.5"
+            aria-pressed={resolution === value}
+            aria-haspopup={lockedPrompt ? "dialog" : undefined}
+            flex="1"
+            cursor="pointer"
+            {...chipProps(resolution === value)}
+            onClick={() => {
+              if (action === "select") onSelect(value);
+              else if (prompt) onUpgrade(prompt);
+            }}
+          >
+            {value}
+            {lockedPrompt?.tier ? <StudioLockGem tier={lockedPrompt.tier} /> : null}
+          </Flex>
+        );
+      })}
+    </Flex>
+  );
+}
+
 export function StudioExportMenu() {
   const {
     clipInfo,
@@ -38,7 +87,9 @@ export function StudioExportMenu() {
     exportState,
     compositionPlanStatus,
     handleExport,
-  } = useStudio("clipInfo", "aspectRatio", "exportState", "compositionPlanStatus", "handleExport");
+    upgradePrompts,
+  } = useStudio("clipInfo", "aspectRatio", "exportState", "compositionPlanStatus", "handleExport", "upgradePrompts");
+  const { openUpgrade } = useUpgrade();
   const [open, setOpen] = useState(false);
   const [selection, setSelection] = useState(() => defaultSelection(aspectRatio));
   const [resolution, setResolution] = useState<"720p" | "1080p">(() =>
@@ -163,45 +214,36 @@ export function StudioExportMenu() {
             ) : null}
 
             <Box mt="5">
-              <SectionLabel
-                action={
-                  !clipInfo.can1080pExport ? (
-                    <Box color="studio.fgSubtle">
-                      <LockKeyhole size={13} aria-label="Plan restricted" />
-                    </Box>
-                  ) : null
-                }
-              >
-                Resolution
-              </SectionLabel>
-              <Flex gap="2" role="group" aria-label="Export resolution">
-                {(["720p", "1080p"] as const).map((value) => {
-                  const disabled = value === "1080p" && !clipInfo.can1080pExport;
-                  return (
-                    <Box
-                      key={value}
-                      as="button"
-                      aria-pressed={resolution === value}
-                      aria-disabled={disabled}
-                      flex="1"
-                      cursor={disabled ? "not-allowed" : "pointer"}
-                      opacity={disabled ? 0.45 : 1}
-                      {...chipProps(resolution === value)}
-                      onClick={disabled ? undefined : () => setResolution(value)}
-                    >
-                      {value}
-                    </Box>
-                  );
-                })}
-              </Flex>
+              <SectionLabel>Resolution</SectionLabel>
+              <ResolutionChoices
+                can1080pExport={clipInfo.can1080pExport}
+                prompt={upgradePrompts.export1080p}
+                resolution={resolution}
+                onSelect={setResolution}
+                onUpgrade={(prompt) => {
+                  setOpen(false);
+                  openUpgrade(prompt);
+                }}
+              />
               <Text fontSize="12px" color="studio.fgSubtle" mt="2.5" lineHeight="1.5">
                 {clipInfo.exportHasWatermark
                   ? "Free-plan exports include a Narriflow watermark. "
                   : "Watermark-free export is included in your plan. "}
-                {!clipInfo.can1080pExport ? (
-                  <ChakraLink asChild color="studio.fg" textUnderlineOffset="3px">
-                    <Link href="/settings/billing">View upgrade options</Link>
-                  </ChakraLink>
+                {clipInfo.exportHasWatermark && upgradePrompts.watermark ? (
+                  <Box
+                    as="button"
+                    color="studio.fg"
+                    textDecoration="underline"
+                    textUnderlineOffset="3px"
+                    aria-haspopup="dialog"
+                    cursor="pointer"
+                    onClick={() => {
+                      setOpen(false);
+                      openUpgrade(upgradePrompts.watermark!);
+                    }}
+                  >
+                    Remove the watermark
+                  </Box>
                 ) : null}
               </Text>
             </Box>

@@ -442,19 +442,6 @@ function personalWorkspaceName(user: Pick<User, "firstName" | "lastName">,
   return fullName ? `${fullName}'s workspace` : "My workspace";
 }
 
-export function workspacesV1EnabledForUser(userId: string) {
-  const globallyEnabled = ["1", "true", "on"].includes(
-    process.env.WORKSPACES_V1?.trim().toLowerCase() ?? "",
-  );
-  if (globallyEnabled) return true;
-  return new Set(
-    (process.env.WORKSPACES_V1_USER_IDS ?? "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean),
-  ).has(userId);
-}
-
 /**
  * Guarantees the invariant used by workspace resolution: every application
  * user has one and only one personal workspace plus an Owner membership.

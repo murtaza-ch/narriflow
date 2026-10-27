@@ -57,7 +57,6 @@ export type NativePublicationDependencies = {
 		linkedInVersion: string;
 		instagramPollAttempts: number;
 		instagramPollIntervalMs: number;
-		facebookReelsPublishingEnabled?: boolean;
 		tiktokPollIntervalMs: number;
 		tiktokChunkBytes: number;
 		tiktokApiVersion: string;
@@ -173,14 +172,6 @@ function facebookReelsPlatform(
 			providerProcessingStatus: "succeeded",
 		},
 	});
-	const assertPublishingEnabled = () => {
-		if (!dependencies.config.facebookReelsPublishingEnabled) {
-			throw new PublicationPlatformConfigurationError(
-				"facebook_reels_rollout_disabled",
-				"Facebook Reels publishing is awaiting provider sandbox evidence",
-			);
-		}
-	};
 	const uploadAndPublish = async (
 		input: PublicationPlatformInput,
 		context: PublicationPlatformContext,
@@ -188,7 +179,7 @@ function facebookReelsPlatform(
 		uploadUrl: string,
 		markSubmitted: () => void,
 	): Promise<PublicationPlatformResult> => {
-		assertPublishingEnabled();
+
 		const account = requireAccount(input, "facebook_reels");
 		requireScopes(
 			account,
@@ -287,7 +278,7 @@ function facebookReelsPlatform(
 		},
 		publish(input, context) {
 			return withNativeOutcome(async (markSubmitted) => {
-				assertPublishingEnabled();
+
 				const account = requireAccount(input, "facebook_reels");
 				requireScopes(account, this.capabilities.requiredScopes);
 				const started = await jsonRequest<{
@@ -332,7 +323,7 @@ function facebookReelsPlatform(
 		},
 		resume(input, operation, context) {
 			return withNativeOutcome(async (markSubmitted) => {
-				assertPublishingEnabled();
+
 				const videoId = operationString(operation.state, "videoId");
 				if (operation.kind === "facebook_reel_finish_pending" && videoId) {
 					const account = requireAccount(input, "facebook_reels");
@@ -390,7 +381,7 @@ function facebookReelsPlatform(
 		},
 		reconcile(input, operation, context) {
 			return withNativeOutcome(async (markSubmitted) => {
-				assertPublishingEnabled();
+
 				const account = requireAccount(input, "facebook_reels");
 				requireScopes(account, this.capabilities.requiredScopes);
 				const videoId = operationString(operation.state, "videoId");

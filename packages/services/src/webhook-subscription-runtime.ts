@@ -34,11 +34,9 @@ const REASON_TEXT = {
   endpoint_gone: "The endpoint answered 410 Gone",
 } as const;
 
-/** Emails the person who should hear about a disabled subscription. Follows
- * the operator switch the other notification emails use. Nothing sent for a
- * reason that configuration can fix is `sent: false`, so the notice stays due. */
+/** Emails the person who should hear about a disabled subscription. Nothing sent for a reason that
+ * configuration can fix is `sent: false`, so the notice stays due. */
 async function emailDisabledNotice(appBaseUrl: string | null, notice: WebhookDisabledNotice): Promise<WebhookNoticeResult> {
-  if (process.env.NOTIFICATION_EMAILS_ENABLED?.trim() !== "true") return { sent: false, reason: "emails_disabled" };
   if (!appBaseUrl) return { sent: false, reason: "app_base_url_missing" };
   const email = await import("@narriflow/email/worker");
   const template = email.webhookDisabled({

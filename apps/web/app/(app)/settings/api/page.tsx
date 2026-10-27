@@ -1,8 +1,9 @@
-import Link from "next/link";
 import { Flex, Stack, Text } from "@chakra-ui/react";
-import { ArrowRight, ArrowUpRight, CircleAlert } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
 import { callbackSigningSecrets, webhookSubscriptions, workspaceService } from "@narriflow/services";
-import { hasFeature, lowestTierWithFeature, PLAN_CATALOG } from "@narriflow/validators";
+import { hasFeature, lowestTierWithFeature, planUpgradeHighlight } from "@narriflow/validators";
+import { UpgradeHero } from "../../_components/upgrade";
+import { ApiVisual } from "../../_components/upgrade-visuals";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
@@ -25,7 +26,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 export default async function ApiSettingsPage() {
   const appUser = await admitWorkspacePage("api.manage");
   const hasApi = hasFeature(appUser.workspace.pricingTier, "integrations.api");
-  const apiPlan = PLAN_CATALOG[lowestTierWithFeature("integrations.api") ?? "business"].name;
+  const apiTier = lowestTierWithFeature("integrations.api");
   const [keys, signing, webhooks] = await Promise.all([
     workspaceService.listApiKeys(appUser.actorUserId, appUser.workspaceId),
     callbackSigningSecrets.status(appUser.workspaceId),
@@ -51,27 +52,18 @@ export default async function ApiSettingsPage() {
       />
 
       {!hasApi ? (
-        <Flex
-          align={{ base: "flex-start", md: "center" }}
-          justify="space-between"
-          direction={{ base: "column", md: "row" }}
-          gap="3"
-          bg="bg.subtle"
-          borderRadius="12px"
-          px="4"
-          py="3"
-        >
-          <Flex align="flex-start" gap="2.5" color="fg.muted">
-            <CircleAlert size={16} style={{ marginTop: 2, flexShrink: 0 }} />
-            <Text fontSize="13px">{`API keys, callbacks and webhooks need the ${apiPlan} plan.`}</Text>
-          </Flex>
-          <Button asChild size="sm" variant="subtle" flexShrink={0}>
-            <Link href="/settings/billing">
-              View plans
-              <ArrowRight size={16} />
-            </Link>
-          </Button>
-        </Flex>
+        <UpgradeHero
+          title="Automate Narriflow from your own tools"
+          points={["Create projects and fetch clips with API keys, n8n, or your AI assistant.", "Get signed webhooks the moment renders finish."]}
+          ctaLabel="Upgrade to use the API"
+          visual={<ApiVisual />}
+          prompt={{
+            tier: apiTier,
+            headline: "Upgrade to use the API",
+            highlight: apiTier ? planUpgradeHighlight(apiTier, "integrations.api") : undefined,
+            canManageBilling: appUser.workspace.role === "owner",
+          }}
+        />
       ) : null}
 
       <section>

@@ -76,7 +76,7 @@ const facts = {
   clips,
   accounts,
   workspaceTimezone: "Asia/Karachi",
-  facebookPublishingEnabled: false,
+
 };
 const submissionFacts = { exports, options: {} };
 const draftKey = (clipId = clips[0]!.id) => `${clipId}:${accounts[0]!.id}`;

@@ -12,7 +12,6 @@ import { pauseGrantsWhoseRuleChanged } from "./standing-grant";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { BrandProfileMembershipError, BrandProfileMissingAssetError, BrandProfileNotFoundError } from "./brand-profile.service";
 import { isBrandAccessRefusal } from "./brand-ownership";
-import { ProgramWriteDisabledError } from "./program-rollout";
 import { autopilotPlanPauseReason } from "./autopilot-plan";
 
 function db() { const prisma = getPrismaClient(); if (!prisma) throw new Error("Database client unavailable"); return prisma; }
@@ -208,7 +207,7 @@ export class ZoomService {
           deferred ??= error;
         }
         else if (error instanceof ZoomError && error.code === "zoom_connection_unavailable") await pause("zoom_connection", error.message);
-        else if (error instanceof BrandProfileNotFoundError || error instanceof BrandProfileMissingAssetError || error instanceof BrandProfileMembershipError || isBrandAccessRefusal(error) || error instanceof ProgramWriteDisabledError) {
+        else if (error instanceof BrandProfileNotFoundError || error instanceof BrandProfileMissingAssetError || error instanceof BrandProfileMembershipError || isBrandAccessRefusal(error)) {
           await pause("brand_profile", "The Recipe's Brand Profile could not be applied. Fix the Brand Profile, then resume this rule.");
           deferred ??= error;
         }

@@ -227,6 +227,7 @@ async function assertReviewRoundWritable(tx: Prisma.TransactionClient, roundId: 
       id: roundId,
       status: "open",
       revokedAt: null,
+      project: accessibleProjectWhere(now),
       OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
     },
     data: { updatedAt: now },
@@ -628,7 +629,7 @@ export class ReviewService {
       await enforceReviewRateLimit(`review-access-token:${tokenHash}`, REVIEW_ACCESS_LIMIT, REVIEW_ACCESS_WINDOW_MS);
       throw new ReviewServiceError("review_access_invalid", "Review access is invalid or expired");
     };
-    const round = await requirePrisma().reviewRound.findUnique({ where: { accessTokenHash: tokenHash }, select: { id: true, projectId: true, accessTokenHash: true, passcodeHash: true, status: true, expiresAt: true, revokedAt: true } });
+    const round = await requirePrisma().reviewRound.findUnique({ where: { accessTokenHash: tokenHash, project: accessibleProjectWhere() }, select: { id: true, projectId: true, accessTokenHash: true, passcodeHash: true, status: true, expiresAt: true, revokedAt: true } });
     if (round?.expiresAt && round.expiresAt <= new Date()) {
       await recordReviewExpiry(round.id);
     }
@@ -647,6 +648,7 @@ export class ReviewService {
     const emailHash = createHmac("sha256", secret).update(normalizedEmail).digest("hex");
     const subject = randomBytes(32).toString("base64url");
     const guest = await requirePrisma().$transaction(async (tx) => {
+      await assertReviewRoundWritable(tx, round.id);
       const row = await tx.reviewGuest.upsert({
         where: { reviewRoundId_emailHash: { reviewRoundId: round.id, emailHash } },
         create: { reviewRoundId: round.id, displayName: parsed.identity, emailHash, emailEncrypted: encryptReviewEmail(normalizedEmail, reviewDeliverySecret()), sessionGrantHash: reviewGrantHash(subject) },
@@ -668,7 +670,7 @@ export class ReviewService {
   async readRound(session: string, secret: string) {
     const claims = verifyReviewSession(session, secret);
     const round = await requirePrisma().reviewRound.findUnique({
-      where: { id: claims.roundId },
+      where: { id: claims.roundId, project: accessibleProjectWhere() },
       include: {
         project: { select: { title: true } },
         workspace: { select: { name: true } },

@@ -6,13 +6,16 @@ import { Box, Flex, NativeSelect, Slider, Stack, Text } from "@chakra-ui/react";
 import { PanelButton, PanelTabs, tileProps, studioSliderCss } from "./panel-ui";
 import { Layers, Move, Sparkles, Zap } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
-import type { MediaMotion, SceneMotion } from "@narriflow/validators";
+import { PLAN_CATALOG, type MediaMotion, type SceneMotion } from "@narriflow/validators";
 import {
   MOTION_ENTRANCE_OPTIONS,
   MOTION_EXIT_OPTIONS,
   TRANSITION_OPTIONS,
 } from "@/lib/motion-options";
+import { upgradePromptFromFailure, type BrowserRequestFailure } from "@/lib/authenticated-request-browser";
+import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "../studio-shell";
+import { StudioLockGem } from "../studio-lock-gem";
 
 type MotionTab = "transition" | "media";
 
@@ -79,8 +82,11 @@ export function TransitionsPanel() {
     "sceneBlocks",
     "updateSceneMotion",
     "upsertMediaMotion",
+    "upgradePrompts",
   );
-  const { studioEdits, setStudioEdits, clipInfo, editorDocument, setMotionPreview } = studio;
+  const { openUpgrade } = useUpgrade();
+  const { studioEdits, setStudioEdits, clipInfo, editorDocument, setMotionPreview, upgradePrompts } = studio;
+  const motionPrompt = upgradePrompts.motion;
   const [tab, setTab] = useState<MotionTab>("transition");
   const [selected, setSelected] = useState(studioEdits.transition.type);
   const [duration, setDuration] = useState(studioEdits.transition.durationSec);
@@ -181,7 +187,12 @@ export function TransitionsPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ patches: [{ transition: { type: selected, durationSec: duration } }], excludeClipId: clipInfo.id }),
       });
-      if (!response.ok) throw new Error("apply failed");
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null) as BrowserRequestFailure | null;
+        const upgrade = failure ? upgradePromptFromFailure(failure) : null;
+        if (upgrade) openUpgrade(upgrade);
+        throw new Error("apply failed");
+      }
       const data = (await response.json()) as { updated: number };
       setApplyState("applied");
       toaster.create({ type: "success", title: data.updated > 0 ? `Applied to ${data.updated} other clip${data.updated === 1 ? "" : "s"}` : "Every other clip already matches" });
@@ -224,9 +235,15 @@ export function TransitionsPanel() {
           </Box>
           <DurationControl value={duration} max={1.5} onChange={setDuration} label="Transition duration" />
           <SecondaryButton onClick={applyTransitionToClip}><Zap size={13} /> {canPersist ? "Apply to this clip" : "Preview on this clip"}</SecondaryButton>
-          <SecondaryButton disabled={!canPersist || applyState === "applying"} onClick={handleApplyToAll}>
-            <Layers size={13} />{applyState === "applying" ? "Applying…" : applyState === "applied" ? "Applied to all clips" : applyState === "error" ? "Try apply to all again" : "Apply to all clips"}
-          </SecondaryButton>
+          {!canPersist && motionPrompt?.tier ? (
+            <SecondaryButton onClick={() => openUpgrade(motionPrompt)}>
+              <Layers size={13} />Apply to all clips<StudioLockGem tier={motionPrompt.tier} />
+            </SecondaryButton>
+          ) : (
+            <SecondaryButton disabled={!canPersist || applyState === "applying"} onClick={handleApplyToAll}>
+              <Layers size={13} />{applyState === "applying" ? "Applying…" : applyState === "applied" ? "Applied to all clips" : applyState === "error" ? "Try apply to all again" : "Apply to all clips"}
+            </SecondaryButton>
+          )}
           <Text fontSize="12px" color="studio.fgSubtle" lineHeight="1.5">Need a subset? Use <Text as="span" color="studio.accentFg" textDecoration="underline"><Link href={`/projects/${clipInfo.projectId}`}>campaign selection</Link></Text> from the Clips view.</Text>
         </>
       ) : target ? (
@@ -249,7 +266,12 @@ export function TransitionsPanel() {
       {!canPersist ? (
         <Box bg="studio.subtle" borderRadius="10px" p="16px">
           <Text fontSize="14px" color="studio.fg" fontWeight="500">Motion preview is available</Text>
-          <Text mt="4px" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Creator and higher plans can save motion and include it in exports. <Text as="span" color="studio.accentFg" textDecoration="underline"><Link href="/settings/billing">View plans</Link></Text></Text>
+          <Text mt="4px" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Saving motion and including it in exports needs {motionPrompt?.tier ? PLAN_CATALOG[motionPrompt.tier].name : "a higher plan"}.</Text>
+          {motionPrompt?.tier ? (
+            <Box as="button" mt="8px" fontSize="13px" color="upgrade.fg" textDecoration="underline" textUnderlineOffset="3px" cursor="pointer" aria-haspopup="dialog" onClick={() => openUpgrade(motionPrompt)}>
+              See what {PLAN_CATALOG[motionPrompt.tier].name} adds
+            </Box>
+          ) : null}
         </Box>
       ) : null}
     </Stack>

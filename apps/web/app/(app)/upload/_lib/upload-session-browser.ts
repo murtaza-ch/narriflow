@@ -6,7 +6,11 @@ import {
   type UploadResumeRecord,
   type UploadResumeStorage,
 } from "./upload-resume";
-import { authenticatedRequestFailureMessage } from "@/lib/authenticated-request-browser";
+import {
+  authenticatedRequestFailureMessage,
+  upgradePromptFromFailure,
+} from "@/lib/authenticated-request-browser";
+import type { UpgradePrompt } from "@/app/(app)/_components/upgrade";
 
 type UploadProgress = {
   stage: "prepare" | "upload" | "finalize";
@@ -35,6 +39,8 @@ export interface UploadSessionBrowserSnapshot {
   etaSeconds: number | null;
   message: string;
   failureCode: string | null;
+  /** Set when a plan change would lift this refusal; the saved source and session stay as they are. */
+  upgrade: UpgradePrompt | null;
   canPause: boolean;
   canResume: boolean;
   canDiscard: boolean;
@@ -303,7 +309,10 @@ async function responsePayload(response: Response) {
 }
 
 class UploadSessionBrowserFailure extends Error {
-  constructor(readonly code: string, message: string,
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "UploadSessionBrowserFailure";
@@ -314,7 +323,7 @@ const UPLOAD_FAILURE_MESSAGES: Record<string, string> = {
   credits_exhausted:
     "This video needs more credits than your workspace has left this month. Review usage before retrying.",
   upload_too_long:
-    "This video is longer than your plan's per-video limit. Upgrade or choose a shorter file.",
+    "This video is longer than your plan's per-video limit. Choose a shorter file.",
   workspace_processing_capacity_reached:
     "Your workspace is processing as many videos as your plan allows. Try again when one finishes.",
   upload_session_idempotency_conflict:
@@ -349,7 +358,16 @@ function responseError(
         : response.status >= 500
           ? "upload_session_unavailable"
           : "upload_failed");
+  // The server states the exact credits or length it refused; the generic text is the fallback.
+  const serverMessage =
+    (code === "credits_exhausted" || code === "upload_too_long") &&
+    isRecord(payload) &&
+    typeof payload.message === "string" &&
+    payload.message
+      ? payload.message
+      : null;
   const message =
+    serverMessage ??
     UPLOAD_FAILURE_MESSAGES[code] ??
     authenticatedRequestFailureMessage(
       isRecord(payload)
@@ -371,7 +389,11 @@ function responseError(
       : `${window.location.pathname}${window.location.search}`,
       fallback,
     );
-  return new UploadSessionBrowserFailure(code, message);
+  return new UploadSessionBrowserFailure(
+    code,
+    message,
+    isRecord(payload) && isRecord(payload.details) ? payload.details : undefined,
+  );
 }
 
 class UploadHttpError extends Error {
@@ -912,6 +934,7 @@ const IDLE_UPLOAD_SNAPSHOT: UploadSessionBrowserSnapshot = Object.freeze({
   etaSeconds: null,
   message: "Choose a video or audio file to begin.",
   failureCode: null,
+  upgrade: null,
   canPause: false,
   canResume: false,
   canDiscard: false,
@@ -932,9 +955,18 @@ export function createUploadSessionBrowserAdapter(
   const lifecycleController = new AbortController();
   const listeners = new Set<() => void>();
 
-  const publish = (snapshot: UploadSessionBrowserSnapshot) => {
+  // The prompt belongs to the one failure that produced it, never to a later state.
+  let failureUpgrade: { code: string; prompt: UpgradePrompt | null } | null = null;
+
+  const publish = (snapshot: Omit<UploadSessionBrowserSnapshot, "upgrade">) => {
     if (disposed) return;
-    currentSnapshot = Object.freeze(snapshot);
+    currentSnapshot = Object.freeze({
+      ...snapshot,
+      upgrade:
+        snapshot.phase === "failed" && failureUpgrade?.code === snapshot.failureCode
+          ? failureUpgrade.prompt
+          : null,
+    });
     for (const listener of listeners) listener();
   };
 
@@ -1193,6 +1225,10 @@ export function createUploadSessionBrowserAdapter(
           return;
         }
         const failure = stableBrowserFailure(error);
+        failureUpgrade = {
+          code: failure.code,
+          prompt: upgradePromptFromFailure({ error: failure.code, message: failure.message, details: failure.details }),
+        };
         publish({
           ...currentSnapshot,
           phase: "failed",

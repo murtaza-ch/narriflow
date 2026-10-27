@@ -110,7 +110,6 @@ export type PublicationExportFacts = {
 };
 
 export interface PublicationFreezePorts {
-	providerEnabled(platform: SocialPlatform): boolean;
 	capabilityVersion(platform: SocialPlatform): string;
 	projectExists(input: { workspaceId: string; projectId: string }): Promise<boolean>;
 	readClip(input: { workspaceId: string; projectId: string; clipId: string }): Promise<{ editorRevision: number } | null>;
@@ -193,7 +192,6 @@ const publicationIntentFailureCatalog = {
 	social_post_not_found: "missing",
 	social_proposal_changed: "conflict",
 	social_proposal_unavailable: "conflict",
-	social_provider_publishing_disabled: "unavailable",
 	social_account_scope_missing: "unavailable",
 	tiktok_creator_settings_changed: "invalid",
 	tiktok_video_too_long: "invalid",
@@ -283,9 +281,6 @@ async function freezePublication(
 	ports: PublicationFreezePorts,
 	now: Date,
 ): Promise<PublicationFreezeResult> {
-	if (!ports.providerEnabled(input.platform)) {
-		throw new PublicationIntentStateError("social_provider_publishing_disabled", "Publishing for this provider is not enabled yet");
-	}
 	if (!await ports.projectExists(input)) {
 		throw new PublicationIntentStateError("project_not_found", "Project not found");
 	}

@@ -36,6 +36,8 @@ function fixture(type: (typeof WORKSPACE_BILLING_WAKE_EVENT_TYPES)[number]) {
           customer: "cus_contract",
           metadata: { workspaceId: "11111111-1111-4111-8111-111111111111" },
         }
+      : type.startsWith("subscription_schedule.")
+        ? { id: "sub_sched_contract", customer: "cus_contract", subscription: "sub_contract", metadata: { workspaceId: "11111111-1111-4111-8111-111111111111" } }
       : type.startsWith("invoice.")
         ? {
             id: "in_contract",
@@ -323,7 +325,7 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       expect(delivery.apiVersion).toBe(WORKSPACE_BILLING_STRIPE_API_VERSION);
       expect(delivery.customerId).toBe("cus_contract");
       expect(delivery.subscriptionId).toBe(
-        type.startsWith("customer.subscription") || type.startsWith("invoice.")
+        type.startsWith("customer.subscription") || type.startsWith("invoice.") || type.startsWith("subscription_schedule.")
           ? "sub_contract"
           : null,
       );

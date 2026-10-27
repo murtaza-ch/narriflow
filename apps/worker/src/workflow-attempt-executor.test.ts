@@ -107,6 +107,7 @@ test("the next-stage executor claims once and passes the exact attempt and conte
         expect(stage).toBe("clip_rendering");
         return attempt;
       },
+      releaseAttempt: async () => false,
       runAttempt: async (claimedAttempt, handler) => {
         expect(claimedAttempt).toBe(attempt);
         return handler(context);
@@ -146,6 +147,7 @@ test("worker shutdown reaches an active Workflow Attempt", async () => {
     signal: shutdown.signal,
     lifecycle: {
       claim: async () => attempt,
+      releaseAttempt: async () => false,
       runAttempt: async (_attempt, handler, options) => handler({
         signal: AbortSignal.any([new AbortController().signal, options?.signal ?? new AbortController().signal]),
         reportProgress: async () => {},
@@ -173,6 +175,7 @@ test("shutdown during claim never starts a Workflow Attempt handler", async () =
     signal: shutdown.signal,
     lifecycle: {
       claim: async () => { await claimGate; return null; },
+      releaseAttempt: async () => false,
       runAttempt: async () => { started = true; },
     },
     process: async () => { started = true; },
@@ -181,4 +184,36 @@ test("shutdown during claim never starts a Workflow Attempt handler", async () =
   releaseClaim();
   expect(await executing).toBe(0);
   expect(started).toBe(false);
+});
+
+test("shutdown during a successful claim releases the claim without executing it", async () => {
+  const shutdown = new AbortController();
+  const attempt = { workflowRunId: "late-run", projectId: "late-project", stage: "dubbing" as const, attemptId: "late-attempt", attemptCount: 1 } as ClaimedWorkflowAttempt & { stage: "dubbing" };
+  let releases = 0;
+  let executions = 0;
+  expect(await executeNextWorkflowAttempt({
+    stage: "dubbing",
+    signal: shutdown.signal,
+    lifecycle: {
+      claim: async () => { shutdown.abort(new Error("worker_shutdown")); return attempt; },
+      runAttempt: async () => { executions += 1; },
+      releaseAttempt: async (claimed: WorkflowAttemptRef) => { expect(claimed).toBe(attempt); releases += 1; return true; },
+    },
+    process: async () => { executions += 1; },
+  })).toBe(0);
+  expect(releases).toBe(1);
+  expect(executions).toBe(0);
+});
+
+test("a shutdown interruption is worker control flow rather than a poll failure", async () => {
+  const shutdown = new AbortController();
+  const attempt: WorkflowAttemptRef = { workflowRunId: "run", projectId: "project", stage: "dubbing", attemptId: "attempt", attemptCount: 1 };
+  expect(await executeClaimedWorkflowAttempt({
+    attempt,
+    signal: shutdown.signal,
+    lifecycle: {
+      runAttempt: async () => { shutdown.abort(new Error("worker_shutdown")); shutdown.signal.throwIfAborted(); },
+    },
+    process: async () => {},
+  })).toBe("interrupted");
 });

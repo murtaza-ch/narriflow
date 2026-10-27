@@ -18,6 +18,8 @@ import { Box, Flex, Input, Popover, Portal, Stack, Text } from "@chakra-ui/react
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { AccountAvatar } from "../../_components/account-menu";
+import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
+import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 import type { ReviewRoomData } from "./review-panel";
 import {
   activeShareRound,
@@ -30,11 +32,12 @@ import {
 
 export function ProjectShareButton({
   projectId,
-  available,
+  upgrade,
   actor,
 }: {
   projectId: string;
-  available: boolean;
+  /** What unlocks review rooms; `null` when the plan already has them. */
+  upgrade: UpgradePrompt | null;
   actor: {
     name: string;
     email: string | null;
@@ -44,6 +47,7 @@ export function ProjectShareButton({
   };
 }) {
   const router = useRouter();
+  const { openUpgrade } = useUpgrade();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<ReviewRoomData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -91,6 +95,8 @@ export function ProjectShareButton({
       });
       const payload = await response.json();
       if (!response.ok) {
+        const prompt = upgradePromptFromFailure(payload);
+        if (prompt) openUpgrade(prompt);
         throw new Error(payload.message || "Sharing could not be updated");
       }
       await loadRoom();
@@ -150,12 +156,20 @@ export function ProjectShareButton({
 
   const approval = activeRound ? reviewApprovalProgress(activeRound) : null;
 
+  if (upgrade) {
+    return (
+      <LockedButton size="sm" variant="subtle" prompt={upgrade}>
+        <Share2 size={16} aria-hidden /> Share
+      </LockedButton>
+    );
+  }
+
   return (
     <Popover.Root
       open={open}
       onOpenChange={(details) => {
         setOpen(details.open);
-        if (details.open && available && !data && !loading) void loadRoom();
+        if (details.open && !data && !loading) void loadRoom();
       }}
       positioning={{ placement: "bottom-end", offset: { mainAxis: 8 } }}
     >
@@ -179,18 +193,7 @@ export function ProjectShareButton({
                 </Text>
               </Box>
 
-              {!available ? (
-                <Stack gap="4" p="5">
-                  <Flex gap="3" align="start">
-                    <ShieldCheck size={18} aria-hidden />
-                    <Box>
-                      <Text fontWeight="650" fontSize="sm">Review sharing is a Business feature</Text>
-                      <Text color="fg.muted" fontSize="sm" mt="1">Upgrade once, then every project can use this flow without setup flags.</Text>
-                    </Box>
-                  </Flex>
-                  <Button asChild size="sm"><Link href="/settings/billing">View Business plan</Link></Button>
-                </Stack>
-              ) : loading && !data ? (
+              {loading && !data ? (
                 <Flex minH="190px" align="center" justify="center" gap="2" color="fg.muted">
                   <Spinner size="sm" />
                   <Text fontSize="sm">Loading sharing…</Text>

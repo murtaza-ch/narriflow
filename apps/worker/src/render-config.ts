@@ -18,15 +18,10 @@ export interface RenderConfig {
   readonly reframeModelPath: string;
   readonly reframeSampleFps: number;
   readonly reframeSceneThreshold: number;
-  readonly autoLayoutAnalysisEnabled: boolean;
   readonly autoLayoutBatchSize: number;
   readonly autoLayoutLeaseMs: number;
   readonly autoLayoutFailureBackoffMs: number;
-  readonly layoutEngineEnabled: boolean;
-  readonly screenLayoutEnabled: boolean;
-  readonly splitEnabled: boolean;
   readonly pipMotionThreshold: number;
-  readonly brollEnabled: boolean;
   readonly brollAssetCacheTtlMs: number;
   readonly pexelsConfigured: boolean;
 }
@@ -66,22 +61,6 @@ function boundedInteger(environment: RenderEnvironment, name: string, fallback: 
     throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
   }
   return value;
-}
-
-function binaryFlag(
-  environment: RenderEnvironment,
-  name: string,
-  fallback: boolean,
-): boolean {
-  const value = environment[name]?.trim();
-  if (value === undefined || value === "") return fallback;
-  if (value === "0") return false;
-  if (value === "1") return true;
-  throw new Error(`${name} must be either 0 or 1`);
-}
-
-function featureEnabled(environment: RenderEnvironment, name: string): boolean {
-  return binaryFlag(environment, name, true);
 }
 
 export function parseRenderConfig(
@@ -206,15 +185,10 @@ export function parseRenderConfig(
       4,
     ),
     reframeSceneThreshold,
-    autoLayoutAnalysisEnabled: featureEnabled(environment, "WORKER_AUTO_LAYOUT_ANALYSIS"),
     autoLayoutBatchSize: boundedInteger(environment, "WORKER_AUTO_LAYOUT_BATCH_SIZE", 2, 1, 10),
     autoLayoutLeaseMs: boundedInteger(environment, "WORKER_AUTO_LAYOUT_LEASE_MS", 180_000, 30_000, 900_000),
     autoLayoutFailureBackoffMs: boundedInteger(environment, "WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS", 300_000, 0),
-    layoutEngineEnabled: featureEnabled(environment, "WORKER_LAYOUT_ENGINE"),
-    screenLayoutEnabled: featureEnabled(environment, "WORKER_SCREEN_LAYOUT"),
-    splitEnabled: featureEnabled(environment, "WORKER_SPLIT"),
     pipMotionThreshold,
-    brollEnabled: featureEnabled(environment, "WORKER_BROLL"),
     brollAssetCacheTtlMs,
     pexelsConfigured: Boolean(environment.PEXELS_API_KEY?.trim()),
   });

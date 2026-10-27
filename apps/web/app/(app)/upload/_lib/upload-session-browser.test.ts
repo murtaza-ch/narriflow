@@ -2252,6 +2252,99 @@ describe("Upload Session browser adapter", () => {
     expect(storage.values.has(UPLOAD_RESUME_STORAGE_KEY)).toBe(true);
   });
 
+  test("keeps the selection and offers an upgrade when intake is refused for credits", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1])], "refused.wav", {
+      type: "audio/wav",
+      lastModified: 98,
+    });
+    const requests: string[] = [];
+    const adapter = createUploadSessionBrowserAdapter({
+      storage,
+      navigate: () => {
+        throw new Error("a refused upload must not navigate");
+      },
+      fetcher: async (request) => {
+        requests.push(String(request));
+        return Response.json(
+          {
+            error: "credits_exhausted",
+            message: "This video needs 40 credits, but the workspace has 10 of 60 Free credits left this month.",
+            requestId: "request-credits-1",
+            details: {
+              tier: "free",
+              limitCredits: 60,
+              remainingCredits: 10,
+              spentCredits: 50,
+              requestedCredits: 40,
+              renewsAt: "2026-11-01T00:00:00.000Z",
+            },
+          },
+          { status: 402 },
+        );
+      },
+    });
+
+    await adapter.start({
+      file: source,
+      title: "Refused",
+      brandTemplateId: null,
+      generationContext: { languageCode: "en", contentPack: {} },
+    });
+
+    expect(requests).toEqual(["/api/upload-sessions/open"]);
+    expect(adapter.snapshot()).toMatchObject({
+      phase: "failed",
+      failureCode: "credits_exhausted",
+      message: expect.stringContaining("needs 40 credits"),
+      upgrade: { tier: "creator", highlight: "300 credits a month" },
+    });
+    // No automatic retry, and the record that lets the same file resume survives.
+    expect(storage.values.has(UPLOAD_RESUME_STORAGE_KEY)).toBe(true);
+  });
+
+  test("offers no upgrade when no plan admits the source or the refusal is capacity", async () => {
+    const source = new File([new Uint8Array([1])], "long.wav", {
+      type: "audio/wav",
+      lastModified: 99,
+    });
+    const refuse = async (status: number, body: Record<string, unknown>) => {
+      const adapter = createUploadSessionBrowserAdapter({
+        storage: memoryStorage(),
+        navigate: () => {},
+        fetcher: async () => Response.json(body, { status }),
+      });
+      await adapter.start({
+        file: source,
+        title: "Refused",
+        brandTemplateId: null,
+        generationContext: { languageCode: "en", contentPack: {} },
+      });
+      return adapter.snapshot();
+    };
+
+    expect(
+      await refuse(422, {
+        error: "upload_too_long",
+        message: "This video is 181 min, over the 180-min per-video limit on the Pro plan. Choose a shorter video.",
+        details: { tier: "pro", maxSeconds: 10_800, seconds: 181 * 60, spentCredits: 0, requestedCredits: 181 },
+      }),
+    ).toMatchObject({ failureCode: "upload_too_long", upgrade: null, message: expect.stringContaining("Choose a shorter video") });
+    expect(
+      await refuse(429, {
+        error: "workspace_processing_capacity_reached",
+        message: "busy",
+        details: { tier: "free", inFlight: 2, inFlightLimit: 2 },
+      }),
+    ).toMatchObject({ failureCode: "workspace_processing_capacity_reached", upgrade: null });
+    expect(
+      await refuse(422, {
+        error: "upload_too_long",
+        details: { tier: "free", maxSeconds: 3600, seconds: 7200, spentCredits: 0, requestedCredits: 120 },
+      }),
+    ).toMatchObject({ upgrade: { tier: "creator", highlight: "Videos up to 2 hours" } });
+  });
+
   test("dispose stops local verification polling and navigation", async () => {
     const storage = memoryStorage();
     const source = new File([new Uint8Array([1])], "dispose.wav", {

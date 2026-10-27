@@ -1,4 +1,5 @@
 import { getPrismaClient } from "@narriflow/db/client";
+import { accessibleProjectWhere } from "./project-access";
 import { signReviewOptOutToken } from "./review-opt-out";
 import { decryptReviewValue, reviewDeliverySecret } from "./review.service";
 
@@ -143,10 +144,13 @@ export function createReviewNotificationStore(): ReviewNotificationStore {
     },
     async getContext(id) {
       const ledger = await requirePrisma().reviewNotificationLedger.findUnique({
-        where: { id },
+        where: { id, reviewRound: { project: accessibleProjectWhere() } },
         include: { reviewRound: { select: {
           id: true,
           title: true,
+          status: true,
+          revokedAt: true,
+          expiresAt: true,
           projectId: true,
           deliveryTokenEncrypted: true,
           workspaceId: true,
@@ -159,6 +163,8 @@ export function createReviewNotificationStore(): ReviewNotificationStore {
       const kind = ledger.kind as ReviewNotificationKind;
       if (!(["round_sent", "first_change_requested", "all_approved", "mention"] as const).includes(kind)) return null;
       const internal = kind === "first_change_requested" || kind === "all_approved";
+      if (!internal && (ledger.reviewRound.status !== "open" || ledger.reviewRound.revokedAt ||
+        (ledger.reviewRound.expiresAt && ledger.reviewRound.expiresAt <= new Date()))) return null;
       return {
         ledgerId: ledger.id,
         recipient: ledger.recipientEmail,

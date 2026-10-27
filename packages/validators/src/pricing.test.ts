@@ -9,6 +9,7 @@ import {
   PLAN_CATALOG,
   planFeatureSchema,
   planLimits,
+  planUpgradeHighlight,
   PRICING_TIER_ORDER,
   processingPeriodEnd,
   processingPeriodStart,
@@ -163,5 +164,21 @@ describe("billing", () => {
       expect(plan.annualPriceCents).toBeLessThan(plan.monthlyPriceCents * 12);
     }
     expect(PLAN_CATALOG.free.monthlyPriceCents).toBe(0);
+  });
+});
+
+describe("planUpgradeHighlight", () => {
+  test("states the plan's count for a count limit, singular and plural", () => {
+    expect(planUpgradeHighlight("creator", "brandProfiles")).toBe("Up to 1 Brand Profile");
+    expect(planUpgradeHighlight("pro", "brandProfiles")).toBe("Up to 4 Brand Profiles");
+    expect(planUpgradeHighlight("pro", "autopilotRules")).toBe("Up to 3 active Autopilot rules");
+  });
+
+  test("uses the plan's own highlight line for a feature gate", () => {
+    expect(planUpgradeHighlight("pro", "integrations.api")).toBe("REST API and MCP");
+    expect(planUpgradeHighlight("pro", "automation.autopilot")).toBe("Autopilot: 3 active rules");
+    expect(planUpgradeHighlight("business", "workspace.members")).toBe(
+      "Team members: Admins and Editors billed per seat, Viewers free",
+    );
   });
 });

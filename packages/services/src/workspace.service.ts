@@ -47,7 +47,6 @@ export { WORKSPACE_API_KEY_SCOPES, type WorkspaceApiKeyScope } from "@narriflow/
 export const workspaceOperationFailureCatalog = {
 	workspace_name_invalid: "invalid",
 	workspace_timezone_invalid: "invalid",
-	workspace_collaboration_disabled: "forbidden",
 	workspace_admin_invite_owner_required: "forbidden",
 	workspace_access_denied: "forbidden",
 	workspace_avatar_invalid: "invalid",
@@ -69,7 +68,6 @@ export const workspaceOperationFailureCatalog = {
 	workspace_owner_role_immutable: "conflict",
 	workspace_admin_peer_forbidden: "forbidden",
 	workspace_owner_removal_forbidden: "forbidden",
-	workspace_creation_disabled: "forbidden",
 	workspace_user_not_found: "missing",
 	workspace_limit_reached: "conflict",
 	workspace_checkout_state_invalid: "conflict",
@@ -89,17 +87,10 @@ export class WorkspaceOperationError extends ExpectedDomainFailureError<Workspac
 }
 
 export function assertWorkspaceInviteEntitlement(input: {
-  collaborationEnabled: boolean;
   pricingTier: PricingTier;
   actorRole: WorkspaceRole;
   invitedRole: Exclude<WorkspaceRole, "owner">;
 }): void {
-  if (!input.collaborationEnabled) {
-    throw new WorkspaceOperationError(
-      "workspace_collaboration_disabled",
-      "Workspace collaboration is not enabled for this account",
-    );
-  }
   // Any new member, Viewers included, needs a plan with team members. A
   // restricted Workspace below that plan can only remove or demote members.
   requirePlanFeature(input.pricingTier, "workspace.members");
@@ -157,17 +148,6 @@ export function normalizeWorkspaceName(value: string) {
   return name;
 }
 
-export function workspacesV1EnabledForUser(userId: string) {
-  if (["1", "true", "on"].includes(process.env.WORKSPACES_V1?.trim().toLowerCase() ?? "")) {
-    return true;
-  }
-  return (process.env.WORKSPACES_V1_USER_IDS ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .includes(userId);
-}
-
 export class WorkspaceService {
   async listAccessibleWorkspaces(userId: string) {
     return requiredPrisma().workspaceMember.findMany({
@@ -189,12 +169,6 @@ export class WorkspaceService {
   }
 
   async createPendingBusinessWorkspace(userId: string, input: { name: string }) {
-    if (!workspacesV1EnabledForUser(userId)) {
-      throw new WorkspaceOperationError(
-        "workspace_creation_disabled",
-        "Workspace creation is not enabled for this account",
-      );
-    }
     const prisma = requiredPrisma();
     const name = normalizeWorkspaceName(input.name);
     const [user, ownedCount, personalWorkspace] = await Promise.all([
@@ -466,10 +440,8 @@ export class WorkspaceService {
     workspaceId: string,
     input: { email: string; role: Exclude<WorkspaceRole, "owner"> },
   ) {
-    const collaborationEnabled = workspacesV1EnabledForUser(userId);
     const actor = await this.requireActor(userId, workspaceId, "members.invite");
     assertWorkspaceInviteEntitlement({
-      collaborationEnabled,
       pricingTier: actor.pricingTier,
       actorRole: actor.role,
       invitedRole: input.role,

@@ -13,6 +13,8 @@ import {
   discardUploadSessionSchema,
   finalizeUploadSessionSchema,
   MAX_UPLOAD_SIZE_BYTES,
+  MAX_UPLOAD_GRANT_TTL_SECONDS,
+  UPLOAD_SOURCE_CLEANUP_DELAY_MS,
   grantUploadPartsSchema,
   openUploadSessionSchema,
   readUploadSessionSchema,
@@ -57,6 +59,7 @@ import {
 import { workspaceService } from "./workspace.service";
 import { emitUploadIntakeFinished } from "./operation-finished";
 import { finishingColumn } from "./generation-finishing";
+import { admitMediaCleanupObligations } from "./media-cleanup";
 
 const MEBIBYTE = 1024 * 1024;
 const GIBIBYTE = 1024 * MEBIBYTE;
@@ -126,6 +129,9 @@ export function defaultUploadSessionConfig(
     throw new Error(
       "Invalid Upload Session configuration: smallFileThresholdBytes",
     );
+  }
+  if (config.uploadGrantTtlSeconds > MAX_UPLOAD_GRANT_TTL_SECONDS) {
+    throw new Error("Invalid Upload Session configuration: uploadGrantTtlSeconds");
   }
   if (
     config.multipartPartSizeBytes < 5 * MEBIBYTE ||
@@ -3111,7 +3117,7 @@ export function uploadSessionConfigFromEnv(
       env,
       "UPLOAD_GRANT_TTL_SECONDS",
       15 * 60,
-      { minimum: 60, maximum: 60 * 60 },
+      { minimum: 60, maximum: MAX_UPLOAD_GRANT_TTL_SECONDS },
     ),
     sessionIdleMs: configuredInteger(
       env,
@@ -3180,6 +3186,17 @@ function requiredPrisma() {
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("Database client unavailable");
   return prisma;
+}
+
+async function admitTerminatedUploadCleanup(tx: Prisma.TransactionClient, session: PrismaUploadSession, now: Date) {
+  if (session.transferKind !== "single") return;
+  await admitMediaCleanupObligations(tx.mediaCleanupObligation, [{
+    origin: "upload_session_termination",
+    cleanupClass: "upload_source",
+    projectId: session.preallocatedProjectId,
+    objectKey: session.storageKey,
+    notBefore: new Date(now.getTime() + UPLOAD_SOURCE_CLEANUP_DELAY_MS),
+  }]);
 }
 
 function completionPartsFromJson(value: Prisma.JsonValue | null) {
@@ -3522,7 +3539,10 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           status: "uploading",
           expiresAt: { gt: updatedAt },
           hardExpiresAt: { gt: updatedAt },
-          reconciliationAttemptId: null,
+          OR: [
+            { reconciliationAttemptId: null },
+            { reconciliationLeaseExpiresAt: { lte: updatedAt } },
+          ],
         },
         data: {
           status: "finalizing",
@@ -3531,6 +3551,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             parts,
           } satisfies Prisma.InputJsonValue,
           reconcileAt,
+          reconciliationAttemptId: null,
+          reconciliationLeaseExpiresAt: null,
           updatedAt,
         },
       });
@@ -3758,6 +3780,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       throw new UploadSessionReconciliationClaimLostError();
     }
     if (status === "failed") {
+      await admitTerminatedUploadCleanup(tx, row, updatedAt);
       await getProcessingUsage().release(tx, {
         projectId: row.preallocatedProjectId,
         reason: failureCode,
@@ -3943,7 +3966,10 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       where: {
         id: sessionId,
         status: "uploading",
-        reconciliationAttemptId: null,
+        OR: [
+          { reconciliationAttemptId: null },
+          { reconciliationLeaseExpiresAt: { lte: updatedAt } },
+        ],
       },
       data: {
         status: "compensating",
@@ -4040,6 +4066,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       throw new UploadSessionReconciliationClaimLostError();
     }
     // An Upload Session that ends without a handoff returns its reservation.
+    await admitTerminatedUploadCleanup(tx, row, updatedAt);
     await getProcessingUsage().release(tx, {
       projectId: row.preallocatedProjectId,
       reason: failureCode,

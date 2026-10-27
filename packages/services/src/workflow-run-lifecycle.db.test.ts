@@ -6,6 +6,7 @@ import {
   describe,
   expect,
   setDefaultTimeout,
+  setSystemTime,
   test,
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -176,6 +177,26 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const attempt = await lifecycle.claim("clip_rendering");
     if (!attempt) throw new Error("clip-rendering claim missing");
     return { attempt, lifecycle };
+  }
+
+  function eventClient(overrides: {
+    findMany?: (args: Parameters<PrismaClient["workflowEvent"]["findMany"]>[0]) => Promise<unknown>;
+    updateMany?: (args: Parameters<PrismaClient["workflowEvent"]["updateMany"]>[0]) => Promise<{ count: number }>;
+  }) {
+    return new Proxy(prisma, {
+      get(target, property) {
+        const value = Reflect.get(target, property);
+        if (property !== "workflowEvent") return typeof value === "function" ? value.bind(target) : value;
+        return new Proxy(target.workflowEvent, {
+          get(delegate, method) {
+            if (method === "findMany" && overrides.findMany) return overrides.findMany;
+            if (method === "updateMany" && overrides.updateMany) return overrides.updateMany;
+            const member = Reflect.get(delegate, method);
+            return typeof member === "function" ? member.bind(delegate) : member;
+          },
+        });
+      },
+    });
   }
 
   async function failAndClaimNextRenderAttempt(
@@ -1521,6 +1542,30 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ).toBe(0);
   });
 
+  test("a render retry retains its frozen work count when every variant was superseded", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const variant = await prisma.clipRender.create({
+      data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
+    });
+    const first = await claimRenderAttempt();
+    await first.lifecycle.beginRenderWorkSet(first.attempt);
+    await first.lifecycle.failAttempt(first.attempt, new WorkflowFailure("render_interrupted", "retryable", "retry"));
+    await prisma.clipRender.delete({ where: { id: variant.id } });
+    await prisma.workflowRun.update({
+      where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1_000) },
+    });
+    const retry = await claimRenderAttempt();
+    expect((await retry.lifecycle.beginRenderWorkSet(retry.attempt)).variantIds).toEqual([]);
+
+    expect(await retry.lifecycle.settleRenderWorkSet(retry.attempt)).toMatchObject({
+      status: "completed", requested: 1, succeeded: 0, failed: 0, superseded: 1,
+    });
+    expect(await prisma.workflowEvent.count({
+      where: { workflowRunId: run.id, notificationRequired: true },
+    })).toBe(0);
+  });
+
   test("retry exhaustion creates durable failed-render notification intent", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
@@ -2749,6 +2794,165 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ).toBe("running");
   });
 
+  test.each(["before execution", "during execution"])("graceful shutdown %s releases Workflow Attempts without spending retries", async (when) => {
+    for (const stage of ["stt", "moment_detection", "clip_rendering", "dubbing", "export_bundle"] as const) {
+      const { run } = await fixture(stage);
+      const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+      for (let shutdownCount = 0; shutdownCount < 4; shutdownCount += 1) {
+        const attempt = await lifecycle.claim(stage);
+        if (!attempt) throw new Error(`Missing ${stage} claim after shutdown ${shutdownCount}`);
+        const shutdown = new AbortController();
+        const reason = new Error("worker_shutdown");
+        if (when === "before execution") shutdown.abort(reason);
+        let executions = 0;
+        await expect(lifecycle.runAttempt(attempt, async ({ signal }) => {
+          executions += 1;
+          shutdown.abort(reason);
+          signal.throwIfAborted();
+        }, { signal: shutdown.signal })).rejects.toBe(reason);
+        expect(executions).toBe(when === "before execution" ? 0 : 1);
+        expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+          status: "queued", attemptCount: 0, attemptId: null, leaseOwner: null, leaseExpiresAt: null, errorCode: null,
+        });
+      }
+    }
+  });
+
+  test.each([
+    ["retry", "complete"], ["shutdown", "complete"], ["retry", "permanent failure"], ["shutdown", "retry exhaustion"],
+  ])("dubbing retains earlier completed outputs after %s and %s", async (interruption, ending) => {
+    const { run, project, workspace } = await fixture("dubbing");
+    const clip = await clipFixture(project.id, run.id);
+    const dubs = await Promise.all(["es", "fr"].map((targetLanguageCode) => prisma.clipDub.create({
+      data: { projectId: project.id, clipId: clip.id, targetLanguageCode, voice: "marin", model: "test" },
+    })));
+    await prisma.generatedMediaUsageReservation.createMany({ data: dubs.map((dub) => ({
+      jobId: dub.id, workspaceId: workspace.id, kind: "dub", policy: "metered", periodStart: new Date(Date.UTC(2026, 9, 1)), attachedAt: new Date(),
+    })) });
+    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const first = await lifecycle.claim("dubbing");
+    if (!first) throw new Error("first claim missing");
+    for (const dub of dubs) expect((await lifecycle.markDubProcessing(first, dub.id)).count).toBe(1);
+    await lifecycle.completeDub(first, dubs[0]!.id, {
+      status: "completed", transcriptText: "hello", translatedText: "hola", audioStorageKey: "tests/dub.mp3", renderStorageKey: "tests/dub.mp4",
+      audioSizeBytes: 100n, renderSizeBytes: 200n, durationSec: 5, completedAt: new Date(),
+    });
+    if (interruption === "shutdown") await lifecycle.releaseAttempt(first);
+    else await lifecycle.failAttempt(first, new WorkflowFailure("worker_interrupted", "retryable", "retry"));
+    await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1) } });
+    const next = await lifecycle.claim("dubbing");
+    if (!next) throw new Error("next claim missing");
+    expect((await lifecycle.markDubProcessing(next, dubs[1]!.id)).count).toBe(1);
+    await lifecycle.failDub(next, dubs[1]!.id, "translation_rejected");
+    if (ending === "complete") await lifecycle.completeDubbing(next);
+    else {
+      if (ending === "retry exhaustion") await prisma.workflowRun.update({ where: { id: run.id }, data: { attemptCount: 3 } });
+      await lifecycle.failAttempt(next, new WorkflowFailure("dubbing_failed", ending === "retry exhaustion" ? "retryable" : "permanent", "failed"));
+    }
+    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+      status: "partial", requestedCount: 2, succeededCount: 1, failedCount: 1,
+    });
+    expect((await prisma.clipDub.findUniqueOrThrow({ where: { id: dubs[0]!.id } })).status).toBe("completed");
+  });
+
+  test("terminal dubbing failure settles unclaimed queued siblings and releases their usage", async () => {
+    const { run, project, workspace } = await fixture("dubbing");
+    const clip = await clipFixture(project.id, run.id);
+    const dubs = await Promise.all(["es", "fr"].map((targetLanguageCode) => prisma.clipDub.create({
+      data: { projectId: project.id, clipId: clip.id, targetLanguageCode, voice: "marin", model: "test" },
+    })));
+    await prisma.generatedMediaUsageReservation.createMany({ data: dubs.map((dub) => ({
+      jobId: dub.id, workspaceId: workspace.id, kind: "dub", policy: "metered", periodStart: new Date(Date.UTC(2026, 9, 1)), attachedAt: new Date(),
+    })) });
+    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const attempt = await lifecycle.claim("dubbing");
+    if (!attempt) throw new Error("claim missing");
+    expect((await lifecycle.markDubProcessing(attempt, dubs[0]!.id)).count).toBe(1);
+    await lifecycle.failAttempt(attempt, new WorkflowFailure("provider_not_configured", "permanent", "failed"));
+    expect(await prisma.clipDub.findMany({ where: { projectId: project.id }, select: { status: true } }))
+      .toEqual([{ status: "failed" }, { status: "failed" }]);
+    expect(await prisma.generatedMediaUsageReservation.findMany({ where: { jobId: { in: dubs.map((dub) => dub.id) } }, select: { status: true } }))
+      .toEqual([{ status: "released" }, { status: "released" }]);
+    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }))
+      .toMatchObject({ status: "failed", requestedCount: 2, succeededCount: 0, failedCount: 2 });
+  });
+
+  test("shutdown release cannot refund an expired claim or change its replacement", async () => {
+    const { run } = await fixture();
+    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const old = await lifecycle.claim("dubbing");
+    if (!old) throw new Error("claim missing");
+    await prisma.workflowRun.update({ where: { id: run.id }, data: { leaseExpiresAt: new Date(Date.now() - 1) } });
+    expect(await lifecycle.releaseAttempt(old)).toBe(false);
+    expect(await lifecycle.reapExpiredAttempts()).toBe(1);
+    await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1) } });
+    const next = await lifecycle.claim("dubbing");
+    if (!next) throw new Error("replacement claim missing");
+    expect(await lifecycle.releaseAttempt(old)).toBe(false);
+    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "running", attemptCount: 2, attemptId: next.attemptId });
+    expect(await lifecycle.releaseAttempt(next)).toBe(true);
+    expect(await lifecycle.releaseAttempt(next)).toBe(false);
+    expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).attemptCount).toBe(1);
+  });
+
+  test("shutdown release leaves an accepted provider transcript waiting instead of submitting again", async () => {
+    const { run, project } = await fixture("stt");
+    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const attempt = await lifecycle.claim("stt");
+    if (!attempt) throw new Error("claim missing");
+    await lifecycle.waitForProvider(attempt, { providerJobId: "accepted-before-shutdown", nextPollAt: new Date(Date.now() + 60_000) });
+    expect(await lifecycle.releaseAttempt(attempt)).toBe(false);
+    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "waiting", attemptId: attempt.attemptId, attemptCount: 1 });
+    expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).providerJobId).toBe("accepted-before-shutdown");
+  });
+
+  test("shutdown release requeues unfinished renders and preserves completed and permanent outcomes", async () => {
+    const { run, project } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const variants = await Promise.all((["ratio_9_16", "ratio_1_1", "ratio_4_5"] as const).map((aspectRatio) =>
+      prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio } })));
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    for (const variant of variants) await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
+    await lifecycle.completeClipRenderVariant(attempt, variants[0]!.id, { storageKey: "tests/completed-before-shutdown.mp4", sizeBytes: 100, durationSec: 5 });
+    await lifecycle.failClipRenderVariant(attempt, variants[1]!.id, "invalid_source", "permanent");
+    expect(await lifecycle.releaseAttempt(attempt)).toBe(true);
+    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "queued", requestedCount: 3, attemptCount: 0 });
+    expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variants[0]!.id } })).toMatchObject({ status: "completed", storageKey: "tests/completed-before-shutdown.mp4" });
+    expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variants[1]!.id } })).toMatchObject({ status: "failed", failureDisposition: "permanent" });
+    expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variants[2]!.id } })).toMatchObject({ status: "pending", workflowAttemptId: null });
+    await expect(lifecycle.completeClipRenderVariant(attempt, variants[2]!.id, { storageKey: "tests/stale-shutdown.mp4", sizeBytes: 100, durationSec: 5 })).rejects.toBeInstanceOf(WorkflowAttemptLost);
+  });
+
+  test("shutdown releases a claim before an unresponsive handler returns", async () => {
+    const { run } = await fixture();
+    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const attempt = await lifecycle.claim("dubbing");
+    if (!attempt) throw new Error("claim missing");
+    let handlerStarted!: () => void;
+    let finishHandler!: () => void;
+    let claimReleased!: () => void;
+    const started = new Promise<void>((resolve) => { handlerStarted = resolve; });
+    const gate = new Promise<void>((resolve) => { finishHandler = resolve; });
+    const released = new Promise<void>((resolve) => { claimReleased = resolve; });
+    const release = lifecycle.releaseAttempt.bind(lifecycle);
+    lifecycle.releaseAttempt = async (owned) => { const changed = await release(owned); claimReleased(); return changed; };
+    const shutdown = new AbortController();
+    const reason = new Error("worker_shutdown");
+    const execution = lifecycle.runAttempt(attempt, async () => { handlerStarted(); await gate; }, { signal: shutdown.signal }).then(() => null, (error) => error);
+    await started;
+    try {
+      shutdown.abort(reason);
+      await released;
+      expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).status).toBe("queued");
+      finishHandler();
+      expect(await execution).toBe(reason);
+    } finally {
+      finishHandler();
+      await execution;
+    }
+  });
+
   test("heartbeat renews ownership and a live attempt is not reaped", async () => {
     const { run } = await fixture();
     const lifecycle = new WorkflowRunLifecycle({
@@ -2967,6 +3171,122 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       select: { seq: true },
     });
     expect(events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  test("Workflow Event delivery starts each lease when its work begins", async () => {
+    const { run } = await fixture();
+    const remaining: number[] = [];
+    let clock = Date.now();
+    let advanced = false;
+    const client = eventClient({ async updateMany(args) {
+      const result = await prisma.workflowEvent.updateMany(args);
+      if (!advanced && args?.data.deliveryLeaseOwner === null && args.data.lastDeliveryError === null) {
+        advanced = true;
+        clock += 31_000;
+        setSystemTime(new Date(clock));
+      }
+      return result;
+    } });
+    const lifecycle = new WorkflowRunLifecycle({ prisma: client, leaseOwner: randomUUID(), publishRedis: async (payload) => {
+      const event = await prisma.workflowEvent.findFirstOrThrow({ where: { workflowRunId: run.id, seq: payload.seq } });
+      remaining.push(event.deliveryLeaseExpiresAt!.getTime() - Date.now());
+      return true;
+    } });
+    const attempt = await lifecycle.claim("dubbing");
+    if (!attempt) throw new Error("claim missing");
+    await lifecycle.reportProgress(attempt, 20);
+    try {
+      clock = Date.now() + 1_000;
+      setSystemTime(new Date(clock));
+      expect(await lifecycle.dispatchEvents()).toBe(2);
+      expect(remaining).toHaveLength(2);
+      expect(remaining.every((value) => value > 0)).toBe(true);
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("Workflow Event claiming rechecks backoff after discovery", async () => {
+    const { run } = await fixture();
+    let published = 0;
+    let postponed = false;
+    const deferredUntil = new Date(Date.now() + 60_000);
+    const client = eventClient({ async findMany(args) {
+      const candidates = await prisma.workflowEvent.findMany(args);
+      if (!postponed && candidates.length) {
+        postponed = true;
+        await prisma.workflowEvent.updateMany({ where: { id: { in: candidates.map((event) => event.id) } }, data: { nextDeliveryAt: deferredUntil } });
+      }
+      return candidates;
+    } });
+    const lifecycle = new WorkflowRunLifecycle({ prisma: client, leaseOwner: randomUUID(), publishRedis: async () => { published += 1; return true; } });
+    await lifecycle.claim("dubbing");
+    expect(await lifecycle.dispatchEvents()).toBe(0);
+    expect(published).toBe(0);
+    expect(await prisma.workflowEvent.findFirstOrThrow({ where: { workflowRunId: run.id } })).toMatchObject({ nextDeliveryAt: deferredUntil, deliveryAttempts: 0 });
+  });
+
+  test("Workflow Event delivery reloads completed channel checkpoints after claiming", async () => {
+    const { run } = await fixture();
+    let published = 0;
+    let analytics = 0;
+    let checkpointed = false;
+    const client = eventClient({ async findMany(args) {
+      const candidates = await prisma.workflowEvent.findMany(args);
+      if (!checkpointed && candidates.length) {
+        checkpointed = true;
+        await prisma.workflowEvent.updateMany({ where: { id: { in: candidates.map((event) => event.id) } }, data: { redisPublishedAt: new Date() } });
+      }
+      return candidates;
+    } });
+    const lifecycle = new WorkflowRunLifecycle({ prisma: client, leaseOwner: randomUUID(),
+      publishRedis: async () => { published += 1; return true; }, publishAnalytics: async () => { analytics += 1; } });
+    const attempt = await lifecycle.claim("dubbing");
+    if (!attempt) throw new Error("claim missing");
+    await lifecycle.completeStage(attempt);
+    await prisma.workflowEvent.deleteMany({ where: { workflowRunId: run.id, analyticsRequired: false } });
+    expect(await lifecycle.dispatchEvents()).toBe(1);
+    expect(published).toBe(0);
+    expect(analytics).toBe(1);
+  });
+
+  test("a stale Workflow Event execution cannot clear a newer claim by the same worker", async () => {
+    const { run } = await fixture();
+    let firstStarted!: () => void;
+    let nextStarted!: () => void;
+    let failFirst!: (error: Error) => void;
+    let finishNext!: (result: boolean) => void;
+    const firstReady = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const nextReady = new Promise<void>((resolve) => { nextStarted = resolve; });
+    const firstGate = new Promise<boolean>((_resolve, reject) => { failFirst = reject; });
+    const nextGate = new Promise<boolean>((resolve) => { finishNext = resolve; });
+    let calls = 0;
+    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: "shared-event-worker", publishRedis: async () => {
+      calls += 1;
+      if (calls === 1) { firstStarted(); return firstGate; }
+      nextStarted(); return nextGate;
+    } });
+    await lifecycle.claim("dubbing");
+    const first = lifecycle.dispatchEvents();
+    await firstReady;
+    const event = await prisma.workflowEvent.findFirstOrThrow({ where: { workflowRunId: run.id } });
+    await prisma.workflowEvent.update({ where: { id: event.id }, data: { deliveryLeaseExpiresAt: new Date(Date.now() - 1) } });
+    const next = lifecycle.dispatchEvents();
+    await nextReady;
+    const claimed = await prisma.workflowEvent.findUniqueOrThrow({ where: { id: event.id } });
+    try {
+      failFirst(new Error("stale delivery failed"));
+      expect(await first).toBe(0);
+      expect(await prisma.workflowEvent.findUniqueOrThrow({ where: { id: event.id } })).toMatchObject({
+        deliveryLeaseOwner: claimed.deliveryLeaseOwner, lastDeliveryError: null, nextDeliveryAt: claimed.nextDeliveryAt,
+      });
+      finishNext(true);
+      expect(await next).toBe(1);
+      expect((await prisma.workflowEvent.findUniqueOrThrow({ where: { id: event.id } })).redisPublishedAt).not.toBeNull();
+    } finally {
+      failFirst(new Error("cleanup")); finishNext(true);
+      await Promise.allSettled([first, next]);
+    }
   });
 
   test("an unavailable Redis publisher is not acknowledged as delivered", async () => {

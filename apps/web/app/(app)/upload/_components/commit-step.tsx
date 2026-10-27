@@ -24,6 +24,7 @@ import { MediaWell } from "@narriflow/ui/components/media-well";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   creditsForSourceSeconds,
+  resolvePricingTier,
   type BrandTemplateSummary,
   type GenerationMode,
   type LinkProviderId,
@@ -42,13 +43,20 @@ import type { RecipeFormSettings } from "../_lib/recipe-settings";
 import { Switch } from "@narriflow/ui/components/switch";
 import { VideoPreview } from "./video-preview";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import type { UpgradePrompt } from "../../_components/upgrade";
+import { UploadRefusalUpgrade } from "./upload-session-status";
 import {
   fetchYoutubeMetadataAction,
   commitDriveImportAction,
   commitLinkImportAction,
 } from "../actions";
 import type { DrivePick } from "../_lib/google-drive-picker";
-import { isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import {
+  creditsUpgradePrompt,
+  isAuthenticatedActionFailure,
+  upgradePromptFromFailure,
+  uploadLengthUpgradePrompt,
+} from "@/lib/authenticated-request-browser";
 
 /** Failure notice: Labeled danger panel with an icon. */
 function ErrorNotice({ message }: { message: string }) {
@@ -76,6 +84,8 @@ function ErrorNotice({ message }: { message: string }) {
 
 interface UsageSummary {
   tier: string;
+  usedCredits: number;
+  reservedCredits: number;
   remainingCredits: number;
   limitCredits: number;
   maxUploadSeconds: number;
@@ -175,6 +185,8 @@ export function CommitStep({
 
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Set when the server refused this source for credits or length and a plan would admit it.
+  const [refusalUpgrade, setRefusalUpgrade] = useState<UpgradePrompt | null>(null);
 
   const youtubeId =
     linkProvider === "youtube" ? extractYoutubeId(linkUrl) : null;
@@ -226,13 +238,28 @@ export function CommitStep({
   // Guidance only; Processing Usage decides at admission and settlement.
   const wouldExceedMonthly =
     hasKnownDuration && estimatedCredits !== null && estimatedCredits > creditsLeft;
+  // The plan that would admit this video; null when none does (explanation only).
+  const tier = resolvePricingTier(usageSummary.tier);
+  const planLimitUpgrade = overUploadCap
+    ? // A plan that admits the length must also have room for its credits.
+      uploadLengthUpgradePrompt(tier, durationSec as number, {
+        spentCredits: usageSummary.usedCredits + usageSummary.reservedCredits,
+        requestedCredits: estimatedCredits as number,
+      })
+    : wouldExceedMonthly
+      ? creditsUpgradePrompt(
+          tier,
+          usageSummary.usedCredits + usageSummary.reservedCredits,
+          estimatedCredits as number,
+        )
+      : null;
   const planLimitMessage = overUploadCap
     ? // The per-upload cap is enforced against the full source duration
       // (sourceDurationSeconds), not the trimmed processing window — trimming
       // here cannot bring this under the cap, so the copy must not suggest it.
       `This video is about ${Math.round((durationSec as number) / 60)} min, over the ${Math.round(
         usageSummary.maxUploadSeconds / 60,
-      )}-min per-upload limit on your plan. Upgrade for longer uploads.`
+      )}-min per-upload limit on your plan.${planLimitUpgrade ? "" : " Choose a shorter video."}`
     : wouldExceedMonthly
       ? `This video needs ${estimatedCredits} credits, but your workspace has ${creditsLeft} of ${usageSummary.limitCredits} left this month.`
       : null;
@@ -240,6 +267,7 @@ export function CommitStep({
   async function handleCommit() {
     setSubmitting(true);
     setErrorMessage(null);
+    setRefusalUpgrade(null);
     const processingStartSec = hasCustomWindow ? Math.floor(startSec) : null;
     const processingEndSec = hasCustomWindow ? Math.floor(endSec) : null;
     const settings = {
@@ -261,6 +289,14 @@ export function CommitStep({
       : await commitLinkImportAction({ ...settings, url: linkUrl });
     if (!result.ok) {
       setErrorMessage(result.message);
+      // The link, Drive pick, and settings stay as they are; the owner can open the plan dialog.
+      setRefusalUpgrade(
+        upgradePromptFromFailure({
+          error: result.code,
+          message: result.message,
+          details: "details" in result ? result.details : undefined,
+        }),
+      );
       setSubmitting(false);
       return;
     }
@@ -453,8 +489,11 @@ export function CommitStep({
         </chakra.details>
 
         <Stack gap="2.5">
-          {planLimitMessage && <PlanLimitNotice message={planLimitMessage} />}
+          {planLimitMessage && (
+            <PlanLimitNotice message={planLimitMessage} upgrade={planLimitUpgrade} />
+          )}
           {errorMessage && <ErrorNotice message={errorMessage} />}
+          {errorMessage && refusalUpgrade && <UploadRefusalUpgrade prompt={refusalUpgrade} />}
           <Button
             onClick={handleCommit}
             disabled={submitting || overUploadCap || wouldExceedMonthly}

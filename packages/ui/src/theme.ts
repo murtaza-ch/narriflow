@@ -444,6 +444,23 @@ const config = defineConfig({
           },
           focusRing: { value: "{colors.warning.500}" },
         },
+        // Upgrade (soft gold) is reserved for paid-plan prompts: the Upgrade
+        // button, plan badges on locked features, and the credits menu. It
+        // never marks status, so it can't be confused with warning.
+        upgrade: {
+          solid: {
+            value: { _light: "{colors.warning.200}", _dark: "#4A3A14" },
+          },
+          solidHover: {
+            value: { _light: "{colors.warning.300}", _dark: "#5A4718" },
+          },
+          fg: {
+            value: { _light: "{colors.warning.800}", _dark: "{colors.warning.200}" },
+          },
+          subtle: {
+            value: { _light: "{colors.warning.50}", _dark: "#2A2210" },
+          },
+        },
         danger: {
           solid: {
             value: { _light: "{colors.danger.600}", _dark: "{colors.danger.500}" },

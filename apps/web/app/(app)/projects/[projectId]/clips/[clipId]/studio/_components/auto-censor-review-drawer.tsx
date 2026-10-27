@@ -16,7 +16,9 @@ import {
   type CensorSegment,
 } from "@narriflow/validators";
 import { formatTimecode } from "@/lib/format";
+import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "./studio-shell";
+import { StudioLockGem } from "./studio-lock-gem";
 import {
   autoCensorResultCountBucket,
   autoCensorSourceSpanKey,
@@ -154,7 +156,11 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
     setCensorSegments,
     updateProjectCensorTerms,
     recordAutoCensorEvent,
-  } = useStudio("editorDocument", "editorRevision", "utterances", "clipWindow", "autoCensorPolicy", "setCensorSegments", "updateProjectCensorTerms", "recordAutoCensorEvent");
+    upgradePrompts,
+  } = useStudio("editorDocument", "editorRevision", "utterances", "clipWindow", "autoCensorPolicy", "setCensorSegments", "updateProjectCensorTerms", "recordAutoCensorEvent", "upgradePrompts");
+  const { openUpgrade } = useUpgrade();
+  // Scanning and review stay free; only saving the edits is plan-locked.
+  const applyLock = autoCensorPolicy.canApply ? null : upgradePrompts.censoring;
   const availableTreatment = (Object.keys(autoCensorPolicy.treatments) as AutoCensorTreatment[])
     .find((treatment) => autoCensorPolicy.treatments[treatment]);
   const firstTreatment = availableTreatment ?? "caption_mask";
@@ -583,11 +589,21 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
         </Box>
 
         <Box px="6" py="5" borderTopWidth="1px" borderColor="studio.border" flexShrink={0}>
-          {!autoCensorPolicy.canApply && <Text mb="3" fontSize="13px" color="studio.fgMuted">Preview is free. Upgrade to Creator to save censor edits.</Text>}
-          {autoCensorPolicy.canApply && !hasWritableTreatment && <Text mb="3" fontSize="13px" color="studio.fgMuted">Scanning is available. Applying censor edits is temporarily unavailable.</Text>}
-          <PanelButton disabled={!autoCensorPolicy.canApply || !hasWritableTreatment || selectedCount === 0} onClick={apply}>
-            Apply {selectedCount > 0 ? selectedCount : "selected"} {selectedCount === 1 ? "edit" : "edits"}
-          </PanelButton>
+          {!hasWritableTreatment ? (
+            <Text mb="3" fontSize="13px" color="studio.fgMuted">Scanning is available. Applying censor edits is temporarily unavailable.</Text>
+          ) : !autoCensorPolicy.canApply ? (
+            <Text mb="3" fontSize="13px" color="studio.fgMuted">{applyLock?.tier ? `Preview is free. Saving censor edits needs ${PLAN_CATALOG[applyLock.tier].name}.` : "Preview is free. Saving censor edits isn't available."}</Text>
+          ) : null}
+          {applyLock?.tier && hasWritableTreatment ? (
+            <PanelButton disabled={selectedCount === 0} onClick={() => openUpgrade(applyLock)}>
+              Apply {selectedCount > 0 ? selectedCount : "selected"} {selectedCount === 1 ? "edit" : "edits"}
+              <StudioLockGem tier={applyLock.tier} />
+            </PanelButton>
+          ) : (
+            <PanelButton disabled={!autoCensorPolicy.canApply || !hasWritableTreatment || selectedCount === 0} onClick={apply}>
+              Apply {selectedCount > 0 ? selectedCount : "selected"} {selectedCount === 1 ? "edit" : "edits"}
+            </PanelButton>
+          )}
         </Box>
       </Flex>
     </>

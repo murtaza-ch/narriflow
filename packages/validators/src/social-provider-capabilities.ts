@@ -11,7 +11,7 @@ export const SOCIAL_PROVIDER_CAPABILITIES = {
   },
   facebook_reels: {
     version: "facebook-reels-2026-08-31", apiVersion: "v24.0", requiredScopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
-    connectionEnabled: true, publishingEnabledByDefault: false, aspectRatios: ["9:16"],
+    connectionEnabled: true, publishingEnabledByDefault: true, aspectRatios: ["9:16"],
     durationSec: { min: 4, max: 60 }, textLimit: 2_200, thumbnailTypes: ["provider_default"], thumbnailSources: [], titleField: true, firstCommentField: false, providerPolling: true, scheduling: true,
   },
   tiktok: {

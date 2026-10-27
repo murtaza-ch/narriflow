@@ -30,7 +30,7 @@ export type PublishingCompositionFacts = {
 	clips: ClipSnapshot[];
 	accounts: SocialAccountSnapshot[];
 	workspaceTimezone: string;
-	facebookPublishingEnabled: boolean;
+
 };
 export type PublishingOptions = {
 	privacyOptions: string[];
@@ -118,7 +118,7 @@ export function createPublishingCompositionSession(dependencies: {
 		clips: [],
 		accounts: [],
 		workspaceTimezone: "UTC",
-		facebookPublishingEnabled: false,
+
 	};
 	let copies: Record<string, PublishingGeneratedCopy> = {};
 	let generationRequests: Record<string, PublishingGenerationRequest> = {};
@@ -222,8 +222,7 @@ export function createPublishingCompositionSession(dependencies: {
 		return facts.accounts.filter(
 			(account) =>
 				account.status === "active" &&
-				account.publishingEligible &&
-				(account.platform !== "facebook_reels" || facts.facebookPublishingEnabled),
+				account.publishingEligible,
 		);
 	}
 	function pairs() {

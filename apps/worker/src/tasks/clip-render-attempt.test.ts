@@ -215,11 +215,7 @@ function createOrdinaryTracer(input: {
 		config: parseRenderConfig({
 			WORKER_RENDER_SOURCE_MODE: input.sourceMode ?? "download",
 			...(input.presignNeverResolves ? { WORKER_STORAGE_TIMEOUT_MS: "5" } : {}),
-			WORKER_LAYOUT_ENGINE: "0",
-			WORKER_SCREEN_LAYOUT: "0",
-			WORKER_SPLIT: "0",
-			WORKER_BROLL: "0",
-		}),
+			}),
 		lifecycle: {
 			beginRenderWorkSet: async () => {
 				beginCalls += 1;
@@ -580,11 +576,7 @@ function createUploadQueueTracer(input: {
 			...(input.configuredConcurrency === undefined
 				? {}
 				: { WORKER_UPLOAD_CONCURRENCY: String(input.configuredConcurrency) }),
-			WORKER_LAYOUT_ENGINE: "0",
-			WORKER_SCREEN_LAYOUT: "0",
-			WORKER_SPLIT: "0",
-			WORKER_BROLL: "0",
-		}),
+			}),
 		lifecycle: {
 			beginRenderWorkSet: async () => ({
 				variantIds: pendingRenders.map((render) => render.id),
@@ -812,11 +804,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 		},
 		config: parseRenderConfig({
 			WORKER_RENDER_SOURCE_MODE: "download",
-			WORKER_LAYOUT_ENGINE: "0",
-			WORKER_SCREEN_LAYOUT: "0",
-			WORKER_SPLIT: "0",
-			WORKER_BROLL: "0",
-		}),
+			}),
 		lifecycle: {
 			beginRenderWorkSet: async () => ({ variantIds: [pendingRender.id] }),
 			settleRenderWorkSet: async () => {
@@ -928,7 +916,7 @@ test("ClipRenderAttempt settles an empty frozen work set through execute", async
 				workspaceId: "workspace",
 			},
 		},
-		config: parseRenderConfig({ }),
+		config: parseRenderConfig({}),
 		lifecycle,
 		adapters: { diagnose: () => {} },
 	});
@@ -1032,7 +1020,7 @@ test("ClipRenderAttempt can reuse frozen injected adapters without retaining ano
 					sourceDurationSeconds: null,
 				},
 			},
-			config: parseRenderConfig({ }),
+			config: parseRenderConfig({}),
 			lifecycle: {
 				beginRenderWorkSet: async () => ({ variantIds: [] }),
 				settleRenderWorkSet: async () => expected,
@@ -1083,7 +1071,7 @@ test("ClipRenderAttempt rechecks cancellation after freezing an empty work set",
 				workspaceId: "workspace",
 			},
 		},
-		config: parseRenderConfig({ }),
+		config: parseRenderConfig({}),
 		lifecycle: {
 			beginRenderWorkSet: async () => {
 				controller.abort(new DOMException("cancelled", "AbortError"));
@@ -1132,7 +1120,7 @@ test("ClipRenderAttempt drives failure and cleanup through construction adapters
 				workspaceId: "workspace",
 			},
 		},
-		config: parseRenderConfig({ }),
+		config: parseRenderConfig({}),
 		lifecycle: {
 			beginRenderWorkSet: async () => ({ variantIds: ["variant-1"] }),
 			settleRenderWorkSet: async () => {
@@ -1334,11 +1322,7 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
 		},
 		config: parseRenderConfig({
 			WORKER_RENDER_SOURCE_MODE: "download",
-			WORKER_LAYOUT_ENGINE: "0",
-			WORKER_SCREEN_LAYOUT: "0",
-			WORKER_SPLIT: "0",
-			WORKER_BROLL: "0",
-		}),
+			}),
 		lifecycle: {
 			beginRenderWorkSet: async () => ({ variantIds: [pendingRender.id] }),
 			settleRenderWorkSet: async () => {

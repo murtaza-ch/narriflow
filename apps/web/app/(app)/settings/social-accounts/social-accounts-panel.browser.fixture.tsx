@@ -31,7 +31,7 @@ async function render(overrides: Partial<Parameters<typeof Panel>[0]> = {}) {
   const container = browser.document.createElement("div");
   browser.document.body.append(container);
   root = createRoot(container as unknown as HTMLElement);
-  await act(async () => { root.render(<ChakraProvider value={system}><Panel accounts={[]} connectedCount={null} errorCode={null} facebookSelectionToken={null} canManage accountLimit={3} connectRequirement={null} canManageBilling {...overrides} /></ChakraProvider>); });
+  await act(async () => { root.render(<ChakraProvider value={system}><Panel accounts={[]} connectedCount={null} errorCode={null} facebookSelectionToken={null} canManage accountLimit={3} connectRequirement={null} connectUpgrade={null} canManageBilling {...overrides} /></ChakraProvider>); });
   return container;
 }
 async function settle() { await act(async () => { await browser.happyDOM.waitUntilComplete(); }); }

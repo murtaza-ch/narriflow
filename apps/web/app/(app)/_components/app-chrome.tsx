@@ -3,8 +3,9 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { Box, chakra, Flex, Text } from "@chakra-ui/react";
-import { Gauge, UserPlus } from "lucide-react";
+import { Box, Flex, Text } from "@chakra-ui/react";
+import { UserPlus } from "lucide-react";
+import { hasFeature, lowestTierWithFeature, planUpgradeHighlight } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
 import { SettingsChrome } from "./settings-chrome";
@@ -16,6 +17,8 @@ import { MobileNav } from "./mobile-nav";
 import { AccountMenu } from "./account-menu";
 import { ThemeToggle } from "./theme-toggle";
 import { GlobalSearch } from "./global-search";
+import { CreditsMenu } from "./credits-menu";
+import { LockedButton } from "./upgrade";
 import { ShellHeader, ShellPanel } from "./shell-panel";
 import type { WorkspaceMenuPresentation, WorkspaceSwitcherItem } from "./workspace-switcher";
 import { switchWorkspaceAction } from "../_actions/workspace";
@@ -30,14 +33,17 @@ interface AppChromeProps {
   lastName: string | null;
   imageUrl: string | null;
   remainingCredits: number;
+  usedCredits: number;
+  reservedCredits: number;
   limitCredits: number;
+  creditsRenewAt: string;
   activeWorkspaceId: string;
   workspaceSelectionChanged: boolean;
   workspaceRole: "owner" | "admin" | "editor" | "viewer";
   workspaceStatus: "active" | "pending_payment" | "restricted";
   workspaceTier: "free" | "creator" | "pro" | "business";
   workspaces: WorkspaceSwitcherItem[];
-  canCreateWorkspace: boolean;
+
   workspaceMenu: WorkspaceMenuPresentation;
   children: React.ReactNode;
 }
@@ -98,36 +104,58 @@ function DesktopTopBar({
   lastName,
   imageUrl,
   remainingCredits,
+  usedCredits,
+  reservedCredits,
+  limitCredits,
+  creditsRenewAt,
   workspaceRole,
   workspaceStatus,
   workspaceTier,
   activeWorkspaceId,
 }: { workspaceName: string } & Pick<AppChromeProps,
-  | "email" | "firstName" | "lastName" | "imageUrl" | "remainingCredits" | "workspaceRole" | "workspaceStatus" | "workspaceTier" | "activeWorkspaceId">) {
+  | "email" | "firstName" | "lastName" | "imageUrl" | "remainingCredits" | "usedCredits" | "reservedCredits" | "limitCredits" | "creditsRenewAt" | "workspaceRole" | "workspaceStatus" | "workspaceTier" | "activeWorkspaceId">) {
   const pathname = usePathname();
   const section = pathname.split("/")[1] ?? "home";
   const title = ({ home: "Home", projects: "Projects", exports: "Exports", calendar: "Calendar", autopilot: "Autopilot", recipes: "Recipes", "brand-kit": "Brand kit", integrations: "Integrations", settings: "Settings", help: "Help", "whats-new": "What's new" } as Record<string, string>)[section] ?? "Workspace";
-  const canInvite = workspaceStatus === "active" && workspaceTier === "business" && (workspaceRole === "owner" || workspaceRole === "admin");
+  const canManageBilling = workspaceRole === "owner";
+  const hasMembers = hasFeature(workspaceTier, "workspace.members");
+  const membersTier = lowestTierWithFeature("workspace.members");
+  const canInvite = workspaceStatus === "active" && hasMembers && (workspaceRole === "owner" || workspaceRole === "admin");
   return (
     <ShellHeader crumbs={pathname.startsWith("/integrations/mcp") ? [workspaceName, title, "AI assistants"] : [workspaceName, title]} display={{ base: "none", lg: "flex" }}>
       <GlobalSearch workspaceId={activeWorkspaceId} />
-      <Button variant="ghost" size="sm" asChild>
-        <Link href="/settings/usage"><Gauge size={14} />{remainingCredits.toLocaleString()} credits left</Link>
-      </Button>
       {canInvite ? (
         <Button variant="subtle" size="sm" asChild>
           <Link href="/settings/members"><UserPlus size={14} />Invite</Link>
         </Button>
+      ) : !hasMembers && membersTier && canManageBilling && workspaceStatus === "active" ? (
+        <LockedButton
+          variant="subtle"
+          size="sm"
+          prompt={{
+            tier: membersTier,
+            headline: "Upgrade to work with your team",
+            highlight: planUpgradeHighlight(membersTier, "workspace.members"),
+            canManageBilling,
+          }}
+        >
+          <UserPlus size={14} />Invite
+        </LockedButton>
       ) : null}
-      {workspaceStatus === "pending_payment" && workspaceRole === "owner" ? (
+      {workspaceStatus === "pending_payment" && canManageBilling ? (
         <Button variant="subtle" size="sm" asChild>
           <Link href="/settings/billing">Complete setup</Link>
         </Button>
-      ) : workspaceTier !== "business" ? (
-        <Button variant="subtle" size="sm" asChild>
-          <Link href="/settings/billing">Upgrade</Link>
-        </Button>
       ) : null}
+      <CreditsMenu
+        remainingCredits={remainingCredits}
+        usedCredits={usedCredits}
+        reservedCredits={reservedCredits}
+        limitCredits={limitCredits}
+        renewsAt={creditsRenewAt}
+        tier={workspaceTier}
+        canManageBilling={canManageBilling && workspaceStatus === "active"}
+      />
       <ThemeToggle />
       <AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />
     </ShellHeader>
@@ -140,7 +168,14 @@ function FocusedTopBar({
   lastName,
   imageUrl,
   remainingCredits,
-}: Pick<AppChromeProps, "email" | "firstName" | "lastName" | "imageUrl" | "remainingCredits">) {
+  usedCredits,
+  reservedCredits,
+  limitCredits,
+  creditsRenewAt,
+  workspaceRole,
+  workspaceStatus,
+  workspaceTier,
+}: Pick<AppChromeProps, "email" | "firstName" | "lastName" | "imageUrl" | "remainingCredits" | "usedCredits" | "reservedCredits" | "limitCredits" | "creditsRenewAt" | "workspaceRole" | "workspaceStatus" | "workspaceTier">) {
   return (
     <ShellHeader
       start={
@@ -149,11 +184,15 @@ function FocusedTopBar({
         </Link>
       }
     >
-      <Link href="/settings/usage">
-        <Text fontSize="13px" color="fg.muted" mr={{ base: "0", sm: "2" }} whiteSpace="nowrap">
-          <chakra.span fontWeight="600" color="fg">{remainingCredits.toLocaleString()}</chakra.span> credits left
-        </Text>
-      </Link>
+      <CreditsMenu
+        remainingCredits={remainingCredits}
+        usedCredits={usedCredits}
+        reservedCredits={reservedCredits}
+        limitCredits={limitCredits}
+        renewsAt={creditsRenewAt}
+        tier={workspaceTier}
+        canManageBilling={workspaceRole === "owner" && workspaceStatus === "active"}
+      />
       <ThemeToggle />
       <AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />
     </ShellHeader>
@@ -180,14 +219,17 @@ export function AppChrome({
   lastName,
   imageUrl,
   remainingCredits,
+  usedCredits,
+  reservedCredits,
   limitCredits,
+  creditsRenewAt,
   activeWorkspaceId,
   workspaceSelectionChanged,
   workspaceRole,
   workspaceStatus,
   workspaceTier,
   workspaces,
-  canCreateWorkspace,
+
   workspaceMenu,
   children,
 }: AppChromeProps) {
@@ -229,6 +271,13 @@ export function AppChrome({
         <ShellPanel>
           <FocusedTopBar
             remainingCredits={remainingCredits}
+            usedCredits={usedCredits}
+            reservedCredits={reservedCredits}
+            limitCredits={limitCredits}
+            creditsRenewAt={creditsRenewAt}
+            workspaceRole={workspaceRole}
+            workspaceStatus={workspaceStatus}
+            workspaceTier={workspaceTier}
             email={email}
             firstName={firstName}
             lastName={lastName}
@@ -258,7 +307,7 @@ export function AppChrome({
         workspaces={workspaces}
         canCreate={workspaceRole !== "viewer" && workspaceStatus === "active"}
         workspaceMenu={workspaceMenu}
-        canCreateWorkspace={canCreateWorkspace}
+
       />
 
       {/* Mobile nav */}
@@ -273,7 +322,7 @@ export function AppChrome({
         workspaces={workspaces}
         canCreate={workspaceRole !== "viewer" && workspaceStatus === "active"}
         workspaceMenu={workspaceMenu}
-        canCreateWorkspace={canCreateWorkspace}
+
       />
 
       {/* Content — one rounded panel inset from the frame on desktop */}
@@ -294,6 +343,10 @@ export function AppChrome({
             lastName={lastName}
             imageUrl={imageUrl}
             remainingCredits={remainingCredits}
+            usedCredits={usedCredits}
+            reservedCredits={reservedCredits}
+            limitCredits={limitCredits}
+            creditsRenewAt={creditsRenewAt}
             workspaceRole={workspaceRole}
             workspaceStatus={workspaceStatus}
             workspaceTier={workspaceTier}

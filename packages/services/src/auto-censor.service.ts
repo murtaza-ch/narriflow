@@ -15,7 +15,6 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 import { hasFeature } from "./plan-features";
-import { isProgramWriteEnabled } from "./program-rollout";
 
 const autoCensorFailureCatalog = {
   auto_censor_forbidden: "forbidden",
@@ -65,9 +64,9 @@ export class AutoCensorService {
         workspaceAllowsCapability(scope, "content.edit") &&
         hasFeature(scope.pricingTier, "editor.censoring"),
       treatments: {
-        caption_mask: isProgramWriteEnabled("auto_censor_caption_masks"),
-        mute: isProgramWriteEnabled("auto_censor_mute"),
-        beep: isProgramWriteEnabled("auto_censor_beep"),
+        caption_mask: true,
+        mute: true,
+        beep: true,
       },
       planTier: resolvePricingTier(scope.pricingTier),
     } as const;

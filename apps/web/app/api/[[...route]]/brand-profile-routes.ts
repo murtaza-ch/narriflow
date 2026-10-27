@@ -19,7 +19,6 @@ import {
   listGeneratedMediaJobsSchema,
 } from "@narriflow/validators";
 import {
-  assertProgramWriteEnabled,
   brandFontService,
   brandProfileService,
   visualAssetService,
@@ -53,32 +52,32 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
 
   app.post("/brand-profiles", async (c) => {
     const { body } = authenticatedHonoInput<{ body: BrandProfileCreateInput }>(c);
-      assertProgramWriteEnabled("brand_profiles");
+
       return c.json(await brandProfileService.create(dependencies.getActor(c), body), 201);
   });
 
   app.patch("/brand-profiles/:id", async (c) => {
     const { id, body } = authenticatedHonoInput<{ id: string; body: BrandProfileUpdateInput }>(c);
-      assertProgramWriteEnabled("brand_profiles");
+
       return c.json(await brandProfileService.update(dependencies.getActor(c), id, body), 200);
   });
 
   app.put("/brand-profiles/:id/membership", async (c) => {
     const { id, body } = authenticatedHonoInput<{ id: string; body: BrandProfileMembershipInput }>(c);
-      assertProgramWriteEnabled(body.kind === "font" ? "brand_fonts" : "brand_profiles");
+
       return c.json(await brandProfileService.setMembership(dependencies.getActor(c), id, body), 200);
   });
 
   app.post("/brand-profiles/:id/set-default", async (c) => {
     const { id } = authenticatedHonoInput<{ id: string }>(c);
-      assertProgramWriteEnabled("brand_profiles");
+
       await brandProfileService.setDefault(dependencies.getActor(c), id);
       return c.json({ ok: true }, 200);
   });
 
   app.delete("/brand-profiles/:id", async (c) => {
     const { id, body } = authenticatedHonoInput<{ id: string; body: BrandProfileSoftDeleteInput }>(c);
-      assertProgramWriteEnabled("brand_profiles");
+
       await brandProfileService.softDelete(dependencies.getActor(c), id, body);
       return c.json({ ok: true }, 200);
   });
@@ -89,19 +88,19 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
 
   app.post("/visual-assets/presign-upload", async (c) => {
     const { body } = authenticatedHonoInput<{ body: VisualAssetUploadInput }>(c);
-      assertProgramWriteEnabled("visual_assets");
+
       return c.json(await visualAssetService.presignUpload(dependencies.getActor(c), body), 200);
   });
 
   app.post("/visual-assets", async (c) => {
     const { body } = authenticatedHonoInput<{ body: VisualAssetFinalizeInput }>(c);
-      assertProgramWriteEnabled("visual_assets");
+
       return c.json(await visualAssetService.finalizeUpload(dependencies.getActor(c), body), 201);
   });
 
   app.delete("/visual-assets/:id", async (c) => {
     const { id, body } = authenticatedHonoInput<{ id: string; body: ReusableAssetSoftDeleteInput }>(c);
-      assertProgramWriteEnabled("visual_assets");
+
       await visualAssetService.softDelete(dependencies.getActor(c), id, body);
       return c.json({ ok: true }, 200);
   });
@@ -122,7 +121,7 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
 
   app.post("/projects/:projectId/generated-media/jobs", async (c) => {
     const { projectId, body } = authenticatedHonoInput<{ projectId: string; body: unknown }>(c);
-      assertProgramWriteEnabled("generated_media");
+
       const input = createGeneratedImageSchema.parse(body);
       if (input.projectId !== projectId) throw new GeneratedMediaJobError("generated_media_origin_not_found");
       return c.json(await generatedMediaService.create(dependencies.getActor(c), input), 202);
@@ -151,19 +150,19 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
 
   app.post("/brand-profiles/:id/scene-templates", async (c) => {
     const { id, body } = authenticatedHonoInput<{ id: string; body: SceneTemplateCreateInput }>(c);
-      assertProgramWriteEnabled("brand_profiles");
+
       return c.json(await sceneTemplateService.create(dependencies.getActor(c), id, body), 201);
   });
 
   app.patch("/brand-profiles/:id/scene-templates/:templateId", async (c) => {
     const { id, templateId, body } = authenticatedHonoInput<{ id: string; templateId: string; body: SceneTemplateUpdateInput }>(c);
-      assertProgramWriteEnabled("brand_profiles");
+
       return c.json(await sceneTemplateService.update(dependencies.getActor(c), id, templateId, body), 200);
   });
 
   app.delete("/brand-profiles/:id/scene-templates/:templateId", async (c) => {
     const { id, templateId, body } = authenticatedHonoInput<{ id: string; templateId: string; body: SceneTemplateDeleteInput }>(c);
-      assertProgramWriteEnabled("brand_profiles");
+
       return c.json(await sceneTemplateService.softDelete(dependencies.getActor(c), id, templateId, body), 200);
   });
 
@@ -173,19 +172,19 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
 
   app.post("/brand-fonts/presign-upload", async (c) => {
     const { body } = authenticatedHonoInput<{ body: BrandFontUploadInput }>(c);
-      assertProgramWriteEnabled("brand_fonts");
+
       return c.json(await brandFontService.presignUpload(dependencies.getActor(c), body), 200);
   });
 
   app.post("/brand-fonts", async (c) => {
     const { body } = authenticatedHonoInput<{ body: BrandFontFinalizeInput }>(c);
-      assertProgramWriteEnabled("brand_fonts");
+
       return c.json(await brandFontService.finalizeUpload(dependencies.getActor(c), body), 201);
   });
 
   app.delete("/brand-fonts/:id", async (c) => {
     const { id, body } = authenticatedHonoInput<{ id: string; body: ReusableAssetSoftDeleteInput }>(c);
-      assertProgramWriteEnabled("brand_fonts");
+
       await brandFontService.softDelete(dependencies.getActor(c), id, body);
       return c.json({ ok: true }, 200);
   });

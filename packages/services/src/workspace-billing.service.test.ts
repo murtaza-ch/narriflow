@@ -1476,6 +1476,48 @@ describe("Workspace Billing", () => {
     expect(await billing.reconcileDueAccounts()).toMatchObject({ claimed: 1 });
   });
 
+  test("billing accounts do not exhaust their leases waiting for a worker slot", async () => {
+    let now = new Date("2026-08-28T10:00:00.000Z");
+    const workspaces = Array.from({ length: 8 }, (_, index) => ({
+      workspaceId: `workspace-bounded-${index}`,
+      personal: true,
+      hasNonOwnerMembers: false,
+      pricingTier: "free" as const,
+      status: "active" as const,
+      providerCustomerId: `cus_bounded_${index}`,
+    }));
+    const store = createInMemoryWorkspaceBillingStore(workspaces);
+    const providerCustomers: string[] = [];
+    const billing = createWorkspaceBillingModule({
+      catalog: { ...catalog, worker: { ...catalog.worker, concurrency: 1 } },
+      store,
+      provider: {
+        verifyDelivery: () => { throw new Error("not used"); },
+        retrieveCurrentState: async (customerId) => {
+          providerCustomers.push(customerId);
+          // Each call fits its 10-second deadline, but a whole batch does
+          // not fit the 60-second lease granted before it starts running.
+          now = new Date(now.getTime() + 9_000);
+          const workspace = workspaces.find((row) => row.providerCustomerId === customerId)!;
+          return {
+            customerId,
+            ownership: { kind: "verified", workspaceId: workspace.workspaceId },
+            subscriptions: [],
+          };
+        },
+      },
+      clock: { now: () => now },
+      diagnostics: { record: () => undefined },
+    });
+
+    for (const _workspace of workspaces) {
+      expect(await billing.reconcileDueAccounts()).toMatchObject({
+        reconciled: 1, staleSettlements: 0,
+      });
+    }
+    expect(providerCustomers.sort()).toEqual(workspaces.map((workspace) => workspace.providerCustomerId).sort());
+  });
+
   test("an expired claimant cannot replace a newer reconciliation", async () => {
     let now = new Date("2026-08-28T10:00:00.000Z");
     let releaseFirst!: (state: Awaited<ReturnType<WorkspaceBillingProvider["retrieveCurrentState"]>>) => void;
@@ -1966,6 +2008,7 @@ describe("Workspace Billing", () => {
         health: "current",
         renewalOrEndAt: "2026-09-01T00:00:00.000Z",
         cancelAtPeriodEnd: false,
+        planChange: null,
         graceDeadlineAt: null,
         lastSuccessfulSyncAt: now.toISOString(),
         desiredAdditionalSeats: 0,

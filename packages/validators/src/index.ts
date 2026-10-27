@@ -36,6 +36,7 @@ export * as restApiSchemas from "./rest-api";
 export * from "./output-type";
 export * from "./pricing";
 export * from "./billing-copy";
+export * from "./billing-plan-change";
 export * from "./project";
 export * from "./project-progress";
 export * from "./posting-schedule";

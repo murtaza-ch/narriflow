@@ -293,6 +293,19 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     expect((await summarizeGenerationUsage(ws.id)).images).toMatchObject({ used: 1, remaining: 9 });
   });
 
+  test("a Free refusal after paid images this month offers a plan with room for them", async () => {
+    // Downgraded to Free after the sample plus 29 paid images this month: Creator's
+    // 10 a month can't admit another image, so the offer must be Business, not Creator.
+    const { owner, workspace: ws } = await workspace("free", "month-history");
+    await prefill({ workspaceId: ws.id, kind: "image", count: 1, policy: "trial_metered" });
+    await prefill({ workspaceId: ws.id, kind: "image", count: 29 });
+    await expect(reserveImage(ws.id, owner.id, "free")).rejects.toMatchObject({
+      code: "plan_limit_reached",
+      details: { limit: "generatedImages", used: 1, max: 1, requiredTier: "business" },
+    });
+    expect((await summarizeGenerationUsage(ws.id)).images).toMatchObject({ used: 1, monthUsed: 30 });
+  });
+
   test("the Free image sample is lifetime, ignores paid history, and survives upgrade and downgrade", async () => {
     const { owner, workspace: ws } = await workspace("free");
     const sample = await reserveImage(ws.id, owner.id, "free");
@@ -401,6 +414,45 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { id: unknown.reservationId } }),
     ).toMatchObject({ status: "finalized", reason: "generation_subject_deleted" });
     expect((await summarizeGenerationUsage(ws.id)).images).toMatchObject({ used: 1, concurrency: { active: 0 } });
+  });
+
+  test("image claims fence expired owners and serialize cancellation with processing", async () => {
+    const { owner, workspace: ws } = await workspace("creator", "image-claims");
+    const { project } = await dubbableProject(ws.id, owner.id);
+    const id = randomUUID();
+    const reservation = await ledger.reserve({ kind: "image", jobId: id, workspaceId: ws.id, actorUserId: owner.id, pricingTier: "creator" });
+    await prismaGeneratedMediaStore.create(
+      imageRecord({ id, reservationId: reservation.reservationId, workspaceId: ws.id, actorUserId: owner.id, projectId: project.id }),
+    );
+    const startedAt = new Date();
+    const expiredAt = new Date(startedAt.getTime() + 1_000);
+    const firstClaim = randomUUID();
+    const secondClaim = randomUUID();
+    expect(await prismaGeneratedMediaStore.claim(id, firstClaim, startedAt, 1_000)).not.toBeNull();
+    await expect(prismaGeneratedMediaStore.updateClaimed(id, firstClaim, { status: "failed", updatedAt: expiredAt }))
+      .rejects.toMatchObject({ code: "generated_media_claim_lost" });
+    expect(await prismaGeneratedMediaStore.claim(id, secondClaim, expiredAt, 1_000)).not.toBeNull();
+    await expect(prismaGeneratedMediaStore.updateClaimed(id, firstClaim, { status: "failed", updatedAt: expiredAt }))
+      .rejects.toMatchObject({ code: "generated_media_claim_lost" });
+    await prismaGeneratedMediaStore.updateClaimed(id, secondClaim, { claimId: null, claimExpiresAt: null, updatedAt: expiredAt });
+
+    await prismaGeneratedMediaStore.update(id, { status: "running" });
+    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000, "cancel")).toBeNull();
+    await prismaGeneratedMediaStore.update(id, { status: "queued", providerUsageImages: 1 });
+    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000, "cancel")).toBeNull();
+    await prismaGeneratedMediaStore.update(id, { providerUsageImages: null });
+    await prismaGeneratedMediaStore.update(id, { outcomeUnknown: true });
+    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000)).toBeNull();
+    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000, "cancel")).toBeNull();
+    await prismaGeneratedMediaStore.update(id, { outcomeUnknown: false, retryAt: new Date(expiredAt.getTime() + 60_000) });
+    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000)).toBeNull();
+    const cancellationClaim = randomUUID();
+    expect(await prismaGeneratedMediaStore.claim(id, cancellationClaim, expiredAt, 1_000, "cancel")).not.toBeNull();
+    expect(await prismaGeneratedMediaStore.claim(id, randomUUID(), expiredAt, 1_000, "cancel")).toBeNull();
+    await prismaGeneratedMediaStore.updateClaimed(id, cancellationClaim, {
+      status: "cancelled", claimId: null, claimExpiresAt: null, updatedAt: expiredAt,
+    });
+    await ledger.release({ jobId: id, reservationId: reservation.reservationId, reason: "test_cancelled" });
   });
 
   test("deleting the actor, output, or Project never refunds a finalized count", async () => {

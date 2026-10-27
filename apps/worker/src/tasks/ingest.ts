@@ -39,6 +39,7 @@ import {
   LINK_PROVIDERS,
   MAX_MEDIA_DURATION_SECONDS,
   MAX_UPLOAD_SIZE_BYTES,
+  UPLOAD_SOURCE_CLEANUP_DELAY_MS,
   type LinkProviderId,
   type SourceProbe,
   zoomIngestPayloadSchema,
@@ -130,11 +131,6 @@ const r2SourceStorage: SourceStorage = {
     }
   },
 };
-
-// Upload grants live at most one hour (UPLOAD_GRANT_TTL_SECONDS). The
-// grantable key is deleted only after any grant for it has expired, so a late
-// PUT can't recreate an object nothing references.
-const GRANTABLE_UPLOAD_RELEASE_DELAY_MS = 70 * 60 * 1000;
 
 class IngestWorkerError extends Error {
   code: string;
@@ -399,7 +395,7 @@ async function runUploadFinalize(
   await runtime.lifecycle.pinSource(job, {
     sourceStorageKey: pinnedKey,
     releasedStorageKey: verified.storageKey,
-    releaseNotBefore: new Date(Date.now() + GRANTABLE_UPLOAD_RELEASE_DELAY_MS),
+    releaseNotBefore: new Date(Date.now() + UPLOAD_SOURCE_CLEANUP_DELAY_MS),
   });
 
   // ffprobe reads the header over range requests, so a presigned URL avoids

@@ -84,7 +84,6 @@ import {
   plannedCompositionVideoStyle,
   plannedSceneTextPreview,
 } from "./composition-preview-adapter";
-import { compositionCapabilities } from "./composition-capabilities";
 import {
   adoptResolvedAudioAssets,
   reconcileSelectedAudioAssets,
@@ -783,9 +782,7 @@ export function VideoPreview() {
         hasAudio: true,
       },
       evidence: {
-        automaticLayout: !compositionCapabilities.automaticSpeakerLayoutEnabled
-          ? { state: "disabled" }
-          : automaticLayoutAnalysis
+        automaticLayout: automaticLayoutAnalysis
             ? {
                 state: "available",
                 value: {
@@ -921,12 +918,12 @@ export function VideoPreview() {
       },
       capabilities: {
         automaticSpeakerLayout:
-          compositionCapabilities.automaticSpeakerLayoutEnabled,
+          true,
         automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE,
         explicitSplitLayout:
-          compositionCapabilities.explicitSplitLayoutEnabled,
+          true,
         splitEngineVersion,
-        screenLayout: compositionCapabilities.screenLayoutEnabled,
+        screenLayout: true,
         screenEngineVersion,
       },
       targets: [

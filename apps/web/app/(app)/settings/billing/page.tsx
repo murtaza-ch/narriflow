@@ -3,7 +3,7 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { billingService, projectService } from "@narriflow/services";
-import { planDefinition } from "@narriflow/validators";
+import { billingIntervalSchema, paidPricingTierSchema, planDefinition } from "@narriflow/validators";
 import { BillingPlans } from "./billing-plans";
 
 function reveal(index: number) {
@@ -17,7 +17,7 @@ function reveal(index: number) {
 export default async function BillingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ checkout?: string; session_id?: string }>;
+  searchParams: Promise<{ checkout?: string; session_id?: string; plan?: string; interval?: string }>;
 }) {
   const appUser = await admitWorkspacePage("content.view");
   const [billingView, usage, params] = await Promise.all([
@@ -88,6 +88,8 @@ export default async function BillingPage({
           }
           checkoutCancelled={params.checkout === "cancelled"}
           canManageBilling={appUser.workspace.role === "owner"}
+          focusTier={paidPricingTierSchema.safeParse(params.plan).data ?? null}
+          requestedInterval={billingIntervalSchema.safeParse(params.interval).data ?? null}
         />
       </Box>
     </Stack>

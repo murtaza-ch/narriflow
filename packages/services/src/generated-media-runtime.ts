@@ -13,7 +13,6 @@ import { prismaGeneratedMediaStore } from "./generated-media-prisma-store";
 import { generatedMediaPromptProtectionFromEnv } from "./generated-media-prompt-protection";
 import { createProductionGeneratedMediaPublisher } from "./generated-media-production-publisher";
 import { createPrismaGenerationUsageLedger, summarizeGenerationUsage } from "./generated-media-usage-ledger";
-import { assertProgramWriteEnabled } from "./program-rollout";
 import { openAiImageProviderFromEnv } from "./openai-image-provider";
 import { analyticsService } from "./analytics.service";
 import { visualAssetService } from "./visual-asset.service";
@@ -35,10 +34,6 @@ function createProductionModule(environment: NodeJS.ProcessEnv = process.env) {
     ids: randomUUID,
     maxAttempts: boundedInteger(environment.GENERATED_IMAGE_MAX_ATTEMPTS, 4, 1, 10),
     maxPromptCharacters: boundedInteger(environment.GENERATED_IMAGE_MAX_PROMPT_CHARACTERS, 4_000, 64, 20_000),
-    async authorizeAccess() {
-      // Plan entitlement and counts are enforced by the module and its ledger.
-      assertProgramWriteEnabled("generated_media", environment);
-    },
     async authorizeOrigin(scope, input) {
       const prisma = getPrismaClient();
       if (!prisma) throw new Error("Database client unavailable");

@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { ActorScope } from "./actor-scope";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
@@ -375,7 +375,7 @@ export function createCompletionCallbackProcessor(dependencies: CompletionCallba
   const secrets = createCallbackSigningSecrets({ prisma, cipher, now });
   const log = dependencies.log ?? ((entry) => console.warn(JSON.stringify(entry)));
 
-  async function claim(state: "waiting" | "pending", batchSize: number) {
+  async function* claim(state: "waiting" | "pending", batchSize: number) {
     const at = now();
     const due = state === "waiting" ? { nextObservationAt: { lte: at } } : { nextAttemptAt: { lte: at } };
     const free = { OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: at } }] };
@@ -385,35 +385,45 @@ export function createCompletionCallbackProcessor(dependencies: CompletionCallba
       take: batchSize,
       select: { id: true },
     });
-    const claimed = [];
     for (const candidate of candidates) {
+      // The batch is only a candidate list. Start each lease immediately
+      // before work, with an identity unique to this execution.
+      const claimedAt = now();
+      const claimOwner = `${leaseOwner}:${randomUUID()}`;
       const won = await prisma.completionCallback.updateMany({
-        where: { id: candidate.id, state, ...free },
-        data: { leaseOwner, leaseExpiresAt: new Date(at.getTime() + CALLBACK_LEASE_MS) },
+        where: { id: candidate.id, state,
+          ...(state === "waiting" ? { nextObservationAt: { lte: claimedAt } } : { nextAttemptAt: { lte: claimedAt } }),
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: claimedAt } }],
+        },
+        data: { leaseOwner: claimOwner, leaseExpiresAt: new Date(claimedAt.getTime() + CALLBACK_LEASE_MS) },
       });
-      if (won.count === 1) claimed.push(await prisma.completionCallback.findUniqueOrThrow({ where: { id: candidate.id } }));
+      if (won.count === 1) {
+        const row = await prisma.completionCallback.findFirst({ where: { id: candidate.id, state, leaseOwner: claimOwner } });
+        if (row) yield row;
+      }
     }
-    return claimed;
   }
 
-  const fenced = (id: string, state: "waiting" | "pending") => ({ id, state, leaseOwner });
+  const fenced = (row: { id: string; leaseOwner: string | null }, state: "waiting" | "pending") => ({
+    id: row.id, state, leaseOwner: row.leaseOwner, leaseExpiresAt: { gt: now() },
+  });
   const release = { leaseOwner: null, leaseExpiresAt: null };
 
   async function observe(batchSize = 25) {
     let frozen = 0;
-    for (const row of await claim("waiting", batchSize)) {
+    for await (const row of claim("waiting", batchSize)) {
       const status = await dependencies.readTrusted({ workspaceId: row.workspaceId }, { kind: row.operationKind as OperationKind, id: row.operationId });
       const at = now();
       const payload = buildCallbackPayload({ eventId: row.eventId, workspaceId: row.workspaceId, createdAt: at, status });
       if (!payload) {
         await prisma.completionCallback.updateMany({
-          where: fenced(row.id, "waiting"),
+          where: fenced(row, "waiting"),
           data: { ...release, observationCount: row.observationCount + 1, nextObservationAt: new Date(at.getTime() + nextObservationDelayMs(row.observationCount)) },
         });
         continue;
       }
       const updated = await prisma.completionCallback.updateMany({
-        where: fenced(row.id, "waiting"),
+        where: fenced(row, "waiting"),
         data: { ...release, state: "pending", payload: payload as unknown as Prisma.InputJsonValue, nextAttemptAt: at },
       });
       frozen += updated.count;
@@ -423,9 +433,15 @@ export function createCompletionCallbackProcessor(dependencies: CompletionCallba
 
   async function deliver(batchSize = 25) {
     let settled = 0;
-    for (const row of await claim("pending", batchSize)) {
+    for await (const row of claim("pending", batchSize)) {
       const payload = row.payload as unknown as CallbackPayload;
       const signing = await secrets.signingSecrets(row.workspaceId);
+      const renewedAt = now();
+      const renewed = await prisma.completionCallback.updateMany({
+        where: fenced(row, "pending"),
+        data: { leaseExpiresAt: new Date(renewedAt.getTime() + CALLBACK_LEASE_MS) },
+      });
+      if (renewed.count === 0) continue;
       const attempt = row.attempts + 1;
       const result = signing.length
         ? await deliverCallback({ url: cipher.open(row.encryptedUrl), payload, secrets: signing, now: now(), transport: dependencies.transport, resolver: dependencies.resolver })
@@ -435,7 +451,7 @@ export function createCompletionCallbackProcessor(dependencies: CompletionCallba
       const delay = disposition === "retry" ? nextAttemptDelayMs(attempt, random) : null;
       const state = disposition === "delivered" ? "delivered" : disposition === "cancelled" ? "cancelled" : delay === null ? "failed" : "pending";
       const updated = await prisma.completionCallback.updateMany({
-        where: fenced(row.id, "pending"),
+        where: fenced(row, "pending"),
         data: {
           ...release,
           state,

@@ -1,5 +1,7 @@
 "use client";
 
+import { UpgradeHero } from "../../_components/upgrade";
+import { TeamVisual } from "../../_components/upgrade-visuals";
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Input, Stack, Text, chakra } from "@chakra-ui/react";
@@ -17,6 +19,8 @@ import {
 import {
   BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS,
   formatUsdCents,
+  lowestTierWithFeature,
+  planUpgradeHighlight,
   type WorkspaceBillingView,
 } from "@narriflow/validators";
 import { formatDate } from "@/lib/format";
@@ -65,13 +69,12 @@ export function MembersPanel({
   const canManageMembers =
     (actorRole === "owner" || actorRole === "admin") &&
     (workspaceStatus === "active" || actorRole === "owner");
+  // Every invitation, Viewers included, needs the team entitlement and an
+  // active workspace; a restricted workspace can only remove or demote members.
   const canInviteViewer =
-    canManageMembers &&
-    (isBusiness || workspaceStatus === "restricted");
+    canManageMembers && isBusiness && workspaceStatus === "active";
   const canAddBillable =
-    canManageMembers &&
-    isBusiness &&
-    workspaceStatus === "active" &&
+    canInviteViewer &&
     billingView.health !== "attention_required" &&
     billingView.health !== "payment_action_required";
   const visibleMembers =
@@ -175,13 +178,26 @@ export function MembersPanel({
 
   return (
     <Stack gap="8">
+      {!isBusiness ? (
+        workspaceStatus === "restricted" ? null : (
+        <UpgradeHero
+          title="Bring your team into one workspace"
+          points={["Invite admins and editors, and add viewers for free.", "Share brand approval rules and client review rooms."]}
+          ctaLabel="Upgrade to invite your team"
+          visual={<TeamVisual />}
+          prompt={{
+            tier: lowestTierWithFeature("workspace.members"),
+            headline: "Upgrade to work with your team",
+            highlight: planUpgradeHighlight(lowestTierWithFeature("workspace.members") ?? "business", "workspace.members"),
+            canManageBilling: actorRole === "owner",
+          }}
+        />
+        )
+      ) : (
       <Box as="form" onSubmit={submitInvite} borderRadius="l3" bg="bg.panel" borderWidth="1px" borderColor="border.card" p="6">
         <Stack gap="4">
           <Flex align="center" gap="2"><Box color="fg.muted" display="flex"><UserPlus size={16} /></Box><Text fontSize="16px" fontWeight="500">Invite a member</Text></Flex>
-          {!isBusiness && workspaceStatus !== "restricted" ? (
-            <Text fontSize="13px" color="fg.muted">Collaboration is available on Business. Your personal workspace remains available on every plan.</Text>
-          ) : (
-            <Flex direction={{ base: "column", md: "row" }} gap="3" align={{ md: "flex-end" }}>
+          <Flex direction={{ base: "column", md: "row" }} gap="3" align={{ md: "flex-end" }}>
               <Stack gap="1.5" flex="1">
                 <chakra.label htmlFor="invite-email" fontSize="13px" fontWeight="500">Email address</chakra.label>
                 <Input ref={inviteEmailRef} id="invite-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="teammate@example.com" required disabled={!(role === "viewer" ? canInviteViewer : canAddBillable) || pending} />
@@ -198,9 +214,12 @@ export function MembersPanel({
                 />
               </Stack>
               <Button type="submit" size="sm" disabled={!(role === "viewer" ? canInviteViewer : canAddBillable) || pending}>{pending ? <Spinner size="xs" /> : <Mail size={14} />}Send invite</Button>
-            </Flex>
-          )}
-          {isBusiness ? (
+          </Flex>
+          {isBusiness && workspaceStatus !== "active" ? (
+            <Text fontSize="12px" color="fg.subtle">
+              Invitations are unavailable until billing is active. You can still remove or change members.
+            </Text>
+          ) : isBusiness ? (
             <Text fontSize="12px" color="fg.subtle">
               {role === "viewer" ? "Viewers are free." : `${role === "admin" ? "Admins" : "Editors"} add ${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.monthly)}/month or ${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.annual)}/year after acceptance.`}
             </Text>
@@ -211,6 +230,7 @@ export function MembersPanel({
           ) : null}
         </Stack>
       </Box>
+      )}
 
       {shouldShowSeatSyncStatus(billingView, actorRole) ? (
         <Box

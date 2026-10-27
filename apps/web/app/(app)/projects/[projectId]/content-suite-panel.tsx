@@ -25,6 +25,8 @@ import {
 } from "@narriflow/validators";
 import { PanelHeader } from "./panel-header";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
+import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 
 /** What each output is, shown before and while it is written. */
 const OUTPUT_DETAILS: Record<TextOutputType, { icon: ReactNode; description: string }> = {
@@ -295,14 +297,16 @@ export function ContentSuitePanel({
   projectId,
   transcriptReady,
   planRequirement,
-  canManageBilling,
+  upgrade,
 }: {
   projectId: string;
   transcriptReady: boolean;
   /** Why the plan can't generate, computed server-side; `null` when it can. */
   planRequirement: string | null;
-  canManageBilling: boolean;
+  /** The plan that unlocks generation; `null` when the plan already allows it. */
+  upgrade: UpgradePrompt | null;
 }) {
+  const { openUpgrade } = useUpgrade();
   const [assets, setAssets] = useState<ContentAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -358,6 +362,10 @@ export function ContentSuitePanel({
         message?: string;
         error?: string;
       };
+      if (res.status === 402) {
+        const prompt = upgradePromptFromFailure(json);
+        if (prompt) openUpgrade(prompt);
+      }
       if (!res.ok || !json.assets) {
         throw new Error(
           json.message ??
@@ -371,7 +379,7 @@ export function ContentSuitePanel({
     } finally {
       setGenerating(false);
     }
-  }, [projectId]);
+  }, [openUpgrade, projectId]);
 
   if (!transcriptReady) return null;
 
@@ -400,7 +408,7 @@ export function ContentSuitePanel({
         }
       />
 
-      <PlanLimitNotice message={planRequirement} actionLabel="See plans." canManageBilling={canManageBilling} />
+      <PlanLimitNotice message={planRequirement} upgrade={upgrade} />
 
       {error ? (
         <Flex

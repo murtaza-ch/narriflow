@@ -107,6 +107,7 @@ import {
 } from "./subtitle-lines";
 import type { TimelineSegment } from "./studio-types";
 import type { CompositionPlanQaFixture } from "./composition-plan-qa-fixture";
+import { NO_STUDIO_UPGRADE_PROMPTS, type StudioUpgradePrompts } from "./studio-upgrade";
 import type {
   StudioCompositionPlanStatus,
   StudioExportState,
@@ -439,6 +440,8 @@ interface StudioState {
   sceneWriteCapabilities: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
   generatedImagesCapability: Readonly<Pick<GeneratedImageCapability, "available" | "reason">>;
   autoCensorPolicy: StudioAutoCensorPolicy;
+  /** Upgrade dialog content for each plan-locked tool (null = not locked). */
+  upgradePrompts: StudioUpgradePrompts;
   /** 'blocked' is a distinct terminal state from 'error': it means autosave
    *  has permanently stopped (a 409/422 that a reload is needed to clear),
    *  as opposed to 'error''s transient/retryable failure. */
@@ -795,6 +798,7 @@ interface StudioShellProps {
   sceneWriteCapabilities?: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
   generatedImagesCapability?: Readonly<Pick<GeneratedImageCapability, "available" | "reason">>;
   autoCensorPolicy: StudioAutoCensorPolicy;
+  upgradePrompts?: StudioUpgradePrompts;
   updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
   recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
 }
@@ -831,8 +835,9 @@ export function StudioShell({
 	sceneFonts = [],
   sceneTemplates = [],
   sceneWriteCapabilities = { cards: false, images: false, videos: false, templates: false },
-  generatedImagesCapability = { available: false, reason: "rollout_disabled" },
+  generatedImagesCapability = { available: false, reason: "entitlement_required" },
   autoCensorPolicy,
+  upgradePrompts = NO_STUDIO_UPGRADE_PROMPTS,
   updateProjectCensorTerms,
   recordAutoCensorEvent,
 }: StudioShellProps) {
@@ -2172,7 +2177,7 @@ export function StudioShell({
     layoutScene, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
-    sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy,
+    sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy, upgradePrompts,
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
     resetState, canUndo, canRedo, canReset,
     editingElsewhere: draftRecoveryReady && writeOwnershipReady && !hasWriteOwnership,

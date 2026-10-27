@@ -27,7 +27,7 @@ const facts: PublishingCompositionFacts = {
 	clips: [clip],
 	accounts: [account],
 	workspaceTimezone: "Asia/Karachi",
-	facebookPublishingEnabled: true,
+
 };
 const scope = { actorId: id(5), workspaceId: id(6), projectId: id(7) };
 const storageKey = `narriflow:publishing:${scope.actorId}:${scope.workspaceId}:${scope.projectId}`;

@@ -48,10 +48,8 @@ export const reviewerOptOut = {
   confirm: (token: string) => reviewerOptOutService().confirm(token),
 };
 
-/** Emails the person who should hear that a grant paused itself. Follows the
- * operator switch the other notification emails use. */
+/** Emails the person who should hear that a grant paused itself. Uses the configured email provider. */
 async function emailPausedNotice(appBaseUrl: string | null, notice: GrantPausedNotice): Promise<GrantNoticeResult> {
-  if (process.env.NOTIFICATION_EMAILS_ENABLED?.trim() !== "true") return { sent: false, reason: "emails_disabled" };
   if (!appBaseUrl) return { sent: false, reason: "app_base_url_missing" };
   const email = await import("@narriflow/email/worker");
   const template = email.standingGrantPaused({

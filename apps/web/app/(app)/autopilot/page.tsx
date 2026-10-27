@@ -16,9 +16,12 @@ export default async function AutopilotPage({ searchParams }: { searchParams: Pr
 
   // Active and running rules hold a slot; paused or failed ones don't.
   const activeRules = rules.filter((rule) => rule.status === "active" || rule.status === "running").length;
+  const newRuleRequirement = planCountRequirement(appUser.pricingTier, "autopilotRules", activeRules);
   return (
     <AutopilotPanel
-      newRuleRequirement={planCountRequirement(appUser.pricingTier, "autopilotRules", activeRules)?.message ?? null}
+      newRuleRequirement={newRuleRequirement?.message ?? null}
+      newRuleUpgradeTier={newRuleRequirement?.requiredTier ?? null}
+      autopilotIncluded={hasFeature(appUser.pricingTier, "automation.autopilot")}
       canManageBilling={appUser.role === "owner"}
       initialRules={rules}
       recipes={recipes}

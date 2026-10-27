@@ -1640,6 +1640,36 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		).rejects.toMatchObject({ code: "export_bundle_empty" });
 	});
 
+	test("refuses export bundles on Creator with the typed plan requirement", async () => {
+		const current = await fixture("bundle-creator-denied");
+		await prisma.workspace.update({ where: { id: current.workspace.id }, data: { pricingTier: "creator" } });
+		const bundleService = new CampaignOperationService(async () => {
+			throw new Error("admission must not run");
+		});
+		const scope = {
+			actorUserId: current.user.id,
+			workspaceId: current.workspace.id,
+			projectId: current.project.id,
+			pricingTier: "creator" as const,
+			role: "owner" as const,
+			status: "active" as const,
+		};
+		const input = {
+			clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }],
+			aspectRatios: ["9:16" as const],
+			resolution: "1080p" as const,
+		};
+		const expected = {
+			code: "plan_feature_required",
+			kind: "payment_required",
+			details: { currentTier: "creator", requiredTier: "pro", feature: "export.bundles" },
+		};
+		await expect(bundleService.previewExportBundle(scope, input)).rejects.toMatchObject(expected);
+		await expect(
+			bundleService.createExportBundle({ ...scope, idempotencyKey: randomUUID() }, input),
+		).rejects.toMatchObject(expected);
+	});
+
 	test("retries an export bundle admission failure by source operation", async () => {
 		const current = await fixture("bundle-admission-retry");
 		const sourceKey = randomUUID();

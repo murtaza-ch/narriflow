@@ -490,13 +490,14 @@ export function createSocialPublicationAttempt(dependencies: {
 							operation = null;
 						}
 					}
+					const canReconcile = credentialCode === null && operation !== null;
 					const settled = await dependencies.store.settleUnknown({
 						owned: input.attempt,
 						code: failureCode,
 						operation,
 						sealedState: loaded.sealedCheckpoint,
-						canReconcile: false,
-						nextActionAt: null,
+						canReconcile,
+						nextActionAt: canReconcile ? new Date(now.getTime() + 30_000) : null,
 						now,
 					});
 					recordDiagnostic({
@@ -505,7 +506,7 @@ export function createSocialPublicationAttempt(dependencies: {
 						phase: settled.kind,
 						operation: operation?.kind ?? "platform_resolution",
 						outcome: settled.kind,
-						disposition: "attention",
+						disposition: canReconcile ? "reconcile" : "attention",
 						errorCode: failureCode,
 					});
 					return settled;

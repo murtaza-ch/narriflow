@@ -97,7 +97,6 @@ export {
 	type ReviewNotificationMailer,
 	type ReviewNotificationStore,
 } from "./review-notification.service";
-export { isSocialProviderPublishingEnabled } from "./social-publication-config";
 export {
 	brandFontService,
 	BrandFontService,
@@ -112,12 +111,15 @@ export {
 	assertBrandMutationAllowedWithAnalytics,
 	brandOwnerForWorkspace,
 	brandOwnerStoragePrefix,
+	brandCountRequirement,
 	brandOwnerWhere,
+	brandPlanRequirement,
 	isBrandAccessRefusal,
 	resolveBrandOwner,
 	BrandAccessError,
 	type BrandActorScope,
 	type BrandOwner,
+	type BrandPlanRequirement,
 } from "./brand-ownership";
 export {
 	clipService,
@@ -337,16 +339,6 @@ export {
 	AutoCensorAccessError,
 	AutoCensorService,
 } from "./auto-censor.service";
-export {
-	assertCampaignActionWriteEnabled,
-	assertProgramWriteEnabled,
-	campaignActionRolloutFromEnv,
-	campaignActionWriteEnabled,
-	isProgramWriteEnabled,
-	ProgramWriteDisabledError,
-	type CampaignActionRollout,
-	type ProgramReleaseGroup,
-} from "./program-rollout";
 export {
 	analyzeSceneDocumentMutation,
 	assertEditorDocumentFeatureDelta,

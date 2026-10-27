@@ -231,7 +231,7 @@ export const prismaGeneratedMediaStore: GeneratedMediaStore = {
   async updateClaimed(id, claimId, patch) {
     const prisma = requirePrisma();
     const result = await prisma.generatedMediaJob.updateMany({
-      where: { id, claimId },
+      where: { id, claimId, claimExpiresAt: { gt: patch.updatedAt } },
       data: {
         ...(patch.status ? { status: patch.status } : {}),
         ...(patch.moderationStatus ? { moderationStatus: patch.moderationStatus } : {}),
@@ -265,12 +265,14 @@ export const prismaGeneratedMediaStore: GeneratedMediaStore = {
     return result.count === 1;
   },
 
-  async claim(id, claimId, now, leaseMs) {
+  async claim(id, claimId, now, leaseMs, intent = "process") {
     const result = await requirePrisma().generatedMediaJob.updateMany({
       where: {
         id,
-        status: { in: ["queued", "running", "waiting"] },
-        OR: [{ retryAt: null }, { retryAt: { lte: now } }],
+        outcomeUnknown: false,
+        status: { in: intent === "cancel" ? ["queued", "waiting"] : ["queued", "running", "waiting"] },
+        ...(intent === "cancel" ? { providerUsageImages: null, resultAssetId: null } : {}),
+        ...(intent === "process" ? { OR: [{ retryAt: null }, { retryAt: { lte: now } }] } : {}),
         AND: [{ OR: [{ claimId: null }, { claimExpiresAt: { lte: now } }] }],
       },
       data: {

@@ -15,6 +15,7 @@ import {
   parseStoredContentPack,
   PLAN_CATALOG,
   pricingTierSchema,
+  lowestTier,
 } from "@narriflow/validators";
 import { createDriveTokenCipher, createGoogleDriveFileReader, DriveSourceError } from "./drive-source";
 import { projectRetentionService } from "./project-retention.service";
@@ -241,6 +242,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect((await reserve(module, ws.id, { declaredSeconds: 599.2 })).reservedSeconds).toBe(600);
     const tooLong = await refusal(reserve(module, ws.id, { declaredSeconds: 61 * 60 }));
     expect(tooLong).toMatchObject({ code: "upload_too_long", kind: "unprocessable", details: { maxSeconds: 3600 } });
+    expect(tooLong.message).toContain("Upgrade for longer videos.");
     await filler(ws.id, 1500);
     const over = await refusal(reserve(module, ws.id, { declaredSeconds: 26 * 60 }));
     expect(over).toMatchObject({
@@ -248,15 +250,26 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       kind: "payment_required",
       details: {
         remainingCredits: 25,
+        spentCredits: 35,
         requestedCredits: 26,
         limitCredits: 60,
         renewsAt: "2026-11-01T00:00:00.000Z",
       },
     });
+    expect(over.message).toContain(", or upgrade for more.");
     // 25 minutes and 0.5 s is 26 started minutes.
     expect((await refusal(reserve(module, ws.id, { declaredSeconds: 25 * 60 + 0.5 }))).code).toBe("credits_exhausted");
     expect((await reserve(module, ws.id, { declaredSeconds: 25 * 60 })).reservedSeconds).toBe(1500);
     expect((await refusal(reserve(module, ws.id))).code).toBe("credits_exhausted");
+
+    // The top plans promise nothing a higher plan cannot deliver.
+    const { workspace: top } = await workspace("business");
+    const topModule = usage();
+    const topTooLong = await refusal(reserve(topModule, top.id, { declaredSeconds: 181 * 60 }));
+    expect(topTooLong.message).toContain("Choose a shorter video.");
+    expect(topTooLong.message).not.toContain("Upgrade");
+    await filler(top.id, 1800 * 60);
+    expect((await refusal(reserve(topModule, top.id, { declaredSeconds: 5 * 60 }))).message).not.toContain("upgrade");
 
     const fresh = (await workspace("free")).workspace;
     // Unknown duration reserves the authorized upper bound.
@@ -269,6 +282,27 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       inFlightLimit: 10,
       maxUploadSeconds: 3600,
     });
+  });
+
+  test("a refusal after a downgrade reports what was actually spent", async () => {
+    clock = new Date();
+    const { workspace: ws } = await workspace("business");
+    const module = usage();
+    await filler(ws.id, 1000 * 60);
+    await prisma.workspace.update({ where: { id: ws.id }, data: { pricingTier: "pro" } });
+    // Pro includes 900: remaining clamps to 0, but 1,000 credits are spent and a
+    // one-credit import needs 1,001, which only Business (1,800) covers.
+    const refused = await refusal(reserve(module, ws.id, { declaredSeconds: 30 }));
+    expect(refused).toMatchObject({
+      code: "credits_exhausted",
+      details: { tier: "pro", limitCredits: 900, remainingCredits: 0, spentCredits: 1000, requestedCredits: 1 },
+    });
+    expect(refused.message).toContain(", or upgrade for more.");
+    // At Business's ceiling no plan covers one more credit.
+    await filler(ws.id, 800 * 60);
+    const none = await refusal(reserve(module, ws.id, { declaredSeconds: 30 }));
+    expect(none).toMatchObject({ details: { spentCredits: 1800 } });
+    expect(none.message).not.toContain("upgrade");
   });
 
   test("every started minute of a source is one whole credit", async () => {
@@ -297,6 +331,62 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 60, reservedCredits: 0, remainingCredits: 0 });
     expect((await refusal(reserve(module, ws.id, { declaredSeconds: 1 }))).code).toBe("credits_exhausted");
   });
+
+  test("a Project's credit guidance excludes its hold and follows retry admission after release", async () => {
+    clock = new Date("2026-12-15T08:30:00.000Z");
+    const { workspace: ws } = await workspace("creator");
+    const module = usage();
+    const project = await measuredProject(ws.id, 61 * 60);
+    await reserve(module, ws.id, { projectId: project.id, declaredSeconds: 61 * 60 });
+    // The summary includes it, so guidance about this Project subtracts it once.
+    expect((await module.summarize(ws.id)).reservedCredits).toBe(61);
+    expect(await module.projectCreditUsage(project.id)).toEqual({
+      periodStart: new Date("2026-12-01T00:00:00.000Z"), spentCredits: 0,
+    });
+    await settle(module, project.id);
+    expect((await module.projectCreditUsage(project.id))?.spentCredits).toBe(61);
+
+    const released = await measuredProject(ws.id, 120);
+    await reserve(module, ws.id, { projectId: released.id, declaredSeconds: 120 });
+    clock = new Date("2027-01-02T00:00:00.000Z");
+    await filler(ws.id, 200 * 60);
+    await prisma.$transaction((tx) => module.release(tx, { projectId: released.id, reason: "ingest_failed" }));
+    expect(await module.projectCreditUsage(released.id)).toEqual({
+      periodStart: new Date("2027-01-01T00:00:00.000Z"), spentCredits: 200,
+    });
+    expect(await module.projectCreditUsage(randomUUID())).toBeNull();
+  });
+
+  for (const scenario of [
+    { priorCredits: 1000, currentCredits: 0, tier: "business" },
+    { priorCredits: 0, currentCredits: 1800, tier: "creator" },
+  ] as const) {
+    test(`cross-month guidance with ${scenario.priorCredits} prior and ${scenario.currentCredits} current credits admits settlement on ${scenario.tier}`, async () => {
+      clock = new Date("2026-09-30T23:59:00.000Z");
+      const { workspace: ws } = await workspace("business");
+      const module = usage();
+      if (scenario.priorCredits) await filler(ws.id, scenario.priorCredits * 60);
+      const project = await measuredProject(ws.id, 61 * 60);
+      await reserve(module, ws.id, { projectId: project.id, declaredSeconds: 61 * 60 });
+      clock = new Date("2026-10-01T00:01:00.000Z");
+      if (scenario.currentCredits) await filler(ws.id, scenario.currentCredits * 60);
+      await prisma.workspace.update({ where: { id: ws.id }, data: { pricingTier: "free" } });
+
+      expect((await module.summarize(ws.id)).reservedCredits).toBe(scenario.currentCredits);
+      const creditUsage = await module.projectCreditUsage(project.id);
+      expect(creditUsage).toEqual({
+        periodStart: new Date("2026-09-01T00:00:00.000Z"), spentCredits: scenario.priorCredits,
+      });
+      const offeredTier = lowestTier((plan) =>
+        plan.limits.maxSourceSeconds >= 61 * 60 && plan.limits.monthlyCredits >= creditUsage!.spentCredits + 61,
+      );
+      expect(offeredTier).toBe(scenario.tier);
+      await prisma.workspace.update({ where: { id: ws.id }, data: { pricingTier: offeredTier! } });
+      expect(await settle(module, project.id)).toEqual({ outcome: "settled", charged: true, settledSeconds: 61 * 60 });
+      expect((await row(project.id)).periodStart).toEqual(new Date("2026-09-01T00:00:00.000Z"));
+      expect((await module.summarize(ws.id)).reservedCredits).toBe(scenario.currentCredits);
+    });
+  }
 
   test("the summary's credit parts sum to the limit and renew on the next UTC month", async () => {
     clock = new Date("2026-12-15T08:30:00.000Z");
@@ -461,7 +551,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     const exhausted = await refusal(module.resize({ projectId, seconds: 1501 }));
     expect(exhausted).toMatchObject({
       code: "credits_exhausted",
-      details: { remainingCredits: 25, requestedCredits: 26 },
+      details: { remainingCredits: 25, spentCredits: 35, requestedCredits: 26 },
     });
     expect((await row(projectId)).reservedSeconds).toBe(1200);
     expect((await module.resize({ projectId, seconds: 1500 })).reservedSeconds).toBe(1500);

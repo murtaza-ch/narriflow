@@ -541,6 +541,8 @@ describe("Upload Session", () => {
     expect(() =>
       uploadSessionConfigFromEnv({ UPLOAD_MULTIPART_CONCURRENCY: "0" }),
     ).toThrow("UPLOAD_MULTIPART_CONCURRENCY");
+    expect(() => defaultUploadSessionConfig({ uploadGrantTtlSeconds: 3_601 }))
+      .toThrow("uploadGrantTtlSeconds");
   });
 
   test("opens one workspace-owned multipart session without creating an empty Project", async () => {
@@ -2536,6 +2538,7 @@ describe("Upload Session", () => {
           tier: "free",
           limitCredits: 60,
           remainingCredits: 0,
+          spentCredits: 60,
           requestedCredits: null,
           renewsAt: "2026-11-01T00:00:00.000Z",
         },

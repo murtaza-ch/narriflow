@@ -2102,8 +2102,7 @@ async function renderClipGroup(input: {
 	// didn't ask to see it repeated.
 	let brollPlan: BrollPlan | null = null;
 	const brollEnabled =
-		currentRenderConfig().pexelsConfigured &&
-		currentRenderConfig().brollEnabled;
+		currentRenderConfig().pexelsConfigured;
 	const userBrollUrl = editorDocument.brollUrl;
 	if (
 		(brollEnabled || userBrollUrl) &&
@@ -2386,7 +2385,6 @@ async function renderClipGroup(input: {
 
 	// Missing or unavailable evidence stays planner input and produces an
 	// explicit Center fallback. The persisted plan is shared with Studio.
-	const layoutEngineEnabled = currentRenderConfig().layoutEngineEnabled;
 	const compositionSourceIdentity = compositionAssetRef(
 		"source",
 		run.projectId,
@@ -2608,9 +2606,9 @@ async function renderClipGroup(input: {
 				split: clip.splitLayoutAnalysis,
 			},
 			enabled: {
-				automatic: layoutEngineEnabled,
-				screen: currentRenderConfig().screenLayoutEnabled,
-				split: currentRenderConfig().splitEnabled,
+				automatic: true,
+				screen: true,
+				split: true,
 			},
 			hasBroll: Boolean(brollPlan),
 			pipMotionThreshold: currentRenderConfig().pipMotionThreshold,
@@ -2693,11 +2691,11 @@ async function renderClipGroup(input: {
 					sceneFonts: sceneFontAvailability,
 				},
 				capabilities: {
-					automaticSpeakerLayout: layoutEngineEnabled,
+					automaticSpeakerLayout: true,
 					automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE,
-					explicitSplitLayout: currentRenderConfig().splitEnabled,
+					explicitSplitLayout: true,
 					splitEngineVersion: "explicit-split-v1",
-					screenLayout: currentRenderConfig().screenLayoutEnabled,
+					screenLayout: true,
 					screenEngineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
 				},
 				targets: outputs.map((output) => {
@@ -3029,11 +3027,11 @@ async function renderClipGroup(input: {
 							: {}),
 				},
 				capabilities: {
-					automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
+					automaticSpeakerLayout: true,
 					automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE,
-					explicitSplitLayout: currentRenderConfig().splitEnabled,
+					explicitSplitLayout: true,
 					splitEngineVersion: "explicit-split-v1",
-					screenLayout: currentRenderConfig().screenLayoutEnabled,
+					screenLayout: true,
 					screenEngineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
 				},
 				targets: outputs.map((output) => {

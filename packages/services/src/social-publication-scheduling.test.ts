@@ -87,8 +87,8 @@ const readyExport: PublicationExportFacts = {
 const preparingExport: PublicationExportFacts = { ...readyExport, variants: readyExport.variants.map((variant) => ({ ...variant, status: "queued", storageKey: null, sizeBytes: null, durationSec: null })) };
 function makePorts(overrides: Partial<PublicationFreezePorts> = {}): PublicationFreezePorts {
 	return {
-		providerEnabled: () => true,
-		capabilityVersion: () => "youtube-2026-08",
+
+capabilityVersion: () => "youtube-2026-08",
 		projectExists: async () => true,
 		readClip: async () => ({ editorRevision: 7 }),
 		readAccount: async () => ({ workspaceId: "workspace-1", platform: "youtube_shorts", status: "active", expiresAt: null, canRefresh: false }),
@@ -416,8 +416,8 @@ describe("publication freeze policy through admission", () => {
 		let unavailable = false;
 		const mutableRead = () => { if (unavailable) throw new Error("mutable facts unavailable"); };
 		const h = policyHarness({
-			providerEnabled: () => { mutableRead(); return true; },
-			projectExists: async () => { mutableRead(); return true; },
+
+projectExists: async () => { mutableRead(); return true; },
 			readClip: async () => { mutableRead(); return { editorRevision: 7 }; },
 			readAccount: async () => { mutableRead(); return { workspaceId: actor.workspaceId, platform: "youtube_shorts", status: "active", expiresAt: null, canRefresh: false }; },
 			readExport: async () => { mutableRead(); return readyExport; },
@@ -454,7 +454,7 @@ describe("publication freeze policy through admission", () => {
 	});
 
 	test.each([
-		{ code: "social_provider_publishing_disabled", ports: { providerEnabled: () => false } },
+
 		{ code: "project_not_found", ports: { projectExists: async () => false } },
 		{ code: "clip_not_found", ports: { readClip: async () => null } },
 		{ code: "editor_revision_conflict", ports: { readClip: async () => ({ editorRevision: 8 }) } },

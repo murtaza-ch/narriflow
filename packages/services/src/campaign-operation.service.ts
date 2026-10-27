@@ -44,12 +44,7 @@ import {
   ClipEditorDocumentPersistenceError,
   ClipEditorRevisionConflictError,
 } from "./clip-editor-document-persistence";
-import { hasFeature, requirePlanFeature } from "./plan-features";
-import {
-  assertCampaignActionWriteEnabled,
-  assertProgramWriteEnabled,
-  campaignActionWriteEnabled,
-} from "./program-rollout";
+import { requirePlanFeature } from "./plan-features";
 import { presignDownloadUrl } from "./r2-storage";
 import { sceneTemplateService, SceneTemplateError } from "./scene-template.service";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
@@ -81,7 +76,6 @@ const CAMPAIGN_OPERATION_FAILURES = {
   export_bundle_duplicate_clip: "invalid",
   export_bundle_empty: "invalid",
   export_bundle_expired: "invalid",
-  export_bundle_feature_unavailable: "forbidden",
   export_bundle_not_found: "missing",
   export_bundle_not_ready: "conflict",
   export_bundle_retention_invalid: "unavailable",
@@ -970,12 +964,6 @@ export class CampaignOperationService {
   }): Promise<RenderResult | (RenderResult & { operationId: string; replayed: boolean })> {
     input = await authorizeCampaignProject(input, "processing.consume");
     const normalizedIds = [...new Set(input.clipIds)].sort();
-    // Recording the pre-existing render-selected path is a rollout concern,
-    // not a paid entitlement. With recording disabled, preserve its exact
-    // response and availability on every plan.
-    if (!campaignActionWriteEnabled("render_selected")) {
-      return input.execute(normalizedIds);
-    }
     const requestFingerprint = fingerprint({ action: "render_selected", clipIds: normalizedIds, aspectRatios: input.aspectRatios ?? null, resolution: input.resolution, retryOfId: input.retryOfId ?? null });
     const prisma = requirePrisma();
     const replay = await prisma.campaignOperation.findUnique({
@@ -1078,7 +1066,7 @@ export class CampaignOperationService {
     execute(clipIds: string[]): Promise<RenderResult>;
   }) {
     input = await authorizeCampaignProject(input, "processing.consume");
-    assertCampaignActionWriteEnabled("render_selected");
+
     const source = await requirePrisma().campaignOperation.findFirst({
       where: {
         id: input.sourceOperationId,
@@ -1170,14 +1158,9 @@ export class CampaignOperationService {
     value: unknown,
   ) {
     scope = await authorizeCampaignProject(scope, "content.download");
-    assertCampaignActionWriteEnabled("export_bundle");
+
     assertCampaignBundleAllowed(scope);
-    if (!hasFeature(scope.pricingTier, "export.bundles")) {
-      throw new CampaignOperationError(
-        "export_bundle_feature_unavailable",
-        "Export bundles are not available on this plan",
-      );
-    }
+    requirePlanFeature(scope.pricingTier, "export.bundles");
     const input = createExportBundleSchema.parse(value);
     const selection = await resolveExportBundleSelection(scope, input);
     const counts = selection.items.reduce(
@@ -1200,7 +1183,7 @@ export class CampaignOperationService {
 
   async retryExportBundle(scope: CampaignBundleActorScope, bundleId: string) {
     scope = await authorizeCampaignProject(scope, "content.download");
-		assertCampaignActionWriteEnabled("export_bundle");
+
 		assertCampaignBundleAllowed(scope);
 		const bundle = await requirePrisma().exportBundle.findFirst({
       where: { id: bundleId, operation: { workspaceId: scope.workspaceId, projectId: scope.projectId, action: "export_bundle" } },
@@ -1212,7 +1195,7 @@ export class CampaignOperationService {
 
 	async retryExportBundleOperation(scope: CampaignBundleActorScope, operationId: string) {
     scope = await authorizeCampaignProject(scope, "content.download");
-		assertCampaignActionWriteEnabled("export_bundle");
+
 		assertCampaignBundleAllowed(scope);
 		const source = await requirePrisma().campaignOperation.findFirst({
 			where: { id: operationId, workspaceId: scope.workspaceId, projectId: scope.projectId, action: "export_bundle" },
@@ -1234,9 +1217,9 @@ export class CampaignOperationService {
 
   async createExportBundle(scope: CampaignBundleActorScope, value: unknown): Promise<{ operationId: string; workflowRunId: string; manifest: ExportBundleManifest; replayed: boolean }> {
     scope = await authorizeCampaignProject(scope, "content.download");
-    assertCampaignActionWriteEnabled("export_bundle");
+
     assertCampaignBundleAllowed(scope);
-    if (!hasFeature(scope.pricingTier, "export.bundles")) throw new CampaignOperationError("export_bundle_feature_unavailable", "Export bundles are not available on this plan");
+    requirePlanFeature(scope.pricingTier, "export.bundles");
     const input = createExportBundleSchema.parse(value);
     const expiresAt = new Date(Date.now() + exportBundleRetentionMs());
     if (new Set(input.clips.map((clip) => clip.clipId)).size !== input.clips.length) {
@@ -1727,8 +1710,8 @@ export class CampaignOperationService {
     value: unknown,
   ): Promise<ApplyCampaignStyleResult> {
     scope = await authorizeCampaignProject(scope, "content.edit");
-    assertCampaignActionWriteEnabled("apply_brand_profile");
-    assertProgramWriteEnabled("brand_kit_projection");
+
+
     assertCampaignBrandApplicationAllowed(scope);
     const input = applyProjectBrandProfileSelectedSchema.parse(value);
     const resolved = await resolveProjectBrandProfileSelection(scope, input);
@@ -1767,8 +1750,8 @@ export class CampaignOperationService {
     value: unknown,
   ): Promise<ApplyCampaignStyleResult> {
     scope = await authorizeCampaignProject(scope, "content.edit");
-    assertCampaignActionWriteEnabled("apply_style");
-    assertProgramWriteEnabled("brand_kit_projection");
+
+
     assertCampaignBrandApplicationAllowed(scope);
     const input = applyStyleSelectedSchema.parse(value);
     const resolved = await resolveMemberStyleSelection(scope, input);
@@ -1812,8 +1795,8 @@ export class CampaignOperationService {
     value: unknown,
   ): Promise<ApplySceneTemplateResult> {
     scope = await authorizeCampaignProject(scope, "content.edit");
-    assertCampaignActionWriteEnabled("apply_scene_template");
-    assertProgramWriteEnabled("scene_templates");
+
+
     assertCampaignBrandApplicationAllowed(scope);
     const input = applySceneTemplateSchema.parse(value);
     const orderedClips = [...input.clips].sort((left, right) => left.clipId.localeCompare(right.clipId));
@@ -2022,7 +2005,7 @@ export class CampaignOperationService {
     value: unknown,
   ): Promise<ApplyMotionSelectedResult> {
     scope = await authorizeCampaignProject(scope, "content.edit");
-    assertCampaignActionWriteEnabled("apply_motion");
+
     if (
       !workspaceAllowsCapability(
         { role: scope.role, status: scope.status },

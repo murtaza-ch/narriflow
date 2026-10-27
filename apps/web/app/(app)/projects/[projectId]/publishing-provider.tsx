@@ -55,6 +55,7 @@ import {
 	clipExportSnapshotSchema,
 	socialPostSnapshotSchema,
 	SOCIAL_PROVIDER_CAPABILITIES,
+	planFeatureRequirement,
 	type BulkSocialScheduleOutcome,
 	type PublishingDraft,
 	type ClipSnapshot,
@@ -72,13 +73,17 @@ import {
 	currentPublicationExport,
 	publishingDraftKey,
 	publishingRequest,
+	PublishingRequestError,
 } from "./publishing-draft";
 import { createPublishingCompositionSession, type PublishingCompositionSession, type PublishingOptions } from "./publishing-composition-session";
 import { PublishingPosts } from "./publishing-posts";
 import { PanelHeader } from "./panel-header";
 import { PublishingCover } from "./publishing-cover";
 import { proposeToQueueAction } from "../../calendar/queue/actions";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { authenticatedActionResultMessage, isAuthenticatedActionFailure, upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 
 type Config = {
 	projectId: string;
@@ -90,12 +95,16 @@ type Config = {
 	initialPosts: SocialPostSnapshot[];
 	initialPostsCursor: string | null;
 	assistedCopyEnabled: boolean;
+	/** What unlocks assisted copy; `null` when the plan already has it. */
+	assistedCopyUpgrade: UpgradePrompt | null;
 	customThumbnailsEnabled: boolean;
+	/** What unlocks custom thumbnails; `null` when the plan already has it. */
+	customThumbnailsUpgrade: UpgradePrompt | null;
 	campaignSchedulingEnabled: boolean;
 	canUploadVisualAssets: boolean;
 	can1080pExport: boolean;
 	canOverrideReview: boolean;
-	facebookPublishingEnabled: boolean;
+
 	canPublish: boolean;
 };
 type PublishingContextValue = {
@@ -165,7 +174,7 @@ export function PublishingProvider({
 		now: () => new Date(),
 	}), [config.actorId, config.workspaceId, config.projectId]);
 	const composition = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
-	useEffect(() => session.reconcile({ clips: config.clips, accounts: config.accounts, workspaceTimezone: config.workspaceTimezone, facebookPublishingEnabled: config.facebookPublishingEnabled }), [session, config.clips, config.accounts, config.workspaceTimezone, config.facebookPublishingEnabled]);
+	useEffect(() => session.reconcile({ clips: config.clips, accounts: config.accounts, workspaceTimezone: config.workspaceTimezone }), [session, config.clips, config.accounts, config.workspaceTimezone]);
 	const triggerRef = useRef<HTMLElement | null>(null);
 	const [posts, setPosts] = useState(config.initialPosts);
 	const [nextPostsCursor, setNextPostsCursor] = useState(config.initialPostsCursor);
@@ -226,7 +235,7 @@ export function PublishingProvider({
 				document.activeElement instanceof HTMLElement
 					? document.activeElement
 					: null;
-			session.open(next, { clips: config.clips, accounts: config.accounts, workspaceTimezone: config.workspaceTimezone, facebookPublishingEnabled: config.facebookPublishingEnabled });
+			session.open(next, { clips: config.clips, accounts: config.accounts, workspaceTimezone: config.workspaceTimezone });
 			setIds(session.getSnapshot().clipIds);
 			setExportId(preferred);
 			setMode("compose");
@@ -238,7 +247,6 @@ export function PublishingProvider({
 			session,
 			config.accounts,
 			config.workspaceTimezone,
-			config.facebookPublishingEnabled,
 		],
 	);
 	function viewPosts(next: string[]) {
@@ -400,16 +408,28 @@ export function PublishingProvider({
 	);
 }
 
+/** Rethrows a refused publishing request after opening the upgrade dialog when a plan would lift it. */
+function openUpgradeOnRefusal(openUpgrade: (prompt: UpgradePrompt) => void) {
+	return (error: unknown): never => {
+		if (error instanceof PublishingRequestError && error.status === 402) {
+			const prompt = upgradePromptFromFailure(error.failure);
+			if (prompt) openUpgrade(prompt);
+		}
+		throw error;
+	};
+}
+
 type Options = PublishingOptions;
 type BulkResult = BulkSocialScheduleOutcome;
 function PublishingRecoveryComposer({ session, onSubmitted, projectId }: { session: PublishingCompositionSession; onSubmitted(outcome: BulkResult): Promise<void>; projectId: string }) {
+	const { openUpgrade } = useUpgrade();
 	const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
 	return <>
 		<Drawer.Body p={{ base: "4", md: "6" }}>
 			<Text>{snapshot.recoveryUnavailable ? "Saved publishing information could not be read. Check it before composing another post." : "The previous submission is saved. Check its result before composing another post."}</Text>
 			{snapshot.error && <Text role="status" color="warning.fg" mt="3">{snapshot.error}</Text>}
 		</Drawer.Body>
-		<Drawer.Footer><Button size="sm" disabled={snapshot.busy || (!snapshot.pending && !snapshot.recoveryUnavailable)} onClick={() => void session.submit({ exports: [], options: {} }, (payload) => publishingRequest(`/api/projects/${projectId}/campaign-operations/schedule`, payload)).then((outcome) => outcome ? onSubmitted(outcome) : undefined)}>
+		<Drawer.Footer><Button size="sm" disabled={snapshot.busy || (!snapshot.pending && !snapshot.recoveryUnavailable)} onClick={() => void session.submit({ exports: [], options: {} }, (payload) => publishingRequest(`/api/projects/${projectId}/campaign-operations/schedule`, payload).catch(openUpgradeOnRefusal(openUpgrade))).then((outcome) => outcome ? onSubmitted(outcome) : undefined)}>
 			{snapshot.busy && <Spinner size="xs" />} Check previous submission
 		</Button></Drawer.Footer>
 	</>;
@@ -430,6 +450,10 @@ function PublishingComposer({
 	onSubmitted(outcome: BulkResult): Promise<void>;
 }) {
 	const router = useRouter();
+	const { openUpgrade, currentTier } = useUpgrade();
+	const campaignUpgrade = featureUpgradePrompt(currentTier, "campaign.operations", "Upgrade to publish multiple posts together");
+	const campaignRequirement = planFeatureRequirement(currentTier, "campaign.operations")?.message
+		?? "Your workspace plan does not include publishing multiple posts together.";
 	const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
 	const { restored, drafts, accountIds, timing, copyErrors, busy, pending, result, error, generating, generationNeeded } = snapshot;
 	const setError = session.setError;
@@ -456,10 +480,9 @@ function PublishingComposer({
 			config.accounts.filter(
 				(a) =>
 					a.status === "active" &&
-					a.publishingEligible &&
-					(a.platform !== "facebook_reels" || config.facebookPublishingEnabled),
+					a.publishingEligible,
 			),
-		[config.accounts, config.facebookPublishingEnabled],
+		[config.accounts],
 	);
 	const accounts = useMemo(
 		() =>
@@ -646,7 +669,7 @@ function PublishingComposer({
 		}
 	}
 	async function submit() {
-		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override }, (payload) => publishingRequest(`/api/projects/${config.projectId}/campaign-operations/schedule`, payload));
+		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override }, (payload) => publishingRequest(`/api/projects/${config.projectId}/campaign-operations/schedule`, payload).catch(openUpgradeOnRefusal(openUpgrade)));
 		if (outcome) await onSubmitted(outcome);
 	}
 	const activeExport = exports.find(
@@ -692,7 +715,7 @@ function PublishingComposer({
 				: issueCount > 0
 					? "Resolve the highlighted publishing requirements before submitting."
 					: pairs.length > 1 && !config.campaignSchedulingEnabled
-						? "Publishing multiple posts together requires a Pro plan."
+						? campaignRequirement
 						: queueBlocked
 							? "Add posting slots to every chosen account, or pick a time."
 							: needsPreview && (!!previewError || !slots.length)
@@ -970,7 +993,9 @@ function PublishingComposer({
 {clips.length > 1 && <Button alignSelf="start" variant="subtle" size="sm" disabled={generating.length > 0} onClick={() => requestRegeneration("current")}>Regenerate this clip</Button>}
 </Stack></Collapsible.Content></Collapsible.Root>
 </Stack></Collapsible.Content></Collapsible.Root>
-) : <Text fontSize="xs" color="fg.muted">Automatic descriptions require a Creator plan. You can write your own description.</Text>}
+) : config.assistedCopyUpgrade ? (
+<LockedButton variant="ghost" size="sm" alignSelf="start" prompt={config.assistedCopyUpgrade}><Sparkles size={14}/>Description assistance</LockedButton>
+) : null}
 {accounts.map((account) => {
 										const key = publishingDraftKey(active.id, account.id);
 										const d = drafts[key];
@@ -1166,6 +1191,11 @@ minH="220px" p="4" lineHeight="1.8"
 																<Sparkles size={15} /> Regenerate description
 															</Button>
 														)}
+														{!config.assistedCopyEnabled && config.assistedCopyUpgrade && (
+															<LockedButton variant="ghost" size="xs" prompt={config.assistedCopyUpgrade}>
+																<Sparkles size={15} /> Regenerate description
+															</LockedButton>
+														)}
 															<Field.ErrorText>
 																Shorten the description before publishing.
 															</Field.ErrorText>
@@ -1205,19 +1235,26 @@ minH="220px" p="4" lineHeight="1.8"
 																					Remove
 																				</Button>
 																			)}
-																			<Button
-																				size="xs"
-																				variant="subtle"
-																				disabled={
-																				!media ||
-																					!config.customThumbnailsEnabled
-																				}
-																				onClick={() =>
-																					setCoverAccount(account.id)
-																				}
-																			>
-																				<ImagePlus size={14} /> Cover
-																			</Button>
+																			{!config.customThumbnailsEnabled && config.customThumbnailsUpgrade ? (
+																				// Current media stays a prerequisite: upgrading can't add a cover without it.
+																				<LockedButton size="xs" variant="subtle" disabled={!media} prompt={config.customThumbnailsUpgrade}>
+																					<ImagePlus size={14} /> Cover
+																				</LockedButton>
+																			) : (
+																				<Button
+																					size="xs"
+																					variant="subtle"
+																					disabled={
+																					!media ||
+																						!config.customThumbnailsEnabled
+																					}
+																					onClick={() =>
+																						setCoverAccount(account.id)
+																					}
+																				>
+																					<ImagePlus size={14} /> Cover
+																				</Button>
+																			)}
 																		</Flex>
 																	</Flex>
 																)}
@@ -1604,9 +1641,7 @@ minH="220px" p="4" lineHeight="1.8"
 					</Text>
 				)}
 				{!config.campaignSchedulingEnabled && pairs.length > 1 && (
-					<Text fontSize="xs" color="warning.fg">
-						Publishing multiple posts together requires a Pro plan.
-					</Text>
+					<PlanLimitNotice message={campaignRequirement} upgrade={campaignUpgrade} />
 				)}
 				<Flex justify="space-between" gap="3" align={{ base: "stretch", sm: "center" }} direction={{ base: "column", sm: "row" }}>
 					<chakra.fieldset disabled={disabled} border="0" p="0" m="0" flex="1" minW="0"><Flex gap="2" align="center" wrap="wrap">

@@ -796,8 +796,12 @@ export class WorkflowRunLifecycle {
           nextPollAt: null,
           waitingSince: null,
           errorCode: null,
-          requestedCount: null,
-          succeededCount: null,
+          // A frozen Render Work Set keeps its original size even when
+          // editor changes remove variants before a retry starts.
+          ...(stage === "clip_rendering" ? {} : { requestedCount: null }),
+          // Completed dubs remain owned by their original attempt. Keep the
+          // successful prefix saved when that attempt was interrupted.
+          ...(stage === "dubbing" ? {} : { succeededCount: null }),
           failedCount: null,
         },
       });
@@ -1785,25 +1789,88 @@ export class WorkflowRunLifecycle {
     });
   }
 
+  /** A graceful shutdown returns owned work immediately and refunds only
+   * this claim's retry. Expired, waiting, and superseded attempts are untouched. */
+  async releaseAttempt(attempt: WorkflowAttemptRef): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      if (attempt.stage === "clip_rendering") await this.lockAdmissionProject(tx, attempt.projectId);
+      const now = await this.databaseNow(tx);
+      const changed = await tx.workflowRun.updateMany({
+        where: {
+          id: attempt.workflowRunId, projectId: attempt.projectId, stage: attempt.stage,
+          attemptId: attempt.attemptId, status: "running", leaseOwner: this.leaseOwner,
+          leaseExpiresAt: { gt: now },
+        },
+        data: {
+          status: "queued", progress: 0, attemptCount: { decrement: 1 }, attemptId: null,
+          leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null,
+          nextAttemptAt: now, nextPollAt: null, waitingSince: null, errorCode: null,
+        },
+      });
+      if (changed.count === 0) return false;
+      await this.settleAttemptChildren(tx, attempt, { requeue: true, errorCode: "worker_shutdown" });
+      if (attempt.stage === "dubbing") {
+        const aggregate = await this.dubbingAggregate(tx, attempt);
+        await tx.workflowRun.update({ where: { id: attempt.workflowRunId }, data: { succeededCount: aggregate.succeededCount } });
+      }
+      await this.appendEvent(tx, {
+        ...attempt, status: "queued", progress: 0, errorCode: null, transition: "released",
+      });
+      return true;
+    });
+  }
+
   async runAttempt<T>(
     attempt: WorkflowAttemptRef,
     handler: (context: WorkflowAttemptContext) => Promise<T>,
     options: { signal?: AbortSignal } = {},
   ): Promise<T> {
     const controller = new AbortController();
-    const stopForWorkerShutdown = () => controller.abort(options.signal?.reason);
+    let shutdownRelease: Promise<void> | undefined;
+    const stopForWorkerShutdown = () => {
+      controller.abort(options.signal?.reason);
+      shutdownRelease ??= this.releaseAttempt(attempt).then(() => {}).catch(() => {
+        console.warn(JSON.stringify({ level: "error", message: "workflow_shutdown_release_failed",
+          workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId, stage: attempt.stage }));
+      });
+    };
+    if (options.signal?.aborted) {
+      stopForWorkerShutdown();
+      await shutdownRelease;
+      controller.signal.throwIfAborted();
+    }
     options.signal?.addEventListener("abort", stopForWorkerShutdown, { once: true });
-    if (options.signal?.aborted) stopForWorkerShutdown();
-    controller.signal.throwIfAborted();
     let ownershipError: WorkflowAttemptLost | null = null;
     let heartbeatInFlight = false;
+    let lastHeartbeatAt = performance.now();
     const heartbeatTimer = setInterval(() => {
-      if (controller.signal.aborted || heartbeatInFlight || ownershipError) return;
+      if (controller.signal.aborted || ownershipError) return;
+      // Check the lease even while a database request is still pending.
+      if (performance.now() - lastHeartbeatAt >= this.leaseDurationMs) {
+        ownershipError = new WorkflowAttemptLost(attempt);
+        controller.abort(ownershipError);
+        return;
+      }
+      if (heartbeatInFlight) return;
       heartbeatInFlight = true;
+      const heartbeatStartedAt = performance.now();
       void this.heartbeat(attempt)
-        .catch(() => {
-          ownershipError = new WorkflowAttemptLost(attempt);
-          controller.abort(ownershipError);
+        .then(() => { lastHeartbeatAt = heartbeatStartedAt; })
+        .catch((error: unknown) => {
+          // A connection error is not evidence that another attempt owns
+          // the run. Retry within the lease; durable writes remain fenced.
+          if (error instanceof WorkflowAttemptLost || performance.now() - lastHeartbeatAt >= this.leaseDurationMs) {
+            ownershipError = error instanceof WorkflowAttemptLost ? error : new WorkflowAttemptLost(attempt);
+            controller.abort(ownershipError);
+            return;
+          }
+          console.warn(JSON.stringify({
+            level: "warn",
+            message: "workflow_heartbeat_failed",
+            workflowRunId: attempt.workflowRunId,
+            attemptId: attempt.attemptId,
+            stage: attempt.stage,
+          }));
         })
         .finally(() => {
           heartbeatInFlight = false;
@@ -1816,6 +1883,7 @@ export class WorkflowRunLifecycle {
         reportProgress: (progress) => this.reportProgress(attempt, progress),
       });
       if (ownershipError) throw ownershipError;
+      controller.signal.throwIfAborted();
       return result;
     } catch (error) {
       if (ownershipError) throw ownershipError;
@@ -1823,6 +1891,10 @@ export class WorkflowRunLifecycle {
     } finally {
       clearInterval(heartbeatTimer);
       options.signal?.removeEventListener("abort", stopForWorkerShutdown);
+      if (options.signal?.aborted) {
+        stopForWorkerShutdown();
+        await shutdownRelease;
+      }
     }
   }
 
@@ -2360,16 +2432,17 @@ export class WorkflowRunLifecycle {
     });
   }
 
-  async completeDubbing(attempt: WorkflowAttemptRef) {
-    const [succeededCount, failedCount] = await Promise.all([
-      this.prisma.clipDub.count({
+  private async dubbingAggregate(db: TransactionClient | PrismaClient, attempt: WorkflowAttemptRef): Promise<WorkflowAggregateResult> {
+    const [run, completed, failedCount] = await Promise.all([
+      db.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId }, select: { succeededCount: true } }),
+      db.clipDub.count({
         where: {
           projectId: attempt.projectId,
           workflowAttemptId: attempt.attemptId,
           status: "completed",
         },
       }),
-      this.prisma.clipDub.count({
+      db.clipDub.count({
         where: {
           projectId: attempt.projectId,
           workflowAttemptId: attempt.attemptId,
@@ -2377,13 +2450,19 @@ export class WorkflowRunLifecycle {
         },
       }),
     ]);
+    const succeededCount = (run.succeededCount ?? 0) + completed;
+    return { requestedCount: succeededCount + failedCount, succeededCount, failedCount };
+  }
+
+  async completeDubbing(attempt: WorkflowAttemptRef) {
+    const { requestedCount, succeededCount, failedCount } = await this.dubbingAggregate(this.prisma, attempt);
     const terminalCount = succeededCount + failedCount;
     if (terminalCount === 0) {
       await this.completeStage(attempt);
       return;
     }
     await this.completeAggregateStage(attempt, {
-      requestedCount: terminalCount,
+      requestedCount,
       succeededCount,
       failedCount,
     });
@@ -2517,6 +2596,16 @@ export class WorkflowRunLifecycle {
       let settledStatus: WorkflowStatus = status;
       let settledErrorCode = errorCode;
       let notification: RenderTerminalNotificationPayload | undefined;
+      if (attempt.stage === "dubbing") {
+        const aggregate = await this.dubbingAggregate(tx, attempt);
+        if (requeue) {
+          await tx.workflowRun.update({ where: { id: run.id }, data: { succeededCount: aggregate.succeededCount } });
+        } else {
+          settledStatus = aggregate.requestedCount > 0 ? terminalStatusForAggregate(aggregate) : "failed";
+          settledErrorCode = settledStatus === "failed" ? errorCode : null;
+          await tx.workflowRun.update({ where: { id: run.id }, data: { ...aggregate, status: settledStatus, errorCode: settledErrorCode } });
+        }
+      }
       if (!requeue && attempt.stage === "clip_rendering") {
         const variants = await tx.clipRender.findMany({
           where: { workflowRunId: attempt.workflowRunId },
@@ -2757,20 +2846,15 @@ export class WorkflowRunLifecycle {
       }
     }
     if (attempt.stage === "dubbing") {
-      // A requeued dub keeps its count for the retry; a terminal failure returns it.
-      if (!outcome.requeue) {
-        await releaseFailedDubUsage(tx, {
-          projectId: attempt.projectId,
-          attemptId: attempt.attemptId,
-          reason: outcome.errorCode,
-          includeProcessing: true,
-        });
-      }
       await tx.clipDub.updateMany({
         where: {
           projectId: attempt.projectId,
-          workflowAttemptId: attempt.attemptId,
-          status: { in: ["processing", "failed"] },
+          OR: [
+            { workflowAttemptId: attempt.attemptId, status: { in: ["processing", "failed"] } },
+            // Only one dubbing run may be live for a Project. A terminal
+            // failure also owns queued siblings it never reached.
+            ...(!outcome.requeue ? [{ workflowAttemptId: null, status: "queued" as const }] : []),
+          ],
         },
         data: outcome.requeue
           ? {
@@ -2782,10 +2866,20 @@ export class WorkflowRunLifecycle {
             }
           : {
               status: "failed",
+              workflowAttemptId: attempt.attemptId,
               errorCode: outcome.errorCode,
               completedAt: new Date(),
             },
       });
+      // A requeued dub keeps its count; settle every known failure, including
+      // siblings newly marked above, in this same terminal transaction.
+      if (!outcome.requeue) {
+        await releaseFailedDubUsage(tx, {
+          projectId: attempt.projectId,
+          attemptId: attempt.attemptId,
+          reason: outcome.errorCode,
+        });
+      }
     }
     if (attempt.stage === "stt") {
       await tx.transcript.updateMany({
@@ -2854,6 +2948,11 @@ export class WorkflowRunLifecycle {
 
   async dispatchEvents(batchSize = 100): Promise<number> {
     const now = new Date();
+    const pendingChannels: Prisma.WorkflowEventWhereInput[] = [
+      { redisRequired: true, redisPublishedAt: null },
+      { analyticsRequired: true, analyticsPublishedAt: null },
+      { notificationRequired: true, notificationDeliveredAt: null },
+    ];
     const candidates = await this.prisma.workflowEvent.findMany({
       where: {
         deadLetteredAt: null,
@@ -2862,92 +2961,94 @@ export class WorkflowRunLifecycle {
           { deliveryLeaseExpiresAt: null },
           { deliveryLeaseExpiresAt: { lte: now } },
         ],
-        AND: [
-          {
-            OR: [
-              { redisRequired: true, redisPublishedAt: null },
-              { analyticsRequired: true, analyticsPublishedAt: null },
-              {
-                notificationRequired: true,
-                notificationDeliveredAt: null,
-              },
-            ],
-          },
-        ],
+        AND: [{ OR: pendingChannels }],
       },
       orderBy: [{ projectId: "asc" }, { seq: "asc" }],
       take: batchSize,
     });
 
     let delivered = 0;
-    for (const event of candidates) {
-      const leaseExpiresAt = new Date(now.getTime() + EVENT_DELIVERY_LEASE_MS);
+    for (const candidate of candidates) {
+      const claimedAt = new Date();
+      const claimOwner = randomUUID();
+      const leaseExpiresAt = new Date(claimedAt.getTime() + EVENT_DELIVERY_LEASE_MS);
       const claimed = await this.prisma.workflowEvent.updateMany({
         where: {
-          id: event.id,
+          id: candidate.id,
           deadLetteredAt: null,
+          nextDeliveryAt: { lte: claimedAt },
           OR: [
             { deliveryLeaseExpiresAt: null },
-            { deliveryLeaseExpiresAt: { lte: now } },
+            { deliveryLeaseExpiresAt: { lte: claimedAt } },
           ],
+          AND: [{ OR: pendingChannels }],
         },
         data: {
-          deliveryLeaseOwner: this.leaseOwner,
+          deliveryLeaseOwner: claimOwner,
           deliveryLeaseExpiresAt: leaseExpiresAt,
           deliveryAttempts: { increment: 1 },
         },
       });
       if (claimed.count === 0) continue;
+      // Discovery can precede another sender's acknowledgement. Execute only
+      // the current claim's fresh channel checkpoints, not the candidate copy.
+      const event = await this.prisma.workflowEvent.findFirst({ where: {
+        id: candidate.id, deliveryLeaseOwner: claimOwner,
+        deliveryLeaseExpiresAt: { gt: new Date() }, deadLetteredAt: null,
+      } });
+      if (!event) continue;
+      const held = (): Prisma.WorkflowEventWhereInput => ({
+        id: event.id, deliveryLeaseOwner: claimOwner,
+        deliveryLeaseExpiresAt: { gt: new Date() }, deadLetteredAt: null,
+      });
+      const renew = async () => {
+        const expiresAt = new Date(Date.now() + EVENT_DELIVERY_LEASE_MS);
+        const updated = await this.prisma.workflowEvent.updateMany({
+          where: held(), data: { deliveryLeaseExpiresAt: expiresAt },
+        });
+        return updated.count === 1 && expiresAt.getTime() > Date.now();
+      };
 
       try {
         const parsed = workflowStageUpdatedEventSchema.parse(event.payload);
         if (event.redisRequired && !event.redisPublishedAt) {
+          if (!(await renew())) continue;
           const published = await this.publishRedis(parsed);
           if (!published) {
             throw new Error("Workflow Redis publisher unavailable");
           }
           const acknowledged = await this.prisma.workflowEvent.updateMany({
-            where: {
-              id: event.id,
-              deliveryLeaseOwner: this.leaseOwner,
-            },
+            where: held(),
             data: { redisPublishedAt: new Date() },
           });
           if (acknowledged.count === 0) continue;
         }
         if (event.analyticsRequired && !event.analyticsPublishedAt) {
+          if (!(await renew())) continue;
           if (this.publishAnalytics) {
             await this.publishAnalytics(parsed, event.dedupeKey);
           }
           const acknowledged = await this.prisma.workflowEvent.updateMany({
-            where: {
-              id: event.id,
-              deliveryLeaseOwner: this.leaseOwner,
-            },
+            where: held(),
             data: { analyticsPublishedAt: new Date() },
           });
           if (acknowledged.count === 0) continue;
         }
         if (event.notificationRequired && !event.notificationDeliveredAt) {
+          if (!(await renew())) continue;
           const notification = parsed.notification;
           if (!notification) {
             throw new Error("Render notification payload unavailable");
           }
           await this.handoffNotification(notification);
           const acknowledged = await this.prisma.workflowEvent.updateMany({
-            where: {
-              id: event.id,
-              deliveryLeaseOwner: this.leaseOwner,
-            },
+            where: held(),
             data: { notificationDeliveredAt: new Date() },
           });
           if (acknowledged.count === 0) continue;
         }
         const released = await this.prisma.workflowEvent.updateMany({
-          where: {
-            id: event.id,
-            deliveryLeaseOwner: this.leaseOwner,
-          },
+          where: held(),
           data: {
             deliveryLeaseOwner: null,
             deliveryLeaseExpiresAt: null,
@@ -2956,12 +3057,9 @@ export class WorkflowRunLifecycle {
         });
         if (released.count > 0) delivered += 1;
       } catch (error) {
-        const attempts = event.deliveryAttempts + 1;
+        const attempts = event.deliveryAttempts;
         await this.prisma.workflowEvent.updateMany({
-          where: {
-            id: event.id,
-            deliveryLeaseOwner: this.leaseOwner,
-          },
+          where: held(),
           data: {
             deliveryLeaseOwner: null,
             deliveryLeaseExpiresAt: null,

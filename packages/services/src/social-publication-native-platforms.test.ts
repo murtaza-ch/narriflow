@@ -96,7 +96,6 @@ function harness(
 			attributes?: Record<string, string | number | boolean | undefined>,
 		): void;
 	},
-	facebookReelsPublishingEnabled = false,
 ) {
 	const requests: Array<{ url: string; init?: RequestInit }> = [];
 	let cleanups = 0;
@@ -148,7 +147,6 @@ function harness(
 			youtubeApiVersion: "v3",
 			youtubeChunkBytes: 8,
 			metaGraphVersion: "v24.0",
-			facebookReelsPublishingEnabled,
 			linkedInVersion: "202608",
 			instagramPollAttempts: 2,
 			instagramPollIntervalMs: 1,
@@ -259,19 +257,7 @@ describe("native publication adapters", () => {
 		expect(state.requests).toHaveLength(0);
 	});
 
-	test("keeps Facebook Reels dark until enabled and then follows the bounded start-upload-finish flow", async () => {
-		const disabled = harness([]);
-		const disabledResult = await disabled.registry
-			.get("facebook_reels")
-			.publish(input("facebook_reels"), {
-				signal: new AbortController().signal,
-				checkpoint: async () => undefined,
-			});
-		expect(disabledResult).toMatchObject({
-			kind: "failed",
-			failure: { code: "facebook_reels_rollout_disabled" },
-		});
-
+	test("publishes Facebook Reels through the bounded start-upload-finish flow", async () => {
 		const enabled = harness(
 			[
 				json({
@@ -282,8 +268,6 @@ describe("native publication adapters", () => {
 				json({ success: true }),
 			],
 			false,
-			undefined,
-			true,
 		);
 		const checkpoints: string[] = [];
 		const result = await enabled.registry
@@ -330,8 +314,6 @@ describe("native publication adapters", () => {
 				}),
 			],
 			false,
-			undefined,
-			true,
 		);
 		const result = await state.registry.get("facebook_reels").reconcile!(
 			input("facebook_reels"),
@@ -372,8 +354,6 @@ describe("native publication adapters", () => {
 				}),
 			],
 			false,
-			undefined,
-			true,
 		);
 		const result = await state.registry.get("facebook_reels").reconcile!(
 			input("facebook_reels"),
@@ -414,8 +394,6 @@ describe("native publication adapters", () => {
 				json({ success: true }),
 			],
 			false,
-			undefined,
-			true,
 		);
 		const checkpoints: string[] = [];
 		const result = await state.registry.get("facebook_reels").resume!(
@@ -455,8 +433,6 @@ describe("native publication adapters", () => {
 				new Response(null, { status: 504 }),
 			],
 			false,
-			undefined,
-			true,
 		);
 		const result = await state.registry
 			.get("facebook_reels")
@@ -476,7 +452,7 @@ describe("native publication adapters", () => {
 	});
 
 	test("maps Facebook role, token, upload, rate-limit, and processing failures to stable codes", async () => {
-		const missingRole = harness([], false, undefined, true);
+		const missingRole = harness([], false);
 		const withoutRole = input("facebook_reels");
 		withoutRole.account!.scopes = [];
 		expect(
@@ -502,8 +478,6 @@ describe("native publication adapters", () => {
 					}),
 				],
 				false,
-				undefined,
-				true,
 			);
 			expect(
 				await state.registry
@@ -524,8 +498,6 @@ describe("native publication adapters", () => {
 				new Response(null, { status: 422 }),
 			],
 			false,
-			undefined,
-			true,
 		);
 		expect(
 			await upload.registry
@@ -552,8 +524,6 @@ describe("native publication adapters", () => {
 				}),
 			],
 			false,
-			undefined,
-			true,
 		);
 		expect(
 			await processing.registry.get("facebook_reels").reconcile!(
@@ -579,8 +549,6 @@ describe("native publication adapters", () => {
 				}),
 			],
 			false,
-			undefined,
-			true,
 		);
 		expect(
 			await rejected.registry.get("facebook_reels").reconcile!(

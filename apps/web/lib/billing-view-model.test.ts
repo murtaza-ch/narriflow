@@ -4,6 +4,7 @@ import {
   canStartBillingCheckout,
   shouldFocusBillingStatus,
   shouldShowSeatSyncStatus,
+  upgradeBillingMode,
 } from "./billing-view-model";
 
 const base = {
@@ -15,6 +16,7 @@ const base = {
   health: "current" as const,
   renewalOrEndAt: "2026-09-28T10:00:00.000Z",
   cancelAtPeriodEnd: false,
+  planChange: null,
   graceDeadlineAt: null,
   lastSuccessfulSyncAt: "2026-08-28T10:00:00.000Z",
   desiredAdditionalSeats: 0,
@@ -136,5 +138,22 @@ describe("billing status presentation", () => {
         { health: "retrying", workspaceAccessStatus: "active" },
       ),
     ).toBe(false);
+  });
+});
+
+describe("upgradeBillingMode", () => {
+  test("a first subscription chooses an interval for Checkout", () => {
+    expect(upgradeBillingMode({ ...base, plan: "free", actions: ["start_checkout"] })).toBe("checkout");
+  });
+
+  test("a current paid subscription reviews a plan change in billing", () => {
+    expect(upgradeBillingMode(base)).toBe("change_plan");
+  });
+
+  test("portal access for repair or recovery goes to the billing page", () => {
+    expect(upgradeBillingMode({ ...base, plan: "free", workspaceAccessStatus: "restricted" })).toBe("billing");
+    expect(upgradeBillingMode({ ...base, health: "attention_required", actions: ["open_portal", "contact_support"] })).toBe("billing");
+    expect(upgradeBillingMode({ ...base, plan: "free" })).toBe("billing");
+    expect(upgradeBillingMode({ ...base, health: "activating", actions: [] })).toBe("billing");
   });
 });

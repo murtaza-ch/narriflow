@@ -453,7 +453,7 @@ describe("upload source pinning and usage facts", () => {
           throw new ProcessingUsageError({
             code: "credits_exhausted",
             message: "No credits left",
-            details: { tier: "free", limitCredits: 60, remainingCredits: 5, requestedCredits: 120, renewsAt: "2026-11-01T00:00:00.000Z" },
+            details: { tier: "free", limitCredits: 60, remainingCredits: 5, spentCredits: 55, requestedCredits: 120, renewsAt: "2026-11-01T00:00:00.000Z" },
           });
         },
       },

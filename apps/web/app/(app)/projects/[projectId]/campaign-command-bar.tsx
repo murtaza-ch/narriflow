@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   Box,
@@ -14,7 +14,7 @@ import {
   Text,
 } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
-import { ActionMenu } from "@narriflow/ui/components/menu";
+import { ActionMenu, type ActionMenuItem } from "@narriflow/ui/components/menu";
 import {
   AlertTriangle,
   Archive,
@@ -42,10 +42,13 @@ import {
   MOTION_EXIT_OPTIONS as EXIT_OPTIONS,
   TRANSITION_OPTIONS,
 } from "@/lib/motion-options";
+import { UpgradeGem, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { RenderClipsButton } from "./render-clips-button";
 import {
   buildApplyMotionSelectedInput,
   buildCampaignEditorRetryRequest,
+  type CampaignActionAvailability,
+  type CampaignAvailableAction,
   type CampaignCommandState,
   type CampaignEditorRetryIntent,
   type CampaignEditorRetryRequest,
@@ -277,13 +280,18 @@ function MotionSelectionPreview({
   );
 }
 
+/** The upgrade prompt for each campaign action group; `null` when the plan already covers it. */
+export type CampaignUpgradePrompts = Readonly<
+  Record<keyof CampaignActionAvailability, UpgradePrompt | null>
+>;
+
 export function CampaignCommandBar({
   projectId,
   state,
   defaultAspectRatio,
   isFreeTier,
   can1080pExport,
-  campaignOperationsEnabled,
+  upgradePrompts,
   onClear,
 }: {
   projectId: string;
@@ -291,10 +299,11 @@ export function CampaignCommandBar({
   defaultAspectRatio: ClipAspectRatio;
   isFreeTier: boolean;
   can1080pExport: boolean;
-  campaignOperationsEnabled: boolean;
+  upgradePrompts: CampaignUpgradePrompts;
   onClear(): void;
 }) {
   const router = useRouter();
+  const { openUpgrade } = useUpgrade();
   const resolution: ClipRenderResolution = can1080pExport ? "1080p" : "720p";
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -715,7 +724,6 @@ export function CampaignCommandBar({
   async function applySelectedMotion() {
     if (
       submitting ||
-      !campaignOperationsEnabled ||
       !state.availableActions.includes("apply_motion") ||
       !canSubmitMotion
     ) {
@@ -890,7 +898,64 @@ export function CampaignCommandBar({
     }
   }
 
-  const menuItems = [
+  // A runnable command opens its preview; a plan-locked one stays in the menu
+  // with a gem and opens the upgrade dialog, sending no request.
+  function commandItem(
+    action: CampaignAvailableAction,
+    promptKey: keyof CampaignUpgradePrompts,
+    item: { value: string; label: string; icon: ReactNode; onSelect: () => void; disabled?: boolean },
+  ): ActionMenuItem[] {
+    if (state.availableActions.includes(action)) return [item];
+    const prompt = upgradePrompts[promptKey];
+    if (!state.lockedActions.includes(action) || !prompt) return [];
+    return [
+      {
+        ...item,
+        disabled: false,
+        hint: <UpgradeGem />,
+        onSelect: () => openUpgrade(prompt),
+      },
+    ];
+  }
+
+  const editorMenuItems = [
+    ...commandItem("apply_brand_profile", "creative", {
+      value: "brand-profile",
+      label: "Apply project Brand Profile",
+      icon: <WandSparkles size={14} />,
+      onSelect: () => openEditorActionPreview("brand_profile"),
+    }),
+    ...commandItem("apply_style", "creative", {
+      value: "style",
+      label: "Apply style preset",
+      icon: <Palette size={14} />,
+      onSelect: () => openEditorActionPreview("style"),
+    }),
+    ...commandItem("apply_scene_template", "creative", {
+      value: "scene",
+      label: "Add intro or outro",
+      icon: <LayoutTemplate size={14} />,
+      onSelect: () => openEditorActionPreview("scene"),
+    }),
+    ...commandItem("apply_motion", "motion", {
+      value: "motion",
+      label: "Apply motion to selected",
+      icon: <WandSparkles size={14} />,
+      onSelect: openMotionPreview,
+    }),
+  ];
+  const zipMenuItems =
+    state.primary === "export_bundle"
+      ? []
+      : commandItem("export_bundle", "exports", {
+          value: "zip",
+          label: "Build download ZIP",
+          icon: <Archive size={14} />,
+          disabled: state.readyItems.length === 0,
+          onSelect: openBundlePreview,
+        });
+
+  const menuItems: ActionMenuItem[] = [
     ...(state.primary !== "render_selected"
       ? [{
           value: "render",
@@ -899,66 +964,8 @@ export function CampaignCommandBar({
           onSelect: openRenderPreview,
         }]
       : []),
-    ...(state.availableActions.includes("apply_brand_profile")
-      ? [
-          {
-            value: "brand-profile",
-            label: campaignOperationsEnabled
-              ? "Apply project Brand Profile"
-              : "Apply project Brand Profile · Pro",
-            icon: <WandSparkles size={14} />,
-            onSelect: () => openEditorActionPreview("brand_profile"),
-          },
-        ]
-      : []),
-    ...(state.availableActions.includes("apply_style")
-      ? [
-          {
-            value: "style",
-            label: campaignOperationsEnabled
-              ? "Apply style preset"
-              : "Apply style preset · Pro",
-            icon: <Palette size={14} />,
-            onSelect: () => openEditorActionPreview("style"),
-          },
-        ]
-      : []),
-    ...(state.availableActions.includes("apply_scene_template")
-      ? [
-          {
-            value: "scene",
-            label: campaignOperationsEnabled
-              ? "Add intro or outro"
-              : "Add intro or outro · Pro",
-            icon: <LayoutTemplate size={14} />,
-            onSelect: () => openEditorActionPreview("scene"),
-          },
-        ]
-      : []),
-    ...(state.availableActions.includes("apply_motion")
-      ? [
-          {
-            value: "motion",
-            label: campaignOperationsEnabled
-              ? "Apply motion to selected"
-              : "Apply motion to selected · Pro",
-            icon: <WandSparkles size={14} />,
-            onSelect: openMotionPreview,
-          },
-        ]
-      : []),
-    ...(state.availableActions.includes("export_bundle") &&
-    state.primary !== "export_bundle"
-      ? [
-          {
-            value: "zip",
-            label: "Build download ZIP",
-            icon: <Archive size={14} />,
-            disabled: state.readyItems.length === 0,
-            onSelect: openBundlePreview,
-          },
-        ]
-      : []),
+    ...editorMenuItems,
+    ...zipMenuItems,
     {
       value: "studio",
       label: "Open first clip in Studio",
@@ -1058,7 +1065,6 @@ export function CampaignCommandBar({
                     kind={editorActionKind}
                     projectId={projectId}
                     state={state}
-                    campaignOperationsEnabled={campaignOperationsEnabled}
                     onApplied={receiveEditorActionResult}
                   />
                 ) : previewingRender ? (
@@ -1372,26 +1378,7 @@ export function CampaignCommandBar({
                       </Stack>
                     </Box>
 
-                    {!campaignOperationsEnabled ? (
-                      <Flex
-                        align="flex-start"
-                        gap="2"
-                        p="3"
-                        borderStartWidth="3px"
-                        borderStartColor="accent.solid"
-                        bg="accent.subtle"
-                      >
-                        <WandSparkles size={14} />
-                        <Box>
-                          <Text fontSize="sm" fontWeight="600">
-                            Selection-scoped motion is a Pro campaign action
-                          </Text>
-                          <Text fontSize="xs" color="fg.muted" mt="0.5">
-                            You can keep previewing presets here. Upgrade to apply one across the selected clips.
-                          </Text>
-                        </Box>
-                      </Flex>
-                    ) : motionAttentionCount > 0 ? (
+                    {motionAttentionCount > 0 ? (
                       <Flex
                         align="flex-start"
                         gap="2"
@@ -1570,20 +1557,14 @@ export function CampaignCommandBar({
                     <Text ms="1">{submitting ? "Queueing…" : "Build ZIP"}</Text>
                   </Button>
                 ) : previewingMotion ? (
-                  campaignOperationsEnabled ? (
-                    <Button
-                      size="sm"
-                      disabled={submitting || !canSubmitMotion}
-                      onClick={applySelectedMotion}
-                    >
-                      {submitting ? <Spinner size="xs" /> : <WandSparkles size={14} />}
-                      <Text ms="1">{submitting ? "Applying…" : "Apply to selected"}</Text>
-                    </Button>
-                  ) : (
-                    <Button size="sm" asChild>
-                      <a href="/settings/billing">See Pro plans</a>
-                    </Button>
-                  )
+                  <Button
+                    size="sm"
+                    disabled={submitting || !canSubmitMotion}
+                    onClick={applySelectedMotion}
+                  >
+                    {submitting ? <Spinner size="xs" /> : <WandSparkles size={14} />}
+                    <Text ms="1">{submitting ? "Applying…" : "Apply to selected"}</Text>
+                  </Button>
                 ) : operation?.action === "export_bundle" &&
                   ["partial", "failed"].includes(operation.status) ? (
                   <Button size="sm" disabled={submitting} onClick={retryBundle}>

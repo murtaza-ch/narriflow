@@ -47,16 +47,6 @@ export function socialPublicationCapabilityVersion(
   return SOCIAL_PROVIDER_CAPABILITIES[platform].version;
 }
 
-export function isSocialProviderPublishingEnabled(
-  platform: keyof typeof SOCIAL_PROVIDER_CAPABILITIES,
-  environment: Record<string, string | undefined> = process.env,
-) {
-  if (platform === "facebook_reels") {
-    return environment.FACEBOOK_REELS_PUBLISHING_ENABLED === "1";
-  }
-  return SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabledByDefault;
-}
-
 const DEFAULT_LINKEDIN_VERSION_SUNSET_AT = "2027-08-31T23:59:59.000Z";
 const LINKEDIN_STARTUP_GUARD_MS = 30 * 24 * 60 * 60_000;
 
@@ -289,8 +279,6 @@ export function parseSocialPublicationConfig(
 				"META_GRAPH_VERSION",
 				SOCIAL_PROVIDER_API_VERSIONS.instagram_reels,
 			),
-			facebookReelsPublishingEnabled:
-				environment.FACEBOOK_REELS_PUBLISHING_ENABLED === "1",
 			instagramPollAttempts: integer(
 				environment,
 				"INSTAGRAM_CONTAINER_POLL_ATTEMPTS",

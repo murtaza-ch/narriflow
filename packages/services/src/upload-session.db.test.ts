@@ -14,6 +14,7 @@ import { buildGenerationContentPack } from "@narriflow/validators";
 import { encodeOperationId } from "./operation-status";
 import { recipeService } from "./recipe.service";
 import { listWorkspaceEvents } from "./workspace-event";
+import { createMediaCleanupWorker, defaultMediaCleanupConfig, prismaMediaCleanupStore } from "./media-cleanup";
 import {
   createUploadSessionModule,
   defaultUploadSessionConfig,
@@ -91,6 +92,72 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     prismaGlobal.narriflowPrismaClient = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
+  });
+
+  test.each([
+    ["single", "finalize"],
+    ["multipart", "finalize"],
+    ["single", "discard"],
+    ["multipart", "discard"],
+  ] as const)("a recovered %s upload can %s after its reconciler's lease expires", async (transferKind, action) => {
+    const user = await prisma.user.create({ data: { clerkId: `upload-recovery:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Recovered upload", ownerUserId: user.id } });
+    try {
+    const now = new Date();
+    const session = await prisma.uploadSession.create({ data: {
+      workspaceId: workspace.id,
+      actorUserId: user.id,
+      clientIdempotencyKey: randomUUID(),
+      immutableInputFingerprint: "recovered-admission",
+      preallocatedProjectId: randomUUID(),
+      title: "Recovered admission",
+      fileName: "recovered.mp4",
+      fileSizeBytes: 2048n,
+      contentType: "video/mp4",
+      browserFingerprint: "recovered-admission",
+      generationSettings: { languageCode: "en", contentPack: CONTENT_PACK },
+      transferKind,
+      partCount: 1,
+      storageKey: `tests/${randomUUID()}.mp4`,
+      status: "initiating",
+      admissionClaimExpiresAt: new Date(now.getTime() - 1),
+      expiresAt: new Date(now.getTime() + 60_000),
+      hardExpiresAt: new Date(now.getTime() + 120_000),
+    } });
+    const reconciliationAttemptId = randomUUID();
+    expect((await prismaUploadSessionPersistence.claimReconciliation({
+      sessionId: session.id, reconciliationAttemptId,
+      leaseExpiresAt: new Date(now.getTime() + 30_000), updatedAt: now,
+    })).claimed).toBe(true);
+    const admissionAttemptId = randomUUID();
+    expect((await prismaUploadSessionPersistence.claimAdmission({
+      sessionId: session.id, admissionAttemptId,
+      claimExpiresAt: new Date(now.getTime() + 30_000), updatedAt: now,
+    })).claimed).toBe(true);
+    if (transferKind === "single") {
+      await prismaUploadSessionPersistence.markSingleReady({ sessionId: session.id, admissionAttemptId, updatedAt: now });
+    } else {
+      await prismaUploadSessionPersistence.bindMultipartProvider({ sessionId: session.id, admissionAttemptId, providerUploadId: "recovered-provider", updatedAt: now });
+    }
+    // Recovery dies after binding, before releaseReconciliation. A live
+    // recovery still owns cleanup, but its expired claim must not block intake.
+    const proceed = (updatedAt: Date) => action === "finalize"
+      ? prismaUploadSessionPersistence.beginFinalization({ sessionId: session.id, parts: [], reconcileAt: updatedAt, updatedAt })
+      : prismaUploadSessionPersistence.beginDiscard({ sessionId: session.id, reconciliationAttemptId: randomUUID(), leaseExpiresAt: new Date(updatedAt.getTime() + 30_000), updatedAt });
+    expect((await proceed(now)).claimed).toBe(false);
+    const resumedAt = new Date(now.getTime() + 30_001);
+    const resumed = await proceed(resumedAt);
+    expect(resumed.claimed).toBe(true);
+    expect(resumed.session.status).toBe(action === "finalize" ? "finalizing" : "compensating");
+    expect(resumed.session.reconciliationAttemptId).not.toBe(reconciliationAttemptId);
+    await expect(prismaUploadSessionPersistence.renewReconciliationClaim({
+      sessionId: session.id, reconciliationAttemptId,
+      leaseExpiresAt: new Date(resumedAt.getTime() + 30_000), updatedAt: resumedAt,
+    })).rejects.toBeInstanceOf(UploadSessionReconciliationClaimLostError);
+    } finally {
+      await prisma.workspace.delete({ where: { id: workspace.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
   });
 
   test("durable handoff survives removal of the non-owner creator", async () => {
@@ -1051,6 +1118,53 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     await expect(prismaUploadSessionPersistence.settleTerminal({ sessionId: expired.row.id, reconciliationAttemptId: expired.attemptId, status: "expired", failureCode: "upload_session_expired", updatedAt: now }))
       .rejects.toBeInstanceOf(UploadSessionReconciliationClaimLostError);
     expect(await feed()).toHaveLength(3);
+  });
+
+  test.each(["aborted", "expired", "failed"] as const)("a %s single upload retains delayed cleanup for bytes written by a still-valid grant", async (status) => {
+    const user = await prisma.user.create({ data: { clerkId: `upload-late-put:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Late PUT", ownerUserId: user.id } });
+    const at = new Date();
+    let clock = at;
+    const key = `late-put/${randomUUID()}.mp4`;
+    const reconciliationAttemptId = randomUUID();
+    const session = await prisma.uploadSession.create({ data: {
+      workspaceId: workspace.id, actorUserId: user.id, clientIdempotencyKey: randomUUID(), immutableInputFingerprint: "late-put",
+      preallocatedProjectId: randomUUID(), title: "Late PUT", fileName: "late.mp4", fileSizeBytes: 2048n, contentType: "video/mp4",
+      browserFingerprint: "late-put", generationSettings: {}, transferKind: "single", storageKey: key,
+      status: status === "failed" ? "finalizing" : "compensating",
+      reconciliationAttemptId: status === "failed" ? null : reconciliationAttemptId,
+      expiresAt: new Date(at.getTime() + 60_000), hardExpiresAt: new Date(at.getTime() + 120_000),
+    } });
+    try {
+      if (status === "failed") {
+        await prismaUploadSessionPersistence.recordFailure({ sessionId: session.id, status, failureCode: "upload_size_mismatch", updatedAt: at });
+      } else {
+        await prismaUploadSessionPersistence.settleTerminal({ sessionId: session.id, reconciliationAttemptId, status, failureCode: status === "aborted" ? "user_discarded" : "upload_session_expired", updatedAt: at });
+      }
+      const obligations = await prisma.mediaCleanupObligation.findMany({ where: { objectKey: key } });
+      expect(obligations).toHaveLength(1);
+      const obligation = obligations[0]!;
+      expect(obligation.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(at.getTime() + 60 * 60_000);
+      // Terminal cleanup deleted an empty key; a PUT already in flight then
+      // recreates it. The durable obligation survives deleting its session.
+      const stored = new Set([key]);
+      await prisma.uploadSession.delete({ where: { id: session.id } });
+      const worker = createMediaCleanupWorker({
+        store: prismaMediaCleanupStore,
+        storage: { async deleteExact(objectKey) { stored.delete(objectKey); } },
+        config: defaultMediaCleanupConfig(),
+        now: () => clock,
+      });
+      await worker.processDue();
+      expect(stored.has(key)).toBe(true);
+      clock = obligation.nextAttemptAt;
+      await worker.processDue();
+      expect(stored.has(key)).toBe(false);
+      expect((await prisma.mediaCleanupObligation.findUniqueOrThrow({ where: { id: obligation.id } })).completedAt).not.toBeNull();
+    } finally {
+      await prisma.workspace.delete({ where: { id: workspace.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
   });
 
   test("an upload opened with a Recipe replays after the Recipe is edited, keeps the revision it froze, and a new key sees the edit", async () => {

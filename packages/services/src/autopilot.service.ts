@@ -3,7 +3,6 @@ import { ZoomError } from "./zoom";
 import { workspaceService, WorkspaceOperationError } from "./workspace.service";
 import { BrandProfileMembershipError, BrandProfileMissingAssetError, BrandProfileNotFoundError } from "./brand-profile.service";
 import { isBrandAccessRefusal } from "./brand-ownership";
-import { ProgramWriteDisabledError } from "./program-rollout";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
 import type { ActorScope } from "./actor-scope";
@@ -136,14 +135,13 @@ export function selectAutopilotEpisodes(
 }
 
 /** The ways applying a Brand Profile can be refused: deleted, missing logo
- * file, plan, or rollout switch. */
+ * file or plan. */
 function isBrandProfileRefusal(error: unknown) {
   return (
     error instanceof BrandProfileNotFoundError ||
     error instanceof BrandProfileMissingAssetError ||
     error instanceof BrandProfileMembershipError ||
-    isBrandAccessRefusal(error) ||
-    error instanceof ProgramWriteDisabledError
+    isBrandAccessRefusal(error)
   );
 }
 

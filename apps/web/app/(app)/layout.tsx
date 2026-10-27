@@ -4,8 +4,10 @@ import { admitOptionalWorkspacePage } from "@/lib/authenticated-request-page";
 import { Box } from "@chakra-ui/react";
 import { hasFeature, resolvePricingTier } from "@narriflow/validators";
 import { AppChrome } from "./_components/app-chrome";
+import { UpgradeProvider } from "./_components/upgrade";
+import { upgradeBillingMode } from "@/lib/billing-view-model";
 import { getCachedUsageSummary } from "./_components/usage";
-import { workspaceService, workspacesV1EnabledForUser, workspaceAllowsCapability,
+import { billingService, workspaceService, workspaceAllowsCapability,
 } from "@narriflow/services";
 
 export default async function AppLayout({ children,
@@ -17,9 +19,10 @@ export default async function AppLayout({ children,
     redirect("/?auth=sign-in");
   }
 
-  const [stats, memberships] = await Promise.all([
+  const [stats, memberships, billingView] = await Promise.all([
     getCachedUsageSummary(appUser.actorUserId, appUser.workspaceId),
     listUserWorkspaces(appUser.actorUserId),
+    billingService.readBillingState(appUser.workspaceId),
   ]);
   const avatarUrls = await workspaceService.getAvatarUrls(
     appUser.actorUserId,
@@ -45,13 +48,21 @@ export default async function AppLayout({ children,
       {/* AppChrome (client) owns the sidebar/offset/mobile-nav vs. /upload
           funnel split — see its own comment for why that needs to be one
           pathname check rather than each piece hiding itself. */}
+      <UpgradeProvider
+        currentTier={resolvePricingTier(appUser.workspace.pricingTier)}
+        billingMode={upgradeBillingMode(billingView)}
+        canManageBilling={workspaceAllowsCapability(appUser.workspace, "billing.manage")}
+      >
       <AppChrome
         email={appUser.primaryEmail}
         firstName={appUser.firstName}
         imageUrl={appUser.imageUrl}
         lastName={appUser.lastName}
         remainingCredits={stats.remainingCredits}
+        usedCredits={stats.usedCredits}
+        reservedCredits={stats.reservedCredits}
         limitCredits={stats.limitCredits}
+        creditsRenewAt={stats.renewsAt.toISOString()}
         activeWorkspaceId={appUser.workspaceId}
         workspaceSelectionChanged={appUser.workspaceSelectionChanged}
         workspaceRole={appUser.workspace.role}
@@ -64,10 +75,10 @@ export default async function AppLayout({ children,
           canInvite: workspaceAllowsCapability(appUser.workspace, "members.invite") && hasFeature(appUser.workspace.pricingTier, "workspace.members"),
           planAction,
         }}
-        canCreateWorkspace={workspacesV1EnabledForUser(appUser.actorUserId)}
       >
         {children}
       </AppChrome>
+      </UpgradeProvider>
     </Box>
   );
 }

@@ -1439,7 +1439,7 @@ describe("composition FFmpeg adapter", () => {
 			}),
 		).toEqual({
 			filterParts: [
-				"[composition_base]drawtext=font=Arial:text=It\\\\\\'s 50%:expansion=none:fontsize=44:fontcolor=0xFFFFFF:x=w*0.5000-text_w/2:y=h*0.1800-text_h/2:enable='between(t\\,1.000\\,4.000)':shadowcolor=black@0.45:shadowx=0:shadowy=2:borderw=2:bordercolor=0x000000[composition_visual_0]",
+				"[composition_base]drawtext=fontfile=Arial\\\\:weight=extrabold:text=It\\\\\\'s 50%:expansion=none:fontsize=44:fontcolor=0xFFFFFF:x=w*0.5000-text_w/2:y=h*0.1800-text_h/2:enable='between(t\\,1.000\\,4.000)':shadowcolor=black@0.45:shadowx=0:shadowy=2:borderw=2:bordercolor=0x000000[composition_visual_0]",
 				"[1:v]scale=130:-1,format=rgba,colorchannelmixer=aa=0.800[composition_logo_1]",
 				"[composition_visual_0][composition_logo_1]overlay=W-w-24:24[composition_visual_1]",
 				"[composition_visual_1]fade=t=in:st=0.000:d=0.500:color=white,fade=t=out:st=4.500:d=0.500:color=white[composition_visual_2]",

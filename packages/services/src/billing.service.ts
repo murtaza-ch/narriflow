@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { createStripePlanChangeProvider, normalizeStripePlanChange } from "./workspace-plan-change-stripe";
 import {
   type BillingInterval,
   type PaidPricingTier,
@@ -48,6 +49,14 @@ const billingFailureCatalog = {
   subscription_pagination_invalid: "unavailable",
   webhook_not_configured: "unavailable",
   workspace_not_found: "missing",
+  plan_change_invalid: "invalid",
+  plan_change_conflict: "conflict",
+  plan_change_recovery_required: "conflict",
+  plan_change_not_configured: "unavailable",
+  plan_change_schedule_conflict: "conflict",
+  plan_change_busy: "conflict",
+  plan_change_quote_missing: "missing",
+  plan_change_quote_expired: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type BillingErrorCode = keyof typeof billingFailureCatalog;
@@ -78,6 +87,14 @@ const billingSafeMessages: Record<BillingErrorCode, string> = {
   subscription_pagination_invalid: "Billing is temporarily unavailable",
   webhook_not_configured: "Billing delivery is temporarily unavailable",
   workspace_not_found: "The workspace could not be found",
+  plan_change_invalid: "Choose a different plan or billing interval",
+  plan_change_conflict: "Billing changed since this quote. Review a fresh quote before continuing",
+  plan_change_recovery_required: "Resolve the current payment or cancellation in billing before changing plans",
+  plan_change_not_configured: "Plan changes are temporarily unavailable",
+  plan_change_schedule_conflict: "This subscription schedule needs support before it can be changed",
+  plan_change_busy: "Billing is updating. Try again in a moment",
+  plan_change_quote_missing: "This plan-change quote could not be found",
+  plan_change_quote_expired: "This quote expired. Review a fresh quote before continuing",
 };
 
 export class BillingError extends ExpectedDomainFailureError<
@@ -275,6 +292,8 @@ export class BillingService {
         periodEnds.length > 0 ? new Date(Math.min(...periodEnds) * 1000) : null,
       trialEnd: secondsToDate(subscription.trial_end),
       cancelAtPeriodEnd: subscription.cancel_at_period_end,
+      planChange: this.catalog ? normalizeStripePlanChange(subscription, this.catalog) : null,
+      planScheduleId: typeof subscription.schedule === "object" && subscription.schedule?.metadata?.app === "narriflow" && subscription.schedule.metadata.workspaceId === subscription.metadata.workspaceId ? subscription.schedule.id : null,
     };
   }
 
@@ -302,7 +321,7 @@ export class BillingService {
         customer: customer.id,
         status: "all",
         limit: 100,
-        expand: ["data.latest_invoice"],
+        expand: ["data.latest_invoice", "data.schedule"],
         starting_after: startingAfter,
       });
       subscriptions.push(...page.data);
@@ -334,6 +353,7 @@ export class BillingService {
 
   private stripeProviderAdapter(): WorkspaceBillingProvider {
     return {
+        ...createStripePlanChangeProvider(this.stripe(), this.catalog!),
         verifyDelivery: (rawBody, signature) =>
           this.verifyStripeDelivery(rawBody, signature),
         retrieveCurrentState: (customerId) => this.retrieveCurrentState(customerId),
@@ -757,6 +777,18 @@ export class BillingService {
         returnUrl: input.returnUrl,
       }),
     );
+  }
+
+  previewPlanChange(input: { userId: string; workspaceId: string; clientIdempotencyKey: string; tier: PaidPricingTier; interval: BillingInterval }) {
+    return this.callWorkspaceBilling(() => this.workspaceBillingModule().previewPlanChange({ workspaceId: input.workspaceId, actorUserId: input.userId, clientIdempotencyKey: input.clientIdempotencyKey, targetTier: input.tier, interval: input.interval }));
+  }
+
+  confirmPlanChange(input: { userId: string; workspaceId: string; quoteId: string }) {
+    return this.callWorkspaceBilling(() => this.workspaceBillingModule().confirmPlanChange({ workspaceId: input.workspaceId, actorUserId: input.userId, quoteId: input.quoteId }));
+  }
+
+  cancelScheduledPlanChange(input: { userId: string; workspaceId: string }) {
+    return this.callWorkspaceBilling(() => this.workspaceBillingModule().cancelScheduledPlanChange({ workspaceId: input.workspaceId, actorUserId: input.userId }));
   }
 
   /** Verifies and durably accepts a Stripe delivery without reconciling inline. */

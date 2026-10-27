@@ -9,7 +9,9 @@ import { Meter } from "@narriflow/ui/components/meter";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Fragment } from "react";
 import { NAV_ITEMS } from "./nav-items";
+import { hasFeature } from "@narriflow/validators";
 import { usagePalette } from "./usage-palette";
+import { UpgradeGem } from "./upgrade";
 import { WorkspaceSwitcher, type WorkspaceMenuPresentation, type WorkspaceSwitcherItem } from "./workspace-switcher";
 
 interface SidebarProps {
@@ -18,7 +20,7 @@ interface SidebarProps {
   activeWorkspaceId: string;
   workspaces: WorkspaceSwitcherItem[];
   canCreate: boolean;
-  canCreateWorkspace: boolean;
+
   workspaceMenu: WorkspaceMenuPresentation;
   collapsed: boolean;
   onToggle: () => void;
@@ -32,7 +34,7 @@ export function Sidebar({
   activeWorkspaceId,
   workspaces,
   canCreate,
-  canCreateWorkspace,
+
   workspaceMenu,
 }: SidebarProps) {
   const usagePct = limitCredits > 0 ? Math.min(100, ((limitCredits - remainingCredits) / limitCredits) * 100) : 0;
@@ -66,7 +68,7 @@ export function Sidebar({
         <IconButton variant="ghost" size="sm" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={onToggle}>{collapsed ? <PanelLeftOpen size={17}/> : <PanelLeftClose size={17}/>}</IconButton>
       </Flex>
 
-      {!collapsed && <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} presentation={workspaceMenu} canCreateWorkspace={canCreateWorkspace} />}
+      {!collapsed && <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} presentation={workspaceMenu} />}
 
       {/* Navigation — single IA source */}
       <Stack as="nav" flex="1" px="3" py="4" gap="0.5" overflowY="auto" css={{ scrollbarWidth: "thin", scrollbarColor: "transparent transparent", "&:hover": { scrollbarColor: "var(--chakra-colors-border) transparent" }, "@media (max-height: 800px)": { paddingBlock: "8px", gap: 0 } }}>
@@ -75,10 +77,10 @@ export function Sidebar({
             <Link href="/upload" aria-label="New project"><Plus size={15} />{!collapsed && "New project"}</Link>
           </Button>
         ) : null}
-        {NAV_ITEMS.map(({ label, href, icon: Icon }) => (
+        {NAV_ITEMS.map(({ label, href, icon: Icon, feature }) => (
           <Fragment key={href}>
           {href === "/autopilot" && !collapsed && <Text textStyle="eyebrow" color="fg.muted" px="3" pt="5" pb="2">Workspace</Text>}
-          <NavLink collapsed={collapsed} href={href} icon={<Icon size={17} />}>
+          <NavLink collapsed={collapsed} href={href} icon={<Icon size={17} />} badge={feature && !hasFeature(workspaceMenu.tier, feature) ? <UpgradeGem /> : undefined}>
             {label}
           </NavLink>
           </Fragment>

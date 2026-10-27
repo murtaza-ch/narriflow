@@ -88,7 +88,6 @@ describe("workspace administration failures", () => {
   test("uses stable codes for plan and owner-only invitation refusals", () => {
     expect(() =>
       assertWorkspaceInviteEntitlement({
-        collaborationEnabled: true,
         pricingTier: "free",
         actorRole: "owner",
         invitedRole: "viewer",
@@ -106,7 +105,6 @@ describe("workspace administration failures", () => {
     // A Pro Workspace restricted by leftover members cannot add even a Viewer.
     expect(() =>
       assertWorkspaceInviteEntitlement({
-        collaborationEnabled: true,
         pricingTier: "pro",
         actorRole: "owner",
         invitedRole: "viewer",
@@ -114,7 +112,6 @@ describe("workspace administration failures", () => {
     ).toThrow(expect.objectContaining({ code: "plan_feature_required" }));
     expect(() =>
       assertWorkspaceInviteEntitlement({
-        collaborationEnabled: true,
         pricingTier: "business",
         actorRole: "admin",
         invitedRole: "admin",

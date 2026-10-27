@@ -24,7 +24,6 @@ import { brandTemplateService } from "./brand-template.service";
 import { brandFontService } from "./brand-font.service";
 import { projectService } from "./project.service";
 import { createProductionReviewApprovalGate } from "./review-approval-gate.prisma";
-import { ProgramWriteDisabledError } from "./program-rollout";
 import { sceneTemplateService } from "./scene-template.service";
 import {
   VisualAssetReferenceError,
@@ -43,7 +42,6 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
   let prisma: PrismaClient;
   let pool: Pool;
   let priorPrisma: PrismaClient | undefined;
-  let priorProjectionWrites: string | undefined;
   const prismaGlobal = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
 
   beforeAll(() => {
@@ -52,17 +50,10 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
     priorPrisma = prismaGlobal.narriflowPrismaClient;
     prismaGlobal.narriflowPrismaClient = prisma;
-    priorProjectionWrites = process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION;
-    process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = "1";
   });
 
   afterAll(async () => {
     prismaGlobal.narriflowPrismaClient = priorPrisma;
-    if (priorProjectionWrites === undefined) {
-      delete process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION;
-    } else {
-      process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = priorProjectionWrites;
-    }
     await prisma?.$disconnect();
     await pool?.end();
   });
@@ -358,28 +349,6 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
         position: 0,
       }),
     ).resolves.toMatchObject({ id: profile.id });
-  });
-
-  test("stops project profile writes when the projection rollout is disabled", async () => {
-    process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = "0";
-    try {
-      await expect(
-        brandProfileService.resolveForProject(
-          {
-            actorUserId: randomUUID(),
-            workspaceId: randomUUID(),
-            workspaceOwnerUserId: randomUUID(),
-            role: "owner",
-            status: "active",
-            pricingTier: "business",
-            isPersonalWorkspace: false,
-          },
-          { profileId: randomUUID() },
-        ),
-      ).rejects.toBeInstanceOf(ProgramWriteDisabledError);
-    } finally {
-      process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = "1";
-    }
   });
 
   test("blocks new application when identity storage is missing", async () => {
@@ -884,6 +853,17 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: asset.id } })).deletedAt).not.toBeNull();
   });
 
+  test("a downgraded shared Workspace can remove its default when its plan cannot choose a replacement", async () => {
+    let f = await workspaceFixture("shared-default-cleanup");
+    const profile = await brandProfileService.create(f.scope, { name: "Shared default", slug: "shared-default" });
+    await brandProfileService.setDefault(f.scope, profile.id);
+    f = await setTier(f, "creator");
+    await expect(brandProfileService.setDefault(f.scope, profile.id)).rejects.toBeInstanceOf(PlanRequirementError);
+    await brandProfileService.softDelete(f.scope, profile.id, { revision: profile.revision });
+    expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
+    expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).deletedAt).not.toBeNull();
+  });
+
   test("approval governance needs Business, and a downgrade keeps an existing rule", async () => {
     let f = await workspaceFixture("governance", true);
     await expect(brandProfileService.create(f.scope, { name: "Governed", slug: "governed", approvalRule: "approval_required" }))
@@ -941,29 +921,22 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
   });
 
   test("default intro and outro Scenes need Business, and Scene Templates stay removable on Free", async () => {
-    const prior = process.env.NARRIFLOW_WRITES_SCENE_TEMPLATES;
-    process.env.NARRIFLOW_WRITES_SCENE_TEMPLATES = "1";
-    try {
-      let f = await workspaceFixture("default-scenes", true);
-      f = await setTier(f, "pro");
-      const profile = await brandProfileService.create(f.scope, { name: "Scenes", slug: "scenes" });
-      const definition = {
-        schemaVersion: 1,
-        durationSec: 2,
-        content: { kind: "color", color: "#1D4ED8" },
-        motion: { entrance: "none", exit: "none", durationSec: 0.5 },
-      };
-      await expect(sceneTemplateService.create(f.scope, profile.id, { name: "Intro", role: "intro", definition, makeDefault: true }))
-        .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.defaultScenes", currentTier: "pro", requiredTier: "business" } });
-      const intro = await sceneTemplateService.create(f.scope, profile.id, { name: "Intro", role: "intro", definition });
-      f = await setTier(f, "free");
-      await expect(sceneTemplateService.create(f.scope, profile.id, { name: "Another", role: "inline", definition }))
-        .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.scenes" } });
-      await sceneTemplateService.softDelete(f.scope, profile.id, intro.id, { expectedRevision: intro.revision });
-      expect(await sceneTemplateService.list(f.scope, profile.id)).toEqual([]);
-    } finally {
-      if (prior === undefined) delete process.env.NARRIFLOW_WRITES_SCENE_TEMPLATES;
-      else process.env.NARRIFLOW_WRITES_SCENE_TEMPLATES = prior;
-    }
+    let f = await workspaceFixture("default-scenes", true);
+    f = await setTier(f, "pro");
+    const profile = await brandProfileService.create(f.scope, { name: "Scenes", slug: "scenes" });
+    const definition = {
+      schemaVersion: 1,
+      durationSec: 2,
+      content: { kind: "color", color: "#1D4ED8" },
+      motion: { entrance: "none", exit: "none", durationSec: 0.5 },
+    };
+    await expect(sceneTemplateService.create(f.scope, profile.id, { name: "Intro", role: "intro", definition, makeDefault: true }))
+      .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.defaultScenes", currentTier: "pro", requiredTier: "business" } });
+    const intro = await sceneTemplateService.create(f.scope, profile.id, { name: "Intro", role: "intro", definition });
+    f = await setTier(f, "free");
+    await expect(sceneTemplateService.create(f.scope, profile.id, { name: "Another", role: "inline", definition }))
+      .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.scenes" } });
+    await sceneTemplateService.softDelete(f.scope, profile.id, intro.id, { expectedRevision: intro.revision });
+    expect(await sceneTemplateService.list(f.scope, profile.id)).toEqual([]);
   });
 });

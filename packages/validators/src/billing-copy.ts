@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { billingIntervalSchema, pricingTierSchema } from "./pricing";
+import { billingPlanChangeSchema } from "./billing-plan-change";
 
 export const billingHealthSchema = z.enum([
   "current",
@@ -29,6 +30,7 @@ export const workspaceBillingViewSchema = z.object({
   health: billingHealthSchema,
   renewalOrEndAt: z.iso.datetime().nullable(),
   cancelAtPeriodEnd: z.boolean(),
+  planChange: billingPlanChangeSchema.nullable(),
   graceDeadlineAt: z.iso.datetime().nullable(),
   lastSuccessfulSyncAt: z.iso.datetime().nullable(),
   desiredAdditionalSeats: z.number().int().nonnegative(),

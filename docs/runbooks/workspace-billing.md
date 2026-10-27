@@ -14,6 +14,7 @@ Deploy database migrations before web or worker code. For this cutover the requi
 6. `20260828150000_reusable_customer_operation_key`
 7. `20260828160000_typed_checkout_outcome`
 8. `20261026000001_checkout_slot`
+9. `20261027140000_workspace_plan_changes`
 
 Run `bun --cwd packages/db run prisma:generate`, then `bun --cwd packages/db run prisma:migrate:deploy` with `packages/db/.env`. Start web and worker only after deployment succeeds.
 
@@ -54,6 +55,12 @@ Register `/api/webhooks/stripe` for exactly these event types:
 - `customer.subscription.paused`
 - `customer.subscription.resumed`
 - `customer.subscription.deleted`
+- `customer.subscription.pending_update_applied`
+- `customer.subscription.pending_update_expired`
+- `subscription_schedule.updated`
+- `subscription_schedule.released`
+- `subscription_schedule.canceled`
+- `subscription_schedule.completed`
 - `invoice.paid`
 - `invoice.payment_succeeded`
 - `invoice.payment_failed`
@@ -64,45 +71,43 @@ Keep sandbox and live completely separate: distinct keys, endpoint, signing secr
 
 ## Stripe catalog and portal
 
-Use one product layout so the portal can schedule every downgrade. Stripe schedules a cross-price downgrade at period end only between prices of the same product.
+Use one **Narriflow plans** product containing the six fixed USD base prices and one separate **Narriflow Business additional seat** product containing the two seat prices. Stripe charges the subscription; Narriflow reserves and settles monthly processing credits. Annual payment does not grant an annual credit pool. Product and price metadata are diagnostic; configured price IDs own the mapping.
 
-- One **Narriflow plans** product with six recurring prices: Creator, Pro, and Business, each monthly and annual.
-- One **Business additional seat** product with a monthly and an annual price. Committed Workspace membership owns its quantity; the portal never edits it.
-- Product and price metadata are diagnostic only. Mapping is by configured price ID.
+The dedicated portal configuration must be active, disable `subscription_update`, allow payment-method updates and invoice history, cancel at period end, and return to the app's `/settings/billing`. Never expose seat quantity editing. Do not configure all six base prices in one portal catalog: Stripe rejects duplicate product/billing-interval choices. Plan changes belong to Workspace Billing, including subscriptions with separate seat items.
 
-The configured portal (`STRIPE_PORTAL_CONFIGURATION_ID`) must be active and must:
+### Plan-change policy
 
-- expose only the six plans-product prices for plan and interval changes, with quantity fixed at one;
-- apply upgrades immediately with `proration_behavior: always_invoice`, so the prorated amount is invoiced and charged at the moment of change instead of deferred to the next renewal;
-- schedule downgrades at period end with `schedule_at_period_end.conditions` `decreasing_item_amount` and `shortening_interval`;
-- schedule cancellation at period end;
-- allow payment-method recovery and invoice history;
-- return to `/settings/billing`;
-- exclude the additional-seat product.
+The owner previews a change before confirming a ten-minute quote. The immutable quote records the selected plan/interval, verified subscription items and paid period, current membership seat count, fixed proration timestamp, and actual USD amount due. A durable attempt identifies each Stripe mutation. Reusing a client key with changed input is refused; stale quotes require fresh review. Plan changes and seat reconciliation share the Billing Account claim, without holding a database transaction across Stripe calls.
 
-Checkout is only for a first subscription. A Workspace whose subscription can still bill always uses this portal for plan, interval, payment method, invoice, recovery, and cancellation changes. Narriflow has no plan-change endpoint of its own.
+- Higher tiers and same-tier monthly-to-annual changes are immediate upgrades. `payment_behavior=pending_if_incomplete` and `proration_behavior=always_invoice` keep existing subscription items until payment succeeds. A decline or unfinished 3DS returns the verified hosted invoice for recovery. Pending payment never grants the target tier or resets this month's credit usage.
+- Lower tiers and same-tier annual-to-monthly changes are scheduled at the verified current period end. The two-phase Subscription Schedule keeps the existing paid phase, applies the target phase without proration, then releases into ordinary renewal.
+- The owner can keep the current plan by releasing a Narriflow-owned schedule. Releasing does not cancel the subscription. Foreign schedules require support. Remove a scheduled change before using portal cancellation, because Stripe's portal does not cancel scheduled subscriptions.
+- Once the final target phase begins, reconciliation releases its owned schedule; portal admission also performs this safe finalization. The underlying subscription keeps running and can be canceled normally.
+- Business future phases use the target interval's seat price. Reconciliation updates both current and future phases from committed membership so removed seats cannot return at renewal. Future phases below Business omit seats. Existing below-Business membership restrictions apply only after the lower tier actually takes effect.
+- Recover past-due/unpaid invoices and pending cancellation before another plan change. The catalog creates no trials; manually created trial subscriptions must finish or be repaired before this flow. An in-progress upgrade invoice must be paid or resolved before a replacement is submitted.
 
-Entitlement never comes from webhook or redirect payloads. Workspace Billing grants the mapped tier only after retrieving the current subscription collection. Note for upgrades: a subscription that becomes `past_due` keeps the *last verified* tier during grace, not the newly mapped price, so an upgrade whose immediate invoice fails is not granted if reconciliation first observes `past_due`. If reconciliation observes `active` between the plan change and the payment failure, the higher tier applies until the next reconciliation sees `past_due`.
+Checkout creates only a first subscription. Entitlements come only from fresh current-state reconciliation, never the confirmed quote, redirect, invoice URL, or webhook payload.
 
-### Owner verification in Stripe test mode (before launch)
+Reconciliation resumes an interrupted confirming attempt with its original quote and Stripe operation keys, including a schedule attached before ownership metadata was bound. It does not adopt foreign schedules. An unapplied expired upgrade requires a new quote, and owner/source/amount conflicts preserve access and require attention. A new browser request cannot bypass a confirming attempt.
 
-First check the configured catalog and portal without creating Stripe objects:
+### Stripe test-mode verification
+
+Check the configured catalog and recovery-only portal without creating objects:
 
 ```sh
 RUN_STRIPE_SANDBOX_CONTRACTS=1 bun --env-file=apps/web/.env.local test \
   packages/services/src/workspace-billing.sandbox.test.ts -t "match the plan catalog"
 ```
 
-It verifies every price amount, currency, and interval against `PLAN_CATALOG` and `BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS`, the single plans product, the separate seat product, and the portal's `always_invoice` upgrades, period-end downgrade conditions, and period-end cancellation.
+Then verify isolated Stripe test customers and, where the paid-period boundary matters, Test Clocks:
 
-Then run each case against the sandbox catalog and record the resulting subscription status, latest invoice status, and the Narriflow billing view after reconciliation:
-
-1. Creator monthly to Pro monthly with a succeeding card: one prorated invoice is paid at the time of change; the view shows Pro.
-2. The same upgrade with a 3-D Secure card (`4000 0027 6000 3184`) left unauthenticated, and with a declining card (`4000 0000 0000 0341`): confirm whether the portal applies the new price before payment. If the subscription ends up `active` on the higher price with an unpaid invoice, the portal cannot guarantee payment-dependent upgrades. In that case disable portal upgrades and add the narrow Workspace Billing plan-change operation (invoice preview plus a pending update) before launch; keep the portal for recovery, downgrades, and cancellation.
-3. Pro to Creator and annual to monthly: the change is scheduled for the period end, current access is unchanged until then, and the view shows the lower plan only after the provider applies it.
-4. Cancellation at period end, then reactivation before the end date.
-5. A Business subscription that has an additional-seat item: confirm what the portal allows. Multi-item subscriptions may not support self-serve plan changes; if they do not, document that the owner removes billable members (the seat item goes to zero) before changing plan.
-6. A past-due subscription after the seven-day grace: the view offers only the portal, and starting Checkout is refused with `billing_portal_required`.
+1. Creator-to-Pro upgrade with a succeeding card: the reviewed prorated amount is paid and only a verified new subscription price grants Pro.
+2. A declining card and unfinished 3DS: old price/access remain, one pending invoice is recoverable, and retry does not create another charge.
+3. Pro-to-Creator and same-tier annual-to-monthly: old paid phase remains until renewal, then the correct target item applies.
+4. Monthly-to-annual and mixed tier/interval changes: amount and timing follow the policy above.
+5. Replace or undo a schedule; then cancel/reactivate in the portal. Never cancel an operator-owned schedule.
+6. Business seats: schedule an interval change, change membership, and verify both phases' quantities. A downgrade removes future seats and the existing access restriction applies at transition if non-owner members remain.
+7. Repeat requests, lose a provider response, use concurrent tabs, change seats after a quote, and submit an expired quote. Confirm immutable input, one provider mutation, and recovery without optimistic access.
 
 ## Access and recovery policy
 

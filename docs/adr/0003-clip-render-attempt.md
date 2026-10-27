@@ -12,7 +12,7 @@ We rejected an independent Render Attempt lease because it would create competin
 
 ## Consequences
 
-ADR 0001 remains the sole owner of Workflow Run claiming, heartbeats, retries, reaping, and attempt fencing, but its clip-rendering child-settlement interface must preserve per-variant failure disposition and Render Work Set lineage. The original migration rollout drained render workers before enabling attempts. Clip Render Attempt is now the only execution path. `WORKER_CLIP_RENDER_ATTEMPT_ENABLED` pauses or enables new claims without selecting another renderer; disabling it does not interrupt an active attempt. Drain workers before changing deployed render code. Render configuration is parsed once into an immutable validated value, operation deadlines and upload concurrency are bounded, structured diagnostics use stable phase and failure fields, and a project-scoped dry-run reconciliation command recovers attempt-unique orphaned objects.
+ADR 0001 remains the sole owner of Workflow Run claiming, heartbeats, retries, reaping, and attempt fencing, but its clip-rendering child-settlement interface must preserve per-variant failure disposition and Render Work Set lineage. The original migration rollout drained render workers before enabling attempts. Clip Render Attempt is now the only execution path. Drain workers before changing deployed render code. Render configuration is parsed once into an immutable validated value, operation deadlines and upload concurrency are bounded, structured diagnostics use stable phase and failure fields, and a project-scoped dry-run reconciliation command recovers attempt-unique orphaned objects.
 
 ## Implementation ownership
 

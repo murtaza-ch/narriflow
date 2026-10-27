@@ -106,9 +106,9 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	rss_missing_enclosure:
 		"That RSS episode doesn't have a downloadable audio file. Choose a different episode.",
 	upload_too_long:
-		"This video exceeds your plan's per-video length limit. Upgrade your plan or upload a shorter video.",
+		"This video is longer than your plan allows per video. Upload a shorter video, or check Billing for plans that allow longer ones.",
 	credits_exhausted:
-		"This video needs more credits than your workspace has left this month. Upgrade, or wait for credits to renew on the 1st (UTC), then retry the import.",
+		"This video needs more credits than your workspace has left this month. Credits renew on the 1st (UTC); check Billing for plans with more credits, then retry the import.",
 	credits_reservation_released:
 		"This video's credit reservation was released before processing started. Retry the import to reserve credits again.",
 	workspace_processing_capacity_reached:

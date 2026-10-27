@@ -7,6 +7,9 @@ import { sourceLanguageCodeSchema } from "./language";
 // ingest probes them. R2 caps a single copy at 5 GiB minus 5 MiB.
 export const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024 * 1024 - 5 * 1024 * 1024;
 export const MAX_MEDIA_DURATION_SECONDS = 4 * 60 * 60;
+export const MAX_UPLOAD_GRANT_TTL_SECONDS = 60 * 60;
+/** Allow all outstanding PUT grants to expire before the final exact-key deletion. */
+export const UPLOAD_SOURCE_CLEANUP_DELAY_MS = (MAX_UPLOAD_GRANT_TTL_SECONDS + 10 * 60) * 1000;
 export const uploadMimeTypes = [
   "video/mp4",
   "video/quicktime",

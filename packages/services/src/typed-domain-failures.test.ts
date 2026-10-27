@@ -75,6 +75,7 @@ describe("typed domain failure catalogs", () => {
           tier: "creator",
           limitCredits: 300,
           remainingCredits: 1,
+          spentCredits: 299,
           requestedCredits: 2,
           renewsAt: "2026-11-01T00:00:00.000Z",
         },

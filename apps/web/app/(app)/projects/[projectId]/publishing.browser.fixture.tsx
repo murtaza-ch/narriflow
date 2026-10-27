@@ -96,6 +96,7 @@ let mergeRefreshedPosts: typeof import("./publishing-provider").mergeRefreshedPo
 let nextTrackedPostBatch: typeof import("./publishing-provider").nextTrackedPostBatch;
 let ChakraProvider: typeof import("@chakra-ui/react").ChakraProvider;
 let system: typeof import("@narriflow/ui/theme").system;
+let UpgradeProvider: typeof import("../../_components/upgrade").UpgradeProvider;
 let root: Root;
 let requests: Array<{ url: string; body: any }> = [];
 let generate: (body: any) => Promise<Response>;
@@ -145,12 +146,15 @@ beforeAll(async () => {
 	));
 	({ ChakraProvider } = await import("@chakra-ui/react"));
 	({ system } = await import("@narriflow/ui/theme"));
+	({ UpgradeProvider } = await import("../../_components/upgrade"));
 });
 async function render(
 	options: {
 		clips?: ClipSnapshot[];
 		accounts?: SocialAccountSnapshot[];
 		assistedCopyEnabled?: boolean;
+		assistedCopyUpgrade?: { tier: "creator"; headline: string };
+		campaignSchedulingEnabled?: boolean;
 		revision?: number;
 		inbox?: boolean;
 	} = {},
@@ -208,6 +212,7 @@ async function render(
 	await act(async () =>
 		root.render(
 			<ChakraProvider value={system}>
+				<UpgradeProvider currentTier="creator" billingMode="change_plan" canManageBilling>
 				<Provider
 					projectId={projectId}
 					actorId={id(6)}
@@ -222,16 +227,19 @@ async function render(
 					initialPosts={[]}
 					initialPostsCursor={null}
 					assistedCopyEnabled={options.assistedCopyEnabled ?? true}
+					assistedCopyUpgrade={options.assistedCopyUpgrade ?? null}
 					customThumbnailsEnabled
-					campaignSchedulingEnabled
+					customThumbnailsUpgrade={null}
+					campaignSchedulingEnabled={options.campaignSchedulingEnabled ?? true}
 					canUploadVisualAssets
 					can1080pExport
 					canOverrideReview
-					facebookPublishingEnabled
+
 					canPublish
 				>
 					<Entry />
 				</Provider>
+				</UpgradeProvider>
 			</ChakraProvider>,
 		),
 	);
@@ -270,6 +278,17 @@ afterEach(async () => {
 	requests = [];
 });
 afterAll(() => browser.close());
+test("a multi-post plan lock opens the shared dialog without submitting or losing copy", async () => {
+	await render({ campaignSchedulingEnabled: false });
+	await click("Bulk clips");
+	const caption = browser.document.querySelector('textarea[aria-label="Description"]')!;
+	await edit(caption, "Keep this publishing draft");
+	await click("Upgrade");
+	expect([...browser.document.querySelectorAll('[role="dialog"]')].at(-1)?.textContent).toContain("Upgrade to publish multiple posts together");
+	expect(browser.document.querySelector('a[href="/settings/billing?plan=pro#plans"]')).not.toBeNull();
+	expect((caption as HTMLTextAreaElement).value).toBe("Keep this publishing draft");
+	expect(requests.filter((request) => request.url.endsWith("/schedule"))).toHaveLength(0);
+});
 test("opens the exact clip, auto-selects the sole account and generates missing copy", async () => {
 	await render();
 	await click("Exact clip");
@@ -542,6 +561,18 @@ test("generation failure leaves manual composition available", async () => {
 	expect(browser.document.body.textContent).toContain(
 		"Description generation unavailable",
 	);
+	await edit(
+		browser.document.querySelector('textarea[aria-label="Description"]') as unknown as Element,
+		"Manual composition",
+	);
+	expect(button("Publish now").disabled).toBe(false);
+});
+test("a plan without assisted copy keeps manual writing and shows a locked control that sends nothing", async () => {
+	await render({ assistedCopyEnabled: false, assistedCopyUpgrade: { tier: "creator", headline: "Upgrade to write post descriptions with AI" } });
+	await click("Exact clip");
+	expect(requests.filter((r) => r.url.endsWith("generations"))).toHaveLength(0);
+	await click("Description assistance(needs Creator)");
+	expect(requests.filter((r) => r.url.endsWith("generations"))).toHaveLength(0);
 	await edit(
 		browser.document.querySelector('textarea[aria-label="Description"]') as unknown as Element,
 		"Manual composition",

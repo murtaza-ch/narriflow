@@ -13,6 +13,7 @@ import {
 } from "@narriflow/services";
 import { ProjectsExplorer } from "./_components/projects-explorer";
 import { ProjectsGridSkeleton } from "./_components/projects-skeleton";
+import { planLimits, resolvePricingTier } from "@narriflow/validators";
 import { RetentionBanner } from "./_components/retention-banner";
 import { FoldersPanel } from "./_components/folders-panel";
 import { workspaceLibraryService } from "@narriflow/services";
@@ -198,9 +199,9 @@ async function ProjectsData({
     appUser.workspace.role !== "viewer" &&
     appUser.workspace.status === "active";
   const retentionBanner =
-    appUser.workspace.pricingTier === "free"
+    planLimits(resolvePricingTier(appUser.workspace.pricingTier)).projectRetentionHours !== null
       ? (
-      <RetentionBanner />
+      <RetentionBanner canManageBilling={appUser.workspace.role === "owner"} />
     ) : null;
   const hasFilters =
     query !== "" || status !== "all" || source !== "all" || Boolean(params.folder);

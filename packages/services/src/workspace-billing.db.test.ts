@@ -13,6 +13,7 @@ import {
   type WorkspaceBillingProvider,
 } from "./workspace-billing.service";
 import { workspaceMembershipService } from "./workspace-membership.service";
+import type { PlanChangeSubscription } from "./workspace-plan-change";
 
 const databaseUrl = process.env.WORKSPACE_BILLING_TEST_DATABASE_URL;
 const databaseSchema = process.env.WORKSPACE_BILLING_TEST_DATABASE_SCHEMA;
@@ -95,6 +96,49 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     });
     return { user, workspace };
   }
+
+  test("persists plan-change quotes across module instances and keeps payment pending off entitlements", async () => {
+    const { user, workspace } = await createWorkspace("plan-change");
+    const other = await createWorkspace("plan-change-other");
+    const now = new Date("2026-10-27T12:00:00Z");
+    const customerId = `cus_plan_${randomUUID()}`;
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { pricingTier: "pro" } });
+    await prisma.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { providerCustomerId: customerId } });
+    const source: PlanChangeSubscription = { id: `sub_plan_${randomUUID()}`, customerId, status: "active", items: [{ id: "si_base", priceId: "price_pro_monthly", quantity: 1 }], periodStart: Date.parse("2026-10-01T00:00:00Z") / 1000, periodEnd: Date.parse("2026-11-01T00:00:00Z") / 1000, cancelAtPeriodEnd: false, pending: null, schedule: null };
+    let mutations = 0;
+    const provider: WorkspaceBillingProvider = {
+      verifyDelivery: () => { throw new Error("unused"); },
+      retrieveCurrentState: async () => ({ customerId, ownership: { kind: "verified", workspaceId: workspace.id }, subscriptions: [{ id: source.id, status: "active", items: source.items, createdAt: now, effectiveAt: now, currentPeriodEnd: new Date(source.periodEnd * 1000), trialEnd: null, cancelAtPeriodEnd: false }] }),
+      retrievePlanChangeSubscription: async () => structuredClone(source),
+      previewPlanChange: async () => ({ amountDue: 745, currency: "usd" }),
+      applyPlanChange: async (input) => {
+        mutations++;
+        source.pending = { items: input.items, paymentUrl: "https://invoice.stripe.com/i/test" };
+        return { kind: "pending_payment", paymentUrl: source.pending.paymentUrl!, effectiveAt: null };
+      },
+    };
+    const module = () => createWorkspaceBillingModule({ catalog, store: createPrismaWorkspaceBillingStore(), provider, clock: { now: () => now }, diagnostics: { record: () => undefined } });
+    const input = { workspaceId: workspace.id, actorUserId: user.id, clientIdempotencyKey: randomUUID(), targetTier: "business" as const, interval: "monthly" as const };
+    const first = await module().previewPlanChange(input);
+    expect(await module().previewPlanChange(input)).toEqual(first);
+    expect(await createPrismaWorkspaceBillingStore().readPlanChangeQuote({ workspaceId: other.workspace.id, id: first.quote.id })).toBeNull();
+    await expect(module().previewPlanChange({ ...input, interval: "annual" })).rejects.toMatchObject({ code: "plan_change_conflict" });
+    // A crash after durable confirmation can be discovered without browser state.
+    await createPrismaWorkspaceBillingStore().markPlanChangeQuote({ workspaceId: workspace.id, id: first.quote.id, phase: "confirming" });
+    expect((await createPrismaWorkspaceBillingStore().readConfirmingPlanChangeQuote(workspace.id))?.public.id).toBe(first.quote.id);
+    expect(await createPrismaWorkspaceBillingStore().readConfirmingPlanChangeQuote(other.workspace.id)).toBeNull();
+    expect((await module().confirmPlanChange({ ...input, quoteId: first.quote.id })).kind).toBe("pending_payment");
+    expect((await module().confirmPlanChange({ ...input, quoteId: first.quote.id })).kind).toBe("pending_payment");
+    expect(mutations).toBe(1);
+    expect((await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).pricingTier).toBe("pro");
+    expect((await prisma.workspacePlanChangeAttempt.findUniqueOrThrow({ where: { id: first.quote.id } })).phase).toBe("submitted");
+    expect(await createPrismaWorkspaceBillingStore().readConfirmingPlanChangeQuote(workspace.id)).toBeNull();
+    const claimed = await createPrismaWorkspaceBillingStore().claimAccount({ workspaceId: workspace.id, now, leaseMs: 60_000 });
+    expect(claimed).not.toBeNull();
+    await createPrismaWorkspaceBillingStore().releasePlanChangeClaim({ workspaceId: workspace.id, attemptId: randomUUID(), now, wake: true });
+    expect(await createPrismaWorkspaceBillingStore().claimAccount({ workspaceId: workspace.id, now, leaseMs: 60_000 })).toBeNull();
+    await createPrismaWorkspaceBillingStore().releasePlanChangeClaim({ workspaceId: workspace.id, attemptId: claimed!.attemptId, now, wake: true });
+  });
 
   test("enforces one account per Workspace and unique provider bindings", async () => {
     const first = await createWorkspace("unique-first");

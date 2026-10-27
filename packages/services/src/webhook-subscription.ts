@@ -302,11 +302,18 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
       select: { id: true },
     });
     for (const candidate of candidates) {
+      const claimedAt = now();
+      const claimOwner = `${leaseOwner}:${randomUUID()}`;
       const won = await prisma.webhookSubscription.updateMany({
-        where: { id: candidate.id, status: "active", ...free },
-        data: { leaseOwner, leaseExpiresAt: leaseUntil(at) },
+        where: { id: candidate.id, status: "active", nextAttemptAt: { lte: claimedAt },
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: claimedAt } }],
+        },
+        data: { leaseOwner: claimOwner, leaseExpiresAt: leaseUntil(claimedAt) },
       });
-      if (won.count === 1) return prisma.webhookSubscription.findUniqueOrThrow({ where: { id: candidate.id } });
+      if (won.count === 1) {
+        const row = await prisma.webhookSubscription.findFirst({ where: { id: candidate.id, status: "active", leaseOwner: claimOwner } });
+        if (row) return row;
+      }
     }
     return null;
   }
@@ -315,11 +322,11 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
    * `deadline` (a `performance.now()` time), a failure, or a lost lease ends
    * it. Returns how many it delivered. */
   async function drain(row: Row, deadline: number) {
-    const held = { id: row.id, leaseOwner, status: "active" };
+    const held = () => ({ id: row.id, leaseOwner: row.leaseOwner, status: "active", leaseExpiresAt: { gt: now() } });
     const mark = { workspaceId: row.workspaceId, webhookId: row.id, host: row.urlHost };
     const disable = async (reason: WebhookDisabledReason, data: Prisma.WebhookSubscriptionUpdateManyMutationInput) => {
       const updated = await prisma.webhookSubscription.updateMany({
-        where: held,
+        where: held(),
         data: { ...release, ...data, status: "disabled", disabledReason: reason, disabledAt: now() },
       });
       log({ level: "warn", message: "webhook_subscription_disabled", ...mark, reason, ...(updated.count === 0 ? { leaseLost: true } : {}) });
@@ -329,7 +336,7 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
      * next look deferred, so a held row never crowds out the others. The cursor and
      * failure count stay, and delivery resumes under the usual expiry rules. */
     const hold = async () => {
-      await prisma.webhookSubscription.updateMany({ where: held, data: { ...release, nextAttemptAt: new Date(now().getTime() + WEBHOOK_PLAN_HOLD_MS) } });
+      await prisma.webhookSubscription.updateMany({ where: held(), data: { ...release, nextAttemptAt: new Date(now().getTime() + WEBHOOK_PLAN_HOLD_MS) } });
       log({ level: "info", message: "webhook_delivery_held", ...mark, reason: "integration_access_unavailable" });
     };
     if (!(await entitled(row.workspaceId))) {
@@ -346,7 +353,7 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
       // Re-enabled: whatever expired while it was disabled is gone, so resume
       // from the oldest event still kept instead of disabling it again.
       if (cursor < floor) cursor = floor;
-      const resumed = await prisma.webhookSubscription.updateMany({ where: held, data: { skipExpiredOnResume: false, lastDeliveredSeq: cursor } });
+      const resumed = await prisma.webhookSubscription.updateMany({ where: held(), data: { skipExpiredOnResume: false, lastDeliveredSeq: cursor } });
       if (resumed.count === 0) return 0;
       if (cursor > row.lastDeliveredSeq) log({ level: "warn", message: "webhook_subscription_resumed_past_expired", ...mark, skippedThroughSeq: Number(cursor) });
     } else if (cursor < floor) {
@@ -359,7 +366,7 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
       // Caught up. Moving the cursor to the head keeps events of other types
       // from looking like a retention gap once they expire.
       await prisma.webhookSubscription.updateMany({
-        where: { ...held, lastDeliveredSeq: { lte: head } },
+        where: { ...held(), lastDeliveredSeq: { lte: head } },
         data: { ...release, lastDeliveredSeq: head, nextAttemptAt: new Date(now().getTime() + WEBHOOK_IDLE_POLL_MS) },
       });
       return 0;
@@ -373,7 +380,7 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
       const seq = BigInt(event.seq);
       if (performance.now() >= deadline) {
         // The tick is out of time: leave the rest due at once for the next one.
-        await prisma.webhookSubscription.updateMany({ where: held, data: { ...release, nextAttemptAt: now() } });
+        await prisma.webhookSubscription.updateMany({ where: held(), data: { ...release, nextAttemptAt: now() } });
         return delivered;
       }
       if (!(await entitled(row.workspaceId))) {
@@ -384,7 +391,7 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
       // the lease and only then POST. If another worker took over, or the
       // subscription was disabled or deleted, nothing is sent.
       const holding = await prisma.webhookSubscription.updateMany({
-        where: { ...held, lastDeliveredSeq: { lt: seq } },
+        where: { ...held(), lastDeliveredSeq: { lt: seq } },
         data: { leaseExpiresAt: leaseUntil(now()) },
       });
       if (holding.count === 0) {
@@ -403,7 +410,7 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
 
       if (disposition === "delivered") {
         const updated = await prisma.webhookSubscription.updateMany({
-          where: { ...held, lastDeliveredSeq: { lt: seq } },
+          where: { ...held(), lastDeliveredSeq: { lt: seq } },
           data: { ...attempt, lastDeliveredAt: at, lastDeliveredSeq: seq, consecutiveFailures: 0, leaseExpiresAt: leaseUntil(at) },
         });
         log({ level: "info", message: "webhook_delivery_attempt", ...entry, disposition: "delivered", ...(updated.count === 0 ? { leaseLost: true } : {}) });
@@ -419,14 +426,14 @@ export function createWebhookDeliveryProcessor(dependencies: WebhookDeliveryProc
       else if (failures >= WEBHOOK_MAX_CONSECUTIVE_FAILURES) await disable("consecutive_failures", { ...attempt, consecutiveFailures: failures });
       else {
         await prisma.webhookSubscription.updateMany({
-          where: held,
+          where: held(),
           data: { ...release, ...attempt, consecutiveFailures: failures, nextAttemptAt: new Date(at.getTime() + retryDelayMs(failures, random)) },
         });
       }
       return delivered;
     }
     // The page was sent in full: come back at once for whatever followed it.
-    await prisma.webhookSubscription.updateMany({ where: held, data: { ...release, nextAttemptAt: now() } });
+    await prisma.webhookSubscription.updateMany({ where: held(), data: { ...release, nextAttemptAt: now() } });
     return delivered;
   }
 

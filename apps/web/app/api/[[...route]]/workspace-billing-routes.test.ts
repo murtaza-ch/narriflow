@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { WorkspaceBillingView } from "@narriflow/validators";
+import type { PlanChangeQuote, WorkspaceBillingView } from "@narriflow/validators";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
 
 const view: WorkspaceBillingView = {
@@ -11,11 +11,22 @@ const view: WorkspaceBillingView = {
   health: "current",
   renewalOrEndAt: null,
   cancelAtPeriodEnd: false,
+  planChange: null,
   graceDeadlineAt: null,
   lastSuccessfulSyncAt: null,
   desiredAdditionalSeats: 0,
   synchronizedAdditionalSeats: null,
   actions: ["start_checkout"],
+};
+const quote: PlanChangeQuote = {
+  id: "018f5f6a-4c31-7c75-9a4f-8f74f977bc12",
+  tier: "pro",
+  interval: "monthly",
+  kind: "immediate",
+  amountDue: 700,
+  currency: "usd",
+  effectiveAt: "2026-10-27T12:00:00.000Z",
+  expiresAt: "2026-10-27T12:10:00.000Z",
 };
 
 function dependencies(overrides: Record<string, unknown> = {}) {
@@ -33,6 +44,9 @@ function dependencies(overrides: Record<string, unknown> = {}) {
       view: { ...view, health: "activating" as const },
     }),
     openPortal: async () => ({ url: "https://billing.test" }),
+    previewPlanChange: async () => ({ quote }),
+    confirmPlanChange: async () => ({ kind: "applied" as const, effectiveAt: quote.effectiveAt }),
+    cancelScheduledPlanChange: async () => ({ kind: "unchanged" as const, effectiveAt: null }),
     readBillingState: async () => view,
     reconcileCurrentState: async () => ({ kind: "reconciled" as const, view }),
     ...overrides,
@@ -99,6 +113,88 @@ describe("Workspace Billing HTTP routes", () => {
     const expired = await terminal.request("/checkout/return", request);
     expect(expired.status).toBe(200);
     expect(expired.headers.get("retry-after")).toBeNull();
+  });
+
+  test("plan previews accept only a catalog choice and use the admitted actor", async () => {
+    let seen: unknown;
+    const app = createWorkspaceBillingHttpRoutes(dependencies({
+      previewPlanChange: async (input: unknown) => {
+        seen = input;
+        return { quote };
+      },
+    }));
+    const request = {
+      clientIdempotencyKey: "018f5f6a-4c31-7c75-9a4f-8f74f977bc13",
+      tier: "pro",
+      interval: "monthly",
+    };
+    const response = await app.request("/plan-change/preview", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ quote });
+    expect(seen).toEqual({ ...request, userId: "user-owner", workspaceId: view.workspaceId });
+
+    for (const invalid of [
+      { ...request, priceId: "price_untrusted" },
+      { ...request, workspaceId: "another-workspace" },
+      { ...request, interval: "weekly" },
+      { ...request, tier: "free" },
+      { ...request, clientIdempotencyKey: "not-a-uuid" },
+    ]) {
+      expect((await app.request("/plan-change/preview", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(invalid),
+      })).status).toBe(400);
+    }
+  });
+
+  test("plan confirmation passes only the persisted quote identity", async () => {
+    let seen: unknown;
+    const app = createWorkspaceBillingHttpRoutes(dependencies({
+      confirmPlanChange: async (input: unknown) => {
+        seen = input;
+        return { kind: "pending_payment" as const, paymentUrl: "https://invoice.stripe.com/i/test", effectiveAt: null };
+      },
+    }));
+    const response = await app.request("/plan-change/confirm", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ quoteId: quote.id }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).kind).toBe("pending_payment");
+    expect(seen).toEqual({ quoteId: quote.id, userId: "user-owner", workspaceId: view.workspaceId });
+    expect((await app.request("/plan-change/confirm", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ quoteId: quote.id, amountDue: 0 }),
+    })).status).toBe(400);
+  });
+
+  test("all plan-change mutations stop before the service when actor admission fails", async () => {
+    let calls = 0;
+    const app = createWorkspaceBillingHttpRoutes(dependencies({
+      getActor: async () => { throw new Error("actor_admission_denied"); },
+      previewPlanChange: async () => { calls += 1; return { quote }; },
+      confirmPlanChange: async () => { calls += 1; return { kind: "applied" as const, effectiveAt: null }; },
+      cancelScheduledPlanChange: async () => { calls += 1; return { kind: "unchanged" as const, effectiveAt: null }; },
+    }));
+    app.onError((_error, c) => c.json({ error: "billing_forbidden" }, 403));
+    for (const path of ["preview", "confirm", "cancel"]) {
+      expect((await app.request(`/plan-change/${path}`, { method: "POST" })).status).toBe(403);
+    }
+    expect(calls).toBe(0);
+  });
+
+  test("removing a scheduled plan change stays in the admitted workspace", async () => {
+    let seen: unknown;
+    const app = createWorkspaceBillingHttpRoutes(dependencies({
+      cancelScheduledPlanChange: async (input: unknown) => {
+        seen = input;
+        return { kind: "unchanged" as const, effectiveAt: null };
+      },
+    }));
+    const response = await app.request("/plan-change/cancel", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId: "untrusted" }),
+    });
+    expect(response.status).toBe(200);
+    expect(seen).toEqual({ userId: "user-owner", workspaceId: view.workspaceId });
   });
 
 });

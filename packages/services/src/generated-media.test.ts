@@ -243,6 +243,30 @@ describe("Generated Media Job", () => {
     expect(usageEvents.filter((event) => event.startsWith("finalize:"))).toHaveLength(1);
   });
 
+  test("finishes a published and finalized job after a crash before its terminal status update", async () => {
+    const store = createInMemoryGeneratedMediaStore();
+    let submissions = 0;
+    const { module, usageEvents } = harness({
+      store,
+      provider: {
+        async submit() {
+          submissions += 1;
+          return { kind: "completed", providerRef: "provider:finalized-recovery", usage: { images: 1 } };
+        },
+        async poll() { throw new Error("a published result must not be polled"); },
+        async cancel() { return { kind: "cancelled" }; },
+        async result() { return { contentType: "image/png", bytes: new Uint8Array([137, 80, 78, 71]) }; },
+      },
+    });
+    const job = await module.create(scope, { ...request, idempotencyKey: "finalized-crash-recovery" });
+    await module.process(job.id);
+    await store.update(job.id, { status: "running", moderationStatus: "pending" });
+
+    expect(await module.process(job.id)).toMatchObject({ status: "completed", usageStatus: "finalized" });
+    expect(submissions).toBe(1);
+    expect(usageEvents).toEqual([`reserve:${job.id}`, `finalize:${job.id}`]);
+  });
+
   test("persists a waiting provider reference and completes it through polling", async () => {
     let polls = 0;
     const { module, usageEvents } = harness({
@@ -307,6 +331,161 @@ describe("Generated Media Job", () => {
     await expect(module.cancel(scope, job.id)).rejects.toMatchObject({
       code: "generated_media_cancellation_pending",
     });
+    expect(usageEvents).toEqual([`reserve:${job.id}`]);
+  });
+
+  test("claims a waiting job before requesting cancellation so a worker cannot poll it concurrently", async () => {
+    let resolveCancellation!: () => void;
+    const cancellation = new Promise<void>((resolve) => { resolveCancellation = resolve; });
+    let reportCancellationStarted!: () => void;
+    const cancellationStarted = new Promise<void>((resolve) => { reportCancellationStarted = resolve; });
+    let polls = 0;
+    const { module, usageEvents } = harness({
+      provider: {
+        async submit() { return { kind: "waiting", providerRef: "provider:cancellation-race" }; },
+        async poll() {
+          polls += 1;
+          return { kind: "completed", providerRef: "provider:cancellation-race", usage: { images: 1 } };
+        },
+        async cancel() {
+          reportCancellationStarted();
+          await cancellation;
+          return { kind: "cancelled" };
+        },
+        async result() { return { contentType: "image/png", bytes: new Uint8Array([137, 80, 78, 71]) }; },
+      },
+    });
+    const job = await module.create(scope, { ...request, idempotencyKey: "cancel-worker-race" });
+    await module.process(job.id);
+    const cancelling = module.cancel(scope, job.id);
+    await cancellationStarted;
+    await module.process(job.id);
+    resolveCancellation();
+
+    expect(await cancelling).toMatchObject({ status: "cancelled", usageStatus: "released" });
+    expect(polls).toBe(0);
+    expect(usageEvents).toEqual([`reserve:${job.id}`, `release:${job.id}`]);
+  });
+
+  test("allows cancellation before a queued retry becomes due", async () => {
+    const store = createInMemoryGeneratedMediaStore();
+    const { module, usageEvents } = harness({ store });
+    const job = await module.create(scope, { ...request, idempotencyKey: "cancel-delayed-retry" });
+    await store.update(job.id, { retryAt: new Date("2026-09-01T01:00:00.000Z") });
+
+    expect(await module.cancel(scope, job.id)).toMatchObject({ status: "cancelled", usageStatus: "released" });
+    expect(usageEvents).toEqual([`reserve:${job.id}`, `release:${job.id}`]);
+  });
+
+  test("retries thrown polling failures on the same provider job and holds usage when the polling budget is exhausted", async () => {
+    let timestamp = new Date("2026-09-01T00:00:00.000Z");
+    let submissions = 0;
+    let polls = 0;
+    const { module, usageEvents } = harness({
+      maxAttempts: 3,
+      now: () => timestamp,
+      provider: {
+        async submit() {
+          submissions += 1;
+          return { kind: "waiting", providerRef: "provider:poll-retry" };
+        },
+        async poll() {
+          polls += 1;
+          throw new GeneratedMediaProviderError("generated_media_provider_unavailable", { retryable: true, retryAfterMs: 1 });
+        },
+        async cancel() { return { kind: "cancelled" }; },
+        async result() { throw new Error("not reached"); },
+      },
+    });
+    const job = await module.create(scope, { ...request, idempotencyKey: "thrown-poll-retries" });
+    await module.process(job.id);
+    expect(await module.process(job.id)).toMatchObject({ status: "waiting", attempt: 2 });
+    timestamp = new Date(timestamp.getTime() + 1_000);
+    expect(await module.process(job.id)).toMatchObject({
+      status: "waiting", usageStatus: "reserved", attempt: 3, outcomeUnknown: true,
+      errorCode: "generated_media_provider_outcome_unknown",
+    });
+    await module.process(job.id);
+    expect(submissions).toBe(1);
+    expect(polls).toBe(2);
+    expect(usageEvents).toEqual([`reserve:${job.id}`]);
+  });
+
+  test("does not refund a delivered image whose publication is retrying", async () => {
+    let cancellations = 0;
+    const { module, usageEvents } = harness({
+      provider: {
+        async submit() {
+          return { kind: "completed", providerRef: "provider:delivered", usage: { images: 1 } };
+        },
+        async poll() { throw new Error("not reached"); },
+        async cancel() {
+          cancellations += 1;
+          return { kind: "cancelled" };
+        },
+        async result() { return { contentType: "image/png", bytes: new Uint8Array([137, 80, 78, 71]) }; },
+      },
+      publisher: { async publish() { throw new Error("database_unavailable"); } },
+    });
+    const job = await module.create(scope, { ...request, idempotencyKey: "cancel-delivered-image" });
+    expect(await module.process(job.id)).toMatchObject({ status: "queued", errorCode: "generated_media_publication_retrying" });
+
+    await expect(module.cancel(scope, job.id)).rejects.toMatchObject({ code: "generated_media_cancellation_pending" });
+    expect(cancellations).toBe(0);
+    expect(usageEvents).toEqual([`reserve:${job.id}`]);
+  });
+
+  test("releases a definitive provider failure returned by polling without submitting another image", async () => {
+    let submissions = 0;
+    const { module, usageEvents } = harness({
+      provider: {
+        async submit() {
+          submissions += 1;
+          return { kind: "waiting", providerRef: "provider:definitive-failure" };
+        },
+        async poll() { return { kind: "failed", code: "provider_generation_failed", retryable: false }; },
+        async cancel() { return { kind: "cancelled" }; },
+        async result() { throw new Error("not reached"); },
+      },
+    });
+    const job = await module.create(scope, { ...request, idempotencyKey: "poll-definitive-failure" });
+    await module.process(job.id);
+
+    expect(await module.process(job.id)).toMatchObject({
+      status: "failed", usageStatus: "released", errorCode: "provider_generation_failed",
+    });
+    await module.process(job.id);
+    expect(submissions).toBe(1);
+    expect(usageEvents).toEqual([`reserve:${job.id}`, `release:${job.id}`]);
+  });
+
+  test.each(["completed", "failed"] as const)("fences an expired worker before %s publication or settlement", async (kind) => {
+    let timestamp = new Date("2026-09-01T00:00:00.000Z");
+    let publications = 0;
+    const { module, usageEvents } = harness({
+      now: () => timestamp,
+      provider: {
+        async submit() {
+          timestamp = new Date(timestamp.getTime() + 300_001);
+          return kind === "completed"
+            ? { kind, providerRef: "provider:expired", usage: { images: 1 } }
+            : { kind, code: "provider_validation", retryable: false };
+        },
+        async poll() { throw new Error("not reached"); },
+        async cancel() { return { kind: "cancelled" }; },
+        async result() { return { contentType: "image/png", bytes: new Uint8Array([137, 80, 78, 71]) }; },
+      },
+      publisher: {
+        async publish() {
+          publications += 1;
+          throw new Error("expired worker must not publish");
+        },
+      },
+    });
+    const job = await module.create(scope, { ...request, idempotencyKey: `expired-worker-${kind}` });
+
+    await expect(module.process(job.id)).rejects.toMatchObject({ code: "generated_media_claim_lost" });
+    expect(publications).toBe(0);
     expect(usageEvents).toEqual([`reserve:${job.id}`]);
   });
 

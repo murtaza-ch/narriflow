@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import type { UpgradePrompt } from "../../_components/upgrade";
 import { Box, Flex, Image, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { Trash2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
@@ -138,6 +139,7 @@ export function SocialAccountsPanel({
 	returnTo,
 	accountLimit,
 	connectRequirement,
+	connectUpgrade,
 	canManageBilling,
 }: {
 	accounts: SocialAccountSnapshot[];
@@ -150,6 +152,8 @@ export function SocialAccountsPanel({
 	accountLimit: number;
 	/** Why the plan can't connect another account; `null` when it can. */
 	connectRequirement: string | null;
+	/** The plan with room for another account; `null` at the top plan, where only disconnecting helps. */
+	connectUpgrade: UpgradePrompt | null;
 	canManageBilling: boolean;
 }) {
 	const mayConnect = canManage && connectRequirement === null;
@@ -474,8 +478,9 @@ export function SocialAccountsPanel({
 						Your plan publishes to {accountLimit} connected account{accountLimit === 1 ? "" : "s"}. Disconnect one to make room for another.
 					</Text>
 				) : null}
-				{canManage ? (
-					<PlanLimitNotice message={connectRequirement} actionLabel="See plans." canManageBilling={canManageBilling} />
+				{/* With no account slots at all, the page leads with an upgrade banner instead. */}
+				{canManage && accountLimit > 0 ? (
+					<PlanLimitNotice message={connectRequirement} upgrade={connectUpgrade} canManageBilling={canManageBilling} />
 				) : null}
 			</Stack>
 			<SimpleGrid

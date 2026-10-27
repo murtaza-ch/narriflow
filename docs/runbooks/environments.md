@@ -138,11 +138,10 @@ Prisma. Keep the applied migration history so a new database can be recreated.
 
 The worker validates layout settings at startup and shares them between background
 proxy analysis and export. Invalid values fail startup instead of silently choosing
-another value. Set these only in the intended worker environment.
+another value. All implemented analysis engines run without feature switches.
 
 | Setting | Default | Accepted values |
 | --- | --- | --- |
-| `WORKER_AUTO_LAYOUT_ANALYSIS` | `1` | `0` disables background analysis; `1` enables it |
 | `WORKER_AUTO_LAYOUT_BATCH_SIZE` | `2` | Integer from 1 through 10; claims are sequential |
 | `WORKER_AUTO_LAYOUT_LEASE_MS` | `180000` | Integer milliseconds from 30000 through 900000 |
 | `WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS` | `300000` | Nonnegative safe integer milliseconds; `0` allows immediate retry |
@@ -150,7 +149,6 @@ another value. Set these only in the intended worker environment.
 | `REFRAME_MODEL_PATH` | `/usr/local/share/narriflow/face_yunet.onnx` | YuNet model path |
 | `REFRAME_SAMPLE_FPS` | `4` | Finite positive sample rate |
 | `REFRAME_SCENE_THRESHOLD` | `0.3` | Finite value greater than 0 and at most 1 |
-| `WORKER_LAYOUT_ENGINE`, `WORKER_SCREEN_LAYOUT`, `WORKER_SPLIT` | `1` | `0` disables that engine; `1` enables it |
 | `WORKER_PIP_MOTION_THRESHOLD` | `0.12` | Finite value greater than 0 and at most 1 |
 | `WORKER_PROBE_TIMEOUT_MS` | `120000` | Finite positive timeout for original source probing and detector commands |
 

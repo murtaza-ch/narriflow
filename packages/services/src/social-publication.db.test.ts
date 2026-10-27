@@ -29,6 +29,7 @@ import {
 import { acceptTikTokPublicationWebhook } from "./social-publication-tiktok-webhook";
 import { createProductionReviewApprovalGate } from "./review-approval-gate.prisma";
 import { listWorkspaceEvents } from "./workspace-event";
+import { createProductionSocialPublicationRuntime } from "./social-publication-runtime";
 
 const databaseUrl = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_URL;
 const databaseSchema = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA;
@@ -265,6 +266,42 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			},
 		};
 	}
+
+	test.each([
+		[20, 1],
+		[1, 4],
+	])("publication batch %i with concurrency %i claims only work it can start", async (batchSize, concurrency) => {
+		const f = await fixture();
+		const now = new Date("2026-08-01T00:00:00Z");
+		try {
+			for (const accountId of [f.firstAccount.id, f.secondAccount.id]) {
+				const candidate = frozenCandidate(f, {
+					id: randomUUID(), key: randomUUID(), hash: randomUUID(), accountId,
+					scheduledFor: new Date(now.getTime() - 1_000),
+				});
+				await prismaPublicationSchedulingStore.open({
+					workspaceId: f.workspace.id,
+					clientIdempotencyKey: candidate.clientIdempotencyKey,
+					immutableRequestHash: candidate.immutableRequestHash,
+					create: async () => candidate,
+				});
+			}
+			const runtime = createProductionSocialPublicationRuntime({
+				SOCIAL_PUBLISH_BATCH_SIZE: String(batchSize),
+				SOCIAL_PUBLISH_CONCURRENCY: String(concurrency),
+				SOCIAL_PUBLICATION_CHECKPOINT_KEY: "test-checkpoint-key-with-at-least-32-characters",
+			});
+			const claims = await runtime.claimDue("bounded-publication-worker", now);
+			expect(claims).toHaveLength(1);
+			expect(await prisma.socialPublicationAttempt.count({
+				where: { socialPost: { workspaceId: f.workspace.id }, currentClaimId: { not: null } },
+			})).toBe(1);
+		} finally {
+			await prisma.socialPost.deleteMany({ where: { workspaceId: f.workspace.id } });
+			await prisma.workspace.delete({ where: { id: f.workspace.id } });
+			await prisma.user.delete({ where: { id: f.user.id } });
+		}
+	});
 
 	async function attentionPublication(
 		f: Awaited<ReturnType<typeof fixture>>,

@@ -24,6 +24,27 @@ export function canStartBillingCheckout(input: {
   );
 }
 
+/**
+ * How an upgrade prompt should route this workspace. A first subscription
+ * picks an interval for Checkout. Plan choices are available for a
+ * paid, current, active subscription: a restricted or attention state also
+ * opens the portal, but to repair billing, so those go to the billing page.
+ */
+export function upgradeBillingMode(
+  view: Pick<WorkspaceBillingView, "actions" | "plan" | "health" | "workspaceAccessStatus">,
+): "checkout" | "change_plan" | "billing" {
+  if (view.actions.includes("start_checkout")) return "checkout";
+  if (
+    view.actions.includes("open_portal") &&
+    view.plan !== "free" &&
+    view.health === "current" &&
+    view.workspaceAccessStatus === "active"
+  ) {
+    return "change_plan";
+  }
+  return "billing";
+}
+
 export function shouldFocusBillingStatus(
   previous: Pick<WorkspaceBillingView, "health" | "workspaceAccessStatus">,
   next: Pick<WorkspaceBillingView, "health" | "workspaceAccessStatus">,

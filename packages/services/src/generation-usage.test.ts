@@ -18,17 +18,8 @@ describe("generation access", () => {
     expect(generatedImagePolicy("business")).toBe("metered");
   });
 
-  test("admits entitled plans when the production write group is enabled", () => {
-    expect(generatedImageCapability(scope, { NARRIFLOW_WRITES_GENERATED_MEDIA: "1" })).toMatchObject({
-      available: true,
-      reason: "available",
-    });
-    expect(generatedImageCapability(
-      { ...scope, pricingTier: "free" },
-      { NARRIFLOW_WRITES_GENERATED_MEDIA: "1" },
-    )).toMatchObject({ available: true, reason: "available", usage: "trial_metered" });
-    expect(generatedImageCapability(scope, {
-      NARRIFLOW_WRITES_GENERATED_MEDIA: "0",
-    })).toMatchObject({ available: false, reason: "rollout_disabled" });
+  test("admits included image generation without deployment switches", () => {
+    expect(generatedImageCapability(scope)).toMatchObject({ available: true, reason: "available", usage: "metered" });
+    expect(generatedImageCapability({ ...scope, pricingTier: "free" })).toMatchObject({ available: true, reason: "available", usage: "trial_metered" });
   });
 });

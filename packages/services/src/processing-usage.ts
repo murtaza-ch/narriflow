@@ -8,6 +8,7 @@ import type {
 import {
   creditDebitSeconds,
   creditsForSourceSeconds,
+  lowestTier,
   planDefinition,
   planLimits,
   processingPeriodEnd,
@@ -53,10 +54,21 @@ export type ProcessingUsageFailureDetails =
       tier: PricingTier;
       limitCredits: number;
       remainingCredits: number;
+      /** Settled plus reserved credits this period. Unlike `limit - remaining`,
+       * it survives a downgrade that leaves spending above the limit. */
+      spentCredits: number;
       requestedCredits: number | null;
       renewsAt: string;
     }
-  | { tier: PricingTier; maxSeconds: number; seconds: number }
+  | {
+      tier: PricingTier;
+      maxSeconds: number;
+      seconds: number;
+      /** Settled plus reserved credits this period, so an upgrade offer can
+       * require room for this video's credits as well as its length. */
+      spentCredits: number;
+      requestedCredits: number;
+    }
   | { tier: PricingTier; inFlight: number; inFlightLimit: number }
   | { tier: PricingTier };
 
@@ -91,37 +103,54 @@ function creditsExhausted(input: {
   const limitCredits = plan.limits.monthlyCredits;
   // Ledger debits are whole credits, so remaining seconds are a multiple of 60.
   const remainingCredits = Math.max(0, Math.floor(input.remainingSeconds / 60));
+  // `remainingSeconds` is unclamped, so a downgrade below current spending still reports the real total.
+  const spentCredits = Math.max(0, limitCredits - Math.floor(input.remainingSeconds / 60));
   const requestedCredits =
     input.requestedSeconds === null
       ? null
       : creditsForSourceSeconds(input.requestedSeconds);
   const renewsAt = processingPeriodEnd(input.periodStart);
   const renewal = renewsAt.toISOString().slice(0, 10);
+  // Only promise more credits when a bigger monthly allowance would cover this video.
+  const needed = spentCredits + (requestedCredits ?? 1);
+  const biggerPlan = lowestTier((candidate) => candidate.limits.monthlyCredits >= needed && candidate.limits.monthlyCredits > limitCredits);
+  const upgradeNote = biggerPlan ? ", or upgrade for more" : "";
   return new ProcessingUsageError({
     code: "credits_exhausted",
     message:
       requestedCredits === null || remainingCredits <= 0
-        ? `This workspace has used its ${limitCredits} ${plan.name} credits for this month. Credits renew on ${renewal} (UTC), or upgrade for more.`
-        : `This video needs ${requestedCredits} credits, but the workspace has ${remainingCredits} of ${limitCredits} ${plan.name} credits left this month. Credits renew on ${renewal} (UTC), or upgrade for more.`,
+        ? `This workspace has used its ${limitCredits} ${plan.name} credits for this month. Credits renew on ${renewal} (UTC)${upgradeNote}.`
+        : `This video needs ${requestedCredits} credits, but the workspace has ${remainingCredits} of ${limitCredits} ${plan.name} credits left this month. Credits renew on ${renewal} (UTC)${upgradeNote}.`,
     details: {
       tier: input.tier,
       limitCredits,
       remainingCredits,
+      spentCredits,
       requestedCredits,
       renewsAt: renewsAt.toISOString(),
     },
   });
 }
 
-function tooLong(tier: PricingTier, seconds: number) {
+function tooLong(tier: PricingTier, seconds: number, remainingSeconds: number) {
   const plan = planDefinition(tier);
   const maxSeconds = plan.limits.maxSourceSeconds;
+  const spentCredits = Math.max(0, plan.limits.monthlyCredits - Math.floor(remainingSeconds / 60));
+  const requestedCredits = creditsForSourceSeconds(seconds);
+  // Only promise longer videos when a plan admits both this length and its credits
+  // (Pro and Business share a three-hour ceiling).
+  const longerPlan = lowestTier(
+    (candidate) =>
+      candidate.limits.maxSourceSeconds >= seconds &&
+      candidate.limits.maxSourceSeconds > maxSeconds &&
+      candidate.limits.monthlyCredits >= spentCredits + requestedCredits,
+  );
   return new ProcessingUsageError({
     code: "upload_too_long",
     message: `This video is ${Math.ceil(seconds / 60)} min, over the ${Math.round(
       maxSeconds / 60,
-    )}-min per-video limit on the ${plan.name} plan. Upgrade for longer videos.`,
-    details: { tier, maxSeconds, seconds },
+    )}-min per-video limit on the ${plan.name} plan. ${longerPlan ? "Upgrade for longer videos." : "Choose a shorter video."}`,
+    details: { tier, maxSeconds, seconds, spentCredits, requestedCredits },
   });
 }
 
@@ -386,14 +415,14 @@ export class ProcessingUsage {
       });
       return failure;
     };
-    if (declared !== null && declared > maxSeconds)
-      throw refuse(tooLong(tier, declared), {});
     const remainingSeconds = await this.remainingSeconds(
       tx,
       input.workspaceId,
       tier,
       periodStart,
     );
+    if (declared !== null && declared > maxSeconds)
+      throw refuse(tooLong(tier, declared, remainingSeconds), {});
     if (
       remainingSeconds <= 0 ||
       (declared !== null && creditDebitSeconds(declared) > remainingSeconds)
@@ -484,7 +513,7 @@ export class ProcessingUsage {
       );
       const failure =
         sourceSeconds > planLimits(tier).maxSourceSeconds
-          ? tooLong(tier, sourceSeconds)
+          ? tooLong(tier, sourceSeconds, remainingSeconds + row.reservedSeconds)
           : next - row.reservedSeconds > remainingSeconds
             ? creditsExhausted({
                 tier,
@@ -595,7 +624,7 @@ export class ProcessingUsage {
       workspace.status !== "active"
         ? inactiveWorkspace()
         : seconds > planLimits(tier).maxSourceSeconds
-          ? tooLong(tier, seconds)
+          ? tooLong(tier, seconds, row.reservedSeconds + remainingSeconds)
           : debitSeconds > row.reservedSeconds + remainingSeconds
             ? creditsExhausted({
                 tier,
@@ -733,6 +762,26 @@ export class ProcessingUsage {
       });
       return view(refunded);
     }, PROCESSING_USAGE_TRANSACTION);
+  }
+
+  /**
+   * Spending the next attempt checks, excluding this Project's own hold.
+   * Settlement keeps a live reservation in its admission period. A released
+   * reservation is re-admitted in the current period by an explicit retry.
+   */
+  async projectCreditUsage(projectId: string): Promise<{ periodStart: Date; spentCredits: number } | null> {
+    const row = await this.deps.prisma.processingUsageReservation.findUnique({
+      where: { projectId },
+      select: { workspaceId: true, state: true, periodStart: true, reservedSeconds: true },
+    });
+    if (!row) return null;
+    const periodStart = row.state === "reserved" ? row.periodStart : processingPeriodStart(this.now());
+    const usage = await this.periodUsage(this.deps.prisma, row.workspaceId, periodStart);
+    const ownReservation = row.state === "reserved" ? row.reservedSeconds : 0;
+    return {
+      periodStart,
+      spentCredits: Math.max(0, Math.floor((usage.settled + usage.reserved - ownReservation) / 60)),
+    };
   }
 
   /** The one usage projection web, MCP, and REST render. */

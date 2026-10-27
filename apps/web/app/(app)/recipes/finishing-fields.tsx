@@ -5,7 +5,10 @@ import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { NumberInput } from "@narriflow/ui/components/number-input";
 import { Switch } from "@narriflow/ui/components/switch";
 import { clipAspectRatioOptions, socialPlatformSchema, type ClipAspectRatio, type SocialPlatform } from "@narriflow/validators";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
+import { PlanLimitNotice } from "../_components/plan-limit-notice";
+import { useUpgrade } from "../_components/upgrade";
 import type { FinishingDraft } from "./finishing-form";
 
 function toggle<T>(values: T[], value: T, on: boolean): T[] {
@@ -28,6 +31,7 @@ export function FinishingFields({
   /** Connected accounts a finished clip can be proposed to. */
   queueAccounts?: Array<{ id: string; platform: SocialPlatform; displayName: string }>;
 }) {
+  const { currentTier } = useUpgrade();
   const set = (patch: Partial<FinishingDraft>) => onChange({ ...draft, ...patch });
   return (
     <Stack gap="3">
@@ -50,11 +54,10 @@ export function FinishingFields({
       </Flex>
 
       {!available ? (
-        <Box bg="bg.subtle" borderRadius="l2" px="3" py="2.5">
-          <Text fontSize="12px" color="fg.muted">
-            Finishing needs the Pro plan. Videos still import and generate clips without it.
-          </Text>
-        </Box>
+        <PlanLimitNotice
+          message="Finishing needs the Pro plan. Videos still import and generate clips without it."
+          upgrade={featureUpgradePrompt(currentTier, "campaign.operations", "Upgrade to finish clips automatically")}
+        />
       ) : null}
 
       {draft.enabled && available ? (

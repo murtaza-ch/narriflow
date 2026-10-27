@@ -1,27 +1,10 @@
-import type { CensorSegment, EditorDocument, SceneBlock } from "@narriflow/validators";
+import type { EditorDocument, SceneBlock } from "@narriflow/validators";
 import { requirePlanFeature } from "./plan-features";
-import {
-  isProgramWriteEnabled,
-  ProgramWriteDisabledError,
-  type ProgramReleaseGroup,
-} from "./program-rollout";
 
 export interface SceneDocumentMutationAnalysis {
   changedSceneBlocks: SceneBlock[];
   introducedSceneReferences: SceneBlock[];
   introducedVisualAssetIds: string[];
-}
-
-function sceneProgramReleaseGroup(
-  scene: SceneBlock,
-): ProgramReleaseGroup | null {
-  if (scene.templateSnapshot) return "scene_templates";
-  if (scene.content.kind === "text" || scene.content.kind === "color") {
-    return "scene_cards";
-  }
-  if (scene.content.kind === "image") return "scene_images";
-  if (scene.content.kind === "video") return "scene_videos";
-  return null;
 }
 
 function sceneReference(scene: SceneBlock) {
@@ -137,18 +120,8 @@ function onlyDeactivatesMotion(previous: SceneBlock | undefined, scene: SceneBlo
   );
 }
 
-function censorTreatmentProgramGroup(
-  segment: CensorSegment,
-): ProgramReleaseGroup {
-  return segment.treatment === "caption_mask"
-    ? "auto_censor_caption_masks"
-    : segment.treatment === "mute"
-      ? "auto_censor_mute"
-      : "auto_censor_beep";
-}
-
 /**
- * The plan and rollout rules for one Clip Editor Document change, enforced by
+ * The plan rules for one Clip Editor Document change, enforced by
  * document persistence for every replace, field patch, reset, and bulk edit.
  * Adding, activating, or changing paid content (Scenes, motion, Auto Censor)
  * needs the plan feature. Removing or disabling it never does, so a downgraded
@@ -167,10 +140,6 @@ export function assertEditorDocumentFeatureDelta(
   );
   if (gatedScenes.length > 0) {
     requirePlanFeature(pricingTier, "brand.scenes");
-    const disabledGroup = gatedScenes
-      .map(sceneProgramReleaseGroup)
-      .find((group) => group && !isProgramWriteEnabled(group));
-    if (disabledGroup) throw new ProgramWriteDisabledError(disabledGroup);
   }
 
   if (activeMotionChanged(current, next)) {
@@ -183,9 +152,5 @@ export function assertEditorDocumentFeatureDelta(
   );
   if (changedCensor.some((segment) => !currentCensor.has(segment.id) || segment.enabled)) {
     requirePlanFeature(pricingTier, "editor.censoring");
-    const disabled = changedCensor.find(
-      (segment) => segment.enabled && !isProgramWriteEnabled(censorTreatmentProgramGroup(segment)),
-    );
-    if (disabled) throw new ProgramWriteDisabledError(censorTreatmentProgramGroup(disabled));
   }
 }

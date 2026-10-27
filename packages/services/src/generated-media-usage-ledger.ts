@@ -78,8 +78,13 @@ async function requireAllowance(
   if (input.kind === "image") {
     const allowance = planLimits(input.tier).generatedImages;
     if (used >= allowance.count) {
+      // A monthly plan counts every image this month, not only the Free sample.
+      const monthUsed =
+        input.policy === "trial_metered"
+          ? await tx.generatedMediaUsageReservation.count({ where: countWhere({ ...input, policy: "metered" }) })
+          : used;
       const requiredTier = lowestTier(
-        (plan) => plan.limits.generatedImages.period === "month" && plan.limits.generatedImages.count > used,
+        (plan) => plan.limits.generatedImages.period === "month" && plan.limits.generatedImages.count > monthUsed,
       );
       throw new PlanRequirementError({
         code: "plan_limit_reached",
@@ -301,6 +306,9 @@ export interface GenerationAllowanceSummary {
 
 export interface GenerationUsageSummary {
   images: GenerationAllowanceSummary & {
+    /** Images admitted this UTC month under any policy. A monthly plan counts these,
+     *  so upgrade offers use it even while Free's `used` is the lifetime sample. */
+    monthUsed: number;
     entitled: boolean;
     policy: GenerationUsagePolicy;
     concurrency: { limit: number; active: number };
@@ -335,8 +343,9 @@ export async function summarizeGenerationUsage(
     const of = (status: string) => groups.find((group) => group.status === status)?._count._all ?? 0;
     return { reserved: of("reserved"), finalized: of("finalized") };
   };
-  const [images, dubs, activeImages] = await Promise.all([
+  const [images, monthImages, dubs, activeImages] = await Promise.all([
     statusCounts(countWhere({ kind: "image", workspaceId, policy: imagePolicy, periodStart })),
+    statusCounts(countWhere({ kind: "image", workspaceId, policy: "metered", periodStart })),
     statusCounts(countWhere({ kind: "dub", workspaceId, policy: "metered", periodStart })),
     prisma.generatedMediaUsageReservation.count({ where: { workspaceId, kind: "image", status: "reserved" } }),
   ]);
@@ -353,6 +362,7 @@ export async function summarizeGenerationUsage(
   return {
     images: {
       ...allowance(limits.generatedImages.count, images, limits.generatedImages.period === "lifetime"),
+      monthUsed: monthImages.reserved + monthImages.finalized,
       entitled: hasFeature(tier, "generated.images"),
       policy: imagePolicy,
       concurrency: { limit: limits.generatedImages.concurrency, active: activeImages },

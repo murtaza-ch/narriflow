@@ -210,13 +210,11 @@ export function CampaignEditorActionPreview({
   kind,
   projectId,
   state,
-  campaignOperationsEnabled,
   onApplied,
 }: {
   kind: CampaignEditorActionKind;
   projectId: string;
   state: CampaignCommandState;
-  campaignOperationsEnabled: boolean;
   onApplied(
     result: CampaignEditorOperationResult,
     retryIntent: CampaignEditorRetryIntent,
@@ -402,7 +400,6 @@ export function CampaignEditorActionPreview({
   async function apply() {
     if (
       submitting ||
-      !campaignOperationsEnabled ||
       !targetAvailable ||
       preflightState !== "ready" ||
       !hasActionableItems ||
@@ -681,18 +678,6 @@ export function CampaignEditorActionPreview({
         </Box>
       </Flex>
 
-      {!campaignOperationsEnabled ? (
-        <Flex p="3" gap="2" borderStartWidth="3px" borderStartColor="accent.solid" bg="accent.subtle">
-          <Sparkles size={14} />
-          <Box>
-            <Text fontSize="sm" fontWeight="600">Campaign actions require Pro</Text>
-            <Text fontSize="xs" color="fg.muted" mt="0.5">
-              You can inspect the exact profile, style, scene, and revision fences before upgrading.
-            </Text>
-          </Box>
-        </Flex>
-      ) : null}
-
       {error ? (
         <Flex role="alert" p="3" gap="2" color="danger.fg" bg="danger.subtle" borderStartWidth="3px" borderStartColor="danger.solid">
           <AlertTriangle size={14} />
@@ -700,7 +685,7 @@ export function CampaignEditorActionPreview({
         </Flex>
       ) : null}
 
-      {loadState === "error" ? null : campaignOperationsEnabled ? (
+      {loadState === "error" ? null : (
         <Button
           size="sm"
           alignSelf="flex-end"
@@ -715,10 +700,6 @@ export function CampaignEditorActionPreview({
         >
           {submitting ? <Spinner size="xs" /> : copy.icon}
           <Text ms="1">{submitting ? "Applying…" : "Apply to selected"}</Text>
-        </Button>
-      ) : (
-        <Button size="sm" alignSelf="flex-end" asChild>
-          <a href="/settings/billing">See Pro plans</a>
         </Button>
       )}
     </Stack>

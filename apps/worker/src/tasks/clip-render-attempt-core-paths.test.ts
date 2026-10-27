@@ -291,7 +291,7 @@ function createCoreRenderPathTracer(input: {
 		});
 	const recordCommand = (args: readonly string[]): string[] => {
 		const ids = outputVariantIds(args);
-		commands.push({
+		if (ids.length > 0) commands.push({
 			outputVariantIds: ids,
 			args: [...args],
 		});
@@ -368,10 +368,6 @@ function createCoreRenderPathTracer(input: {
 		},
 		config: parseRenderConfig({
 			WORKER_RENDER_SOURCE_MODE: input.sourceAccess ? "ranged" : "download",
-			WORKER_LAYOUT_ENGINE: "0",
-			WORKER_SCREEN_LAYOUT: "0",
-			WORKER_SPLIT: "0",
-			WORKER_BROLL: "0",
 			...input.configOverrides,
 		}),
 		lifecycle: {
@@ -471,7 +467,7 @@ function createCoreRenderPathTracer(input: {
 					}
 					expect(command).toBe("ffmpeg");
 					const ids = recordCommand(args);
-					if (input.failFirstRenderCommand && commands.length === 1) {
+					if (input.failFirstRenderCommand && ids.length > 0 && commands.length === 1) {
 						throw new WorkflowFailure(
 							"worker_command_input_invalid",
 							"permanent",
@@ -1330,7 +1326,7 @@ test("ClipRenderAttempt deduplicates keyed analysis and extraction across mixed 
 			label: "Automatic",
 			input: {
 				topology: "studio-per-output" as const,
-				configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+
 				multiFaceAnalysisSamples,
 			},
 			counts: { extraction: 1, face: 0, multiFace: 1, pip: 0, scene: 1 },
@@ -1342,7 +1338,7 @@ test("ClipRenderAttempt deduplicates keyed analysis and extraction across mixed 
 			input: {
 				topology: "studio-per-output" as const,
 				clipOverrides: { studioEdits: { framing: { mode: "split" } } },
-				configOverrides: { WORKER_SPLIT: "1" },
+
 				multiFaceAnalysisSamples,
 			},
 			counts: { extraction: 1, face: 0, multiFace: 1, pip: 0, scene: 0 },
@@ -1354,7 +1350,7 @@ test("ClipRenderAttempt deduplicates keyed analysis and extraction across mixed 
 			input: {
 				topology: "studio-per-output" as const,
 				clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
-				configOverrides: { WORKER_SCREEN_LAYOUT: "1" },
+
 				faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
 					t: index * 0.25,
 					cx: 0.88,
@@ -1423,7 +1419,7 @@ test("a stacked scene layout requests Automatic evidence under clip-wide Center 
 				],
 			},
 		},
-		configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+
 		multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
 			t: index * 0.8,
 			faces: [face(0.3), face(0.7)],
@@ -1478,10 +1474,7 @@ test("a screen scene layout requests only Automatic evidence under clip-wide Cen
 				],
 			},
 		},
-		configOverrides: {
-			WORKER_LAYOUT_ENGINE: "1",
-			WORKER_SCREEN_LAYOUT: "1",
-		},
+
 		multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
 			t: index * 0.8,
 			faces: [{ cx: 0.82, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 }],
@@ -1522,7 +1515,7 @@ test("a screen scene layout requests only Automatic evidence under clip-wide Cen
 test("ClipRenderAttempt degrades shared extraction failure without changing settlement", async () => {
 	const harness = createCoreRenderPathTracer({
 		topology: "studio-per-output",
-		configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+
 		analysisExtractionFailure: new Error("Injected extraction failure"),
 	});
 
@@ -1568,7 +1561,7 @@ test("ClipRenderAttempt rejects unknown evidence versions before writes or comma
 			clipOverrides: {
 				autoLayoutAnalysis: { version: 99, engine: "shot-layout-v99" },
 			},
-			configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+
 		},
 		{
 			label: "Screen",
@@ -1576,7 +1569,7 @@ test("ClipRenderAttempt rejects unknown evidence versions before writes or comma
 				studioEdits: { framing: { mode: "screen" } },
 				layoutAnalysis: { version: 99, engine: "screen-layout-v99" },
 			},
-			configOverrides: { WORKER_SCREEN_LAYOUT: "1" },
+
 		},
 		{
 			label: "Split",
@@ -1584,7 +1577,7 @@ test("ClipRenderAttempt rejects unknown evidence versions before writes or comma
 				studioEdits: { framing: { mode: "split" } },
 				splitLayoutAnalysis: { version: 99, engine: "explicit-split-v99" },
 			},
-			configOverrides: { WORKER_SPLIT: "1" },
+
 		},
 	];
 
@@ -1643,11 +1636,7 @@ test("ClipRenderAttempt skips analysis for Center, Fit, B-roll-short-circuited, 
 	for (const analysisCase of cases) {
 		const harness = createCoreRenderPathTracer({
 			...analysisCase,
-			configOverrides: {
-				WORKER_LAYOUT_ENGINE: "1",
-				WORKER_SPLIT: "1",
-				WORKER_SCREEN_LAYOUT: "1",
-			},
+
 			faceAnalysisSamples: [{ t: 0, cx: 0.5 }],
 			multiFaceAnalysisSamples: [
 				{
@@ -1842,7 +1831,7 @@ test("ClipRenderAttempt skips unavailable stock B-roll through its optional-asse
 		topology: "single-video",
 		clipWindow: { startSec: 0, endSec: 15 },
 		clipOverrides: { title: "Build a camera", hookText: "Workshop" },
-		configOverrides: { WORKER_BROLL: "1", PEXELS_API_KEY: "configured" },
+		configOverrides: { PEXELS_API_KEY: "configured" },
 		brollProviderFailure: new Error(
 			"provider rejected https://signed.example/video?secret=do-not-log",
 		),
@@ -1885,7 +1874,7 @@ test("ClipRenderAttempt validates downloaded stock B-roll before caching it", as
 		topology: "single-video",
 		clipWindow: { startSec: 0, endSec: 15 },
 		clipOverrides: { title: "Build a camera", hookText: "Workshop" },
-		configOverrides: { WORKER_BROLL: "1", PEXELS_API_KEY: "configured" },
+		configOverrides: { PEXELS_API_KEY: "configured" },
 		brollCutaways: [resolvedBrollFixture],
 		optionalMediaInvalidFor: "video",
 	});
@@ -1912,7 +1901,7 @@ test("ClipRenderAttempt preserves stock B-roll attribution after successful sele
 		topology: "single-video",
 		clipWindow: { startSec: 0, endSec: 15 },
 		clipOverrides: { title: "Build a camera", hookText: "Workshop" },
-		configOverrides: { WORKER_BROLL: "1", PEXELS_API_KEY: "configured" },
+		configOverrides: { PEXELS_API_KEY: "configured" },
 		brollCutaways: [resolvedBrollFixture],
 	});
 
@@ -1937,7 +1926,7 @@ test("ClipRenderAttempt retries a failed stock B-roll composition without B-roll
 		topology: "single-video",
 		clipWindow: { startSec: 0, endSec: 15 },
 		clipOverrides: { title: "Build a camera", hookText: "Workshop" },
-		configOverrides: { WORKER_BROLL: "1", PEXELS_API_KEY: "configured" },
+		configOverrides: { PEXELS_API_KEY: "configured" },
 		brollCutaways: [resolvedBrollFixture],
 		failFirstRenderCommand: true,
 	});
@@ -2402,7 +2391,7 @@ test("ClipRenderAttempt propagates ownership loss from fenced analysis persisten
 			previewStorageKey: "projects/test/previews/current.mp4",
 			editorRevision: 0,
 		},
-		configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+
 		multiFaceAnalysisSamples: [
 			{
 				t: 0,
@@ -2431,9 +2420,7 @@ test("ClipRenderAttempt records degraded Screen evidence when analysis is unavai
 			previewStorageKey: "projects/test/previews/current.mp4",
 			editorRevision: 0,
 		},
-		configOverrides: {
-			WORKER_SCREEN_LAYOUT: "1",
-		},
+
 		faceAnalysisSamples: null,
 		pipAnalysisResult: null,
 	});
@@ -2487,9 +2474,7 @@ test("ClipRenderAttempt selects a qualifying picture-in-picture crop", async () 
 	const harness = createCoreRenderPathTracer({
 		topology: "single-video",
 		clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
-		configOverrides: {
-			WORKER_SCREEN_LAYOUT: "1",
-		},
+
 		faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
 			t: index * 0.25,
 			cx: 0.88,
@@ -2526,9 +2511,7 @@ test("ClipRenderAttempt always compiles Screen through the shared plan", async (
 			previewStorageKey: "projects/test/previews/current.mp4",
 			editorRevision: 0,
 		},
-		configOverrides: {
-			WORKER_SCREEN_LAYOUT: "1",
-		},
+
 		faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
 			t: index * 0.25,
 			cx: 0.88,
@@ -2608,9 +2591,7 @@ test("ClipRenderAttempt reuses matching Screen evidence without rerunning or dow
 				],
 			},
 		},
-		configOverrides: {
-			WORKER_SCREEN_LAYOUT: "1",
-		},
+
 		faceAnalysisFailure: new Error("face analysis must not rerun"),
 	});
 
@@ -2641,9 +2622,7 @@ test("ClipRenderAttempt preserves speaker-band framing for a valid no-screen res
 	const harness = createCoreRenderPathTracer({
 		topology: "single-video",
 		clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
-		configOverrides: {
-			WORKER_SCREEN_LAYOUT: "1",
-		},
+
 		faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
 			t: index * 0.25,
 			cx: 0.88,
@@ -2694,7 +2673,7 @@ test("ClipRenderAttempt applies a deterministic split-layout analysis", async ()
 	const harness = createCoreRenderPathTracer({
 		topology: "single-video",
 		clipOverrides: { studioEdits: { framing: { mode: "split" } } },
-		configOverrides: { WORKER_SPLIT: "1" },
+
 		multiFaceAnalysisSamples: Array.from({ length: 40 }, (_, index) => ({
 			t: index * 0.25,
 			faces: [face(0.3), face(0.7)],
@@ -2765,7 +2744,7 @@ test("ClipRenderAttempt reuses matching durable Split evidence without rerunning
 				mappedSpeakerCount: 2,
 			},
 		},
-		configOverrides: { WORKER_SPLIT: "1" },
+
 		multiFaceAnalysisSamples: null,
 	});
 
@@ -2807,9 +2786,7 @@ test("ClipRenderAttempt compiles explicit Split through the shared plan", async 
 			previewStorageKey: "projects/test/previews/current.mp4",
 			editorRevision: 0,
 		},
-		configOverrides: {
-			WORKER_SPLIT: "1",
-		},
+
 		multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
 			t: index * 0.25,
 			faces: [face(0.3), face(0.7)],
@@ -2872,9 +2849,7 @@ test("ClipRenderAttempt keeps Split rendering when preview evidence persistence 
 			previewStorageKey: "projects/test/previews/current.mp4",
 			editorRevision: 0,
 		},
-		configOverrides: {
-			WORKER_SPLIT: "1",
-		},
+
 		multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
 			t: index * 0.25,
 			faces: [face(0.3), face(0.7)],
@@ -2908,9 +2883,7 @@ test("ClipRenderAttempt degrades only the ineligible Split target", async () => 
 	const harness = createCoreRenderPathTracer({
 		topology: "studio-per-output",
 		clipOverrides: { studioEdits: { framing: { mode: "split" } } },
-		configOverrides: {
-			WORKER_SPLIT: "1",
-		},
+
 		multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
 			t: index * 0.25,
 			faces: [face(0.2 + (index % 6) * 0.04), face(0.7)],
@@ -2983,7 +2956,7 @@ test("ClipRenderAttempt reuses matching durable Automatic evidence without rerun
 				mappedSpeakerCount: 1,
 			},
 		},
-		configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+
 		multiFaceAnalysisSamples: null,
 	});
 
@@ -3024,9 +2997,7 @@ test("ClipRenderAttempt rejects shot-layout evidence truncated before the canoni
 	});
 	const harness = createCoreRenderPathTracer({
 		topology: "single-video",
-		configOverrides: {
-			WORKER_LAYOUT_ENGINE: "1",
-		},
+
 		multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
 			t: index * 0.25,
 			faces: [face(0.3), face(0.7)],
@@ -3049,90 +3020,6 @@ test("ClipRenderAttempt rejects shot-layout evidence truncated before the canoni
 		}),
 	});
 });
-
-for (const disabledAnalysisCase of [
-	{
-		mode: "screen",
-		message: "clip_screen_fallback",
-		analysisMode: "screen_layout",
-	},
-	{
-		mode: "split",
-		message: "clip_split_fallback",
-		analysisMode: "split_layout",
-	},
-] as const) {
-	test(`ClipRenderAttempt reports the literal-0 ${disabledAnalysisCase.mode} capability fallback`, async () => {
-		const harness = createCoreRenderPathTracer({
-			topology: "single-video",
-			clipOverrides: {
-				studioEdits: { framing: { mode: disabledAnalysisCase.mode } },
-			},
-		});
-
-		await expect(
-			harness.clipRenderAttempt.execute(
-				harness.attempt,
-				attemptContext(new AbortController().signal),
-			),
-		).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-		expect(harness.analysisCounts()).toEqual({
-			extraction: 0,
-			face: 0,
-			multiFace: 0,
-			pip: 0,
-			scene: 0,
-		});
-		expect(harness.diagnostics).toContainEqual({
-			message: "clip_composition_plan",
-			context: expect.objectContaining({
-				requestedMode: disabledAnalysisCase.mode,
-				noticeCodes: [`${disabledAnalysisCase.mode}_layout_disabled`],
-			}),
-		});
-	});
-}
-
-for (const disabledPlanCase of [
-	{ mode: "screen" },
-	{ mode: "split" },
-] as const) {
-	test(`ClipRenderAttempt uses the planned ${disabledPlanCase.mode} fallback when analysis is disabled`, async () => {
-		const harness = createCoreRenderPathTracer({
-			topology: "single-video",
-			clipOverrides: {
-				studioEdits: { framing: { mode: disabledPlanCase.mode } },
-			},
-			configOverrides: {},
-			faceAnalysisSamples: [
-				{ t: 0, cx: 0.2 },
-				{ t: 1, cx: 0.5 },
-				{ t: 2, cx: 0.8 },
-			],
-		});
-
-		await expect(
-			harness.clipRenderAttempt.execute(
-				harness.attempt,
-				attemptContext(new AbortController().signal),
-			),
-		).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-		const graph = harness.commands[0]?.args.join(" ") ?? "";
-		expect(graph).not.toContain("sendcmd=");
-		expect(
-			harness.diagnostics.some(
-				(diagnostic) => diagnostic.message === "clip_reframe_applied",
-			),
-		).toBe(false);
-		expect(harness.diagnostics).toContainEqual({
-			message: "clip_composition_plan",
-			context: expect.objectContaining({
-				requestedMode: disabledPlanCase.mode,
-				effectiveModes: ["center"],
-			}),
-		});
-	});
-}
 
 test("ClipRenderAttempt contains a per-output command failure to its variant", async () => {
 	const harness = createCoreRenderPathTracer({
@@ -3884,7 +3771,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 			expect(boundaryFrameHashes.every(Boolean)).toBe(true);
 			expect(new Set(boundaryFrameHashes).size).toBeGreaterThanOrEqual(6);
 			const graph = harness.commands[0]?.args.join(" ") ?? "";
-			expect(graph).toContain("drawtext=font=Arial:text=Plan first:expansion=none");
+			expect(graph).toContain("drawtext=fontfile=Arial\\\\:weight=extrabold:text=Plan first:expansion=none");
 			expect(graph).toContain("ass='");
 			expect(graph).toContain("colorchannelmixer=aa=0.800");
 			expect(graph).toContain("fade=t=in:st=0.000:d=0.200:color=white");
@@ -4196,7 +4083,6 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 				clipWindow: { startSec: 0, endSec: 15 },
 				clipOverrides: { title: "Build a camera", hookText: "Workshop" },
 				configOverrides: {
-					WORKER_BROLL: "1",
 					PEXELS_API_KEY: "configured",
 				},
 				brollProviderFailure: new Error("B-roll provider unavailable"),
@@ -4303,9 +4189,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 		{
 			label: "picture-in-picture screen layout",
 			diagnostic: "clip_screen_pip_selected",
-			configOverrides: {
-				WORKER_SCREEN_LAYOUT: "1",
-			},
+
 			clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
 			faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
 				t: index * 0.04,
@@ -4322,9 +4206,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 		{
 			label: "split layout",
 			diagnostic: "clip_split_applied",
-			configOverrides: {
-				WORKER_SPLIT: "1",
-			},
+
 			clipOverrides: { studioEdits: { framing: { mode: "split" } } },
 			faceAnalysisSamples: undefined,
 			multiFaceAnalysisSamples: Array.from({ length: 40 }, (_, index) => ({
@@ -4340,9 +4222,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 		{
 			label: "truncated shot-layout evidence",
 			diagnostic: "clip_layout_plan_fallback",
-			configOverrides: {
-				WORKER_LAYOUT_ENGINE: "1",
-			},
+
 			clipOverrides: {},
 			faceAnalysisSamples: undefined,
 			multiFaceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
@@ -4370,7 +4250,6 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 							resolution: analysisCase.resolution,
 						},
 					],
-					configOverrides: analysisCase.configOverrides,
 					clipOverrides: analysisCase.clipOverrides,
 					faceAnalysisSamples: analysisCase.faceAnalysisSamples,
 					multiFaceAnalysisSamples: analysisCase.multiFaceAnalysisSamples,
@@ -4441,12 +4320,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 					clipWindow: { startSec: 0, endSec: 10 },
 					variants,
 					clipOverrides: { studioEdits: { framing: { mode: plannedMode } } },
-					configOverrides:
-						plannedMode === "split"
-							? { WORKER_SPLIT: "1" }
-							: {
-									WORKER_SCREEN_LAYOUT: "1",
-								},
+
 					faceAnalysisSamples:
 						plannedMode === "screen"
 							? Array.from({ length: 8 }, (_, index) => ({

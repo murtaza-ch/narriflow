@@ -18,6 +18,8 @@ import { userErrorMessage } from "@narriflow/validators";
 import type { DubUsageSummary } from "@narriflow/services";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
+import { upgradePromptFromFailure, type BrowserRequestFailure } from "@/lib/authenticated-request-browser";
 
 const languageOptions = [
   { value: "es", label: "Spanish" },
@@ -105,7 +107,7 @@ export function DubbingPanel({
   dubs,
   allowance,
   planRequirement,
-  canManageBilling,
+  upgrade,
 }: {
   projectId: string;
   clips: ClipSnapshot[];
@@ -114,9 +116,11 @@ export function DubbingPanel({
   allowance: DubUsageSummary | null;
   /** Why the plan can't dub, computed server-side; `null` when it can. */
   planRequirement: string | null;
-  canManageBilling: boolean;
+  /** What an upgrade would add; `null` when no plan lifts the block (top-tier allowance: it renews). */
+  upgrade: UpgradePrompt | null;
 }) {
   const router = useRouter();
+  const { openUpgrade } = useUpgrade();
   const [isPending, startTransition] = useTransition();
   const renderedClips = useMemo(
     () => clips.filter((clip) => renderedAspectRatios(clip).length > 0),
@@ -176,10 +180,11 @@ export function DubbingPanel({
       });
 
       if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as {
-          message?: string;
-          error?: string;
-        } | null;
+        const payload = (await response.json().catch(() => null)) as BrowserRequestFailure | null;
+        if (response.status === 402 && payload) {
+          const prompt = upgradePromptFromFailure(payload);
+          if (prompt) openUpgrade(prompt);
+        }
         setMessage(
           payload?.message ??
             userErrorMessage(payload?.error) ??
@@ -385,11 +390,7 @@ export function DubbingPanel({
         {blockedMessage || clipTooLong ? (
           <Box px="5" pb="5" mt="-3">
             {blockedMessage ? (
-              <PlanLimitNotice
-                message={blockedMessage}
-                actionLabel="See plans."
-                canManageBilling={canManageBilling}
-              />
+              <PlanLimitNotice message={blockedMessage} upgrade={upgrade} />
             ) : (
               <Text fontSize="xs" color="warning.fg">
                 Dubs work on clips up to {Math.round((allowance?.maxClipSeconds ?? 0) / 60)} minutes. Trim this clip

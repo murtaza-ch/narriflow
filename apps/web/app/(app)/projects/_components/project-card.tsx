@@ -6,6 +6,7 @@ import { Checkbox } from "@narriflow/ui/components/checkbox";
 import type { ProjectListItem } from "@narriflow/services";
 import { formatDate, formatDateTime, formatDuration } from "@/lib/format";
 import { DeleteProjectButton } from "./delete-project-button";
+import { ProjectExpiration } from "./project-expiration";
 import { ProjectThumbnail } from "./project-thumbnail";
 import { STATUS_CONFIG, type BadgeStatus } from "../_lib/status";
 
@@ -138,6 +139,7 @@ export function ProjectCard({
             >
               {project.title}
             </Text>
+            {project.expiresAt ? <ProjectExpiration expiresAt={project.expiresAt} /> : null}
           </Stack>
         </Stack>
       </Link>

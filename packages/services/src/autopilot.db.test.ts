@@ -14,7 +14,6 @@ import { campaignOperationService } from "./campaign-operation.service";
 import { brandTemplateService } from "./brand-template.service";
 import { brandProfileService, BrandProfileNotFoundError } from "./brand-profile.service";
 import { recipeService } from "./recipe.service";
-import { ProgramWriteDisabledError } from "./program-rollout";
 import { workspaceService } from "./workspace.service";
 import { socialOAuthService } from "./social-oauth.service";
 import { brandTemplateInputSchema, contentPackSchema, DEFAULT_CAPTION_PRESET, type RecipeInput } from "@narriflow/validators";
@@ -701,14 +700,8 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect((await service.updateRule(scope, rule.id, { recipeId: unbranded.id })).recipeId).toBe(unbranded.id);
 
       await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "business" } });
-      const flag = process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION;
-      delete process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION;
-      try {
-        await expect(saveRecipe(f, { brandProfileId: profile.id }, "Switch off")).rejects.toBeInstanceOf(ProgramWriteDisabledError);
-        await expect(service.updateRule(scope, loose.id, { recipeId: bound.id })).rejects.toBeInstanceOf(ProgramWriteDisabledError);
-      } finally {
-        if (flag !== undefined) process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = flag;
-      }
+      expect((await saveRecipe(f, { brandProfileId: profile.id }, "Restored plan")).brandProfileId).toBe(profile.id);
+      expect((await service.updateRule(scope, loose.id, { recipeId: bound.id })).recipeId).toBe(bound.id);
     });
 
     test("a replayed rule create keeps the Recipe it was accepted with, even after that Recipe is edited", async () => {

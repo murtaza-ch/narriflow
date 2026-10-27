@@ -7,7 +7,7 @@ import { accessibleProjectWhere } from "./project-access";
 import { brandOwnerWhere } from "./brand-ownership";
 import { assistedSocialCopyService } from "./assisted-social-copy-runtime";
 import { readSocialPublishingOptionsForAccount } from "./social-publishing-options";
-import { isSocialProviderPublishingEnabled, socialPublicationCapabilityVersion } from "./social-publication-config";
+import { socialPublicationCapabilityVersion } from "./social-publication-config";
 import { reviewApprovalGate } from "./review-approval-gate.prisma";
 import { workspaceService } from "./workspace.service";
 import { requirePublishableSocialAccount } from "./social-account-eligibility";
@@ -403,7 +403,6 @@ export function createProductionSocialPublicationScheduling() {
 		},
 		authorizeReview: (input) => reviewApprovalGate.authorize(input),
 		freezePorts: {
-			providerEnabled: isSocialProviderPublishingEnabled,
 			capabilityVersion: socialPublicationCapabilityVersion,
 			async projectExists({ projectId, workspaceId }) {
 				return Boolean(await requirePrisma().project.findFirst({

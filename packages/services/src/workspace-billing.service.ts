@@ -1,5 +1,6 @@
 import {
   billingHealthSchema,
+  billingPlanChangeSchema,
   hasFeature,
   PLAN_CATALOG,
   resolvePricingTier,
@@ -7,11 +8,14 @@ import {
   type BillingInterval,
   type PaidPricingTier,
   type PricingTier,
+  type BillingPlanChange,
 } from "@narriflow/validators";
 import { getPrismaClient } from "@narriflow/db/client";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { projectRetentionService } from "./project-retention.service";
 import { randomUUID } from "node:crypto";
+import { createWorkspacePlanChanges, type WorkspacePlanChangeStore, type WorkspacePlanChangeProvider, type StoredPlanChangeQuote } from "./workspace-plan-change";
+import { createPrismaWorkspacePlanChangeStore } from "./workspace-plan-change-store";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -173,6 +177,8 @@ export interface ProviderSubscription {
   currentPeriodEnd: Date | null;
   trialEnd: Date | null;
   cancelAtPeriodEnd: boolean;
+  planChange?: BillingPlanChange | null;
+  planScheduleId?: string | null;
 }
 
 export interface ProviderCurrentState {
@@ -205,6 +211,12 @@ export const WORKSPACE_BILLING_WAKE_EVENT_TYPES = [
   "customer.subscription.paused",
   "customer.subscription.resumed",
   "customer.subscription.deleted",
+  "customer.subscription.pending_update_applied",
+  "customer.subscription.pending_update_expired",
+  "subscription_schedule.updated",
+  "subscription_schedule.released",
+  "subscription_schedule.canceled",
+  "subscription_schedule.completed",
   "invoice.paid",
   "invoice.payment_succeeded",
   "invoice.payment_failed",
@@ -212,7 +224,7 @@ export const WORKSPACE_BILLING_WAKE_EVENT_TYPES = [
   "customer.deleted",
 ] as const;
 
-export interface WorkspaceBillingProvider {
+export interface WorkspaceBillingProvider extends WorkspacePlanChangeProvider {
   verifyDelivery(
     rawBody: string,
     signature: string,
@@ -303,6 +315,7 @@ export interface WorkspaceBillingView {
   health: WorkspaceBillingHealth;
   renewalOrEndAt: string | null;
   cancelAtPeriodEnd: boolean;
+  planChange: BillingPlanChange | null;
   graceDeadlineAt: string | null;
   lastSuccessfulSyncAt: string | null;
   desiredAdditionalSeats: number;
@@ -324,6 +337,7 @@ export interface WorkspaceBillingProjection {
   currentPeriodEnd: Date | null;
   trialEnd: Date | null;
   cancelAtPeriodEnd: boolean;
+  planChange: BillingPlanChange | null;
   firstPastDueAt: Date | null;
   graceDeadlineAt: Date | null;
   health: WorkspaceBillingHealth;
@@ -339,7 +353,7 @@ export interface WorkspaceBillingProjection {
   } | null;
 }
 
-export interface WorkspaceBillingStore {
+export interface WorkspaceBillingStore extends WorkspacePlanChangeStore {
   readProjection(workspaceId: string): Promise<WorkspaceBillingProjection | null>;
   acceptDelivery(input: {
     delivery: VerifiedBillingDelivery;
@@ -516,6 +530,14 @@ const workspaceBillingFailureCatalog = {
   price_not_configured: "unavailable",
   seat_provider_not_configured: "unavailable",
   workspace_not_found: "missing",
+  plan_change_invalid: "invalid",
+  plan_change_conflict: "conflict",
+  plan_change_recovery_required: "conflict",
+  plan_change_not_configured: "unavailable",
+  plan_change_schedule_conflict: "conflict",
+  plan_change_busy: "conflict",
+  plan_change_quote_missing: "missing",
+  plan_change_quote_expired: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type WorkspaceBillingErrorCode =
@@ -537,6 +559,14 @@ const workspaceBillingSafeMessages: Record<WorkspaceBillingErrorCode, string> = 
   price_not_configured: "This plan is temporarily unavailable",
   seat_provider_not_configured: "Seat billing is temporarily unavailable",
   workspace_not_found: "The workspace could not be found",
+  plan_change_invalid: "Choose a different plan or billing interval",
+  plan_change_conflict: "Billing changed since this quote. Review a fresh quote before continuing",
+  plan_change_recovery_required: "Resolve the current payment or cancellation in billing before changing plans",
+  plan_change_not_configured: "Plan changes are temporarily unavailable",
+  plan_change_schedule_conflict: "This subscription schedule needs support before it can be changed",
+  plan_change_busy: "Billing is updating. Try again in a moment",
+  plan_change_quote_missing: "This plan-change quote could not be found",
+  plan_change_quote_expired: "This quote expired. Review a fresh quote before continuing",
 };
 
 export type WorkspaceBillingErrorDetails = Record<string, string | null>;
@@ -607,6 +637,7 @@ export function createInMemoryWorkspaceBillingStore(
         currentPeriodEnd: null,
         trialEnd: null,
         cancelAtPeriodEnd: false,
+        planChange: null,
         firstPastDueAt: null,
         graceDeadlineAt: null,
         health: "current",
@@ -622,6 +653,7 @@ export function createInMemoryWorkspaceBillingStore(
   );
   const deliveries = new Map<string, string | null>();
   const checkoutAttempts = new Map<string, WorkspaceCheckoutAttempt>();
+  const planChangeQuotes = new Map<string, StoredPlanChangeQuote>();
   /** Workspace ID -> attempt ID holding the one open Checkout slot. */
   const checkoutSlots = new Map<string, string>();
   const attemptView = (attempt: WorkspaceCheckoutAttempt): WorkspaceCheckoutAttempt => ({
@@ -647,6 +679,31 @@ export function createInMemoryWorkspaceBillingStore(
   );
 
   return {
+    async readPlanChangeQuote(input) {
+      return [...planChangeQuotes.values()].find((quote) => quote.workspaceId === input.workspaceId && (input.id ? quote.public.id === input.id : quote.clientIdempotencyKey === input.clientIdempotencyKey)) ?? null;
+    },
+    async readConfirmingPlanChangeQuote(workspaceId) {
+      const quotes = [...planChangeQuotes.values()].filter((quote) => quote.workspaceId === workspaceId && quote.phase === "confirming");
+      if (quotes.length > 1) throw new WorkspaceBillingError("plan_change_conflict");
+      return quotes[0] ?? null;
+    },
+    async savePlanChangeQuote(quote) {
+      if ([...planChangeQuotes.values()].some((existing) => existing.clientIdempotencyKey === quote.clientIdempotencyKey)) throw new WorkspaceBillingError("plan_change_conflict");
+      planChangeQuotes.set(quote.public.id, structuredClone(quote));
+    },
+    async markPlanChangeQuote(input) {
+      const quote = planChangeQuotes.get(input.id);
+      if (!quote || quote.workspaceId !== input.workspaceId) throw new WorkspaceBillingError("plan_change_quote_missing");
+      quote.phase = input.phase;
+    },
+    async releasePlanChangeClaim(input) {
+      const state = runtime.get(input.workspaceId);
+      if (state?.attemptId === input.attemptId) {
+        state.attemptId = null;
+        state.leaseExpiresAt = null;
+        if (input.wake) state.nextReconcileAt = input.now;
+      }
+    },
     async readProjection(workspaceId) {
       return rows.get(workspaceId) ?? null;
     },
@@ -943,6 +1000,7 @@ export function createInMemoryWorkspaceBillingStore(
         currentPeriodEnd: null,
         trialEnd: null,
         cancelAtPeriodEnd: false,
+        planChange: null,
         firstPastDueAt: null,
         graceDeadlineAt: null,
         health: input.health,
@@ -997,6 +1055,7 @@ export function createInMemoryWorkspaceBillingStore(
         currentPeriodEnd: input.subscription.currentPeriodEnd,
         trialEnd: input.subscription.trialEnd,
         cancelAtPeriodEnd: input.subscription.cancelAtPeriodEnd,
+        planChange: input.subscription.planChange ?? null,
         firstPastDueAt: input.firstPastDueAt,
         graceDeadlineAt: input.graceDeadlineAt,
         health: input.health,
@@ -1031,11 +1090,23 @@ function billingHealth(value: string): WorkspaceBillingHealth {
   return billingHealthSchema.parse(value);
 }
 
+function snapshotPlanChange(snapshot: unknown): BillingPlanChange | null {
+  if (!snapshot || typeof snapshot !== "object" || !("planChange" in snapshot) || snapshot.planChange == null) return null;
+  return billingPlanChangeSchema.parse(snapshot.planChange);
+}
+
 export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("DATABASE_URL is required for Workspace Billing");
 
   return {
+    ...createPrismaWorkspacePlanChangeStore(prisma),
+    async releasePlanChangeClaim(input) {
+      await prisma.workspaceBillingAccount.updateMany({
+        where: { workspaceId: input.workspaceId, reconcileAttemptId: input.attemptId },
+        data: { reconcileAttemptId: null, leaseExpiresAt: null, ...(input.wake ? { nextReconcileAt: input.now } : {}) },
+      });
+    },
     async readProjection(workspaceId) {
       const row = await prisma.workspace.findUnique({
         where: { id: workspaceId },
@@ -1081,6 +1152,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         currentPeriodEnd: account.currentPeriodEndAt,
         trialEnd: account.trialEndAt,
         cancelAtPeriodEnd: account.cancelAtPeriodEnd,
+        planChange: snapshotPlanChange(account.snapshot),
         firstPastDueAt: account.firstPastDueAt,
         graceDeadlineAt: account.graceDeadlineAt,
         health: billingHealth(account.health),
@@ -1826,6 +1898,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           currentPeriodEnd: null,
           trialEnd: null,
           cancelAtPeriodEnd: false,
+          planChange: null,
           firstPastDueAt: null,
           graceDeadlineAt: null,
           health: input.health,
@@ -1967,6 +2040,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
               currentPeriodEnd: input.subscription.currentPeriodEnd?.toISOString() ?? null,
               trialEnd: input.subscription.trialEnd?.toISOString() ?? null,
               cancelAtPeriodEnd: input.subscription.cancelAtPeriodEnd,
+              planChange: input.subscription.planChange ?? null,
             },
           },
         });
@@ -2010,6 +2084,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           currentPeriodEnd: account.currentPeriodEndAt,
           trialEnd: account.trialEndAt,
           cancelAtPeriodEnd: account.cancelAtPeriodEnd,
+          planChange: input.subscription.planChange ?? null,
           firstPastDueAt: account.firstPastDueAt,
           graceDeadlineAt: account.graceDeadlineAt,
           health: billingHealth(account.health),
@@ -2094,6 +2169,7 @@ function billingView(row: WorkspaceBillingProjection): WorkspaceBillingView {
     health: row.health,
     renewalOrEndAt: (row.trialEnd ?? row.currentPeriodEnd)?.toISOString() ?? null,
     cancelAtPeriodEnd: row.cancelAtPeriodEnd,
+    planChange: row.planChange,
     graceDeadlineAt: row.graceDeadlineAt?.toISOString() ?? null,
     lastSuccessfulSyncAt: row.lastVerifiedAt?.toISOString() ?? null,
     desiredAdditionalSeats: row.desiredAdditionalSeats,
@@ -2136,6 +2212,7 @@ export function createWorkspaceBillingModule(dependencies: {
   };
   const retryBand = (attemptCount: number) =>
     attemptCount <= 1 ? "first" : attemptCount <= 3 ? "early" : "persistent";
+  const planChanges = createWorkspacePlanChanges(dependencies);
   const callProvider = async <T>(
     operation: string,
     call: () => Promise<T> | T,
@@ -2163,6 +2240,14 @@ export function createWorkspaceBillingModule(dependencies: {
     const current = await dependencies.store.readProjection(workspaceId);
     if (!current) {
       throw new WorkspaceBillingError("workspace_not_found");
+    }
+    if (attemptId) {
+      try {
+        await planChanges.recoverConfirmingPlanChange({ workspaceId, attemptId });
+      } catch (error) {
+        if (!(error instanceof WorkspaceBillingError)) throw error;
+        return { kind: "unresolved", reason: error.code, view: billingView(current) };
+      }
     }
     const settleNoSubscription = async (activating: boolean) => {
       if (!attemptId) throw new WorkspaceBillingAttemptLost();
@@ -2469,6 +2554,7 @@ export function createWorkspaceBillingModule(dependencies: {
       mapped.tier === "business" &&
       !hasSubscriptionConflict &&
       SEAT_BILLABLE_SUBSCRIPTION_STATUSES.has(subscription.status)
+      && subscription.planChange?.state !== "pending_payment"
     ) {
       const desired = await dependencies.store.readDesiredSeatState(workspaceId);
       const providerSeat = selectedItems.seatItems[0]?.item;
@@ -2555,12 +2641,25 @@ export function createWorkspaceBillingModule(dependencies: {
           });
         }
       }
+      if (subscription.planChange?.state === "scheduled") {
+        try {
+          if (!dependencies.provider.synchronizeScheduledSeats) throw new WorkspaceBillingError("plan_change_not_configured");
+          providerSeatMutation = true;
+          await dependencies.provider.synchronizeScheduledSeats({ workspaceId, subscriptionId: subscription.id, desired: desired.desired, revision: desired.revision });
+        } catch {
+          seatConvergenceFailed = true;
+          dependencies.diagnostics.record({ level: "warn", message: "workspace_billing_scheduled_seat_convergence_failed", workspaceId, phase: "seat_convergence" });
+        }
+      }
       seat = {
         desired: desired.desired,
         observed,
         itemId,
         revision: desired.revision,
       };
+    }
+    if (subscription.planScheduleId && !subscription.planChange && dependencies.provider.finalizeCompletedPlanChangeSchedule) {
+      await dependencies.provider.finalizeCompletedPlanChangeSchedule({ workspaceId, subscriptionId: subscription.id });
     }
     let settled: WorkspaceBillingProjection;
     try {
@@ -2704,6 +2803,7 @@ export function createWorkspaceBillingModule(dependencies: {
   };
 
   return {
+    ...planChanges,
     async startCheckout(input: {
       workspaceId: string;
       actorUserId: string;
@@ -3068,6 +3168,9 @@ export function createWorkspaceBillingModule(dependencies: {
           "portal_not_configured",
         );
       }
+      if (current.canonicalSubscriptionId && dependencies.provider.finalizeCompletedPlanChangeSchedule) {
+        await dependencies.provider.finalizeCompletedPlanChangeSchedule({ workspaceId: input.workspaceId, subscriptionId: current.canonicalSubscriptionId });
+      }
       const portal = await callProvider("create_portal", () =>
         dependencies.provider.createPortalSession!({
           customerId: current.providerCustomerId!,
@@ -3226,7 +3329,8 @@ export function createWorkspaceBillingModule(dependencies: {
       const now = dependencies.clock.now();
       const claims = await dependencies.store.claimDueAccounts({
         now,
-        limit: dependencies.catalog.worker.batchSize,
+        // Waiting for a worker slot must not consume an account's lease.
+        limit: Math.min(dependencies.catalog.worker.batchSize, dependencies.catalog.worker.concurrency),
         leaseMs: dependencies.catalog.worker.leaseMs,
       });
       dependencies.diagnostics.record({

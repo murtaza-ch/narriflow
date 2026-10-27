@@ -173,8 +173,7 @@ guide is `apps/web/content/docs/api/webhooks.mdx`.
 - The worker's `webhook_deliveries` loop emails the creator while they are
   still a Workspace member, otherwise the owner, once per disabling
   (`disabledNotifiedAt` is written first). A send that goes out or fails
-  stays final. A skipped send (`NOTIFICATION_EMAILS_ENABLED` not `true`, no
-  app base URL, or no Resend key) is unmarked, logged as
+  stays final. A skipped send (no app base URL or no Resend key) is unmarked, logged as
   `webhook_disabled_notice_skipped`, and retried after five minutes.
 - `POST /webhooks/{id}/test` allows one test per webhook every 5 seconds
   (`lastTestedAt`, `webhook_test_throttled`), for REST and Settings alike.

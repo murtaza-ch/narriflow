@@ -53,18 +53,25 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
         planProducts.add(typeof price.product === "string" ? price.product : price.product.id);
       }
     }
-    // One plans product, so the portal can schedule every downgrade.
+    // Plan changes use pending updates and schedules, not the portal catalog.
     expect(planProducts.size).toBe(1);
+    const seatProducts = new Set<string>();
     for (const interval of BILLING_INTERVALS) {
       const priceId = process.env[`STRIPE_PRICE_BUSINESS_SEAT_${interval.toUpperCase()}`];
       if (!priceId) throw new Error(`Missing seat/${interval} price`);
       const price = await stripe.prices.retrieve(priceId);
+      expect(price.active).toBe(true);
+      expect(price.currency).toBe("usd");
+      expect(price.recurring?.usage_type).toBe("licensed");
+      expect(price.recurring?.interval_count).toBe(1);
       expect(price.unit_amount).toBe(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS[interval]);
       expect(price.recurring?.interval).toBe(stripeInterval[interval]);
       expect(planProducts.has(
         typeof price.product === "string" ? price.product : price.product.id,
       )).toBe(false);
+      seatProducts.add(typeof price.product === "string" ? price.product : price.product.id);
     }
+    expect(seatProducts.size).toBe(1);
 
     const portalId = process.env.STRIPE_PORTAL_CONFIGURATION_ID;
     if (!portalId?.startsWith("bpc_")) {
@@ -73,15 +80,10 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
     const portal = await stripe.billingPortal.configurations.retrieve(portalId);
     const update = portal.features.subscription_update;
     expect(portal.active).toBe(true);
-    expect(update.enabled).toBe(true);
-    expect(update.proration_behavior).toBe("always_invoice");
+    expect(update.enabled).toBe(false);
     expect(update.default_allowed_updates).not.toContain("quantity");
-    expect(
-      update.schedule_at_period_end.conditions.map((condition) => condition.type).sort(),
-    ).toEqual(["decreasing_item_amount", "shortening_interval"]);
-    expect((update.products ?? []).map((product) => product.product)).toEqual([
-      ...planProducts,
-    ]);
+    expect(portal.features.payment_method_update.enabled).toBe(true);
+    expect(portal.features.invoice_history.enabled).toBe(true);
     expect(portal.features.subscription_cancel.mode).toBe("at_period_end");
   });
 
@@ -186,25 +188,10 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
           payment_method_update: { enabled: true },
           subscription_cancel: { enabled: true, mode: "at_period_end" },
           subscription_update: {
-            enabled: true,
-            default_allowed_updates: ["price"],
-            proration_behavior: "create_prorations",
+            enabled: false,
           },
         },
       });
-      const expectedPortalPrices = [
-        process.env.STRIPE_PRICE_CREATOR_MONTHLY,
-        process.env.STRIPE_PRICE_CREATOR_ANNUAL,
-        process.env.STRIPE_PRICE_PRO_MONTHLY,
-        process.env.STRIPE_PRICE_PRO_ANNUAL,
-        process.env.STRIPE_PRICE_BUSINESS_MONTHLY,
-        process.env.STRIPE_PRICE_BUSINESS_ANNUAL,
-      ].filter((price): price is string => Boolean(price)).sort();
-      const portalProducts = portalConfig.features.subscription_update.products;
-      expect(portalProducts).toBeDefined();
-      expect(portalProducts?.flatMap((product) => product.prices).sort())
-        .toEqual(expectedPortalPrices);
-      expect(expectedPortalPrices).not.toContain(seatPrice);
       const portal = await adapter.createPortalSession!({
         customerId,
         returnUrl: "https://app.narriflow.test/settings/billing",

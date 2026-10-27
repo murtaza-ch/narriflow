@@ -235,7 +235,7 @@ export function createClipEditorHttpRoutes(
     const parsed = saveEditorDocumentSchema.safeParse(payload);
     if (!parsed.success) return c.json({ error: "invalid_input" }, 400);
 
-    // Plan and rollout rules for the change are enforced by document
+    // Plan rules for the change are enforced by document
     // persistence; this adapter validates the Scene references it introduces.
     const current = await dependencies.clip.getClipEditorDocument(
       actor,

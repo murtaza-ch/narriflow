@@ -11,14 +11,15 @@ import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { admitProjectPage } from "@/lib/authenticated-request-page";
 import {
 	analyticsService,
+	brandPlanRequirement,
 	brandProfileService,
 	clipService,
-	campaignActionRolloutFromEnv,
+
 	dubbingService,
+	getProcessingUsage,
 	getProjectFinishing,
 	hasFeature,
-	isProgramWriteEnabled,
-	isSocialProviderPublishingEnabled,
+
 	isQuotaBlockedMidFlight,
 	MAX_INGEST_RETRY_ATTEMPTS,
 	presignDownloadUrl,
@@ -32,7 +33,9 @@ import {
 	deriveProjectPipeline,
 	BRAND_DEFAULT_CAPTION_PRESET_ID,
 	captionPresetIdSchema,
+	creditsForSourceSeconds,
 	defaultAspectRatioSchema,
+	lowestTierWithFeature,
 	planDefinition,
 	planFeatureRequirement,
 	userErrorMessage,
@@ -44,6 +47,11 @@ import { SourceIcon } from "./source-icon";
 import { ProjectEventsProvider } from "./project-events-provider";
 import { PipelineStepper } from "./pipeline-stepper";
 import { ingestRecoveryAction, ingestRecoveryLabel } from "@/lib/project-state";
+import {
+	creditsUpgradePrompt,
+	uploadLengthUpgradePrompt,
+} from "@/lib/authenticated-request-browser";
+import { dubAllowanceUpgradePrompt, featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { ProjectTabs, TabCountBadge } from "./project-tabs";
 import { projectTabFromSearchParam } from "./project-tab";
 import { ProcessingPanel } from "./processing-panel";
@@ -54,9 +62,12 @@ import {
 } from "../actions";
 import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
 import { DeleteProjectButton } from "../_components/delete-project-button";
+import { ProjectExpiration } from "../_components/project-expiration";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import { UpgradeBanner } from "../../_components/upgrade";
 import { TranscriptPanel } from "./transcript-panel";
 import { ClipsPanel } from "./clips-panel";
+import { deriveCampaignActionPlan } from "./campaign-command-state";
 import { ContentSuitePanel } from "./content-suite-panel";
 import { AnalyticsPanel } from "./analytics-panel";
 import { DubbingPanel } from "./dubbing-panel";
@@ -188,6 +199,7 @@ export default async function ProjectDetailPage({
 		activeWorkspace,
 		finishing,
 		dubAllowance,
+		projectCreditUsage,
 	] = await Promise.all([
 		activeTab === "transcript"
 			? projectService.getTranscriptSnapshot(appUser, projectId)
@@ -226,6 +238,8 @@ export default async function ProjectDetailPage({
 		activeTab === "dubbing"
 			? dubbingService.getDubbingAllowance(appUser)
 			: Promise.resolve(null),
+		// The period settlement checks, excluding this Project's own reservation.
+		getProcessingUsage().projectCreditUsage(projectId),
 	]);
 	const reviewRoomData = reviewRoom
 		? (JSON.parse(JSON.stringify(reviewRoom)) as ReviewRoomData)
@@ -241,24 +255,31 @@ export default async function ProjectDetailPage({
 	// `pricingTier === "free"` check — so the render popover's resolution
 	// picker degrades exactly the way the worker's render-time gate does.
 	const can1080pExport = hasFeature(pricingTier, "export.1080p");
-	const campaignActionRollout = campaignActionRolloutFromEnv();
-	const campaignOperationsEnabled = hasFeature(
+	const { availability: campaignActionAvailability, upgradePrompts: campaignUpgradePrompts } =
+		deriveCampaignActionPlan({
+			pricingTier,
+			brandRequirement: brandPlanRequirement(
+				{ pricingTier, isPersonalWorkspace: appUser.isPersonalWorkspace },
+				"brand.profiles",
+			),
+		});
+	const contentSuiteUpgrade = featureUpgradePrompt(
 		pricingTier,
-		"campaign.operations",
+		"content.repurposing",
+		"Upgrade to repurpose your videos",
 	);
-	const campaignActionAvailability = {
-		exports:
-			campaignActionRollout.exports &&
-			campaignOperationsEnabled &&
-			hasFeature(pricingTier, "export.bundles"),
-		creative: campaignActionRollout.creative && campaignOperationsEnabled,
-		motion:
-			campaignActionRollout.creative &&
-			campaignOperationsEnabled &&
-			hasFeature(pricingTier, "editor.motion"),
-	};
+	// The offer must admit the next dub: a plan with dubbing *and* room after
+	// this month's dubs (a downgrade keeps them), or none. Without usage facts,
+	// fall back to the plan that dubs at all.
+	const dubAllowanceUpgrade = dubAllowance ? dubAllowanceUpgradePrompt(pricingTier, dubAllowance.used) : null;
+	const dubbingUpgrade = !hasFeature(pricingTier, "dubbing")
+		? dubAllowance
+			? dubAllowanceUpgrade && { ...dubAllowanceUpgrade, headline: "Upgrade to dub your clips" }
+			: featureUpgradePrompt(pricingTier, "dubbing", "Upgrade to dub your clips")
+		: dubAllowance && dubAllowance.remaining <= 0
+			? dubAllowanceUpgrade
+			: null;
 	const canApplyBrandProfile =
-		isProgramWriteEnabled("brand_kit_projection") &&
 		hasFeature(pricingTier, "brand.profiles") &&
 		workspaceAllowsCapability(
 			{ role: appUser.role, status: appUser.status },
@@ -356,10 +377,39 @@ export default async function ProjectDetailPage({
 	const quotaBlockedMidFlight = isQuotaBlockedMidFlight({
 		ingestErrorCode: snapshot.project.ingestErrorCode,
 	});
+	// Cover this source once in the period its next attempt checks. An older
+	// live reservation still settles in its admission month. Without a known
+	// duration or ledger facts no specific plan can be promised.
+	const sourceCredits =
+		sourceSeconds > 0 && projectCreditUsage
+			? {
+					spentCredits: projectCreditUsage.spentCredits,
+					requestedCredits: creditsForSourceSeconds(sourceSeconds),
+				}
+			: null;
+	// A plan only helps when one qualifies; at the top the notice just explains.
+	const quotaUpgrade =
+		!quotaBlockedMidFlight || !sourceCredits
+			? null
+			: snapshot.project.ingestErrorCode === "upload_too_long"
+				? uploadLengthUpgradePrompt(pricingTier, sourceSeconds, sourceCredits)
+				: creditsUpgradePrompt(pricingTier, sourceCredits.spentCredits, sourceCredits.requestedCredits);
+	// Length never recovers on renewal: an overlong source needs a qualifying
+	// plan or a shorter replacement. Only spent credits wait for the renewal.
 	const quotaBlockedMessage = quotaBlockedMidFlight
-		? `${usage.remainingCredits} of ${usage.limitCredits} ${planDefinition(usage.tier).name} credits remain this month, with a ${Math.round(
-				usage.maxUploadSeconds / 60,
-			)}-min per-video limit. Retry after upgrading or when credits renew on ${usage.renewsAt.toISOString().slice(0, 10)} (UTC).`
+		? snapshot.project.ingestErrorCode === "upload_too_long"
+			? `This source is longer than the ${Math.round(
+					usage.maxUploadSeconds / 60,
+				)}-min per-video limit on ${planDefinition(usage.tier).name}. ${
+					quotaUpgrade
+						? "Upgrade to a plan that fits it, or replace it with a shorter source."
+						: sourceCredits
+							? "No plan fits it, so replace it with a shorter source."
+							: "Replace it with a shorter source, or check Billing for plans that allow longer videos."
+				}`
+			: `${usage.remainingCredits} of ${usage.limitCredits} ${planDefinition(usage.tier).name} credits remain this month, with a ${Math.round(
+					usage.maxUploadSeconds / 60,
+				)}-min per-video limit. Retry ${quotaUpgrade ? "after upgrading or " : ""}when credits renew on ${usage.renewsAt.toISOString().slice(0, 10)} (UTC).`
 		: null;
 
 	const { transcribe: transcribeStage, detect: detectStage, render: renderStage } = pipelineStates.processingStages;
@@ -478,6 +528,9 @@ export default async function ProjectDetailPage({
 								<Text fontSize="xs" color="fg.subtle">
 									{formatDate(snapshot.project.createdAt)}
 								</Text>
+								{snapshot.project.expiresAt ? (
+									<ProjectExpiration expiresAt={snapshot.project.expiresAt} />
+								) : null}
 								{(projectProgress.active || projectProgress.status === "failed") && (
 									<StatusBadge
 										status={projectProgress.status}
@@ -498,7 +551,7 @@ export default async function ProjectDetailPage({
 							{canManageReview ? (
 								<ProjectShareButton
 									projectId={projectId}
-									available={hasFeature(pricingTier, "review.rooms")}
+									upgrade={featureUpgradePrompt(pricingTier, "review.rooms", "Upgrade to share projects for client review")}
 									actor={{
 										name: getDisplayName(appUser.firstName, appUser.lastName),
 										email: appUser.primaryEmail,
@@ -694,16 +747,24 @@ export default async function ProjectDetailPage({
 						{ role: appUser.role, status: appUser.status },
 						"publishing.manage",
 					)}
-					facebookPublishingEnabled={isSocialProviderPublishingEnabled(
-						"facebook_reels",
-					)}
+
 					assistedCopyEnabled={hasFeature(
 						pricingTier,
 						"publishing.assistedCopy",
 					)}
+					assistedCopyUpgrade={featureUpgradePrompt(
+						pricingTier,
+						"publishing.assistedCopy",
+						"Upgrade to write post descriptions with AI",
+					)}
 					customThumbnailsEnabled={hasFeature(
 						pricingTier,
 						"publishing.customThumbnails",
+					)}
+					customThumbnailsUpgrade={featureUpgradePrompt(
+						pricingTier,
+						"publishing.customThumbnails",
+						"Upgrade to set custom thumbnails",
 					)}
 					campaignSchedulingEnabled={hasFeature(
 						pricingTier,
@@ -781,6 +842,7 @@ export default async function ProjectDetailPage({
 										mode={generationMode}
 										workflowRunId={activeRun?.workflowRunId ?? null}
 										quotaBlockedMessage={quotaBlockedMessage}
+										quotaUpgrade={quotaUpgrade}
 										advancedSettingsProps={advancedSettingsProps}
 										defaultSourceLanguageCode={snapshot.project.languageCode}
 									/>
@@ -822,7 +884,10 @@ export default async function ProjectDetailPage({
 															</Text>
 														</Flex>
 													)}
-													<PlanLimitNotice message={planLimitMessage} />
+													<PlanLimitNotice
+														message={planLimitMessage}
+														upgrade={sourceCredits ? uploadLengthUpgradePrompt(pricingTier, sourceSeconds, sourceCredits) : null}
+													/>
 												</Box>
 												<ActionSubmitButton
 													pendingLabel="Starting…"
@@ -898,23 +963,11 @@ export default async function ProjectDetailPage({
                   and zero-clip runs still expose Retry/Re-run detection in
                   the processing panel, and the first detection is Step 02. */}
 										{!hasFeature(pricingTier, "export.noWatermark") && hasRenderableClips && (
-											<Text fontSize="13px" color="fg.muted">
-												Free plan renders are 720p and watermarked.{" "}
-												<Link href="/settings/billing">
-													<Text
-														as="span"
-														color="fg"
-														textDecoration="underline"
-														textDecorationColor="border.emphasized"
-														textUnderlineOffset="3px"
-														transition="text-decoration-color 120ms ease"
-														_hover={{ textDecorationColor: "fg" }}
-													>
-														Upgrade
-													</Text>
-												</Link>{" "}
-												for 1080p, no watermark.
-											</Text>
+											<UpgradeBanner
+												message="Export in 1080p without the watermark."
+												tier={lowestTierWithFeature("export.noWatermark")}
+												canManageBilling={appUser.role === "owner"}
+											/>
 										)}
 										{/* Ranked-row results (Phase 3). The view's single solid
                   ultramarine button — "Render selected" — lives in this
@@ -929,7 +982,7 @@ export default async function ProjectDetailPage({
 											defaultAspectRatio={clipsDefaultAspectRatio}
 											sourceVideoUrl={sourceVideoUrl}
 											actionAvailability={campaignActionAvailability}
-											campaignOperationsEnabled={campaignOperationsEnabled}
+											upgradePrompts={campaignUpgradePrompts}
 										/>
 									</Stack>
 								)
@@ -954,7 +1007,7 @@ export default async function ProjectDetailPage({
 										projectId={projectId}
 										transcriptReady={transcriptReady}
 										planRequirement={planFeatureRequirement(pricingTier, "content.repurposing")?.message ?? null}
-										canManageBilling={appUser.role === "owner"}
+										upgrade={contentSuiteUpgrade}
 									/>
 								) : (
 									<EmptyState
@@ -974,7 +1027,7 @@ export default async function ProjectDetailPage({
 									dubs={dubs}
 									allowance={dubAllowance}
 									planRequirement={planFeatureRequirement(pricingTier, "dubbing")?.message ?? null}
-									canManageBilling={appUser.role === "owner"}
+									upgrade={dubbingUpgrade}
 								/>
 							) : null}
 						</Tabs.Content>

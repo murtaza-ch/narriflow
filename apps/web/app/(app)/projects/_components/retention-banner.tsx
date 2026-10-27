@@ -1,13 +1,16 @@
-import Link from "next/link";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Clock3 } from "lucide-react";
-import { Button } from "@narriflow/ui/components/button";
+import { lowestTier, planLimits } from "@narriflow/validators";
+import { UpgradeButton } from "../../_components/upgrade";
 
-export function RetentionBanner() {
+const RETENTION_DAYS = (planLimits("free").projectRetentionHours ?? 0) / 24;
+const DAYS_LABEL = `${RETENTION_DAYS} day${RETENTION_DAYS === 1 ? "" : "s"}`;
+
+export function RetentionBanner({ canManageBilling }: { canManageBilling: boolean }) {
   return (
     <Flex
       as="aside"
-      aria-label="Free-plan project retention"
+      aria-label="Project retention"
       align={{ base: "flex-start", sm: "center" }}
       justify="space-between"
       direction={{ base: "column", sm: "row" }}
@@ -25,17 +28,22 @@ export function RetentionBanner() {
         </Box>
         <Stack gap="1">
           <Text fontSize="14px" fontWeight="500" color="fg">
-            Free storage · 3 days
+            Projects on this plan are kept for {DAYS_LABEL}
           </Text>
           <Text fontSize="13px" color="fg.muted" lineHeight="1.55">
-            Free projects are permanently deleted three days after creation.
-            Upgrade before the deadline to keep every active project.
+            Each project shows its own deletion deadline. Projects from a plan
+            that ended get a short grace period instead. Upgrade before a
+            deadline to keep them.
           </Text>
         </Stack>
       </Flex>
-      <Button size="sm" variant="subtle" asChild flexShrink={0}>
-        <Link href="/settings/billing">Keep my projects</Link>
-      </Button>
+      {canManageBilling ? (
+        <UpgradeButton tier={lowestTier((plan) => plan.limits.projectRetentionHours === null)} flexShrink={0}>
+          Keep my projects
+        </UpgradeButton>
+      ) : (
+        <Text fontSize="12.5px" color="fg.muted" flexShrink={0}>Ask the workspace owner to upgrade.</Text>
+      )}
     </Flex>
   );
 }

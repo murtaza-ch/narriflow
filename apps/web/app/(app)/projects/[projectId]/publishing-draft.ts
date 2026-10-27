@@ -5,6 +5,7 @@ import {
 	type SocialPlatform,
 	SOCIAL_PROVIDER_CAPABILITIES,
 } from "@narriflow/validators";
+import type { BrowserRequestFailure } from "@/lib/authenticated-request-browser";
 
 // Access storage only when the client session opens, never during rendering.
 export const browserPublishingStorage = {
@@ -96,8 +97,13 @@ export class PublishingRequestError extends Error {
 		message: string,
 		readonly status: number,
 		readonly code?: string,
+		readonly details?: Record<string, unknown>,
 	) {
 		super(message);
+	}
+	/** The refusal in the shape `upgradePromptFromFailure` reads. */
+	get failure(): BrowserRequestFailure {
+		return { error: this.code, message: this.message, details: this.details };
 	}
 }
 export async function publishingRequest<T>(
@@ -120,6 +126,9 @@ export async function publishingRequest<T>(
 				"The request could not be completed. Please try again.",
 			response.status,
 			payload?.error ?? payload?.code,
+			payload?.details && typeof payload.details === "object" && !Array.isArray(payload.details)
+				? payload.details
+				: undefined,
 		);
 	return payload as T;
 }

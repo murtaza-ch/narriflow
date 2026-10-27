@@ -16,7 +16,9 @@ import { NAV_ITEMS } from "./nav-items";
 import { AccountAvatar } from "./account-menu";
 import { getDisplayName, getInitials } from "@/lib/account-display";
 import { isStudioRoute } from "./theme-toggle";
+import { hasFeature } from "@narriflow/validators";
 import { usagePalette } from "./usage-palette";
+import { UpgradeGem, useUpgrade } from "./upgrade";
 import { WorkspaceSwitcher, type WorkspaceMenuPresentation, type WorkspaceSwitcherItem } from "./workspace-switcher";
 
 interface MobileNavProps {
@@ -29,7 +31,7 @@ interface MobileNavProps {
   activeWorkspaceId: string;
   workspaces: WorkspaceSwitcherItem[];
   canCreate: boolean;
-  canCreateWorkspace: boolean;
+
   workspaceMenu: WorkspaceMenuPresentation;
 }
 
@@ -43,7 +45,7 @@ export function MobileNav({
   activeWorkspaceId,
   workspaces,
   canCreate,
-  canCreateWorkspace,
+
   workspaceMenu,
 }: MobileNavProps) {
   const [open, setOpen] = useState(false);
@@ -51,6 +53,7 @@ export function MobileNav({
   const { colorMode, toggleColorMode } = useColorMode();
   const { signOut } = useClerk();
   const pathname = usePathname();
+  const { canManageBilling } = useUpgrade();
 
   const displayName = getDisplayName(firstName, lastName);
   const initials = getInitials(firstName, lastName, email);
@@ -136,7 +139,7 @@ export function MobileNav({
                 </Drawer.CloseTrigger>
               </Flex>
 
-              <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} presentation={workspaceMenu} canCreateWorkspace={canCreateWorkspace} />
+              <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} presentation={workspaceMenu} />
 
               {/* Navigation — single IA source */}
               <Stack as="nav" flex="1" px="3" py="4" gap="0.5" overflowY="auto">
@@ -145,8 +148,8 @@ export function MobileNav({
                     <Link href="/upload"><Plus size={15} />New project</Link>
                   </Button>
                 ) : null}
-                {NAV_ITEMS.map(({ label, href, icon: Icon }) => (
-                  <NavLink key={href} href={href} icon={<Icon size={16} />}>
+                {NAV_ITEMS.map(({ label, href, icon: Icon, feature }) => (
+                  <NavLink key={href} href={href} icon={<Icon size={16} />} badge={feature && !hasFeature(workspaceMenu.tier, feature) ? <UpgradeGem /> : undefined}>
                     {label}
                   </NavLink>
                 ))}
@@ -181,9 +184,11 @@ export function MobileNav({
                 {/* Compact usage meter — mirrors the sidebar's, mobile has no other home for it */}
                 <Box mb="3">
                   <Flex align="baseline" justify="space-between" gap="3" mb="1.5">
-                    <Text textStyle="eyebrow" color="fg.muted">
-                      Usage
-                    </Text>
+                    <Link href={canManageBilling ? "/settings/billing" : "/settings/usage"}>
+                      <Text textStyle="eyebrow" color="fg.muted" textDecoration="underline" textUnderlineOffset="3px">
+                        {canManageBilling ? "Usage & billing" : "Usage"}
+                      </Text>
+                    </Link>
                     <Text
                       fontSize="12px"
                       fontVariantNumeric="tabular-nums"

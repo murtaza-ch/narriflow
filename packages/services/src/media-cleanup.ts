@@ -13,6 +13,7 @@ export const MEDIA_CLEANUP_ORIGINS = [
   "generated_media_publication",
   "thumbnail_frame_preparation",
   "upload_source_pinning",
+  "upload_session_termination",
 ] as const;
 export type MediaCleanupOrigin = (typeof MEDIA_CLEANUP_ORIGINS)[number];
 

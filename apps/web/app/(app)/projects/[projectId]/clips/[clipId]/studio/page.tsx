@@ -4,7 +4,7 @@ import { executeProjectAction } from "@/lib/authenticated-request-action";
 import {
   clipService,
   hasFeature,
-  isProgramWriteEnabled,
+
   projectService,
   presignDownloadUrl,
   visualAssetService,
@@ -14,7 +14,8 @@ import {
   generatedImageCapability,
   autoCensorService,
 } from "@narriflow/services";
-import { brandTemplateSnapshotSchema, getEffectiveClipTiming, sceneTemplateDefinitionSchema,
+import {
+  brandTemplateSnapshotSchema, getEffectiveClipTiming, planFeatureRequirement, sceneTemplateDefinitionSchema,
   type AutoCensorAnalyticsInput,
 } from "@narriflow/validators";
 import { compositionAssetRef } from "@narriflow/composition-plan";
@@ -22,6 +23,7 @@ import { StudioShell } from "./_components/studio-shell";
 import type { ClipInfo, StudioBrandLogo, StudioSceneFont, StudioVisualAsset } from "./_components/studio-shell";
 import { buildSegmentsFromUtterances } from "./_components/edited-timeline";
 import { resolveCompositionPlanQaFixture } from "./_components/composition-plan-qa-fixture";
+import { studioUpgradePrompts } from "./_components/studio-upgrade";
 
 export default async function StudioPage({
   params,
@@ -53,15 +55,20 @@ export default async function StudioPage({
 
   const autoCensorPolicy = await autoCensorService.getPolicy(appUser, projectId);
 
-  const scenesEntitled = hasFeature(pricingTier, "brand.scenes");
+  // Scenes in a clip, including inserting and editing template-backed ones,
+  // need only the plan feature (scene-document-mutation.ts). Creating reusable
+  // Scene Templates follows the shared-workspace branding rule, in Brand kit.
+  const scenesRequirement = planFeatureRequirement(pricingTier, "brand.scenes");
+  const scenesEntitled = scenesRequirement === null;
   const generatedImagesCapability = generatedImageCapability(appUser);
   const generatedImagesEntitled = generatedImagesCapability.available;
   const sceneWriteCapabilities = {
-    cards: scenesEntitled && isProgramWriteEnabled("scene_cards"),
-    images: scenesEntitled && isProgramWriteEnabled("scene_images"),
-    videos: scenesEntitled && isProgramWriteEnabled("scene_videos"),
-    templates: scenesEntitled && isProgramWriteEnabled("scene_templates"),
+    cards: scenesEntitled,
+    images: scenesEntitled,
+    videos: scenesEntitled,
+    templates: scenesEntitled,
   };
+  const upgradePrompts = studioUpgradePrompts(pricingTier, scenesRequirement);
 
   const clip = clips.find((c) => c.id === clipId);
   if (!clip) notFound();
@@ -296,6 +303,7 @@ export default async function StudioPage({
       sceneWriteCapabilities={sceneWriteCapabilities}
       generatedImagesCapability={generatedImagesCapability}
       autoCensorPolicy={autoCensorPolicy}
+      upgradePrompts={upgradePrompts}
       updateProjectCensorTerms={updateProjectCensorTerms}
       recordAutoCensorEvent={recordAutoCensorEvent}
     />

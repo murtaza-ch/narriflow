@@ -2,8 +2,8 @@ import { Box, Flex, Grid, Image, Stack, Text } from "@chakra-ui/react";
 import { ArrowLeft, AudioLines, ImageIcon, LayoutTemplate, MessageSquareText, Shapes, Type } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { brandProfileService, BrandProfileNotFoundError, sceneTemplateService } from "@narriflow/services";
-import { hasFeature, planFeatureRequirement, sceneTemplateDefinitionSchema } from "@narriflow/validators";
+import { brandPlanRequirement, brandProfileService, BrandProfileNotFoundError, sceneTemplateService } from "@narriflow/services";
+import { planUpgradeHighlight, sceneTemplateDefinitionSchema } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { MediaWell } from "@narriflow/ui/components/media-well";
@@ -11,6 +11,7 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { formatDuration } from "@/lib/format";
 import { SceneTemplateManager, type SceneTemplateCard } from "./scene-template-manager";
+import type { UpgradePrompt } from "../../_components/upgrade";
 
 const SECTIONS = ["identity", "styles", "assets", "scenes", "audio", "voice"] as const;
 type Section = (typeof SECTIONS)[number];
@@ -44,6 +45,15 @@ export default async function BrandProfilePage({ params, searchParams }: {
     return [{ id: scene.id, name: scene.name, role: scene.role, revision: scene.revision, fingerprint: scene.fingerprint, definition: definition.data, isDefault: profile.defaultIntroSceneTemplateId === scene.id || profile.defaultOutroSceneTemplateId === scene.id }];
   });
 
+  const scenesRequirement = brandPlanRequirement(actor, "brand.scenes");
+  const defaultsRequirement = brandPlanRequirement(actor, "brand.defaultScenes");
+  const createUpgrade: UpgradePrompt | null = scenesRequirement?.requiredTier
+    ? { tier: scenesRequirement.requiredTier, headline: "Upgrade to save reusable scenes", highlight: planUpgradeHighlight(scenesRequirement.requiredTier, "brand.scenes") }
+    : null;
+  const defaultsUpgrade: UpgradePrompt | null = defaultsRequirement?.requiredTier
+    ? { tier: defaultsRequirement.requiredTier, headline: "Upgrade to set default intros and outros", highlight: planUpgradeHighlight(defaultsRequirement.requiredTier, "brand.defaultScenes") }
+    : null;
+
   return (
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
@@ -68,7 +78,7 @@ export default async function BrandProfilePage({ params, searchParams }: {
         {section === "identity" && <IdentitySection profile={profile} />}
         {section === "styles" && <StylesSection profile={profile} selectedTemplateId={query.template} />}
         {section === "assets" && <AssetsSection profile={profile} />}
-        {section === "scenes" && <ScenesSection profileId={profile.id} scenes={sceneCards} fonts={profile.fonts} canManageDefaults={hasFeature(actor.pricingTier, "brand.defaultScenes")} createRequirement={planFeatureRequirement(actor.pricingTier, "brand.scenes")?.message ?? null} />}
+        {section === "scenes" && <ScenesSection profileId={profile.id} scenes={sceneCards} fonts={profile.fonts} canManageDefaults={defaultsRequirement === null} createRequirement={scenesRequirement?.message ?? null} createUpgrade={createUpgrade} defaultsUpgrade={defaultsUpgrade} />}
         {section === "audio" && <AudioSection profile={profile} />}
         {section === "voice" && <VoiceSection profile={profile} />}
       </Box>
@@ -161,11 +171,11 @@ function AssetsSection({ profile }: { profile: Profile }) {
   );
 }
 
-function ScenesSection({ profileId, scenes, fonts, canManageDefaults, createRequirement }: { profileId: string; scenes: SceneTemplateCard[]; fonts: Profile["fonts"]; canManageDefaults: boolean; createRequirement: string | null }) {
+function ScenesSection({ profileId, scenes, fonts, canManageDefaults, createRequirement, createUpgrade, defaultsUpgrade }: { profileId: string; scenes: SceneTemplateCard[]; fonts: Profile["fonts"]; canManageDefaults: boolean; createRequirement: string | null; createUpgrade: UpgradePrompt | null; defaultsUpgrade: UpgradePrompt | null }) {
   return (
     <Stack gap="7">
       <SectionHeader icon={<Type size={18} />} title="Scene templates" />
-      <SceneTemplateManager profileId={profileId} scenes={scenes} fonts={fonts.map((font) => ({ id: font.id, family: font.family, fingerprint: font.fingerprint, missing: font.missing }))} canManageDefaults={canManageDefaults} createRequirement={createRequirement} />
+      <SceneTemplateManager profileId={profileId} scenes={scenes} fonts={fonts.map((font) => ({ id: font.id, family: font.family, fingerprint: font.fingerprint, missing: font.missing }))} canManageDefaults={canManageDefaults} createRequirement={createRequirement} createUpgrade={createUpgrade} defaultsUpgrade={defaultsUpgrade} />
     </Stack>
   );
 }

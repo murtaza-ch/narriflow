@@ -1,13 +1,16 @@
 import Link from "next/link";
+import { LockedButton, PlanBadge, UpgradeGem, type UpgradePrompt } from "../_components/upgrade";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { ArrowRight, Braces, Plus, Webhook } from "lucide-react";
 import { callbackSigningSecrets, socialOAuthService, workspaceAllowsCapability, workspaceService } from "@narriflow/services";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { hasFeature, lowestTierWithFeature, PLAN_CATALOG, type SocialAccountSnapshot, type SocialPlatform } from "@narriflow/validators";
+import { hasFeature, lowestTierWithFeature, PLAN_CATALOG, planCountRequirement, planUpgradeHighlight, type SocialAccountSnapshot, type SocialPlatform } from "@narriflow/validators";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { docsUrl } from "@/lib/docs-url";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { type AssistantBrand, BrandTile } from "./_components/brand-tile";
+import { UpgradeTileButton } from "./_components/upgrade-tile-button";
 
 const PLATFORMS: Array<{ id: SocialPlatform; name: string }> = [
   { id: "tiktok", name: "TikTok" },
@@ -43,6 +46,7 @@ function IntegrationTile({
   status,
   tone,
   trailing,
+  upgrade,
 }: {
   href: string;
   external?: boolean;
@@ -54,6 +58,8 @@ function IntegrationTile({
   status: React.ReactNode;
   tone: Tone;
   trailing?: React.ReactNode;
+  /** The plan rules out this tile's action: it opens the upgrade dialog instead of following `href`. */
+  upgrade?: UpgradePrompt | null;
 }) {
   const body = (
     <>
@@ -67,6 +73,13 @@ function IntegrationTile({
       {trailing}
     </>
   );
+  if (upgrade) {
+    return (
+      <UpgradeTileButton prompt={upgrade} label={label}>
+        {body}
+      </UpgradeTileButton>
+    );
+  }
   return (
     <Flex
       asChild
@@ -137,11 +150,19 @@ export default async function IntegrationsPage() {
   const apiPlan = `${PLAN_CATALOG[lowestTierWithFeature("integrations.api") ?? "business"].name} plan`;
   const canManageApi = workspaceAllowsCapability(workspace, "api.manage");
   const canManageSocial = workspaceAllowsCapability(workspace, "social.manage");
+  const mcpUpgrade = featureUpgradePrompt(workspace.pricingTier, "integrations.mcp", "Upgrade to connect your AI assistant");
   const [accounts, keys, signing] = await Promise.all([
     socialOAuthService.listAccounts(appUser),
     canManageApi ? workspaceService.listApiKeys(appUser.actorUserId, appUser.workspaceId) : null,
     canManageApi ? callbackSigningSecrets.status(appUser.workspaceId) : null,
   ]);
+
+  // A new account takes a slot; if the plan has none left, say so here instead of starting an OAuth that would be refused.
+  const slotRequirement = planCountRequirement(
+    workspace.pricingTier,
+    "socialDestinations",
+    accounts.filter((account) => account.status !== "revoked").length,
+  );
 
   return (
     <Stack gap="8" maxW="1120px" mx="auto" w="full">
@@ -174,41 +195,54 @@ export default async function IntegrationsPage() {
               <Text as="h2" fontSize="18px" fontWeight="500" letterSpacing="-0.01em">
                 Use Narriflow from your AI assistant
               </Text>
-              {!hasMcp ? (
-                <Text as="span" fontSize="12px" color="fg.muted" bg="bg.soft" px="2" py="0.5" borderRadius="full">
-                  {PLAN_CATALOG[lowestTierWithFeature("integrations.mcp") ?? "business"].name}
-                </Text>
-              ) : null}
+              {!hasMcp ? <PlanBadge tier={lowestTierWithFeature("integrations.mcp") ?? "business"} /> : null}
             </Flex>
             <Text fontSize="14px" color="fg.muted">
               Clip, export and schedule from Claude, ChatGPT, Cursor or Codex.
             </Text>
           </Stack>
         </Stack>
-        <Button asChild size="sm" flexShrink={0}>
-          <Link href="/integrations/mcp">
+        {mcpUpgrade ? (
+          <LockedButton size="sm" flexShrink={0} prompt={mcpUpgrade}>
             Connect
-            <ArrowRight size={16} />
-          </Link>
-        </Button>
+          </LockedButton>
+        ) : (
+          <Button asChild size="sm" flexShrink={0}>
+            <Link href="/integrations/mcp">
+              Connect
+              <ArrowRight size={16} />
+            </Link>
+          </Button>
+        )}
       </Flex>
 
       <Section title="Publishing">
         {PLATFORMS.map(({ id, name }) => {
           const connected = accounts.filter((account) => account.platform === id);
           const [firstActive, ...moreActive] = connected.filter((account) => account.status === "active");
-          const canConnect = canManageSocial && connected.length === 0;
+          const canAdd = canManageSocial && connected.length === 0;
+          const slotUpgrade =
+            canAdd && slotRequirement?.requiredTier
+              ? {
+                  tier: slotRequirement.requiredTier,
+                  headline: slotRequirement.code === "plan_feature_required" ? "Upgrade to publish to your socials" : "Upgrade to connect more accounts",
+                  highlight: planUpgradeHighlight(slotRequirement.requiredTier, "socialDestinations"),
+                }
+              : null;
+          // At the top plan with every slot used, the tile explains on the accounts page rather than starting OAuth.
+          const canConnect = canAdd && slotRequirement === null;
           return (
             <IntegrationTile
               key={id}
               href={canConnect ? `/api/social/oauth/start/${id}?redirect=/settings/social-accounts` : "/settings/social-accounts"}
+              upgrade={slotUpgrade}
               native={canConnect}
               label={canConnect ? `Connect ${name} account` : undefined}
               logo={<BrandTile brand={id} />}
               name={name}
               tone={firstActive ? "on" : connected.length ? "warn" : "off"}
               status={firstActive ? accountLabel([firstActive, ...moreActive]) : connected.length ? "Needs reconnecting" : "Not connected"}
-              trailing={canConnect ? <AddMark /> : undefined}
+              trailing={slotUpgrade ? <UpgradeGem /> : canConnect ? <AddMark /> : undefined}
             />
           );
         })}

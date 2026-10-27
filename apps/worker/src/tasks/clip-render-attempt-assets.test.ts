@@ -86,7 +86,7 @@ function fixture(input: {
       workspaceId: WORKSPACE_ID,
     } },
     config: parseRenderConfig({ WORKER_RENDER_SOURCE_MODE: "download",
-      WORKER_LAYOUT_ENGINE: "0", WORKER_SCREEN_LAYOUT: "0", WORKER_SPLIT: "0", WORKER_BROLL: "0" }),
+      }),
     lifecycle: {
       beginRenderWorkSet: async (owned) => { expect(owned).toEqual(attempt); return { variantIds: [pendingRender.id] }; },
       settleRenderWorkSet: async (owned) => {
@@ -117,7 +117,7 @@ function fixture(input: {
         execute: async ({ command, args, signal, diagnose }) => {
           signal.throwIfAborted();
           expect(command).toBe("ffmpeg");
-          commands.push([...args]);
+          if (args.includes("-filter_complex") || args.includes("-map")) commands.push([...args]);
           diagnose?.({ operation: "exit", status: "completed", elapsedMs: args.includes("null") ? 88 : 6 });
           return { exitCode: 0, stdout: Buffer.alloc(0) };
         },

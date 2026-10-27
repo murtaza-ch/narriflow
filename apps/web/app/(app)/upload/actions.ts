@@ -13,6 +13,7 @@ import {
   DriveSourceError,
   ProcessingUsageError,
   LinkUnsupportedSourceError,
+  boundedExpectedDomainFailureDetails,
 } from "@narriflow/services";
 import {
   contentPackSchema,
@@ -56,9 +57,34 @@ function commitErrorCode(error: unknown): string {
   throw error;
 }
 
+/**
+ * A refused Commit. A Processing Usage refusal keeps its own message (exact
+ * credits or length, derived from the plan catalog) and bounded details, so the
+ * Commit step can offer the plan that admits the source without losing it.
+ */
+function commitFailure(error: unknown) {
+  const code = commitErrorCode(error);
+  const usage = error instanceof ProcessingUsageError ? error : null;
+  const details = boundedExpectedDomainFailureDetails(usage?.details);
+  return {
+    ok: false as const,
+    code,
+    message:
+      usage?.message ??
+      userErrorMessage(code) ??
+      "Could not start this import. Please try again.",
+    ...(details ? { details } : {}),
+  };
+}
+
 export type CommitLinkImportResult =
   | { ok: true; projectId: string; title: string }
-  | { ok: false; code: string; message: string };
+  | {
+      ok: false;
+      code: string;
+      message: string;
+      details?: Record<string, unknown>;
+    };
 
 async function fetchYoutubeTitle(url: string): Promise<string | null> {
   if (detectLinkProvider(url) !== "youtube") return null;
@@ -115,13 +141,7 @@ export async function commitLinkImportAction(input: {
       title: ingest.project.title,
     };
   } catch (error) {
-    const code = commitErrorCode(error);
-    return {
-      ok: false,
-      code,
-      message:
-        userErrorMessage(code) ?? "Could not start this import. Please try again.",
-    };
+    return commitFailure(error);
   }
   });
 }
@@ -158,14 +178,7 @@ export async function commitDriveImportAction(input: {
           title: ingest.project.title,
         };
       } catch (error) {
-        const code = commitErrorCode(error);
-        return {
-          ok: false,
-          code,
-          message:
-            userErrorMessage(code) ??
-            "Could not start this import. Please try again.",
-        };
+        return commitFailure(error);
       }
     },
     {
@@ -305,14 +318,19 @@ export async function generateFromRssAction(formData: FormData) {
         ? String(error.code)
         : null;
     if (!code || !hasUserErrorMessage(code)) throw error;
+    const usage = error instanceof ProcessingUsageError ? error : null;
+    const details = boundedExpectedDomainFailureDetails(usage?.details);
     return {
       ok: false as const,
       error: code,
       message:
+        usage?.message ??
         authenticatedActionErrorMessage(
           error,
           "We couldn't import that RSS episode. Check the feed and try again.",
         ),
+      ...(details ? { details } : {}),
+      ...(usage?.retryAfterSeconds ? { retryAfterSeconds: usage.retryAfterSeconds } : {}),
     };
   }
 

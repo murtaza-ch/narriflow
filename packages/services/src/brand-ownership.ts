@@ -1,15 +1,19 @@
 import type { Prisma } from "@prisma/client";
 import {
+  hasFeature,
+  lowestTier,
+  planCountRequirement,
+  planFeatureRequirement,
+  PLAN_CATALOG,
+  PRICING_TIER_ORDER,
   resolvePricingTier,
   workspaceAllowsCapability,
+  type PlanCountLimit,
+  type PricingTier,
   type WorkspaceAccessRole,
   type WorkspaceAccessStatus,
 } from "@narriflow/validators";
-import {
-  PlanRequirementError,
-  requirePlanFeature,
-  type PlanFeature,
-} from "./plan-features";
+import { PlanRequirementError, type PlanFeature } from "./plan-features";
 import { analyticsService } from "./analytics.service";
 import {
   ExpectedDomainFailureError,
@@ -113,18 +117,68 @@ export function assertBrandManageAllowed(
   }
 }
 
-/** Branding in a collaborative Workspace is part of Business collaboration. */
-function requireBrandPlan(scope: BrandActorScope, feature: PlanFeature): void {
-  requirePlanFeature(scope.pricingTier, feature);
-  if (!scope.isPersonalWorkspace && resolvePricingTier(scope.pricingTier) !== "business") {
-    throw new PlanRequirementError({
-      code: "plan_feature_required",
-      message: "Branding in a shared Workspace needs the Business plan.",
-      currentTier: resolvePricingTier(scope.pricingTier),
-      requiredTier: "business",
-      feature,
-    });
+export interface BrandPlanRequirement {
+  requiredTier: PricingTier | null;
+  message: string;
+}
+
+/**
+ * Why this Workspace's plan can't use a branding `feature`, or `null` when it
+ * can. Branding in a collaborative Workspace is part of team collaboration, so
+ * there the plan needs the feature and `workspace.members`. The service refusal
+ * and every upgrade prompt read this one policy, so an offered tier always
+ * unlocks the action.
+ */
+export function brandPlanRequirement(
+  scope: Pick<BrandActorScope, "pricingTier" | "isPersonalWorkspace">,
+  feature: PlanFeature,
+): BrandPlanRequirement | null {
+  if (scope.isPersonalWorkspace) return planFeatureRequirement(scope.pricingTier, feature);
+  if (hasFeature(scope.pricingTier, feature) && hasFeature(scope.pricingTier, "workspace.members")) {
+    return null;
   }
+  const requiredTier = lowestTier((plan) => plan.features[feature] && plan.features["workspace.members"]);
+  return {
+    requiredTier,
+    message: requiredTier
+      ? `Branding in a shared Workspace needs the ${PLAN_CATALOG[requiredTier].name} plan.`
+      : "Branding in a shared Workspace is not available on any plan.",
+  };
+}
+
+/**
+ * `brandPlanRequirement` combined with a count limit: the tier to offer is the
+ * higher of the two requirements, or `null` when none qualifies, so a count
+ * upgrade never lands below the Workspace requirement.
+ */
+export function brandCountRequirement(
+  scope: Pick<BrandActorScope, "pricingTier" | "isPersonalWorkspace">,
+  feature: PlanFeature,
+  limit: PlanCountLimit,
+  used: number,
+  adding = 1,
+): BrandPlanRequirement | null {
+  const scopeRequirement = brandPlanRequirement(scope, feature);
+  const count = planCountRequirement(scope.pricingTier, limit, used, adding);
+  if (!scopeRequirement || !count) return scopeRequirement ?? count;
+  if (!scopeRequirement.requiredTier) return scopeRequirement;
+  const { requiredTier, message } = count;
+  if (!requiredTier) return { requiredTier, message };
+  return PRICING_TIER_ORDER.indexOf(requiredTier) > PRICING_TIER_ORDER.indexOf(scopeRequirement.requiredTier)
+    ? { requiredTier, message }
+    : scopeRequirement;
+}
+
+function requireBrandPlan(scope: BrandActorScope, feature: PlanFeature): void {
+  const requirement = brandPlanRequirement(scope, feature);
+  if (!requirement) return;
+  throw new PlanRequirementError({
+    code: "plan_feature_required",
+    message: requirement.message,
+    currentTier: resolvePricingTier(scope.pricingTier),
+    requiredTier: requirement.requiredTier,
+    feature,
+  });
 }
 
 export function assertBrandMutationAllowed(

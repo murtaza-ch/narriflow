@@ -1014,6 +1014,7 @@ model WorkspaceBillingAccount {
   transitions      WorkspaceBillingTransition[]
   deliveries       WebhookDeliveryLog[]
   checkoutAttempts WorkspaceCheckoutAttempt[]
+  planChangeAttempts WorkspacePlanChangeAttempt[]
 
   @@index([nextReconcileAt, id])
   @@index([leaseExpiresAt])
@@ -1045,6 +1046,23 @@ model WorkspaceCheckoutAttempt {
 
   @@index([billingAccountId, createdAt])
   @@index([customerOperationKey])
+}
+
+model WorkspacePlanChangeAttempt {
+  id                   String   @id @default(uuid()) @db.Uuid
+  billingAccountId     String   @db.Uuid
+  actorUserId          String   @db.Uuid
+  clientIdempotencyKey  String   @unique
+  targetTier           PricingTier
+  interval             String
+  quote                Json
+  phase                String   @default("quoted")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  billingAccount WorkspaceBillingAccount @relation(fields: [billingAccountId], references: [id], onDelete: Cascade)
+
+  @@index([billingAccountId, createdAt])
 }
 
 model WorkspaceBillingTransition {

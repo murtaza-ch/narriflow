@@ -47,8 +47,10 @@ import { formatDate, formatTimecode } from "@/lib/format";
 import {
   authenticatedRequestFailureMessage,
   classifyAuthenticatedRequestFailure,
+  upgradePromptFromFailure,
   type BrowserRequestFailure,
 } from "@/lib/authenticated-request-browser";
+import type { UpgradePrompt } from "../../_components/upgrade";
 import { LanguageSelect } from "./language-select";
 import { RecipePicker } from "./recipe-picker";
 import type { RecipeFormSettings } from "../_lib/recipe-settings";
@@ -60,6 +62,7 @@ import { VideoPreview } from "./video-preview";
 import { BrandTemplatePicker } from "./brand-template-picker";
 import {
   focusUploadSessionStatusForPhase,
+  UploadRefusalUpgrade,
   UploadSessionSecondaryActions,
   UploadSessionStatusPanel,
 } from "./upload-session-status";
@@ -289,6 +292,8 @@ export function UploadShell({
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Set when an RSS import was refused for credits or length and a plan would admit it.
+  const [refusalUpgrade, setRefusalUpgrade] = useState<UpgradePrompt | null>(null);
   const rssCommitTokenRef = useRef<string | null>(null);
   const uploadStatusRef = useRef<HTMLDivElement | null>(null);
 
@@ -666,6 +671,7 @@ export function UploadShell({
   async function handleRssImportAndGenerate(
     ratio: ContentPack["defaultAspectRatio"],
   ) {
+    setRefusalUpgrade(null);
     if (!rssUrl.trim() || selectedEpisodes.length === 0) {
       setErrorMessage("Select at least one episode to import.");
       return;
@@ -691,6 +697,8 @@ export function UploadShell({
           setErrorMessage,
           "RSS import failed.",
         );
+        // The feed, episode, and settings stay as they are; nothing is retried.
+        setRefusalUpgrade(upgradePromptFromFailure(result));
         toaster.error({ title: "RSS import failed", description: message });
         return;
       }
@@ -1287,6 +1295,7 @@ export function UploadShell({
                 </Flex>
               )}
               {errorMessage && <ErrorNotice message={errorMessage} />}
+              {errorMessage && refusalUpgrade && <UploadRefusalUpgrade prompt={refusalUpgrade} />}
               <HStack gap="2" w="full" maxW="480px" mx="auto">
                 <Button
                   disabled={submitDisabled}

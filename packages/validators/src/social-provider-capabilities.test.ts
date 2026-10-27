@@ -32,7 +32,7 @@ describe("social provider capability contract", () => {
     expect(socialProviderAcceptsMedia({ platform: "facebook_reels", aspectRatio: "9:16", durationSec: 4 })).toBe(true);
     expect(socialProviderAcceptsMedia({ platform: "facebook_reels", aspectRatio: "9:16", durationSec: 60 })).toBe(true);
     expect(socialProviderAcceptsMedia({ platform: "facebook_reels", aspectRatio: "9:16", durationSec: 60.01 })).toBe(false);
-    expect(SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.publishingEnabledByDefault).toBe(false);
+    expect(SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.publishingEnabledByDefault).toBe(true);
 		expect(SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.providerPolling).toBe(true);
 		expect(Object.values(SOCIAL_PROVIDER_CAPABILITIES).every((capability) =>
 			typeof capability.titleField === "boolean" && typeof capability.firstCommentField === "boolean"

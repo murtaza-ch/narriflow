@@ -7,6 +7,7 @@ import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { CircleAlert, RefreshCw } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
+import { Dialog, Portal } from "@narriflow/ui/components/dialog";
 import {
   formatUsdCents,
   hasFeature,
@@ -14,9 +15,12 @@ import {
   minimumAnnualSavingsPercent,
   PLAN_CATALOG,
   planHighlights,
+  planChangeQuoteSchema,
+  planChangeResultSchema,
   workspaceBillingViewSchema,
   type BillingInterval,
   type PaidPricingTier,
+  type PlanChangeQuote,
   type WorkspaceBillingView,
 } from "@narriflow/validators";
 import {
@@ -30,6 +34,12 @@ import {
   canStartBillingCheckout,
   shouldFocusBillingStatus,
 } from "@/lib/billing-view-model";
+import {
+  canChangePaidPlan,
+  formatBillingChangeDate,
+  planChangeQuotePresentation,
+  stripeInvoicePaymentUrl,
+} from "@/lib/billing-plan-change";
 
 export function BillingPlans({
   initialView,
@@ -38,6 +48,8 @@ export function BillingPlans({
   canManageBilling,
   checkoutReturnSessionId,
   checkoutCancelled,
+  focusTier = null,
+  requestedInterval = null,
 }: {
   initialView: WorkspaceBillingView;
   availableTiers: PaidPricingTier[];
@@ -45,13 +57,27 @@ export function BillingPlans({
   canManageBilling: boolean;
   checkoutReturnSessionId: string | null;
   checkoutCancelled: boolean;
+  /** The plan an upgrade prompt sent the user here for; its card leads. */
+  focusTier?: PaidPricingTier | null;
+  /** The interval the upgrade prompt showed. */
+  requestedInterval?: BillingInterval | null;
 }) {
   const router = useRouter();
   const [view, setView] = useState(initialView);
   const [interval, setInterval] = useState<BillingInterval>(
-    initialView.interval ?? "annual",
+    requestedInterval ?? initialView.interval ?? "annual",
   );
+  // A prompt can send the user to this same route with a different ?interval=,
+  // which re-renders this component instead of mounting it.
+  const [seenRequestedInterval, setSeenRequestedInterval] = useState(requestedInterval);
+  if (requestedInterval !== seenRequestedInterval) {
+    setSeenRequestedInterval(requestedInterval);
+    if (requestedInterval) setInterval(requestedInterval);
+  }
+  const leadTier = focusTier && availableTiers.includes(focusTier) ? focusTier : "pro";
   const [busy, setBusy] = useState<string | null>(null);
+  const [quote, setQuote] = useState<PlanChangeQuote | null>(null);
+  const [inlineNotice, setInlineNotice] = useState<string | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(
     checkoutCancelled
       ? "Checkout was cancelled. Your plan is unchanged, and you can continue safely when ready."
@@ -65,11 +91,15 @@ export function BillingPlans({
     workspaceAccessStatus: initialView.workspaceAccessStatus,
   });
   const status = billingStatusPresentation(view);
+  const quotePresentation = quote ? planChangeQuotePresentation(quote) : null;
   const mayStartCheckout = canStartBillingCheckout({
     view,
     canManageBilling,
     isConfigured,
   });
+  const mayChangePlan = canChangePaidPlan({ view, canManageBilling, isConfigured });
+
+  useEffect(() => setView(initialView), [initialView]);
 
   function rememberActionOrigin() {
     actionOriginRef.current =
@@ -240,6 +270,108 @@ export function BillingPlans({
     }
   }
 
+  async function postPlanChange(path: string, body?: unknown) {
+    const response = await fetch(`/api/billing/plan-change/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const messages: Record<string, string> = {
+        plan_change_invalid: "Choose a different plan or billing interval.",
+        plan_change_quote_expired: "This quote expired. Close it and review the plan again for a fresh price.",
+        plan_change_conflict: "Billing changed while this quote was open. Close it and review the plan again.",
+        plan_change_busy: "Another billing change is in progress. Wait a moment, then review the plan again.",
+        plan_change_recovery_required: "Review the current payment, cancellation or pending plan change in billing before starting another change.",
+        plan_change_not_configured: "Plan changes are temporarily unavailable. Your current plan is unchanged.",
+        plan_change_schedule_conflict: "This subscription has a scheduled change that needs support before it can be updated.",
+        plan_change_quote_missing: "This quote is no longer available. Close it and review the plan again.",
+        billing_forbidden: "Only the workspace owner can change the subscription.",
+      };
+      throw new Error(messages[payload.error] ?? "The plan change could not be completed. Refresh billing status and try again.");
+    }
+    return payload;
+  }
+
+  async function previewPlanChange(tier: PaidPricingTier) {
+    rememberActionOrigin();
+    setBusy(tier);
+    setInlineError(null);
+    setInlineNotice(null);
+    try {
+      const result = await postPlanChange("preview", {
+        clientIdempotencyKey: crypto.randomUUID(),
+        tier,
+        interval,
+      });
+      setQuote(planChangeQuoteSchema.parse(result.quote));
+    } catch (error) {
+      setInlineError(error instanceof Error ? error.message : "The plan could not be reviewed.");
+      restoreActionOriginAfterError();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function refreshAfterPlanChange() {
+    try {
+      const response = await fetch("/api/billing/reconcile", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok || !payload.view) throw new Error("Billing sync is delayed");
+      setView(workspaceBillingViewSchema.parse(payload.view));
+      router.refresh();
+    } catch {
+      setInlineNotice("Your billing request was submitted. Refresh billing status to check the verified result before making another change.");
+    }
+  }
+
+  async function confirmPlanChange() {
+    if (!quote) return;
+    setBusy("confirm");
+    setInlineError(null);
+    try {
+      const result = planChangeResultSchema.parse(await postPlanChange("confirm", { quoteId: quote.id }));
+      setQuote(null);
+      if (result.kind === "pending_payment") {
+        if (result.paymentUrl) {
+          const paymentUrl = stripeInvoicePaymentUrl(result.paymentUrl);
+          if (paymentUrl) {
+            window.location.assign(paymentUrl);
+            return;
+          }
+        }
+        setInlineNotice("Your current plan remains active. Open the billing portal to complete payment for the plan change.");
+      } else if (result.kind === "scheduled" && result.effectiveAt) {
+        setInlineNotice(`Your plan change is scheduled for ${formatBillingChangeDate(result.effectiveAt)} UTC. Your current plan stays active until then.`);
+      } else {
+        setInlineNotice("Stripe accepted your plan change. Narriflow is verifying the updated subscription.");
+      }
+      await refreshAfterPlanChange();
+    } catch (error) {
+      setInlineError(error instanceof Error ? error.message : "The plan could not be changed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function keepCurrentPlan() {
+    rememberActionOrigin();
+    setBusy("cancel-change");
+    setInlineError(null);
+    setInlineNotice(null);
+    try {
+      planChangeResultSchema.parse(await postPlanChange("cancel"));
+      setInlineNotice("The scheduled plan change was removed. Your current plan will continue.");
+      await refreshAfterPlanChange();
+    } catch (error) {
+      setInlineError(error instanceof Error ? error.message : "The scheduled change could not be removed.");
+      restoreActionOriginAfterError();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function retry() {
     rememberActionOrigin();
     setBusy("retry");
@@ -271,9 +403,7 @@ export function BillingPlans({
         ref={statusRef}
         tabIndex={-1}
         borderRadius="l3"
-        bg="bg.panel"
-        borderWidth="1px"
-        borderColor="border.card"
+        bg="bg.soft"
         p="5"
         outline="none"
         role="status"
@@ -324,23 +454,39 @@ export function BillingPlans({
         </Grid>
       ) : null}
 
-      {mayStartCheckout ? (
-        <Stack gap="5">
+      {view.planChange?.state === "scheduled" ? (
+        <Flex gap="4" align={{ base: "flex-start", md: "center" }} justify="space-between" direction={{ base: "column", md: "row" }} p="5" bg="bg.soft" borderRadius="l3">
+          <Stack gap="1">
+            <Text textStyle="title" fontSize="16px">Switching to {PLAN_CATALOG[view.planChange.tier].name}</Text>
+            <Text fontSize="13px" color="fg.muted">
+              {view.planChange.effectiveAt ? `Your current plan stays active until ${formatBillingChangeDate(view.planChange.effectiveAt)} UTC.` : "Your current plan stays active until renewal."}
+              {" "}To cancel your subscription in the billing portal, remove this scheduled change first.
+            </Text>
+          </Stack>
+          {canManageBilling ? <Button size="sm" variant="subtle" loading={busy === "cancel-change"} disabled={busy !== null} onClick={keepCurrentPlan}>Keep current plan</Button> : null}
+        </Flex>
+      ) : view.planChange?.state === "pending_payment" ? (
+        <Text role="status" fontSize="13px" color="fg.muted">The switch to {PLAN_CATALOG[view.planChange.tier].name} is awaiting payment. Your current plan remains active. {canManageBilling ? "Open the billing portal to finish or review the invoice." : "The workspace owner can finish or review the invoice."}</Text>
+      ) : null}
+
+      {mayStartCheckout || mayChangePlan ? (
+        <Stack id="plans" gap="5" scrollMarginTop="24px">
           <Flex align="center" justify="space-between" gap="3" wrap="wrap">
-            <Text textStyle="eyebrow" color="fg.muted">Choose a plan</Text>
+            <Text textStyle="eyebrow" color="fg.muted">{mayStartCheckout ? "Choose a plan" : "Change plan"}</Text>
             <SegmentedControl size="sm" aria-label="Billing interval" items={[{ label: "Monthly", value: "monthly" }, { label: `Annual · save ${minimumAnnualSavingsPercent()}%+`, value: "annual" }]} value={interval} onValueChange={(value) => setInterval(value as BillingInterval)} />
           </Flex>
           <Grid layerStyle="band" templateColumns={{ base: "1fr", md: `repeat(${Math.min(3, availableTiers.length)}, minmax(0, 1fr))` }} gap="3">
             {availableTiers.map((tier) => {
               const info = PLAN_CATALOG[tier];
+              const isCurrentPlan = !mayStartCheckout && tier === view.plan && interval === view.interval;
               const perMonth = formatUsdCents(
                 interval === "annual" ? Math.round(info.annualPriceCents / 12) : info.monthlyPriceCents,
               );
               return (
-                <Stack key={tier} gap="4" p="5" bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card">
+                <Stack key={tier} gap="4" p="5" bg={tier === focusTier ? "accent.subtle" : "bg.soft"} borderRadius="l3">
                   <Flex align="baseline" justify="space-between" gap="2">
                     <Text textStyle="title" fontSize="16px">{info.name}</Text>
-                    {tier === "pro" ? <Text fontSize="12px" fontWeight="500" color="accent.fg">Recommended</Text> : null}
+                    {tier === focusTier ? <Text fontSize="12px" fontWeight="500" color="accent.fg">Selected</Text> : tier === "pro" ? <Text fontSize="12px" fontWeight="500" color="accent.fg">Recommended</Text> : null}
                   </Flex>
                   <Flex align="baseline" gap="1"><Text fontWeight="500" fontVariantNumeric="tabular-nums" fontSize="28px">{perMonth}</Text><Text fontSize="13px" color="fg.muted">/mo</Text></Flex>
                   <Stack as="ul" gap="1" listStyleType="none">
@@ -348,8 +494,8 @@ export function BillingPlans({
                       <Text as="li" key={highlight} fontSize="13px" color="fg.muted">{highlight}</Text>
                     ))}
                   </Stack>
-                  <Button size="sm" variant={tier === "pro" ? "solid" : "subtle"} loading={busy === tier} disabled={busy !== null} onClick={() => checkout(tier)}>
-                    Continue with {info.name}
+                  <Button size="sm" variant={tier === leadTier ? "solid" : "subtle"} loading={busy === tier} disabled={busy !== null || isCurrentPlan} onClick={() => mayStartCheckout ? checkout(tier) : previewPlanChange(tier)}>
+                    {mayStartCheckout ? `Continue with ${info.name}` : isCurrentPlan ? "Current plan" : `Review ${info.name}`}
                   </Button>
                 </Stack>
               );
@@ -359,7 +505,26 @@ export function BillingPlans({
       ) : null}
 
       {!canManageBilling ? <Text fontSize="12px" color="fg.subtle">Only the workspace owner can change the subscription or payment method.</Text> : null}
-      {inlineError ? <Text role="alert" fontSize="12px" color="danger.fg" tabIndex={-1}>{inlineError}</Text> : null}
+      {inlineNotice ? <Text role="status" fontSize="13px" color="fg.muted">{inlineNotice}</Text> : null}
+      {inlineError && !quote ? <Text role="alert" fontSize="12px" color="danger.fg" tabIndex={-1}>{inlineError}</Text> : null}
+      <Dialog.Root open={quote !== null} onOpenChange={({ open }) => { if (!open && busy !== "confirm") setQuote(null); }} placement="center" closeOnEscape={busy !== "confirm"} closeOnInteractOutside={busy !== "confirm"} finalFocusEl={() => actionOriginRef.current}>
+        <Portal><Dialog.Backdrop /><Dialog.Positioner p="4"><Dialog.Content maxW="460px" maxH="calc(100dvh - 32px)" overflowY="auto" bg="bg.panel" p="6">
+          {quote && quotePresentation ? <Stack gap="5">
+            <Dialog.Title fontSize="20px">{quotePresentation.title}</Dialog.Title>
+            <Dialog.Description fontSize="13px" color="fg.muted">{quotePresentation.body}</Dialog.Description>
+            <Box bg="bg.soft" p="4" borderRadius="l2">
+              <Flex justify="space-between" gap="3"><Text fontSize="13px">Due today</Text><Text fontWeight="500" fontVariantNumeric="tabular-nums">{quotePresentation.due}</Text></Flex>
+              <Text fontSize="12px" color="fg.muted" mt="2">{PLAN_CATALOG[quote.tier].name} · {quote.interval === "annual" ? `${formatUsdCents(PLAN_CATALOG[quote.tier].annualPriceCents)} billed yearly` : `${formatUsdCents(PLAN_CATALOG[quote.tier].monthlyPriceCents)} billed monthly`}, plus additional seats and applicable taxes.</Text>
+              <Text fontSize="12px" color="fg.subtle" mt="2">Monthly processing credits keep their usual renewal date. Current usage is retained.</Text>
+            </Box>
+            {inlineError ? <Text role="alert" fontSize="12px" color="danger.fg">{inlineError}</Text> : null}
+            <Flex justify="flex-end" gap="2" wrap="wrap">
+              <Button size="sm" variant="subtle" disabled={busy === "confirm"} onClick={() => setQuote(null)}>Cancel</Button>
+              <Button size="sm" variant="solid" loading={busy === "confirm"} disabled={busy !== null} onClick={confirmPlanChange}>{quotePresentation.action}</Button>
+            </Flex>
+          </Stack> : null}
+        </Dialog.Content></Dialog.Positioner></Portal>
+      </Dialog.Root>
       {!hasFeature(view.plan, "integrations.api") ? (
         <Text fontSize="13px" color="fg.muted">
           {PLAN_CATALOG[lowestTierWithFeature("integrations.api") ?? "pro"].name} adds the REST API, MCP and webhooks; Business adds team members and client review.{" "}

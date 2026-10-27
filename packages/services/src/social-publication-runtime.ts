@@ -225,8 +225,6 @@ export function createProductionSocialPublicationRuntime(
 			youtubeApiVersion: config.providers.youtubeApiVersion,
 			youtubeChunkBytes: config.providers.youtubeChunkBytes,
 			metaGraphVersion: config.providers.metaGraphVersion,
-			facebookReelsPublishingEnabled:
-				config.providers.facebookReelsPublishingEnabled,
 			linkedInVersion: config.providers.linkedInVersion,
 			instagramPollAttempts: config.providers.instagramPollAttempts,
 			instagramPollIntervalMs: config.providers.instagramPollIntervalMs,
@@ -309,7 +307,9 @@ export function createProductionSocialPublicationRuntime(
 				claimantId,
 				now,
 				config: {
-					batchSize: config.worker.batchSize,
+					// Claims start their lease here, before the worker starts their
+					// heartbeat. Leave excess work unclaimed for the next poll.
+					batchSize: Math.min(config.worker.batchSize, config.worker.concurrency),
 					leaseMs: config.worker.leaseMs,
 					processingDeadlineMs: config.worker.processingDeadlineMs,
 					reconciliationDeadlineMs: config.worker.reconciliationDeadlineMs,

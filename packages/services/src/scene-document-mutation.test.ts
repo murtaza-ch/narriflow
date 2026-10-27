@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   captionPresetSchema,
   editorDocumentSchema,
@@ -7,7 +7,6 @@ import {
   type SceneBlock,
 } from "@narriflow/validators";
 import { PlanRequirementError } from "./plan-features";
-import { ProgramWriteDisabledError } from "./program-rollout";
 import {
   analyzeSceneDocumentMutation,
   assertEditorDocumentFeatureDelta,
@@ -19,28 +18,6 @@ const VISUAL_ASSET_ID = "20000000-0000-4000-8000-000000000001";
 const SECOND_VISUAL_ASSET_ID = "20000000-0000-4000-8000-000000000002";
 const BROLL_ID = "30000000-0000-4000-8000-000000000001";
 const FONT_ID = "40000000-0000-4000-8000-000000000001";
-
-const rolloutVariables = [
-  "NARRIFLOW_WRITES_SCENE_CARDS",
-  "NARRIFLOW_WRITES_SCENE_IMAGES",
-  "NARRIFLOW_WRITES_SCENE_VIDEOS",
-  "NARRIFLOW_WRITES_SCENE_TEMPLATES",
-] as const;
-const originalRollout = Object.fromEntries(
-  rolloutVariables.map((name) => [name, process.env[name]]),
-);
-
-afterEach(() => {
-  for (const name of rolloutVariables) {
-    const value = originalRollout[name];
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
-});
-
-function enableSceneWrites() {
-  for (const name of rolloutVariables) process.env[name] = "1";
-}
 
 function baseDocument(): EditorDocument {
   return editorDocumentSchema.parse({
@@ -135,7 +112,6 @@ describe("analyzeSceneDocumentMutation", () => {
   });
 
   test("lets a downgraded Free workspace delete a Scene Block", () => {
-    enableSceneWrites();
     const current = { ...baseDocument(), sceneBlocks: [colorScene(), imageScene(SECOND_SCENE_ID)] };
 
     expect(() =>
@@ -178,26 +154,12 @@ describe("analyzeSceneDocumentMutation", () => {
         },
       }),
     ],
-  ] as const)("rejects a changed %s Scene Block while its rollout is disabled", (group, scene) => {
-    enableSceneWrites();
-    process.env[`NARRIFLOW_WRITES_${group.toUpperCase()}`] = "0";
+  ] as const)("admits entitled %s Scene Blocks without deployment switches", (_group, scene) => {
     const current = baseDocument();
-
-    try {
-      assertEditorDocumentFeatureDelta(
-        "creator",
-        current,
-        { ...current, sceneBlocks: [scene] },
-      );
-      throw new Error("Expected Scene Block mutation to be rejected");
-    } catch (error) {
-      expect(error).toBeInstanceOf(ProgramWriteDisabledError);
-      expect(error).toMatchObject({ group });
-    }
+    expect(() => assertEditorDocumentFeatureDelta("creator", current, { ...current, sceneBlocks: [scene] })).not.toThrow();
   });
 
   test("classifies changed Scene Blocks separately from introduced references", () => {
-    enableSceneWrites();
     const currentScene = imageScene();
     const current = { ...baseDocument(), sceneBlocks: [currentScene] };
     const restyled = {
@@ -213,13 +175,11 @@ describe("analyzeSceneDocumentMutation", () => {
     expect(analysis.introducedSceneReferences).toEqual([introduced]);
   });
 
-  test("lets a Scene Block be deleted while its rollout is disabled, without returning it for reference checks", () => {
-    enableSceneWrites();
+  test("lets a downgraded workspace delete Scenes without returning them for reference checks", () => {
     const removed = colorScene();
     const kept = colorScene(SECOND_SCENE_ID, { content: { kind: "color", color: "#000000" } });
     const current = { ...baseDocument(), sceneBlocks: [removed, kept] };
     expect(analyzeSceneDocumentMutation(current, baseDocument()).changedSceneBlocks).toEqual([]);
-    process.env.NARRIFLOW_WRITES_SCENE_CARDS = "0";
 
     expect(() =>
       assertEditorDocumentFeatureDelta("creator", current, baseDocument()),
@@ -229,15 +189,14 @@ describe("analyzeSceneDocumentMutation", () => {
     ).not.toThrow();
     // Content that remains and changes is still checked.
     expect(() =>
-      assertEditorDocumentFeatureDelta("creator", current, {
+      assertEditorDocumentFeatureDelta("free", current, {
         ...current,
         sceneBlocks: [{ ...kept, durationSec: 4 }],
       }),
-    ).toThrow(ProgramWriteDisabledError);
+    ).toThrow(PlanRequirementError);
   });
 
   test("lets a downgraded Free workspace turn a saved Scene's motion off, but not change it otherwise", () => {
-    enableSceneWrites();
     const animated = colorScene(SCENE_ID, { motion: { entrance: "fade", exit: "fade", durationSec: 0.5 } });
     const current = { ...baseDocument(), sceneBlocks: [animated] };
     const stopped = { ...animated, motion: { entrance: "none" as const, exit: "none" as const, durationSec: 0.5 } };
@@ -245,7 +204,6 @@ describe("analyzeSceneDocumentMutation", () => {
     expect(() =>
       assertEditorDocumentFeatureDelta("free", current, { ...current, sceneBlocks: [stopped] }),
     ).not.toThrow();
-    process.env.NARRIFLOW_WRITES_SCENE_CARDS = "0";
     expect(() =>
       assertEditorDocumentFeatureDelta("free", current, { ...current, sceneBlocks: [stopped] }),
     ).not.toThrow();
@@ -264,7 +222,6 @@ describe("analyzeSceneDocumentMutation", () => {
   });
 
   test("deduplicates newly introduced visual assets across scenes and B-roll", () => {
-    enableSceneWrites();
     const current = baseDocument();
     const next = editorDocumentSchema.parse({
       ...current,
@@ -298,7 +255,6 @@ describe("analyzeSceneDocumentMutation", () => {
   });
 
   test("returns only the replacement visual asset when a reference changes", () => {
-    enableSceneWrites();
     const current = {
       ...baseDocument(),
       sceneBlocks: [imageScene(SCENE_ID, VISUAL_ASSET_ID)],
@@ -315,7 +271,6 @@ describe("analyzeSceneDocumentMutation", () => {
   });
 
   test("does not introduce a visual asset when its reference is removed", () => {
-    enableSceneWrites();
     const current = {
       ...baseDocument(),
       sceneBlocks: [imageScene(SCENE_ID, VISUAL_ASSET_ID)],
@@ -328,7 +283,6 @@ describe("analyzeSceneDocumentMutation", () => {
   });
 
   test("treats a changed brand-font reference as newly introduced", () => {
-    enableSceneWrites();
     const currentScene = textScene();
     const nextScene = {
       ...currentScene,

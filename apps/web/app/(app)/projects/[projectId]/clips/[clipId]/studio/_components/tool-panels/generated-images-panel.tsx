@@ -24,7 +24,11 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
 import type { GeneratedImageUsageSummary } from "@narriflow/services";
 import type { StudioVisualAsset } from "../studio-shell";
+import { upgradePromptFromFailure, type BrowserRequestFailure } from "@/lib/authenticated-request-browser";
+import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "../studio-shell";
+import { StudioLockGem } from "../studio-lock-gem";
+import { generatedImagesExhaustedCopy, generatedImagesUpgradePrompt } from "../studio-upgrade";
 import { createGeneratedImagesBrowserApi } from "./generated-images-browser";
 
 type PromptOrigin = "transcript_selection" | "broll_cue" | "manual";
@@ -91,7 +95,6 @@ function generatedMediaErrorCopy(code: string | null | undefined, fallback: stri
     generated_media_concurrency_limit_reached: "Too many images are already being generated. Try again when one finishes.",
     generated_media_retry_exhausted: "The image service could not complete this frame after several attempts.",
     generated_media_rejected: "This prompt could not be generated. Edit it and try again.",
-    program_write_disabled: "New image generation is temporarily paused.",
   };
   return code ? copy[code] ?? fallback : fallback;
 }
@@ -115,6 +118,7 @@ export function GeneratedImagesPanel() {
     utterances,
     generatedImagesCapability,
   } = useStudio("aspectRatio", "brandProfileId", "clipInfo", "compositeToBaseEdited", "duration", "editedTimeMap", "editorDocument", "insertSceneBlock", "playbackClock", "registerVisualAsset", "setBrollUrl", "setStudioEdits", "transcriptSelectionRange", "unregisterVisualAsset", "utterances", "generatedImagesCapability");
+  const { currentTier, openUpgrade } = useUpgrade();
   const [cueIndex, setCueIndex] = useState(0);
   const cue = clipInfo.brollCues[cueIndex] ?? null;
   const browserApi = useMemo(() => createGeneratedImagesBrowserApi(clipInfo.projectId), [clipInfo.projectId]);
@@ -216,8 +220,12 @@ export function GeneratedImagesPanel() {
           sourceEndSec: origin === "transcript_selection" ? transcriptSelectionRange?.endSec ?? null : null,
           sourceCueAtSec: origin === "broll_cue" ? cue?.atSec ?? null : null,
       });
-      const payload = await response.json() as GeneratedJob & { error?: string; message?: string };
-      if (!response.ok) throw new Error(generatedMediaErrorCopy(payload.error, payload.message ?? "Image generation could not start"));
+      const payload = await response.json() as GeneratedJob & BrowserRequestFailure;
+      if (!response.ok) {
+        const upgrade = upgradePromptFromFailure(payload);
+        if (upgrade) openUpgrade(upgrade);
+        throw new Error(generatedMediaErrorCopy(payload.error, payload.message ?? "Image generation could not start"));
+      }
       setJobs((current) => [payload, ...current.filter((job) => job.id !== payload.id)]);
       setPrompt("");
       toaster.create({ type: "success", title: "Frame queued", description: "You can leave Studio—this job will keep running." });
@@ -343,9 +351,7 @@ export function GeneratedImagesPanel() {
   const terminal = jobs.filter((job) => ["failed", "rejected", "cancelled"].includes(job.status));
   const limitExhausted = usage?.remaining === 0;
 
-  const unavailableCopy = generatedImagesCapability.reason === "rollout_disabled"
-    ? "Image generation is disabled for this deployment. Existing jobs and assets remain available below."
-    : "Image generation is not included in this workspace plan.";
+  const unavailableCopy = "Image generation is not included in this workspace plan.";
 
   return (
     <Stack gap="0" h="100%" overflowY="auto">
@@ -429,7 +435,21 @@ export function GeneratedImagesPanel() {
           ))}
         </SimpleGrid>
 
-        {limitExhausted ? <Text fontSize="11px" color="studio.fgMuted">Your workspace has used its available images for this period.</Text> : null}
+        {limitExhausted && usage ? (() => {
+          // Only a larger allowance on a higher tier is offered; a concurrency limit just waits.
+          const prompt = generatedImagesUpgradePrompt(currentTier, usage.monthUsed);
+          const exhausted = generatedImagesExhaustedCopy(usage, prompt);
+          return (
+            <Flex align="center" justify="space-between" gap="3" wrap="wrap">
+              <Text fontSize="11px" color="studio.fgMuted">{exhausted.message}</Text>
+              {exhausted.upgrade && prompt?.tier ? (
+                <Button size="2xs" {...softButtonProps} aria-haspopup="dialog" onClick={() => openUpgrade(prompt)}>
+                  More images<StudioLockGem tier={prompt.tier} size={12} />
+                </Button>
+              ) : null}
+            </Flex>
+          );
+        })() : null}
         {error ? <Text fontSize="11px" color="danger.fg">{error}</Text> : null}
         <Button h="44px" borderRadius="10px" fontSize="14px" colorPalette="brand" onClick={() => void generate()} disabled={!generatedImagesCapability.available || limitExhausted || submitting || (!prompt.trim() && !contextIncluded)}>
           {submitting ? <Spinner size="xs" /> : <Sparkles size={14} />}

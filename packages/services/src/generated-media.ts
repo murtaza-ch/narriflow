@@ -166,9 +166,9 @@ export interface GeneratedMediaStore {
   get(id: string): Promise<GeneratedMediaJobRecord | null>;
   list(workspaceId: string, projectId: string, clipId?: string): Promise<GeneratedMediaJobRecord[]>;
   update(id: string, patch: Partial<GeneratedMediaJobRecord>): Promise<GeneratedMediaJobRecord>;
-  updateClaimed(id: string, claimId: string, patch: Partial<GeneratedMediaJobRecord>): Promise<GeneratedMediaJobRecord>;
+  updateClaimed(id: string, claimId: string, patch: Partial<GeneratedMediaJobRecord> & { updatedAt: Date }): Promise<GeneratedMediaJobRecord>;
   renew(id: string, claimId: string, now: Date, leaseMs: number): Promise<boolean>;
-  claim(id: string, claimId: string, now: Date, leaseMs: number): Promise<GeneratedMediaJobRecord | null>;
+  claim(id: string, claimId: string, now: Date, leaseMs: number, intent?: "process" | "cancel"): Promise<GeneratedMediaJobRecord | null>;
   due(now: Date, limit: number): Promise<string[]>;
 }
 
@@ -320,7 +320,9 @@ export function createInMemoryGeneratedMediaStore(): GeneratedMediaStore {
     },
     async updateClaimed(id, claimId, patch) {
       const row = rows.get(id);
-      if (!row || row.claimId !== claimId) throw new GeneratedMediaJobError("generated_media_claim_lost");
+      if (!row || row.claimId !== claimId || !row.claimExpiresAt || row.claimExpiresAt <= patch.updatedAt) {
+        throw new GeneratedMediaJobError("generated_media_claim_lost");
+      }
       const updated = { ...row, ...structuredClone(patch) };
       rows.set(id, updated);
       return structuredClone(updated);
@@ -331,10 +333,11 @@ export function createInMemoryGeneratedMediaStore(): GeneratedMediaStore {
       rows.set(id, { ...row, claimExpiresAt: new Date(now.getTime() + leaseMs), updatedAt: now });
       return true;
     },
-    async claim(id, claimId, now, leaseMs) {
+    async claim(id, claimId, now, leaseMs, intent = "process") {
       const row = rows.get(id);
-      if (!row || ["completed", "failed", "rejected", "cancelled"].includes(row.status)) return null;
-      if (row.retryAt && row.retryAt.getTime() > now.getTime()) return null;
+      if (!row || row.outcomeUnknown || ["completed", "failed", "rejected", "cancelled"].includes(row.status)) return null;
+      if (intent === "cancel" && (row.status === "running" || row.providerUsageImages != null || row.resultAsset)) return null;
+      if (intent === "process" && row.retryAt && row.retryAt.getTime() > now.getTime()) return null;
       if (row.claimExpiresAt && row.claimExpiresAt.getTime() > now.getTime()) return null;
       const updated = {
         ...row,
@@ -457,13 +460,14 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
     return record;
   }
 
-  function persist(record: GeneratedMediaJobRecord, patch: Partial<GeneratedMediaJobRecord>) {
+  function persist(record: GeneratedMediaJobRecord, patch: Partial<GeneratedMediaJobRecord> & { updatedAt: Date }) {
     return record.claimId
       ? dependencies.store.updateClaimed(record.id, record.claimId, patch)
       : dependencies.store.update(record.id, patch);
   }
 
   async function release(record: GeneratedMediaJobRecord, status: "failed" | "rejected" | "cancelled", code: string) {
+    if (record.claimId) record = await persist(record, { updatedAt: now() });
     if (record.usageStatus === "reserved") {
       try {
         await dependencies.usage.release({
@@ -733,9 +737,10 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
       const heartbeat = setInterval(() => {
         void dependencies.store.renew(id, claimId, now(), leaseMs).catch(() => false);
       }, 60_000);
+      let source: "submit" | "poll" = "submit";
 
       try {
-        if (record.resultAsset && record.usageStatus === "reserved") {
+        if (record.resultAsset && record.usageStatus !== "released") {
           const next = await complete(record, {
             kind: "completed",
             providerRef: record.providerRef ?? "published",
@@ -765,6 +770,7 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
           }));
         }
         if (record.status === "waiting" && record.providerRef) {
+          source = "poll";
           const next = await applyOutcome(record, await dependencies.provider.poll(record.providerRef), "poll");
           return generatedMediaPublicJob(await dependencies.store.updateClaimed(next.id, claimId, { claimId: null, claimExpiresAt: null, updatedAt: now() }));
         }
@@ -795,20 +801,25 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
             }));
           }
           if (error.details?.retryable) {
-            if (record.attempt >= maxAttempts) {
-              const exhausted = await release(record, "failed", "generated_media_retry_exhausted");
-              return generatedMediaPublicJob(await dependencies.store.updateClaimed(exhausted.id, claimId, {
+            if (source === "poll" && record.attempt + 1 >= maxAttempts) {
+              return generatedMediaPublicJob(await dependencies.store.updateClaimed(record.id, claimId, {
+                status: "waiting",
+                attempt: record.attempt + 1,
+                outcomeUnknown: true,
+                errorCode: "generated_media_provider_outcome_unknown",
+                retryAt: null,
                 claimId: null,
                 claimExpiresAt: null,
                 updatedAt: now(),
               }));
             }
-            return generatedMediaPublicJob(await dependencies.store.updateClaimed(record.id, claimId, {
-              status: "queued",
-              retryAt: new Date(
-                now().getTime() + (error.retryAfterSeconds ?? 5) * 1_000,
-              ),
-              errorCode: error.code,
+            const next = await applyOutcome(record, {
+              kind: "failed",
+              code: error.code,
+              retryable: true,
+              retryAfterMs: (error.retryAfterSeconds ?? 5) * 1_000,
+            }, source);
+            return generatedMediaPublicJob(await dependencies.store.updateClaimed(next.id, claimId, {
               claimId: null,
               claimExpiresAt: null,
               updatedAt: now(),
@@ -870,19 +881,38 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
     },
 
     async cancel(scope: BrandActorScope, id: string) {
-      const record = await owned(id, scope);
+      let record = await owned(id, scope);
       if (["completed", "failed", "rejected", "cancelled"].includes(record.status)) return generatedMediaPublicJob(record);
       if (record.outcomeUnknown) {
         throw new GeneratedMediaJobError("generated_media_reconciliation_required");
       }
-      if (record.status === "running" || record.claimId) {
+      if (record.status === "running" || record.claimId || record.providerUsageImages != null || record.resultAsset) {
         throw new GeneratedMediaJobError("generated_media_cancellation_pending");
       }
-      if (record.providerRef) {
-        const outcome = await dependencies.provider.cancel(record.providerRef);
-        if (outcome.kind === "waiting") return generatedMediaPublicJob(record);
+      const claimId = ids();
+      const leaseMs = 5 * 60_000;
+      const claimed = await dependencies.store.claim(id, claimId, now(), leaseMs, "cancel");
+      if (!claimed) throw new GeneratedMediaJobError("generated_media_cancellation_pending");
+      record = claimed;
+      const heartbeat = setInterval(() => {
+        void dependencies.store.renew(id, claimId, now(), leaseMs).catch(() => undefined);
+      }, 60_000);
+      try {
+        const outcome = record.providerRef
+          ? await dependencies.provider.cancel(record.providerRef)
+          : { kind: "cancelled" };
+        if (outcome.kind === "cancelled") {
+          record = await release(record, "cancelled", "user_cancelled");
+        }
+      } finally {
+        clearInterval(heartbeat);
+        record = await dependencies.store.updateClaimed(id, claimId, {
+          claimId: null,
+          claimExpiresAt: null,
+          updatedAt: now(),
+        });
       }
-      return generatedMediaPublicJob(await release(record, "cancelled", "user_cancelled"));
+      return generatedMediaPublicJob(record);
     },
   };
 }

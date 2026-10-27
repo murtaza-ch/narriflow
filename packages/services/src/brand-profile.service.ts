@@ -22,14 +22,14 @@ import {
   assertBrandApplicationAllowed,
   assertBrandManageAllowed,
   assertBrandMutationAllowedWithAnalytics,
+  brandPlanRequirement,
   brandOwnerWhere,
   lockBrandOwner,
   resolveBrandOwner,
   type BrandActorScope,
 } from "./brand-ownership";
-import { hasFeature, requirePlanFeature, requireWithinPlanLimit } from "./plan-features";
+import { requirePlanFeature, requireWithinPlanLimit } from "./plan-features";
 import { analyticsService } from "./analytics.service";
-import { assertProgramWriteEnabled } from "./program-rollout";
 import { headObject, presignDownloadUrl } from "./r2-storage";
 import {
   ExpectedDomainFailureError,
@@ -379,10 +379,10 @@ export class BrandProfileService {
     return profile.id;
   }
 
-  /** Like requireUsableId, and also refuses when the plan or the rollout
+  /** Like requireUsableId, and also refuses when the plan
    * switch would stop resolveForProject from applying the profile now. */
   async requireApplicableId(scope: BrandActorScope, id: string) {
-    assertProgramWriteEnabled("brand_kit_projection");
+
     assertBrandApplicationAllowed(scope);
     return this.requireUsableId(scope, id);
   }
@@ -589,7 +589,7 @@ export class BrandProfileService {
     if (!profile) throw new BrandProfileNotFoundError();
     const isDefault = profile.defaultForUsers.length > 0 || profile.defaultForWorkspaces.length > 0;
     // A plan that can't choose another default can still delete its profile.
-    if (isDefault && hasFeature(scope.pricingTier, "brand.profiles")) throw new BrandProfileReferenceError();
+    if (isDefault && !brandPlanRequirement(scope, "brand.profiles")) throw new BrandProfileReferenceError();
     await prisma.$transaction(async (tx) => {
       if (isDefault) {
         await tx.user.updateMany({ where: { defaultBrandProfileId: id }, data: { defaultBrandProfileId: null } });
@@ -600,7 +600,7 @@ export class BrandProfileService {
   }
 
   async resolveForProject(scope: BrandActorScope, input: { profileId: string; templateId?: string | null }) {
-    assertProgramWriteEnabled("brand_kit_projection");
+
     try {
       assertBrandApplicationAllowed(scope);
     } catch (error) {

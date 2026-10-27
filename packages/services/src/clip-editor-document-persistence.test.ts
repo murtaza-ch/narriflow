@@ -1085,18 +1085,11 @@ describe("Clip Editor Document plan deltas", () => {
   test("lets a downgraded Free workspace remove existing Scenes and motion, and refuses adding them back", async () => {
     const paid = document({ sceneBlocks: [scene], studioEdits: { ...document().studioEdits, transition: fade } });
     const { persistence, scope } = freeSetup(stored({ document: paid }));
-    const previous = process.env.NARRIFLOW_WRITES_SCENE_CARDS;
-    process.env.NARRIFLOW_WRITES_SCENE_CARDS = "1";
-    try {
-      const cleaned = await persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: 3, document: document() } });
-      expect(cleaned).toMatchObject({ revision: 4, noop: false });
-      expect(cleaned.document.sceneBlocks).toEqual([]);
-      await expect(persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: 4, document: document({ sceneBlocks: [scene] }) } }))
-        .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.scenes" } });
-    } finally {
-      if (previous === undefined) delete process.env.NARRIFLOW_WRITES_SCENE_CARDS;
-      else process.env.NARRIFLOW_WRITES_SCENE_CARDS = previous;
-    }
+    const cleaned = await persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: 3, document: document() } });
+    expect(cleaned).toMatchObject({ revision: 4, noop: false });
+    expect(cleaned.document.sceneBlocks).toEqual([]);
+    await expect(persistence.mutateDocument({ ...scope, intent: { kind: "replace", baseRevision: 4, document: document({ sceneBlocks: [scene] }) } }))
+      .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.scenes" } });
   });
 
   test("keeps unchanged paid content editable around on Free", async () => {

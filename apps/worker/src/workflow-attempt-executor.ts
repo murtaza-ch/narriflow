@@ -17,6 +17,7 @@ type ClaimedAttemptFor<TStage extends WorkflowAttemptRef["stage"]> =
   ClaimedWorkflowAttempt & { stage: TStage };
 
 interface WorkflowAttemptClaimer extends WorkflowAttemptRunner {
+  releaseAttempt(attempt: WorkflowAttemptRef): Promise<boolean>;
   claim<TStage extends WorkflowAttemptRef["stage"]>(
     stage: TStage,
   ): Promise<ClaimedAttemptFor<TStage> | null>;
@@ -41,9 +42,12 @@ export async function executeNextWorkflowAttempt<
 }): Promise<0 | 1> {
   if (input.signal?.aborted) return 0;
   const claimed = await input.lifecycle.claim(input.stage);
-  // Shutdown can arrive while a database claim is in flight. Do not begin
-  // execution or a heartbeat; the normal lease reaper recovers this claim.
-  if (input.signal?.aborted) return 0;
+  // Shutdown can arrive while the claim is in flight. Return it without
+  // starting its handler or charging a failed execution.
+  if (input.signal?.aborted) {
+    if (claimed) await input.lifecycle.releaseAttempt(claimed);
+    return 0;
+  }
   if (!claimed) return 0;
   const attempt = claimed;
   const startedAtMs = Date.now();
@@ -69,15 +73,16 @@ export async function executeClaimedWorkflowAttempt<
   ) => Promise<void>;
   onAttemptLost?: (error: WorkflowAttemptLost) => void;
   signal?: AbortSignal;
-}): Promise<"completed" | "lost"> {
+}): Promise<"completed" | "lost" | "interrupted"> {
   try {
     await input.lifecycle.runAttempt(
       input.attempt,
       (context) => input.process(input.attempt, context),
       { signal: input.signal },
     );
-    return "completed";
+    return input.signal?.aborted ? "interrupted" : "completed";
   } catch (error) {
+    if (input.signal?.aborted) return "interrupted";
     if (!(error instanceof WorkflowAttemptLost)) throw error;
     input.onAttemptLost?.(error);
     return "lost";

@@ -2,6 +2,10 @@ import { Hono, type Context } from "hono";
 import {
   checkoutRequestSchema,
   checkoutReturnRequestSchema,
+  planChangeConfirmRequestSchema,
+  planChangePreviewRequestSchema,
+  type PlanChangeQuote,
+  type PlanChangeResult,
   type WorkspaceBillingView,
 } from "@narriflow/validators";
 
@@ -35,6 +39,22 @@ interface WorkspaceBillingHttpDependencies {
     workspaceId: string;
     returnUrl: string;
   }): Promise<{ url: string }>;
+  previewPlanChange(input: {
+    userId: string;
+    workspaceId: string;
+    clientIdempotencyKey: string;
+    tier: "creator" | "pro" | "business";
+    interval: "monthly" | "annual";
+  }): Promise<{ quote: PlanChangeQuote }>;
+  confirmPlanChange(input: {
+    userId: string;
+    workspaceId: string;
+    quoteId: string;
+  }): Promise<PlanChangeResult>;
+  cancelScheduledPlanChange(input: {
+    userId: string;
+    workspaceId: string;
+  }): Promise<PlanChangeResult>;
   readBillingState(workspaceId: string): Promise<WorkspaceBillingView>;
   reconcileCurrentState(workspaceId: string): Promise<{
     kind: "reconciled" | "unresolved";
@@ -110,6 +130,44 @@ export function createWorkspaceBillingHttpRoutes(
     const view = await dependencies.readBillingState(actor.workspaceId);
     if (view.health === "activating") c.header("Retry-After", "2");
     return c.json({ view }, 200);
+  });
+
+  app.post("/plan-change/preview", async (c) => {
+    const actor = await dependencies.getActor(c);
+    const parsed = planChangePreviewRequestSchema.safeParse(
+      await c.req.json().catch(() => ({})),
+    );
+    if (!parsed.success) {
+      return c.json({ error: "validation_failed", issues: parsed.error.issues }, 400);
+    }
+    return c.json(await dependencies.previewPlanChange({
+      userId: actor.actorUserId,
+      workspaceId: actor.workspaceId,
+      ...parsed.data,
+    }), 200);
+  });
+
+  app.post("/plan-change/confirm", async (c) => {
+    const actor = await dependencies.getActor(c);
+    const parsed = planChangeConfirmRequestSchema.safeParse(
+      await c.req.json().catch(() => ({})),
+    );
+    if (!parsed.success) {
+      return c.json({ error: "validation_failed", issues: parsed.error.issues }, 400);
+    }
+    return c.json(await dependencies.confirmPlanChange({
+      userId: actor.actorUserId,
+      workspaceId: actor.workspaceId,
+      quoteId: parsed.data.quoteId,
+    }), 200);
+  });
+
+  app.post("/plan-change/cancel", async (c) => {
+    const actor = await dependencies.getActor(c);
+    return c.json(await dependencies.cancelScheduledPlanChange({
+      userId: actor.actorUserId,
+      workspaceId: actor.workspaceId,
+    }), 200);
   });
 
   app.post("/reconcile", async (c) => {

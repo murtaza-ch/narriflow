@@ -9,13 +9,8 @@ describe("RenderConfig", () => {
     expect(config).not.toHaveProperty("compositionPath");
   });
 
-  test("freezes current defaults and preserves literal zero kill switches", () => {
-    const config = parseRenderConfig({
-      WORKER_LAYOUT_ENGINE: "0",
-      WORKER_SCREEN_LAYOUT: "0",
-      WORKER_SPLIT: "0",
-      WORKER_BROLL: "0",
-    });
+  test("freezes validated worker defaults", () => {
+    const config = parseRenderConfig({});
 
     expect(config).toMatchObject({
       sourceMode: "ranged",
@@ -23,10 +18,6 @@ describe("RenderConfig", () => {
       renderCommandTimeoutMs: 1_800_000,
       probeCommandTimeoutMs: 120_000,
       compositionCommandMaxBytes: 512 * 1024,
-      layoutEngineEnabled: false,
-      screenLayoutEnabled: false,
-      splitEnabled: false,
-      brollEnabled: false,
       pexelsConfigured: false,
       pipMotionThreshold: 0.12,
       brollAssetCacheTtlMs: 24 * 60 * 60 * 1000,
@@ -67,9 +58,6 @@ describe("RenderConfig", () => {
       parseRenderConfig({ WORKER_X264_PRESET: "warp-speed" }),
     ).toThrow("WORKER_X264_PRESET");
     expect(() =>
-      parseRenderConfig({ WORKER_LAYOUT_ENGINE: "2" }),
-    ).toThrow("WORKER_LAYOUT_ENGINE");
-    expect(() =>
       parseRenderConfig({ WORKER_PIP_MOTION_THRESHOLD: "0" }),
     ).toThrow("WORKER_PIP_MOTION_THRESHOLD");
     expect(() =>
@@ -99,9 +87,9 @@ describe("RenderConfig", () => {
 });
 
 test("validates background layout configuration and every detector setting", () => {
-  expect(parseRenderConfig({ WORKER_AUTO_LAYOUT_ANALYSIS: "0", WORKER_AUTO_LAYOUT_BATCH_SIZE: "10", WORKER_AUTO_LAYOUT_LEASE_MS: "240000", WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS: "0", REFRAME_SAMPLE_FPS: "2", REFRAME_SCENE_THRESHOLD: "0.4" })).toMatchObject({ autoLayoutAnalysisEnabled: false, autoLayoutBatchSize: 10, autoLayoutLeaseMs: 240000, autoLayoutFailureBackoffMs: 0, reframeSampleFps: 2, reframeSceneThreshold: 0.4 });
+  expect(parseRenderConfig({ WORKER_AUTO_LAYOUT_BATCH_SIZE: "10", WORKER_AUTO_LAYOUT_LEASE_MS: "240000", WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS: "0", REFRAME_SAMPLE_FPS: "2", REFRAME_SCENE_THRESHOLD: "0.4" })).toMatchObject({ autoLayoutBatchSize: 10, autoLayoutLeaseMs: 240000, autoLayoutFailureBackoffMs: 0, reframeSampleFps: 2, reframeSceneThreshold: 0.4 });
   for (const [name, invalid] of [
-    ["WORKER_AUTO_LAYOUT_ANALYSIS", "yes"], ["WORKER_AUTO_LAYOUT_BATCH_SIZE", "11"], ["WORKER_AUTO_LAYOUT_BATCH_SIZE", "1.5"], ["WORKER_AUTO_LAYOUT_LEASE_MS", "0"], ["WORKER_AUTO_LAYOUT_LEASE_MS", "29999"], ["WORKER_AUTO_LAYOUT_LEASE_MS", "900001"], ["WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS", "-1"], ["REFRAME_SAMPLE_FPS", "NaN"], ["REFRAME_SCENE_THRESHOLD", "1.1"],
+    ["WORKER_AUTO_LAYOUT_BATCH_SIZE", "11"], ["WORKER_AUTO_LAYOUT_BATCH_SIZE", "1.5"], ["WORKER_AUTO_LAYOUT_LEASE_MS", "0"], ["WORKER_AUTO_LAYOUT_LEASE_MS", "29999"], ["WORKER_AUTO_LAYOUT_LEASE_MS", "900001"], ["WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS", "-1"], ["REFRAME_SAMPLE_FPS", "NaN"], ["REFRAME_SCENE_THRESHOLD", "1.1"],
   ]) expect(() => parseRenderConfig({ [name!]: invalid })).toThrow(name);
 });
 

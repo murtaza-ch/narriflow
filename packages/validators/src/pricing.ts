@@ -311,6 +311,37 @@ const PLAN_COUNT_LIMIT_LABELS: Readonly<Record<PlanCountLimit, string>> = {
   autopilotRules: "active Autopilot rules",
 };
 
+const PLAN_COUNT_LIMIT_NOUNS: Readonly<Record<PlanCountLimit, string>> = {
+  brandProfiles: "Brand Profile",
+  brandTemplates: "custom Brand Template",
+  socialDestinations: "connected social account",
+  autopilotRules: "active Autopilot rule",
+};
+
+/** Lowercase words of four or more letters, for matching a feature to its catalog line. */
+function significantWords(line: string): string[] {
+  return line.toLowerCase().match(/[a-z]{4,}/g) ?? [];
+}
+
+/**
+ * The line an upgrade prompt leads with: what `tier` adds for the limit or
+ * feature that stopped the user. Limits read "Up to 4 Brand Profiles";
+ * features use the plan's own highlight line ("REST API and MCP").
+ */
+export function planUpgradeHighlight(tier: PricingTier, gate: PlanFeature | PlanCountLimit): string {
+  if (gate in PLAN_COUNT_LIMIT_NOUNS) {
+    const limit = gate as PlanCountLimit;
+    return `Up to ${plural(PLAN_CATALOG[tier].limits[limit], PLAN_COUNT_LIMIT_NOUNS[limit])}`;
+  }
+  const label = PLAN_FEATURE_LABELS[gate as PlanFeature];
+  const words = significantWords(label);
+  return (
+    planHighlights(tier).find(
+      (line) => !line.startsWith("Everything in") && significantWords(line).some((word) => words.includes(word)),
+    ) ?? label
+  );
+}
+
 /**
  * Why `tier` can't add `adding` more objects when `used` exist, or `null` when
  * it can. A zero limit reads as a missing feature; a full one as a reached limit.
