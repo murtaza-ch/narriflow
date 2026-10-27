@@ -313,10 +313,14 @@ export default async function ProjectDetailPage({
 	}
 	// The per-video cap is deterministic, so show it before the click. Credits
 	// are decided by Processing Usage settlement; a refusal is persisted on the
-	// Project and rendered from its typed code. Regeneration is free.
+	// Project and rendered from its typed code. Regeneration is free. Once the
+	// Project is settled (or refunded), settlement returns early, so a retry
+	// skips the length and credit checks and no block or offer applies.
 	const sourceSeconds = snapshot.project.sourceDurationSeconds ?? 0;
+	const settlementFinal =
+		projectCreditUsage?.state === "settled" || projectCreditUsage?.state === "refunded";
 	const planLimitMessage =
-		sourceSeconds > usage.maxUploadSeconds
+		!settlementFinal && sourceSeconds > usage.maxUploadSeconds
 			? `This source is ${Math.ceil(sourceSeconds / 60)} min, over the ${Math.round(
 					usage.maxUploadSeconds / 60,
 				)}-min per-video limit on the ${planDefinition(pricingTier).name} plan.`
@@ -381,7 +385,7 @@ export default async function ProjectDetailPage({
 	// live reservation still settles in its admission month. Without a known
 	// duration or ledger facts no specific plan can be promised.
 	const sourceCredits =
-		sourceSeconds > 0 && projectCreditUsage
+		sourceSeconds > 0 && projectCreditUsage && !settlementFinal
 			? {
 					spentCredits: projectCreditUsage.spentCredits,
 					requestedCredits: creditsForSourceSeconds(sourceSeconds),

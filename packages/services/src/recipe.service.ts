@@ -196,7 +196,7 @@ export class RecipeService {
     const parsed = recipeInputSchema.parse(input);
     // An omitted Brand Profile freezes the Workspace default onto the Recipe
     // now, so a later default change doesn't move it. Null means none.
-    const brandProfileId = parsed.brandProfileId === undefined ? await brandProfileService.getDefaultId(actor) : parsed.brandProfileId;
+    const brandProfileId = parsed.brandProfileId === undefined ? await brandProfileService.getApplicableDefaultId(actor) : parsed.brandProfileId;
     const finishing = parsed.finishing ?? null;
     await this.requireUsable(scope, { brandProfileId, finishing });
     const row = await requirePrisma().$transaction(async (tx) => {

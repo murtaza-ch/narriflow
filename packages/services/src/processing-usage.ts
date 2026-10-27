@@ -262,7 +262,6 @@ export interface ProcessingUsageLogRecord {
 
 export interface ProcessingUsageDependencies {
   prisma: PrismaClient;
-  capacityLimits: Readonly<Record<PricingTier, number>>;
   now?: () => Date;
   log?: (record: ProcessingUsageLogRecord) => void;
 }
@@ -432,7 +431,7 @@ export class ProcessingUsage {
         { remainingSeconds },
       );
     const inFlight = await this.inFlight(tx, input.workspaceId);
-    const inFlightLimit = this.deps.capacityLimits[tier];
+    const inFlightLimit = planLimits(tier).processingCapacity;
     if (inFlight >= inFlightLimit)
       throw refuse(capacityReached(tier, inFlight, inFlightLimit), {
         remainingSeconds,
@@ -768,8 +767,12 @@ export class ProcessingUsage {
    * Spending the next attempt checks, excluding this Project's own hold.
    * Settlement keeps a live reservation in its admission period. A released
    * reservation is re-admitted in the current period by an explicit retry.
+   * A `settled` or `refunded` reservation is already final: its retry skips
+   * the length and credit checks, so this guidance does not apply to it.
    */
-  async projectCreditUsage(projectId: string): Promise<{ periodStart: Date; spentCredits: number } | null> {
+  async projectCreditUsage(
+    projectId: string,
+  ): Promise<{ periodStart: Date; spentCredits: number; state: ProcessingUsageState } | null> {
     const row = await this.deps.prisma.processingUsageReservation.findUnique({
       where: { projectId },
       select: { workspaceId: true, state: true, periodStart: true, reservedSeconds: true },
@@ -781,6 +784,7 @@ export class ProcessingUsage {
     return {
       periodStart,
       spentCredits: Math.max(0, Math.floor((usage.settled + usage.reserved - ownReservation) / 60)),
+      state: row.state,
     };
   }
 
@@ -806,7 +810,7 @@ export class ProcessingUsage {
       periodStart,
       renewsAt: processingPeriodEnd(periodStart),
       inFlight,
-      inFlightLimit: this.deps.capacityLimits[tier],
+      inFlightLimit: limits.processingCapacity,
       maxUploadSeconds: limits.maxSourceSeconds,
     };
   }

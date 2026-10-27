@@ -1521,7 +1521,7 @@ export class ProjectService {
 			const profileId = options.recipe
 				? usedRecipe!.brandProfileId
 				: parsed.brandProfileId === undefined && options.mutation
-					? await brandProfileService.getDefaultId(actor)
+					? await brandProfileService.getApplicableDefaultId(actor)
 					: (parsed.brandProfileId ?? null);
 			brand = await resolveIntakeBrand(actor, {
 				profileId,

@@ -160,6 +160,38 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     }
   });
 
+  test("same-key concurrent opens replay the admitted session at the Workspace capacity limit", async () => {
+    const user = await prisma.user.create({ data: { clerkId: `upload-capacity-race:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "Last upload slot", ownerUserId: user.id, pricingTier: "free" } });
+    let arrivals = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const persistence = { ...prismaUploadSessionPersistence, async findByClientKey(input: { workspaceId: string; clientIdempotencyKey: string }) {
+      const existing = await prismaUploadSessionPersistence.findByClientKey(input);
+      arrivals += 1;
+      if (arrivals === 2) release();
+      await gate;
+      return existing;
+    } };
+    const module = createUploadSessionModule({ config: defaultUploadSessionConfig(), persistence,
+      storage: { async grantSinglePut() { return { url: "https://upload.invalid/direct" }; }, async headExactObjectIfExists() { return null; } } as unknown as UploadSessionStorage,
+      admission: { async resolveBrand() { return null; } }, now: () => new Date(), createId: randomUUID,
+    });
+    const input = { actorUserId: user.id, workspaceId: workspace.id, clientIdempotencyKey: randomUUID(), title: "One slot",
+      source: { fileName: "one.mp4", sizeBytes: 2048, contentType: "video/mp4", browserFingerprint: "same-file" }, brandTemplateId: null, generation: { languageCode: "en", contentPack: CONTENT_PACK } };
+    try {
+      const results = await Promise.allSettled([module.open(input), module.open(input)]);
+      expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+      const ids = results.flatMap((result) => result.status === "fulfilled" ? [result.value.sessionId] : []);
+      expect(new Set(ids).size).toBe(1);
+      expect(await prisma.uploadSession.count({ where: { workspaceId: workspace.id } })).toBe(1);
+      expect(await prisma.processingUsageReservation.count({ where: { workspaceId: workspace.id } })).toBe(1);
+    } finally {
+      await prisma.workspace.delete({ where: { id: workspace.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
   test("durable handoff survives removal of the non-owner creator", async () => {
     const owner = await prisma.user.create({ data: { clerkId: `upload-owner:${randomUUID()}` } });
     const creator = await prisma.user.create({ data: { clerkId: `upload-creator:${randomUUID()}` } });
@@ -1161,6 +1193,40 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       await worker.processDue();
       expect(stored.has(key)).toBe(false);
       expect((await prisma.mediaCleanupObligation.findUniqueOrThrow({ where: { id: obligation.id } })).completedAt).not.toBeNull();
+    } finally {
+      await prisma.workspace.delete({ where: { id: workspace.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("single-PUT cleanup retains its exact key when transfer finishes after the old 70-minute window", async () => {
+    const user = await prisma.user.create({ data: { clerkId: `upload-very-late:${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { name: "In-flight PUT", ownerUserId: user.id } });
+    const at = new Date();
+    let clock = at;
+    const key = `late-single-put/${randomUUID()}.mp4`;
+    const session = await prisma.uploadSession.create({ data: {
+      workspaceId: workspace.id, actorUserId: user.id, clientIdempotencyKey: randomUUID(), immutableInputFingerprint: "very-late-put",
+      preallocatedProjectId: randomUUID(), title: "In-flight PUT", fileName: "large.mp4", fileSizeBytes: 5_363_466_240n, contentType: "video/mp4",
+      browserFingerprint: "very-late-put", generationSettings: {}, transferKind: "single", storageKey: key, status: "finalizing",
+      expiresAt: new Date(at.getTime() + 60_000), hardExpiresAt: new Date(at.getTime() + 120_000),
+    } });
+    try {
+      await prismaUploadSessionPersistence.recordFailure({ sessionId: session.id, status: "failed", failureCode: "upload_size_mismatch", updatedAt: at });
+      await prisma.uploadSession.delete({ where: { id: session.id } });
+      const stored = new Set<string>();
+      const worker = createMediaCleanupWorker({ store: prismaMediaCleanupStore, storage: { async deleteExact(objectKey) { stored.delete(objectKey); } }, config: defaultMediaCleanupConfig(), now: () => clock });
+      // The former one-shot cleanup succeeds on a missing object here.
+      clock = new Date(at.getTime() + 70 * 60_000);
+      await worker.processDue();
+      // A request accepted before grant expiry finishes two hours later.
+      clock = new Date(at.getTime() + 2 * 60 * 60_000);
+      stored.add(key);
+      await worker.processDue();
+      clock = new Date(at.getTime() + 24 * 60 * 60_000);
+      await worker.processDue();
+      expect(stored.has(key)).toBe(false);
+      expect(await prisma.mediaCleanupObligation.findFirstOrThrow({ where: { objectKey: key } })).toMatchObject({ completedAt: expect.any(Date) });
     } finally {
       await prisma.workspace.delete({ where: { id: workspace.id } });
       await prisma.user.delete({ where: { id: user.id } });

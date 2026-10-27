@@ -41,6 +41,14 @@ the provider lifecycle shorter than that envelope. The worker first attempts
 owned compensation, and the provider lifecycle is the final backstop for
 declared abandoned bytes.
 
+## Late single-PUT cleanup
+
+A discarded, expired, or failed single-PUT Upload Session commits one exact-key Media Cleanup obligation in its terminal-state transaction. It survives removal of the session, Project, or Workspace. Normal compensation still attempts immediate deletion. The durable follow-up waits for the maximum single-PUT transfer allowance plus the existing 70-minute grant-expiry cushion, rather than completing on an empty key after only 70 minutes.
+
+The allowance is the product size cap, 5 GiB minus 5 MiB, at a conservative 64 KiB/s, rounded up to whole seconds. Adding 70 minutes gives 23 hours 54 minutes after termination. The cushion includes the one-hour maximum grant lifetime and ten minutes of slack. The worker deletes only that session's exact key, including a missing key, using the existing Media Cleanup claims and bounded retries. There is one durable obligation per key, with no bucket scan or new worker.
+
+This is a bounded cleanup policy. [R2's presigned URL contract](https://developers.cloudflare.com/r2/api/s3/presigned-urls/) specifies URL validity but does not specify a hard maximum for an accepted PUT's in-flight duration. A transfer slower than the allowance can finish after this final deletion and needs operator cleanup of its exact key. An absolute guarantee for arbitrarily long transfers requires a provider-enforced transfer deadline or a storage lifecycle backstop. Do not infer that guarantee from URL expiry or file size alone. Successfully handed-off uploads retain the separate source-pinning cleanup policy.
+
 ## Runtime controls and budgets
 
 Configuration is parsed once at process startup. Invalid, non-finite, or

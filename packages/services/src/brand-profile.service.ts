@@ -231,6 +231,14 @@ function assertApprovalRuleAllowed(
   }
 }
 
+const LOGO_FIELDS = new Set<keyof BrandVisualIdentity>(["primaryLogoAssetId", "alternateLogoAssetId"]);
+
+/** True when `next` keeps every identity field and only clears logos. */
+function identityOnlyClearsLogos(current: BrandVisualIdentity, next: BrandVisualIdentity) {
+  const keys = new Set([...Object.keys(current), ...Object.keys(next)] as (keyof BrandVisualIdentity)[]);
+  return [...keys].every((key) => next[key] === current[key] || (LOGO_FIELDS.has(key) && next[key] === null));
+}
+
 async function recordBrandEvent(
   scope: BrandActorScope,
   input: Parameters<typeof analyticsService.recordBrandProgramEvent>[0],
@@ -396,6 +404,16 @@ export class BrandProfileService {
     return (await prisma.user.findUnique({ where: { id: owner.userId! }, select: { defaultBrandProfileId: true } }))?.defaultBrandProfileId ?? null;
   }
 
+  /**
+   * The default to apply when intake names no profile. After a downgrade the
+   * plan may no longer allow applying Brand Profiles; a remembered default then
+   * means "no profile" instead of refusing every import that never chose one.
+   */
+  async getApplicableDefaultId(scope: BrandActorScope) {
+    if (brandPlanRequirement(scope, "brand.profiles")) return null;
+    return this.getDefaultId(scope);
+  }
+
   async get(scope: BrandActorScope, id: string) {
     const prisma = this.requirePrisma();
     const profile = await prisma.brandProfile.findFirst({ where: { id, ...brandOwnerWhere(scope), deletedAt: null }, include: profileInclude });
@@ -460,16 +478,23 @@ export class BrandProfileService {
   }
 
   async update(scope: BrandActorScope, id: string, input: BrandProfileUpdateInput) {
-    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = brandProfileUpdateSchema.parse(input);
+    // Clearing a logo or the default template is cleanup, so a downgraded plan can still do it.
+    const { revision: _revision, identity: _identity, defaultTemplateId, ...otherFields } = parsed;
+    const mayOnlyClear = defaultTemplateId == null && Object.values(otherFields).every((value) => value === undefined);
+    if (mayOnlyClear) assertBrandManageAllowed(scope);
+    else await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const prisma = this.requirePrisma();
     const current = await prisma.brandProfile.findFirst({
       where: { id, ...brandOwnerWhere(scope), deletedAt: null },
       select: { visualIdentity: true, approvalRule: true },
     });
     if (!current) throw new BrandProfileNotFoundError();
-    assertApprovalRuleAllowed(scope, parsed.approvalRule, current.approvalRule);
     const currentIdentity = brandVisualIdentitySchema.parse(current.visualIdentity);
+    if (mayOnlyClear && parsed.identity && !identityOnlyClearsLogos(currentIdentity, parsed.identity)) {
+      await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
+    }
+    assertApprovalRuleAllowed(scope, parsed.approvalRule, current.approvalRule);
     const nextLogoAssetIds = parsed.identity
       ? await requireOwnedLogoAssets(prisma, scope, parsed.identity)
       : null;
@@ -524,12 +549,13 @@ export class BrandProfileService {
   }
 
   async setMembership(scope: BrandActorScope, profileId: string, input: BrandProfileMembershipInput) {
-    await assertBrandMutationAllowedWithAnalytics(
+    const parsed = brandProfileMembershipSchema.parse(input);
+    if (parsed.kind === "font" && parsed.remove) assertBrandManageAllowed(scope);
+    else await assertBrandMutationAllowedWithAnalytics(
       scope,
       input.kind === "font" ? "brand.customFonts" : "brand.profiles",
       input.kind === "font" ? "font" : "profile",
     );
-    const parsed = brandProfileMembershipSchema.parse(input);
     const prisma = this.requirePrisma();
     await prisma.$transaction(async (tx) => {
       const profile = await tx.brandProfile.findFirst({ where: { id: profileId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } });
@@ -558,9 +584,13 @@ export class BrandProfileService {
           data: { brandSavedAt: new Date() },
         });
       } else if (parsed.kind === "font") {
-        const resource = await tx.brandFont.findFirst({ where: { id: parsed.resourceId, ...owner, deletedAt: null }, select: { id: true } });
-        if (!resource) throw new BrandProfileMembershipError();
-        await tx.brandProfileFont.upsert({ where: { profileId_role: { profileId, role: parsed.role } }, create: { profileId, fontId: resource.id, role: parsed.role, position: parsed.position }, update: { fontId: resource.id, position: parsed.position } });
+        if (parsed.remove) {
+          await tx.brandProfileFont.deleteMany({ where: { profileId, fontId: parsed.resourceId, role: parsed.role } });
+        } else {
+          const resource = await tx.brandFont.findFirst({ where: { id: parsed.resourceId, ...owner, deletedAt: null }, select: { id: true } });
+          if (!resource) throw new BrandProfileMembershipError();
+          await tx.brandProfileFont.upsert({ where: { profileId_role: { profileId, role: parsed.role } }, create: { profileId, fontId: resource.id, role: parsed.role, position: parsed.position }, update: { fontId: resource.id, position: parsed.position } });
+        }
       } else {
         const resource = await tx.audioAsset.findFirst({ where: { id: parsed.resourceId, deletedAt: null, ...audioMembershipOwnerWhere(scope) }, select: { id: true } });
         if (!resource) throw new BrandProfileMembershipError();

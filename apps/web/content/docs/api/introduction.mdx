@@ -56,7 +56,7 @@ The API needs an active Workspace on the Pro or Business plan. Other plans get `
 
 Importing and uploading use the Workspace's credits, exactly as in the app. `GET /workspace` returns `usedCredits`, `reservedCredits`, `remainingCredits` and `limitCredits` for this UTC month, `periodStart` and `renewsAt`, the videos in flight, and the per-video length limit. New imports are refused with `429 workspace_processing_capacity_reached` while the plan's number of videos is already importing or processing; retry after the `Retry-After` delay.
 
-- One credit is one started minute of source video, counted per video. Narriflow measures the video's length to the nearest second, so a 1-second video uses 1 credit, 60 seconds uses 1, and 61 seconds uses 2. The whole video counts, even when you process only part of it.
+- One credit is one started minute of source video, counted per video from its measured length: 1 second uses 1 credit, 60 seconds uses 1, and 60.01 seconds uses 2. The whole video counts, even when you process only part of it. The per-video length limit also uses the measured length, so a video even a fraction of a second over the limit is refused.
 - Credits are reserved when Narriflow accepts the video and settled from its real length before transcription. A video that never starts processing gives its credits back.
 - Credits renew at 00:00 UTC on the first of each month (`renewsAt`). Unused credits don't roll over.
 - Retrying or regenerating the same Project is free. Importing the same video again as a new Project uses credits again.

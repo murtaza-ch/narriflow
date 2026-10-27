@@ -672,7 +672,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ status: "active", ...schedule });
     });
 
-    test("Recipe and rule saves are refused when the Brand Profile can't be applied, default or chosen", async () => {
+    test("Recipe and rule saves refuse a chosen Brand Profile the plan can't apply, and skip an inapplicable default", async () => {
       const f = await businessFixture("save-time");
       const owner = f.brandScope(f.owner.id, "owner");
       const profile = await brandProfileService.create(owner, { name: "Plan bound", slug: "plan-bound" });
@@ -687,8 +687,9 @@ describeDb("Autopilot database concurrency and recovery", () => {
 
       await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
       const brandRefusal = { code: "plan_feature_required", details: { feature: "brand.profiles" } };
-      // Like link intake, an inapplicable default refuses the save instead of storing null.
-      await expect(saveRecipe(f, {}, "Default")).rejects.toMatchObject(brandRefusal);
+      // Like link intake, a remembered default the plan can no longer apply means "no profile",
+      // so the save goes through unbranded; naming the profile is still refused.
+      expect((await saveRecipe(f, {}, "Default")).brandProfileId).toBeNull();
       await expect(saveRecipe(f, { brandProfileId: profile.id }, "Chosen")).rejects.toMatchObject(brandRefusal);
       await expect(recipeService.update(scope, unbranded.id, { expectedRevision: 1, brandProfileId: profile.id })).rejects.toMatchObject(brandRefusal);
       // A rule can't be created on, or moved to, a Recipe its saver couldn't have saved.

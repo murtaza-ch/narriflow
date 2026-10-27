@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
-import { buildGenerationContentPack, DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
+import { buildGenerationContentPack, brandTemplateInputSchema, DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import { Pool } from "pg";
 import {
   BrandProfileConflictError,
@@ -21,7 +22,7 @@ import {
 } from "./brand-ownership";
 import { PlanRequirementError } from "./plan-features";
 import { brandTemplateService } from "./brand-template.service";
-import { brandFontService } from "./brand-font.service";
+import { BrandFontService, brandFontService } from "./brand-font.service";
 import { projectService } from "./project.service";
 import { createProductionReviewApprovalGate } from "./review-approval-gate.prisma";
 import { sceneTemplateService } from "./scene-template.service";
@@ -168,6 +169,25 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect((await assistantIntake()).project.id).toBe(first.project.id);
     await expect(projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
       { url: "https://www.youtube.com/watch?v=brand-foreign-db-test", commitToken: randomUUID(), brandProfileId: other.id })).rejects.toBeInstanceOf(BrandProfileNotFoundError);
+  });
+
+  test("a remembered default never blocks intake after a downgrade removes Brand Profiles", async () => {
+    const f = await workspaceFixture("default-after-downgrade", true);
+    const profile = await brandProfileService.create(f.scope, { name: "Kept", slug: "kept" });
+    await brandProfileService.setDefault(f.scope, profile.id);
+    await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
+    const free = { ...f.scope, pricingTier: "free" };
+    // Brand kit still shows the remembered default; intake treats it as "no profile".
+    expect(await brandProfileService.getDefaultId(free)).toBe(profile.id);
+    expect(await brandProfileService.getApplicableDefaultId(free)).toBeNull();
+    const key = randomUUID();
+    const intake = await projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
+      { url: "https://www.youtube.com/watch?v=brand-default-after-downgrade", commitToken: key },
+      { generationContext: { contentPack: buildGenerationContentPack(), languageCode: null }, mutation: { clientIdempotencyKey: key, callerId: `oauth:test:${f.user.id}` } });
+    expect((await prisma.project.findUniqueOrThrow({ where: { id: intake.project.id }, select: { brandProfileId: true } })).brandProfileId).toBeNull();
+    // Naming the profile explicitly is still refused by the plan.
+    await expect(projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
+      { url: "https://www.youtube.com/watch?v=brand-explicit-after-downgrade", commitToken: randomUUID(), brandProfileId: profile.id })).rejects.toMatchObject({ code: "plan_feature_required" });
   });
 
   test("RSS imports freeze the Brand Profile like link intake, so its approval rule gates the clips", async () => {
@@ -939,4 +959,118 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await sceneTemplateService.softDelete(f.scope, profile.id, intro.id, { expectedRevision: intro.revision });
     expect(await sceneTemplateService.list(f.scope, profile.id)).toEqual([]);
   });
+
+  test("a downgraded Workspace can clear a default Scene but not edit Scenes", async () => {
+    let f = await workspaceFixture("clear-default-scene", true);
+    f = await setTier(f, "business");
+    const profile = await brandProfileService.create(f.scope, { name: "Defaults", slug: "defaults" });
+    const definition = {
+      schemaVersion: 1,
+      durationSec: 2,
+      content: { kind: "color", color: "#1D4ED8" },
+      motion: { entrance: "none", exit: "none", durationSec: 0.5 },
+    };
+    const intro = await sceneTemplateService.create(f.scope, profile.id, { name: "Intro", role: "intro", definition, makeDefault: true });
+    expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).defaultIntroSceneTemplateId).toBe(intro.id);
+    f = await setTier(f, "free");
+    await expect(sceneTemplateService.update(f.scope, profile.id, intro.id, { expectedRevision: intro.revision, name: "Renamed" }))
+      .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.scenes" } });
+    await expect(sceneTemplateService.update(f.scope, profile.id, intro.id, { expectedRevision: intro.revision, name: "Renamed", makeDefault: false }))
+      .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.scenes" } });
+    await expect(sceneTemplateService.update({ ...f.scope, role: "viewer" }, profile.id, intro.id, { expectedRevision: intro.revision, makeDefault: false }))
+      .rejects.toMatchObject({ code: "brand_forbidden" });
+    await sceneTemplateService.update(f.scope, profile.id, intro.id, { expectedRevision: intro.revision, makeDefault: false });
+    expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).defaultIntroSceneTemplateId).toBeNull();
+  });
+
+  test("a downgraded Workspace can clear a profile's logo and default template but not change its identity", async () => {
+    let f = await workspaceFixture("clear-profile-logo", true);
+    f = await setTier(f, "pro");
+    const profile = await brandProfileService.create(f.scope, { name: "Logo", slug: "logo" });
+    const asset = await prisma.visualAsset.create({ data: {
+      ...resolveBrandOwner(f.scope), createdByUserId: f.user.id, title: "Logo", kind: "image", storageKey: `visual-assets/${f.user.id}/${randomUUID()}.png`,
+      contentType: "image/png", sizeBytes: BigInt(1), width: 1, height: 1, fingerprint: randomUUID(),
+    } });
+    const identity = { primaryColor: "#FFFFFF", secondaryColor: "#111522", accentColor: null, primaryLogoAssetId: asset.id, alternateLogoAssetId: null };
+    const withLogo = await brandProfileService.update(f.scope, profile.id, { revision: profile.revision, identity });
+    f = await setTier(f, "free");
+    await expect(brandProfileService.update(f.scope, profile.id, { revision: withLogo.revision, identity: { ...identity, primaryColor: "#000000" } }))
+      .rejects.toMatchObject({ code: "plan_feature_required" });
+    await expect(brandProfileService.update(f.scope, profile.id, { revision: withLogo.revision, identity: { ...identity, primaryLogoAssetId: null, alternateLogoAssetId: asset.id } }))
+      .rejects.toMatchObject({ code: "plan_feature_required" });
+    await expect(brandProfileService.update(f.scope, profile.id, { revision: withLogo.revision, name: "Renamed" }))
+      .rejects.toMatchObject({ code: "plan_feature_required" });
+    await expect(brandProfileService.update({ ...f.scope, role: "viewer" }, profile.id, { revision: withLogo.revision, defaultTemplateId: null }))
+      .rejects.toMatchObject({ code: "brand_forbidden" });
+    await brandProfileService.update(f.scope, profile.id, { revision: withLogo.revision, identity: { ...identity, primaryLogoAssetId: null }, defaultTemplateId: null });
+    const stored = await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } });
+    expect(stored.defaultTemplateId).toBeNull();
+    expect((stored.visualIdentity as { primaryLogoAssetId: string | null }).primaryLogoAssetId).toBeNull();
+    expect(await prisma.brandProfileAsset.count({ where: { profileId: profile.id, role: "logo" } })).toBe(0);
+  });
+
+  test("renaming a profile keeps its approval rule", async () => {
+    let f = await workspaceFixture("keep-approval-rule", true);
+    f = await setTier(f, "business");
+    const profile = await brandProfileService.create(f.scope, { name: "Governed", slug: "governed", approvalRule: "approval_required" });
+    await brandProfileService.update(f.scope, profile.id, { revision: profile.revision, name: "Governed renamed" });
+    expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).approvalRule).toBe("approval_required");
+  });
+  test("font uploads verify bytes and ownership; deleted uploads remain available to saved clips", async () => {
+    const f = await workspaceFixture("custom-font", true);
+    const other = await workspaceFixture("other-font-owner", true);
+    const bytes = readFileSync(new URL("../../caption-fonts/fonts/Anton-Regular.ttf", import.meta.url));
+    const fingerprint = createHash("sha256").update(bytes).digest("hex");
+    let unavailable = false;
+    let uploads = 0;
+    const service = new BrandFontService({
+      isR2Configured: () => true,
+      headObject: async () => ({ contentType: "font/ttf", sizeBytes: bytes.length, etag: null, metadata: {} }),
+      readObjectBytes: async () => { if (unavailable) throw new Error("missing"); return bytes; },
+      presignDownloadUrl: async () => "https://storage.example.test/font.ttf",
+      presignSingleUploadUrl: async () => { uploads++; return "https://storage.example.test/upload"; },
+    });
+    const metadata = { contentType: "font/ttf" as const, sizeBytes: bytes.length, licenseConfirmed: true as const };
+    await expect(service.presignUpload({ ...f.scope, pricingTier: "free" }, metadata)).rejects.toMatchObject({ code: "plan_feature_required" });
+    await expect(service.presignUpload({ ...f.scope, role: "viewer" }, metadata)).rejects.toMatchObject({ code: "brand_forbidden" });
+    expect(uploads).toBe(0);
+    const presigned = await service.presignUpload(f.scope, metadata);
+    expect(presigned.key).toStartWith(`brand-fonts/${f.user.id}/`);
+    const input = { ...metadata, key: presigned.key, fingerprint };
+    await expect(service.finalizeUpload(other.scope, input)).rejects.toMatchObject({ code: "brand_font_key_forbidden" });
+    await expect(service.finalizeUpload(f.scope, { ...input, fingerprint: "f".repeat(64) })).rejects.toMatchObject({ code: "brand_font_fingerprint_mismatch" });
+    const font = await service.finalizeUpload(f.scope, input);
+    expect(font.family).toBe("Anton");
+    expect(font.face?.assName).toBe("Anton Regular");
+    expect(font.face?.ascent).toBeCloseTo(1.4043, 4);
+    expect((await service.finalizeUpload(f.scope, input)).replayed).toBe(true);
+    expect((await service.list(f.scope)).map((item) => item.id)).toEqual([font.id]);
+    const ref = { id: font.id, fingerprint };
+    await service.assertSelection(f.scope, ref);
+    await expect(service.assertSelection(other.scope, ref)).rejects.toMatchObject({ code: "brand_font_not_found" });
+    expect(await service.resolveReferences(other.scope, [ref])).toEqual([]);
+    const styleInput = brandTemplateInputSchema.parse({ name: "Custom font style", captionPreset: { ...DEFAULT_CAPTION_PRESET, fontAsset: { kind: "brand_font", ...ref } } });
+    await expect(brandTemplateService.create(other.scope, styleInput)).rejects.toMatchObject({ code: "brand_font_not_found" });
+    const style = await brandTemplateService.create(f.scope, styleInput);
+    expect(style.captionPreset.fontAsset).toEqual({ kind: "brand_font", ...ref });
+    await expect(service.softDelete(f.scope, font.id, {})).rejects.toMatchObject({ code: "brand_font_in_use" });
+    await brandTemplateService.update(f.scope, style.id, { captionPreset: { ...style.captionPreset, fontAsset: null } });
+    const profile = await brandProfileService.create(f.scope, { name: "Typography", slug: "typography" });
+    await prisma.brandProfileFont.create({ data: { profileId: profile.id, fontId: font.id, role: "caption", position: 0 } });
+    await expect(service.softDelete(f.scope, font.id, {})).rejects.toMatchObject({ code: "brand_font_in_use" });
+    await brandProfileService.setMembership({ ...f.scope, pricingTier: "free" }, profile.id, { kind: "font", resourceId: font.id, role: "caption", position: 0, remove: true });
+    expect(await prisma.brandProfileFont.count({ where: { profileId: profile.id } })).toBe(0);
+    await service.softDelete(f.scope, font.id, {});
+    expect(await service.list(f.scope)).toEqual([]);
+    await expect(service.assertSelection(f.scope, ref)).rejects.toMatchObject({ code: "brand_font_not_found" });
+    expect((await service.resolveReferences(f.scope, [ref]))[0]?.accessUrl).toBe("https://storage.example.test/font.ttf");
+    expect(await service.resolveReferences(f.scope, [{ ...ref, fingerprint: "b".repeat(64) }])).toEqual([]);
+    unavailable = true;
+    expect((await service.resolveReferences(f.scope, [ref]))[0]?.accessUrl).toBeNull();
+    unavailable = false;
+    const restored = await service.finalizeUpload(f.scope, input);
+    expect(restored.id).toBe(font.id);
+    expect((await service.list(f.scope)).map((item) => item.id)).toEqual([font.id]);
+  });
+
 });

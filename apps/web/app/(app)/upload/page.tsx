@@ -108,7 +108,7 @@ export default async function UploadPage({
   ] = await Promise.all([
     brandTemplateService.list(appUser),
     brandProfileService.list(brandScope),
-    brandProfileService.getDefaultId(brandScope),
+    brandProfileService.getApplicableDefaultId(brandScope),
     searchParams,
     projectService.getUsageSummary(appUser),
     recipeService.list(appUser),

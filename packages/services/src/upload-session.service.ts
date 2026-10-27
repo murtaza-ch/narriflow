@@ -3,6 +3,7 @@ import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { getProcessingUsage } from "./processing-usage-runtime";
 import {
   isProcessingUsageFailureCode,
+  lockWorkspaceUsage,
   PROCESSING_USAGE_TRANSACTION,
 } from "./processing-usage";
 import { randomUUID } from "node:crypto";
@@ -3188,6 +3189,12 @@ function requiredPrisma() {
   return prisma;
 }
 
+// Bound the late-write allowance by the product's single-PUT cap at a
+// conservative 64 KiB/s, plus the existing maximum-grant/expiry cushion.
+// This is a cleanup policy, not a provider-enforced transfer deadline.
+const SINGLE_PUT_CLEANUP_DELAY_MS = UPLOAD_SOURCE_CLEANUP_DELAY_MS +
+  Math.ceil(MAX_UPLOAD_SIZE_BYTES / (64 * 1024)) * 1_000;
+
 async function admitTerminatedUploadCleanup(tx: Prisma.TransactionClient, session: PrismaUploadSession, now: Date) {
   if (session.transferKind !== "single") return;
   await admitMediaCleanupObligations(tx.mediaCleanupObligation, [{
@@ -3195,7 +3202,7 @@ async function admitTerminatedUploadCleanup(tx: Prisma.TransactionClient, sessio
     cleanupClass: "upload_source",
     projectId: session.preallocatedProjectId,
     objectKey: session.storageKey,
-    notBefore: new Date(now.getTime() + UPLOAD_SOURCE_CLEANUP_DELAY_MS),
+    notBefore: new Date(now.getTime() + SINGLE_PUT_CLEANUP_DELAY_MS),
   }]);
 }
 
@@ -3286,6 +3293,14 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
   async reserve(record, usage) {
     try {
       const row = await requiredPrisma().$transaction(async (tx) => {
+        // Replay durable identity under the same lock as quota admission.
+        // A competing open may have committed while this one waited for the
+        // last slot; its existing session must win before another reservation.
+        await lockWorkspaceUsage(tx, record.workspaceId);
+        const existing = await tx.uploadSession.findUnique({
+          where: { workspaceId_clientIdempotencyKey: { workspaceId: record.workspaceId, clientIdempotencyKey: record.clientIdempotencyKey } },
+        });
+        if (existing) return existing;
         if (usage)
           await getProcessingUsage().reserve(tx, {
             workspaceId: record.workspaceId,
@@ -3331,7 +3346,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         },
         });
       }, PROCESSING_USAGE_TRANSACTION);
-      return { created: true, session: fromPrismaUploadSession(row) };
+      return { created: row.id === record.id, session: fromPrismaUploadSession(row) };
     } catch (error) {
       if (
         !(error instanceof Prisma.PrismaClientKnownRequestError) ||
@@ -4306,7 +4321,7 @@ const productionUploadSessionModule = createUploadSessionModule({
   admission: {
     async resolveBrand(input) {
       const actor = await workspaceService.requireActor(input.actorUserId, input.workspaceId, "content.view");
-      const profileId = input.brandProfileId ?? (input.useDefaultBrandProfile ? await brandProfileService.getDefaultId(actor) : null);
+      const profileId = input.brandProfileId ?? (input.useDefaultBrandProfile ? await brandProfileService.getApplicableDefaultId(actor) : null);
       if (profileId) {
         const resolved = await brandProfileService.resolveForProject(actor, {
           profileId,

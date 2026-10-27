@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CreditsMenu, creditsPresentation } from "./credits-menu";
+import type { PricingTier } from "@narriflow/validators";
+import { CreditsMenu, creditsPresentation, creditsUpgradeTier } from "./credits-menu";
 
 describe("creditsPresentation", () => {
   test("is quiet at 0% and states nothing extra", () => {
@@ -38,8 +39,36 @@ describe("creditsPresentation", () => {
   });
 });
 
+describe("creditsUpgradeTier", () => {
+  test("offers the next plan when it has room", () => {
+    expect(creditsUpgradeTier("free", 10)).toBe("creator");
+    expect(creditsUpgradeTier("creator", 250)).toBe("pro");
+    expect(creditsUpgradeTier("pro", 850)).toBe("business");
+  });
+
+  test("skips plans the spent credits would leave with none", () => {
+    // Free after a downgrade from Pro: Creator (300) and Pro (900) are already used up.
+    expect(creditsUpgradeTier("free", 900)).toBe("business");
+    expect(creditsUpgradeTier("free", 899)).toBe("pro");
+    expect(creditsUpgradeTier("creator", 300)).toBe("pro");
+  });
+
+  test("offers nothing when no higher plan has room, or on the top plan", () => {
+    expect(creditsUpgradeTier("free", 1900)).toBeNull();
+    expect(creditsUpgradeTier("pro", 1800)).toBeNull();
+    expect(creditsUpgradeTier("business", 0)).toBeNull();
+  });
+});
+
 describe("CreditsMenu trigger", () => {
-  function render(props: { remainingCredits: number; usedCredits: number; limitCredits: number }) {
+  function render(props: {
+    remainingCredits: number;
+    usedCredits: number;
+    limitCredits: number;
+    reservedCredits?: number;
+    tier?: PricingTier;
+    canManageBilling?: boolean;
+  }) {
     return renderToStaticMarkup(
       <ChakraProvider value={system}>
         <CreditsMenu
@@ -52,6 +81,27 @@ describe("CreditsMenu trigger", () => {
       </ChakraProvider>,
     );
   }
+
+  test("offers the cheapest plan that still has credits after a downgrade", () => {
+    const markup = render({ remainingCredits: 0, usedCredits: 900, limitCredits: 60 });
+    expect(markup).toContain("/settings/billing?plan=business#plans");
+  });
+
+  test("counts reserved credits when picking the plan", () => {
+    const markup = render({ remainingCredits: 0, usedCredits: 500, reservedCredits: 400, limitCredits: 60 });
+    expect(markup).toContain("/settings/billing?plan=business#plans");
+  });
+
+  test("offers no upgrade when no higher plan has room", () => {
+    const markup = render({ remainingCredits: 0, usedCredits: 1900, limitCredits: 60 });
+    expect(markup).not.toContain("plan=");
+    expect(markup).not.toContain("Upgrade");
+  });
+
+  test("offers no upgrade to someone who cannot manage billing", () => {
+    const markup = render({ remainingCredits: 50, usedCredits: 10, limitCredits: 60, canManageBilling: false });
+    expect(markup).not.toContain("plan=");
+  });
 
   test("announces a depleted balance in text, not only color", () => {
     const markup = render({ remainingCredits: 0, usedCredits: 900, limitCredits: 300 });

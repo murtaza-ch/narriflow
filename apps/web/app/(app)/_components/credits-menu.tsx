@@ -3,14 +3,21 @@
 import Link from "next/link";
 import { Box, Flex, Popover, Portal, Stack, Text } from "@chakra-ui/react";
 import { CircleAlert, Sparkles } from "lucide-react";
-import { PLAN_CATALOG, PRICING_TIER_ORDER, type PricingTier } from "@narriflow/validators";
+import { PLAN_CATALOG, PRICING_TIER_ORDER, lowestTier, type PricingTier } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { UpgradeButton } from "./upgrade";
 import { usagePalette } from "./usage-palette";
 
-/** The next plan up, or `null` on the top plan. */
-function nextTier(tier: PricingTier): PricingTier | null {
-  return PRICING_TIER_ORDER[PRICING_TIER_ORDER.indexOf(tier) + 1] ?? null;
+/**
+ * The cheapest plan above `tier` whose monthly allowance still has room after
+ * `spentCredits` (settled plus reserved, which can exceed the current limit
+ * after a downgrade), or `null` when no plan does.
+ */
+export function creditsUpgradeTier(tier: PricingTier, spentCredits: number): PricingTier | null {
+  const current = PRICING_TIER_ORDER.indexOf(tier);
+  return lowestTier(
+    (plan) => PRICING_TIER_ORDER.indexOf(plan.tier) > current && plan.limits.monthlyCredits > spentCredits,
+  );
 }
 
 // An explicit locale so the server render and the browser agree.
@@ -43,7 +50,8 @@ export function creditsPresentation({
 /**
  * Header credit balance (Vizard's pattern): the balance opens a card with the
  * plan, the refresh date and a meter, plus one action: a gold Upgrade for an
- * owner below the top plan, otherwise a link to billing or usage.
+ * owner when a higher plan has room for this month's credits, otherwise a link
+ * to billing or usage.
  */
 export function CreditsMenu({
   remainingCredits,
@@ -62,7 +70,7 @@ export function CreditsMenu({
   tier: PricingTier;
   canManageBilling: boolean;
 }) {
-  const upgradeTier = canManageBilling ? nextTier(tier) : null;
+  const upgradeTier = canManageBilling ? creditsUpgradeTier(tier, usedCredits + reservedCredits) : null;
   const { pct, palette, status, usage } = creditsPresentation({ usedCredits, reservedCredits, limitCredits });
   const refreshesOn = new Intl.DateTimeFormat("en-US", {
     month: "short",

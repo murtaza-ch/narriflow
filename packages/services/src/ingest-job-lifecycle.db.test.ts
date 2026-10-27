@@ -23,7 +23,6 @@ import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { autoTriggerIdempotencyKey } from "./generation-sequencing";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { ProcessingUsage } from "./processing-usage";
-import { processingCapacityFromEnv } from "./processing-usage-runtime";
 import { creditDebitSeconds } from "@narriflow/validators";
 
 const url = process.env.WORKFLOW_TEST_DATABASE_URL;
@@ -61,7 +60,6 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
   ): IngestJobLifecycleDependencies["usage"] {
     const real = new ProcessingUsage({
       prisma,
-      capacityLimits: processingCapacityFromEnv({}),
       log: () => {},
     });
     return {

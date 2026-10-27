@@ -3,6 +3,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDriveTokenCipher, ProcessingUsageError } from "@narriflow/services";
+import { creditsForSourceSeconds } from "@narriflow/validators";
 import { WorkerProcessFailure, type WorkerProcessModule } from "../worker-process";
 import {
   classifyYtdlpProviderFailure,
@@ -408,9 +409,9 @@ describe("upload source pinning and usage facts", () => {
     ]);
   });
 
-  test("the source probe measured at ingest is stored with the Project's source", async () => {
+  test.each([[30.03, 31, 1], [60.01, 61, 2]])("the exact %s-second probe is stored with a duration that preserves its credits", async (durationSec, storedSeconds, credits) => {
     const sourceProbe = {
-      durationSec: 30.03,
+      durationSec,
       video: { width: 1920, height: 1080, frameRate: { numerator: 30000, denominator: 1001 }, startTimecode: null },
       audio: { sampleRate: 48_000, channels: 2 },
     };
@@ -418,7 +419,7 @@ describe("upload source pinning and usage facts", () => {
     await processIngestJob(uploadJob, {
       workerProcess: {
         ...processModuleWithExecute(async () => { throw new Error("no subprocess expected"); }),
-        inspectMedia: async () => ({ durationSec: 30.03, width: 1920, height: 1080, hasVideo: true, hasAudio: true, hasVisualStream: true, fps: 30000 / 1001, sourceProbe }),
+        inspectMedia: async () => ({ durationSec, width: 1920, height: 1080, hasVideo: true, hasAudio: true, hasVisualStream: true, fps: 30000 / 1001, sourceProbe }),
       },
       lifecycle: {
         progress: async () => {},
@@ -430,7 +431,8 @@ describe("upload source pinning and usage facts", () => {
       putSource: async () => {},
       sourceStorage: { exists: async () => true, copyIfMatch: async () => "copied" },
     });
-    expect(completed).toEqual([expect.objectContaining({ sourceDurationSeconds: 30, sourceProbe })]);
+    expect(completed).toEqual([expect.objectContaining({ sourceDurationSeconds: storedSeconds, sourceProbe })]);
+    expect(creditsForSourceSeconds(completed[0]!.sourceDurationSeconds as number)).toBe(credits);
   });
 
   test("a link whose metadata exceeds the allowance is refused before download with its typed code", async () => {

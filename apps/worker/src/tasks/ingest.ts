@@ -486,8 +486,11 @@ async function probeSource(
 }
 
 function normalizeDuration(value: unknown): number | null {
+  // Project.sourceDurationSeconds is an integer. Ceiling preserves both
+  // started-minute credit debits and the catalog's whole-second source caps;
+  // sourceProbe keeps the exact duration for media timing.
   return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.max(1, Math.round(value))
+    ? Math.ceil(value)
     : null;
 }
 
