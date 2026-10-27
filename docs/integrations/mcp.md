@@ -143,8 +143,21 @@ PKCE S256, retain hosted user consent, and create all nine application scopes.
 Set read defaults and configure each intended application's scope ceiling.
 Advertising scopes alone does not grant them. Clients must send the exact
 canonical resource matching `NEXT_PUBLIC_APP_URL` plus `/mcp`. Online
-verification on every request enforces audience, expiry and revocation.
+verification on every request enforces audience, expiry and Clerk's reported
+revocation state. Immediate revocation requires opaque access tokens; Clerk's
+JWT access tokens cannot be immediately revoked by calling that verifier.
 See [Clerk's OAuth contract](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth).
+
+OAuth upload-open and browser publication-confirmation continuations carry an
+AES-256-GCM encrypted copy of the originating access token inside their signed
+state. Admission decrypts it only on the server and calls the same online
+verifier again, checks the acting user and OAuth client, and intersects the
+current scopes with the signed grant. Revocation, expiration, removed scopes,
+or an unavailable verifier refuse the write. The continuation expires at the
+earlier of ten minutes and the original token's expiry. API-key continuations
+recheck the current key. Already-open Upload Sessions continue under their
+signed-in owner's current authority. Continuation version 3 replaces version 2;
+prepare a new request if an earlier handoff is rejected.
 
 Discovery documents are `/.well-known/oauth-protected-resource/mcp`, its root
 alias, and the authorization-server mirror. The integration page verifies

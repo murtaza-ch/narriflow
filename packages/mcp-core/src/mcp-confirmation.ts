@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { ExpectedDomainFailureError } from "@narriflow/services";
 import { mcpPrepareSocialPostSchema, mcpUploadVideoSchema } from "@narriflow/validators";
 import * as z from "zod/v4";
@@ -12,8 +12,8 @@ type ClockAndSecret = { secret?: string; now?: number; allowExpired?: boolean };
 /** Signed continuations carry the originating credential's kind and the
  * application scopes it held when signing. Admission requires the needed
  * scope from this signed set; nothing reconstructs or widens it. */
-const signedGrant = { principalKind: z.enum(["oauth", "api_key"]), scopes: z.array(z.string().min(1).max(128)).max(64) };
-const confirmationSchema = z.strictObject({ version: z.literal(2), stage: z.enum(["prepared", "approved"]), callerId: z.string().max(512), actorUserId: z.string().uuid(), workspaceId: z.string().uuid(), ...signedGrant, tool: z.literal("narriflow_schedule_social_post"), digest: z.string().regex(/^[a-f0-9]{64}$/), expiresAtMs: z.number().int(), intent: mcpPrepareSocialPostSchema });
+const signedGrant = { principalKind: z.enum(["oauth", "api_key"]), scopes: z.array(z.string().min(1).max(128)).max(64), oauthToken: z.string().min(40).max(24_000).optional() };
+const confirmationSchema = z.strictObject({ version: z.literal(3), stage: z.enum(["prepared", "approved"]), callerId: z.string().max(512), actorUserId: z.string().uuid(), workspaceId: z.string().uuid(), ...signedGrant, tool: z.literal("narriflow_schedule_social_post"), digest: z.string().regex(/^[a-f0-9]{64}$/), expiresAtMs: z.number().int(), intent: mcpPrepareSocialPostSchema });
 type ConfirmationState = z.infer<typeof confirmationSchema>;
 export const MCP_CONTINUATION_TTL_MS = 600_000;
 /** OAuth continuations end no later than the access token that created them. */
@@ -21,11 +21,36 @@ export function mcpContinuationExpiresAtMs(principal: NarriflowMcpPrincipal, now
   const ttl = now + MCP_CONTINUATION_TTL_MS;
   return principal.kind === "oauth" && principal.expiresAt !== undefined ? Math.min(ttl, principal.expiresAt * 1000) : ttl;
 }
-function grant(principal: NarriflowMcpPrincipal) {
-  return { principalKind: principal.kind, scopes: [...principal.scopes] };
+function tokenEncryptionKey(options: ClockAndSecret) {
+  return createHash("sha256").update("narriflow.mcp.oauth-token.v1:").update(secret(options)).digest();
 }
-function signedKindMatchesCaller(state: { principalKind: "oauth" | "api_key"; callerId: string }) {
-  return state.callerId.startsWith(state.principalKind === "api_key" ? "api_key:" : "oauth:");
+function grant(principal: NarriflowMcpPrincipal, options: ClockAndSecret) {
+  if (principal.kind === "api_key") return { principalKind: principal.kind, scopes: [...principal.scopes] };
+  if (!principal.oauthAccessToken || Buffer.byteLength(principal.oauthAccessToken) > 16_384) fail("mcp_confirmation_unavailable", "unavailable", "The originating OAuth credential is unavailable. Reconnect and prepare the request again.");
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", tokenEncryptionKey(options), nonce);
+  cipher.setAAD(Buffer.from(mcpCallerId(principal)));
+  const encrypted = Buffer.concat([cipher.update(principal.oauthAccessToken, "utf8"), cipher.final()]);
+  return { principalKind: principal.kind, scopes: [...principal.scopes], oauthToken: Buffer.concat([nonce, encrypted, cipher.getAuthTag()]).toString("base64url") };
+}
+/** Call only after verifying the continuation signature and browser actor.
+ * Decrypted bearer bytes stay server-side and go only to the online verifier. */
+export function openMcpContinuationAccessToken(state: { callerId: string; oauthToken?: string }, options: ClockAndSecret = {}) {
+  const key = tokenEncryptionKey(options);
+  try {
+    const data = Buffer.from(state.oauthToken ?? "", "base64url");
+    const decipher = createDecipheriv("aes-256-gcm", key, data.subarray(0, 12));
+    decipher.setAAD(Buffer.from(state.callerId));
+    decipher.setAuthTag(data.subarray(-16));
+    const token = Buffer.concat([decipher.update(data.subarray(12, -16)), decipher.final()]).toString("utf8");
+    if (!token) throw new Error("Missing OAuth credential");
+    return token;
+  } catch {
+    fail("mcp_continuation_revoked", "forbidden", "This connection cannot be verified. Prepare the request again using an active connection.");
+  }
+}
+function signedKindMatchesCaller(state: { principalKind: "oauth" | "api_key"; callerId: string; oauthToken?: string }) {
+  return state.callerId.startsWith(state.principalKind === "api_key" ? "api_key:" : "oauth:") && (state.principalKind === "oauth" ? !!state.oauthToken : state.oauthToken === undefined);
 }
 function fail(code: string, kind: "invalid" | "forbidden" | "conflict" | "unavailable", message: string): never {
   throw new ExpectedDomainFailureError({ code, kind, message });
@@ -68,7 +93,7 @@ export function mcpPreparationDigest(input: z.input<typeof mcpPrepareSocialPostS
 export function createMcpConfirmation(principal: NarriflowMcpPrincipal, input: z.input<typeof mcpPrepareSocialPostSchema>, options: ClockAndSecret & { expiresAtMs?: number } = {}) {
   const intent = mcpPrepareSocialPostSchema.parse(input);
   const expiresAtMs = Math.min(options.expiresAtMs ?? Number.POSITIVE_INFINITY, mcpContinuationExpiresAtMs(principal, options.now ?? Date.now()));
-  const state: ConfirmationState = { version: 2, stage: "prepared", callerId: mcpCallerId(principal), actorUserId: principal.userId, workspaceId: intent.workspaceId, ...grant(principal), tool: "narriflow_schedule_social_post", digest: digest(intent), expiresAtMs, intent };
+  const state: ConfirmationState = { version: 3, stage: "prepared", callerId: mcpCallerId(principal), actorUserId: principal.userId, workspaceId: intent.workspaceId, ...grant(principal, options), tool: "narriflow_schedule_social_post", digest: digest(intent), expiresAtMs, intent };
   return { token: seal(state, options), expiresAt: new Date(expiresAtMs).toISOString() };
 }
 export function verifyMcpPreparation(token: string, options: ClockAndSecret & { principal?: NarriflowMcpPrincipal; actorUserId?: string; workspaceId?: string; clientIdempotencyKey?: string } = {}) {
@@ -90,12 +115,12 @@ export function verifyMcpConfirmation(token: string, receipt: string, principal:
   return state;
 }
 
-const uploadHandoffSchema = z.strictObject({ version: z.literal(2), actorUserId: z.string().uuid(), callerId: z.string().max(512), workspaceId: z.string().uuid(), ...signedGrant, tool: z.literal("narriflow_upload_video"), expiresAtMs: z.number().int(), intent: mcpUploadVideoSchema });
+const uploadHandoffSchema = z.strictObject({ version: z.literal(3), actorUserId: z.string().uuid(), callerId: z.string().max(512), workspaceId: z.string().uuid(), ...signedGrant, tool: z.literal("narriflow_upload_video"), expiresAtMs: z.number().int(), intent: mcpUploadVideoSchema });
 export type McpUploadHandoffState = z.infer<typeof uploadHandoffSchema>;
 export function createMcpUploadHandoff(principal: NarriflowMcpPrincipal, input: z.input<typeof mcpUploadVideoSchema>, options: ClockAndSecret = {}) {
   const intent = mcpUploadVideoSchema.parse(input);
   const expiresAtMs = mcpContinuationExpiresAtMs(principal, options.now ?? Date.now());
-  const state = { version: 2, actorUserId: principal.userId, callerId: mcpCallerId(principal), workspaceId: intent.workspaceId, ...grant(principal), tool: "narriflow_upload_video", expiresAtMs, intent };
+  const state = { version: 3, actorUserId: principal.userId, callerId: mcpCallerId(principal), workspaceId: intent.workspaceId, ...grant(principal, options), tool: "narriflow_upload_video", expiresAtMs, intent };
   const payload = Buffer.from(JSON.stringify(state)).toString("base64url");
   const mac = createHmac("sha256", secret(options)).update(`narriflow.mcp.upload.v1:${payload}`).digest("base64url");
   return { token: `${payload}.${mac}`, expiresAt: new Date(expiresAtMs).toISOString() };

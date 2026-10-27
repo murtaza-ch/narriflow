@@ -17,7 +17,7 @@ const KEY = "00000000-0000-4000-8000-000000000008";
 const actor: WorkspaceActorContext = { actorUserId: ACTOR, workspaceId: WORKSPACE, workspaceName: "Agency", workspaceOwnerUserId: ACTOR,
   role: "owner", status: "active", pricingTier: "business", isPersonalWorkspace: false };
 const allScopes = ["projects:read", "exports:read", "exports:write", "usage:read", "autopilot:read", "autopilot:write", "publishing:read", "publishing:write", "processing:write"];
-const oauth = (scopes = allScopes): NarriflowMcpPrincipal => ({ kind: "oauth", userId: ACTOR, clientId: "assistant", scopes });
+const oauth = (scopes = allScopes): NarriflowMcpPrincipal => ({ kind: "oauth", userId: ACTOR, clientId: "assistant", scopes, oauthAccessToken: "test-oauth-access-token" });
 
 const restores: Array<{ mockRestore(): void }> = [];
 const clients: Client[] = [];

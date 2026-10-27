@@ -40,7 +40,9 @@ export function principalFromMcpAuth(auth: AuthInfo | undefined): NarriflowMcpPr
   return value as NarriflowMcpPrincipal;
 }
 
-/** Online verification intentionally has no token cache: revocation takes effect on the next request. */
+/** No token cache: every request observes Clerk's current verification result.
+ * Immediate OAuth revocation requires Clerk to issue revocable opaque tokens;
+ * online verification cannot make its JWT access tokens revocable. */
 export function createNarriflowTokenVerifier(deps: McpVerifierDependencies): OAuthTokenVerifier {
   return {
     async verifyAccessToken(token) {
@@ -83,6 +85,7 @@ export function createNarriflowTokenVerifier(deps: McpVerifierDependencies): OAu
       try { user = await deps.findUser(claims.subject); } catch { throw new McpAuthUnavailableError(); }
       if (!user) throw new OAuthError(OAuthErrorCode.InvalidToken, "Sign in to Narriflow once before connecting an MCP client");
       const principal: NarriflowMcpPrincipal = { kind: "oauth", userId: user.id, clientId: claims.client_id, scopes: claims.scopes, expiresAt: claims.expiration };
+      Object.defineProperty(principal, "oauthAccessToken", { value: token });
       return { token, clientId: claims.client_id, scopes: claims.scopes, expiresAt: claims.expiration,
         extra: { narriflowPrincipal: principal } };
     },

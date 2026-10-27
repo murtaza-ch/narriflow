@@ -13,7 +13,11 @@ import {
 } from "@narriflow/services";
 import type { WorkspaceApiKeyScope } from "@narriflow/validators";
 
-export type NarriflowMcpPrincipal = IntegrationPrincipal;
+export type NarriflowMcpPrincipal = IntegrationPrincipal & {
+  /** Server-only evidence for continuation revalidation. The verifier makes
+   * this non-enumerable; only encrypted evidence enters signed state. */
+  oauthAccessToken?: string;
+};
 
 export const MCP_WORKSPACE_ACCESS_MESSAGE = INTEGRATION_ACCESS_MESSAGES.mcp;
 

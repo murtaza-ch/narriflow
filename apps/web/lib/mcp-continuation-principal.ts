@@ -1,8 +1,10 @@
-import type { NarriflowMcpPrincipal } from "@narriflow/mcp-core";
+import { openMcpContinuationAccessToken, type NarriflowMcpPrincipal } from "@narriflow/mcp-core";
+import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
+import { McpAuthUnavailableError, principalFromMcpAuth } from "@narriflow/mcp-core/auth";
 import { getPrismaClient } from "@narriflow/db/client";
 import { ExpectedDomainFailureError } from "@narriflow/services";
 
-type SignedContinuation = { callerId: string; actorUserId: string; workspaceId: string; principalKind: "oauth" | "api_key"; scopes: string[] };
+type SignedContinuation = { callerId: string; actorUserId: string; workspaceId: string; principalKind: "oauth" | "api_key"; scopes: string[]; oauthToken?: string };
 type ContinuationScope = "processing:write" | "publishing:write";
 type ActiveKey = { createdByUserId: string | null; userId: string; scopes: string[] };
 
@@ -24,13 +26,15 @@ function scopeRequired(scope: ContinuationScope): never {
 }
 
 /** Browser identity confirms the signed caller. The signed grant must include
- * the needed scope, and key-backed continuations also honor revocation and the
- * key's current explicit grant. */
+ * the needed scope. Both credential kinds recheck revocation and the current
+ * explicit grant; verification outages refuse admission. */
 export async function admitMcpContinuation(
   state: SignedContinuation,
   requiredScope: ContinuationScope,
   findActiveKey: (keyId: string, workspaceId: string) => Promise<ActiveKey | null> = async (id, workspaceId) =>
     await getPrismaClient()?.apiKey.findFirst({ where: { id, workspaceId, revokedAt: null }, select: { createdByUserId: true, userId: true, scopes: true } }) ?? null,
+  verifyOAuthAccessToken: (token: string) => Promise<NarriflowMcpPrincipal> = async (token) =>
+    principalFromMcpAuth(await (await import("./mcp-auth")).narriflowMcpTokenVerifier.verifyAccessToken(token)),
 ) {
   const principal = continuationPrincipal(state);
   if (!principal.scopes.includes(requiredScope)) scopeRequired(requiredScope);
@@ -39,6 +43,21 @@ export async function admitMcpContinuation(
     if (!key || (key.createdByUserId ?? key.userId) !== principal.userId) throw new ExpectedDomainFailureError({ code: "mcp_continuation_revoked", kind: "forbidden", message: "This connection was revoked. Prepare the request again using an active connection." });
     if (!key.scopes.includes(requiredScope)) scopeRequired(requiredScope);
     principal.scopes = principal.scopes.filter((scope) => key.scopes.includes(scope));
+  } else {
+    const token = openMcpContinuationAccessToken(state);
+    let current: NarriflowMcpPrincipal;
+    try {
+      current = await verifyOAuthAccessToken(token);
+    } catch (error) {
+      if (error instanceof McpAuthUnavailableError) throw new ExpectedDomainFailureError({ code: "mcp_continuation_unavailable", kind: "unavailable", message: "Credential verification is temporarily unavailable. Retry this request.", retryAfterSeconds: error.retryAfterSeconds });
+      if (!(error instanceof OAuthError) || error.code !== OAuthErrorCode.InvalidToken) throw error;
+      throw new ExpectedDomainFailureError({ code: "mcp_continuation_revoked", kind: "forbidden", message: "This connection was revoked or expired. Prepare the request again using an active connection." });
+    }
+    if (current.kind !== "oauth" || current.userId !== principal.userId || current.clientId !== principal.clientId) {
+      throw new ExpectedDomainFailureError({ code: "mcp_continuation_revoked", kind: "forbidden", message: "This connection no longer matches the request. Prepare the request again using an active connection." });
+    }
+    if (!current.scopes.includes(requiredScope)) scopeRequired(requiredScope);
+    principal.scopes = principal.scopes.filter((scope) => current.scopes.includes(scope));
   }
   return principal;
 }

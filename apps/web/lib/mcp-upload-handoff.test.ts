@@ -10,7 +10,7 @@ const workspaceId = "00000000-0000-4000-8000-000000000002";
 const key = "00000000-0000-4000-8000-000000000003";
 const sessionId = "00000000-0000-4000-8000-000000000004";
 const brandProfileId = "00000000-0000-4000-8000-000000000005";
-const assistant: NarriflowMcpPrincipal = { kind: "oauth", userId, clientId: "assistant", scopes: ["processing:write"] };
+const assistant: NarriflowMcpPrincipal = { kind: "oauth", userId, clientId: "assistant", scopes: ["processing:write"], oauthAccessToken: "test-oauth-access-token" };
 const actor = { actorUserId: userId, workspaceId } as ActorScope;
 
 function harness(now: number, overrides: Partial<McpUploadHandoffDependencies> = {}) {

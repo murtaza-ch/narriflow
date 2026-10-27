@@ -22,6 +22,8 @@ describe("online MCP credential verification", () => {
     const result = await verifier().verifyAccessToken("access-token");
     expect(result.scopes).toEqual(["projects:read"]);
     expect(result.extra?.narriflowPrincipal).toMatchObject({ userId: "app-user", kind: "oauth", expiresAt: 2_000_000_000 });
+    expect((result.extra?.narriflowPrincipal as { oauthAccessToken?: string }).oauthAccessToken).toBe("access-token");
+    expect(JSON.stringify(result.extra)).not.toContain("access-token");
   });
   for (const patch of [
     { aud: undefined }, { aud: ["https://another.example/mcp"] }, { revoked: true },

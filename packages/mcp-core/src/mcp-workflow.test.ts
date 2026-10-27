@@ -9,7 +9,7 @@ import { createMcpConfirmation, acceptMcpConfirmation, verifyMcpPreparation } fr
 const userId = "00000000-0000-4000-8000-000000000001";
 const workspaceId = "00000000-0000-4000-8000-000000000002";
 const projectId = "00000000-0000-4000-8000-000000000003";
-const principal = { kind: "oauth" as const, userId, clientId: "test-client", scopes: ["projects:read"] };
+const principal = { kind: "oauth" as const, userId, clientId: "test-client", scopes: ["projects:read"], oauthAccessToken: "test-oauth-access-token" };
 const clients: Client[] = [];
 const mocks: Array<{ mockRestore(): void }> = [];
 afterEach(async () => { for (const mock of mocks.splice(0)) mock.mockRestore(); await Promise.all(clients.splice(0).map((client) => client.close())); });

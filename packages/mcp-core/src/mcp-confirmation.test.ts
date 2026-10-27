@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { createMcpConfirmation, verifyMcpPreparation, acceptMcpConfirmation, verifyMcpConfirmation, createMcpUploadHandoff, verifyMcpUploadHandoff, MCP_CONTINUATION_TTL_MS } from "./mcp-confirmation";
+import { createMcpConfirmation, verifyMcpPreparation, acceptMcpConfirmation, verifyMcpConfirmation, createMcpUploadHandoff, verifyMcpUploadHandoff, openMcpContinuationAccessToken, MCP_CONTINUATION_TTL_MS } from "./mcp-confirmation";
 
-const principal = { kind: "oauth" as const, userId: "00000000-0000-4000-8000-000000000001", clientId: "test-client", scopes: ["publishing:write"] };
+const principal = { kind: "oauth" as const, userId: "00000000-0000-4000-8000-000000000001", clientId: "test-client", scopes: ["publishing:write"], oauthAccessToken: "test-oauth-access-token" };
 const intent = { workspaceId: "00000000-0000-4000-8000-000000000002", clientIdempotencyKey: "00000000-0000-4000-8000-000000000003", projectId: "00000000-0000-4000-8000-000000000004", clipId: "00000000-0000-4000-8000-000000000005", accountId: "00000000-0000-4000-8000-000000000006", clipExportId: "00000000-0000-4000-8000-000000000007", clipExportVariantId: "00000000-0000-4000-8000-000000000008", expectedEditorRevision: 3, platform: "youtube_shorts" as const, aspectRatio: "9:16" as const, resolution: "1080p" as const, caption: "The exact caption", scheduledFor: "2026-10-06T12:00:00.000Z", providerSettings: {} };
 const options = { secret: "a-shared-secret-of-at-least-32-bytes-long", now: 1_000_000 };
 describe("Exact publication confirmation", () => {
@@ -32,6 +32,24 @@ function tamper(token: string, patch: Record<string, unknown>) {
 }
 describe("Signed continuation grants", () => {
   const upload = { workspaceId: intent.workspaceId, clientIdempotencyKey: intent.clientIdempotencyKey };
+  test("OAuth continuation evidence is encrypted, caller-bound, and authenticated", () => {
+    const prepared = createMcpConfirmation(principal, intent, options);
+    const handoff = createMcpUploadHandoff(principal, upload, options);
+    for (const state of [verifyMcpPreparation(prepared.token, options), verifyMcpUploadHandoff(handoff.token, options)]) {
+      expect(JSON.stringify(state)).not.toContain(principal.oauthAccessToken);
+      expect(openMcpContinuationAccessToken(state, options)).toBe(principal.oauthAccessToken);
+      expect(() => openMcpContinuationAccessToken({ ...state, callerId: "oauth:another-client:user" }, options)).toThrow();
+      expect(() => openMcpContinuationAccessToken({ ...state, oauthToken: "x".repeat(50) }, options)).toThrow();
+      expect(() => openMcpContinuationAccessToken(state, { ...options, secret: "a-different-secret-of-at-least-32-bytes" })).toThrow();
+    }
+    expect(verifyMcpPreparation(createMcpConfirmation(principal, intent, options).token, options).oauthToken)
+      .not.toBe(verifyMcpPreparation(prepared.token, options).oauthToken);
+  });
+  test("OAuth continuations cannot be minted without the originating credential", () => {
+    const { oauthAccessToken: _token, ...withoutCredential } = principal;
+    expect(() => createMcpConfirmation(withoutCredential, intent, options)).toThrow();
+    expect(() => createMcpUploadHandoff(withoutCredential, upload, options)).toThrow();
+  });
   test("states carry the originating credential kind and its granted scopes, never synthesized ones", () => {
     const readOnly = { ...principal, scopes: ["projects:read"] };
     expect(verifyMcpPreparation(createMcpConfirmation(readOnly, intent, options).token, options)).toMatchObject({ principalKind: "oauth", scopes: ["projects:read"] });
