@@ -110,9 +110,11 @@ export class SceneTemplateService {
   }
 
   async update(scope: BrandActorScope, profileId: string, templateId: string, value: unknown) {
-
-    await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
     const input = sceneTemplateUpdateSchema.parse(value);
+    // Clearing a default is cleanup, so a downgraded plan can still do it.
+    const clearsDefaultOnly = input.makeDefault === false && input.name === undefined && input.role === undefined && input.definition === undefined;
+    if (clearsDefaultOnly) assertBrandManageAllowed(scope);
+    else await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
     if (input.makeDefault) requirePlanFeature(scope.pricingTier, "brand.defaultScenes");
     const prisma = requirePrisma();
     return withSerializableTransaction(prisma, async (tx) => {

@@ -1,5 +1,6 @@
 "use client";
 
+import { BrandFontPicker, brandFontReference } from "./brand-fonts";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text, chakra } from "@chakra-ui/react";
@@ -481,13 +482,14 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
                 if (named) update("captionPreset", applyCaptionPresetLook(preset, named));
               }}
             />
+            <BrandFontPicker value={preset.fontAsset} onChange={(font) => update("captionPreset", { ...preset, fontName: "Montserrat", fontAsset: font ? brandFontReference(font) : null })} />
             <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="5">
               <Select
                 label="Font"
                 items={CAPTION_FONT_NAMES.map((font) => ({ label: font, value: font }))}
-                value={preset.fontName}
+                value={preset.fontAsset ? "" : preset.fontName}
                 onValueChange={(value) => {
-                  if (value) updateCaption("fontName", value as CaptionFontName);
+                  if (value) update("captionPreset", { ...preset, fontName: value as CaptionFontName, fontAsset: null });
                 }}
               />
               <Select

@@ -1,3 +1,4 @@
+import type { RenderBrandFonts } from "./brand-font-resolution";
 import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
 import { WorkflowFailure } from "@narriflow/services";
 import {
@@ -572,6 +573,7 @@ function logoOverlayPosition(position: string, marginPx: number) {
 
 function textLayerFilter(
 	layer: Extract<CompositionVisualLayer, { kind: "text" }>,
+ fonts?: Readonly<Record<string, string>>,
 ): string {
 	const value = layer.value;
 	const border =
@@ -583,7 +585,8 @@ function textLayerFilter(
 		: "";
 	// drawtext parses Fontconfig patterns through fontfile; font only accepts
 	// a family name. Match Studio's 800/500 weight request on available faces.
-	const fontPattern = `${value.fontName}:weight=${value.bold ? "extrabold" : "medium"}`;
+	const uploadedPath = value.fontAsset ? fonts?.[compositionAssetRef("brand_font", `${value.fontAsset.id}:${value.fontAsset.fingerprint}`)] : undefined;
+ const fontPattern = uploadedPath ?? `${value.fontName}:weight=${value.bold ? "extrabold" : "medium"}`;
 	return (
 		`drawtext=fontfile=${escapeFilterOptionValue(fontPattern)}` +
 		`:${drawtextLiteralText(value.text)}` +
@@ -606,6 +609,8 @@ export function compileCompositionPlanVisualLayers(input: {
 	targetId: string;
 	inputLabel: string;
 	outputLabel: string;
+ resolvedFonts?: Readonly<Record<string, string>>;
+ captionFontsDirectory?: string;
 	subtitlePath?: string | null;
 	logoInputIndex?: number | null;
 }): {
@@ -655,7 +660,7 @@ export function compileCompositionPlanVisualLayers(input: {
 	for (const layer of target.visualLayers) {
 		if (layer.kind === "text") {
 			stages.push((source, output) => ({
-				parts: [`${source}${textLayerFilter(layer)}${output}`],
+				parts: [`${source}${textLayerFilter(layer, input.resolvedFonts)}${output}`],
 			}));
 		} else if (layer.kind === "caption" && !captionsAdded) {
 			captionsAdded = true;
@@ -664,7 +669,7 @@ export function compileCompositionPlanVisualLayers(input: {
 					throw new Error("clip_composition_caption_asset_missing");
 				}
 				const filter = input.subtitlePath.endsWith(".ass")
-					? `ass='${escapeSubtitlePath(input.subtitlePath)}':fontsdir='${escapeSubtitlePath(CAPTION_FONTS_DIRECTORY)}'`
+					? `ass='${escapeSubtitlePath(input.subtitlePath)}':fontsdir='${escapeSubtitlePath(input.captionFontsDirectory ?? CAPTION_FONTS_DIRECTORY)}'`
 					: `subtitles='${escapeSubtitlePath(input.subtitlePath)}'`;
 				return { parts: [`${source}${filter}${output}`] };
 			});
@@ -1829,6 +1834,7 @@ export interface ClipCompositionCommandInput {
 			>
 		>;
 		fonts?: Readonly<Record<string, string>>;
+ captionFontsDirectory?: string;
 	};
 }
 
@@ -1856,6 +1862,7 @@ export function compileClipCompositionCommand(
 		background: input.assets.background,
 		resolvedSceneAssets: input.assets.scenes,
 		resolvedSceneFonts: input.assets.fonts,
+ captionFontsDirectory: input.assets.captionFontsDirectory,
 	};
 	if (!input.source.hasVideo)
 		return buildAudiogramArgs({
@@ -1910,10 +1917,12 @@ function httpSourceInputArgs(input: string): string[] {
 export function compileCompositionPlanCaptions(
 	plan: ClipCompositionPlan,
 	targetId: string,
+ fonts?: RenderBrandFonts,
 ): string {
 	const target = plan.targets.find((candidate) => candidate.id === targetId);
 	if (!target) throw new Error("clip_composition_target_missing");
 	return serializeCaptionAss({
+ fonts,
 		layers: target.visualLayers.filter(
 			(layer): layer is CompositionCaptionVisualLayer =>
 				layer.kind === "caption",
@@ -2372,6 +2381,7 @@ function buildSingleVideoArgs(params: {
 	aspectRatio: ClipAspectRatio;
 	probe: SourceProbe;
 	subtitlePath: string | null;
+ captionFontsDirectory?: string;
 	logo?: LogoOverlay | null;
 	/** The sole versioned composition policy for every video render. */
 	composition: {
@@ -2492,6 +2502,8 @@ function buildSingleVideoArgs(params: {
 		inputLabel: "[composition_base]",
 		outputLabel: "[outv]",
 		subtitlePath: params.subtitlePath,
+ resolvedFonts: params.resolvedSceneFonts,
+ captionFontsDirectory: params.captionFontsDirectory,
 		logoInputIndex,
 	});
 	filterParts.push(...visual.filterParts);
@@ -2615,6 +2627,7 @@ function buildBrollVideoArgs(params: {
 	aspectRatio: ClipAspectRatio;
 	probe: SourceProbe;
 	subtitlePath: string | null;
+ captionFontsDirectory?: string;
 	logo?: LogoOverlay | null;
 	composition: {
 		plan: ClipCompositionPlan;
@@ -2755,6 +2768,8 @@ function buildBrollVideoArgs(params: {
 		inputLabel: "[stage0]",
 		outputLabel: "[outv]",
 		subtitlePath: params.subtitlePath,
+ resolvedFonts: params.resolvedSceneFonts,
+ captionFontsDirectory: params.captionFontsDirectory,
 		logoInputIndex,
 	});
 	parts.push(...visual.filterParts);
@@ -2890,6 +2905,7 @@ function buildAudiogramArgs(params: {
 	};
 	clipDurationSec: number;
 	subtitlePath: string | null;
+ captionFontsDirectory?: string;
 	logo?: LogoOverlay | null;
 	audio: BoundCompositionAudioRenderRequest;
 	resolvedSceneAssets?: Readonly<
@@ -3063,6 +3079,8 @@ function buildAudiogramArgs(params: {
 		inputLabel: "[comp]",
 		outputLabel: "[composition_visual]",
 		subtitlePath: params.subtitlePath,
+ resolvedFonts: params.resolvedSceneFonts,
+ captionFontsDirectory: params.captionFontsDirectory,
 		logoInputIndex,
 	});
 	chain.push(...visual.filterParts);

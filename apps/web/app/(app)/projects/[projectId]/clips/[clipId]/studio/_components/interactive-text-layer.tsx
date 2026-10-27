@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { Box } from "@chakra-ui/react";
 import { motion, useMotionValue } from "framer-motion";
 import type { StudioTextLayer } from "@narriflow/validators";
+import { useBrandFont, brandFontStyle } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { useStudio } from "./studio-shell";
 import { computeSnap, type SnapGuide } from "./snap-guides";
 import { SnapGuideLines, DragResizeHandles } from "./interactive-caption-overlay";
@@ -25,6 +26,7 @@ export function InteractiveTextLayer({
   videoContainerRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const { selectedTextLayerId, selectTextLayer, setStudioEdits, endCoalesce } = useStudio("selectedTextLayerId", "selectTextLayer", "setStudioEdits", "endCoalesce");
+  const customFont = useBrandFont(layer.fontAsset);
   const isSelected = selectedTextLayerId === layer.id;
 
   const [hovered, setHovered] = useState(false);
@@ -202,6 +204,7 @@ export function InteractiveTextLayer({
               fontFamily: `"${layer.fontName}", Arial, sans-serif`,
               fontSize: `${displayFontSize}px`,
               fontWeight: layer.bold ? 800 : 500,
+              ...(customFont ? brandFontStyle(customFont) : {}),
               lineHeight: 1.08,
               backgroundColor: layer.backgroundColor
                 ? `${layer.backgroundColor}${Math.round(layer.backgroundOpacity * 255)

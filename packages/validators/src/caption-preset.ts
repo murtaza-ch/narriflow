@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CAPTION_FONT_NAMES } from "./caption-font";
 import { CAPTION_ANIMATION_NAMES } from "./caption-style";
+import { brandFontReferenceSchema } from "./timed-edits";
 
 export const BRAND_DEFAULT_CAPTION_PRESET_ID = "brand_default";
 
@@ -141,6 +142,8 @@ const hexColor = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
  */
 export const captionPresetSchema = z.object({
   fontName: captionFontNameSchema.default("Montserrat"),
+  /** Uploaded face; fontName remains the built-in fallback if it is unavailable. */
+  fontAsset: brandFontReferenceSchema.nullable().optional(),
   /** Font size (the em) in canvas px. */
   fontSize: z.number().min(16).max(200).default(84),
   textTransform: z
@@ -189,7 +192,7 @@ export const captionPresetSchema = z.object({
 export type CaptionPreset = z.infer<typeof captionPresetSchema>;
 export type CaptionPresetInput = z.input<typeof captionPresetSchema>;
 
-/** Field-aware equality for canonical caption presets (every field is a primitive). */
+/** Field-aware equality, including the immutable uploaded-font reference. */
 export function captionPresetsEqual(
   left: CaptionPreset,
   right: CaptionPreset,
@@ -197,6 +200,11 @@ export function captionPresetsEqual(
   if (left === right) return true;
   const keys = new Set([...Object.keys(left), ...Object.keys(right)]) as Set<keyof CaptionPreset>;
   for (const key of keys) {
+    if (key === "fontAsset") {
+      if ((left.fontAsset?.id ?? null) !== (right.fontAsset?.id ?? null) ||
+          (left.fontAsset?.fingerprint ?? null) !== (right.fontAsset?.fingerprint ?? null)) return false;
+      continue;
+    }
     if (left[key] !== right[key]) return false;
   }
   return true;
@@ -383,6 +391,10 @@ export function matchCaptionPreset(preset: CaptionPreset): NamedCaptionPreset | 
     const keys = new Set([...Object.keys(named.preset), ...Object.keys(preset)]) as Set<keyof CaptionPreset>;
     for (const key of keys) {
       if (CAPTION_PLACEMENT_FIELDS.has(key)) continue;
+      if (key === "fontAsset") {
+        if (named.preset.fontAsset?.id !== preset.fontAsset?.id || named.preset.fontAsset?.fingerprint !== preset.fontAsset?.fingerprint) return false;
+        continue;
+      }
       if (named.preset[key] !== preset[key]) return false;
     }
     return true;

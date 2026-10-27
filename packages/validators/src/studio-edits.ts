@@ -10,7 +10,7 @@ import {
   speakerLayoutOverridesEqual,
   studioSpeakerLayoutOverrideSchema,
 } from "./speaker-layout-overrides";
-import { visualAssetReferenceSchema } from "./timed-edits";
+import { brandFontReferenceSchema, visualAssetReferenceSchema } from "./timed-edits";
 import {
   sceneLayoutSelectionsEqual,
   studioSceneLayoutSelectionsSchema,
@@ -42,6 +42,7 @@ export const studioTextLayerSchema = z
     positionX: z.number().min(0).max(100).default(50),
     positionY: z.number().min(0).max(100).default(18),
     fontName: z.string().trim().min(1).max(100).default("Arial"),
+    fontAsset: brandFontReferenceSchema.nullable().optional(),
     fontSize: z.number().min(8).max(160).default(44),
     color: hexColorSchema.default("#FFFFFF"),
     backgroundColor: hexColorSchema.nullable().optional(),
@@ -531,6 +532,8 @@ function studioTextLayersEqual(
         layer.positionX === candidate.positionX &&
         layer.positionY === candidate.positionY &&
         layer.fontName === candidate.fontName &&
+        (layer.fontAsset?.id ?? null) === (candidate.fontAsset?.id ?? null) &&
+        (layer.fontAsset?.fingerprint ?? null) === (candidate.fontAsset?.fingerprint ?? null) &&
         layer.fontSize === candidate.fontSize &&
         layer.color === candidate.color &&
         layer.backgroundColor === candidate.backgroundColor &&

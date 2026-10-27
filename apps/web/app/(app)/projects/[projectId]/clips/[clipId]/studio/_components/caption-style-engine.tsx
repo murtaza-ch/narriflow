@@ -1,4 +1,5 @@
 "use client";
+import { useBrandFont, brandFontStyle } from "@/app/(app)/brand-kit/_components/brand-fonts";
 
 /**
  * The ONE caption renderer for every caption surface in the web app:
@@ -245,7 +246,8 @@ export function CaptionCue({
   reducedMotion = false,
 }: CaptionCueProps) {
   const [naturalWidth, setNaturalWidth] = useState(0);
-  const face = captionFontFace(preset.fontName);
+  const customFont = useBrandFont(preset.fontAsset);
+  const face = customFont?.face ?? captionFontFace(preset.fontName);
   const spec: CaptionMotionSpec = CAPTION_MOTIONS[preset.animation];
   const emPx = preset.fontSize * scale;
   const stroke = preset.outlineWidth * scale;
@@ -360,7 +362,7 @@ export function CaptionCue({
             fontSize: `${emPx}px`,
             letterSpacing: `${preset.letterSpacing}em`,
             wordSpacing: preset.highlightBoxColor ? `${CAPTION_PILL.extraWordSpacingEm}em` : undefined,
-            ...captionFontStyle(preset.fontName),
+            ...(customFont ? brandFontStyle(customFont) : captionFontStyle(preset.fontName)),
           }}
         >
           {preset.backgroundColor && (

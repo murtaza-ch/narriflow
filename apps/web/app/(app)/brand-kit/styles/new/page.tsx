@@ -2,9 +2,10 @@ import { Box, Stack } from "@chakra-ui/react";
 import Link from "next/link";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { brandTemplateService } from "@narriflow/services";
+import { brandTemplateService, brandFontService, brandPlanRequirement } from "@narriflow/services";
 import { planCountRequirement, planFeatureRequirement, planUpgradeHighlight } from "@narriflow/validators";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
+import { BrandFontsProvider } from "../../_components/brand-fonts";
 import { TemplateForm } from "../../_components/template-form";
 import { PlanLimitNotice } from "../../../_components/plan-limit-notice";
 
@@ -22,6 +23,9 @@ export default async function NewBrandTemplatePage() {
         highlight: planUpgradeHighlight(requirement.requiredTier, "brandTemplates"),
       }
     : null;
+  const fontRequirement = brandPlanRequirement(actor, "brand.customFonts");
+  const activeFonts = await brandFontService.list(actor);
+  const fonts = activeFonts;
   return (
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
@@ -43,7 +47,7 @@ export default async function NewBrandTemplatePage() {
         {requirement ? (
           <PlanLimitNotice message={requirement.requiredTier ? requirement.message : `${requirement.message} Delete a style to add another.`} upgrade={upgrade} canManageBilling={actor.role === "owner"} />
         ) : (
-          <TemplateForm mode="create" />
+          <BrandFontsProvider fonts={fonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: actor.role === "owner" } : null}><TemplateForm mode="create" /></BrandFontsProvider>
         )}
       </Box>
     </Stack>

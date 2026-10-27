@@ -16,6 +16,7 @@ import {
 } from "@chakra-ui/react";
 import { PanelButton, PanelTabs, softFieldProps, tileProps, studioSliderCss } from "./panel-ui";
 import { Plus, X, Bold } from "lucide-react";
+import { BrandFontPicker, brandFontReference } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { useStudio } from "../studio-shell";
 import type { StudioTextLayer } from "@narriflow/validators";
 
@@ -282,7 +283,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
         <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Font</Text>
         <Flex gap="6px" wrap="wrap">
           {FONTS.map((f) => {
-            const isActive = layer.fontName === f;
+            const isActive = !layer.fontAsset && layer.fontName === f;
             return (
               <Box
                 key={f}
@@ -295,7 +296,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
                 borderWidth="2px"
                 borderColor={isActive ? "studio.accent" : "transparent"}
                 cursor="pointer"
-                onClick={() => update({ fontName: f })}
+                onClick={() => update({ fontName: f, fontAsset: null })}
                 transition="background 120ms ease, border-color 120ms ease"
                 _hover={{ bg: "studio.raised" }}
               >
@@ -312,9 +313,11 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
         </Flex>
       </Box>
 
+<BrandFontPicker studio value={layer.fontAsset} onChange={(font) => update({ fontName: "Arial", fontAsset: font ? brandFontReference(font) : null })} />
+
       <Flex gap="10px" align="flex-end">
         <Box flex="1">
-          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Font size</Text>
+        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Font size</Text>
           <Flex align="center" gap="10px">
             <Slider.Root
               aria-label={["Font size"]}
@@ -340,12 +343,12 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
             </Text>
           </Flex>
         </Box>
-        <ToggleBtn
+        {!layer.fontAsset ? <ToggleBtn
           icon={<Bold size={14} />}
           label="Bold"
           active={layer.bold}
           onClick={() => update({ bold: !layer.bold })}
-        />
+        /> : null}
       </Flex>
 
       <Flex gap="12px">

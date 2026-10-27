@@ -2,6 +2,7 @@ import { Box, Flex, Grid, Image, Stack, Text } from "@chakra-ui/react";
 import { ArrowRight, AudioLines, Check, ImageIcon, Type } from "lucide-react";
 import Link from "next/link";
 import {
+  brandFontService,
   brandCountRequirement,
   brandPlanRequirement,
   brandProfileService,
@@ -13,6 +14,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
+import { FontManager } from "./_components/font-manager";
 import { TemplateGallery } from "./_components/template-gallery";
 import { BrandProfileDefaultButton } from "./_components/brand-profile-default-button";
 import { PlanLimitNotice } from "../_components/plan-limit-notice";
@@ -30,16 +32,18 @@ export default async function BrandKitPage() {
     pricingTier: actor.pricingTier,
     isPersonalWorkspace: actor.isPersonalWorkspace,
   };
-  const [profiles, defaultProfileId, templates] = await Promise.all([
+  const [profiles, defaultProfileId, templates, fonts] = await Promise.all([
     brandProfileService.list(scope),
     brandProfileService.getDefaultId(scope),
     brandTemplateService.list(actor),
+    brandFontService.list(scope),
   ]);
   const mayManageBrand = workspaceAllowsCapability(
     { role: actor.role, status: actor.status },
     "brand.manage",
   );
   const writable = mayManageBrand;
+  const fontRequirement = brandPlanRequirement(actor, "brand.customFonts");
   // Brand Profiles are plan-gated by the same policy the services refuse with, including the shared-Workspace rule.
   const brandKitRequirement = brandPlanRequirement(actor, "brand.profiles");
   const hasProfiles = brandKitRequirement === null;
@@ -188,6 +192,8 @@ export default async function BrandKitPage() {
           </Grid>
         )}
       </Stack>
+
+      <FontManager fonts={fonts} canManage={mayManageBrand} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", highlight: planUpgradeHighlight(fontRequirement.requiredTier, "brand.customFonts"), canManageBilling } : null} />
 
       <Box as="section">
         <Flex justify="space-between" align="center" mb="5"><Text fontSize="16px" fontWeight="500">Style library</Text>{newStyleAction}</Flex>

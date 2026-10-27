@@ -6,9 +6,12 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import {
   brandTemplateService,
+  brandFontService,
+  brandPlanRequirement,
   brandProfileService,
   BrandTemplateNotFoundError,
 } from "@narriflow/services";
+import { BrandFontsProvider, type BrandFontChoice } from "../../_components/brand-fonts";
 import { TemplateForm } from "../../_components/template-form";
 
 interface PageProps {
@@ -49,6 +52,10 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
     );
   }
 
+  const fontRequirement = brandPlanRequirement(appUser, "brand.customFonts");
+  const activeFonts = await brandFontService.list(appUser);
+  const retainedFonts = await brandFontService.resolveReferences(appUser, template.captionPreset.fontAsset ? [template.captionPreset.fontAsset] : []);
+  const fonts = [...new Map<string, BrandFontChoice>([...retainedFonts.map((font) => [font.id, { ...font, insertable: false }] as const), ...activeFonts.map((font) => [font.id, { ...font, insertable: true }] as const)]).values()];
   return (
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
@@ -67,7 +74,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
         animationFillMode="backwards"
         style={{ animationDelay: "60ms" }}
       >
-        <TemplateForm mode="edit" initialTemplate={template} />
+        <BrandFontsProvider fonts={fonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: appUser.role === "owner" } : null}><TemplateForm mode="edit" initialTemplate={template} /></BrandFontsProvider>
       </Box>
     </Stack>
   );

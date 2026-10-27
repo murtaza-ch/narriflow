@@ -2,14 +2,16 @@ import { Box, Flex, Grid, Image, Stack, Text } from "@chakra-ui/react";
 import { ArrowLeft, AudioLines, ImageIcon, LayoutTemplate, MessageSquareText, Shapes, Type } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { brandPlanRequirement, brandProfileService, BrandProfileNotFoundError, sceneTemplateService } from "@narriflow/services";
-import { planUpgradeHighlight, sceneTemplateDefinitionSchema } from "@narriflow/validators";
+import { brandFontService, brandPlanRequirement, brandProfileService, BrandProfileNotFoundError, sceneTemplateService } from "@narriflow/services";
+import { planUpgradeHighlight, sceneTemplateDefinitionSchema, workspaceAllowsCapability } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { formatDuration } from "@/lib/format";
+import { ProfileFontRoles } from "../_components/profile-font-roles";
+import type { BrandFontChoice } from "../_components/brand-fonts";
 import { SceneTemplateManager, type SceneTemplateCard } from "./scene-template-manager";
 import type { UpgradePrompt } from "../../_components/upgrade";
 
@@ -45,6 +47,10 @@ export default async function BrandProfilePage({ params, searchParams }: {
     return [{ id: scene.id, name: scene.name, role: scene.role, revision: scene.revision, fingerprint: scene.fingerprint, definition: definition.data, isDefault: profile.defaultIntroSceneTemplateId === scene.id || profile.defaultOutroSceneTemplateId === scene.id }];
   });
 
+  const fonts = section === "identity" ? await brandFontService.list(actor) : [];
+  const fontRequirement = brandPlanRequirement(actor, "brand.customFonts");
+  const canManageFonts = workspaceAllowsCapability({ role: actor.role, status: actor.status }, "brand.manage");
+
   const scenesRequirement = brandPlanRequirement(actor, "brand.scenes");
   const defaultsRequirement = brandPlanRequirement(actor, "brand.defaultScenes");
   const createUpgrade: UpgradePrompt | null = scenesRequirement?.requiredTier
@@ -75,7 +81,7 @@ export default async function BrandProfilePage({ params, searchParams }: {
       </Flex>
 
       <Box animation="fade-up" animationFillMode="backwards" style={{ animationDelay: "55ms" }}>
-        {section === "identity" && <IdentitySection profile={profile} />}
+        {section === "identity" && <IdentitySection profile={profile} fonts={fonts} canManage={canManageFonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: actor.role === "owner" } : null} />}
         {section === "styles" && <StylesSection profile={profile} selectedTemplateId={query.template} />}
         {section === "assets" && <AssetsSection profile={profile} />}
         {section === "scenes" && <ScenesSection profileId={profile.id} scenes={sceneCards} fonts={profile.fonts} canManageDefaults={defaultsRequirement === null} createRequirement={scenesRequirement?.message ?? null} createUpgrade={createUpgrade} defaultsUpgrade={defaultsUpgrade} />}
@@ -97,7 +103,7 @@ function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }
   );
 }
 
-function IdentitySection({ profile }: { profile: Profile }) {
+function IdentitySection({ profile, fonts, canManage, requirement, upgrade }: { profile: Profile; fonts: BrandFontChoice[]; canManage: boolean; requirement: string | null; upgrade: UpgradePrompt | null }) {
   return (
     <Stack gap="7">
       <SectionHeader icon={<Shapes size={18} />} title="Colors and fonts" />
@@ -114,17 +120,7 @@ function IdentitySection({ profile }: { profile: Profile }) {
             </Flex>
           ))}
         </Stack>
-        <Box bg="bg.panel" borderRadius="l3" borderWidth="1px" borderColor="border.card" p="6">
-          <Stack gap="5">
-            <Text textStyle="eyebrow" color="fg.muted">Type roles</Text>
-            {profile.fonts.length ? profile.fonts.map((font) => (
-              <Flex key={`${font.id}-${font.role}`} align="baseline" justify="space-between" gap="4">
-                <Text fontFamily="display" fontSize="20px" fontWeight={font.weight}>{font.family}</Text>
-                <Text fontSize="12px" color="fg.subtle">{font.role}</Text>
-              </Flex>
-            )) : <Text fontSize="13px" color="fg.muted">System typography is used until font roles are attached.</Text>}
-          </Stack>
-        </Box>
+        <ProfileFontRoles profileId={profile.id} memberships={profile.fonts} fonts={fonts} canManage={canManage} requirement={requirement} upgrade={upgrade} />
       </Grid>
     </Stack>
   );

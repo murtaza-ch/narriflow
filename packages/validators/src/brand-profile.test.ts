@@ -35,6 +35,11 @@ describe("Brand Profile contracts", () => {
     expect(brandProfileUpdateSchema.parse({ revision: 4, name: "New name" }).revision).toBe(4);
   });
 
+  test("a profile update that omits the approval rule leaves it unset", () => {
+    expect(brandProfileUpdateSchema.parse({ revision: 4, name: "New name" })).not.toHaveProperty("approvalRule");
+    expect(brandProfileUpdateSchema.parse({ revision: 4, approvalRule: "approval_required" }).approvalRule).toBe("approval_required");
+  });
+
   test("accepts supported visual uploads and rejects SVG", () => {
     expect(visualAssetUploadSchema.parse({ contentType: "video/quicktime", sizeBytes: 2048 }).contentType).toBe("video/quicktime");
     expect(() => visualAssetUploadSchema.parse({ contentType: "image/svg+xml", sizeBytes: 2048 })).toThrow();
@@ -54,11 +59,8 @@ describe("Brand Profile contracts", () => {
       contentType: "font/woff2",
       sizeBytes: 1024,
       fingerprint,
-      family: "Archivo",
-      style: "Normal",
-      weight: 700,
       licenseConfirmed: true,
-    }).weight).toBe(700);
+    }).contentType).toBe("font/woff2");
   });
 
   test("uses typed profile membership roles", () => {

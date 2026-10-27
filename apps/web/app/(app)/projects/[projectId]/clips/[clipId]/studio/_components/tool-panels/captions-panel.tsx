@@ -19,6 +19,7 @@ import {
   type CaptionPreset,
   type CaptionShadow,
 } from "@narriflow/validators";
+import { BrandFontPicker, brandFontReference } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { useStudio } from "../studio-shell";
 import { CaptionCue, captionFontStyle, useLiveCaption } from "../caption-style-engine";
 import type { CaptionWord } from "../use-current-caption";
@@ -387,7 +388,7 @@ function CustomizeControls() {
         <SectionLabel>Font</SectionLabel>
         <Flex gap="6px" wrap="wrap">
           {CAPTION_FONT_NAMES.map((f) => (
-            <Chip key={f} active={captionPreset.fontName === f} onClick={() => update({ fontName: f })}>
+            <Chip key={f} active={!captionPreset.fontAsset && captionPreset.fontName === f} onClick={() => update({ fontName: f, fontAsset: null })}>
               <Text as="span" fontSize="12px" style={captionFontStyle(f)}>
                 {f}
               </Text>
@@ -486,6 +487,8 @@ function CustomizeControls() {
           onChange={(value, key) => update({ outlineWidth: value }, key)}
         />
       </Box>
+
+      <BrandFontPicker studio value={captionPreset.fontAsset} onChange={(font) => update({ fontName: "Montserrat", fontAsset: font ? brandFontReference(font) : null })} />
 
       {/* Font size */}
       <Box>

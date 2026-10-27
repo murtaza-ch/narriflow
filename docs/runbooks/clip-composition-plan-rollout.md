@@ -34,3 +34,12 @@ In a development or test environment, append `?qaCompositionPlan=invalid` to a S
 Investigate detector failures through typed analysis diagnostics. Center, Fit, plan validation, and FFmpeg composition remain active when analysis is unavailable. Unknown plan versions fail before FFmpeg starts and must not be bypassed.
 
 Exact `explicit-split-v1` and `screen-layout-v1` records are reused only when their source identity and versioned fingerprint match. There are no compatibility reads. To recover from a detector incident, fix the detector and retry failed evidence. To recover from a command-budget incident, inspect the safe byte-count diagnostic before changing the limit; do not restore a renderer selector or combine targets as a workaround.
+
+## Regression checks
+
+Keep these tests passing when changing retained time, inserted Scenes, text rendering, or B-roll resolution:
+
+- Retained slivers under `MIN_KEPT_SEGMENT_SEC` share one clock for render duration, captions, subtitles, censors, and ducking: `dropped edit slivers share the render duration and caption clock` in `packages/composition-plan`, and `apps/worker/src/tasks/cut-plan.test.ts`.
+- Music ducking follows speech after inserted Scenes: `music ducking follows speech after an inserted scene`, `music ducking follows speech across an inserted scene`, and the real-FFmpeg `encoded music ducks at the speech's final time after a Scene Block`.
+- Text-layer weight matches Studio's 800/500 request: `text layer bold control changes the rendered font weight` in `apps/worker/src/composition-text-weight.test.ts`.
+- Automatic stock cutaways render only inside their planned window: `renders automatic stock cutaway pixels only inside the planned window` in `apps/worker/src/tasks/clip-render-attempt-core-paths.test.ts`.

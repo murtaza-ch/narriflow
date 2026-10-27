@@ -1,3 +1,4 @@
+import { brandFontKey, type RenderBrandFonts, type RenderBrandFont } from "./brand-font-resolution";
 import { measureCaptionTextEm } from "@narriflow/caption-fonts";
 import { captionWordSegmentEnd, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import {
@@ -98,11 +99,12 @@ interface CueGeometry {
 export function serializeCaptionAss(input: {
 	layers: readonly CompositionCaptionVisualLayer[];
 	canvas: { width: number; height: number };
+ fonts?: RenderBrandFonts;
 }): string {
 	const first = input.layers[0];
 	if (!first) return "";
-	const face = captionFontFace(first.preset.fontName);
-	const events = input.layers.flatMap((cue) => cueEvents(cue, input.canvas));
+	const face = (first.preset.fontAsset ? input.fonts?.get(brandFontKey(first.preset.fontAsset))?.face : null) ?? captionFontFace(first.preset.fontName);
+	const events = input.layers.flatMap((cue) => cueEvents(cue, input.canvas, cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined));
 	return [
 		"[Script Info]",
 		"ScriptType: v4.00+",
@@ -129,11 +131,12 @@ export function serializeCaptionAss(input: {
 function cueEvents(
 	cue: CompositionCaptionVisualLayer,
 	canvas: { width: number; height: number },
+ customFont?: RenderBrandFont,
 ): AssEvent[] {
 	const preset = cue.preset;
 	const motion: CaptionMotionSpec = CAPTION_MOTIONS[preset.animation];
-	const face = captionFontFace(preset.fontName);
-	const geometry = cueGeometry(cue, face, canvas);
+	const face = customFont?.face ?? captionFontFace(preset.fontName);
+	const geometry = cueGeometry(cue, face, canvas, customFont);
 	const measured = geometry.words !== null;
 	const usesOverlay =
 		measured && (motion.word.length > 0 || motion.effect === "glitch");
@@ -201,7 +204,7 @@ function cueEvents(
 		if (spans.some((span) => span.visibility > 0)) {
 			events.push(
 				...stackEvents({
-					preset,
+					preset, face,
 					px: geometry.px,
 					spans,
 					separator: wordSeparator(preset, geometry.px),
@@ -246,7 +249,7 @@ function cueEvents(
 			if (motion.effect === "glitch") {
 				events.push(
 					...glitchEvents({
-						preset,
+						preset, face,
 						geometry,
 						box,
 						span: activeSpan,
@@ -258,7 +261,7 @@ function cueEvents(
 			} else {
 				events.push(
 					...stackEvents({
-						preset,
+						preset, face,
 						px: geometry.px,
 						spans: [activeSpan],
 						separator: "",
@@ -288,6 +291,7 @@ function cueGeometry(
 	cue: CompositionCaptionVisualLayer,
 	face: CaptionFontFace,
 	canvas: { width: number; height: number },
+ customFont?: RenderBrandFont,
 ): CueGeometry {
 	const preset = cue.preset;
 	const motion = CAPTION_MOTIONS[preset.animation];
@@ -297,9 +301,9 @@ function cueGeometry(
 		? CAPTION_CUE_TILTS_DEG[cue.cueIndex % CAPTION_CUE_TILTS_DEG.length]!
 		: 0;
 	const wordWidthsEm = cue.words.map((word) =>
-		measureCaptionTextEm(preset.fontName, word.text, preset.letterSpacing),
+		customFont ? customFont.measure(word.text, preset.letterSpacing) : measureCaptionTextEm(preset.fontName, word.text, preset.letterSpacing),
 	);
-	const spaceEm = measureCaptionTextEm(preset.fontName, " ", preset.letterSpacing);
+	const spaceEm = customFont ? customFont.measure(" ", preset.letterSpacing) : measureCaptionTextEm(preset.fontName, " ", preset.letterSpacing);
 	const baseline = (px: number) => anchorY + ((face.ascent - face.descent) / 2) * px;
 	if (spaceEm === null || wordWidthsEm.some((width) => width === null)) {
 		const px = preset.fontSize;
@@ -331,6 +335,7 @@ function wordSeparator(preset: CaptionPreset, px: number): string {
 }
 
 function stackEvents(input: {
+ face: CaptionFontFace;
 	preset: CaptionPreset;
 	px: number;
 	spans: readonly Span[];
@@ -366,7 +371,7 @@ function stackEvents(input: {
 			endSec: input.endSec,
 			style: "Caption",
 			text:
-				`{\\an5${position}${input.common}\\fs${num(assFontSize(captionFontFace(preset.fontName), px))}` +
+				`{\\an5\\fn${input.face.assName}${position}${input.common}\\fs${num(assFontSize(input.face, px))}` +
 				`\\fsp${num(preset.letterSpacing * px)}\\bord${num(bord)}\\shad0` +
 				`${motion.tags(extraBlurPx)}}${body}`,
 		});
@@ -554,6 +559,7 @@ function pillEvent(input: {
 }
 
 function glitchEvents(input: {
+ face: CaptionFontFace;
 	preset: CaptionPreset;
 	geometry: CueGeometry;
 	box: { centerX: number; width: number };
@@ -587,7 +593,7 @@ function glitchEvents(input: {
 		const startSec = slice.startSec;
 		const endSec = Math.min(slice.endSec, input.endSec);
 		if (endSec <= startSec) continue;
-		const fs = num(assFontSize(captionFontFace(preset.fontName), px));
+		const fs = num(assFontSize(input.face, px));
 		const fsp = num(preset.letterSpacing * px);
 		CAPTION_GLITCH.ghostColors.forEach((color, ghostIndex) => {
 			const sign = ghostIndex === 0 ? 1 : -1;
@@ -603,7 +609,7 @@ function glitchEvents(input: {
 		});
 		events.push(
 			...stackEvents({
-				preset,
+				preset, face: input.face,
 				px,
 				spans: [span],
 				separator: "",

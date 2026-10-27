@@ -18,6 +18,7 @@ import {
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
 } from "./clip-composition-plan";
+import { formatSubtitles } from "./subtitles";
 
 function centerDocument() {
   return editorDocumentSchema.parse({
@@ -99,6 +100,16 @@ describe("Clip Composition Plan", () => {
       clipStartSec: 0,
       clipEndSec: 3.2,
       deletedRanges: [{ startSec: 0.05, endSec: 0.3 }],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        music: { url: "https://example.com/music.mp3", ducking: true },
+      }),
+      censorSegments: [{
+        schemaVersion: 1, id: "10000000-0000-4000-8000-000000000001",
+        sourceWordIds: [autoCensorWordId({ utteranceIndex: 0, wordIndex: 1, word: { word: "Kept", startSec: 0.4, endSec: 0.6, confidence: 1 } })], sourceStartSec: 0.4, sourceEndSec: 0.6,
+        treatment: "mute", paddingSec: 0, beepSettings: null, captionMaskPolicy: null,
+        suggestionFingerprint: "a".repeat(64), policyVersion: "auto-censor-v1", enabled: true,
+      }],
       transcriptSlice: [{
         index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: 0, endSec: 0.6,
         text: "Dropped Kept", confidence: 1,
@@ -112,7 +123,7 @@ describe("Clip Composition Plan", () => {
       document,
       source: { identity: "source:sliver", kind: "video", width: 320, height: 180 },
       evidence: { automaticLayout: { state: "missing" } },
-      assets: { backgroundImage: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" }, music: { state: "available", ref: "music:bed" } },
       capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
     });
@@ -122,6 +133,12 @@ describe("Clip Composition Plan", () => {
     expect(result.plan.editedDurationSec).toBe(cutPlan.editedDurationSec);
     expect(result.plan.targets[0]!.scenes.at(-1)!.endSec).toBe(2.9);
     expect(deriveCaptionCues(document)).toEqual([{ startSec: 0.1, endSec: 0.3, text: "KEPT" }]);
+    expect(formatSubtitles(deriveCaptionCues(document), "srt")).toBe("1\n00:00:00,100 --> 00:00:00,300\nKEPT\n\n");
+    expect(formatSubtitles(deriveCaptionCues(document), "vtt")).toBe("WEBVTT\n\n00:00:00.100 --> 00:00:00.300\nKEPT\n\n");
+    expect(result.plan.audioSchedule.censors).toEqual([expect.objectContaining({ startSec: 0.1, endSec: 0.3, treatment: "mute" })]);
+    expect(result.plan.audioSchedule.music!.ducking.windows).toHaveLength(1);
+    expect(result.plan.audioSchedule.music!.ducking.windows[0]!.startSec).toBe(0);
+    expect(result.plan.audioSchedule.music!.ducking.windows[0]!.endSec).toBeCloseTo(0.42, 8);
     const captions = result.plan.targets[0]!.visualLayers.filter((layer) => layer.kind === "caption");
     expect(captions.flatMap((layer) => layer.words.map((word) => word.text))).toEqual(["KEPT"]);
     expect(captions[0]!.words[0]!.startSec).toBe(0.1);

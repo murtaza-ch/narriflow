@@ -27,6 +27,7 @@ import {
 } from "./expected-domain-failure";
 import { lockBrandOwner } from "./brand-ownership";
 import { requirePlanFeature, requireWithinPlanLimit } from "./plan-features";
+import { brandFontService } from "./brand-font.service";
 
 const FALLBACK_BUILT_IN_KEY = "karaoke";
 
@@ -228,6 +229,7 @@ export class BrandTemplateService {
     const assetOwnerUserId = actor.workspaceOwnerUserId;
     const context = scope;
     const parsed = brandTemplateInputSchema.parse(input);
+    await brandFontService.assertSelection(actor, parsed.captionPreset.fontAsset);
     assertOwnedLogoKey(assetOwnerUserId, parsed.logoStorageKey, context);
     const captionPreset = applyBrandColorsToCaption(
       parsed.captionPreset,
@@ -278,6 +280,10 @@ export class BrandTemplateService {
       existing.workspaceId !== scope.workspaceId
     ) {
       throw new BrandTemplateForbiddenError();
+    }
+
+    if (parsed.captionPreset?.fontAsset && JSON.stringify(parsed.captionPreset.fontAsset) !== JSON.stringify(captionPresetSchema.parse(existing.captionPreset).fontAsset)) {
+      await brandFontService.assertSelection(actor, parsed.captionPreset.fontAsset);
     }
 
     const data: PrismaTypes.BrandTemplateUpdateInput = { updatedByUserId: scope.actorUserId };

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { BrandFont, BrandFontFormat } from "@prisma/client";
 import { create as parseFont } from "fontkit";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -11,6 +11,7 @@ import {
   type BrandFontFinalizeInput,
   type BrandFontUploadInput,
   type ReusableAssetSoftDeleteInput,
+  type CaptionFontFace,
 } from "@narriflow/validators";
 import {
   assertBrandManageAllowed,
@@ -21,7 +22,6 @@ import {
   type BrandActorScope,
 } from "./brand-ownership";
 import {
-  hashObjectSha256,
   headObject,
   isR2Configured,
   presignDownloadUrl,
@@ -68,7 +68,7 @@ export class BrandFontReferenceError extends ExpectedDomainFailureError<"brand_f
       code: "brand_font_in_use",
       kind: brandFontIntegrityFailureCatalog.brand_font_in_use,
       message:
-        "Remove this font from every Brand Profile and Scene template before deleting it",
+        "Remove this font from every Brand Profile, caption style and Scene Template before deleting it",
     });
     this.name = "BrandFontReferenceError";
   }
@@ -97,6 +97,7 @@ export interface ParsedBrandFont {
   family: string;
   style: string;
   weight: number;
+  face: CaptionFontFace;
 }
 
 function normalizeFontName(value: string, maximumLength: number) {
@@ -134,7 +135,19 @@ export function parseBrandFont(bytes: Uint8Array): ParsedBrandFont {
       100,
       Math.min(900, Math.round(font["OS/2"].usWeightClass || 400)),
     );
-    return { format, family, style, weight };
+    const units = font.unitsPerEm;
+    const metrics = font["OS/2"];
+    const ascent = (metrics.winAscent || font.ascent) / units;
+    const descent = (metrics.winDescent || Math.abs(font.descent)) / units;
+    const capHeight = (font.capHeight || font.ascent) / units;
+    const assName = normalizeFontName(font.fullName, 256);
+    if (/[,\\{}\r\n]/.test(assName)) throw new BrandFontIntegrityError("brand_font_name_invalid");
+    if (![ascent, descent, capHeight].every((value) => Number.isFinite(value) && value >= 0 && value <= 10) || ascent + descent === 0) throw new BrandFontIntegrityError("brand_font_malformed");
+    return { format, family, style, weight, face: {
+      name: family, file: "", assName,
+      weight, style: font.italicAngle !== 0 ? "italic" : "normal",
+      ascent, descent, capHeight,
+    } };
   } catch (error) {
     if (error instanceof BrandFontIntegrityError) throw error;
     throw new BrandFontIntegrityError("brand_font_malformed");
@@ -143,6 +156,21 @@ export function parseBrandFont(bytes: Uint8Array): ParsedBrandFont {
 
 export function parseBrandFontHeader(bytes: Uint8Array): "ttf" | "otf" | "woff2" {
   return parseBrandFont(bytes).format;
+}
+
+/** Shape the exact uploaded bytes for the caption burn-in's word geometry. */
+export function brandFontRenderer(bytes: Uint8Array) {
+  const parsed = parseBrandFont(bytes);
+  const font = parseFont(Buffer.from(bytes));
+  if (!("layout" in font)) throw new BrandFontIntegrityError("brand_font_collection_unsupported");
+  return {
+    face: parsed.face,
+    measure(text: string, letterSpacingEm: number): number | null {
+      const characters = [...text];
+      if (characters.some((character) => !font.hasGlyphForCodePoint(character.codePointAt(0)!))) return null;
+      return font.layout(text).advanceWidth / font.unitsPerEm + letterSpacingEm * characters.length;
+    },
+  };
 }
 
 function formatForContentType(contentType: string): "ttf" | "otf" | "woff2" {
@@ -157,7 +185,7 @@ function requirePrisma() {
   return prisma;
 }
 
-function toRow(font: BrandFont, accessUrl: string | null, replayed = false) {
+function toRow(font: BrandFont, accessUrl: string | null, replayed = false, face: CaptionFontFace | null = null) {
   return {
     id: font.id,
     family: font.family,
@@ -167,6 +195,7 @@ function toRow(font: BrandFont, accessUrl: string | null, replayed = false) {
     sizeBytes: Number(font.sizeBytes),
     fingerprint: font.fingerprint,
     accessUrl,
+    face,
     replayed,
     createdAt: font.createdAt.toISOString(),
   };
@@ -174,16 +203,46 @@ function toRow(font: BrandFont, accessUrl: string | null, replayed = false) {
 
 export class BrandFontService {
   private requirePrisma = requirePrisma;
+  constructor(private readonly storage = { headObject, readObjectBytes, presignDownloadUrl, presignSingleUploadUrl, isR2Configured }) {}
+
+  private async row(font: BrandFont, replayed = false) {
+    try {
+      const bytes = await this.storage.readObjectBytes(font.storageKey, 20 * 1024 * 1024);
+      if (createHash("sha256").update(bytes).digest("hex") !== font.fingerprint) return toRow(font, null, replayed);
+      const parsed = parseBrandFont(bytes);
+      return toRow(font, await this.storage.presignDownloadUrl({ key: font.storageKey }), replayed, parsed.face);
+    } catch {
+      return toRow(font, null, replayed);
+    }
+  }
+
+  /** Deleted uploads remain resolvable by existing documents; new pickers use list(). */
+  async resolveReferences(scope: BrandActorScope, references: readonly { id: string; fingerprint: string }[]) {
+    if (!references.length) return [];
+    const rows = await this.requirePrisma().brandFont.findMany({ where: {
+      ...brandOwnerWhere(scope), id: { in: [...new Set(references.map((ref) => ref.id))] },
+    } });
+    return Promise.all(rows.filter((font) => references.some((ref) => ref.id === font.id && ref.fingerprint === font.fingerprint)).map((font) => this.row(font)));
+  }
+
+  async assertSelection(scope: BrandActorScope, reference: { id: string; fingerprint: string } | null | undefined) {
+    if (!reference) return;
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
+    const font = await this.requirePrisma().brandFont.findFirst({ where: {
+      ...brandOwnerWhere(scope), id: reference.id, fingerprint: reference.fingerprint, deletedAt: null,
+    }, select: { id: true } });
+    if (!font) throw new BrandFontIntegrityError("brand_font_not_found");
+  }
 
   async presignUpload(scope: BrandActorScope, input: BrandFontUploadInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
     const parsed = brandFontUploadSchema.parse(input);
-    if (!isR2Configured()) {
+    if (!this.storage.isR2Configured()) {
       throw new BrandFontIntegrityError("brand_font_storage_unavailable");
     }
     const format = formatForContentType(parsed.contentType);
     const key = `${brandOwnerStoragePrefix(scope, "brand-fonts")}${randomUUID()}.${format}`;
-    return { key, contentType: parsed.contentType, uploadUrl: await presignSingleUploadUrl({ key, contentType: parsed.contentType }) };
+    return { key, contentType: parsed.contentType, uploadUrl: await this.storage.presignSingleUploadUrl({ key, contentType: parsed.contentType }) };
   }
 
   async finalizeUpload(scope: BrandActorScope, input: BrandFontFinalizeInput) {
@@ -222,26 +281,24 @@ export class BrandFontService {
     if (!parsed.key.startsWith(brandOwnerStoragePrefix(scope, "brand-fonts"))) throw new BrandFontIntegrityError("brand_font_key_forbidden");
     const prisma = this.requirePrisma();
     const ownerWhere = brandOwnerWhere(scope);
-    const existing = await prisma.brandFont.findFirst({ where: { ...ownerWhere, fingerprint: parsed.fingerprint, deletedAt: null } });
-    if (existing) return toRow(existing, await presignDownloadUrl({ key: existing.storageKey }), true);
+    const existing = await prisma.brandFont.findFirst({ where: { ...ownerWhere, fingerprint: parsed.fingerprint } });
+    if (existing && !existing.deletedAt) return this.row(existing, true);
     let object;
     try {
-      object = await headObject(parsed.key);
+      object = await this.storage.headObject(parsed.key);
     } catch {
       throw new BrandFontIntegrityError("brand_font_object_missing");
     }
     if (object.contentType !== parsed.contentType) throw new BrandFontIntegrityError("brand_font_mime_mismatch");
     if (object.sizeBytes !== parsed.sizeBytes) throw new BrandFontIntegrityError("brand_font_size_mismatch");
-    const [bytes, fingerprint] = await Promise.all([
-      readObjectBytes(parsed.key, 20 * 1024 * 1024),
-      hashObjectSha256(parsed.key),
-    ]);
+    const bytes = await this.storage.readObjectBytes(parsed.key, 20 * 1024 * 1024);
+    const fingerprint = createHash("sha256").update(bytes).digest("hex");
     const parsedFont = parseBrandFont(bytes);
     if (parsedFont.format !== formatForContentType(parsed.contentType)) throw new BrandFontIntegrityError("brand_font_format_mismatch");
     if (fingerprint !== parsed.fingerprint) throw new BrandFontIntegrityError("brand_font_fingerprint_mismatch");
     const owner = resolveBrandOwner(scope);
     try {
-      const created = await prisma.brandFont.create({ data: {
+      const data = {
         ...owner,
         licenseConfirmedByUserId: scope.actorUserId,
         family: parsedFont.family,
@@ -252,20 +309,26 @@ export class BrandFontService {
         sizeBytes: BigInt(parsed.sizeBytes),
         fingerprint,
         licenseConfirmedAt: new Date(),
-      } });
-      return toRow(created, await presignDownloadUrl({ key: created.storageKey }));
+        deletedAt: null,
+      };
+      // The fingerprint is unique for an owner even after soft deletion.
+      // Re-uploading the same bytes restores that asset and its saved references.
+      const created = existing
+        ? await prisma.brandFont.update({ where: { id: existing.id }, data })
+        : await prisma.brandFont.create({ data });
+      return toRow(created, await this.storage.presignDownloadUrl({ key: created.storageKey }), false, parsedFont.face);
     } catch (error) {
       if ((error as { code?: string }).code !== "P2002") throw error;
       const replay = await prisma.brandFont.findFirst({ where: { ...ownerWhere, fingerprint, deletedAt: null } });
       if (!replay) throw error;
-      return toRow(replay, await presignDownloadUrl({ key: replay.storageKey }), true);
+      return this.row(replay, true);
     }
   }
 
   async list(scope: BrandActorScope) {
     const prisma = this.requirePrisma();
     const rows = await prisma.brandFont.findMany({ where: { ...brandOwnerWhere(scope), deletedAt: null }, orderBy: { createdAt: "desc" } });
-    return Promise.all(rows.map(async (row) => toRow(row, await presignDownloadUrl({ key: row.storageKey }))));
+    return Promise.all(rows.map((row) => this.row(row)));
   }
 
 	async resolveSceneReferences(scope: BrandActorScope, scenes: readonly SceneBlock[]) {
@@ -326,6 +389,7 @@ export class BrandFontService {
   async softDelete(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
     assertBrandManageAllowed(scope);
     const parsed = reusableAssetSoftDeleteSchema.parse(input);
+    if (parsed.replacementId === id) throw new BrandFontIntegrityError("brand_font_replacement_invalid");
     const prisma = this.requirePrisma();
     await withSerializableTransaction(prisma, async (tx) => {
       // Only live profiles hold a font in use; a deleted profile never blocks cleanup.
@@ -340,6 +404,15 @@ export class BrandFontService {
         select: { id: true },
       });
       if (templateReference) throw new BrandFontReferenceError();
+      const captionStyleReference = await tx.brandTemplate.findFirst({
+        where: {
+          deletedAt: null,
+          workspaceId: scope.workspaceId,
+          captionPreset: { path: ["fontAsset", "id"], equals: id },
+        },
+        select: { id: true },
+      });
+      if (captionStyleReference) throw new BrandFontReferenceError();
       if (font.profiles.length > 0 && !parsed.replacementId) throw new BrandFontReferenceError();
       const replacement = parsed.replacementId
         ? await tx.brandFont.findFirst({ where: { id: parsed.replacementId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } })

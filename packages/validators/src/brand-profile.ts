@@ -59,6 +59,8 @@ export const brandProfileUpdateSchema = brandProfileCreateSchema
   .extend({
     revision: z.number().int().positive(),
     slug: z.string().trim().min(1).max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
+    // No default: an update that omits the rule keeps the stored one.
+    approvalRule: brandApprovalRuleSchema.optional(),
   })
   .strict();
 
@@ -116,9 +118,7 @@ export const brandFontFinalizeSchema = brandFontUploadSchema
   .extend({
     key: z.string().min(1).max(1024),
     fingerprint: fingerprintSchema,
-    family: z.string().trim().min(1).max(120),
-    style: z.string().trim().min(1).max(80),
-    weight: z.number().int().min(100).max(900),
+    // Font metadata comes from the verified file, never browser form fields.
   })
   .strict();
 
@@ -138,6 +138,7 @@ export const brandProfileMembershipSchema = z.discriminatedUnion("kind", [
     kind: z.literal("font"),
     ...commonMembership,
     role: z.enum(["display", "body", "caption", "fallback"]),
+    remove: z.literal(true).optional(),
   }).strict(),
   z.object({ kind: z.literal("audio"), ...commonMembership }).strict(),
 ]);

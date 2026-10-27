@@ -9,3 +9,5 @@ We rejected keeping the protocol in React effects because it leaves correctness 
 ## Consequences
 
 The session accepts synchronous intents and typed asynchronous operations, resets history when a newer cloud document becomes its baseline, uses conservative whole-document conflict choices, and depends on browser and in-memory adapters for durability, coordination, time, media, and cloud access. Migration transfers one protocol at a time through a temporary React compatibility adapter so no behavior has two active owners.
+
+Release-candidate browser checks for this protocol are in the [Studio Editing Session runbook](../runbooks/studio-editing-session.md).

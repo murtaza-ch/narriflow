@@ -247,6 +247,10 @@ _Avoid_: B-roll URL, upload file, generated output
 A reusable Brand Profile definition that creates a Scene Block, usually an intro, outro, or branded card.
 _Avoid_: Brand Template, saved clip, preset video
 
+**Brand Font**:
+A licensed, uploaded font style owned by a personal or shared Workspace, reusable in Brand Profiles, caption styles, and clip text. Removing it from the Brand Kit retires it from new selections while existing clips retain their chosen style.
+_Avoid_: System font, caption preset, font family
+
 **Campaign Operation**:
 One idempotent request to apply a selection-scoped action to project clips, with an outcome recorded for each selected item.
 _Avoid_: Workflow Run, bulk job, campaign
