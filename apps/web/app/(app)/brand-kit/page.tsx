@@ -17,9 +17,12 @@ import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { FontManager } from "./_components/font-manager";
 import { TemplateGallery } from "./_components/template-gallery";
 import { BrandProfileDefaultButton } from "./_components/brand-profile-default-button";
+import { BrandProfileDeleteButton } from "./_components/brand-profile-delete-button";
 import { PlanLimitNotice } from "../_components/plan-limit-notice";
 import { LockedButton, UpgradeHero } from "../_components/upgrade";
 import { BrandKitVisual } from "../_components/upgrade-visuals";
+import { AccessNote } from "../settings/_components/access-note";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 
 export default async function BrandKitPage() {
   const actor = await admitWorkspacePage("content.view");
@@ -32,9 +35,10 @@ export default async function BrandKitPage() {
     pricingTier: actor.pricingTier,
     isPersonalWorkspace: actor.isPersonalWorkspace,
   };
-  const [profiles, defaultProfileId, templates, fonts] = await Promise.all([
+  const [profiles, defaultProfileId, usage, templates, fonts] = await Promise.all([
     brandProfileService.list(scope),
     brandProfileService.getDefaultId(scope),
+    brandProfileService.usage(scope),
     brandTemplateService.list(actor),
     brandFontService.list(scope),
   ]);
@@ -71,19 +75,19 @@ export default async function BrandKitPage() {
       New profile
     </LockedButton>
   ) : undefined;
-  const newStyleAction = !mayManageBrand ? null : styleRequirement === null ? (
-    <Button size="sm" variant="subtle" asChild><Link href="/brand-kit/styles/new">New style</Link></Button>
-  ) : styleRequirement.requiredTier ? (
-    <LockedButton
-      size="sm"
-      variant="subtle"
-      prompt={{
+  const styleUpgrade = styleRequirement?.requiredTier
+    ? {
         tier: styleRequirement.requiredTier,
         headline: "Upgrade to save your own caption styles",
         highlight: planUpgradeHighlight(styleRequirement.requiredTier, "brandTemplates"),
         canManageBilling,
-      }}
-    >
+      }
+    : null;
+  const customStylesUpgrade = featureUpgradePrompt(actor.pricingTier, "brand.customTemplates", "Upgrade to use your own caption styles");
+  const newStyleAction = !mayManageBrand ? null : styleRequirement === null ? (
+    <Button size="sm" variant="subtle" asChild><Link href="/brand-kit/styles/new">New style</Link></Button>
+  ) : styleUpgrade ? (
+    <LockedButton size="sm" variant="subtle" prompt={styleUpgrade}>
       New style
     </LockedButton>
   ) : null;
@@ -96,6 +100,7 @@ export default async function BrandKitPage() {
           description="Manage your brand colors, fonts, assets, and caption styles."
           actions={hasProfiles ? newProfileAction : undefined}
         />
+        <AccessNote access={actor} capability="brand.manage" action="change the brand kit" mt="-4" />
         {mayManageBrand && profileRequirement && !profileRequirement.requiredTier ? (
           <PlanLimitNotice message={`${profileRequirement.message} Remove a profile to add another.`} upgrade={null} />
         ) : null}
@@ -183,7 +188,19 @@ export default async function BrandKitPage() {
                     <Stack align="flex-end" justify="space-between" minH="176px">
                       <Text textStyle="eyebrow" color={profile.approvalRule === "approval_required" ? "accent.fg" : "fg.muted"}>{profile.approvalRule === "approval_required" ? "Approval required" : "Direct publish"}</Text>
                       <Button size="sm" variant="subtle" asChild><Link href={`/brand-kit/${profile.id}`}>Open <ArrowRight size={13} /></Link></Button>
-                      {canManage && !isDefault && <BrandProfileDefaultButton profileId={profile.id} />}
+                      <Flex gap="1">
+                        {canManage && !isDefault && <BrandProfileDefaultButton profileId={profile.id} />}
+                        {/* Deleting is role-only on every plan; the dialog moves the default and Recipes to a replacement. */}
+                        {mayManageBrand ? (
+                          <BrandProfileDeleteButton
+                            profileId={profile.id}
+                            name={profile.name}
+                            revision={profile.revision}
+                            usage={usage[profile.id] ?? { isDefault: false, recipes: [] }}
+                            replacements={hasProfiles ? profiles.filter((other) => other.id !== profile.id).map((other) => ({ id: other.id, name: other.name })) : []}
+                          />
+                        ) : null}
+                      </Flex>
                     </Stack>
                   </Flex>
                 </Box>
@@ -198,7 +215,18 @@ export default async function BrandKitPage() {
       <Box as="section">
         <Flex justify="space-between" align="center" mb="5"><Text fontSize="16px" fontWeight="500">Style library</Text>{newStyleAction}</Flex>
         {mayManageBrand && styleRequirement && !styleRequirement.requiredTier ? <Box mt="-3" mb="5"><PlanLimitNotice message={`${styleRequirement.message} Delete a style to add another.`} upgrade={null} /></Box> : null}
-        <TemplateGallery builtIns={templates.builtIns} mine={templates.mine.filter((template) => !profiles.some((profile) => profile.templates.some((style) => style.id === template.id)))} defaultId={templates.defaultId} />
+        <TemplateGallery
+          builtIns={templates.builtIns}
+          mine={templates.mine.filter((template) => !profiles.some((profile) => profile.templates.some((style) => style.id === template.id)))}
+          defaultId={templates.defaultId}
+          access={{
+            canManage: mayManageBrand,
+            // Choosing the workspace default is a workspace setting (brand-template.service.ts setDefault).
+            canSetDefault: workspaceAllowsCapability({ role: actor.role, status: actor.status }, "workspace.manage"),
+            customUpgrade: customStylesUpgrade ? { ...customStylesUpgrade, canManageBilling } : null,
+            duplicateBlocked: styleRequirement ? { upgrade: styleUpgrade } : null,
+          }}
+        />
       </Box>
     </Stack>
   );

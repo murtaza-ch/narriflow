@@ -52,9 +52,9 @@ export {
 	BrandProfileMembershipError,
 	BrandProfileMissingAssetError,
 	BrandProfileNotFoundError,
-	BrandProfileReferenceError,
 	buildBrandProfileSnapshot,
 	resolveProfileStyleSelection,
+	type BrandProfileUsage,
 } from "./brand-profile.service";
 export {
 	visualAssetService,

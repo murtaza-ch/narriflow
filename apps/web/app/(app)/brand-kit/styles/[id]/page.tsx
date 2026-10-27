@@ -13,6 +13,9 @@ import {
 } from "@narriflow/services";
 import { BrandFontsProvider, type BrandFontChoice } from "../../_components/brand-fonts";
 import { TemplateForm } from "../../_components/template-form";
+import { planFeatureRequirement, planUpgradeHighlight, workspaceAllowsCapability } from "@narriflow/validators";
+import { PlanLimitNotice } from "../../../_components/plan-limit-notice";
+import { AccessNote } from "../../../settings/_components/access-note";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -52,6 +55,9 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
     );
   }
 
+  // Saving follows brand-template.service.ts update: `brand.manage` and custom styles on the plan.
+  const mayEdit = workspaceAllowsCapability({ role: appUser.role, status: appUser.status }, "brand.manage");
+  const styleRequirement = planFeatureRequirement(appUser.pricingTier, "brand.customTemplates");
   const fontRequirement = brandPlanRequirement(appUser, "brand.customFonts");
   const activeFonts = await brandFontService.list(appUser);
   const retainedFonts = await brandFontService.resolveReferences(appUser, template.captionPreset.fontAsset ? [template.captionPreset.fontAsset] : []);
@@ -74,7 +80,17 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
         animationFillMode="backwards"
         style={{ animationDelay: "60ms" }}
       >
+        {!mayEdit ? (
+          <AccessNote access={appUser} capability="brand.manage" action="edit this style" />
+        ) : styleRequirement ? (
+          <PlanLimitNotice
+            message={styleRequirement.message}
+            upgrade={styleRequirement.requiredTier ? { tier: styleRequirement.requiredTier, headline: "Upgrade to edit your caption styles", highlight: planUpgradeHighlight(styleRequirement.requiredTier, "brand.customTemplates") } : null}
+            canManageBilling={appUser.role === "owner"}
+          />
+        ) : (
         <BrandFontsProvider fonts={fonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: appUser.role === "owner" } : null}><TemplateForm mode="edit" initialTemplate={template} /></BrandFontsProvider>
+        )}
       </Box>
     </Stack>
   );

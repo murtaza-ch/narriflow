@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
-import { buildGenerationContentPack, brandTemplateInputSchema, DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
+import { buildGenerationContentPack, brandTemplateInputSchema, DEFAULT_CAPTION_PRESET, studioEditsSchema } from "@narriflow/validators";
 import { Pool } from "pg";
 import {
   BrandProfileConflictError,
@@ -139,6 +139,41 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     });
     expect(frozen.brandProfileId).toBe(profile.id);
     expect(frozen.brandProfileSnapshot).toMatchObject({ profileId: profile.id });
+  });
+
+  test("freezes the profile's music and sound effects into the Project; later edits leave it alone", async () => {
+    const f = await workspaceFixture("audio-snapshot");
+    const track = (kind: "music" | "sfx", title: string) => prisma.audioAsset.create({ data: {
+      kind, title, workspaceId: f.workspace.id, createdByUserId: f.user.id, storageKey: `audio-assets/${randomUUID()}.mp3`, durationSec: 42,
+    } });
+    const [theme, sting, whoosh, gone] = await Promise.all([track("music", "Theme"), track("music", "Sting"), track("sfx", "Whoosh"), track("music", "Gone")]);
+    const profile = await brandProfileService.create(f.scope, { name: "Northstar", slug: "northstar-audio" });
+    for (const [position, asset] of [theme, whoosh, sting, gone].entries()) {
+      await brandProfileService.setMembership(f.scope, profile.id, { kind: "audio", resourceId: asset.id, position });
+    }
+    await prisma.audioAsset.update({ where: { id: gone.id }, data: { deletedAt: new Date() } });
+
+    const intake = (n: number) => projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id }, {
+      url: `https://www.youtube.com/watch?v=brand-audio-${n}`, brandProfileId: profile.id, commitToken: randomUUID(),
+    });
+    const first = await intake(1);
+    const audioOf = async (projectId: string) => (await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { brandProfileSnapshot: true } }))
+      .brandProfileSnapshot as { audio: unknown };
+    const frozen = {
+      music: [{ assetId: theme.id, title: "Theme", durationSec: 42 }, { assetId: sting.id, title: "Sting", durationSec: 42 }],
+      sfx: [{ assetId: whoosh.id, title: "Whoosh", durationSec: 42 }],
+    };
+    expect((await audioOf(first.project.id)).audio).toEqual(frozen);
+    expect(await projectService.getProjectBrandAudio(f.scope, first.project.id)).toEqual(frozen);
+
+    await brandProfileService.setMembership(f.scope, profile.id, { kind: "audio", resourceId: theme.id, position: 0, remove: true });
+    expect((await audioOf(first.project.id)).audio).toEqual(frozen);
+    expect((await audioOf((await intake(2)).project.id)).audio).toEqual({ music: [{ assetId: sting.id, title: "Sting", durationSec: 42 }], sfx: frozen.sfx });
+
+    const unbranded = await projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id }, {
+      url: "https://www.youtube.com/watch?v=brand-audio-none", brandProfileId: null, commitToken: randomUUID(),
+    });
+    expect(await projectService.getProjectBrandAudio(f.scope, unbranded.project.id)).toEqual({ music: [], sfx: [] });
   });
 
   test("assistant intake resolves only Brand Profiles the actor can use and falls back to the default", async () => {
@@ -504,6 +539,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       }),
     ).not.toBeNull();
     await expect(visualAssetService.softDelete(first.scope, original.id, {})).rejects.toBeInstanceOf(VisualAssetReferenceError);
+    await expect(visualAssetService.softDelete(first.scope, original.id, {})).rejects.toMatchObject({
+      details: { usedIn: expect.stringMatching(/^brand profile /) },
+    });
     const sceneTemplate = await prisma.sceneTemplate.create({
       data: {
         profileId: profile.id,
@@ -526,7 +564,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     });
     await expect(
       visualAssetService.softDelete(first.scope, original.id, { replacementId: replacement.id }),
-    ).rejects.toBeInstanceOf(VisualAssetReferenceError);
+    ).rejects.toMatchObject({ details: { usedIn: "scene template Referenced visual" } });
     await prisma.sceneTemplate.update({
       where: { id: sceneTemplate.id },
       data: { deletedAt: new Date() },
@@ -534,6 +572,30 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await visualAssetService.softDelete(first.scope, original.id, { replacementId: replacement.id });
     expect(await prisma.brandProfileAsset.findUnique({ where: { profileId_assetId: { profileId: profile.id, assetId: replacement.id } } })).not.toBeNull();
     expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: original.id } })).deletedAt).not.toBeNull();
+  });
+
+  test("a clip in an expired Project no longer holds a visual asset; one in a live Project still does", async () => {
+    const f = await workspaceFixture("asset-expired-clip");
+    const asset = await prisma.visualAsset.create({ data: {
+      workspaceId: f.workspace.id, createdByUserId: f.user.id, title: "B-roll", kind: "image",
+      storageKey: `workspaces/${f.workspace.id}/visual-assets/${randomUUID()}.png`, contentType: "image/png", sizeBytes: 128, width: 64, height: 64, fingerprint: "a".repeat(64),
+    } });
+    const placed = studioEditsSchema.parse({ visualBroll: [{ id: randomUUID(), asset: { kind: "visual_asset", id: asset.id, fingerprint: asset.fingerprint }, startSec: 1, endSec: 3, fit: "cover" }] });
+    const clipIn = async (title: string, expiresAt: Date | null) => {
+      const project = await prisma.project.create({ data: { title, sourceMediaUrl: "r2://test/source.mp4", workspaceId: f.workspace.id, createdByUserId: f.user.id, expiresAt } });
+      const pack = await prisma.contentPack.create({ data: { projectId: project.id, outputTypes: ["short_clip"], clipCountTarget: 1, clipDurationSecTarget: 30, toneConstraints: [], captionPreset: "bold-pop", platformPlaybookVersion: "test" } });
+      const run = await prisma.workflowRun.create({ data: { projectId: project.id, idempotencyKey: `run-${randomUUID()}`, stage: "moment_detection", status: "completed", contentPackId: pack.id } });
+      return prisma.clip.create({ data: {
+        projectId: project.id, workflowRunId: run.id, index: 0, startSec: 0, endSec: 10, title, hookText: "Hook", reasoning: "Fixture", category: "hook", transcriptSlice: [], studioEdits: placed as object,
+        viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50, tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "test", llmModel: "test",
+      } });
+    };
+    await clipIn("Expired clip", new Date(Date.now() - 60_000));
+    const live = await clipIn("Live clip", null);
+    await expect(visualAssetService.softDelete(f.scope, asset.id, {})).rejects.toMatchObject({ details: { usedIn: "clip Live clip" } });
+    await prisma.clip.delete({ where: { id: live.id } });
+    await visualAssetService.softDelete(f.scope, asset.id, {});
+    expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: asset.id } })).deletedAt).not.toBeNull();
   });
 
   test("serializes Scene Template creation against referenced asset and font deletion", async () => {
@@ -882,6 +944,143 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await brandProfileService.softDelete(f.scope, profile.id, { revision: profile.revision });
     expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
     expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).deletedAt).not.toBeNull();
+  });
+
+  describe("deleting a profile that is in use", () => {
+    async function inUseFixture(label: string) {
+      const f = await workspaceFixture(label);
+      const doomed = await brandProfileService.create(f.scope, { name: "Doomed", slug: "doomed" });
+      const keeper = await brandProfileService.create(f.scope, { name: "Keeper", slug: "keeper" });
+      await brandProfileService.setDefault(f.scope, doomed.id);
+      const recipe = (name: string, brandProfileId: string | null, deletedAt: Date | null = null) =>
+        prisma.recipe.create({ data: { workspaceId: f.workspace.id, name, brandProfileId, deletedAt, contentPack: buildGenerationContentPack() as object } });
+      const weekly = await recipe("Weekly", doomed.id);
+      const daily = await recipe("Daily", doomed.id);
+      const other = await recipe("Other", keeper.id);
+      const retired = await recipe("Retired", doomed.id, new Date());
+      return { f, doomed, keeper, weekly, daily, other, retired };
+    }
+
+    test("usage names the default and the live Recipes", async () => {
+      const { f, doomed, keeper } = await inUseFixture("delete-usage");
+      expect(await brandProfileService.usage(f.scope, [doomed.id, keeper.id])).toEqual({
+        [doomed.id]: { isDefault: true, recipes: [{ id: expect.any(String), name: "Daily" }, { id: expect.any(String), name: "Weekly" }] },
+        [keeper.id]: { isDefault: false, recipes: [{ id: expect.any(String), name: "Other" }] },
+      });
+    });
+
+    test("a replacement takes over the default and every live Recipe", async () => {
+      const { f, doomed, keeper, weekly, other, retired } = await inUseFixture("delete-replace");
+      await brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision, replacementProfileId: keeper.id });
+      expect(await brandProfileService.getDefaultId(f.scope)).toBe(keeper.id);
+      expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: doomed.id } })).deletedAt).not.toBeNull();
+      const moved = await prisma.recipe.findUniqueOrThrow({ where: { id: weekly.id } });
+      expect(moved).toMatchObject({ brandProfileId: keeper.id, revision: weekly.revision + 1, contentRevision: weekly.contentRevision + 1 });
+      expect(await prisma.recipe.count({ where: { workspaceId: f.workspace.id, brandProfileId: keeper.id, deletedAt: null } })).toBe(3);
+      expect(await prisma.recipe.findUniqueOrThrow({ where: { id: other.id } })).toMatchObject({ revision: other.revision, contentRevision: other.contentRevision });
+      expect((await prisma.recipe.findUniqueOrThrow({ where: { id: retired.id } })).brandProfileId).toBe(doomed.id);
+    });
+
+    test("no replacement clears the default and the Recipes' profile", async () => {
+      const { f, doomed, weekly, daily } = await inUseFixture("delete-null");
+      await brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision, replacementProfileId: null });
+      expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
+      for (const recipe of [weekly, daily]) {
+        expect((await prisma.recipe.findUniqueOrThrow({ where: { id: recipe.id } })).brandProfileId).toBeNull();
+      }
+    });
+
+    test("an unusable replacement changes nothing", async () => {
+      const { f, doomed, keeper, weekly } = await inUseFixture("delete-invalid");
+      const foreign = await workspaceFixture("delete-invalid-foreign");
+      const foreignProfile = await brandProfileService.create(foreign.scope, { name: "Foreign", slug: "foreign" });
+      const gone = await brandProfileService.create(f.scope, { name: "Gone", slug: "gone-replacement" });
+      await brandProfileService.softDelete(f.scope, gone.id, { revision: gone.revision });
+      for (const replacementProfileId of [foreignProfile.id, gone.id, doomed.id, randomUUID()]) {
+        await expect(brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision, replacementProfileId })).rejects.toBeInstanceOf(BrandProfileMembershipError);
+      }
+      await expect(brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision + 1, replacementProfileId: keeper.id })).rejects.toBeInstanceOf(BrandProfileNotFoundError);
+      expect(await brandProfileService.getDefaultId(f.scope)).toBe(doomed.id);
+      expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: doomed.id } })).deletedAt).toBeNull();
+      expect((await prisma.recipe.findUniqueOrThrow({ where: { id: weekly.id } })).brandProfileId).toBe(doomed.id);
+    });
+
+    test("a plan that cannot apply profiles can only delete without a replacement", async () => {
+      const { f: shared, doomed, keeper, weekly } = await inUseFixture("delete-plan");
+      const f = await setTier(shared, "creator");
+      await expect(brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision, replacementProfileId: keeper.id })).rejects.toBeInstanceOf(PlanRequirementError);
+      await brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision });
+      expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
+      expect((await prisma.recipe.findUniqueOrThrow({ where: { id: weekly.id } })).brandProfileId).toBeNull();
+    });
+
+    test("deleting a profile while its replacement is deleted never leaves a default or Recipe on a deleted profile", async () => {
+      for (let round = 0; round < 4; round += 1) {
+        const { f, doomed, keeper } = await inUseFixture(`delete-race-${round}`);
+        const results = await Promise.allSettled([
+          brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision, replacementProfileId: keeper.id }),
+          brandProfileService.softDelete(f.scope, keeper.id, { revision: keeper.revision, replacementProfileId: null }),
+        ]);
+        // The delete of the replacement always succeeds; the other either lands first or is refused.
+        expect(results[1].status).toBe("fulfilled");
+        if (results[0].status === "rejected") expect(results[0].reason).toBeInstanceOf(BrandProfileMembershipError);
+        const live = new Set((await prisma.brandProfile.findMany({ where: { workspaceId: f.workspace.id, deletedAt: null }, select: { id: true } })).map((profile) => profile.id));
+        const defaultId = await brandProfileService.getDefaultId(f.scope);
+        expect(defaultId === null || live.has(defaultId)).toBe(true);
+        const stranded = await prisma.recipe.findMany({ where: { workspaceId: f.workspace.id, deletedAt: null, brandProfileId: { not: null } }, select: { brandProfileId: true } });
+        expect(stranded.filter((recipe) => !live.has(recipe.brandProfileId!))).toEqual([]);
+      }
+    });
+
+    test("a single-profile plan deletes its only (default) profile", async () => {
+      let f = await workspaceFixture("delete-single", true);
+      const only = await brandProfileService.create(f.scope, { name: "Only", slug: "only" });
+      await brandProfileService.setDefault(f.scope, only.id);
+      f = await setTier(f, "creator");
+      await brandProfileService.softDelete(f.scope, only.id, { revision: only.revision, replacementProfileId: null });
+      expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
+      await expect(brandProfileService.create(f.scope, { name: "Next", slug: "next" })).resolves.toMatchObject({ name: "Next" });
+    });
+  });
+
+  test("audio keeps attachment order however the client numbers positions, so the default music is stable", async () => {
+    const f = await workspaceFixture("audio-order");
+    const track = (title: string) => prisma.audioAsset.create({ data: {
+      kind: "music", title, workspaceId: f.workspace.id, createdByUserId: f.user.id, storageKey: `audio-assets/${randomUUID()}.mp3`, durationSec: 30,
+    } });
+    const [first, second, third] = [await track("First"), await track("Second"), await track("Third")];
+    const profile = await brandProfileService.create(f.scope, { name: "Ordered", slug: "ordered-audio" });
+    // The picker sends the same render-time position for quick adds.
+    for (const asset of [first, second, third]) {
+      await brandProfileService.setMembership(f.scope, profile.id, { kind: "audio", resourceId: asset.id, position: 0 });
+    }
+    // Re-adding a track keeps its place.
+    await brandProfileService.setMembership(f.scope, profile.id, { kind: "audio", resourceId: first.id, position: 9 });
+    const titles = async () => (await brandProfileService.resolveForProject(f.scope, { profileId: profile.id })).profileSnapshot.audio.music.map((entry) => entry.title);
+    expect(await titles()).toEqual(["First", "Second", "Third"]);
+    expect((await brandProfileService.get(f.scope, profile.id)).audio.map((entry) => entry.title)).toEqual(["First", "Second", "Third"]);
+
+    // Equal stored positions (concurrent adds) fall back to attachment time.
+    await prisma.brandProfileAudio.updateMany({ where: { profileId: profile.id }, data: { position: 0 } });
+    expect(await titles()).toEqual(["First", "Second", "Third"]);
+  });
+
+  test("styles and audio can be attached and removed, and removing a default style clears the default", async () => {
+    const f = await workspaceFixture("membership-remove");
+    const profile = await brandProfileService.create(f.scope, { name: "Members", slug: "members" });
+    const template = await prisma.brandTemplate.create({ data: { workspaceId: f.workspace.id, name: "Removable", captionPreset: DEFAULT_CAPTION_PRESET } });
+    const audio = await prisma.audioAsset.create({ data: { kind: "sfx", workspaceId: f.workspace.id, storageKey: `workspaces/${f.workspace.id}/audio-assets/${randomUUID()}.mp3`, title: "Whoosh", durationSec: 2 } });
+    const withStyle = await brandProfileService.setMembership(f.scope, profile.id, { kind: "template", resourceId: template.id, position: 0 });
+    const withDefault = await brandProfileService.update(f.scope, profile.id, { revision: withStyle.revision, defaultTemplateId: template.id });
+    expect((await brandProfileService.setMembership(f.scope, profile.id, { kind: "audio", resourceId: audio.id, position: 0 })).audio).toMatchObject([{ id: audio.id, kind: "sfx" }]);
+    expect(withDefault.defaultTemplateId).toBe(template.id);
+    // Removal is cleanup: it stays open on a plan without Brand Profiles.
+    const free = await setTier(f, "free");
+    await brandProfileService.setMembership(free.scope, profile.id, { kind: "audio", resourceId: audio.id, position: 0, remove: true });
+    const afterRemoval = await brandProfileService.setMembership(free.scope, profile.id, { kind: "template", resourceId: template.id, position: 0, remove: true });
+    expect(afterRemoval).toMatchObject({ templates: [], audio: [], defaultTemplateId: null });
+    expect(await prisma.brandTemplate.count({ where: { id: template.id, deletedAt: null } })).toBe(1);
+    await expect(brandProfileService.setMembership(free.scope, profile.id, { kind: "template", resourceId: template.id, position: 0 })).rejects.toBeInstanceOf(PlanRequirementError);
   });
 
   test("approval governance needs Business, and a downgrade keeps an existing rule", async () => {

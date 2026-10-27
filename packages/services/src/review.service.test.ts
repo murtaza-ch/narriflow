@@ -71,6 +71,7 @@ describe("review guest security primitives", () => {
 			},
 			approvalRule: "approval_required",
 			style: null,
+			audio: { music: [], sfx: [] },
 		};
 
 		expect(brandApprovalRequiredByDefault(snapshot)).toBe(true);

@@ -47,7 +47,7 @@ const APPROVAL_REQUIRED_SNAPSHOT = {
 	version: 1, profileId: randomUUID(), profileRevision: 1, name: "Approval required",
 	identity: { primaryColor: "#FFFFFF", secondaryColor: "#111522", accentColor: null, primaryLogoAssetId: null, alternateLogoAssetId: null },
 	voice: { audience: "", tone: [], preferredTerms: [], blockedTerms: [], hashtagGuidance: "" },
-	approvalRule: "approval_required", style: null,
+	approvalRule: "approval_required", style: null, audio: { music: [], sfx: [] },
 };
 
 dbDescribe("Standing Grant PostgreSQL invariants", () => {

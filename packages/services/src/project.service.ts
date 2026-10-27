@@ -39,6 +39,7 @@ import {
 	sourceLanguageCodeSchema,
 	workflowStageUpdatedEventSchema,
 	type WorkflowStageUpdatedEvent,
+	brandProfileSnapshotSchema,
 	contentPackSchema,
 	parseStoredContentPack,
 	planTranscript,
@@ -46,6 +47,7 @@ import {
 	deriveProjectListProgress,
 	finishingSettingsSchema,
 	PLATFORM_PLAYBOOK_VERSION,
+	type BrandAudioSnapshot,
 	type ClipAspectRatio,
 	type ContentPack,
 	type DriveIngestInput,
@@ -2054,6 +2056,26 @@ export class ProjectService {
 			select: { brandSnapshot: true },
 		});
 		return row?.brandSnapshot ?? null;
+	}
+
+	/** The brand audio frozen into the Project when its Brand Profile was
+	 * applied; empty when there was no profile or it had none. */
+	async getProjectBrandAudio(
+		scope: ActorScope,
+		projectId: string,
+	): Promise<BrandAudioSnapshot> {
+		await this.requireActor(scope, "content.view");
+		const prisma = this.requirePrisma();
+		const row = await prisma.project.findFirst({
+			where: {
+				id: projectId,
+				workspaceId: scope.workspaceId,
+				...accessibleProjectWhere(),
+			},
+			select: { brandProfileSnapshot: true },
+		});
+		const snapshot = brandProfileSnapshotSchema.safeParse(row?.brandProfileSnapshot);
+		return snapshot.success ? snapshot.data.audio : { music: [], sfx: [] };
 	}
 
 	/**

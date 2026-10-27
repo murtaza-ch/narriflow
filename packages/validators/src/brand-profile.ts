@@ -31,6 +31,22 @@ export const brandApprovalRuleSchema = z.enum([
   "approval_required",
 ]);
 
+/** One Brand Profile audio reference, frozen into the Project: the id the
+ * editor and renderer resolve (`studioEdits.music.assetId` / `sfx[].assetId`),
+ * plus the display fields the Studio lists without a lookup. */
+export const brandAudioReferenceSchema = z.strictObject({
+  assetId: idSchema,
+  title: z.string().trim().min(1).max(120),
+  durationSec: z.number().finite().min(0),
+});
+
+/** The profile's tracks in attachment order. `music[0]` is the default
+ * background music for the Project's clips; `sfx` is offered first in Studio. */
+export const brandAudioSnapshotSchema = z.strictObject({
+  music: z.array(brandAudioReferenceSchema).max(50),
+  sfx: z.array(brandAudioReferenceSchema).max(50),
+});
+
 export const brandProfileSnapshotSchema = z.strictObject({
   version: z.literal(1),
   profileId: idSchema,
@@ -40,6 +56,7 @@ export const brandProfileSnapshotSchema = z.strictObject({
   voice: brandVoiceGuidanceSchema,
   approvalRule: brandApprovalRuleSchema,
   style: brandTemplateSnapshotSchema.nullable(),
+  audio: brandAudioSnapshotSchema,
 });
 
 export const brandProfileCreateSchema = z
@@ -128,7 +145,7 @@ const commonMembership = {
 };
 
 export const brandProfileMembershipSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("template"), ...commonMembership }).strict(),
+  z.object({ kind: z.literal("template"), ...commonMembership, remove: z.literal(true).optional() }).strict(),
   z.object({
     kind: z.literal("asset"),
     ...commonMembership,
@@ -140,7 +157,7 @@ export const brandProfileMembershipSchema = z.discriminatedUnion("kind", [
     role: z.enum(["display", "body", "caption", "fallback"]),
     remove: z.literal(true).optional(),
   }).strict(),
-  z.object({ kind: z.literal("audio"), ...commonMembership }).strict(),
+  z.object({ kind: z.literal("audio"), ...commonMembership, remove: z.literal(true).optional() }).strict(),
 ]);
 
 export const brandProfileSoftDeleteSchema = z
@@ -162,6 +179,8 @@ export const reusableAssetSoftDeleteSchema = z
   .object({ replacementId: idSchema.nullable().optional() })
   .strict();
 
+export type BrandAudioReference = z.infer<typeof brandAudioReferenceSchema>;
+export type BrandAudioSnapshot = z.infer<typeof brandAudioSnapshotSchema>;
 export type BrandVoiceGuidance = z.infer<typeof brandVoiceGuidanceSchema>;
 export type BrandVisualIdentity = z.infer<typeof brandVisualIdentitySchema>;
 export type BrandProfileCreateInput = z.infer<typeof brandProfileCreateSchema>;

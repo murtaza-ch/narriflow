@@ -1,6 +1,7 @@
 import { Prisma, type BrandProfile, type BrandTemplate } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
+  brandAudioSnapshotSchema,
   brandProfileCreateSchema,
   brandProfileListSchema,
   brandProfileMembershipSchema,
@@ -10,6 +11,7 @@ import {
   brandVisualIdentitySchema,
   brandVoiceGuidanceSchema,
   resolvePricingTier,
+  type BrandAudioSnapshot,
   type BrandProfileCreateInput,
   type BrandProfileListInput,
   type BrandProfileMembershipInput,
@@ -21,6 +23,7 @@ import {
 import {
   assertBrandApplicationAllowed,
   assertBrandManageAllowed,
+  assertBrandMutationAllowed,
   assertBrandMutationAllowedWithAnalytics,
   brandPlanRequirement,
   brandOwnerWhere,
@@ -29,6 +32,8 @@ import {
   type BrandActorScope,
 } from "./brand-ownership";
 import { requirePlanFeature, requireWithinPlanLimit } from "./plan-features";
+import { onRecipeContentChanged } from "./recipe-content-change";
+import { flushWorkspaceEvents } from "./workspace-event";
 import { analyticsService } from "./analytics.service";
 import { headObject, presignDownloadUrl } from "./r2-storage";
 import {
@@ -39,7 +44,6 @@ import {
 const brandProfileFailureCatalog = {
   brand_profile_not_found: "missing",
   brand_profile_conflict: "conflict",
-  brand_profile_is_default: "conflict",
   brand_profile_membership_invalid: "unprocessable",
   brand_profile_asset_missing: "unprocessable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -62,14 +66,6 @@ export class BrandProfileConflictError extends ExpectedDomainFailureError<"brand
   }
 }
 
-export class BrandProfileReferenceError extends ExpectedDomainFailureError<"brand_profile_is_default"> {
-  constructor() {
-    const code = "brand_profile_is_default" satisfies BrandProfileFailureCode;
-    super({ code, kind: brandProfileFailureCatalog[code], message: "Choose a different default Brand Profile before deleting this one" });
-    this.name = "BrandProfileReferenceError";
-  }
-}
-
 export class BrandProfileMembershipError extends ExpectedDomainFailureError<"brand_profile_membership_invalid"> {
   constructor() {
     const code = "brand_profile_membership_invalid" satisfies BrandProfileFailureCode;
@@ -84,6 +80,12 @@ export class BrandProfileMissingAssetError extends ExpectedDomainFailureError<"b
     super({ code, kind: brandProfileFailureCatalog[code], message: "Replace missing Brand Profile assets before applying this profile" });
     this.name = "BrandProfileMissingAssetError";
   }
+}
+
+export interface BrandProfileUsage {
+  /** The Workspace's (or personal) default for new projects. */
+  isDefault: boolean;
+  recipes: { id: string; name: string }[];
 }
 
 type SnapshotProfile = Pick<
@@ -125,9 +127,31 @@ function templateSnapshot(template: SnapshotTemplate): BrandTemplateSnapshot {
   });
 }
 
+type SnapshotAudioMembership = {
+  audio: { id: string; kind: string; title: string; durationSec: number; deletedAt: Date | null };
+};
+
+/** The profile's live audio, split by kind in attachment order. Soft-deleted
+ * tracks are left out, like they are everywhere else the profile is read. */
+export function brandAudioSnapshot(
+  memberships: readonly SnapshotAudioMembership[],
+): BrandAudioSnapshot {
+  const byKind = (kind: "music" | "sfx") =>
+    memberships
+      .filter(({ audio }) => !audio.deletedAt && audio.kind === kind)
+      .slice(0, 50)
+      .map(({ audio }) => ({
+        assetId: audio.id,
+        title: audio.title.trim().slice(0, 120) || "Untitled",
+        durationSec: audio.durationSec,
+      }));
+  return brandAudioSnapshotSchema.parse({ music: byKind("music"), sfx: byKind("sfx") });
+}
+
 export function buildBrandProfileSnapshot(
   profile: SnapshotProfile,
   template: SnapshotTemplate | null,
+  audio: BrandAudioSnapshot,
 ) {
   return {
     version: 1 as const,
@@ -138,6 +162,7 @@ export function buildBrandProfileSnapshot(
     voice: brandVoiceGuidanceSchema.parse(profile.voiceGuidance),
     approvalRule: profile.approvalRule,
     style: template ? templateSnapshot(template) : null,
+    audio,
   };
 }
 
@@ -186,11 +211,15 @@ function audioMembershipOwnerWhere(
       };
 }
 
+/** Attachment order. Positions can tie (two quick adds), so the order never
+ * leans on position alone: `music[0]` is the default for new clips. */
+const audioMembershipOrder = [{ position: "asc" }, { createdAt: "asc" }, { audioId: "asc" }] satisfies Prisma.BrandProfileAudioOrderByWithRelationInput[];
+
 const profileInclude = {
   templates: { orderBy: { position: "asc" as const }, include: { template: true } },
   assets: { orderBy: { position: "asc" as const }, include: { asset: true } },
   fonts: { orderBy: { position: "asc" as const }, include: { font: true } },
-  audio: { orderBy: { position: "asc" as const }, include: { audio: true } },
+  audio: { orderBy: audioMembershipOrder, include: { audio: true } },
 } satisfies Prisma.BrandProfileInclude;
 
 type ProfileAggregate = Prisma.BrandProfileGetPayload<{ include: typeof profileInclude }>;
@@ -550,7 +579,8 @@ export class BrandProfileService {
 
   async setMembership(scope: BrandActorScope, profileId: string, input: BrandProfileMembershipInput) {
     const parsed = brandProfileMembershipSchema.parse(input);
-    if (parsed.kind === "font" && parsed.remove) assertBrandManageAllowed(scope);
+    // Removing a member is cleanup: role-only, so it stays possible on every plan.
+    if (parsed.kind !== "asset" && parsed.remove) assertBrandManageAllowed(scope);
     else await assertBrandMutationAllowedWithAnalytics(
       scope,
       input.kind === "font" ? "brand.customFonts" : "brand.profiles",
@@ -561,7 +591,10 @@ export class BrandProfileService {
       const profile = await tx.brandProfile.findFirst({ where: { id: profileId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } });
       if (!profile) throw new BrandProfileNotFoundError();
       const owner = brandOwnerWhere(scope);
-      if (parsed.kind === "template") {
+      if (parsed.kind === "template" && parsed.remove) {
+        await tx.brandProfileTemplate.deleteMany({ where: { profileId, templateId: parsed.resourceId } });
+        await tx.brandProfile.updateMany({ where: { id: profileId, defaultTemplateId: parsed.resourceId }, data: { defaultTemplateId: null } });
+      } else if (parsed.kind === "template") {
         const resource = await tx.brandTemplate.findFirst({ where: { id: parsed.resourceId, isBuiltIn: false, deletedAt: null, ...templateMembershipOwnerWhere(scope) }, select: { id: true } });
         if (!resource) throw new BrandProfileMembershipError();
         const existingMembership = await tx.brandProfileTemplate.findUnique({
@@ -591,10 +624,15 @@ export class BrandProfileService {
           if (!resource) throw new BrandProfileMembershipError();
           await tx.brandProfileFont.upsert({ where: { profileId_role: { profileId, role: parsed.role } }, create: { profileId, fontId: resource.id, role: parsed.role, position: parsed.position }, update: { fontId: resource.id, position: parsed.position } });
         }
+      } else if (parsed.remove) {
+        await tx.brandProfileAudio.deleteMany({ where: { profileId, audioId: parsed.resourceId } });
       } else {
         const resource = await tx.audioAsset.findFirst({ where: { id: parsed.resourceId, deletedAt: null, ...audioMembershipOwnerWhere(scope) }, select: { id: true } });
         if (!resource) throw new BrandProfileMembershipError();
-        await tx.brandProfileAudio.upsert({ where: { profileId_audioId: { profileId, audioId: resource.id } }, create: { profileId, audioId: resource.id, position: parsed.position }, update: { position: parsed.position } });
+        // New tracks go last; the client's position is a render-time guess. A
+        // track already attached keeps its place.
+        const last = await tx.brandProfileAudio.aggregate({ where: { profileId }, _max: { position: true } });
+        await tx.brandProfileAudio.upsert({ where: { profileId_audioId: { profileId, audioId: resource.id } }, create: { profileId, audioId: resource.id, position: (last._max.position ?? -1) + 1 }, update: {} });
       }
       await tx.brandProfile.update({ where: { id: profileId }, data: { revision: { increment: 1 }, updatedByUserId: scope.actorUserId } });
     });
@@ -611,21 +649,68 @@ export class BrandProfileService {
     else await prisma.user.update({ where: { id: owner.userId! }, data: { defaultBrandProfileId: id } });
   }
 
+  /** What deleting these profiles would affect: the default for new projects
+   * and the live Recipes that name them. Keyed by profile id. */
+  async usage(scope: BrandActorScope, profileIds?: string[]) {
+    const prisma = this.requirePrisma();
+    const [defaultId, recipes] = await Promise.all([
+      this.getDefaultId(scope),
+      prisma.recipe.findMany({
+        where: { deletedAt: null, brandProfileId: profileIds ? { in: profileIds } : { not: null }, brandProfile: brandOwnerWhere(scope) },
+        select: { id: true, name: true, brandProfileId: true },
+        orderBy: [{ name: "asc" }, { id: "asc" }],
+      }),
+    ]);
+    const byProfile: Record<string, BrandProfileUsage> = {};
+    const entry = (id: string) => (byProfile[id] ??= { isDefault: false, recipes: [] });
+    if (defaultId) entry(defaultId).isDefault = true;
+    for (const recipe of recipes) entry(recipe.brandProfileId!).recipes.push({ id: recipe.id, name: recipe.name });
+    return byProfile;
+  }
+
+  /** Deleting is cleanup: role-only, on every plan. The default and every
+   * Recipe that named the profile move to `replacementProfileId`, or to no
+   * profile when it is absent, in the same transaction. Projects keep the
+   * brand they froze. */
   async softDelete(scope: BrandActorScope, id: string, input: BrandProfileSoftDeleteInput) {
     assertBrandManageAllowed(scope);
     const parsed = brandProfileSoftDeleteSchema.parse(input);
+    const replacementId = parsed.replacementProfileId ?? null;
+    if (replacementId) {
+      if (replacementId === id) throw new BrandProfileMembershipError();
+      // Naming a profile applies it, so the plan has to admit profiles.
+      assertBrandMutationAllowed(scope, "brand.profiles");
+    }
     const prisma = this.requirePrisma();
-    const profile = await prisma.brandProfile.findFirst({ where: { id, revision: parsed.revision, ...brandOwnerWhere(scope), deletedAt: null }, include: { defaultForUsers: { select: { id: true } }, defaultForWorkspaces: { select: { id: true } } } });
-    if (!profile) throw new BrandProfileNotFoundError();
-    const isDefault = profile.defaultForUsers.length > 0 || profile.defaultForWorkspaces.length > 0;
-    // A plan that can't choose another default can still delete its profile.
-    if (isDefault && !brandPlanRequirement(scope, "brand.profiles")) throw new BrandProfileReferenceError();
     await prisma.$transaction(async (tx) => {
-      if (isDefault) {
-        await tx.user.updateMany({ where: { defaultBrandProfileId: id }, data: { defaultBrandProfileId: null } });
-        await tx.workspace.updateMany({ where: { defaultBrandProfileId: id }, data: { defaultBrandProfileId: null } });
+      // Lock the profile and its replacement together, in id order. A delete of
+      // the replacement running at the same time waits here, then sees this
+      // move committed and carries it on; it can't strand a default or Recipe
+      // on a deleted profile.
+      const lockIds = replacementId ? [id, replacementId] : [id];
+      await tx.$queryRaw`SELECT "id" FROM "BrandProfile" WHERE "id" = ANY(${lockIds}::uuid[]) AND "deletedAt" IS NULL ORDER BY "id" FOR NO KEY UPDATE`;
+      const profile = await tx.brandProfile.findFirst({ where: { id, revision: parsed.revision, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } });
+      if (!profile) throw new BrandProfileNotFoundError();
+      if (replacementId) {
+        const replacement = await tx.brandProfile.findFirst({ where: { id: replacementId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } });
+        if (!replacement) throw new BrandProfileMembershipError();
       }
+      await tx.user.updateMany({ where: { defaultBrandProfileId: id }, data: { defaultBrandProfileId: replacementId } });
+      await tx.workspace.updateMany({ where: { defaultBrandProfileId: id }, data: { defaultBrandProfileId: replacementId } });
       await tx.brandProfile.update({ where: { id }, data: { deletedAt: new Date(), revision: { increment: 1 }, updatedByUserId: scope.actorUserId } });
+      // Moving a Recipe's profile is a content edit, as in RecipeService.update.
+      const recipes = await tx.recipe.findMany({ where: { brandProfileId: id, deletedAt: null }, select: { id: true } });
+      if (recipes.length > 0) {
+        const recipeIds = recipes.map((recipe) => recipe.id);
+        await tx.recipe.updateMany({
+          where: { id: { in: recipeIds } },
+          data: { brandProfileId: replacementId, revision: { increment: 1 }, contentRevision: { increment: 1 }, updatedByUserId: scope.actorUserId },
+        });
+        const rules = await tx.autopilotRule.findMany({ where: { recipeId: { in: recipeIds } }, select: { id: true } });
+        await onRecipeContentChanged(tx, rules.map((rule) => rule.id));
+        // Counter last, after every other lock.
+        await flushWorkspaceEvents(tx);
+      }
     });
   }
 
@@ -648,7 +733,7 @@ export class BrandProfileService {
       throw error;
     }
     const prisma = this.requirePrisma();
-    const profile = await prisma.brandProfile.findFirst({ where: { id: input.profileId, ...brandOwnerWhere(scope), deletedAt: null }, include: { templates: { include: { template: true } } } });
+    const profile = await prisma.brandProfile.findFirst({ where: { id: input.profileId, ...brandOwnerWhere(scope), deletedAt: null }, include: { templates: { include: { template: true } }, audio: { orderBy: audioMembershipOrder, include: { audio: true } } } });
     if (!profile) throw new BrandProfileNotFoundError();
     const identity = brandVisualIdentitySchema.parse(profile.visualIdentity);
     const logoAssetIds = [
@@ -678,7 +763,7 @@ export class BrandProfileService {
     const selected = selectedId ? profile.templates.find((membership) => membership.templateId === selectedId)?.template ?? null : null;
     return {
       profileId: profile.id,
-      profileSnapshot: buildBrandProfileSnapshot(profile, selected),
+      profileSnapshot: buildBrandProfileSnapshot(profile, selected, brandAudioSnapshot(profile.audio)),
       templateId: selected?.id ?? null,
       templateSnapshot: selected ? templateSnapshot(selected) : null,
     };

@@ -1,7 +1,7 @@
 import { Box, Stack } from "@chakra-ui/react";
 import Link from "next/link";
 import { brandCountRequirement, brandProfileService } from "@narriflow/services";
-import { hasFeature, planUpgradeHighlight } from "@narriflow/validators";
+import { planFeatureRequirement, planUpgradeHighlight } from "@narriflow/validators";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
@@ -27,6 +27,21 @@ export default async function NewBrandProfilePage() {
         highlight: planUpgradeHighlight(requirement.requiredTier, "brandProfiles"),
       }
     : null;
+  // Approval rules are a plan feature (brand-profile.service.ts); below it the field explains the upgrade.
+  const governanceRequirement = planFeatureRequirement(actor.pricingTier, "brand.governance");
+  const governance = governanceRequirement
+    ? {
+        message: governanceRequirement.message,
+        upgrade: governanceRequirement.requiredTier
+          ? {
+              tier: governanceRequirement.requiredTier,
+              headline: "Upgrade to require approval before publishing",
+              highlight: planUpgradeHighlight(governanceRequirement.requiredTier, "brand.governance"),
+              canManageBilling: actor.role === "owner",
+            }
+          : null,
+      }
+    : null;
   return (
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
@@ -37,8 +52,8 @@ export default async function NewBrandProfilePage() {
         />
       </Box>
       {requirement ? (
-        <PlanLimitNotice message={requirement.message} upgrade={upgrade} canManageBilling={actor.role === "owner"} />
-      ) : <BrandProfileCreateForm governanceAvailable={hasFeature(actor.pricingTier, "brand.governance")} />}
+        <PlanLimitNotice message={requirement.requiredTier ? requirement.message : `${requirement.message} Delete a profile in Brand kit to add another.`} upgrade={upgrade} canManageBilling={actor.role === "owner"} />
+      ) : <BrandProfileCreateForm governance={governance} />}
     </Stack>
   );
 }

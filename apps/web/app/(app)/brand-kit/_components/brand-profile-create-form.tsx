@@ -7,6 +7,8 @@ import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Select } from "@narriflow/ui/components/select";
 import { toaster } from "@narriflow/ui/components/toaster";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import type { UpgradePrompt } from "../../_components/upgrade";
 
 function slugify(value: string) {
   return value.toLocaleLowerCase("en-US").trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
@@ -16,7 +18,12 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <Stack gap="1.5"><Text fontSize="13px" fontWeight="500" color="fg">{label}</Text>{children}</Stack>;
 }
 
-export function BrandProfileCreateForm({ governanceAvailable }: { governanceAvailable: boolean }) {
+export function BrandProfileCreateForm({
+  governance,
+}: {
+  /** Why the plan can't require approval, or `null` when it can. */
+  governance: { message: string; upgrade: UpgradePrompt | null } | null;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [name, setName] = useState("");
@@ -74,7 +81,14 @@ export function BrandProfileCreateForm({ governanceAvailable }: { governanceAvai
           <Grid templateColumns="repeat(3, 1fr)" gap="3">
             {[{ label: "Primary", value: primaryColor, set: setPrimaryColor }, { label: "Secondary", value: secondaryColor, set: setSecondaryColor }, { label: "Signal", value: accentColor, set: setAccentColor }].map((color) => <Field key={color.label} label={color.label}><Input type="color" aria-label={color.label} value={color.value} onChange={(event) => color.set(event.currentTarget.value.toUpperCase())} p="1" /></Field>)}
           </Grid>
-          {governanceAvailable ? <Field label="Publishing rule"><Select ariaLabel="Publishing rule" items={[{ label: "Direct publish", value: "none" }, { label: "Approval required", value: "approval_required" }]} value={approvalRule} onValueChange={setApprovalRule} /></Field> : null}
+          {governance ? (
+            <Field label="Publishing rule">
+              <Text fontSize="13px" color="fg.muted">Direct publish</Text>
+              <PlanLimitNotice message={governance.message} upgrade={governance.upgrade} />
+            </Field>
+          ) : (
+            <Field label="Publishing rule"><Select ariaLabel="Publishing rule" items={[{ label: "Direct publish", value: "none" }, { label: "Approval required", value: "approval_required" }]} value={approvalRule} onValueChange={setApprovalRule} /></Field>
+          )}
         </Stack>
         <Stack gap="5">
           <Text fontSize="16px" fontWeight="500">Voice</Text>

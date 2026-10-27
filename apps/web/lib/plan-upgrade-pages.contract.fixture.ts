@@ -24,7 +24,7 @@ mock.module("@narriflow/services", () => ({
   brandPlanRequirement: (scope: typeof actor, feature: Parameters<typeof planFeatureRequirement>[1]) => planFeatureRequirement(scope.pricingTier, feature),
   brandCountRequirement: () => null,
   brandFontService: { list: noItems },
-  brandProfileService: { list: noItems, getDefaultId: noValue },
+  brandProfileService: { list: noItems, getDefaultId: noValue, usage: async () => ({}) },
   brandTemplateService: { list: async () => ({ builtIns: [], mine: Array.from({ length: styleCount }, (_, id) => ({ id: String(id) })), defaultId: null }) },
 
 

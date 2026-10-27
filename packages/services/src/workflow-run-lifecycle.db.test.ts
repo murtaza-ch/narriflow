@@ -18,6 +18,7 @@ import {
   CLIP_AUTO_LAYOUT_ENGINE,
   CLIP_AUTO_LAYOUT_VERSION,
   fitSuppliedUtterances,
+  studioEditsSchema,
   workflowStageUpdatedEventSchema,
 } from "@narriflow/validators";
 import { Pool } from "pg";
@@ -2642,6 +2643,31 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     // The completion event freezes the export for the generation.
     const completion = await prisma.workflowEvent.findFirstOrThrow({ where: { workflowRunId: run.id, status: "completed" } });
     expect(completion.payload).toMatchObject({ generationExport: { exportId: exports[0]!.id, clipId: clip.id } });
+  });
+
+  test("detected clips are seeded with the Project's Brand Profile music through the real persistence path", async () => {
+    const { project, run } = await fixture("moment_detection");
+    const trackId = randomUUID();
+    await prisma.project.update({ where: { id: project.id }, data: { brandProfileSnapshot: {
+      version: 1, profileId: randomUUID(), profileRevision: 1, name: "Northstar", identity: {}, voice: {}, approvalRule: "none", style: null,
+      audio: { music: [{ assetId: trackId, title: "Theme", durationSec: 60 }, { assetId: randomUUID(), title: "Second", durationSec: 30 }], sfx: [] },
+    } } });
+    const attempt = await getWorkflowRunLifecycle().claim("moment_detection");
+    if (!attempt) throw new Error("moment-detection claim missing");
+    expect(attempt.workflowRunId).toBe(run.id);
+
+    const detected = (startSec: number) => ({
+      startSec, endSec: startSec + 30, title: null, hookText: "Hook", payoffText: null, reasoning: "Fixture", category: "hook" as const,
+      platformFit: ["tiktok" as const], hookStrengthScore: 70, emotionalIntensityScore: 70, storyCompletenessScore: 70, pacingScore: 70,
+      durationOptimalityScore: 70, viralityScore: 70, tiktokScore: 70, youtubeScore: 70, instagramScore: 70, transcriptSlice: [],
+    });
+    await clipService.persistDetectedClips(attempt, [detected(0), detected(60)], { provider: "test", model: "test", totalTokensUsed: 1 });
+
+    const clips = await prisma.clip.findMany({ where: { projectId: project.id }, orderBy: { index: "asc" } });
+    expect(clips).toHaveLength(2);
+    for (const clip of clips) {
+      expect(studioEditsSchema.parse(clip.studioEdits).music).toMatchObject({ assetId: trackId, title: "Theme", url: null });
+    }
   });
 
   test("a captioned video without its clip cannot complete detection, and nothing is admitted or completed", async () => {

@@ -484,6 +484,22 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect(row.id).not.toBe(source.id);
     });
 
+    test("starts with the Project's brand music, and leaves the source clip's music alone", async () => {
+      const { scope, workspaceId, userId } = await workspaceFixture("clips-brand-music");
+      const project = await clipProject(workspaceId, userId);
+      const run = await generationRun(project.id, "bold-pop");
+      await sourceClip(project.id, run.id);
+      const trackId = randomUUID();
+      await prisma.project.update({ where: { id: project.id }, data: { brandProfileSnapshot: {
+        version: 1, profileId: randomUUID(), profileRevision: 1, name: "Northstar", identity: {}, voice: {}, approvalRule: "none", style: null,
+        audio: { music: [{ assetId: trackId, title: "Theme", durationSec: 60 }], sfx: [] },
+      } } });
+
+      const created = await clipService.createClipFromRange(scope, project.id, range);
+      const edits = studioEditsSchema.parse((await prisma.clip.findUniqueOrThrow({ where: { id: created.id } })).studioEdits);
+      expect(edits.music).toEqual({ ...studioEditsSchema.parse(undefined).music, assetId: trackId, title: "Theme", url: null });
+    });
+
     test("the run's default falls back to the Brand Profile style, then the built-in style", async () => {
       const { scope, workspaceId, userId } = await workspaceFixture("clips-brand");
       const project = await clipProject(workspaceId, userId);

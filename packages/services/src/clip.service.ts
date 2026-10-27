@@ -25,6 +25,7 @@ import {
 	EDITOR_DOCUMENT_VERSION,
 	getCaptionPresetById,
   getEffectiveClipTiming,
+  brandProfileSnapshotSchema,
   isBrandDefaultCaptionPresetId,
   parseClipAutoLayoutAnalysis,
   parseClipSplitLayoutAnalysis,
@@ -610,6 +611,27 @@ export function planStudioEditsForClipFromSelection(
   };
 }
 
+/**
+ * A new clip's background music when its Project's Brand Profile has music:
+ * the profile's first track, with the Studio's own defaults for everything
+ * else (the same fields the Music panel sets when a user picks a track).
+ * The track is referenced by `assetId` alone; preview and render both
+ * resolve a fresh URL from it. A clip that already has music keeps it.
+ */
+export function seedBrandMusic(
+  studioEdits: StudioEdits,
+  brandProfileSnapshot: unknown,
+): StudioEdits {
+  if (studioEdits.music.assetId || studioEdits.music.url) return studioEdits;
+  const snapshot = brandProfileSnapshotSchema.safeParse(brandProfileSnapshot);
+  const track = snapshot.success ? snapshot.data.audio.music[0] : undefined;
+  if (!track) return studioEdits;
+  return {
+    ...studioEdits,
+    music: { ...studioEdits.music, assetId: track.assetId, title: track.title, url: null },
+  };
+}
+
 /** The caption style a generation run gives its clips: the run's Content Pack
  * choice, or the Brand Profile style snapshotted on the Project. */
 function runDefaultCaptionPreset(brandSnapshot: unknown, captionPresetId: string | null | undefined): CaptionPreset {
@@ -1058,7 +1080,7 @@ export class ClipService {
     const { projectId, workflowRunId } = attempt;
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { brandSnapshot: true, sourceDurationSeconds: true, sourceProbe: true },
+      select: { brandSnapshot: true, brandProfileSnapshot: true, sourceDurationSeconds: true, sourceProbe: true },
     });
 
     const resolvedCaptionPreset = runDefaultCaptionPreset(
@@ -1068,8 +1090,11 @@ export class ClipService {
     // A caption-only generation's clip is its whole source (see
     // clipDurationBounds). A captioned video also states how to frame it.
     const wholeSource = contentPack?.mode === "caption_only";
-    const studioEdits = studioEditsSchema.parse(
-      contentPack?.captionedVideo ? captionedVideoFramingEdits(contentPack.captionedVideo.framing) : undefined,
+    const studioEdits = seedBrandMusic(
+      studioEditsSchema.parse(
+        contentPack?.captionedVideo ? captionedVideoFramingEdits(contentPack.captionedVideo.framing) : undefined,
+      ),
+      project?.brandProfileSnapshot,
     );
 
     const detectedClipRows = clips.map((clip, i) => {
@@ -1813,6 +1838,7 @@ export class ClipService {
         sourceDurationSeconds: true,
         sourceProbe: true,
         brandSnapshot: true,
+        brandProfileSnapshot: true,
         transcript: { select: { utterancesJson: true } },
         clips: { orderBy: { createdAt: "desc" }, take: 1, select: { workflowRunId: true, index: true } },
       },
@@ -1835,7 +1861,7 @@ export class ClipService {
       range: input,
       look: {
         captionPreset: runDefaultCaptionPreset(project.brandSnapshot, run?.contentPack?.captionPreset),
-        studioEdits: studioEditsSchema.parse(undefined),
+        studioEdits: seedBrandMusic(studioEditsSchema.parse(undefined), project.brandProfileSnapshot),
         brollUrl: null,
       },
       origin: { reasoning: "Created from a library search result.", llmModel: "library-search" },
