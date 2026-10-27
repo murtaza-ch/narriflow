@@ -8,7 +8,9 @@ import {
   type CreateGeneratedMediaInput,
   type GeneratedMediaReconciliation,
   GeneratedMediaJobError,
+  GeneratedMediaProviderError,
 } from "./generated-media";
+import { generatedImageProviderConfigured } from "./generation-usage";
 import { prismaGeneratedMediaStore } from "./generated-media-prisma-store";
 import { generatedMediaPromptProtectionFromEnv } from "./generated-media-prompt-protection";
 import { createProductionGeneratedMediaPublisher } from "./generated-media-production-publisher";
@@ -24,7 +26,12 @@ function boundedInteger(value: string | undefined, fallback: number, minimum: nu
   return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
 }
 
-function createProductionModule(environment: NodeJS.ProcessEnv = process.env) {
+export function createProductionModule(environment: NodeJS.ProcessEnv = process.env) {
+  // The rule Studio's capability reports: without its settings, generation is
+  // temporarily unavailable (a typed 503), never an unexpected failure.
+  if (!generatedImageProviderConfigured(environment)) {
+    throw new GeneratedMediaProviderError("generated_media_provider_not_configured");
+  }
   return createGeneratedMediaModule({
     store: prismaGeneratedMediaStore,
     provider: openAiImageProviderFromEnv(environment),

@@ -351,7 +351,9 @@ export function GeneratedImagesPanel() {
   const terminal = jobs.filter((job) => ["failed", "rejected", "cancelled"].includes(job.status));
   const limitExhausted = usage?.remaining === 0;
 
-  const unavailableCopy = "Image generation is not included in this workspace plan.";
+  const unavailableCopy = generatedImagesCapability.reason === "provider_unavailable"
+    ? "Image generation is temporarily unavailable. Existing jobs and images remain available below."
+    : "Image generation is not included in this workspace plan.";
 
   return (
     <Stack gap="0" h="100%" overflowY="auto">
@@ -435,8 +437,9 @@ export function GeneratedImagesPanel() {
           ))}
         </SimpleGrid>
 
-        {limitExhausted && usage ? (() => {
+        {generatedImagesCapability.available && limitExhausted && usage ? (() => {
           // Only a larger allowance on a higher tier is offered; a concurrency limit just waits.
+          // An unavailable provider is never an upgrade reason.
           const prompt = generatedImagesUpgradePrompt(currentTier, usage.monthUsed);
           const exhausted = generatedImagesExhaustedCopy(usage, prompt);
           return (

@@ -1,3 +1,4 @@
+import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../brand-font-resolution";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { extname, join } from "node:path";
 import {
@@ -2420,6 +2421,7 @@ async function renderClipGroup(input: {
 			),
 		]).values(),
 	];
+	const customFontReferences = documentFontReferences(compositionDocument);
 	const sceneFontReferences = [
 		...new Map(
 			compositionDocument.sceneBlocks.flatMap((block) =>
@@ -2443,11 +2445,11 @@ async function renderClipGroup(input: {
 	> = {};
 	const resolvedSceneFonts: Record<string, string> = {};
 	const sceneSources =
-		sceneAssetReferences.length > 0 || sceneFontReferences.length > 0
+		sceneAssetReferences.length > 0 || sceneFontReferences.length > 0 || customFontReferences.length > 0
 			? await currentRenderAdapters().assets.loadSceneSources({
 					workspaceId: frozenState.workspaceId,
 					visualIds: sceneAssetReferences.map((asset) => asset.id),
-					fontIds: sceneFontReferences.map((font) => font.id),
+					fontIds: [...new Set([...sceneFontReferences.map((font) => font.id), ...customFontReferences.map((font) => font.id)])],
 				})
 			: { visuals: [], fonts: [] };
 	if (sceneAssetReferences.length > 0) {
@@ -2547,6 +2549,17 @@ async function renderClipGroup(input: {
 			] = path;
 		}
 	}
+ const customFonts = await resolveRenderBrandFonts({
+   references: customFontReferences, fonts: sceneSources.fonts, directory: tempDir, signal: currentRenderSignal(),
+   download: async (key, filePath) => {
+     await currentRenderAdapters().storage.downloadObjectToFile({ key, filePath, signal: renderStorageSignal() });
+   },
+ });
+ for (const reference of customFontReferences) {
+   const font = customFonts.get(brandFontKey(reference));
+   if (font) resolvedSceneFonts[compositionAssetRef("brand_font", brandFontKey(reference))] = font.path;
+ }
+ const captionFontsDirectory = await prepareCaptionFontsDirectory(tempDir, customFonts, captionPreset.fontAsset);
 	const sceneVisualAvailability = Object.fromEntries(
 		compositionDocument.sceneBlocks.flatMap((scene) =>
 			scene.content.kind === "image" || scene.content.kind === "video"
@@ -3192,6 +3205,7 @@ async function renderClipGroup(input: {
 			const assContent = compileCompositionPlanCaptions(
 				compositionPlan,
 				output.clipRenderId,
+ customFonts,
 			);
 			if (assContent.length > 0) {
 				const assPath = join(
@@ -3271,6 +3285,7 @@ async function renderClipGroup(input: {
 						logo: logo,
 						scenes: resolvedSceneAssets,
 						fonts: resolvedSceneFonts,
+ captionFontsDirectory,
 					},
 				});
 
@@ -3298,6 +3313,7 @@ async function renderClipGroup(input: {
 											logo: null,
 											scenes: resolvedSceneAssets,
 											fonts: resolvedSceneFonts,
+ captionFontsDirectory,
 										},
 									})
 							: undefined,
@@ -3411,6 +3427,7 @@ async function renderClipGroup(input: {
 						background: backgroundPlan,
 						scenes: resolvedSceneAssets,
 						fonts: resolvedSceneFonts,
+ captionFontsDirectory,
 					},
 				});
 				const encodeStartedAtMs = currentTimeMs();
@@ -3436,6 +3453,7 @@ async function renderClipGroup(input: {
 											background: fallbackBackgroundPlan,
 											scenes: resolvedSceneAssets,
 											fonts: resolvedSceneFonts,
+ captionFontsDirectory,
 										},
 									})
 							: undefined,

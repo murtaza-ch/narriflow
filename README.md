@@ -22,7 +22,6 @@ Current architecture and vocabulary live in [GLOSSARY.md](GLOSSARY.md) and the [
 | `packages/auth`, `packages/email`, `packages/config` | Shared authentication, email, and configuration |
 | `integrations/zapier` | Separate npm project: the Zapier app over the public REST API |
 | `integrations/make` | Make custom app definition (JSON for Make's Apps SDK) over the public REST API |
-| `tools/videos` | Separate npm project for marketing videos |
 
 ## Stack
 
@@ -192,6 +191,10 @@ Run the network-free identity check before starting localhost:
 bun run env:check
 ```
 
+Processing Capacity comes only from the plan catalog: Free/Creator/Pro/Business
+allow 2/5/10/20 videos in flight. Web and worker use the same limit, with no
+environment overrides. Worker concurrency settings control execution separately.
+
 It reads `apps/web/.env.local`, `apps/worker/.env`, and `packages/db/.env`, then
 compares their database host/port/database/schema, R2 account/bucket, and Redis
 endpoint without printing credentials. Redis may be absent from both local app
@@ -227,7 +230,7 @@ Notes:
 - Set `CLERK_OAUTH_ISSUER` for remote MCP OAuth; it is not required for ordinary browser sign-in.
 - `CLERK_WEBHOOK_SECRET`, `RESEND_API_KEY`, and `NARRIFLOW_EMAIL_FROM` are only required if you are exercising the Clerk webhook and email path locally.
 - Project notification emails use `RESEND_API_KEY` and the verified sending domain in `NARRIFLOW_EMAIL_FROM`. Completion emails follow each Project's notification preference.
-- Generated stills require `OPENAI_API_KEY`, `OPENAI_IMAGE_MODEL=gpt-image-2`, and the same `GENERATED_MEDIA_PROMPT_ACTIVE_KEY_VERSION`, `GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY`, `GENERATED_MEDIA_PROMPT_DECRYPTION_KEYS_JSON`, and `GENERATED_MEDIA_PROMPT_FINGERPRINT_KEY` in web and worker. Generate the encryption and fingerprint keys independently with `openssl rand -base64 32`. Keep retired encryption keys in the JSON keyring until every prompt encrypted by them passes its 30-day retention deadline.
+- Generated stills require `OPENAI_API_KEY`, `OPENAI_IMAGE_MODEL=gpt-image-2`, and the same `GENERATED_MEDIA_PROMPT_ACTIVE_KEY_VERSION`, `GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY`, `GENERATED_MEDIA_PROMPT_DECRYPTION_KEYS_JSON`, and `GENERATED_MEDIA_PROMPT_FINGERPRINT_KEY` in web and worker. Generate the encryption and fingerprint keys independently with `openssl rand -base64 32`. Keep retired encryption keys in the JSON keyring until every prompt encrypted by them passes its 30-day retention deadline. Without valid settings Studio shows image generation as temporarily unavailable; `bun run env:check` confirms web and worker carry the same values.
 - Native social OAuth requires `SOCIAL_TOKEN_ENCRYPTION_KEY` plus the provider client IDs/secrets listed in the env example. Register `${NEXT_PUBLIC_APP_URL}/api/social/oauth/callback` as the redirect URI in each provider app.
 - The upload page offers **Google Drive** and **Dropbox** pickers only when configured. Drive needs `NEXT_PUBLIC_GOOGLE_API_KEY`, `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, and `NEXT_PUBLIC_GOOGLE_APP_ID` together, plus `SOCIAL_TOKEN_ENCRYPTION_KEY` in both web and worker (it seals the Drive access token on the Ingest Job). Dropbox needs `NEXT_PUBLIC_DROPBOX_APP_KEY`. Create the apps with [the cloud file picker runbook](docs/runbooks/cloud-file-pickers.md).
 - Free-project retention needs no settings: new Free Projects get the 72-hour deadline and paid-to-Free Workspaces get the 28-day download grace from the plan catalog (`packages/validators/src/pricing.ts`).

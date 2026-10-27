@@ -24,6 +24,7 @@ import { Pool } from "pg";
 import {
   type WorkflowAttemptRef,
   getWorkflowRunLifecycle,
+  WORKFLOW_RELEASE_GRACE_MS,
   WorkflowAttemptLost,
   WorkflowFailure,
   WorkflowRunLifecycle,
@@ -34,6 +35,8 @@ import { notificationService } from "./notification.service";
 import { clipService } from "./clip.service";
 import { projectService } from "./project.service";
 import { workspaceLibraryService } from "./workspace-library.service";
+import { createCallbackCipher, createCompletionCallbackProcessor } from "./completion-callback";
+import { createOperationStatusReader } from "./operation-status";
 
 const databaseUrl = process.env.WORKFLOW_TEST_DATABASE_URL;
 const databaseSchema = process.env.WORKFLOW_TEST_DATABASE_SCHEMA;
@@ -2703,6 +2706,41 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
   });
 
+  test.each(["retry success", "retry exhaustion", "partial success"])("a retryable render failure cannot freeze a failed export callback before %s", async (ending) => {
+    const { project, run, workspace } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const exported = await prisma.clipExport.create({ data: { workspaceId: workspace.id, projectId: project.id, clipId: clip.id, editorRevision: 0, fingerprint: randomUUID(), resolution: "1080p", watermark: false } });
+    const variant = await prisma.clipExportVariant.create({ data: { exportId: exported.id, aspectRatio: "ratio_9_16", resolution: "1080p", watermark: false } });
+    const render = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16", exportVariantId: variant.id } });
+    const callback = await prisma.completionCallback.create({ data: { workspaceId: workspace.id, operationKind: "export", operationId: exported.id, receiptId: randomUUID(), encryptedUrl: "unused", urlHost: "example.test", urlFingerprint: randomUUID(), eventId: randomUUID() } });
+    const observer = createCompletionCallbackProcessor({ prisma, readTrusted: createOperationStatusReader(prisma).readTrusted, leaseOwner: randomUUID(), cipher: createCallbackCipher("workflow-callback-test-key") });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    await lifecycle.markClipRenderVariantRendering(attempt, render.id);
+    if (ending === "retry exhaustion") await prisma.workflowRun.update({ where: { id: run.id }, data: { attemptCount: 3 } });
+    if (ending === "partial success") {
+      const sibling = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_1_1", workflowRunId: run.id, workflowAttemptId: attempt.attemptId, status: "rendering" } });
+      await lifecycle.completeClipRenderVariant(attempt, sibling.id, { storageKey: "tests/sibling.mp4", sizeBytes: 100, durationSec: 5 });
+    }
+    await lifecycle.failClipRenderVariant(attempt, render.id, "storage_temporarily_unavailable", "retryable");
+    expect(await observer.observe()).toBe(0);
+    expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: callback.id } })).toMatchObject({ state: "waiting", payload: null });
+    expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: exported.id } })).toMatchObject({ status: "rendering", completedAt: null });
+    expect(await lifecycle.settleRenderWorkSet(attempt)).toMatchObject({ status: ending === "retry success" ? "requeued" : ending === "partial success" ? "partial" : "failed" });
+    if (ending === "retry success") {
+      await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1000) } });
+      const retry = await claimRenderAttempt();
+      await retry.lifecycle.beginRenderWorkSet(retry.attempt);
+      await retry.lifecycle.markClipRenderVariantRendering(retry.attempt, render.id);
+      await retry.lifecycle.completeClipRenderVariant(retry.attempt, render.id, { storageKey: "tests/retry-success.mp4", sizeBytes: 100, durationSec: 5 });
+      await retry.lifecycle.settleRenderWorkSet(retry.attempt);
+    }
+    await prisma.completionCallback.update({ where: { id: callback.id }, data: { nextObservationAt: new Date(Date.now() - 1000) } });
+    expect(await observer.observe()).toBe(1);
+    expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: exported.id } })).toMatchObject({ status: ending === "retry success" ? "ready" : "failed", completedAt: expect.any(Date) });
+    expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: callback.id } })).toMatchObject({ state: "pending", payload: { data: { state: ending === "retry success" ? "completed" : "failed" } } });
+  });
+
   test("concurrent export child completions serialize parent aggregate settlement", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
@@ -2814,6 +2852,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
           status: "queued", attemptCount: 0, attemptId: null, leaseOwner: null, leaseExpiresAt: null, errorCode: null,
         });
+        await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1) } });
       }
     }
   });
@@ -2951,6 +2990,25 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       finishHandler();
       await execution;
     }
+  });
+
+  test("a peer cannot claim a released attempt until its grace period passes", async () => {
+    const { run } = await fixture();
+    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const peer = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const attempt = await lifecycle.claim("dubbing");
+    if (!attempt) throw new Error("claim missing");
+    const releasedAfter = Date.now();
+    expect(await lifecycle.releaseAttempt(attempt)).toBe(true);
+    const { status, nextAttemptAt } = await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } });
+    expect(status).toBe("queued");
+    const delayMs = (nextAttemptAt?.getTime() ?? 0) - releasedAfter;
+    expect(delayMs).toBeGreaterThan(WORKFLOW_RELEASE_GRACE_MS - 5_000);
+    expect(delayMs).toBeLessThan(WORKFLOW_RELEASE_GRACE_MS + 5_000);
+    // The aborted handler may still be inside a paid provider call.
+    expect(await peer.claim("dubbing")).toBeNull();
+    await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1) } });
+    expect(await peer.claim("dubbing")).toMatchObject({ workflowRunId: run.id, attemptCount: 1 });
   });
 
   test("heartbeat renews ownership and a live attempt is not reaped", async () => {

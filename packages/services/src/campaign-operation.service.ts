@@ -97,6 +97,26 @@ function assertCampaignClaim(count: number, operationId: string, clipId?: string
   throw new CampaignOperationError("campaign_operation_claim_lost", "Campaign operation ownership was lost");
 }
 
+/**
+ * Records a failed Render selected admission without masking why it failed:
+ * the caller rethrows the admission's own refusal (credits, 1080p, length).
+ * A settlement that errors or loses its claim is logged; the lease expiry
+ * lets a replay reclaim the operation.
+ */
+async function settleFailedRenderBestEffort(operationId: string, settle: () => Promise<unknown>) {
+  try {
+    await settle();
+  } catch (error) {
+    console.warn(JSON.stringify({
+      level: "error",
+      message: "campaign_render_failure_settlement_failed",
+      operationId,
+      errorCode: error instanceof CampaignOperationError ? error.code : null,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  }
+}
+
 function requirePrisma() {
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("Database client unavailable");
@@ -992,11 +1012,11 @@ export class CampaignOperationService {
         return { ...result, operationId: replay.id, replayed: true };
       } catch (error) {
         if (error instanceof CampaignOperationError && error.code === "campaign_operation_claim_lost") throw error;
-        await prisma.$transaction(async (tx) => {
+        await settleFailedRenderBestEffort(replay.id, () => prisma.$transaction(async (tx) => {
           const owned = await tx.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken, leaseExpiresAt: { gt: new Date() } }, data: { status: "failed", failedCount: resumableIds.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
           assertCampaignClaim(owned.count, replay.id);
           await tx.campaignOperationItem.updateMany({ where: { operationId: replay.id, status: "pending" }, data: { status: "failed", errorCode: "campaign_render_admission_failed", settledAt: new Date() } });
-        });
+        }));
         throw error;
       }
     }
@@ -1045,11 +1065,11 @@ export class CampaignOperationService {
       return { ...result, operationId: operation.id, replayed: false };
     } catch (error) {
       if (error instanceof CampaignOperationError && error.code === "campaign_operation_claim_lost") throw error;
-      await prisma.$transaction(async (tx) => {
+      await settleFailedRenderBestEffort(operation.id, () => prisma.$transaction(async (tx) => {
         const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { status: "failed", failedCount: eligible.length, ineligibleCount: normalizedIds.length - eligible.length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
         assertCampaignClaim(owned.count, operation.id);
         await tx.campaignOperationItem.updateMany({ where: { operationId: operation.id, status: "pending" }, data: { status: "failed", errorCode: "campaign_render_admission_failed", settledAt: new Date() } });
-      });
+      }));
       throw error;
     }
   }

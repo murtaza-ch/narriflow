@@ -3627,6 +3627,61 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 	});
 
 	test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
+		"renders automatic stock cutaway pixels only inside the planned window",
+		async () => {
+			const sourcePath = join(fixtureDirectory, "stock-base.mp4");
+			const stockPath = join(fixtureDirectory, "stock-cutaway.mp4");
+			for (const fixture of [
+				{ path: sourcePath, color: "blue", duration: 15 },
+				{ path: stockPath, color: "red", duration: 3 },
+			]) {
+				const generated = spawnSync("ffmpeg", [
+					"-y", "-v", "error", "-f", "lavfi", "-i",
+					`color=${fixture.color}:s=90x160:r=10:d=${fixture.duration}`,
+					"-f", "lavfi", "-i", `anullsrc=r=48000:cl=mono:d=${fixture.duration}`,
+					"-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", fixture.path,
+				], { encoding: "utf-8" });
+				if (generated.status !== 0) throw new Error(generated.stderr);
+			}
+			const colors: number[][] = [];
+			const harness = createCoreRenderPathTracer({
+				topology: "single-video",
+				clipWindow: { startSec: 0, endSec: 15 },
+				clipOverrides: { title: "Build a camera", hookText: "Workshop", captionPreset: { visible: false } },
+				variants: [{ id: "stock-pixels", aspectRatio: "ratio_9_16", resolution: "720p" }],
+				configOverrides: { PEXELS_API_KEY: "configured" },
+				brollCutaways: [resolvedBrollFixture],
+				optionalMediaFiles: { [resolvedBrollFixture.downloadUrl]: stockPath },
+				realMedia: {
+					sourcePath,
+					probeOutput: async (_id, path) => {
+						for (const timeSec of [2, 4, 7]) {
+							const decoded = spawnSync("ffmpeg", [
+								"-v", "error", "-ss", String(timeSec), "-i", path,
+								"-vf", "crop=2:2:(iw-2)/2:(ih-2)/2", "-frames:v", "1",
+								"-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+							]);
+							if (decoded.status !== 0) throw new Error(decoded.stderr.toString());
+							expect(decoded.stdout.length).toBe(12);
+							colors.push([...decoded.stdout.subarray(0, 3)]);
+						}
+					},
+				},
+			});
+			await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)))
+				.resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+			// Blue source before/after; the red stock asset owns only [3, 6).
+			expect(colors).toHaveLength(3);
+			for (const [index, [red, green, blue]] of colors.entries()) {
+				expect(green!).toBeLessThan(20);
+				expect(index === 1 ? red! : blue!).toBeGreaterThan(220);
+				expect(index === 1 ? blue! : red!).toBeLessThan(20);
+			}
+		},
+		30_000,
+	);
+
+	test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
 		"audiogram caption visibility controls encoded pixels and generated files",
 		async () => {
 			const hashes = new Map<string, string>();

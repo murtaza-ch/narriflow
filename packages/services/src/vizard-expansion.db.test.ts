@@ -34,6 +34,7 @@ import { dubbingService } from "./dubbing.service";
 import { workspaceLibraryService } from "./workspace-library.service";
 import { prismaPublicationSchedulingStore } from "./social-publication-scheduling-runtime";
 import { bulkSocialSchedulingService, prismaBulkScheduleStore } from "./bulk-social-scheduling-runtime";
+import { requirePlanFeature } from "./plan-features";
 
 const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
 const databaseSchema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;
@@ -325,7 +326,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 
 	for (const outcome of ["success", "failure"] as const) {
 		for (const loss of ["replaced", "expired"] as const) {
-			test(`Campaign Render selected reports ${loss} claims on ${outcome}`, async () => {
+			test(`Campaign Render selected after a ${loss} claim on ${outcome} reports ${outcome === "success" ? "the lost claim" : "the admission refusal"}`, async () => {
 				const current = await fixture(`render-${loss}-${outcome}`);
 				const request = {
 					actorUserId: current.user.id,
@@ -343,8 +344,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 									? { claimToken: randomUUID() }
 									: { leaseExpiresAt: new Date(0) },
 						});
-						if (outcome === "failure")
-							throw new Error("render admission unavailable");
+						// A typed plan refusal, as render admission throws for 1080p on Free.
+						if (outcome === "failure") requirePlanFeature("free", "export.1080p");
 						return {
 							workflowRunId: randomUUID(),
 							acceptedAt: new Date().toISOString(),
@@ -355,9 +356,25 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 						};
 					},
 				};
-				await expect(
-					campaignOperationService.renderSelected(request),
-				).rejects.toMatchObject({ code: "campaign_operation_claim_lost" });
+				const warnings = spyOn(console, "warn").mockImplementation(() => {});
+				try {
+					await expect(
+						campaignOperationService.renderSelected(request),
+					).rejects.toMatchObject({
+						code: outcome === "success" ? "campaign_operation_claim_lost" : "plan_feature_required",
+					});
+					if (outcome === "failure") {
+						expect(warnings.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(
+							expect.objectContaining({
+								level: "error",
+								message: "campaign_render_failure_settlement_failed",
+								errorCode: "campaign_operation_claim_lost",
+							}),
+						);
+					}
+				} finally {
+					warnings.mockRestore();
+				}
 				const operation = (
 					await campaignOperationService.listOperations({
 						actorUserId: current.user.id,

@@ -23,6 +23,8 @@ import {
 	pruneExpiredMcpTasks,
 	purgeExpiredWorkspaceEvents,
 	generatedMediaService,
+	generatedImageProviderConfigured,
+	workerShutdownDrainMs,
 	purgeExpiredGeneratedMediaPrompts,
 	reconcileGenerationUsageReservations,
 	getProcessingUsage,
@@ -645,6 +647,9 @@ const mediaCleanupLoop = createPollLoop("media_cleanup", async () => {
 });
 
 const generatedMediaLoop = createPollLoop("generated_media", async () => {
+	// Without image settings nothing can be admitted or generated; idle rather
+	// than failing every tick until the loop gives up.
+	if (!generatedImageProviderConfigured(process.env)) return 0;
 	const jobs = await generatedMediaService.processDue(1);
 	return jobs.length;
 });
@@ -773,9 +778,8 @@ function beginGracefulShutdown() {
 	// Every process-capable stage receives workerShutdown and Worker Process
 	// reaps descendants on abort. Do not let an adapter that ignores cancellation
 	// keep a deployment hostage forever.
-	const configuredDrainMs = Number(process.env.WORKER_SHUTDOWN_DRAIN_MS ?? "30000");
-	const drainMs = Number.isFinite(configuredDrainMs) && configuredDrainMs > 0 ? configuredDrainMs : 30_000;
-	const forceExit = setTimeout(() => process.exit(0), drainMs);
+	// The same drain sets how long released work waits before a peer may claim it.
+	const forceExit = setTimeout(() => process.exit(0), workerShutdownDrainMs());
 	forceExit.unref();
 }
 

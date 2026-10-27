@@ -104,6 +104,7 @@ export {
 	BrandFontReferenceError,
 	assertSceneBrandFontReferences,
 	parseBrandFontHeader,
+	brandFontRenderer,
 } from "./brand-font.service";
 export {
 	assertBrandManageAllowed,
@@ -345,6 +346,7 @@ export {
 	type SceneDocumentMutationAnalysis,
 } from "./scene-document-mutation";
 export {
+	generatedImageProviderConfigured,
 	generatedImageCapability,
 	generatedImagePolicy,
 	type GeneratedImageCapability,
@@ -498,6 +500,7 @@ export {
 	type WorkflowFailureDisposition,
 	type CompleteTranscriptInput,
 	type AdmitWorkflowRunInput,
+	workerShutdownDrainMs,
 } from "./workflow-run-lifecycle";
 export { purgeOldWebhookDeliveryLogs } from "./webhook-log.service";
 export * from "./url-guard";
@@ -582,7 +585,7 @@ export {
 	type ProcessingUsageSettlement,
 	type ProcessingUsageSummary,
 } from "./processing-usage";
-export { getProcessingUsage, processingCapacityFromEnv } from "./processing-usage-runtime";
+export { getProcessingUsage } from "./processing-usage-runtime";
 export { createDriveTokenCipher, createGoogleDriveFileReader, driveDownloadRefusal, driveFileMediaUrl, DriveSourceError, googleDriveFileReader, readDriveFileMetadata, verifyDriveAccessToken, type DriveFileMetadata, type DriveFileReader, type DriveTokenCipher } from "./drive-source";
 export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestReselectRequiredError, IngestRetryLimitExceededError, MAX_INGEST_RETRY_ATTEMPTS, type ClaimedIngestJob, type IngestClaimRef, type IngestExecutionContext, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
 

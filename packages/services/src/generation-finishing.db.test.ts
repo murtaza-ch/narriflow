@@ -509,7 +509,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
     await prisma.generationFinishing.update({ where: { id: g.row.id }, data: { actorUserId: actor.id } });
 
     const mails: Array<{ to: string; outcome: string; clipCount: number; deepLink: string }> = [];
-    const notifications = new NotificationService({ mailer: async (mail) => { mails.push(mail); return { sent: true, id: `message-${mails.length}` }; }, emailsEnabled: () => true, hasResendApiKey: () => true });
+    const notifications = new NotificationService({ mailer: async (mail) => { mails.push(mail); return { sent: true, id: `message-${mails.length}` }; }, hasResendApiKey: () => true });
     const results: string[] = [];
     const { service } = runner({
       notify: async (input) => {

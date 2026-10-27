@@ -16,6 +16,15 @@ export function readEnvFile(path: string): EnvironmentValues {
   return parseEnv(readFileSync(path, "utf8"));
 }
 
+const GENERATED_IMAGE_SETTINGS = [
+  "OPENAI_API_KEY",
+  "OPENAI_IMAGE_MODEL",
+  "GENERATED_MEDIA_PROMPT_ACTIVE_KEY_VERSION",
+  "GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY",
+  "GENERATED_MEDIA_PROMPT_DECRYPTION_KEYS_JSON",
+  "GENERATED_MEDIA_PROMPT_FINGERPRINT_KEY",
+] as const;
+
 function required(values: EnvironmentValues, key: string, label: string, issues: EnvironmentCheckIssue[]) {
   if (!values[key]?.trim()) issues.push({ message: `${label} is missing ${key}` });
   return values[key]?.trim() ?? "";
@@ -87,6 +96,14 @@ export function checkEnvironmentValues(
     issues.push({ message: "web and worker R2_BUCKET values do not agree" });
   }
 
+  // Image generation is optional, but web admits jobs and protects their
+  // prompts while the worker generates and reveals them: both or neither.
+  for (const key of GENERATED_IMAGE_SETTINGS) {
+    if ((web[key]?.trim() ?? "") !== (worker[key]?.trim() ?? "")) {
+      issues.push({ message: `web and worker ${key} values do not agree` });
+    }
+  }
+
   const webRedis = web.UPSTASH_REDIS_URL?.trim() ?? "";
   const workerRedis = worker.UPSTASH_REDIS_URL?.trim() ?? "";
   if (Boolean(webRedis) !== Boolean(workerRedis)) {
@@ -124,6 +141,6 @@ if (import.meta.main) {
     for (const issue of issues) console.error(`- ${issue.message}`);
     process.exitCode = 1;
   } else {
-    console.log("Environment check passed: database, R2 account/bucket, and Redis identities agree.");
+    console.log("Environment check passed: database, R2 account/bucket, Redis, and image generation settings agree.");
   }
 }

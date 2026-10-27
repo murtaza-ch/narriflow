@@ -1,3 +1,4 @@
+import { BrandFontsProvider, type BrandFontChoice } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { notFound } from "next/navigation";
 import { admitProjectPage } from "@/lib/authenticated-request-page";
 import { executeProjectAction } from "@/lib/authenticated-request-action";
@@ -10,6 +11,7 @@ import {
   visualAssetService,
   sceneTemplateService,
   brandFontService,
+  brandPlanRequirement,
   brandProfileService,
   generatedImageCapability,
   autoCensorService,
@@ -61,7 +63,8 @@ export default async function StudioPage({
   const scenesRequirement = planFeatureRequirement(pricingTier, "brand.scenes");
   const scenesEntitled = scenesRequirement === null;
   const generatedImagesCapability = generatedImageCapability(appUser);
-  const generatedImagesEntitled = generatedImagesCapability.available;
+  // A temporarily unavailable provider still shows the images already made.
+  const generatedImagesEntitled = generatedImagesCapability.reason !== "entitlement_required";
   const sceneWriteCapabilities = {
     cards: scenesEntitled,
     images: scenesEntitled,
@@ -168,6 +171,13 @@ export default async function StudioPage({
   });
   const utterances = effective.transcriptSlice;
 
+  const fontRequirement = brandPlanRequirement(appUser, "brand.customFonts");
+  const fontReferences = [editorDoc.document.captionPreset.fontAsset, ...editorDoc.document.studioEdits.textLayers.map((layer) => layer.fontAsset)].filter((ref): ref is NonNullable<typeof ref> => Boolean(ref));
+  const [activeFonts, retainedFonts] = await Promise.all([
+    brandFontService.list(appUser), brandFontService.resolveReferences(appUser, fontReferences),
+  ]);
+  const fonts = [...new Map<string, BrandFontChoice>([...retainedFonts.map((font) => [font.id, { ...font, insertable: false }] as const), ...activeFonts.map((font) => [font.id, { ...font, insertable: true }] as const)]).values()];
+
   const clipInfo: ClipInfo = {
     id: clip.id,
     projectId: clip.projectId,
@@ -258,7 +268,7 @@ export default async function StudioPage({
   }
 
   return (
-    <StudioShell
+    <BrandFontsProvider fonts={fonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: appUser.role === "owner" } : null}><StudioShell
       clipInfo={clipInfo}
       timelineSegments={buildSegmentsFromUtterances(
         utterances,
@@ -306,6 +316,6 @@ export default async function StudioPage({
       upgradePrompts={upgradePrompts}
       updateProjectCensorTerms={updateProjectCensorTerms}
       recordAutoCensorEvent={recordAutoCensorEvent}
-    />
+    /></BrandFontsProvider>
   );
 }

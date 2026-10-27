@@ -57,6 +57,21 @@ describe("env check", () => {
     ]));
   });
 
+  test("allows image generation settings in both files or neither, without exposing values", () => {
+    const image = { OPENAI_IMAGE_MODEL: "gpt-image-2", GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY: "secret-key" };
+    expect(checkEnvironmentValues(values(image), values(image), values())).toEqual([]);
+    const issues = checkEnvironmentValues(
+      values(image),
+      values({ GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY: "other-secret-key" }),
+      values(),
+    );
+    expect(issues.map((issue) => issue.message)).toEqual([
+      "web and worker OPENAI_IMAGE_MODEL values do not agree",
+      "web and worker GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY values do not agree",
+    ]);
+    expect(JSON.stringify(issues)).not.toContain("secret");
+  });
+
   test("requires database and R2 values", () => {
     const issues = checkEnvironmentValues({}, {}, {});
     expect(issues.map((issue) => issue.message)).toEqual(expect.arrayContaining([

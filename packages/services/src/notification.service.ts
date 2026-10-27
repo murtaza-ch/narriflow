@@ -123,7 +123,7 @@ export interface NotificationServiceDependencies {
   store?: NotificationStore;
   mailer?: NotificationMailer;
   now?: () => Date;
-  /** Operator opt-in. Delivery stays off until the sending domain is verified. */
+  /** Emails send whenever RESEND_API_KEY is configured; without it they are skipped. */
   hasResendApiKey?: () => boolean;
   leaseMs?: number;
 }

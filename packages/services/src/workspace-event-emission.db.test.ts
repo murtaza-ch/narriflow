@@ -253,7 +253,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     const first = await claimRender();
     await first.lifecycle.markClipRenderVariantRendering(first.attempt, x.renders[0]!.id);
     await first.lifecycle.failClipRenderVariant(first.attempt, x.renders[0]!.id, "transient_render_failure", "retryable");
-    expect((await prisma.clipExport.findUniqueOrThrow({ where: { id: x.exported.id } })).status).toBe("failed");
+    expect((await prisma.clipExport.findUniqueOrThrow({ where: { id: x.exported.id } })).status).toBe("rendering");
     expect(await feed(f.workspace.id)).toEqual([]);
     expect((await first.lifecycle.settleRenderWorkSet(first.attempt)).status).toBe("requeued");
     expect(await feed(f.workspace.id)).toEqual([]);

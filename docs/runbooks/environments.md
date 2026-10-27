@@ -49,7 +49,8 @@ bun run dev
 ```
 
 The check compares local database identities, including any app `DIRECT_URL`,
-R2 account/bucket, and Redis endpoint without printing secrets. It does not
+R2 account/bucket, Redis endpoint, and image generation settings without
+printing secrets. It does not
 connect to providers or inspect deployed variables. A local Redis service is
 not needed.
 
