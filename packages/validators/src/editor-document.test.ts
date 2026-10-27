@@ -17,6 +17,7 @@ import {
   type EditorDocument,
 } from "./editor-document";
 import {
+  STUDIO_EDIT_LIMITS,
   studioEditsSchema,
   studioSfxPlacementSchema,
   studioTextLayerSchema,
@@ -942,5 +943,97 @@ describe("history", () => {
     );
     expect(history.past).toBe(pastAfterFirstGestureTick);
     expect(history.past).toHaveLength(EDITOR_HISTORY_LIMIT);
+  });
+});
+
+describe("timed content follows the timeline", () => {
+  const sceneId = (n: number) => `10000000-0000-4000-8000-00000000000${n}`;
+  const scene = (n: number, anchorSec: number) => ({
+    schemaVersion: 1 as const,
+    id: sceneId(n),
+    anchorSec,
+    durationSec: 3,
+    content: { kind: "color" as const, color: "#1D4ED8" },
+    motion: { entrance: "none" as const, exit: "none" as const, durationSec: 0.5 },
+    templateSnapshot: null,
+  });
+  const brollMotion = (endSec: number) => ({
+    schemaVersion: 1 as const,
+    id: "50000000-0000-4000-8000-000000000001",
+    target: { kind: "broll" as const },
+    startSec: 0,
+    endSec,
+    entrance: "fade" as const,
+    exit: "fade" as const,
+    durationSec: 0.5,
+    enabled: true,
+  });
+  // Source window 10-40 (30s): intro card, a card after 10s of footage, end card.
+  function withScenes(extra: Partial<EditorDocument> = {}): EditorDocument {
+    return editorDocumentSchema.parse({
+      ...makeDocument(),
+      sceneBlocks: [scene(1, 0), scene(2, 13), scene(3, 36)],
+      ...extra,
+    });
+  }
+  const anchors = (doc: EditorDocument) => doc.sceneBlocks.map((block) => block.anchorSec);
+
+  test("a cut moves Scenes with their footage and keeps the start and end cards in place", () => {
+    const before = applyEditorAction(withScenes(), { type: "deleteRange", range: { startSec: 12, endSec: 14 } });
+    expect(anchors(before)).toEqual([0, 11, 34]);
+    expect(editorDocumentSchema.safeParse(before).success).toBe(true);
+
+    const after = applyEditorAction(withScenes(), { type: "deleteRange", range: { startSec: 30, endSec: 35 } });
+    expect(anchors(after)).toEqual([0, 13, 31]);
+    expect(editorDocumentSchema.safeParse(after).success).toBe(true);
+
+    const reverted = applyEditorAction(after, { type: "revertRange", range: { startSec: 30, endSec: 35 } });
+    expect(anchors(reverted)).toEqual([0, 13, 36]);
+  });
+
+  test("trimming the clip keeps an end card on the timeline and an intro card at the start", () => {
+    const trimmed = applyEditorAction(withScenes(), { type: "setClipBoundaries", startSec: 5, endSec: 30 });
+    expect(anchors(trimmed)).toEqual([0, 18, 31]);
+    expect(editorDocumentSchema.safeParse(trimmed).success).toBe(true);
+  });
+
+  test("a cut or a removed Scene shortens a whole-clip motion instead of being refused", () => {
+    const document = withScenes({ mediaMotions: [brollMotion(39)] });
+    const cut = applyEditorAction(document, { type: "deleteRange", range: { startSec: 30, endSec: 35 } });
+    expect(cut.mediaMotions[0]?.endSec).toBe(34);
+    expect(editorDocumentSchema.safeParse(cut).success).toBe(true);
+
+    const removed = applyEditorAction(document, { type: "deleteSceneBlock", id: sceneId(1) });
+    expect(removed).not.toBe(document);
+    expect(anchors(removed)).toEqual([10, 33]);
+    expect(removed.mediaMotions[0]?.endSec).toBe(36);
+  });
+});
+
+describe("setStudioEdits keeps the document saveable", () => {
+  const layer = (index: number, text = `Layer ${index}`) =>
+    studioTextLayerSchema.parse({ id: `layer-${index}`, text, startSec: 0, endSec: null });
+  const placement = (index: number) => ({
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    asset: { kind: "visual_asset" as const, id: "00000000-0000-4000-8000-000000000999", fingerprint: "a".repeat(64) },
+    startSec: index * 1,
+    endSec: index * 1 + 1,
+    fit: "cover" as const,
+  });
+  const set = (doc: EditorDocument, edits: Partial<EditorDocument["studioEdits"]>) =>
+    applyEditorAction(doc, { type: "setStudioEdits", studioEdits: { ...doc.studioEdits, ...edits } });
+
+  test("accepts edits at the shared caps and refuses edits past them", () => {
+    const doc = makeDocument();
+    const { textLayers, textLayerChars, visualBroll } = STUDIO_EDIT_LIMITS;
+    const layers = (count: number) => Array.from({ length: count }, (_, index) => layer(index));
+    const placements = (count: number) => Array.from({ length: count }, (_, index) => placement(index));
+
+    expect(set(doc, { textLayers: layers(textLayers) })).not.toBe(doc);
+    expect(set(doc, { textLayers: layers(textLayers + 1) })).toBe(doc);
+    expect(set(doc, { visualBroll: placements(visualBroll) })).not.toBe(doc);
+    expect(set(doc, { visualBroll: placements(visualBroll + 1) })).toBe(doc);
+    expect(set(doc, { textLayers: [layer(0, "a".repeat(textLayerChars))] })).not.toBe(doc);
+    expect(set(doc, { textLayers: [{ ...layer(0), text: "a".repeat(textLayerChars + 1) }] })).toBe(doc);
   });
 });

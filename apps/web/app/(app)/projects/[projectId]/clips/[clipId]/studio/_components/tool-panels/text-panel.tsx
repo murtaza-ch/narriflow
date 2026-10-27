@@ -18,7 +18,7 @@ import { PanelButton, PanelTabs, softFieldProps, tileProps, studioSliderCss } fr
 import { Plus, X, Bold } from "lucide-react";
 import { BrandFontPicker, brandFontReference } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { useStudio } from "../studio-shell";
-import type { StudioTextLayer } from "@narriflow/validators";
+import { STUDIO_EDIT_LIMITS, type StudioTextLayer } from "@narriflow/validators";
 
 // Preview styles mirror the USER text-layer colors that get burned in —
 // they intentionally stay literal.
@@ -244,9 +244,9 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
         <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Text</Text>
         <Textarea
           value={textDraft}
-          maxLength={280}
+          maxLength={STUDIO_EDIT_LIMITS.textLayerChars}
           onChange={(event) => {
-            const next = event.target.value.slice(0, 280);
+            const next = event.target.value.slice(0, STUDIO_EDIT_LIMITS.textLayerChars);
             setTextDraft(next);
             // Never commit an empty (or all-whitespace) value — the schema
             // requires non-empty text (it trims server-side), and a
@@ -482,6 +482,9 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
   );
 }
 
+/** `studioEditsSchema.textLayers`'s cap; past it the document can't save. */
+export const MAX_TEXT_LAYERS = STUDIO_EDIT_LIMITS.textLayers;
+
 export function TextPanel() {
   const {
     studioEdits, setStudioEdits, playbackClock, duration,
@@ -491,6 +494,7 @@ export function TextPanel() {
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [customText, setCustomText] = useState("");
   const [fontSize, setFontSize] = useState(44);
+  const atLayerCap = studioEdits.textLayers.length >= MAX_TEXT_LAYERS;
 
   const addLayer = (input: {
     text: string;
@@ -500,7 +504,7 @@ export function TextPanel() {
     bold?: boolean;
   }) => {
     const text = input.text.trim();
-    if (!text) return;
+    if (!text || atLayerCap) return;
     const id = crypto.randomUUID();
     // Clamp to `duration - MIN_TEXT_LAYER_DURATION_SEC` so a layer added at
     // (or after) the clip's end still gets a visible, non-degenerate
@@ -556,6 +560,12 @@ export function TextPanel() {
         onChange={setActiveTab}
       />
 
+      {atLayerCap ? (
+        <Text px="20px" pt="14px" fontSize="12px" color="studio.fgMuted">
+          A clip holds up to {MAX_TEXT_LAYERS} text layers. Remove one to add another.
+        </Text>
+      ) : null}
+
       {activeTab === "presets" && (
         <Stack gap="8px" px="20px" pt="16px" pb="16px">
           {PRESETS.map((p) => (
@@ -575,6 +585,7 @@ export function TextPanel() {
               <Box
                 as="button"
                 aria-label={`Add ${p.label} overlay`}
+                aria-disabled={atLayerCap}
                 w="32px"
                 h="32px"
                 borderRadius="full"
@@ -582,9 +593,10 @@ export function TextPanel() {
                 display="flex"
                 alignItems="center"
                 justifyContent="center"
-                cursor="pointer"
+                cursor={atLayerCap ? "not-allowed" : "pointer"}
+                opacity={atLayerCap ? 0.45 : 1}
                 color="studio.fg"
-                _hover={{ bg: "studio.fg", color: "studio.canvas" }}
+                _hover={atLayerCap ? undefined : { bg: "studio.fg", color: "studio.canvas" }}
                 transition="background 120ms ease, color 120ms ease"
                 onClick={(e: React.MouseEvent) => {
                   e.stopPropagation();
@@ -616,7 +628,8 @@ export function TextPanel() {
             <Textarea
               placeholder="Type your text..."
               value={customText}
-              onChange={(event) => setCustomText(event.target.value)}
+              maxLength={STUDIO_EDIT_LIMITS.textLayerChars}
+              onChange={(event) => setCustomText(event.target.value.slice(0, STUDIO_EDIT_LIMITS.textLayerChars))}
               rows={3}
               size="sm"
               variant="outline"
@@ -651,6 +664,7 @@ export function TextPanel() {
             </Flex>
           </Box>
           <PanelButton
+            disabled={atLayerCap || !customText.trim()}
             onClick={() => {
               addLayer({ text: customText, fontSize });
               setCustomText("");

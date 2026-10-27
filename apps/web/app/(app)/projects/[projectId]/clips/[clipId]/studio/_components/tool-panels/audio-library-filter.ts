@@ -32,3 +32,18 @@ export function filterAudioAssets<T extends FilterableAudioAsset>(
   }
   return matches;
 }
+
+/**
+ * The Brand group leads the "All" view (never a category or Saved view) and
+ * follows the search. Tracks shown there are not repeated in the library list.
+ */
+export function brandAudioFirst<T extends FilterableAudioAsset>(
+  brand: T[],
+  library: T[],
+  options: { category: string; search: string },
+): { brand: T[]; library: T[] } {
+  if (options.category !== "all") return { brand: [], library };
+  const shown = filterAudioAssets(brand, { ...options, activeId: null });
+  const shownIds = new Set(shown.map((asset) => asset.id));
+  return { brand: shown, library: library.filter((asset) => !shownIds.has(asset.id)) };
+}

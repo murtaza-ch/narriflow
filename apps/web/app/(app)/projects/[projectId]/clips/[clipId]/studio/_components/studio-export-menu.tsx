@@ -12,7 +12,7 @@ import {
 import { Check, ChevronDown, Download } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { clipAspectRatioOptions } from "@narriflow/validators";
+import { PLAN_CATALOG, clipAspectRatioOptions } from "@narriflow/validators";
 import { useUpgrade, type UpgradePrompt } from "@/app/(app)/_components/upgrade";
 import { useStudio, type AspectRatio } from "./studio-shell";
 import { StudioLockGem } from "./studio-lock-gem";
@@ -20,6 +20,7 @@ import { resolutionAction } from "./studio-upgrade";
 import {
   canSubmitStudioExport,
   studioExportBlockReason,
+  studioExportMotionLocked,
 } from "./studio-export-policy";
 import { SectionLabel, chipProps, tileProps } from "./tool-panels/panel-ui";
 
@@ -80,6 +81,45 @@ export function ResolutionChoices({
   );
 }
 
+/**
+ * A clip whose saved motion the plan no longer includes can't export until the
+ * motion is turned off or the plan is upgraded.
+ */
+export function MotionExportNotice({
+  planName,
+  onRemove,
+  onUpgrade,
+}: {
+  planName: string | null;
+  onRemove: () => void;
+  onUpgrade: (() => void) | null;
+}) {
+  const action = {
+    as: "button" as const,
+    color: "studio.fg",
+    textDecoration: "underline",
+    textUnderlineOffset: "3px",
+    cursor: "pointer",
+  };
+  return (
+    <Box role="alert" mt="3" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">
+      <Text>
+        This clip uses motion, which {planName ? `needs ${planName} to export` : "your plan can't export"}.
+      </Text>
+      <Flex mt="1.5" gap="4">
+        <Box {...action} onClick={onRemove}>
+          Turn off motion
+        </Box>
+        {onUpgrade ? (
+          <Box {...action} color="upgrade.fg" aria-haspopup="dialog" onClick={onUpgrade}>
+            Upgrade
+          </Box>
+        ) : null}
+      </Flex>
+    </Box>
+  );
+}
+
 export function StudioExportMenu() {
   const {
     clipInfo,
@@ -88,8 +128,12 @@ export function StudioExportMenu() {
     compositionPlanStatus,
     handleExport,
     upgradePrompts,
-  } = useStudio("clipInfo", "aspectRatio", "exportState", "compositionPlanStatus", "handleExport", "upgradePrompts");
+    editorDocument,
+    setActiveTool,
+  } = useStudio("clipInfo", "aspectRatio", "exportState", "compositionPlanStatus", "handleExport", "upgradePrompts", "editorDocument", "setActiveTool");
   const { openUpgrade } = useUpgrade();
+  const motionLocked = studioExportMotionLocked(editorDocument, clipInfo.canPersistMotion);
+  const motionPrompt = upgradePrompts.motion;
   const [open, setOpen] = useState(false);
   const [selection, setSelection] = useState(() => defaultSelection(aspectRatio));
   const [resolution, setResolution] = useState<"720p" | "1080p">(() =>
@@ -105,6 +149,7 @@ export function StudioExportMenu() {
     compositionPlanStatus,
     exportState,
     selectedVariantCount: selected.length,
+    motionLocked,
   });
 
   async function submit() {
@@ -141,7 +186,7 @@ export function StudioExportMenu() {
               ? "Preparing…"
               : exportState === "queued"
                 ? "Queued"
-                : blockReason
+                : blockReason || motionLocked
                   ? "Export blocked"
                   : "Export"}
           </Text>
@@ -211,6 +256,23 @@ export function StudioExportMenu() {
               <Text role="alert" mt="3" fontSize="13px" color="studio.danger">
                 {blockReason}
               </Text>
+            ) : null}
+            {motionLocked ? (
+              <MotionExportNotice
+                planName={motionPrompt?.tier ? PLAN_CATALOG[motionPrompt.tier].name : null}
+                onRemove={() => {
+                  setOpen(false);
+                  setActiveTool("transitions");
+                }}
+                onUpgrade={
+                  motionPrompt?.tier
+                    ? () => {
+                        setOpen(false);
+                        openUpgrade(motionPrompt);
+                      }
+                    : null
+                }
+              />
             ) : null}
 
             <Box mt="5">

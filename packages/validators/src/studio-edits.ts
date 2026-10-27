@@ -33,10 +33,20 @@ const httpUrlSchema = z.string().url().refine(
   { message: "must be an http(s) URL" },
 );
 
+/** Per-clip caps on Studio Edits. The document schema enforces them and the
+ *  Studio panels read the same values, so the editor can't build a document
+ *  its save would refuse. */
+export const STUDIO_EDIT_LIMITS = {
+  textLayers: 12,
+  textLayerChars: 280,
+  sfx: 20,
+  visualBroll: 20,
+} as const;
+
 export const studioTextLayerSchema = z
   .object({
     id: z.string().min(1).max(80),
-    text: z.string().trim().min(1).max(280),
+    text: z.string().trim().min(1).max(STUDIO_EDIT_LIMITS.textLayerChars),
     startSec: z.number().min(0).default(0),
     endSec: z.number().min(0).nullable().optional(),
     positionX: z.number().min(0).max(100).default(50),
@@ -454,7 +464,7 @@ export const studioVisualBrollPlacementSchema = z.strictObject({
 
 export const studioEditsSchema = z
   .object({
-    textLayers: z.array(studioTextLayerSchema).max(12).default([]),
+    textLayers: z.array(studioTextLayerSchema).max(STUDIO_EDIT_LIMITS.textLayers).default([]),
     transition: studioTransitionSchema.default({
       type: "none",
       durationSec: 0.4,
@@ -469,8 +479,8 @@ export const studioEditsSchema = z
       .max(64)
       .default([]),
     sceneLayouts: studioSceneLayoutSelectionsSchema,
-    sfx: z.array(studioSfxPlacementSchema).max(20).default([]),
-    visualBroll: z.array(studioVisualBrollPlacementSchema).max(20).default([]),
+    sfx: z.array(studioSfxPlacementSchema).max(STUDIO_EDIT_LIMITS.sfx).default([]),
+    visualBroll: z.array(studioVisualBrollPlacementSchema).max(STUDIO_EDIT_LIMITS.visualBroll).default([]),
   })
   .superRefine((edits, context) => {
     const ordered = [...edits.visualBroll].sort((left, right) => left.startSec - right.startSec);

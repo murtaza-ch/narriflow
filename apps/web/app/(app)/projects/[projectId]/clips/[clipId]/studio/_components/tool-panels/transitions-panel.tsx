@@ -2,8 +2,8 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Box, Flex, NativeSelect, Slider, Stack, Text } from "@chakra-ui/react";
-import { PanelButton, PanelTabs, tileProps, studioSliderCss } from "./panel-ui";
+import { Box, Button, Flex, NativeSelect, Slider, Stack, Text } from "@chakra-ui/react";
+import { PanelButton, PanelTabs, softButtonProps, tileProps, studioSliderCss } from "./panel-ui";
 import { Layers, Move, Sparkles, Zap } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { PLAN_CATALOG, type MediaMotion, type SceneMotion } from "@narriflow/validators";
@@ -83,6 +83,7 @@ export function TransitionsPanel() {
     "updateSceneMotion",
     "upsertMediaMotion",
     "upgradePrompts",
+    "setActiveTool",
   );
   const { openUpgrade } = useUpgrade();
   const { studioEdits, setStudioEdits, clipInfo, editorDocument, setMotionPreview, upgradePrompts } = studio;
@@ -107,6 +108,9 @@ export function TransitionsPanel() {
   const [mediaExit, setMediaExit] = useState<SceneMotion["exit"]>(currentMediaMotion.exit);
   const [mediaDuration, setMediaDuration] = useState(currentMediaMotion.durationSec);
   const canPersist = clipInfo.canPersistMotion;
+  const lockedPreviewCopy = motionPrompt?.tier
+    ? `Upgrade to ${PLAN_CATALOG[motionPrompt.tier].name} to save and export it.`
+    : "Saving and exporting motion isn't available on this plan.";
 
   function chooseTarget(id: string) {
     setTargetId(id);
@@ -120,7 +124,8 @@ export function TransitionsPanel() {
 
   function applyMediaMotion() {
     if (!target) return;
-    if (!canPersist) {
+    // Turning motion off is cleanup any plan may save.
+    if (!canPersist && !(mediaEntrance === "none" && mediaExit === "none")) {
       if (target.kind === "scene") {
         setMotionPreview({
           kind: "scene",
@@ -142,7 +147,7 @@ export function TransitionsPanel() {
         };
         setMotionPreview({ kind: "broll", motion: previewMotion });
       }
-      toaster.create({ type: "info", title: "Previewing motion", description: "Upgrade to Creator to save and export it." });
+      toaster.create({ type: "info", title: "Previewing motion", description: lockedPreviewCopy });
       return;
     }
     setMotionPreview(null);
@@ -168,9 +173,10 @@ export function TransitionsPanel() {
 
   function applyTransitionToClip() {
     const transition = { type: selected, durationSec: duration };
-    if (!canPersist) {
+    // A cut (no transition) is cleanup any plan may save.
+    if (!canPersist && selected !== "none") {
       setMotionPreview({ kind: "transition", transition });
-      toaster.create({ type: "info", title: "Previewing transition", description: "Upgrade to Creator to save and export it." });
+      toaster.create({ type: "info", title: "Previewing transition", description: lockedPreviewCopy });
       return;
     }
     setMotionPreview(null);
@@ -234,7 +240,7 @@ export function TransitionsPanel() {
             </Box>
           </Box>
           <DurationControl value={duration} max={1.5} onChange={setDuration} label="Transition duration" />
-          <SecondaryButton onClick={applyTransitionToClip}><Zap size={13} /> {canPersist ? "Apply to this clip" : "Preview on this clip"}</SecondaryButton>
+          <SecondaryButton onClick={applyTransitionToClip}><Zap size={13} /> {canPersist || selected === "none" ? "Apply to this clip" : "Preview on this clip"}</SecondaryButton>
           {!canPersist && motionPrompt?.tier ? (
             <SecondaryButton onClick={() => openUpgrade(motionPrompt)}>
               <Layers size={13} />Apply to all clips<StudioLockGem tier={motionPrompt.tier} />
@@ -257,10 +263,17 @@ export function TransitionsPanel() {
                 <Box flex="1"><Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="7px">Exit</Text><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Exit motion" value={mediaExit} onChange={(event) => setMediaExit(event.currentTarget.value as SceneMotion["exit"])} bg="studio.subtle" borderWidth="0" borderRadius="10px" h="40px">{EXITS.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
               </Flex>
               <DurationControl value={mediaDuration} max={2} onChange={setMediaDuration} label="Motion duration" />
-              <SecondaryButton onClick={applyMediaMotion}><Sparkles size={13} /> {canPersist ? "Apply media motion" : "Preview media motion"}</SecondaryButton>
+              <SecondaryButton onClick={applyMediaMotion}><Sparkles size={13} /> {canPersist || (mediaEntrance === "none" && mediaExit === "none") ? "Apply media motion" : "Preview media motion"}</SecondaryButton>
             </>
       ) : (
-            <Box bg="studio.subtle" borderRadius="10px" p="16px"><Text fontSize="14px" color="studio.fg" fontWeight="500">No media target yet</Text><Text mt="4px" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Add manual B-roll or a Scene Block, then return here to animate it.</Text></Box>
+            <Box bg="studio.subtle" borderRadius="10px" p="16px">
+              <Text fontSize="14px" color="studio.fg" fontWeight="500">No media target yet</Text>
+              <Text mt="4px" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Add B-roll or a scene, then return here to animate it.</Text>
+              <Flex mt="10px" gap="8px">
+                <Button size="xs" {...softButtonProps} onClick={() => studio.setActiveTool("broll")}>Add B-roll</Button>
+                <Button size="xs" {...softButtonProps} onClick={() => studio.setActiveTool("scenes")}>Add a scene</Button>
+              </Flex>
+            </Box>
       )}
 
       {!canPersist ? (

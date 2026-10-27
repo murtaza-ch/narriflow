@@ -1,3 +1,5 @@
+import type { BrowserRequestFailure } from "@/lib/authenticated-request-browser";
+
 export interface GeneratedImagesBrowserApi {
   list(clipId: string): Promise<Response>;
   create(body: unknown): Promise<Response>;
@@ -28,4 +30,13 @@ export function createGeneratedImagesBrowserApi(
       return request(`${base}/${encodeURIComponent(jobId)}/result`, { method: "DELETE" });
     },
   };
+}
+
+/** Where a frame that cannot be deleted is still used, so the person knows what to remove first. */
+export function assetInUseCopy(payload: BrowserRequestFailure): string | null {
+  if (payload.error !== "visual_asset_in_use") return null;
+  const usedIn = payload.details?.usedIn;
+  return typeof usedIn === "string" && usedIn
+    ? `Used in: ${usedIn}. Remove it there first.`
+    : "This frame is still in use. Remove it there first.";
 }

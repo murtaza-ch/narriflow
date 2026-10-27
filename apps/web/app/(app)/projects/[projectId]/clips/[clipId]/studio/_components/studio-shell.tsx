@@ -15,6 +15,7 @@ import React, {
 import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Monitor } from "lucide-react";
+import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
 import type { GeneratedImageCapability } from "@narriflow/services";
 import {
@@ -58,8 +59,11 @@ import {
   type SceneTemplateDefinition,
   type CensorSegment,
   type AutoCensorAnalyticsInput,
+  type BrandAudioSnapshot,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
+import { saveIssueFor, type SaveIssue } from "./save-issue";
+import type { SaveIssueSessionActions } from "./save-issue-panel";
 import { TranscriptPanel } from "./transcript-panel";
 import { VideoPreview } from "./video-preview";
 import { ToolSidebar } from "./tool-sidebar";
@@ -115,20 +119,32 @@ import type {
 import {
   authenticatedRequestFailureMessage,
   isAuthenticatedActionFailure,
+  upgradePromptFromFailure,
   type BrowserRequestFailure,
 } from "@/lib/authenticated-request-browser";
+import { useUpgrade } from "@/app/(app)/_components/upgrade";
 
 class StudioExportRequestError extends Error {
   constructor(
     readonly code:
       | "editor_revision_conflict"
       | "censor_segments_stale"
+      | "export_refused"
       | "export_queue_failed",
+    /** The server's own explanation, shown when the refusal has one. */
+    readonly serverMessage: string | null = null,
   ) {
     super(code);
     this.name = "StudioExportRequestError";
   }
 }
+
+/** Refusals whose server message names what to fix; retrying won't help. */
+const STUDIO_EXPORT_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "plan_feature_required",
+  "scene_asset_unavailable",
+  "scene_font_unavailable",
+]);
 
 type StudioAuthenticatedActionFailure = BrowserRequestFailure & {
   ok: false;
@@ -433,6 +449,9 @@ interface StudioState {
   sceneBlocks: readonly SceneBlock[];
   visualAssets: readonly StudioVisualAsset[];
   brandProfileId: string | null;
+  /** Music and sound effects frozen into the Project's brand snapshot; the
+   *  Music and SFX tabs list them first. */
+  brandAudio: BrandAudioSnapshot;
 	registerVisualAsset: (asset: StudioVisualAsset) => void;
 	unregisterVisualAsset: (assetId: string) => void;
 	sceneFonts: readonly StudioSceneFont[];
@@ -466,6 +485,9 @@ interface StudioFields extends StudioState {
   /** Another tab holds the write lease, so this tab is read-only. */
   editingElsewhere: boolean;
   handleTakeOverEditing: () => void;
+  /** Why autosave is stopped (null unless the save status is blocked). */
+  saveIssue: SaveIssue | null;
+  saveIssueActions: SaveIssueSessionActions;
   /** Current immutable Clip Editor Document projection owned by the session. */
   editorDocument: EditorDocument;
   motionPreview: StudioSessionSnapshot["preview"]["motion"];
@@ -793,6 +815,7 @@ interface StudioShellProps {
   compositionPlanQaFixture?: CompositionPlanQaFixture | null;
   visualAssets?: StudioVisualAsset[];
 	brandProfileId?: string | null;
+  brandAudio?: BrandAudioSnapshot;
 	sceneFonts?: StudioSceneFont[];
   sceneTemplates?: StudioSceneTemplate[];
   sceneWriteCapabilities?: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
@@ -802,6 +825,8 @@ interface StudioShellProps {
   updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
   recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
 }
+
+const EMPTY_BRAND_AUDIO: BrandAudioSnapshot = { music: [], sfx: [] };
 
 export function StudioShell({
   clipInfo,
@@ -832,6 +857,7 @@ export function StudioShell({
   compositionPlanQaFixture = null,
   visualAssets = [],
 	brandProfileId = null,
+  brandAudio = EMPTY_BRAND_AUDIO,
 	sceneFonts = [],
   sceneTemplates = [],
   sceneWriteCapabilities = { cards: false, images: false, videos: false, templates: false },
@@ -1218,6 +1244,7 @@ export function StudioShell({
   const [showTimeline, setShowTimeline] = useState(true);
   const [timelineSnapping, setTimelineSnapping] = useState(true);
   const router = useRouter();
+  const { openUpgrade } = useUpgrade();
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(clipInfo.aspectRatio,
   );
   const [layoutScene, setLayoutScene] = useState<StudioLayoutScene | null>(null);
@@ -1892,6 +1919,14 @@ export function StudioShell({
         if (body?.error === "censor_segments_stale") {
           throw new StudioExportRequestError("censor_segments_stale");
         }
+        if (typeof body?.error === "string" && STUDIO_EXPORT_REFUSAL_CODES.has(body.error)) {
+          const upgrade = upgradePromptFromFailure(body as BrowserRequestFailure);
+          if (upgrade) openUpgrade(upgrade);
+          throw new StudioExportRequestError(
+            "export_refused",
+            typeof body.message === "string" ? body.message : null,
+          );
+        }
         throw new StudioExportRequestError("export_queue_failed");
       }
       setExportState("queued");
@@ -1908,6 +1943,8 @@ export function StudioShell({
             ? "The clip changed in another session. Reload before exporting."
             : error instanceof StudioExportRequestError && error.code === "censor_segments_stale"
               ? "Review or remove stale Auto Censor segments before exporting."
+            : error instanceof StudioExportRequestError && error.code === "export_refused"
+              ? error.serverMessage ?? "Something in this clip can't be exported yet."
             : "The render couldn't be queued. Try again.",
       });
     }
@@ -1917,6 +1954,7 @@ export function StudioShell({
     clipInfo.projectId,
     clipInfo.id,
     router,
+    openUpgrade,
   ],
   );
 
@@ -1978,6 +2016,73 @@ export function StudioShell({
         });
       });
   }, [sessionDraftConflict, studioSession]);
+
+  const saveIssue = useMemo(
+    () => (saveState === "blocked" ? saveIssueFor(cloud, status) : null),
+    [saveState, cloud, status],
+  );
+  // Local edits are never discarded without an explicit choice.
+  const { confirm: confirmDiscard, dialog: discardDialog } = useConfirm();
+  const saveIssueActions = useMemo<SaveIssueSessionActions>(
+    () => ({
+      retry: () => {
+        void studioSession.perform({ type: "retry-cloud-save" });
+      },
+      loadLastSaved: () => {
+        void (async () => {
+          const confirmed = await confirmDiscard({
+            title: "Discard your unsaved changes?",
+            description:
+              "The clip goes back to its last saved version. You can still undo this until you leave the Studio.",
+            confirmLabel: "Discard changes",
+            destructive: true,
+          });
+          if (!confirmed) return;
+          const result = await studioSession.perform({ type: "revert-to-cloud" });
+          if (result.kind === "cloud-reverted") return;
+          toaster.create({
+            type: "error",
+            title: "Could not load the last saved version",
+            description:
+              "Wait for the current save to finish, then try again. Your edits have not been changed.",
+          });
+        })();
+      },
+      removeBroll: (placementIds) => {
+        const ids = new Set(placementIds);
+        const current = (studioSession.getSnapshot().document as EditorDocument).studioEdits;
+        studioSession.dispatch({
+          type: "document.edit",
+          action: {
+            type: "setStudioEdits",
+            studioEdits: {
+              ...current,
+              visualBroll: current.visualBroll.filter((placement) => !ids.has(placement.id)),
+            },
+          },
+        });
+        // Editing marks the document dirty, so autosave retries on its own.
+      },
+      resolveConflict: (choice) => {
+        void (async () => {
+          if (
+            choice === "cloud" &&
+            !(await confirmDiscard({
+              title: "Discard your unsaved changes?",
+              description:
+                "Your edits on this device are replaced by the newer version. This can't be undone.",
+              confirmLabel: "Load latest",
+              destructive: true,
+            }))
+          ) {
+            return;
+          }
+          await studioSession.perform({ type: "resolve-conflict", choice });
+        })();
+      },
+    }),
+    [studioSession, confirmDiscard],
+  );
 
   const handleRecoverConflictingDraft = useCallback(() => {
     if (!sessionDraftConflict) return;
@@ -2177,11 +2282,13 @@ export function StudioShell({
     layoutScene, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
-    sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy, upgradePrompts,
+    sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, brandAudio, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability, autoCensorPolicy, upgradePrompts,
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
     resetState, canUndo, canRedo, canReset,
     editingElsewhere: draftRecoveryReady && writeOwnershipReady && !hasWriteOwnership,
     handleTakeOverEditing,
+    saveIssue,
+    saveIssueActions,
     editorDocument: doc,
     motionPreview: preview.motion,
     setMotionPreview,
@@ -2274,6 +2381,7 @@ export function StudioShell({
         position="relative"
       >
         <StudioEditorTree />
+        {discardDialog}
 
         <DraftRecoveryDialog
           open={sessionDraftConflict}

@@ -18,6 +18,7 @@ import {
 import {
   studioEditsEqual,
   studioEditsSchema,
+  type StudioEdits,
   type StudioSfxPlacement,
   type StudioTextLayer,
   type StudioSpeakerLayoutOverride,
@@ -555,13 +556,9 @@ function rebaseSceneLayouts(
  *  extra branch. */
 function rebaseStudioEdits(
   doc: EditorDocument,
-  oldWindow: ClipWindow,
-  oldDeletedRanges: SourceRange[],
-  newWindow: ClipWindow,
-  newDeletedRanges: SourceRange[],
-) {
-  const oldMap = buildClipCutPlan(oldDeletedRanges, oldWindow).map;
-  const newMap = buildClipCutPlan(newDeletedRanges, newWindow).map;
+  oldMap: EditedTimeMap,
+  newMap: EditedTimeMap,
+): StudioEdits {
   const textLayers = rebaseTextLayers(doc.studioEdits.textLayers, oldMap, newMap);
   const sfx = rebaseSfxPlacements(doc.studioEdits.sfx, oldMap, newMap);
   const speakerLayoutOverrides = rebaseSpeakerLayoutOverrides(
@@ -588,6 +585,101 @@ function rebaseStudioEdits(
     sfx,
     speakerLayoutOverrides,
     sceneLayouts,
+  };
+}
+
+const SCENE_EDGE_EPSILON_SEC = 0.0005;
+
+/**
+ * Keeps Scene Blocks attached to the footage they were inserted beside when
+ * the edited source timeline changes under them (cuts, reverts, clip trims),
+ * and closes the gaps left by Scenes that `keep` drops. A Scene's insertion
+ * point is its anchor minus the Scenes before it; that point follows its
+ * source instant onto the new timeline, except that a Scene at the start or
+ * the end stays there. Order and durations never change, so anchors are
+ * recomposed in order. Returns `blocks` itself when nothing moves.
+ *
+ * The plan gate (`assertEditorDocumentFeatureDelta`) uses this to tell these
+ * shifts apart from a user moving a Scene.
+ */
+export function rebaseSceneBlocks(
+  blocks: SceneBlock[],
+  oldMap: EditedTimeMap,
+  newMap: EditedTimeMap,
+  keep: (block: SceneBlock) => boolean = () => true,
+): SceneBlock[] {
+  if (blocks.length === 0) return blocks;
+  const insertionPoint = (baseSec: number) => {
+    if (oldMap === newMap) return baseSec;
+    if (baseSec <= SCENE_EDGE_EPSILON_SEC) return 0;
+    if (baseSec >= oldMap.editedDurationSec - SCENE_EDGE_EPSILON_SEC) return newMap.editedDurationSec;
+    return Math.min(newMap.editedDurationSec, sourceToEdited(newMap, editedToSource(oldMap, baseSec)));
+  };
+  let oldInsertedSec = 0;
+  let newInsertedSec = 0;
+  let changed = false;
+  const rebased: SceneBlock[] = [];
+  for (const block of sortSceneBlocks(blocks)) {
+    const baseSec = block.anchorSec - oldInsertedSec;
+    oldInsertedSec += block.durationSec;
+    if (!keep(block)) {
+      changed = true;
+      continue;
+    }
+    const anchorSec = insertionPoint(baseSec) + newInsertedSec;
+    newInsertedSec += block.durationSec;
+    if (anchorSec === block.anchorSec) {
+      rebased.push(block);
+    } else {
+      changed = true;
+      rebased.push({ ...block, anchorSec });
+    }
+  }
+  return changed ? rebased : blocks;
+}
+
+/** Shortens media motions to a timeline that shrank (cuts, removed or
+ *  shortened Scenes) and drops those left with no window, so cleaning up
+ *  never yields a document the save refuses. */
+function fitMediaMotions(
+  motions: MediaMotion[],
+  sourceDurationSec: number,
+  sceneBlocks: readonly SceneBlock[],
+): MediaMotion[] {
+  // Same total as the document schema's bound.
+  const totalSec = sourceDurationSec + sceneBlocks.reduce((sum, scene) => sum + scene.durationSec, 0);
+  if (motions.every((motion) => motion.endSec <= totalSec)) return motions;
+  return motions.flatMap((motion) => {
+    if (motion.endSec <= totalSec) return [motion];
+    return motion.startSec < totalSec ? [{ ...motion, endSec: totalSec }] : [];
+  });
+}
+
+function fitMediaMotionsToDocument(doc: EditorDocument): EditorDocument {
+  const mediaMotions = fitMediaMotions(
+    doc.mediaMotions,
+    buildClipCutPlan(doc.deletedRanges, documentWindow(doc)).map.editedDurationSec,
+    doc.sceneBlocks,
+  );
+  return mediaMotions === doc.mediaMotions ? doc : { ...doc, mediaMotions };
+}
+
+/** Everything timed on the edited timeline, moved with it when cuts or the
+ *  clip window change. */
+function rebaseTimeline(
+  doc: EditorDocument,
+  oldWindow: ClipWindow,
+  oldDeletedRanges: SourceRange[],
+  newWindow: ClipWindow,
+  newDeletedRanges: SourceRange[],
+) {
+  const oldMap = buildClipCutPlan(oldDeletedRanges, oldWindow).map;
+  const newMap = buildClipCutPlan(newDeletedRanges, newWindow).map;
+  const sceneBlocks = rebaseSceneBlocks(doc.sceneBlocks, oldMap, newMap);
+  return {
+    studioEdits: rebaseStudioEdits(doc, oldMap, newMap),
+    sceneBlocks,
+    mediaMotions: fitMediaMotions(doc.mediaMotions, newMap.editedDurationSec, sceneBlocks),
   };
 }
 
@@ -640,9 +732,13 @@ export function applyEditorAction(
       };
     }
     case "setStudioEdits":
-      return studioEditsEqual(action.studioEdits, doc.studioEdits)
-        ? doc
-        : { ...doc, studioEdits: action.studioEdits };
+      if (studioEditsEqual(action.studioEdits, doc.studioEdits)) return doc;
+      // Refuse here what the save would refuse (the STUDIO_EDIT_LIMITS caps,
+      // overlapping B-roll, empty text), so the editor never holds a
+      // document autosave can't store.
+      return studioEditsSchema.safeParse(action.studioEdits).success
+        ? { ...doc, studioEdits: action.studioEdits }
+        : doc;
     case "setBrollUrl":
       return action.brollUrl === doc.brollUrl
         ? doc
@@ -654,25 +750,22 @@ export function applyEditorAction(
         window,
       );
       if (deletedRangesEqual(deletedRanges, doc.deletedRanges, window)) return doc;
-      // Fix 2: a delete can shift every kept frame after it — rebase any
-      // text layers so their edited-timeline timing keeps pointing at the
-      // same underlying footage (see rebaseTextLayers's doc comment).
-      const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
-      return { ...doc, deletedRanges, studioEdits };
+      // Fix 2: a delete can shift every kept frame after it — rebase text
+      // layers, SFX, and Scenes so they keep pointing at the same underlying
+      // footage (see rebaseTextLayers's and rebaseSceneBlocks's doc comments).
+      return { ...doc, deletedRanges, ...rebaseTimeline(doc, window, doc.deletedRanges, window, deletedRanges) };
     }
     case "revertRange": {
       const window = documentWindow(doc);
       const deletedRanges = subtractDeletedRange(doc.deletedRanges, action.range, window);
       if (deletedRangesEqual(deletedRanges, doc.deletedRanges, window)) return doc;
-      const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
-      return { ...doc, deletedRanges, studioEdits };
+      return { ...doc, deletedRanges, ...rebaseTimeline(doc, window, doc.deletedRanges, window, deletedRanges) };
     }
     case "setDeletedRanges": {
       const window = documentWindow(doc);
       const deletedRanges = normalizeDeletedRanges(action.ranges, window);
       if (deletedRangesEqual(deletedRanges, doc.deletedRanges, window)) return doc;
-      const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
-      return { ...doc, deletedRanges, studioEdits };
+      return { ...doc, deletedRanges, ...rebaseTimeline(doc, window, doc.deletedRanges, window, deletedRanges) };
     }
     case "setClipBoundaries": {
       if (action.startSec === doc.clipStartSec && action.endSec === doc.clipEndSec) {
@@ -687,7 +780,7 @@ export function applyEditorAction(
       // every text layer's rebased edited position too — same rebase used
       // by the delete/revert branches, just against the new window as well
       // as any deletedRanges renormalization it forced.
-      const studioEdits = rebaseStudioEdits(
+      const timeline = rebaseTimeline(
         doc,
         oldWindow,
         doc.deletedRanges,
@@ -699,7 +792,7 @@ export function applyEditorAction(
         clipStartSec: action.startSec,
         clipEndSec: action.endSec,
         deletedRanges,
-        studioEdits,
+        ...timeline,
         censorSegments: clampCensorSegmentsToWindow(doc.censorSegments, newWindow),
       };
     }
@@ -724,7 +817,7 @@ export function applyEditorAction(
       const oldWindow = documentWindow(doc);
       const newWindow = { startSec: action.startSec, endSec: action.endSec };
       const deletedRanges = normalizeDeletedRanges(doc.deletedRanges, newWindow);
-      const studioEdits = rebaseStudioEdits(
+      const timeline = rebaseTimeline(
         doc,
         oldWindow,
         doc.deletedRanges,
@@ -737,7 +830,7 @@ export function applyEditorAction(
         clipEndSec: action.endSec,
         transcriptSlice: action.transcriptSlice,
         deletedRanges,
-        studioEdits,
+        ...timeline,
         censorSegments: clampCensorSegmentsToWindow(doc.censorSegments, newWindow),
       };
     }
@@ -763,7 +856,7 @@ export function applyEditorAction(
       const scene = doc.sceneBlocks.find((block) => block.id === action.id);
       if (!scene || scene.durationSec === action.durationSec || sceneDurationIssue(scene.content, action.durationSec)) return doc;
       const delta = action.durationSec - scene.durationSec;
-      return validatedTimedMutation(doc, {
+      return validatedTimedMutation(doc, fitMediaMotionsToDocument({
         ...doc,
         sceneBlocks: sortSceneBlocks(doc.sceneBlocks.map((block) => {
           if (block.id === action.id) return { ...block, durationSec: action.durationSec };
@@ -771,7 +864,7 @@ export function applyEditorAction(
             ? { ...block, anchorSec: block.anchorSec + delta }
             : block;
         })),
-      });
+      }));
     }
     case "duplicateSceneBlock": {
       const scene = doc.sceneBlocks.find((block) => block.id === action.id);
@@ -790,13 +883,13 @@ export function applyEditorAction(
 			const durationSec = Math.min(maximumDuration, Math.max(minimumDuration, action.durationSec ?? scene.durationSec));
 			if (JSON.stringify(scene.content) === JSON.stringify(action.content) && scene.durationSec === durationSec) return doc;
 			const delta = durationSec - scene.durationSec;
-			return validatedTimedMutation(doc, {
+			return validatedTimedMutation(doc, fitMediaMotionsToDocument({
 				...doc,
 				sceneBlocks: sortSceneBlocks(doc.sceneBlocks.map((block) => {
 					if (block.id === action.id) return { ...block, content: action.content, durationSec, templateSnapshot: null };
 					return block.anchorSec > scene.anchorSec ? { ...block, anchorSec: block.anchorSec + delta } : block;
 				})),
-			});
+			}));
 		}
 		case "updateSceneMotion": {
 			const scene = doc.sceneBlocks.find((block) => block.id === action.id);
@@ -813,7 +906,7 @@ export function applyEditorAction(
       if (!removed) return doc;
       const mediaMotions = doc.mediaMotions.filter((motion) =>
         motion.target.kind !== "scene_block" || motion.target.sceneBlockId !== action.id);
-      return validatedTimedMutation(doc, { ...doc, sceneBlocks: removed.blocks, mediaMotions });
+      return validatedTimedMutation(doc, fitMediaMotionsToDocument({ ...doc, sceneBlocks: removed.blocks, mediaMotions }));
     }
     case "insertCensorSegment":
       return doc.censorSegments.some((segment) => segment.id === action.segment.id)

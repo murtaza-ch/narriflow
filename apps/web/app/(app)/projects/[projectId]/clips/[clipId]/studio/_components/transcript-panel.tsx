@@ -27,6 +27,8 @@ import {
 import { subtitleParagraphGroups } from "./subtitle-lines";
 import { sceneTextContent } from "./scene-fonts";
 import { AutoCensorReviewDrawer } from "./auto-censor-review-drawer";
+import { StudioLockGem } from "./studio-lock-gem";
+import { useUpgrade, type UpgradePrompt } from "@/app/(app)/_components/upgrade";
 
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
@@ -757,12 +759,14 @@ function ToolbarBtn({
   icon,
   label,
   iconOnly = false,
+  trailing = null,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   /** Universal actions (delete, copy) show the icon alone, named by tooltip. */
   iconOnly?: boolean;
+  trailing?: React.ReactNode;
   onClick: () => void;
 }) {
   return (
@@ -795,6 +799,7 @@ function ToolbarBtn({
     >
       {icon}
       {iconOnly ? null : label}
+      {trailing}
     </Flex>
   );
 }
@@ -810,6 +815,8 @@ function SelectionToolbar({
   onCreateClip,
   onInsertScene,
   canInsertScene,
+  insertSceneLock = null,
+  onUpgrade,
 }: {
   top: number;
   left: number;
@@ -821,6 +828,9 @@ function SelectionToolbar({
   onCreateClip: () => void;
   onInsertScene: () => void;
   canInsertScene: boolean;
+  /** Shown with a gem instead of hidden when the plan locks scenes. */
+  insertSceneLock?: UpgradePrompt | null;
+  onUpgrade?: (prompt: UpgradePrompt) => void;
 }) {
   return (
     <Flex
@@ -845,7 +855,16 @@ function SelectionToolbar({
         <>
           <ToolbarBtn icon={<Trash2 size={16} />} label="Delete" iconOnly onClick={onDelete} />
           <ToolbarBtn icon={<Copy size={15} />} label="Copy" iconOnly onClick={onCopy} />
-          {canInsertScene && <ToolbarBtn icon={<PanelsTopLeft size={15} />} label="Insert scene" onClick={onInsertScene} />}
+          {canInsertScene ? (
+            <ToolbarBtn icon={<PanelsTopLeft size={15} />} label="Insert scene" onClick={onInsertScene} />
+          ) : insertSceneLock?.tier && onUpgrade ? (
+            <ToolbarBtn
+              icon={<PanelsTopLeft size={15} />}
+              label="Insert scene"
+              trailing={<StudioLockGem tier={insertSceneLock.tier} />}
+              onClick={() => onUpgrade(insertSceneLock)}
+            />
+          ) : null}
           <ToolbarBtn
             icon={<Scissors size={15} />}
             label={creatingClip ? "Creating…" : "Create clip"}
@@ -877,7 +896,9 @@ export function TranscriptPanel() {
     baseEditedToComposite,
     sceneWriteCapabilities,
     sceneFonts,
-  } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts");
+    upgradePrompts,
+  } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts", "upgradePrompts");
+  const { openUpgrade } = useUpgrade();
   const router = useRouter();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1398,6 +1419,11 @@ export function TranscriptPanel() {
             onCreateClip={handleCreateClip}
             onInsertScene={handleInsertScene}
             canInsertScene={sceneWriteCapabilities.cards}
+            insertSceneLock={upgradePrompts.scenes}
+            onUpgrade={(prompt) => {
+              dismissSelection();
+              openUpgrade(prompt);
+            }}
           />
         )}
       </Box>

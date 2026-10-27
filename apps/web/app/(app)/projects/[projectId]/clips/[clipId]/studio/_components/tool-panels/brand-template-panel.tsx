@@ -120,6 +120,9 @@ function LogoSection() {
                 Add one in Brand kit
               </Text>
             </NextLink>
+            <Text fontSize="12px" color="studio.fgSubtle">
+              Then apply that brand to this project from its page.
+            </Text>
           </Stack>
         </Flex>
       </Stack>

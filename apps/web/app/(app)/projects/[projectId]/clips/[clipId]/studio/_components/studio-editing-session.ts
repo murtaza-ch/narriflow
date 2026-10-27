@@ -146,6 +146,9 @@ export interface StudioSessionSnapshot {
     revision: number;
     dirty: boolean;
     rejectionCode: string | null;
+    /** What the server said about a `rejected` save; only meaningful in that
+     *  state (every other transition replaces or ignores it). */
+    rejection?: StudioCloudRejection;
   };
   preview: StudioPreviewSnapshot;
   playback: StudioPlaybackSnapshot;
@@ -154,6 +157,11 @@ export interface StudioSessionSnapshot {
     play: boolean;
     takeOver: boolean;
   };
+}
+
+export interface StudioCloudRejection {
+  message: string | null;
+  details: Record<string, unknown> | null;
 }
 
 export type StudioSessionIntent =
@@ -195,6 +203,12 @@ export type StudioSessionOperation =
   | { type: "prepare-cloud-revision" }
   | { type: "take-over" }
   | { type: "resolve-conflict"; choice: "device" | "cloud" }
+  /** Try the blocked save again with the edits kept (after signing in again,
+   *  or once the cause of a rejection was edited away). */
+  | { type: "retry-cloud-save" }
+  /** Return the document to the last saved version as an undoable edit. Only
+   *  while the save is blocked and nothing is in flight. */
+  | { type: "revert-to-cloud" }
   | { type: "reset-to-original" }
   | { type: "close"; reason: "unmount" | "navigation" | "pagehide" };
 
@@ -215,6 +229,8 @@ export type StudioOperationResult =
       reason: "ownership-lost";
     }
   | { kind: "cloud-current"; revision: number }
+  | { kind: "cloud-retrying" }
+  | { kind: "cloud-reverted"; revision: number }
   | {
       kind: "cloud-refreshed";
       revision: number;
@@ -419,7 +435,12 @@ export type StudioCloudSaveOutcome =
     }
   | { kind: "authentication-lost" }
   | { kind: "missing" }
-  | { kind: "rejected"; code: string }
+  | {
+      kind: "rejected";
+      code: string;
+      message?: string;
+      details?: Record<string, unknown>;
+    }
   | { kind: "revision-conflict"; currentRevision?: number };
 
 export type StudioCloudResetOutcome =
@@ -571,6 +592,7 @@ function snapshotsObservablyEqual(
     left.cloud.revision === right.cloud.revision &&
     left.cloud.dirty === right.cloud.dirty &&
     left.cloud.rejectionCode === right.cloud.rejectionCode &&
+    left.cloud.rejection === right.cloud.rejection &&
     studioPreviewSnapshotsEqual(left.preview, right.preview) &&
     left.playback.editedTimeSec === right.playback.editedTimeSec &&
     left.playback.durationSec === right.playback.durationSec &&
@@ -1012,6 +1034,57 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
     if (operation.type === "reset-to-original") {
       return this.resetToOriginal();
+    }
+    if (operation.type === "retry-cloud-save") {
+      const cloud = this.projection.cloud;
+      if (
+        this.projection.status !== "ready" ||
+        !cloud.dirty ||
+        (cloud.state !== "rejected" && cloud.state !== "authentication-lost") ||
+        (this.projection.ownership.kind !== "writer" &&
+          this.projection.ownership.kind !== "degraded")
+      ) {
+        return { kind: "unavailable", reason: "invalid-state" };
+      }
+      this.projection = {
+        ...this.projection,
+        cloud: {
+          state: (this.dependencies?.runtime.isOnline?.() ?? true) ? "pending" : "offline",
+          revision: this.cloudRevision,
+          dirty: true,
+          rejectionCode: null,
+        },
+      };
+      this.publish();
+      this.wakeCloudCheckpoint();
+      return { kind: "cloud-retrying" };
+    }
+    if (operation.type === "revert-to-cloud") {
+      const cloudState = this.projection.cloud.state;
+      if (
+        this.projection.status !== "ready" ||
+        !this.projection.cloud.dirty ||
+        (cloudState !== "rejected" &&
+          cloudState !== "authentication-lost" &&
+          cloudState !== "revision-conflict") ||
+        this.cloudSaveRunning ||
+        this.cloudAttempt ||
+        (this.projection.ownership.kind !== "writer" &&
+          this.projection.ownership.kind !== "degraded")
+      ) {
+        return { kind: "unavailable", reason: "invalid-state" };
+      }
+      // An ordinary document edit back to the saved version: Undo restores the
+      // discarded edits, and the device draft follows the document as usual.
+      this.unified = applyUnifiedEditorAction(this.unified, {
+        kind: "document",
+        action: { type: "reset", original: ownDocument(this.cloudDocument) },
+      });
+      this.reconcilePlaybackAfterDocumentChange();
+      this.scheduleDeviceDraftWrite();
+      this.markCloudDirty();
+      this.publish();
+      return { kind: "cloud-reverted", revision: this.cloudRevision };
     }
     if (operation.type !== "resolve-conflict") {
       return { kind: "unavailable", reason: "not-implemented" };
@@ -1644,6 +1717,14 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         revision: this.cloudRevision,
         dirty,
         rejectionCode: outcome.kind === "rejected" ? outcome.code : null,
+        ...(outcome.kind === "rejected"
+          ? {
+              rejection: {
+                message: outcome.message ?? null,
+                details: outcome.details ?? null,
+              },
+            }
+          : {}),
       },
     };
   }

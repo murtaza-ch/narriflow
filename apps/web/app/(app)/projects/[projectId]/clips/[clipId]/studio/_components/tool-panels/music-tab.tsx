@@ -22,12 +22,13 @@ import { toaster } from "@narriflow/ui/components/toaster";
 import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
 import {
+  brandAudioRows,
   useAudioAssetList,
   resolveAudioPlaybackUrl,
   type AudioAssetListRow,
   type PreviewPlayer,
 } from "./audio-library";
-import { filterAudioAssets } from "./audio-library-filter";
+import { brandAudioFirst, filterAudioAssets } from "./audio-library-filter";
 
 interface MusicTabProps {
   reloadKey: number;
@@ -74,7 +75,8 @@ function TrackRow({
   player: PreviewPlayer;
   selected: boolean;
   onUse: () => void;
-  onFavorite: () => void;
+  /** Omitted for brand tracks, which can't be starred. */
+  onFavorite?: () => void;
 }) {
   const active = player.activeId === asset.id;
   const playing = active && player.isPlaying;
@@ -137,22 +139,24 @@ function TrackRow({
         </Stack>
 
         <Flex align="center" gap="3px" flexShrink={0}>
-          <Flex
-            as="button"
-            aria-label={asset.favorited ? `Remove ${asset.title} from Saved` : `Save ${asset.title}`}
-            aria-pressed={asset.favorited}
-            w="25px"
-            h="25px"
-            align="center"
-            justify="center"
-            borderRadius="full"
-            color={asset.favorited ? "warning.fg" : "studio.fgMuted"}
-            cursor="pointer"
-            _hover={{ bg: "studio.subtle", color: asset.favorited ? "warning.fg" : "studio.fg" }}
-            onClick={onFavorite}
-          >
-            <Star size={13} fill={asset.favorited ? "currentColor" : "none"} />
-          </Flex>
+          {onFavorite ? (
+            <Flex
+              as="button"
+              aria-label={asset.favorited ? `Remove ${asset.title} from Saved` : `Save ${asset.title}`}
+              aria-pressed={asset.favorited}
+              w="25px"
+              h="25px"
+              align="center"
+              justify="center"
+              borderRadius="full"
+              color={asset.favorited ? "warning.fg" : "studio.fgMuted"}
+              cursor="pointer"
+              _hover={{ bg: "studio.subtle", color: asset.favorited ? "warning.fg" : "studio.fg" }}
+              onClick={onFavorite}
+            >
+              <Star size={13} fill={asset.favorited ? "currentColor" : "none"} />
+            </Flex>
+          ) : null}
           <Flex
             as="button"
             aria-label={selected ? `${asset.title} is in use` : `Use ${asset.title}`}
@@ -203,7 +207,7 @@ function TrackRow({
 }
 
 export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
-  const { studioEdits, setStudioEdits, endCoalesce } = useStudio("studioEdits", "setStudioEdits", "endCoalesce");
+  const { studioEdits, setStudioEdits, endCoalesce, brandAudio } = useStudio("studioEdits", "setStudioEdits", "endCoalesce", "brandAudio");
   const music = studioEdits.music;
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
@@ -213,7 +217,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
     reloadKey,
     { search, favorited: category === "saved" ? true : undefined },
   );
-  const [showMix, setShowMix] = useState(Boolean(music.url));
+  const [showMix, setShowMix] = useState(Boolean(music.assetId || music.url));
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [urlDraft, setUrlDraft] = useState(music.url ?? "");
   const [titleDraft, setTitleDraft] = useState(music.title ?? "");
@@ -232,7 +236,13 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
     return filterAudioAssets(rows, { category, search, activeId: player.activeId });
   }, [assets, category, player.activeId, player.activeAsset, search]);
 
-  const selectedAssetDurationSec = assets.find((asset) => asset.id === music.assetId)?.durationSec;
+  const brandRows = useMemo(() => brandAudioRows(brandAudio.music, "music"), [brandAudio.music]);
+  const groups = useMemo(
+    () => brandAudioFirst(brandRows, visibleAssets, { category, search }),
+    [brandRows, visibleAssets, category, search],
+  );
+
+  const selectedAssetDurationSec = [...brandRows, ...assets].find((asset) => asset.id === music.assetId)?.durationSec;
   const startOffsetMaxSec =
     selectedAssetDurationSec && selectedAssetDurationSec > 0
       ? Math.max(1, Math.ceil(selectedAssetDurationSec))
@@ -341,6 +351,23 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
 
       <Box maxH="330px" overflowY="auto" pr="2px">
         <Stack gap="3px">
+          {groups.brand.length > 0 ? (
+            <>
+              <Text fontSize="12px" fontWeight="500" color="studio.fgMuted" px="8px" pb="2px">Brand</Text>
+              {groups.brand.map((asset) => (
+                <TrackRow
+                  key={asset.id}
+                  asset={asset}
+                  player={player}
+                  selected={music.assetId === asset.id}
+                  onUse={() => void applyTrack(asset)}
+                />
+              ))}
+              {groups.library.length > 0 ? (
+                <Text fontSize="12px" fontWeight="500" color="studio.fgMuted" px="8px" pt="8px" pb="2px">Library</Text>
+              ) : null}
+            </>
+          ) : null}
           {loading ? (
             <Flex align="center" gap="7px" py="18px" justify="center" color="studio.fgMuted">
               <Box animation="spin">
@@ -355,7 +382,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
                 Retry
               </Flex>
             </Stack>
-          ) : visibleAssets.length === 0 ? (
+          ) : groups.library.length === 0 && groups.brand.length === 0 ? (
             <Stack align="center" gap="8px" py="28px" px="12px" textAlign="center">
               <Music size={20} />
               <Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">
@@ -383,7 +410,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               ) : null}
             </Stack>
           ) : (
-            visibleAssets.map((asset) => (
+            groups.library.map((asset) => (
               <TrackRow
                 key={asset.id}
                 asset={asset}
@@ -407,7 +434,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
         </Stack>
       </Box>
 
-      {music.url ? (
+      {music.assetId || music.url ? (
         <Flex
           align="center"
           justify="space-between"

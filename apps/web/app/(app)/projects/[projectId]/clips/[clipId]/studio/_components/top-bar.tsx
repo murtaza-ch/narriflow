@@ -1,14 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { Box, Flex, Text, HStack } from "@chakra-ui/react";
-import { ChevronLeft, Undo2, Redo2, Keyboard, RotateCcw, Lock } from "lucide-react";
+import { Box, Flex, Popover, Portal, Text, HStack } from "@chakra-ui/react";
+import { ChevronLeft, ChevronDown, Undo2, Redo2, Keyboard, RotateCcw, Lock } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { ClipActionsMenu } from "../../../../clip-actions-menu";
 import { useStudio, type StudioSaveState } from "./studio-shell";
 import { ResetConfirmDialog } from "./reset-confirm-dialog";
 import { StudioExportMenu } from "./studio-export-menu";
+import { SaveIssueBody, type SaveIssueActions } from "./save-issue-panel";
+import type { SaveIssue } from "./save-issue";
+import { useUpgrade } from "@/app/(app)/_components/upgrade";
+import { authEntryHref } from "@/lib/auth-entry";
 import { useIsMac } from "./use-is-mac";
 
 function IconBtn({
@@ -56,9 +60,13 @@ function IconBtn({
 function AutosaveIndicator({
   saveState,
   isDocDirty,
+  saveIssue,
+  issueActions,
 }: {
   saveState: StudioSaveState;
   isDocDirty: boolean;
+  saveIssue?: SaveIssue | null;
+  issueActions?: SaveIssueActions;
 }) {
   if (saveState === "saving") {
     return (
@@ -83,7 +91,7 @@ function AutosaveIndicator({
   // Claiming "Saved" while dirty is a silent-data-loss message; consult the
   // dirty flag and say so honestly instead.
   const idleButDirty = !isError && isDocDirty;
-  return (
+  const status = (
     <HStack gap="6px" aria-live="polite">
       <Box
         w="6px"
@@ -119,6 +127,86 @@ function AutosaveIndicator({
               : "Saved"}
       </Text>
     </HStack>
+  );
+  if (!isBlocked || !saveIssue || !issueActions) return status;
+  return <SaveIssuePopover issue={saveIssue} actions={issueActions}>{status}</SaveIssuePopover>;
+}
+
+/** The blocked save status as a quiet button; its popover says why and how to continue. */
+function SaveIssuePopover({
+  issue,
+  actions,
+  children,
+}: {
+  issue: SaveIssue;
+  actions: SaveIssueActions;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const close = (run: () => void) => () => {
+    setOpen(false);
+    run();
+  };
+  const wrapped: SaveIssueActions = {
+    ...actions,
+    undo: actions.undo ? close(actions.undo) : null,
+    upgrade: (prompt) => {
+      setOpen(false);
+      actions.upgrade(prompt);
+    },
+    retry: close(actions.retry),
+    loadLastSaved: close(actions.loadLastSaved),
+    removeBroll: (ids) => {
+      setOpen(false);
+      actions.removeBroll(ids);
+    },
+    resolveConflict: (choice) => {
+      setOpen(false);
+      actions.resolveConflict(choice);
+    },
+    backToProject: close(actions.backToProject),
+  };
+  return (
+    <Popover.Root
+      open={open}
+      onOpenChange={(details) => setOpen(details.open)}
+      positioning={{ placement: "bottom-end", gutter: 8 }}
+    >
+      <Popover.Trigger asChild>
+        <Flex
+          as="button"
+          align="center"
+          gap="1.5"
+          h="32px"
+          px="2.5"
+          borderRadius="8px"
+          bg="studio.raised"
+          cursor="pointer"
+          aria-haspopup="dialog"
+          aria-label="Save needs attention. See details"
+          transition="background 120ms ease"
+          _hover={{ bg: "studio.borderStrong" }}
+        >
+          {children}
+          <ChevronDown size={12} aria-hidden />
+        </Flex>
+      </Popover.Trigger>
+      <Portal>
+        <Popover.Positioner>
+          <Popover.Content
+            w="min(300px, calc(100vw - 24px))"
+            p="4"
+            bg="studio.surface"
+            color="studio.fg"
+            borderWidth="0"
+            borderRadius="14px"
+            boxShadow="none"
+          >
+            <SaveIssueBody issue={issue} actions={wrapped} />
+          </Popover.Content>
+        </Popover.Positioner>
+      </Portal>
+    </Popover.Root>
   );
 }
 
@@ -176,8 +264,11 @@ export function TopBar() {
     isDocDirty,
     editingElsewhere,
     handleTakeOverEditing,
-  } = useStudio("clipInfo", "canUndo", "canRedo", "showShortcuts", "setShowShortcuts", "handleUndo", "handleRedo", "handleReset", "resetState", "canReset", "saveState", "isDocDirty", "editingElsewhere", "handleTakeOverEditing");
+    saveIssue,
+    saveIssueActions,
+  } = useStudio("clipInfo", "canUndo", "canRedo", "showShortcuts", "setShowShortcuts", "handleUndo", "handleRedo", "handleReset", "resetState", "canReset", "saveState", "isDocDirty", "editingElsewhere", "handleTakeOverEditing", "saveIssue", "saveIssueActions");
   const isMac = useIsMac();
+  const { openUpgrade } = useUpgrade();
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   return (
@@ -247,7 +338,18 @@ export function TopBar() {
           <EditingElsewhereNotice onTakeOver={handleTakeOverEditing} />
         ) : (
           <Box ms="3" me="2">
-            <AutosaveIndicator saveState={saveState} isDocDirty={isDocDirty} />
+            <AutosaveIndicator
+              saveState={saveState}
+              isDocDirty={isDocDirty}
+              saveIssue={saveIssue}
+              issueActions={{
+                ...saveIssueActions,
+                undo: canUndo ? handleUndo : null,
+                upgrade: openUpgrade,
+                openSignIn: () => window.open(authEntryHref("sign-in", "/home"), "_blank", "noopener"),
+                backToProject: () => router.push(`/projects/${clipInfo.projectId}`),
+              }}
+            />
           </Box>
         )}
         <StudioExportMenu />

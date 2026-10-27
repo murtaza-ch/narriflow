@@ -33,6 +33,18 @@ test("classifies retryable and terminal editor responses without conflating them
     code: "editor_document_empty_timeline",
   });
   expect(
+    classifyStudioCloudResponse(422, {
+      error: "visual_broll_asset_invalid",
+      message: "The selected visual asset could not be verified",
+      details: { placementIds: ["a"] },
+    }),
+  ).toEqual({
+    kind: "rejected",
+    code: "visual_broll_asset_invalid",
+    message: "The selected visual asset could not be verified",
+    details: { placementIds: ["a"] },
+  });
+  expect(
     classifyStudioCloudResponse(409, { details: { currentRevision: 9 } }),
   ).toEqual({ kind: "revision-conflict", currentRevision: 9 });
 });

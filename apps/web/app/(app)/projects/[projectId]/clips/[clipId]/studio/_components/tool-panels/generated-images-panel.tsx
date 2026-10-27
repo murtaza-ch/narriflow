@@ -23,13 +23,14 @@ import {
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
 import type { GeneratedImageUsageSummary } from "@narriflow/services";
+import { STUDIO_EDIT_LIMITS } from "@narriflow/validators";
 import type { StudioVisualAsset } from "../studio-shell";
 import { upgradePromptFromFailure, type BrowserRequestFailure } from "@/lib/authenticated-request-browser";
 import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "../studio-shell";
 import { StudioLockGem } from "../studio-lock-gem";
 import { generatedImagesExhaustedCopy, generatedImagesUpgradePrompt } from "../studio-upgrade";
-import { createGeneratedImagesBrowserApi } from "./generated-images-browser";
+import { assetInUseCopy, createGeneratedImagesBrowserApi } from "./generated-images-browser";
 
 type PromptOrigin = "transcript_selection" | "broll_cue" | "manual";
 type Style = "editorial" | "cinematic" | "photoreal" | "illustration";
@@ -90,6 +91,9 @@ function jobStatusCopy(job: GeneratedJob) {
   return "Ready";
 }
 
+/** `studioEditsSchema.visualBroll`'s cap; past it the document can't save. */
+export const MAX_VISUAL_BROLL = STUDIO_EDIT_LIMITS.visualBroll;
+
 function generatedMediaErrorCopy(code: string | null | undefined, fallback: string) {
   const copy: Record<string, string> = {
     generated_media_concurrency_limit_reached: "Too many images are already being generated. Try again when one finishes.",
@@ -117,7 +121,9 @@ export function GeneratedImagesPanel() {
     unregisterVisualAsset,
     utterances,
     generatedImagesCapability,
-  } = useStudio("aspectRatio", "brandProfileId", "clipInfo", "compositeToBaseEdited", "duration", "editedTimeMap", "editorDocument", "insertSceneBlock", "playbackClock", "registerVisualAsset", "setBrollUrl", "setStudioEdits", "transcriptSelectionRange", "unregisterVisualAsset", "utterances", "generatedImagesCapability");
+    sceneWriteCapabilities,
+    upgradePrompts,
+  } = useStudio("aspectRatio", "brandProfileId", "clipInfo", "compositeToBaseEdited", "duration", "editedTimeMap", "editorDocument", "insertSceneBlock", "playbackClock", "registerVisualAsset", "setBrollUrl", "setStudioEdits", "transcriptSelectionRange", "unregisterVisualAsset", "utterances", "generatedImagesCapability", "sceneWriteCapabilities", "upgradePrompts");
   const { currentTier, openUpgrade } = useUpgrade();
   const [cueIndex, setCueIndex] = useState(0);
   const cue = clipInfo.brollCues[cueIndex] ?? null;
@@ -265,6 +271,10 @@ export function GeneratedImagesPanel() {
       toaster.create({ type: "warning", title: "B-roll already covers this range", description: "Replace the selected B-roll or move the playhead to a free range." });
       return;
     }
+    if (editorDocument.studioEdits.visualBroll.length >= MAX_VISUAL_BROLL) {
+      toaster.create({ type: "warning", title: `A clip holds up to ${MAX_VISUAL_BROLL} B-roll placements`, description: "Remove one from the timeline, or replace the selected B-roll." });
+      return;
+    }
     setStudioEdits((current) => ({
       ...current,
       visualBroll: [...current.visualBroll, {
@@ -322,8 +332,10 @@ export function GeneratedImagesPanel() {
       body: JSON.stringify({ kind: "asset", resourceId: asset.id, role: "image", position: 0 }),
     });
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({})) as { error?: string };
-      setError(generatedMediaErrorCopy(payload.error, "Could not save this frame to the Brand Profile"));
+      const payload = await response.json().catch(() => ({})) as BrowserRequestFailure & { error?: string };
+      const upgrade = upgradePromptFromFailure(payload);
+      if (upgrade) openUpgrade(upgrade);
+      setError(generatedMediaErrorCopy(payload.error, payload.message ?? "Could not save this frame to the Brand Profile"));
       return;
     }
     setError(null);
@@ -334,8 +346,8 @@ export function GeneratedImagesPanel() {
     if (!job.resultAsset) return;
     const response = await browserApi.deleteResult(job.id);
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({})) as { error?: string };
-      setError(generatedMediaErrorCopy(payload.error, "Could not delete this frame"));
+      const payload = await response.json().catch(() => ({})) as BrowserRequestFailure & { error?: string };
+      setError(assetInUseCopy(payload) ?? generatedMediaErrorCopy(payload.error, "Could not delete this frame"));
       return;
     }
     setError(null);
@@ -350,6 +362,13 @@ export function GeneratedImagesPanel() {
   const reconciliation = jobs.filter((job) => job.outcomeUnknown);
   const terminal = jobs.filter((job) => ["failed", "rejected", "cancelled"].includes(job.status));
   const limitExhausted = usage?.remaining === 0;
+  // Same playhead window for every frame, so one visible hint covers them all.
+  const insertionWindow = brollWindowAtPlayhead();
+  const insertBlocked = editorDocument.studioEdits.visualBroll.some((placement) =>
+    placement.startSec < insertionWindow.endSec && insertionWindow.startSec < placement.endSec,
+  );
+  const selectedBroll = insertionWindow.selected;
+  const sceneLock = sceneWriteCapabilities.images ? null : upgradePrompts.scenes;
 
   const unavailableCopy = generatedImagesCapability.reason === "provider_unavailable"
     ? "Image generation is temporarily unavailable. Existing jobs and images remain available below."
@@ -505,14 +524,17 @@ export function GeneratedImagesPanel() {
           </Flex>
         ) : null}
 
+        {completed.length > 0 ? (
+          <Text fontSize="11px" color="studio.fgMuted" lineHeight="1.5">
+            {insertBlocked
+              ? "B-roll already covers the playhead. Replace it, or move the playhead to a free spot to insert."
+              : "Insert adds four seconds of B-roll at the playhead. Move the playhead over B-roll to replace it."}
+          </Text>
+        ) : null}
+
         <SimpleGrid columns={2} gap="8px">
         {completed.map((job) => {
           const asset = job.resultAsset!;
-          const insertionWindow = brollWindowAtPlayhead();
-          const selectedBroll = insertionWindow.selected;
-          const insertBlocked = editorDocument.studioEdits.visualBroll.some((placement) =>
-            placement.startSec < insertionWindow.endSec && insertionWindow.startSec < placement.endSec,
-          );
           const usedInDocument = editorDocument.studioEdits.visualBroll.some((placement) => placement.asset.id === asset.id) || editorDocument.sceneBlocks.some((scene) => (scene.content.kind === "image" || scene.content.kind === "video") && scene.content.asset.id === asset.id);
           return (
             <Box key={job.id} bg="studio.subtle" borderRadius="10px" overflow="hidden">
@@ -524,13 +546,22 @@ export function GeneratedImagesPanel() {
                   <Text fontSize="11px" lineClamp="1" color="studio.fg">{asset.title}</Text>
                   <Text fontFamily="mono" fontSize="9px" color="studio.fgMuted">{job.style.toUpperCase()}</Text>
                 </Flex>
-                <Button size="xs" {...softButtonProps} disabled={insertBlocked} title={insertBlocked ? "Move the playhead to a free range or replace the selected B-roll" : "Insert a four-second B-roll placement"} onClick={() => insertBroll(asset)}><ImagePlus size={12} />Insert at playhead</Button>
-                <Button size="xs" {...softButtonProps} disabled={!selectedBroll} title={selectedBroll ? "Replace the B-roll under the playhead" : "Move the playhead over a B-roll placement"} onClick={() => replaceBroll(asset)}><ImagePlus size={12} />Replace selected B-roll</Button>
-                <Button size="xs" {...softButtonProps} onClick={() => insertScene(asset)}><Library size={12} />Insert image scene</Button>
-                <SimpleGrid columns={3} gap="5px">
-                  <Button size="xs" variant="ghost" aria-label="Save to Brand Profile" title="Save to Brand Profile" disabled={!brandProfileId} onClick={() => void saveToBrand(asset)}><BookmarkPlus size={13} /></Button>
+                <Button size="xs" {...softButtonProps} disabled={insertBlocked} onClick={() => insertBroll(asset)}><ImagePlus size={12} />Insert at playhead</Button>
+                <Button size="xs" {...softButtonProps} disabled={!selectedBroll} onClick={() => replaceBroll(asset)}><ImagePlus size={12} />Replace selected B-roll</Button>
+                {sceneLock?.tier ? (
+                  <Button size="xs" {...softButtonProps} aria-haspopup="dialog" onClick={() => openUpgrade(sceneLock)}><Library size={12} />Insert image scene<StudioLockGem tier={sceneLock.tier} size={12} /></Button>
+                ) : sceneWriteCapabilities.images ? (
+                  <Button size="xs" {...softButtonProps} onClick={() => insertScene(asset)}><Library size={12} />Insert image scene</Button>
+                ) : null}
+                <SimpleGrid columns={brandProfileId ? 3 : 2} gap="5px">
+                  {brandProfileId ? (
+                    <Button size="xs" variant="ghost" aria-label="Save to Brand Profile" title="Save to Brand Profile" onClick={() => void saveToBrand(asset)}><BookmarkPlus size={13} /></Button>
+                  ) : null}
                   <Button asChild size="xs" variant="ghost"><a href={asset.accessUrl!} download aria-label="Download generated image" title="Download"><Download size={13} /></a></Button>
-                  <Button size="xs" variant="ghost" colorPalette="danger" aria-label="Delete generated image" disabled={usedInDocument} title={usedInDocument ? "Remove this frame from the timeline before deleting it" : "Delete"} onClick={() => void deleteAsset(job)}><Trash2 size={13} /></Button>
+                  <Button size="xs" variant="ghost" colorPalette="danger" aria-label="Delete generated image" title="Delete" onClick={() => {
+                    if (usedInDocument) toaster.create({ type: "warning", title: "This frame is on the timeline", description: "Remove it from the timeline before deleting it." });
+                    else void deleteAsset(job);
+                  }}><Trash2 size={13} /></Button>
                 </SimpleGrid>
               </Stack>
             </Box>

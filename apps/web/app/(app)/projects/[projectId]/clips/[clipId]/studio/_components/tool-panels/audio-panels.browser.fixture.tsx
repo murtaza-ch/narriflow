@@ -1,12 +1,14 @@
 import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
-import { studioEditsSchema } from "@narriflow/validators";
+import { studioEditsSchema, type BrandAudioSnapshot } from "@narriflow/validators";
 import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 
 const browser = new Window({ url: "http://localhost:3000/studio" });
+const noBrandAudio: BrandAudioSnapshot = { music: [], sfx: [] };
 const studio = {
   studioEdits: studioEditsSchema.parse({}),
+  brandAudio: noBrandAudio,
   setStudioEdits: mock((_update: unknown) => {}),
   endCoalesce() {},
   playbackClock: { getSnapshot: () => 0, subscribe: () => () => {} },
@@ -52,6 +54,8 @@ afterEach(async () => {
   root = null;
   browser.document.body.replaceChildren();
   globalThis.fetch = realFetch;
+  studio.brandAudio = noBrandAudio;
+  studio.studioEdits = studioEditsSchema.parse({});
   studio.setStudioEdits.mockReset();
 });
 afterAll(() => browser.happyDOM.abort());
@@ -331,4 +335,48 @@ test("applying a later track cannot be undone by an earlier playback URL respons
   await act(async () => { (container.querySelector('[aria-label="Use second"]') as unknown as HTMLButtonElement).click(); });
   await act(async () => { finishFirst(Response.json({ url: "https://audio.test/first.mp3", durationSec: 2 })); });
   expect(applied).toEqual(["second"]);
+});
+
+test.each(["music", "sfx"] as const)("%s lists the Project's brand tracks first and not again in the library", async (kind) => {
+  const brandId = "b2f1b0c4-7a33-4c25-9d54-1ef3a8c1a001";
+  const track = { assetId: brandId, title: "Brand theme", durationSec: 30 };
+  studio.brandAudio = kind === "music" ? { music: [track], sfx: [] } : { music: [], sfx: [track] };
+  if (kind === "music") studio.studioEdits = studioEditsSchema.parse({ music: { assetId: brandId, title: "Brand theme" } });
+  globalThis.fetch = mock(async (url) => {
+    if (String(url).includes("playback-url")) return Response.json({ url: "https://audio.test/brand.mp3", durationSec: 30 });
+    const asks = new URL(String(url), "http://localhost").searchParams.get("kind");
+    return Response.json({ assets: [
+      { id: "library-track", kind: asks, scope: "curated", title: "Library track", moodTags: [], durationSec: 2, favorited: false },
+      { id: brandId, kind: asks, scope: "user", title: "Brand theme", moodTags: [], durationSec: 30, favorited: false },
+    ], moodTags: [], nextOffset: null });
+  }) as typeof fetch;
+  const container = await mount(<MusicPanel />);
+  if (kind === "sfx") {
+    const tab = [...container.querySelectorAll('[role="tab"]')].find((node) => node.textContent === "Sound effects")!;
+    await act(async () => { (tab as unknown as HTMLButtonElement).click(); });
+  }
+  const text = container.textContent ?? "";
+  expect(text.indexOf("Brand")).toBeGreaterThanOrEqual(0);
+  expect(text.indexOf("Brand theme")).toBeLessThan(text.indexOf("Library track"));
+  expect(text.indexOf("Library")).toBeGreaterThan(text.indexOf("Brand theme"));
+  expect(text.split("Brand theme")).toHaveLength(kind === "music" ? 3 : 2);
+  expect(container.querySelector('[aria-label="Save Brand theme"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Save Library track"]')).not.toBeNull();
+  if (kind === "music") {
+    // The seeded track shows as the clip's music even though it has no stored URL.
+    expect(container.querySelector('[aria-label="Brand theme is in use"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Remove music"]')).not.toBeNull();
+  } else {
+    expect(container.querySelector('[aria-label="Add Brand theme at playhead"]')).not.toBeNull();
+  }
+});
+
+test("brand tracks are hidden in category views and follow the search", async () => {
+  studio.brandAudio = { music: [{ assetId: "b2f1b0c4-7a33-4c25-9d54-1ef3a8c1a001", title: "Brand theme", durationSec: 30 }], sfx: [] };
+  globalThis.fetch = mock(async () => Response.json({ assets: [], moodTags: ["Calm"], nextOffset: null })) as typeof fetch;
+  const container = await mount(<MusicPanel />);
+  expect(container.textContent).toContain("Brand theme");
+  const calm = [...container.querySelectorAll("button")].find((node) => node.textContent === "Calm")!;
+  await act(async () => { calm.click(); });
+  expect(container.textContent).not.toContain("Brand theme");
 });

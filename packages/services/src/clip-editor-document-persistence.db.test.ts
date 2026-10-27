@@ -303,6 +303,27 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       expect(await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).toMatchObject({ wholeSource: false });
     });
 
+    test("extending a clip carries a trailing end-card Scene with the footage", async () => {
+      const f = await fixture();
+      const persistence = persistenceFor();
+      const scope = fixtureActorScope(f);
+      const endCard = {
+        schemaVersion: 1 as const,
+        id: randomUUID(),
+        anchorSec: 20,
+        durationSec: 3,
+        content: { kind: "color" as const, color: "#1D4ED8" },
+        motion: { entrance: "none" as const, exit: "none" as const, durationSec: 0.5 },
+        templateSnapshot: null,
+      };
+      const clip = await addClip(f, 1, editorDocument({ clipStartSec: 10, clipEndSec: 30, sceneBlocks: [endCard] }));
+      const extended = await persistence.mutateDocument({ ...scope, projectId: f.project.id, clipId: clip.id, intent: { kind: "set_boundaries", startSec: 10, endSec: 40 } });
+      expect(extended.document).toMatchObject({ clipStartSec: 10, clipEndSec: 40 });
+      expect(extended.document.sceneBlocks).toEqual([{ ...endCard, anchorSec: 30 }]);
+      const read = await persistence.readDocument({ ...scope, projectId: f.project.id, clipId: clip.id });
+      expect(read.document.sceneBlocks).toEqual([{ ...endCard, anchorSec: 30 }]);
+    });
+
     test("a whole-source clip trimmed to 4 seconds resets to its 8-second original under the same policy", async () => {
       const f = await fixture();
       const persistence = persistenceFor();

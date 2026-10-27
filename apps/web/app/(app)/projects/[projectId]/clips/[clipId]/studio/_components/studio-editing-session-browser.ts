@@ -61,7 +61,14 @@ export function classifyStudioCloudResponse(
       ...(currentRevision === undefined ? {} : { currentRevision }),
     };
   }
-  return { kind: "rejected", code: errorCode };
+  return {
+    kind: "rejected",
+    code: errorCode,
+    ...(isRecord(body) && typeof body.message === "string"
+      ? { message: body.message }
+      : {}),
+    ...(isRecord(body) && isRecord(body.details) ? { details: body.details } : {}),
+  };
 }
 
 async function parseSuccessfulCloudWrite(

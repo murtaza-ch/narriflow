@@ -54,6 +54,11 @@ export function ScenesPanel() {
       : scene.content.kind === "image"
         ? studio.sceneWriteCapabilities.images
         : studio.sceneWriteCapabilities.videos);
+  // A locked plan's edit controls open the upgrade instead of doing nothing.
+  const lockedEdit = (scene: SceneBlock, edit: () => void) => () => {
+    if (canWriteScene(scene)) edit();
+    else if (scenesLock?.tier) openUpgrade(scenesLock);
+  };
   const transcriptBoundary = useMemo(() => {
     const orderedScenes = [...studio.sceneBlocks].sort((left, right) => left.anchorSec - right.anchorSec);
     const toComposite = (baseSec: number) => {
@@ -151,8 +156,8 @@ export function ScenesPanel() {
 								: null;
 							const unavailableVisual = visualAsset && !studio.visualAssets.some((asset) => asset.insertable && asset.id === visualAsset.id && asset.fingerprint === visualAsset.fingerprint);
 							const unavailable = Boolean(unavailableFont || unavailableVisual);
-							return <Button key={template.id} {...softButtonProps} h="40px" justifyContent="space-between" disabled={unavailable} title={unavailable ? "Restore or replace the missing Scene asset before inserting this template" : undefined} onClick={() => insert(template.definition.content, template.definition.durationSec, { templateId: template.id, templateRevision: template.revision, fingerprint: template.fingerprint, name: template.name }, template.definition.motion)}>
-								<Text truncate>{template.name}</Text><Text fontVariantNumeric="tabular-nums" fontSize="12px">{template.definition.durationSec}s</Text>
+							return <Button key={template.id} {...softButtonProps} h="40px" justifyContent="space-between" disabled={unavailable} onClick={() => insert(template.definition.content, template.definition.durationSec, { templateId: template.id, templateRevision: template.revision, fingerprint: template.fingerprint, name: template.name }, template.definition.motion)}>
+								<Text truncate>{template.name}</Text><Text fontVariantNumeric="tabular-nums" fontSize="12px" flexShrink={0}>{unavailable ? (unavailableFont ? "Font missing" : "Asset missing") : `${template.definition.durationSec}s`}</Text>
 							</Button>;
 						})}
           </Stack>
@@ -176,11 +181,11 @@ export function ScenesPanel() {
 					<Text fontSize="13px" fontWeight="500" color="studio.fg" truncate>{sceneLabel(content)}</Text><Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.timecode">{scene.anchorSec.toFixed(1)}s</Text>
                 </Button>
                 <Flex mt="3" gap="1" wrap="wrap">
-                  <Button size="xs" variant="ghost" disabled={!canWriteScene(scene)} aria-label="Move scene to start" onClick={() => studio.moveSceneBlock(scene.id, 0)}><MoveLeft size={13} /></Button>
-                  <Button size="xs" variant="ghost" disabled={!canWriteScene(scene)} aria-label="Move scene to end" onClick={() => studio.moveSceneBlock(scene.id, Math.max(0, totalDuration - scene.durationSec))}><MoveRight size={13} /></Button>
+                  <Button size="xs" variant="ghost" disabled={!canWriteScene(scene) && !scenesLock?.tier} aria-haspopup={canWriteScene(scene) ? undefined : "dialog"} aria-label="Move scene to start" onClick={lockedEdit(scene, () => studio.moveSceneBlock(scene.id, 0))}><MoveLeft size={13} /></Button>
+                  <Button size="xs" variant="ghost" disabled={!canWriteScene(scene) && !scenesLock?.tier} aria-haspopup={canWriteScene(scene) ? undefined : "dialog"} aria-label="Move scene to end" onClick={lockedEdit(scene, () => studio.moveSceneBlock(scene.id, Math.max(0, totalDuration - scene.durationSec)))}><MoveRight size={13} /></Button>
                   <Button size="xs" variant="ghost" aria-label="Preview scene" onClick={() => studio.seekTo(scene.anchorSec)}><Play size={13} /></Button>
-                  <Button size="xs" variant="ghost" disabled={!canWriteScene(scene)} aria-label="Duplicate scene" onClick={() => studio.duplicateSceneBlock(scene.id)}><Copy size={13} /></Button>
-                  <Button size="xs" variant="ghost" disabled={!canWriteScene(scene)} color="danger.fg" aria-label="Delete scene" onClick={() => { studio.deleteSceneBlock(scene.id); setSelectedSceneId(null); }}><Trash2 size={13} /></Button>
+                  <Button size="xs" variant="ghost" disabled={!canWriteScene(scene) && !scenesLock?.tier} aria-haspopup={canWriteScene(scene) ? undefined : "dialog"} aria-label="Duplicate scene" onClick={lockedEdit(scene, () => studio.duplicateSceneBlock(scene.id))}><Copy size={13} /></Button>
+                  <Button size="xs" variant="ghost" color="danger.fg" aria-label="Delete scene" onClick={() => { studio.deleteSceneBlock(scene.id); setSelectedSceneId(null); }}><Trash2 size={13} /></Button>
 					<Input ml="auto" w="64px" h="24px" px="2" disabled={!canWriteScene(scene)} type="number" min={content.kind === "video" ? 0.1 : 1} max={content.kind === "video" ? content.sourceEndSec - content.sourceStartSec : 30} step="0.1" aria-label={`Duration for scene ${index + 1}`} value={scene.durationSec} onChange={(event) => { const min = content.kind === "video" ? 0.1 : 1; const max = content.kind === "video" ? content.sourceEndSec - content.sourceStartSec : 30; studio.trimSceneBlock(scene.id, Math.min(max, Math.max(min, Number(event.target.value) || min))); }} />
                 </Flex>
 						{selectedSceneId === scene.id && canWriteScene(scene) && (
@@ -223,7 +228,18 @@ export function ScenesPanel() {
         )}
       </Box>
       {!canCreateScenes && studio.sceneBlocks.length > 0 && (
-        <Box bg="studio.subtle" borderRadius="10px" p="4"><Text fontSize="13px" color="studio.fgMuted">Scene editing is read-only. Existing scenes remain in preview and exports.</Text></Box>
+        <Box bg="studio.subtle" borderRadius="10px" p="4">
+          <Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">
+            {scenesLock?.tier
+              ? `Editing scenes needs ${PLAN_CATALOG[scenesLock.tier].name}. You can still remove them.`
+              : "Scene editing is unavailable. You can still remove scenes."}
+          </Text>
+          {scenesLock?.tier ? (
+            <Button mt="3" size="xs" {...softButtonProps} aria-haspopup="dialog" onClick={() => openUpgrade(scenesLock)}>
+              Upgrade to edit scenes<StudioLockGem tier={scenesLock.tier} />
+            </Button>
+          ) : null}
+        </Box>
       )}
     </Stack>
   );

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createGeneratedImagesBrowserApi } from "./generated-images-browser";
+import { assetInUseCopy, createGeneratedImagesBrowserApi } from "./generated-images-browser";
 
 describe("generated image browser lifecycle", () => {
   test("a reopened Studio adopts the durable gallery only through its Project route", async () => {
@@ -41,5 +41,15 @@ describe("generated image browser lifecycle", () => {
       { url: "/api/projects/project-1/generated-media/jobs/job-1/cancel", method: "POST" },
       { url: "/api/projects/project-1/generated-media/jobs/job-1/result", method: "DELETE" },
     ]);
+  });
+
+  test("a refused delete says where the frame is still used", () => {
+    expect(
+      assetInUseCopy({ error: "visual_asset_in_use", details: { usedIn: "clips Clip A, Clip B and 2 more" } }),
+    ).toBe("Used in: clips Clip A, Clip B and 2 more. Remove it there first.");
+    expect(assetInUseCopy({ error: "visual_asset_in_use" })).toBe(
+      "This frame is still in use. Remove it there first.",
+    );
+    expect(assetInUseCopy({ error: "generated_media_job_not_found" })).toBeNull();
   });
 });

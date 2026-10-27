@@ -15,17 +15,19 @@ import {
   X,
 } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
+import { STUDIO_EDIT_LIMITS } from "@narriflow/validators";
 import { formatDuration, formatTimecode } from "@/lib/format";
 import { useStudio } from "../studio-shell";
 import {
+  brandAudioRows,
   useAudioAssetList,
   type AudioAssetListRow,
   type PreviewPlayer,
 } from "./audio-library";
-import { filterAudioAssets } from "./audio-library-filter";
+import { brandAudioFirst, filterAudioAssets } from "./audio-library-filter";
 import { chipProps, studioSliderCss, softFocusWithin } from "./panel-ui";
 
-const MAX_SFX_PLACEMENTS = 20;
+const MAX_SFX_PLACEMENTS = STUDIO_EDIT_LIMITS.sfx;
 
 interface SfxTabProps {
   reloadKey: number;
@@ -70,7 +72,8 @@ function SfxRow({
   player: PreviewPlayer;
   disabled: boolean;
   onAdd: () => void;
-  onFavorite: () => void;
+  /** Omitted for brand effects, which can't be starred. */
+  onFavorite?: () => void;
 }) {
   const active = player.activeId === asset.id;
   const playing = active && player.isPlaying;
@@ -117,21 +120,23 @@ function SfxRow({
           </Text>
         </Stack>
         <Flex align="center" gap="3px">
-          <Flex
-            as="button"
-            aria-label={asset.favorited ? `Remove ${asset.title} from Saved` : `Save ${asset.title}`}
-            aria-pressed={asset.favorited}
-            w="25px"
-            h="25px"
-            align="center"
-            justify="center"
-            borderRadius="full"
-            color={asset.favorited ? "warning.fg" : "studio.fgMuted"}
-            _hover={{ bg: "studio.subtle", color: asset.favorited ? "warning.fg" : "studio.fg" }}
-            onClick={onFavorite}
-          >
-            <Star size={13} fill={asset.favorited ? "currentColor" : "none"} />
-          </Flex>
+          {onFavorite ? (
+            <Flex
+              as="button"
+              aria-label={asset.favorited ? `Remove ${asset.title} from Saved` : `Save ${asset.title}`}
+              aria-pressed={asset.favorited}
+              w="25px"
+              h="25px"
+              align="center"
+              justify="center"
+              borderRadius="full"
+              color={asset.favorited ? "warning.fg" : "studio.fgMuted"}
+              _hover={{ bg: "studio.subtle", color: asset.favorited ? "warning.fg" : "studio.fg" }}
+              onClick={onFavorite}
+            >
+              <Star size={13} fill={asset.favorited ? "currentColor" : "none"} />
+            </Flex>
+          ) : null}
           <Flex
             as="button"
             aria-label={`Add ${asset.title} at playhead`}
@@ -177,7 +182,7 @@ function SfxRow({
 }
 
 export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
-  const { studioEdits, setStudioEdits, endCoalesce, playbackClock } = useStudio("studioEdits", "setStudioEdits", "endCoalesce", "playbackClock");
+  const { studioEdits, setStudioEdits, endCoalesce, playbackClock, brandAudio } = useStudio("studioEdits", "setStudioEdits", "endCoalesce", "playbackClock", "brandAudio");
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
   const { assets, moodTags, loading, error, retry, setFavorite, hasMore, loadingMore, loadMoreError, loadMore } = useAudioAssetList(
@@ -194,6 +199,12 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
     const rows = active?.kind === "sfx" && !assets.some((asset) => asset.id === active.id) ? [...assets, active] : assets;
     return filterAudioAssets(rows, { category, search, activeId: player.activeId });
   }, [assets, category, player.activeId, player.activeAsset, search]);
+
+  const brandRows = useMemo(() => brandAudioRows(brandAudio.sfx, "sfx"), [brandAudio.sfx]);
+  const groups = useMemo(
+    () => brandAudioFirst(brandRows, visibleAssets, { category, search }),
+    [brandRows, visibleAssets, category, search],
+  );
 
   const addAtPlayhead = (asset: AudioAssetListRow) => {
     if (atCap) return;
@@ -293,6 +304,23 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
 
       <Box maxH="300px" overflowY="auto" pr="2px">
         <Stack gap="3px">
+          {groups.brand.length > 0 ? (
+            <>
+              <Text fontSize="12px" fontWeight="500" color="studio.fgMuted" px="8px" pb="2px">Brand</Text>
+              {groups.brand.map((asset) => (
+                <SfxRow
+                  key={asset.id}
+                  asset={asset}
+                  player={player}
+                  disabled={atCap}
+                  onAdd={() => addAtPlayhead(asset)}
+                />
+              ))}
+              {groups.library.length > 0 ? (
+                <Text fontSize="12px" fontWeight="500" color="studio.fgMuted" px="8px" pt="8px" pb="2px">Library</Text>
+              ) : null}
+            </>
+          ) : null}
           {loading ? (
             <Flex align="center" gap="7px" py="18px" justify="center" color="studio.fgMuted">
               <Box animation="spin"><LoaderCircle size={14} /></Box>
@@ -305,7 +333,7 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
                 Retry
               </Flex>
             </Stack>
-          ) : visibleAssets.length === 0 ? (
+          ) : groups.library.length === 0 && groups.brand.length === 0 ? (
             <Stack align="center" gap="8px" py="28px" px="12px" textAlign="center">
               <Sparkles size={18} />
               <Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">
@@ -321,7 +349,7 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
                 </Flex>
               ) : null}
             </Stack>
-          ) : visibleAssets.map((asset) => (
+          ) : groups.library.map((asset) => (
             <SfxRow
               key={asset.id}
               asset={asset}

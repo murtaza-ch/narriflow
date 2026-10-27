@@ -300,7 +300,11 @@ export function BRollPanel() {
       {/* Results */}
       <Box flex="1" overflowY="auto" px="20px" pb="20px">
         {!configured ? (
-          <EmptyHint text="Stock B-roll search isn't available on your workspace yet." />
+          <EmptyHint text="Stock B-roll search is temporarily unavailable.">
+            <Flex as="button" minH="24px" align="center" gap="6px" color="studio.fg" fontSize="13px" fontWeight="500" cursor="pointer" onClick={() => setSourceMode("generate")}>
+              <Sparkles size={12} /> Generate an image instead
+            </Flex>
+          </EmptyHint>
         ) : results.length === 0 && !loading ? (
           <EmptyHint text="No results. Try a different keyword." />
         ) : (
@@ -424,7 +428,7 @@ export function BRollPanel() {
   );
 }
 
-function EmptyHint({ text }: { text: string }) {
+function EmptyHint({ text, children }: { text: string; children?: React.ReactNode }) {
   return (
     <Flex
       direction="column"
@@ -449,6 +453,7 @@ function EmptyHint({ text }: { text: string }) {
       <Text fontSize="13px" color="studio.fgMuted" textAlign="center" lineHeight="1.5">
         {text}
       </Text>
+      {children}
     </Flex>
   );
 }

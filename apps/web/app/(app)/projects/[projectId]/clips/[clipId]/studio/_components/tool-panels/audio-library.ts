@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { AudioAssetListRow } from "@narriflow/services";
-import type { AudioAssetKindInput } from "@narriflow/validators";
+import type { AudioAssetKindInput, BrandAudioReference } from "@narriflow/validators";
 import { toaster } from "@narriflow/ui/components/toaster";
 
 export type { AudioAssetListRow };
@@ -245,4 +245,21 @@ export function usePreviewPlayer(): PreviewPlayer {
   }, []);
 
   return { audioRef, activeId, activeAsset, isPlaying, loadingId, currentTime, duration, toggle, seek };
+}
+
+/** The Project's brand tracks as library rows, so the shared player and row
+ *  components handle them like any other track. */
+export function brandAudioRows(
+  tracks: readonly BrandAudioReference[],
+  kind: AudioAssetKindInput,
+): AudioAssetListRow[] {
+  return tracks.map((track) => ({
+    id: track.assetId,
+    kind,
+    scope: "curated",
+    title: track.title,
+    moodTags: [],
+    durationSec: track.durationSec,
+    favorited: false,
+  }));
 }

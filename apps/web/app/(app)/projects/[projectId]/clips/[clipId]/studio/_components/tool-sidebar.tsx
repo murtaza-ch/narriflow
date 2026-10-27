@@ -52,8 +52,40 @@ const PANEL_MAP: Record<ToolId, React.ReactNode> = {
  * Tool rail on the editor's right edge, and — only while a tool is open — its
  * panel floating beside it. With no tool selected the canvas gets the room.
  */
+/**
+ * While another tab holds the write lease, edits in this tab are refused. Say
+ * so where the edits happen, with the same take-over the top bar offers.
+ */
+export function ReadOnlyPanelNotice({ onTakeOver }: { onTakeOver: () => void }) {
+  return (
+    <Flex mx="5" mb="3" px="3" py="2.5" gap="3" align="center" justify="space-between" bg="studio.subtle" borderRadius="10px" role="status">
+      <Text fontSize="12px" color="studio.fgMuted" lineHeight="1.4">
+        Read-only here. This clip is open for editing in another tab.
+      </Text>
+      <Box
+        as="button"
+        flexShrink={0}
+        h="28px"
+        px="2.5"
+        borderRadius="8px"
+        bg="studio.raised"
+        border="none"
+        color="studio.fg"
+        fontSize="12px"
+        fontWeight="500"
+        whiteSpace="nowrap"
+        cursor="pointer"
+        _hover={{ bg: "studio.borderStrong" }}
+        onClick={onTakeOver}
+      >
+        Take over
+      </Box>
+    </Flex>
+  );
+}
+
 export function ToolSidebar() {
-  const { activeTool, setActiveTool } = useStudio("activeTool", "setActiveTool");
+  const { activeTool, setActiveTool, editingElsewhere, handleTakeOverEditing } = useStudio("activeTool", "setActiveTool", "editingElsewhere", "handleTakeOverEditing");
 
   const handleToolClick = (id: ToolId) => {
     setActiveTool(activeTool === id ? null : id);
@@ -94,6 +126,7 @@ export function ToolSidebar() {
               <X size={16} />
             </Flex>
           </Flex>
+          {editingElsewhere ? <ReadOnlyPanelNotice onTakeOver={handleTakeOverEditing} /> : null}
           <Box
             flex="1"
             overflowY="auto"

@@ -42,7 +42,7 @@ export default async function StudioPage({
     process.env.NODE_ENV,
   );
 
-  const [snapshot, clips, previewSource, rawBrandSnapshot, pricingTier] = await Promise.all([
+  const [snapshot, clips, previewSource, rawBrandSnapshot, brandAudio, pricingTier] = await Promise.all([
     projectService.getProjectSnapshot(appUser, projectId),
     clipService.listClips(appUser, projectId),
     clipService.getClipPreviewSource(appUser, projectId, clipId),
@@ -50,6 +50,8 @@ export default async function StudioPage({
     // the source of truth for the logo ASSET. The studio only overrides
     // how it's *shown* per clip (studioEdits.logo); see brand-template-panel.tsx.
     projectService.getProjectBrandSnapshot(appUser, projectId),
+    // Brand music/SFX frozen with the profile; the Music and SFX tabs list them first.
+    projectService.getProjectBrandAudio(appUser, projectId),
     Promise.resolve(appUser.pricingTier),
   ]);
 
@@ -308,6 +310,7 @@ export default async function StudioPage({
       compositionPlanQaFixture={compositionPlanQaFixture}
       visualAssets={visualAssets}
 		brandProfileId={snapshot.project.brandProfileId}
+      brandAudio={brandAudio}
 		sceneFonts={sceneFonts}
       sceneTemplates={sceneTemplates}
       sceneWriteCapabilities={sceneWriteCapabilities}

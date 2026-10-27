@@ -7,6 +7,7 @@ import {
   clipSourceEdgeSec,
   DEFAULT_CAPTION_PRESET,
   EDITOR_DOCUMENT_VERSION,
+  applyEditorAction,
   applyStudioEditsPatchSchema,
   captionPresetSchema,
   deletedRangesEqual,
@@ -367,11 +368,16 @@ function planNextDocument(
       endSec: requested.data.endSec,
       sourceDurationSec: state.sourceDurationSec,
     });
+    // The same reducer the Studio uses, so Scenes, text, SFX, and whole-clip
+    // motion move with the footage instead of being left behind.
+    const moved = applyEditorAction(state.document, {
+      type: "setClipBoundaries",
+      startSec: effective.startSec,
+      endSec: effective.endSec,
+    });
     return canonicalizeDocument(
-      {
-        ...state.document,
-        clipStartSec: effective.startSec,
-        clipEndSec: effective.endSec,
+      applyEditorAction(moved, {
+        type: "setTranscriptSlice",
         transcriptSlice:
           state.sourceTranscript.length > 0
             ? mergeCorrectedWordsIntoWindow(
@@ -379,11 +385,7 @@ function planNextDocument(
                 state.document.transcriptSlice,
               )
             : [],
-        deletedRanges: normalizeDeletedRanges(state.document.deletedRanges, {
-          startSec: effective.startSec,
-          endSec: effective.endSec,
-        }),
-      },
+      }),
       sourceOf(state),
     );
   }

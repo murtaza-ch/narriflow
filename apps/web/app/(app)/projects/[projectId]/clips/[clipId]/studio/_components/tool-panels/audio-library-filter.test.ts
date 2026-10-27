@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { filterAudioAssets } from "./audio-library-filter";
+import { brandAudioFirst, filterAudioAssets } from "./audio-library-filter";
 
 const ASSETS = [
   { id: "1", title: "Cinematic ambient", moodTags: ["ambient", "cinematic"], favorited: false },
@@ -30,5 +30,33 @@ describe("filterAudioAssets", () => {
         (asset) => asset.id,
       ),
     ).toEqual(["2", "1"]);
+  });
+});
+
+describe("brandAudioFirst", () => {
+  const brand = [
+    { id: "b1", title: "Theme", moodTags: [], favorited: false },
+    { id: "b2", title: "Outro", moodTags: [], favorited: false },
+  ];
+  const library = [...ASSETS, { id: "b1", title: "Theme", moodTags: ["ambient"], favorited: false }];
+
+  test("leads the All view and is not repeated in the library list", () => {
+    const groups = brandAudioFirst(brand, library, { category: "all", search: "" });
+    expect(groups.brand.map((asset) => asset.id)).toEqual(["b1", "b2"]);
+    expect(groups.library.map((asset) => asset.id)).toEqual(["1", "2", "3"]);
+  });
+
+  test("follows the search, leaving non-matching tracks to the library only", () => {
+    const groups = brandAudioFirst(brand, library, { category: "all", search: "theme" });
+    expect(groups.brand.map((asset) => asset.id)).toEqual(["b1"]);
+    expect(groups.library.map((asset) => asset.id)).toEqual(["1", "2", "3"]);
+  });
+
+  test("stays out of category and Saved views", () => {
+    for (const category of ["saved", "ambient"]) {
+      const groups = brandAudioFirst(brand, library, { category, search: "" });
+      expect(groups.brand).toEqual([]);
+      expect(groups.library).toBe(library);
+    }
   });
 });

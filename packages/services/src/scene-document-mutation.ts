@@ -1,4 +1,10 @@
-import type { EditorDocument, SceneBlock } from "@narriflow/validators";
+import {
+  buildClipCutPlan,
+  deletedRangesEqual,
+  rebaseSceneBlocks,
+  type EditorDocument,
+  type SceneBlock,
+} from "@narriflow/validators";
 import { requirePlanFeature } from "./plan-features";
 
 export interface SceneDocumentMutationAnalysis {
@@ -103,21 +109,61 @@ function activeMotionChanged(current: EditorDocument, next: EditorDocument): boo
   const currentMedia = new Map(current.mediaMotions.map((motion) => [targetKey(motion), motion]));
   return next.mediaMotions.some((motion) => {
     const previous = currentMedia.get(targetKey(motion));
+    // A window cut short by a shrinking timeline removes motion; it adds none.
+    const shortened =
+      previous !== undefined &&
+      motion.endSec <= previous.endSec &&
+      JSON.stringify({ ...previous, endSec: motion.endSec }) === JSON.stringify(motion);
     return (
       JSON.stringify(previous) !== JSON.stringify(motion) &&
+      !shortened &&
       motion.enabled &&
       (motion.entrance !== "none" || motion.exit !== "none")
     );
   });
 }
 
-function onlyDeactivatesMotion(previous: SceneBlock | undefined, scene: SceneBlock): boolean {
-  return (
-    previous !== undefined &&
-    scene.motion.entrance === "none" &&
-    scene.motion.exit === "none" &&
-    JSON.stringify({ ...previous, motion: scene.motion }) === JSON.stringify(scene)
+/** Reducer arithmetic and per-edit rounding can leave a shifted anchor a few
+ *  milliseconds from a single-step rebase; no user move is that small. */
+const SCENE_SHIFT_TOLERANCE_SEC = 0.01;
+
+/** Where each kept Scene lands if the change only removed Scenes and moved
+ *  the timeline under them (cuts, reverts, clip trims), using the reducer's
+ *  own rebase. */
+function cleanupSceneAnchors(current: EditorDocument, next: EditorDocument): Map<string, number> {
+  const nextIds = new Set(next.sceneBlocks.map((scene) => scene.id));
+  const currentWindow = { startSec: current.clipStartSec, endSec: current.clipEndSec };
+  const oldMap = buildClipCutPlan(current.deletedRanges, currentWindow).map;
+  const sameTimeline =
+    current.clipStartSec === next.clipStartSec &&
+    current.clipEndSec === next.clipEndSec &&
+    deletedRangesEqual(current.deletedRanges, next.deletedRanges, currentWindow);
+  const newMap = sameTimeline
+    ? oldMap
+    : buildClipCutPlan(next.deletedRanges, { startSec: next.clipStartSec, endSec: next.clipEndSec }).map;
+  return new Map(
+    rebaseSceneBlocks(current.sceneBlocks, oldMap, newMap, (scene) => nextIds.has(scene.id))
+      .map((scene) => [scene.id, scene.anchorSec]),
   );
+}
+
+/** A kept Scene whose change only removes paid content: its motion turned
+ *  off, its template link dropped (the Studio drops it on any edit), or its
+ *  position shifted by removals and cuts. */
+function isSceneCleanup(
+  previous: SceneBlock | undefined,
+  scene: SceneBlock,
+  cleanupAnchorSec: number | undefined,
+): boolean {
+  if (!previous || cleanupAnchorSec === undefined) return false;
+  if (Math.abs(scene.anchorSec - cleanupAnchorSec) > SCENE_SHIFT_TOLERANCE_SEC) return false;
+  const motionOff = scene.motion.entrance === "none" && scene.motion.exit === "none";
+  return JSON.stringify({
+    ...previous,
+    anchorSec: scene.anchorSec,
+    motion: motionOff ? scene.motion : previous.motion,
+    templateSnapshot: scene.templateSnapshot === null ? null : previous.templateSnapshot,
+  }) === JSON.stringify(scene);
 }
 
 /**
@@ -133,13 +179,15 @@ export function assertEditorDocumentFeatureDelta(
   next: EditorDocument,
 ): void {
   const { currentById, changedIds } = sceneChanges(current, next);
-  // Removed Scenes and Scenes whose only change turns their motion off are
-  // cleanup; only added or edited Scenes in the next document are gated.
-  const gatedScenes = next.sceneBlocks.filter(
-    (scene) => changedIds.has(scene.id) && !onlyDeactivatesMotion(currentById.get(scene.id), scene),
-  );
-  if (gatedScenes.length > 0) {
-    requirePlanFeature(pricingTier, "brand.scenes");
+  // Removed Scenes, and kept Scenes whose change is only cleanup, need no
+  // plan; only added or edited Scenes in the next document are gated.
+  const changedScenes = next.sceneBlocks.filter((scene) => changedIds.has(scene.id));
+  if (changedScenes.length > 0) {
+    const cleanupAnchors = cleanupSceneAnchors(current, next);
+    if (changedScenes.some((scene) =>
+      !isSceneCleanup(currentById.get(scene.id), scene, cleanupAnchors.get(scene.id)))) {
+      requirePlanFeature(pricingTier, "brand.scenes");
+    }
   }
 
   if (activeMotionChanged(current, next)) {

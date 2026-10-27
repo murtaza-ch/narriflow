@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applyEditorAction,
   captionPresetSchema,
   editorDocumentSchema,
   studioEditsSchema,
@@ -304,6 +305,107 @@ describe("analyzeSceneDocumentMutation", () => {
         { ...current, sceneBlocks: [nextScene] },
       ).introducedSceneReferences,
     ).toEqual([nextScene]);
+  });
+});
+
+describe("assertEditorDocumentFeatureDelta after a downgrade", () => {
+  const THIRD_SCENE_ID = "10000000-0000-4000-8000-000000000003";
+  // 20s of footage with an intro card, a card after 10s, and an end card.
+  function documentWithScenes(extra: Partial<EditorDocument> = {}): EditorDocument {
+    return editorDocumentSchema.parse({
+      ...baseDocument(),
+      sceneBlocks: [
+        colorScene(SCENE_ID, { anchorSec: 0 }),
+        colorScene(SECOND_SCENE_ID, { anchorSec: 13 }),
+        colorScene(THIRD_SCENE_ID, { anchorSec: 26 }),
+      ],
+      ...extra,
+    });
+  }
+  const wholeClipMotion = {
+    schemaVersion: 1 as const,
+    id: "50000000-0000-4000-8000-000000000001",
+    target: { kind: "broll" as const },
+    startSec: 0,
+    endSec: 29,
+    entrance: "pan-left" as const,
+    exit: "ken-burns-out" as const,
+    durationSec: 0.5,
+    enabled: true,
+  };
+
+  test("deleting any Scene is cleanup, though it shifts the Scenes after it", () => {
+    const current = documentWithScenes();
+    for (const id of [SCENE_ID, SECOND_SCENE_ID, THIRD_SCENE_ID]) {
+      const next = applyEditorAction(current, { type: "deleteSceneBlock", id });
+      expect(next).not.toBe(current);
+      expect(() => assertEditorDocumentFeatureDelta("free", current, next)).not.toThrow();
+    }
+    const two = applyEditorAction(
+      applyEditorAction(current, { type: "deleteSceneBlock", id: SCENE_ID }),
+      { type: "deleteSceneBlock", id: SECOND_SCENE_ID },
+    );
+    expect(() => assertEditorDocumentFeatureDelta("free", current, two)).not.toThrow();
+  });
+
+  test("cutting footage moves Scenes with it and is not a Scene edit", () => {
+    const current = documentWithScenes({ mediaMotions: [wholeClipMotion] });
+    const cut = applyEditorAction(current, { type: "deleteRange", range: { startSec: 2, endSec: 4 } });
+    expect(cut.sceneBlocks.map((scene) => scene.anchorSec)).toEqual([0, 11, 24]);
+    expect(cut.mediaMotions[0]?.endSec).toBe(27);
+    expect(() => assertEditorDocumentFeatureDelta("free", current, cut)).not.toThrow();
+
+    // One autosave can carry several such edits.
+    const batched = applyEditorAction(
+      applyEditorAction(cut, { type: "deleteSceneBlock", id: SCENE_ID }),
+      { type: "deleteRange", range: { startSec: 15, endSec: 16.3 } },
+    );
+    expect(() => assertEditorDocumentFeatureDelta("free", current, batched)).not.toThrow();
+  });
+
+  test("moving or reordering a kept Scene is still an edit", () => {
+    const current = documentWithScenes();
+    const moved = applyEditorAction(current, { type: "moveSceneBlock", id: SECOND_SCENE_ID, anchorSec: 3 });
+    expect(moved).not.toBe(current);
+    expect(() => assertEditorDocumentFeatureDelta("free", current, moved)).toThrow(PlanRequirementError);
+
+    const cutThenMoved = applyEditorAction(
+      applyEditorAction(current, { type: "deleteRange", range: { startSec: 2, endSec: 4 } }),
+      { type: "moveSceneBlock", id: THIRD_SCENE_ID, anchorSec: 3 },
+    );
+    expect(() => assertEditorDocumentFeatureDelta("free", current, cutThenMoved)).toThrow(PlanRequirementError);
+
+    const motionChanged = { ...current, mediaMotions: [{ ...wholeClipMotion, endSec: 20 }] };
+    expect(() =>
+      assertEditorDocumentFeatureDelta("free", motionChanged, { ...motionChanged, mediaMotions: [{ ...wholeClipMotion, startSec: 1, endSec: 20 }] }),
+    ).toThrow(PlanRequirementError);
+  });
+
+  test("turning off a template Scene's motion is cleanup; changing it is not", () => {
+    const template = colorScene(SCENE_ID, {
+      motion: { entrance: "fade", exit: "fade", durationSec: 0.5 },
+      templateSnapshot: {
+        templateId: "50000000-0000-4000-8000-000000000001",
+        templateRevision: 1,
+        fingerprint: "c".repeat(64),
+        name: "Opening",
+      },
+    });
+    const current = { ...baseDocument(), sceneBlocks: [template] };
+    const off = applyEditorAction(current, {
+      type: "updateSceneMotion",
+      id: SCENE_ID,
+      motion: { entrance: "none", exit: "none", durationSec: 0.5 },
+    });
+    expect(off.sceneBlocks[0]?.templateSnapshot).toBeNull();
+    expect(() => assertEditorDocumentFeatureDelta("free", current, off)).not.toThrow();
+
+    const changed = applyEditorAction(current, {
+      type: "updateSceneMotion",
+      id: SCENE_ID,
+      motion: { entrance: "scale-in", exit: "none", durationSec: 0.5 },
+    });
+    expect(() => assertEditorDocumentFeatureDelta("free", current, changed)).toThrow(PlanRequirementError);
   });
 });
 

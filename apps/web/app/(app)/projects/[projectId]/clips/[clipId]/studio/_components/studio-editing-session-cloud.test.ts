@@ -6,6 +6,7 @@ import {
   studioEditsSchema,
   type EditorDocument,
 } from "@narriflow/validators";
+import { saveIssueFor } from "./save-issue";
 import {
   createStudioEditingSession,
   type StudioCloudSaveOutcome,
@@ -613,6 +614,183 @@ test("a semantic rejection preserves editing and a corrected version can checkpo
   await waitUntil(() => cloud.saves.length === 2);
   cloud.acknowledge(1, 4);
   expect(await corrected).toEqual({ kind: "cloud-prepared", revision: 4 });
+});
+
+test("a rejection keeps the server's message and details for the save status", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/bad.mp4" },
+  });
+  void session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  cloud.respond(0, {
+    kind: "rejected",
+    code: "plan_feature_required",
+    message: "Scenes need Creator",
+    details: { feature: "brand.scenes" },
+  });
+  const snapshot = await waitForSnapshot(session, (next) => next.cloud.state === "rejected");
+  expect(snapshot.cloud.rejection).toEqual({
+    message: "Scenes need Creator",
+    details: { feature: "brand.scenes" },
+  });
+});
+
+test("retry-cloud-save sends the kept edits again after sign-in is lost", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+  void session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  cloud.respond(0, { kind: "authentication-lost" });
+  await waitForSnapshot(session, (next) => next.cloud.state === "authentication-lost");
+
+  expect(await session.perform({ type: "retry-cloud-save" })).toEqual({ kind: "cloud-retrying" });
+  await waitUntil(() => cloud.saves.length === 2);
+  expect(cloud.saves[1]?.document.brollUrl).toBe("https://cdn.example.com/a.mp4");
+  cloud.acknowledge(1, 4);
+  await waitForSnapshot(session, (next) => next.cloud.state === "current");
+});
+
+test("retry-cloud-save has nothing to do when the save is not blocked", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  expect(await session.perform({ type: "retry-cloud-save" })).toEqual({
+    kind: "unavailable",
+    reason: "invalid-state",
+  });
+});
+
+test("revert-to-cloud returns to the saved version as an edit that Undo reverses", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/bad.mp4" },
+  });
+  void session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  cloud.respond(0, { kind: "rejected", code: "plan_feature_required" });
+  await waitForSnapshot(session, (next) => next.cloud.state === "rejected");
+  await new Promise((done) => setTimeout(done, 0));
+
+  expect(await session.perform({ type: "revert-to-cloud" })).toEqual({
+    kind: "cloud-reverted",
+    revision: 3,
+  });
+  const snapshot = session.getSnapshot();
+  expect(snapshot.document.brollUrl).toBeNull();
+  expect(snapshot.cloud).toMatchObject({ state: "current", dirty: false, revision: 3 });
+  expect(snapshot.history.canUndo).toBe(true);
+  expect(await session.perform({ type: "revert-to-cloud" })).toEqual({
+    kind: "unavailable",
+    reason: "invalid-state",
+  });
+
+  session.dispatch({ type: "history.undo" });
+  expect(session.getSnapshot().document.brollUrl).toBe("https://cdn.example.com/bad.mp4");
+  expect(session.getSnapshot().cloud).toMatchObject({ dirty: true });
+});
+
+test("revert-to-cloud is refused while a save is in flight and cannot be overtaken by it", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+  void session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  expect(session.getSnapshot().cloud.state).toBe("saving");
+
+  expect(await session.perform({ type: "revert-to-cloud" })).toEqual({
+    kind: "unavailable",
+    reason: "invalid-state",
+  });
+  cloud.acknowledge(0, 4);
+  await waitForSnapshot(session, (next) => next.cloud.state === "current");
+  expect(session.getSnapshot().document.brollUrl).toBe("https://cdn.example.com/a.mp4");
+});
+
+test("retry-cloud-save after a rejection makes one attempt per call", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+  void session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  cloud.respond(0, { kind: "rejected", code: "plan_feature_required" });
+  await waitForSnapshot(session, (next) => next.cloud.state === "rejected");
+
+  // Still refused after the first retry: no loop, the status stays rejected.
+  expect(await session.perform({ type: "retry-cloud-save" })).toEqual({ kind: "cloud-retrying" });
+  await waitUntil(() => cloud.saves.length === 2);
+  cloud.respond(1, { kind: "rejected", code: "plan_feature_required" });
+  await waitForSnapshot(session, (next) => next.cloud.state === "rejected");
+  await Promise.resolve();
+  expect(cloud.saves).toHaveLength(2);
+
+  // The plan was upgraded: the next click saves the same kept edits.
+  expect(await session.perform({ type: "retry-cloud-save" })).toEqual({ kind: "cloud-retrying" });
+  await waitUntil(() => cloud.saves.length === 3);
+  cloud.acknowledge(2, 4);
+  await waitForSnapshot(session, (next) => next.cloud.state === "current");
+});
+
+test("removing dangling B-roll placements lets the next autosave succeed", async () => {
+  const runtime = new ManualRuntime();
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud, runtime);
+  const placementId = "00000000-0000-4000-8000-000000000001";
+  const placement = {
+    id: placementId,
+    asset: {
+      kind: "visual_asset" as const,
+      id: "00000000-0000-4000-8000-000000000002",
+      fingerprint: "a".repeat(64),
+    },
+    startSec: 1,
+    endSec: 3,
+    fit: "cover" as const,
+  };
+  const withBroll = (visualBroll: Array<typeof placement>) =>
+    ({
+      type: "setStudioEdits",
+      studioEdits: { ...session.getSnapshot().document.studioEdits, visualBroll },
+    }) as const;
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+  session.dispatch({ type: "document.edit", action: withBroll([placement]) });
+  runtime.advance(5_000);
+  await waitUntil(() => cloud.saves.length === 1);
+  cloud.respond(0, {
+    kind: "rejected",
+    code: "visual_broll_asset_invalid",
+    details: { placementIds: [placementId] },
+  });
+  const blocked = await waitForSnapshot(session, (next) => next.cloud.state === "rejected");
+  expect(saveIssueFor(blocked.cloud, blocked.status)).toEqual({
+    kind: "deleted-broll",
+    placementIds: [placementId],
+  });
+
+  // What the "Remove it" action dispatches: an ordinary edit, so autosave resumes.
+  session.dispatch({ type: "document.edit", action: withBroll([]) });
+  expect(session.getSnapshot().cloud.state).toBe("pending");
+  runtime.advance(5_000);
+  await waitUntil(() => cloud.saves.length === 2);
+  expect(cloud.saves[1]?.document.studioEdits.visualBroll).toEqual([]);
+  cloud.acknowledge(1, 4);
+  await waitForSnapshot(session, (next) => next.cloud.state === "current");
 });
 
 test("merges disjoint cloud changes after a revision conflict and resets history", async () => {

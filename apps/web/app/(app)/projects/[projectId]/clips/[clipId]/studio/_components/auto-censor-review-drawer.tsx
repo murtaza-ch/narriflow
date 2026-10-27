@@ -570,13 +570,20 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
                   const stale = isCensorSegmentStale(segment, utterances);
                   return (
                     <Flex key={segment.id} p="3" gap="3" align="center" bg="studio.subtle" borderRadius="10px">
-                      <Checkbox.Root size="sm" colorPalette="accent" checked={segment.enabled} onCheckedChange={(event) => updateApplied(segment.id, (current) => ({ ...current, enabled: Boolean(event.checked) }))}><Checkbox.HiddenInput /><Checkbox.Control /></Checkbox.Root>
+                      <Checkbox.Root size="sm" colorPalette="accent" checked={segment.enabled} onCheckedChange={(event) => {
+                        // Turning a segment off is cleanup any plan may save; turning one on is not.
+                        if (event.checked && applyLock?.tier) openUpgrade(applyLock);
+                        else if (!event.checked || autoCensorPolicy.canApply) updateApplied(segment.id, (current) => ({ ...current, enabled: Boolean(event.checked) }));
+                      }}><Checkbox.HiddenInput /><Checkbox.Control /></Checkbox.Root>
                       <Flex flex="1" minW="0" align="center" gap="2">
                         <Text fontSize="13px" color="studio.fgMuted" fontVariantNumeric="tabular-nums">{formatTimecode(segment.sourceStartSec)}</Text>
                         {stale && <Text fontSize="12px" fontWeight="500" color="studio.danger">Stale</Text>}
                       </Flex>
-                      <TreatmentSelect value={segment.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateApplied(segment.id, (current) => treatmentSettings(current, value))} />
-                      {stale && <Button size="sm" h="32px" {...softButtonProps} fontSize="13px" onClick={() => reviewStale(segment)}>Review</Button>}
+                      <TreatmentSelect disabled={!autoCensorPolicy.canApply && segment.enabled} value={segment.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateApplied(segment.id, (current) => treatmentSettings(current, value))} />
+                      {stale && <Button size="sm" h="32px" {...softButtonProps} fontSize="13px" aria-haspopup={applyLock?.tier && segment.enabled ? "dialog" : undefined} onClick={() => {
+                        if (!autoCensorPolicy.canApply && segment.enabled && applyLock?.tier) openUpgrade(applyLock);
+                        else reviewStale(segment);
+                      }}>Review</Button>}
                       <RoundIconButton label="Delete censor segment" onClick={() => setCensorSegments(editorDocument.censorSegments.filter((candidate) => candidate.id !== segment.id))}>
                         <X size={15} />
                       </RoundIconButton>
