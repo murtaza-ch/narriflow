@@ -58,7 +58,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 	});
 
 	/** A Workspace with a clip, a finished export, and one YouTube account that has slots. */
-	async function fixture(options: { platform?: "youtube_shorts" | "tiktok" | "x"; schedule?: typeof EVERY_DAY | null } = {}) {
+	async function fixture(options: { platform?: "youtube_shorts" | "tiktok" | "x" | "facebook_reels"; schedule?: typeof EVERY_DAY | null } = {}) {
 		const suffix = randomUUID();
 		const user = await prisma.user.create({ data: { clerkId: `queue-db-test:${suffix}`, primaryEmail: `queue-${suffix}@example.test` } });
 		const workspace = await prisma.workspace.create({ data: { name: "Queue DB test", ownerUserId: user.id, personalOwnerUserId: user.id, pricingTier: "pro" } });
@@ -126,6 +126,12 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 
 		const events = await listWorkspaceEvents(prisma, { workspaceId: f.workspace.id }, { types: ["social_post.proposed"] });
 		expect(events.data.map((event) => event.subject)).toEqual([{ socialPostId: proposal.proposalId, projectId: f.project.id, clipId: f.clip.id, socialAccountId: f.account.id, platform: "youtube_shorts" }]);
+	});
+
+	test("a platform whose publishing isn't available yet refuses the proposal up front", async () => {
+		const f = await fixture({ platform: "facebook_reels" });
+		await expect(propose(f)).rejects.toMatchObject({ code: "social_provider_publishing_disabled" });
+		expect(await prisma.socialPost.count({ where: { socialAccountId: f.account.id } })).toBe(0);
 	});
 
 	test("proposals never reach the scheduler or recovery", async () => {

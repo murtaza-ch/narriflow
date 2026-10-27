@@ -10,7 +10,7 @@ import {
 	type OwnedPublicationAttempt,
 } from "./social-publication-attempt";
 import { createPublicationCheckpointCipher } from "./social-publication-checkpoint-cipher";
-import { parseSocialPublicationConfig } from "./social-publication-config";
+import { isSocialProviderPublishingEnabled, parseSocialPublicationConfig } from "./social-publication-config";
 import { createNativePublicationPlatformRegistry } from "./social-publication-native-platforms";
 import type { NativePublicationThumbnail } from "./social-publication-native-platforms";
 import {
@@ -228,6 +228,7 @@ export function createProductionSocialPublicationRuntime(
 			linkedInVersion: config.providers.linkedInVersion,
 			instagramPollAttempts: config.providers.instagramPollAttempts,
 			instagramPollIntervalMs: config.providers.instagramPollIntervalMs,
+			facebookReelsPublishingEnabled: isSocialProviderPublishingEnabled("facebook_reels"),
 			tiktokPollIntervalMs: config.providers.tiktokPollIntervalMs,
 			tiktokChunkBytes: config.providers.tiktokChunkBytes,
 			tiktokApiVersion: config.providers.tiktokApiVersion,

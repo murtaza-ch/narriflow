@@ -1459,6 +1459,45 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		});
 	});
 
+	test.each(["expired", "exhausted", "active"] as const)("manual recheck grants one standard window only when the current window is %s", async (window) => {
+		const previousDeadline = process.env.SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS;
+		const previousBudget = process.env.SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET;
+		process.env.SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS = "7200000";
+		process.env.SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET = "12";
+		let cleanupPostId: string | undefined;
+		try {
+			const f = await fixture();
+			const target = await attentionPublication(f, `window-${window}`);
+			cleanupPostId = target.socialPostId;
+			const deadline = new Date(target.now.getTime() + (window === "expired" ? 0 : 60_000));
+			const count = window === "exhausted" ? 12 : 3;
+			await prisma.socialPublicationAttempt.update({ where: { id: target.attemptId }, data: { reconciliationDeadline: deadline, providerCallCount: count } });
+			const before = await prisma.socialPublicationAttempt.findUniqueOrThrow({ where: { id: target.attemptId } });
+			await socialPublicationRecovery.recheck({ workspaceId: f.workspace.id, projectId: f.project.id, actorUserId: f.user.id, socialPostId: target.socialPostId, reason: "Read existing provider operation", now: target.now });
+			const after = await prisma.socialPublicationAttempt.findUniqueOrThrow({ where: { id: target.attemptId } });
+			expect(after).toMatchObject({ phase: "reconciling", providerCallCount: window === "active" ? 3 : 0,
+				reconciliationDeadline: window === "active" ? deadline : new Date(target.now.getTime() + 7_200_000),
+				processingDeadline: before.processingDeadline, idempotencyKey: before.idempotencyKey, operationLookupHash: before.operationLookupHash });
+			const claims = await claimDueSocialPublicationAttempts({ claimantId: "manual-window", now: target.now, config: claimConfig });
+			expect(claims.some((claim) => claim.attemptId === target.attemptId)).toBe(true);
+			const claim = claims.find((claim) => claim.attemptId === target.attemptId)!;
+			expect((await prismaSocialPublicationAttemptStore.loadOwned(claim, target.now)).attempt.reconciliationOnly).toBe(true);
+			await prisma.socialPublicationAttempt.update({ where: { id: target.attemptId }, data: { processingDeadline: new Date(target.now.getTime() - 1) } });
+			await prismaSocialPublicationAttemptStore.settlePending({ owned: claim, result: { kind: "pending", receiptId: "original-operation", operation: { kind: "provider_processing", state: { id: "original-operation" } }, nextCheckAt: new Date(target.now.getTime() + 30_000) }, sealedState: "sealed-original-operation", operationLookupHash: after.operationLookupHash, now: target.now });
+			expect(await prisma.socialPublicationAttempt.findUniqueOrThrow({ where: { id: target.attemptId } })).toMatchObject({ phase: "reconciling", nextActionAt: new Date(target.now.getTime() + 30_000), reconciliationDeadline: after.reconciliationDeadline });
+			await expect(socialPublicationRecovery.recheck({ workspaceId: f.workspace.id, actorUserId: f.user.id, socialPostId: target.socialPostId, reason: "Repeated click", now: new Date(target.now.getTime() + 1000) })).rejects.toMatchObject({ code: "social_publication_recheck_unavailable" });
+			expect((await prisma.socialPublicationAttempt.findUniqueOrThrow({ where: { id: target.attemptId } })).reconciliationDeadline).toEqual(after.reconciliationDeadline);
+		} finally {
+			if (cleanupPostId) {
+				// Leave this fixture out of later pollers without deleting its audit.
+				await prisma.socialPublicationAttempt.updateMany({ where: { socialPostId: cleanupPostId }, data: { phase: "needs_attention", terminalAt: new Date(), currentClaimId: null } });
+				await prisma.socialPost.update({ where: { id: cleanupPostId }, data: { status: "needs_attention", nextAttemptAt: null } });
+			}
+			if (previousDeadline === undefined) delete process.env.SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS; else process.env.SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS = previousDeadline;
+			if (previousBudget === undefined) delete process.env.SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET; else process.env.SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET = previousBudget;
+		}
+	});
+
 	test("manual confirmation records labeled evidence without a verified published video", async () => {
 		const f = await fixture();
 		const target = await attentionPublication(f, "confirm");

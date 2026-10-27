@@ -92,6 +92,8 @@ export type PublicationPlatformInput = {
 
 export type PublicationPlatformContext = {
 	signal: AbortSignal;
+	/** Manual Recheck may read existing operations, never upload or submit. */
+	reconciliationOnly?: boolean;
 	checkpoint(operation: PublicationProviderOperation): Promise<void>;
 	providerCall?(): Promise<void>;
 };

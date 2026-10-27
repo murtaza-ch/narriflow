@@ -480,7 +480,8 @@ function PublishingComposer({
 			config.accounts.filter(
 				(a) =>
 					a.status === "active" &&
-					a.publishingEligible,
+					a.publishingEligible &&
+					SOCIAL_PROVIDER_CAPABILITIES[a.platform].publishingEnabled,
 			),
 		[config.accounts],
 	);
@@ -770,7 +771,12 @@ function PublishingComposer({
 																	platform={account.platform}
 																	size="4"
 																/></Box></Box>
-																<Text fontSize="sm" overflowWrap="anywhere">{account.handle || account.displayName}</Text>
+																<Box minW="0">
+																	<Text fontSize="sm" overflowWrap="anywhere">{account.handle || account.displayName}</Text>
+																	{!SOCIAL_PROVIDER_CAPABILITIES[account.platform].publishingEnabled && (
+																		<Text fontSize="xs" color="fg.muted">Publishing coming soon</Text>
+																	)}
+																</Box>
 															</Flex>
 														</Checkbox>
 													</Box>

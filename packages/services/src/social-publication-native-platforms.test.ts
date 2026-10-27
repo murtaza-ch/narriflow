@@ -96,6 +96,8 @@ function harness(
 			attributes?: Record<string, string | number | boolean | undefined>,
 		): void;
 	},
+	// Production reads the catalog, which keeps Facebook off; these tests prove the flow.
+	facebookReelsPublishingEnabled = true,
 ) {
 	const requests: Array<{ url: string; init?: RequestInit }> = [];
 	let cleanups = 0;
@@ -150,6 +152,7 @@ function harness(
 			linkedInVersion: "202608",
 			instagramPollAttempts: 2,
 			instagramPollIntervalMs: 1,
+			facebookReelsPublishingEnabled,
 			tiktokPollIntervalMs: 1,
 			tiktokChunkBytes: 8,
 			tiktokApiVersion: "v2",
@@ -255,6 +258,21 @@ describe("native publication adapters", () => {
 			}),
 		).resolves.toMatchObject({ kind: "failed" });
 		expect(state.requests).toHaveLength(0);
+	});
+
+	test("keeps Facebook Reels publishing, resume, and reconciliation off without provider calls", async () => {
+		const disabled = harness([], false, undefined, false);
+		const platform = disabled.registry.get("facebook_reels");
+		const context = { signal: new AbortController().signal, checkpoint: async () => undefined };
+		const operation = { kind: "facebook_reel_processing", state: { videoId: "facebook-video-1" } };
+		for (const result of [
+			await platform.publish(input("facebook_reels"), context),
+			await platform.resume!(input("facebook_reels"), operation, context),
+			await platform.reconcile!(input("facebook_reels"), operation, context),
+		]) {
+			expect(result).toMatchObject({ kind: "failed", failure: { code: "facebook_reels_publishing_disabled" } });
+		}
+		expect(disabled.requests).toHaveLength(0);
 	});
 
 	test("publishes Facebook Reels through the bounded start-upload-finish flow", async () => {
@@ -633,6 +651,31 @@ describe("native publication adapters", () => {
 		});
 		expect(checkpoints).toEqual(["submission_started", "youtube_thumbnail"]);
 		expect(state.cleanupCount()).toBe(2);
+	});
+
+	test("manual YouTube Recheck probes the existing upload without sending remaining bytes", async () => {
+		const state = harness([new Response(null, { status: 308, headers: { range: "bytes=0-3" } })]);
+		await state.registry.get("youtube_shorts").reconcile!(input("youtube_shorts"), { kind: "submission_started", state: { uploadUrl: "https://youtube-upload.example/session", totalBytes: 8, uploadedBytes: 0 } }, { signal: new AbortController().signal, reconciliationOnly: true, checkpoint: async () => undefined });
+		expect(state.requests).toHaveLength(1);
+		expect(state.requests[0]!.init?.headers).toMatchObject({ "Content-Length": "0", "Content-Range": "bytes */8" });
+		expect(state.requests[0]!.init?.body).toBeUndefined();
+	});
+
+	test("manual YouTube Recheck preserves accepted video evidence without rewriting its thumbnail", async () => {
+		const request = input("youtube_shorts");
+		request.providerSettings = { ...request.providerSettings, thumbnailType: "custom_image", thumbnailAssetId: "asset-1", thumbnailFingerprint: "a".repeat(64) };
+		const state = harness([json({})]);
+		const result = await state.registry.get("youtube_shorts").reconcile!(request, { kind: "youtube_thumbnail", state: { videoId: "original-video" } }, { signal: new AbortController().signal, reconciliationOnly: true, checkpoint: async () => undefined });
+		expect(result).toMatchObject({ kind: "accepted", receipt: { platformPostId: "original-video" } });
+		expect(state.requests).toHaveLength(0);
+	});
+
+	test("manual TikTok Recheck reads status without resuming incomplete media chunks", async () => {
+		const state = harness([json({ data: { status: "PROCESSING_UPLOAD" } })]);
+		const result = await state.registry.get("tiktok").reconcile!(input("tiktok"), { kind: "submission_started", state: { publishId: "original-publish", uploadUrl: "https://tiktok-upload.example/session", chunkBytes: 8, totalChunks: 1, nextChunk: 0 } }, { signal: new AbortController().signal, reconciliationOnly: true, checkpoint: async () => undefined });
+		expect(result.kind).toBe("pending");
+		expect(state.requests).toHaveLength(1);
+		expect(state.requests[0]!.url).toContain("/status/fetch/");
 	});
 
 	test("retries only the custom YouTube thumbnail after an uncertain response", async () => {

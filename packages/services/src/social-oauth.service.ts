@@ -261,6 +261,7 @@ async function postForm(
 ) {
 	return readSocialProviderJson(
 		await fetch(url, {
+			signal: AbortSignal.timeout(15_000),
 			method: "POST",
 			headers: {
 				"Content-Type": "application/x-www-form-urlencoded",
@@ -1360,69 +1361,42 @@ export class SocialOAuthService {
 	}
 
 	private async refreshAccount(accountId: string) {
-		const prisma = requirePrisma();
-		const row = await prisma.socialAccount.findUnique({
-			where: { id: accountId },
-		});
-		if (!row?.refreshTokenEncrypted) {
-			throw new SocialOAuthError(
-				"social_account_refresh_missing",
-				"Connected social account has no refresh token",
-			);
-		}
-
-		// Workers refresh the same account at once, and a provider may rotate the
-		// refresh token. The stored refresh token is the version: the first write
-		// wins, and every other caller takes the winner's row instead of its own.
-		const winner = () =>
-			prisma.socialAccount.findUniqueOrThrow({ where: { id: row.id } });
-		const refreshToken = decryptToken(row.refreshTokenEncrypted);
-		let refreshed: OAuthToken | null;
-		try {
-			refreshed =
-				row.platform === "tiktok"
-					? await this.refreshTikTok(refreshToken)
-					: row.platform === "youtube_shorts"
-						? await this.refreshGoogle(refreshToken)
-						: row.platform === "linkedin"
-							? await this.refreshLinkedIn(refreshToken)
-							: row.platform === "x"
-								? await this.refreshX(refreshToken)
-								: null;
-		} catch (error) {
-			// A rotated refresh token is rejected for the loser of the race.
-			const current = await winner();
-			if (current.refreshTokenEncrypted !== row.refreshTokenEncrypted) {
-				return current;
+		return requirePrisma().$transaction(async (tx) => {
+			// Hold the account row through the provider exchange and persistence.
+			// A rotated credential must never be sent by a second worker before
+			// the first worker has committed its replacement.
+			await tx.$queryRaw`SELECT "id" FROM "SocialAccount" WHERE "id" = ${accountId}::uuid FOR UPDATE`;
+			const row = await tx.socialAccount.findUnique({ where: { id: accountId } });
+			if (!row || row.status === "revoked") {
+				throw new SocialOAuthError("social_account_missing", "Connected social account was not found");
 			}
-			throw error;
-		}
-
-		if (!refreshed) return row;
-		if (!refreshed.accessToken) {
-			throw new SocialOAuthError(
-				"social_oauth_refresh_invalid",
-				"The provider refresh response had no access token",
-			);
-		}
-
-		await prisma.socialAccount.updateMany({
-			where: { id: row.id, refreshTokenEncrypted: row.refreshTokenEncrypted },
-			data: {
-				accessTokenEncrypted: encryptToken(refreshed.accessToken),
-				refreshTokenEncrypted:
-					refreshed.refreshToken === undefined
-						? row.refreshTokenEncrypted
-						: refreshed.refreshToken
-							? encryptToken(refreshed.refreshToken)
-							: null,
-				expiresAt: refreshed.expiresAt ?? null,
-				scopes: refreshed.scopes.length > 0 ? refreshed.scopes : row.scopes,
-				status: "active",
-			},
-		});
-		// Whether this call or a concurrent one wrote, the stored row is the truth.
-		return winner();
+			if (!row.expiresAt || row.expiresAt.getTime() - Date.now() > TOKEN_REFRESH_WINDOW_MS) return row;
+			if (!row.refreshTokenEncrypted) {
+				throw new SocialOAuthError("social_account_refresh_missing", "Connected social account has no refresh token");
+			}
+			const refreshToken = decryptToken(row.refreshTokenEncrypted);
+			const refreshed = row.platform === "tiktok"
+				? await this.refreshTikTok(refreshToken)
+				: row.platform === "youtube_shorts"
+					? await this.refreshGoogle(refreshToken)
+					: row.platform === "linkedin"
+						? await this.refreshLinkedIn(refreshToken)
+						: row.platform === "x" ? await this.refreshX(refreshToken) : null;
+			if (!refreshed) return row;
+			if (!refreshed.accessToken.trim()) {
+				throw new SocialOAuthError("social_oauth_refresh_invalid", "The provider refresh response had no access token");
+			}
+			return tx.socialAccount.update({
+				where: { id: row.id },
+				data: {
+					accessTokenEncrypted: encryptToken(refreshed.accessToken),
+					refreshTokenEncrypted: refreshed.refreshToken === undefined ? row.refreshTokenEncrypted : refreshed.refreshToken ? encryptToken(refreshed.refreshToken) : null,
+					expiresAt: refreshed.expiresAt ?? null,
+					scopes: refreshed.scopes.length > 0 ? refreshed.scopes : row.scopes,
+					status: "active",
+				},
+			});
+		}, { timeout: 25_000 });
 	}
 
 	private async refreshTikTok(refreshToken: string): Promise<OAuthToken> {

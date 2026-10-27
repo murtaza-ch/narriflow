@@ -28,6 +28,8 @@ Bounded worker controls:
 
 Provider capability controls are validated at startup: YouTube API `v3` with 256 KiB-aligned 256 KiB–256 MiB chunks, Meta Graph `v24.0` with bounded container polling, TikTok API `v2` with 5–64 MiB chunks and polling no faster than five seconds, LinkedIn `202608` with a 30-day pre-sunset startup guard, and X API `v2` with bounded media, chunk, rate-retry, and reconciliation policies. Configure them with `YOUTUBE_API_VERSION`, `YOUTUBE_UPLOAD_CHUNK_BYTES`, `META_GRAPH_VERSION`, `INSTAGRAM_CONTAINER_POLL_ATTEMPTS`, `INSTAGRAM_CONTAINER_POLL_INTERVAL_MS`, `TIKTOK_API_VERSION`, `TIKTOK_UPLOAD_CHUNK_BYTES`, `TIKTOK_STATUS_POLL_INTERVAL_MS`, `LINKEDIN_API_VERSION`, `LINKEDIN_API_VERSION_SUNSET_AT`, `X_API_VERSION`, `X_UPLOAD_CHUNK_BYTES`, `X_MAX_MEDIA_BYTES`, `X_RATE_LIMIT_RETRY_FLOOR_MS`, and `X_RECONCILIATION_MAX_PAGES`. Invalid values stop startup; upgrades must change the shared contract and pinned adapter fixtures together.
 
+Facebook Pages connect, but Facebook Reels publishing is off: `facebook_reels.publishingEnabled` is `false` in `packages/validators/src/social-provider-capabilities.ts` because only mocked provider tests exist. Composers show those accounts as coming soon, scheduling refuses them with `social_provider_publishing_disabled`, and the adapter refuses already-queued work with `facebook_reels_publishing_disabled`. Set it to `true` only after a Meta sandbox run of the start-upload-finish flow is recorded here.
+
 Provider recovery contracts:
 
 - YouTube: `youtube.upload`; resumable upload sessions use bounded chunks and are status-probed with the total byte count before resuming the provider-reported range. A confirmed video ID settles Posted immediately. The worker then enriches the retained receipt from `videos.list`, recording processing success or failure and observed privacy without uploading again. Audit-enforced accounts stay private.
@@ -58,7 +60,10 @@ bun --filter @narriflow/services social-publication:operator -- \
   --workspace <workspace-uuid> --post <social-post-uuid> --actor <user-uuid>
 ```
 
-Request targeted reconciliation only after confirming the account still permits provider reads. This reuses the existing attempt and cannot submit a new post:
+Request targeted reconciliation only after confirming the account still permits provider reads. Recheck reads the existing provider operation on the same Social Publication Attempt. It never resubmits, changes its provider idempotency key, or creates another attempt.
+
+If the current reconciliation window has expired or its provider-call budget is exhausted, one Recheck starts one fresh standard window. Its deadline is the request time plus `SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS` and its provider-call count resets to zero, restoring `SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET` calls subject to the platform's normal limit. Defaults are 24 hours and 100 calls. Recheck during an active, unspent window preserves both its deadline and count. Repeated clicks while reconciliation is queued or running cannot renew the window. Each accepted Recheck records a manual decision. That existing decision keeps the attempt in read-only reconciliation across pending results and process restarts. YouTube status probes send no remaining media bytes or thumbnail writes; TikTok checks the existing publish ID without resuming chunks. Even provider evidence that permits a fresh publication cannot create an automatic retry from Recheck; the person must choose Publish again.
+
 
 ```sh
 bun --filter @narriflow/services social-publication:operator -- \

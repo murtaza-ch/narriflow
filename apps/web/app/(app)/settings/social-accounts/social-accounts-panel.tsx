@@ -10,6 +10,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
+	SOCIAL_PROVIDER_CAPABILITIES,
 	userErrorMessage,
 	type SocialAccountSnapshot,
 	type SocialPlatform,
@@ -431,6 +432,10 @@ export function SocialAccountsPanel({
 										>
 											{account.status.replaceAll("_", " ")}
 										</Text>
+									) : !SOCIAL_PROVIDER_CAPABILITIES[account.platform].publishingEnabled ? (
+										<Text fontSize="xs" color="fg.muted">
+											Publishing coming soon
+										</Text>
 									) : !account.publishingEligible ? (
 										<Text fontSize="xs" color="warning.fg">
 											Over your plan's {accountLimit}-account limit
@@ -504,9 +509,16 @@ export function SocialAccountsPanel({
 							p="5"
 						>
 							<PlatformTile platform={platform} />
-							<Text fontSize="13px" fontWeight="500">
-								{platformLabels[platform]}
-							</Text>
+							<Box textAlign="center">
+								<Text fontSize="13px" fontWeight="500">
+									{platformLabels[platform]}
+								</Text>
+								{!SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabled ? (
+									<Text fontSize="xs" color="fg.muted">
+										Publishing coming soon
+									</Text>
+								) : null}
+							</Box>
 						</Stack>
 					);
 					return mayConnect ? (
@@ -525,7 +537,7 @@ export function SocialAccountsPanel({
 						>
 							<a
 								href={connectHref(platform, returnTo)}
-								aria-label={`Connect ${platformLabels[platform]} account`}
+								aria-label={`Connect ${platformLabels[platform]} account${SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabled ? "" : " (publishing coming soon)"}`}
 							>
 								{content}
 							</a>

@@ -57,6 +57,8 @@ export type NativePublicationDependencies = {
 		linkedInVersion: string;
 		instagramPollAttempts: number;
 		instagramPollIntervalMs: number;
+		/** The catalog's `facebook_reels.publishingEnabled`; tests enable the flow. */
+		facebookReelsPublishingEnabled: boolean;
 		tiktokPollIntervalMs: number;
 		tiktokChunkBytes: number;
 		tiktokApiVersion: string;
@@ -172,6 +174,14 @@ function facebookReelsPlatform(
 			providerProcessingStatus: "succeeded",
 		},
 	});
+	const assertPublishingEnabled = () => {
+		if (!dependencies.config.facebookReelsPublishingEnabled) {
+			throw new PublicationPlatformConfigurationError(
+				"facebook_reels_publishing_disabled",
+				"Facebook Reels publishing is awaiting provider sandbox evidence",
+			);
+		}
+	};
 	const uploadAndPublish = async (
 		input: PublicationPlatformInput,
 		context: PublicationPlatformContext,
@@ -179,7 +189,7 @@ function facebookReelsPlatform(
 		uploadUrl: string,
 		markSubmitted: () => void,
 	): Promise<PublicationPlatformResult> => {
-
+		assertPublishingEnabled();
 		const account = requireAccount(input, "facebook_reels");
 		requireScopes(
 			account,
@@ -278,7 +288,7 @@ function facebookReelsPlatform(
 		},
 		publish(input, context) {
 			return withNativeOutcome(async (markSubmitted) => {
-
+				assertPublishingEnabled();
 				const account = requireAccount(input, "facebook_reels");
 				requireScopes(account, this.capabilities.requiredScopes);
 				const started = await jsonRequest<{
@@ -323,7 +333,7 @@ function facebookReelsPlatform(
 		},
 		resume(input, operation, context) {
 			return withNativeOutcome(async (markSubmitted) => {
-
+				assertPublishingEnabled();
 				const videoId = operationString(operation.state, "videoId");
 				if (operation.kind === "facebook_reel_finish_pending" && videoId) {
 					const account = requireAccount(input, "facebook_reels");
@@ -381,7 +391,7 @@ function facebookReelsPlatform(
 		},
 		reconcile(input, operation, context) {
 			return withNativeOutcome(async (markSubmitted) => {
-
+				assertPublishingEnabled();
 				const account = requireAccount(input, "facebook_reels");
 				requireScopes(account, this.capabilities.requiredScopes);
 				const videoId = operationString(operation.state, "videoId");
@@ -844,6 +854,7 @@ async function finishYoutubePublication(
 	context: PublicationPlatformContext,
 	video: YouTubeVideoResource,
 ): Promise<PublicationPlatformResult> {
+	if (context.reconciliationOnly) return youtubeReceipt(video);
 	const thumbnail = customThumbnail(input);
 	if (!thumbnail) return youtubeReceipt(video);
 	if (!video.id || !dependencies.thumbnails) {
@@ -1027,6 +1038,11 @@ async function continueYoutubeUpload(
 				);
 			}
 			uploadedBytes = providerBytes;
+		}
+
+		if (context.reconciliationOnly) {
+			return { kind: "unknown", code: "youtube_upload_incomplete", phase: "reconciliation",
+				operation: { kind: "submission_started", state: { ...state, uploadedBytes } } };
 		}
 
 		while (uploadedBytes < totalBytes) {
@@ -2052,7 +2068,7 @@ function tiktokPlatform(
 				const nextChunk = operationNumber(operation.state, "nextChunk") ?? 0;
 				const moderationChecks =
 					operationNumber(operation.state, "moderationChecks") ?? 0;
-				if (uploadUrl && chunkBytes && totalChunks && nextChunk < totalChunks) {
+				if (!context.reconciliationOnly && uploadUrl && chunkBytes && totalChunks && nextChunk < totalChunks) {
 					const local = await dependencies.media.materialize(input.media);
 					try {
 						await uploadTikTokChunks(dependencies, context, local, {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  isSocialProviderPublishingEnabled,
   parseSocialPublicationConfig,
   SOCIAL_PROVIDER_CAPABILITIES,
   socialPublicationCapabilityVersion,
@@ -31,14 +32,16 @@ const valid = {
 };
 
 describe("Social Publication configuration", () => {
-  test("exposes the implemented Facebook connection and publishing capability", () => {
+  test("keeps Facebook connection metadata visible while publishing awaits sandbox evidence", () => {
     expect(SOCIAL_PROVIDER_CAPABILITIES.facebook_reels).toMatchObject({
       apiVersion: "v24.0",
       connectionEnabled: true,
-      publishingEnabledByDefault: true,
+      publishingEnabled: false,
       requiredScopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
     });
     expect(socialPublicationCapabilityVersion("facebook_reels")).toBe("facebook-reels-2026-08-31");
+    expect(isSocialProviderPublishingEnabled("facebook_reels")).toBe(false);
+    expect(isSocialProviderPublishingEnabled("youtube_shorts")).toBe(true);
   });
 
   test("parses finite bounded worker and receiver policy once", () => {

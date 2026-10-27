@@ -515,8 +515,7 @@ describe("bulk social scheduling", () => {
 		let settleAvailable = false;
 		const intentStore = createInMemoryPublicationSchedulingStore();
 		const freezePorts: PublicationFreezePorts = {
-
-capabilityVersion: () => "capability-v1",
+			providerEnabled: () => true, capabilityVersion: () => "capability-v1",
 			projectExists: async () => { mutableReads += 1; if (unavailable) throw new Error("project reader unavailable"); return true; },
 			readClip: async () => ({ editorRevision: 4 }),
 			readAccount: async () => ({ workspaceId: INPUT.workspaceId, platform: "youtube_shorts", status: "active", expiresAt: null, canRefresh: false }),

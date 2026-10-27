@@ -47,6 +47,12 @@ export function socialPublicationCapabilityVersion(
   return SOCIAL_PROVIDER_CAPABILITIES[platform].version;
 }
 
+export function isSocialProviderPublishingEnabled(
+  platform: keyof typeof SOCIAL_PROVIDER_CAPABILITIES,
+): boolean {
+  return SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabled;
+}
+
 const DEFAULT_LINKEDIN_VERSION_SUNSET_AT = "2027-08-31T23:59:59.000Z";
 const LINKEDIN_STARTUP_GUARD_MS = 30 * 24 * 60 * 60_000;
 
@@ -159,6 +165,15 @@ function webhookConfiguration(environment: Record<string, string | undefined>) {
 	};
 }
 
+export function parseSocialPublicationReconciliationBudget(
+	environment: Record<string, string | undefined>,
+) {
+	return {
+		providerCallBudget: integer(environment, "SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET", 100, 1, 100),
+		reconciliationDeadlineMs: integer(environment, "SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS", 24 * 60 * 60_000, 60_000, 7 * 24 * 60 * 60_000),
+	};
+}
+
 export function parseSocialPublicationConfig(
 	environment: Record<string, string | undefined>,
 	now = new Date(),
@@ -215,23 +230,10 @@ export function parseSocialPublicationConfig(
 				1_000,
 				10 * 60_000,
 			),
-			providerCallBudget: integer(
-				environment,
-				"SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET",
-				100,
-				1,
-				100,
-			),
+			...parseSocialPublicationReconciliationBudget(environment),
 			processingDeadlineMs: integer(
 				environment,
 				"SOCIAL_PUBLISH_PROCESSING_DEADLINE_MS",
-				24 * 60 * 60_000,
-				60_000,
-				7 * 24 * 60 * 60_000,
-			),
-			reconciliationDeadlineMs: integer(
-				environment,
-				"SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS",
 				24 * 60 * 60_000,
 				60_000,
 				7 * 24 * 60 * 60_000,

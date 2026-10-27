@@ -28,6 +28,7 @@ import { socialPublicationScheduling } from "./social-publication-scheduling-run
 import { workspaceService } from "./workspace.service";
 import { requirePlanFeature } from "./plan-features";
 import { readPublishableSocialAccountIds, requirePublishableSocialAccount, socialAccountBeyondPlanError } from "./social-account-eligibility";
+import { isSocialProviderPublishingEnabled } from "./social-publication-config";
 import { flushWorkspaceEvents, queueWorkspaceEvent } from "./workspace-event";
 
 /** The Publishing Queue: weekly posting slots on each Social Account, and
@@ -52,6 +53,7 @@ const queueFailureCatalog = {
 	social_proposal_not_found: "missing",
 	social_proposal_tiktok_options_required: "invalid",
 	social_proposal_variant_unavailable: "unprocessable",
+	social_provider_publishing_disabled: "unavailable",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export class PublishingQueueError extends ExpectedDomainFailureError<keyof typeof queueFailureCatalog> {
@@ -221,6 +223,8 @@ export const publishingQueue = {
 					select: { id: true, platform: true },
 				});
 				if (!account) throw new PublishingQueueError("social_account_unavailable", "Connect this account again, or choose another. List the Workspace's accounts for current IDs.");
+				// Refuse up front, like scheduling does, rather than queue a proposal that can't be accepted.
+				if (!isSocialProviderPublishingEnabled(account.platform)) throw new PublishingQueueError("social_provider_publishing_disabled", "Publishing to this platform isn't available yet. Choose another account.");
 				await requirePublishableSocialAccount(tx, { workspaceId: scope.workspaceId, accountId: account.id, tier });
 				const exported = await tx.clipExport.findFirst({
 					where: { id: input.exportId, clipId: input.clipId, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },

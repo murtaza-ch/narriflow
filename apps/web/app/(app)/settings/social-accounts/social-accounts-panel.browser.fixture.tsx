@@ -42,8 +42,14 @@ test("empty state has six labeled OAuth links in platform order", async () => {
   const dom = await render();
   expect(dom.textContent).toContain("Connect your first social account");
   const links = [...dom.querySelectorAll("a")];
-  expect(links.map((link) => link.getAttribute("aria-label"))).toEqual(["Connect TikTok account", "Connect YouTube account", "Connect Instagram account", "Connect Facebook account", "Connect X account", "Connect LinkedIn account"]);
+  expect(links.map((link) => link.getAttribute("aria-label"))).toEqual(["Connect TikTok account", "Connect YouTube account", "Connect Instagram account", "Connect Facebook account (publishing coming soon)", "Connect X account", "Connect LinkedIn account"]);
   expect(links[3]?.getAttribute("href")).toBe("/api/social/oauth/start/facebook_reels?redirect=/settings/social-accounts");
+  expect(links[3]?.textContent).toContain("Publishing coming soon");
+});
+test("a connected Facebook Page shows publishing as coming soon", async () => {
+  const dom = await render({ accounts: [{ ...account, id: "facebook", platform: "facebook_reels", displayName: "Brand Page" }] });
+  const card = [...dom.querySelectorAll("p")].find((node) => node.textContent === "Brand Page")?.parentElement;
+  expect(card?.textContent).toContain("Publishing coming soon");
 });
 test("multiple profiles precede add cards and read-only users cannot manage", async () => {
   const dom = await render({ accounts: [account, { ...account, id: "two", displayName: "Second channel", status: "expired" }], canManage: false });

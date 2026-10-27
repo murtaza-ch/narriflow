@@ -398,6 +398,29 @@ describe("Social Publication Attempt", () => {
 		});
 	});
 
+	test.each(["pending", "safe retry"])("manual Recheck remains read-only after a %s result", async (resultKind) => {
+		let publishes = 0;
+		let readOnly: boolean | undefined;
+		const platform = {
+			capabilities: createDeterministicPublicationPlatform([]).capabilities,
+			async publish() { publishes += 1; throw new Error("manual Recheck must never publish"); },
+			async reconcile(_input: unknown, _operation: unknown, context: { reconciliationOnly?: boolean }) {
+				readOnly = context.reconciliationOnly;
+				return resultKind === "pending" ? { kind: "pending" as const, receiptId: "original-operation", operation: { kind: "provider_processing", state: { operationId: "original-operation" } }, nextCheckAt: new Date("2026-08-28T10:00:40.000Z") }
+					: { kind: "failed" as const, failure: { code: "provider_proves_not_published", phase: "reconciliation" as const, disposition: "safe_retry" as const, retryAfterMs: null, safeToRepublishAfterSubmission: true } };
+			},
+		};
+		const manualSeed: PublicationAttemptSeed = { ...seed, socialPost: { ...seed.socialPost, status: "reconciling" },
+			attempt: { ...seed.attempt, phase: "reconciling", reconciliationOnly: true, processingDeadline: new Date("2026-08-28T09:00:00.000Z") },
+			checkpointKind: "provider_processing", sealedCheckpoint: 'sealed:{"operationId":"original-operation"}' };
+		const { attempt, store } = createAttemptHarness(platform, manualSeed);
+		const result = await attempt.execute({ attempt: { attemptId: "attempt-1", claimId: "claim-1" }, signal: new AbortController().signal });
+		expect(readOnly).toBe(true);
+		expect(publishes).toBe(0);
+		expect(result.kind).toBe(resultKind === "pending" ? "reconciling" : "needs_attention");
+		if (resultKind === "pending") expect(await store.inspect("attempt-1")).toMatchObject({ attempt: { phase: "reconciling", nextActionAt: new Date("2026-08-28T10:00:40.000Z"), reconciliationDeadline: seed.attempt.reconciliationDeadline, processingDeadline: new Date("2026-08-28T09:00:00.000Z") }, socialPost: { status: "reconciling" } });
+	});
+
 	test("a transient reconciliation failure preserves the durable operation", async () => {
 		let publishCalls = 0;
 		let reconcileCalls = 0;

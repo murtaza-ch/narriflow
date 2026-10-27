@@ -107,57 +107,28 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 			select: { accessTokenEncrypted: true, refreshTokenEncrypted: true, status: true },
 		});
 
-	test("workers refreshing at once converge on the first write", async () => {
+	test.each(["rotated", "unchanged", "no expiry"])("concurrent refreshes make one provider exchange when the response is %s", async (response) => {
 		const id = await expiringAccount();
 		let calls = 0;
 		globalThis.fetch = (async () => {
 			calls += 1;
 			const n = calls;
-			await new Promise((resolve) => setTimeout(resolve, 25));
-			return tokenResponse(n);
+			// A provider can reject the losing exchange before the winning
+			// response is stored. Write fencing alone cannot recover that race.
+			if (n > 1) return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			return response === "rotated" ? tokenResponse(n) : Response.json({ access_token: "access-1", ...(response === "no expiry" ? {} : { expires_in: 3600 }) });
 		}) as typeof fetch;
 
-		const [first, second] = await Promise.all([
+		const results = await Promise.allSettled([
 			socialOAuthService.getPublishAccount(id),
 			socialOAuthService.getPublishAccount(id),
 		]);
-
-		expect(calls).toBe(2);
-		expect(first.accessToken).toBe(second.accessToken);
-		expect(["access-1", "access-2"]).toContain(first.accessToken);
-		// Later reads see the same single winner and don't refresh again.
-		expect((await socialOAuthService.getPublishAccount(id)).accessToken).toBe(first.accessToken);
-		expect(calls).toBe(2);
-	});
-
-	test("the loser of a rotated refresh token takes the winner's tokens instead of failing", async () => {
-		const id = await expiringAccount();
-		let calls = 0;
-		let releaseWinner!: () => void;
-		let releaseLoser!: () => void;
-		const winnerGate = new Promise<void>((resolve) => (releaseWinner = resolve));
-		const loserGate = new Promise<void>((resolve) => (releaseLoser = resolve));
-		globalThis.fetch = (async () => {
-			calls += 1;
-			if (calls === 1) {
-				await winnerGate;
-				return tokenResponse(1);
-			}
-			await loserGate;
-			// The provider already rotated the refresh token this call still holds.
-			return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
-		}) as typeof fetch;
-
-		const winning = socialOAuthService.getPublishAccount(id);
-		const losing = socialOAuthService.getPublishAccount(id);
-		while (calls < 2) await new Promise((resolve) => setTimeout(resolve, 5));
-		releaseWinner();
-		const winner = await winning;
-		releaseLoser();
-		const loser = await losing;
-
-		expect(winner.accessToken).toBe("access-1");
-		expect(loser.accessToken).toBe("access-1");
+		expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+		for (const result of results) if (result.status === "fulfilled") expect(result.value.accessToken).toBe("access-1");
+		expect(calls).toBe(1);
+		expect((await socialOAuthService.getPublishAccount(id)).accessToken).toBe("access-1");
+		expect(calls).toBe(1);
 	});
 
 	test("a rejected refresh surfaces with its HTTP status and leaves the stored tokens alone", async () => {
@@ -172,11 +143,11 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 		expect(await stored(id)).toEqual(before);
 	});
 
-	test("a response with no access token never overwrites a good token", async () => {
+	test.each([{}, { access_token: "" }])("a response with no access token never overwrites a good token: %j", async (token) => {
 		const id = await expiringAccount();
 		const before = await stored(id);
 		globalThis.fetch = (async () =>
-			new Response(JSON.stringify({ expires_in: 3_600 }), { status: 200 })) as typeof fetch;
+			new Response(JSON.stringify({ ...token, expires_in: 3_600 }), { status: 200 })) as typeof fetch;
 
 		await expect(socialOAuthService.getPublishAccount(id)).rejects.toMatchObject({
 			code: "social_oauth_refresh_invalid",

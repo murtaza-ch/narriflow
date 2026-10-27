@@ -222,7 +222,8 @@ export function createPublishingCompositionSession(dependencies: {
 		return facts.accounts.filter(
 			(account) =>
 				account.status === "active" &&
-				account.publishingEligible,
+				account.publishingEligible &&
+				SOCIAL_PROVIDER_CAPABILITIES[account.platform].publishingEnabled,
 		);
 	}
 	function pairs() {

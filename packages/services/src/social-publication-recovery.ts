@@ -17,7 +17,7 @@ import {
 import { combineLatestCaptures, latestCaptureInclude } from "./performance-summary";
 import { structuredSocialPublicationMetrics } from "./social-publication-observability";
 import { emitSocialPostFinished } from "./social-post-finished";
-import { SOCIAL_PROVIDER_API_VERSIONS } from "./social-publication-config";
+import { parseSocialPublicationReconciliationBudget, SOCIAL_PROVIDER_API_VERSIONS } from "./social-publication-config";
 import { socialOAuthService } from "./social-oauth.service";
 import { requirePlanFeature } from "./plan-features";
 import { hasCustomThumbnail, requirePublishableSocialAccount } from "./social-account-eligibility";
@@ -457,6 +457,10 @@ export const socialPublicationRecovery = {
           "This publication can no longer be rechecked with the existing provider operation",
         );
       }
+      const budget = parseSocialPublicationReconciliationBudget(process.env);
+      const renewWindow = attempt.reconciliationDeadline <= now ||
+        attempt.providerCallCount >= budget.providerCallBudget ||
+        attempt.failureCode === "publication_provider_call_budget_exhausted";
       const updatedPost = await tx.socialPost.updateMany({
         where: { id: post.id, status: "needs_attention" },
         data: { status: "reconciling", nextAttemptAt: now },
@@ -469,6 +473,10 @@ export const socialPublicationRecovery = {
           outcome: "unknown",
           nextActionAt: now,
           terminalAt: null,
+          ...(renewWindow ? {
+            reconciliationDeadline: new Date(now.getTime() + budget.reconciliationDeadlineMs),
+            providerCallCount: 0,
+          } : {}),
         },
       });
       if (updatedPost.count !== 1 || updatedAttempt.count !== 1) {

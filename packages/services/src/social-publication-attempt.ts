@@ -76,6 +76,8 @@ export type PublicationAttemptSeed = {
 		phaseStartedAt?: Date;
 		processingDeadline: Date;
 		reconciliationDeadline: Date;
+		/** An accepted manual Recheck permits provider reads for this attempt only. */
+		reconciliationOnly?: boolean;
 		failureCode?: string | null;
 		failureEvidence?: Prisma.InputJsonValue | null;
 		failureDisposition?: PublicationFailureDisposition | null;
@@ -631,6 +633,7 @@ export function createSocialPublicationAttempt(dependencies: {
 				}
 				const context = {
 					signal: input.signal,
+					reconciliationOnly: loaded.attempt.reconciliationOnly === true,
 					providerCall: async () => {
 						await dependencies.store.recordProviderCall({
 							owned: input.attempt,
@@ -742,8 +745,8 @@ export function createSocialPublicationAttempt(dependencies: {
 							retryAfterMs: result.failure.retryAfterMs,
 							failureEvidence: result.failure.evidence,
 							submissionMayHaveStarted:
-								submissionCheckpointed &&
-								!result.failure.safeToRepublishAfterSubmission,
+								loaded.attempt.reconciliationOnly === true ||
+								(submissionCheckpointed && !result.failure.safeToRepublishAfterSubmission),
 							now,
 							retry: dependencies.retry,
 							processingDeadlineMs: dependencies.processingDeadlineMs,
@@ -1062,10 +1065,10 @@ export function createInMemorySocialPublicationAttemptStore(
 			const nextActionAt = new Date(
 				Math.min(
 					input.result.nextCheckAt.getTime(),
-					record.attempt.processingDeadline.getTime(),
+					(record.attempt.reconciliationOnly ? record.attempt.reconciliationDeadline : record.attempt.processingDeadline).getTime(),
 				),
 			);
-			const nextPhase =
+			const nextPhase = record.attempt.reconciliationOnly ? "reconciling" :
 				input.result.submissionStarted === false ? "uploading" : "processing";
 			if (record.attempt.phase !== nextPhase) {
 				record.attempt.phaseStartedAt = input.now;
@@ -1073,12 +1076,12 @@ export function createInMemorySocialPublicationAttemptStore(
 			record.attempt.phase = nextPhase;
 			record.attempt.outcome = "pending";
 			record.attempt.nextActionAt = nextActionAt;
-			record.socialPost.status = "processing";
+			record.socialPost.status = record.attempt.reconciliationOnly ? "reconciling" : "processing";
 			record.checkpointKind = input.result.operation.kind;
 			record.sealedCheckpoint = input.sealedState;
 			record.claim = null;
 			return {
-				kind: "processing",
+				kind: record.attempt.reconciliationOnly ? "reconciling" : "processing",
 				attemptId: record.attempt.id,
 				socialPostId: record.socialPost.id,
 				nextActionAt,
@@ -1252,12 +1255,19 @@ export function createInMemorySocialPublicationAttemptStore(
 	};
 }
 
+const manualRecheckSelect = {
+	where: { kind: "recheck_requested" as const },
+	take: 1,
+	select: { id: true },
+};
+
 const publicationAttemptInclude = {
 	socialPost: true,
 	frozenState: true,
 	claims: { orderBy: { createdAt: "desc" as const } },
 	receipt: true,
 	analyticsIntent: true,
+	manualDecisions: manualRecheckSelect,
 };
 
 type PublicationAttemptRow = Prisma.SocialPublicationAttemptGetPayload<{
@@ -1366,6 +1376,7 @@ function rowToLoadedAttempt(
 			phaseStartedAt: row.phaseStartedAt,
 			processingDeadline: row.processingDeadline,
 			reconciliationDeadline: row.reconciliationDeadline,
+			reconciliationOnly: row.manualDecisions.length > 0,
 			failureCode: row.failureCode,
 			failureDisposition: row.failureDisposition,
 		},
@@ -1665,15 +1676,16 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 				await requireCurrentClaim(tx, input.owned, input.now);
 				const current = await tx.socialPublicationAttempt.findUniqueOrThrow({
 					where: { id: input.owned.attemptId },
-					select: { processingDeadline: true, phase: true },
+					select: { processingDeadline: true, reconciliationDeadline: true, phase: true, manualDecisions: manualRecheckSelect },
 				});
+				const reconciliationOnly = current.manualDecisions.length > 0;
 				const nextActionAt = new Date(
 					Math.min(
 						input.result.nextCheckAt.getTime(),
-						current.processingDeadline.getTime(),
+						(reconciliationOnly ? current.reconciliationDeadline : current.processingDeadline).getTime(),
 					),
 				);
-				const nextPhase =
+				const nextPhase = reconciliationOnly ? "reconciling" :
 					input.result.submissionStarted === false ? "uploading" : "processing";
 				const row = await tx.socialPublicationAttempt.update({
 					where: { id: input.owned.attemptId },
@@ -1691,13 +1703,13 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 				await tx.socialPost.update({
 					where: { id: row.socialPostId },
 					data: {
-						status: "processing",
+						status: reconciliationOnly ? "reconciling" : "processing",
 						nextAttemptAt: nextActionAt,
 					},
 				});
 				await releaseCurrentClaim(tx, input.owned, input.now);
 				return {
-					kind: "processing",
+					kind: reconciliationOnly ? "reconciling" : "processing",
 					attemptId: row.id,
 					socialPostId: row.socialPostId,
 					nextActionAt,
