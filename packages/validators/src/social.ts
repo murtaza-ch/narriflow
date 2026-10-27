@@ -276,6 +276,8 @@ export const socialPostSnapshotSchema = z.object({
 	providerProcessingFailureCode: z.string().nullable(),
 	providerVisibility: z.string().nullable(),
 	allowedActions: z.array(socialPublicationActionSchema).default([]),
+	/** The account must be reconnected; `allowedActions` lists reconnect only for members who may do it. */
+	reconnectRequired: z.boolean().default(false),
 	latestMetrics: socialPostMetricsSnapshotSchema.nullable(),
 	createdAt: z.string().datetime(),
 });

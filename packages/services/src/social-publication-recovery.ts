@@ -13,6 +13,9 @@ import {
   type RecheckSocialPublicationInput,
   type RepublishSocialPublicationInput,
   type SocialPublicationAction,
+  type WorkspaceAccessRole,
+  type WorkspaceAccessStatus,
+  workspaceAllowsCapability,
 } from "@narriflow/validators";
 import { combineLatestCaptures, latestCaptureInclude } from "./performance-summary";
 import { structuredSocialPublicationMetrics } from "./social-publication-observability";
@@ -29,28 +32,31 @@ import {
 const DEFAULT_PROCESSING_DEADLINE_MS = 24 * 60 * 60_000;
 const DEFAULT_RECONCILIATION_DEADLINE_MS = 24 * 60 * 60_000;
 
-export function allowedSocialPublicationActions(row: {
+type SocialPublicationActionRow = {
   status: string;
   errorCode: string | null;
   socialAccount?: { status?: string } | null;
   workspace?: { status?: string } | null;
-}): SocialPublicationAction[] {
-	const reconnectRequired =
-		row.socialAccount?.status !== undefined &&
-		row.socialAccount.status !== "active" ||
-		row.errorCode === "social_account_reconnect_required" ||
-		row.errorCode?.includes("authentication") ||
-		row.errorCode?.includes("permission");
+};
+
+/** Every action the post's state allows, before the requesting member's role is considered. */
+function stateAllowedActions(row: SocialPublicationActionRow): SocialPublicationAction[] {
+  const reconnectRequired =
+    (row.socialAccount?.status !== undefined &&
+      row.socialAccount.status !== "active") ||
+    row.errorCode === "social_account_reconnect_required" ||
+    row.errorCode?.includes("authentication") ||
+    row.errorCode?.includes("permission");
   if (
     row.status === "draft" ||
     row.status === "preparing_video" ||
     row.status === "scheduled"
   ) {
     return ["cancel"];
-	}
-	if (row.status === "needs_attention") {
-		if (reconnectRequired) return ["confirm_published", "reconnect_account"];
-		const actions: SocialPublicationAction[] = ["confirm_published"];
+  }
+  if (row.status === "needs_attention") {
+    if (reconnectRequired) return ["confirm_published", "reconnect_account"];
+    const actions: SocialPublicationAction[] = ["confirm_published"];
     if (row.socialAccount?.status === "active") actions.unshift("recheck");
     if (
       row.socialAccount?.status === "active" &&
@@ -62,16 +68,31 @@ export function allowedSocialPublicationActions(row: {
     }
     return actions;
   }
-  if (
-    row.status === "failed" &&
-    reconnectRequired
-  ) {
-    return ["reconnect_account"];
-  }
-	if (row.status === "posted" && reconnectRequired) {
-		return ["reconnect_account"];
-	}
+  if (row.status === "failed" && reconnectRequired) return ["reconnect_account"];
+  if (row.status === "posted" && reconnectRequired) return ["reconnect_account"];
   return row.status === "failed" ? ["schedule_again"] : [];
+}
+
+/** Whether the post needs its account reconnected, whoever is looking. */
+export function socialPublicationReconnectRequired(
+  row: SocialPublicationActionRow,
+): boolean {
+  return stateAllowedActions(row).includes("reconnect_account");
+}
+
+/**
+ * The actions the requesting member may perform on this post: the post's state
+ * narrowed by their capabilities (the same ones the mutations enforce).
+ */
+export function allowedSocialPublicationActions(
+  row: SocialPublicationActionRow,
+  actor: { role: WorkspaceAccessRole; status: WorkspaceAccessStatus },
+): SocialPublicationAction[] {
+  if (!workspaceAllowsCapability(actor, "publishing.manage")) return [];
+  const canReconnect = workspaceAllowsCapability(actor, "social.manage");
+  return stateAllowedActions(row).filter(
+    (action) => action !== "reconnect_account" || canReconnect,
+  );
 }
 
 const SOCIAL_PUBLICATION_RECOVERY_FAILURES = {
@@ -351,7 +372,7 @@ export const socialPublicationRecovery = {
     projectId?: string;
     socialPostId: string;
   }) {
-    await workspaceService.requireActor(input.actorUserId, input.workspaceId, "content.view");
+    const actor = await workspaceService.requireActor(input.actorUserId, input.workspaceId, "content.view");
     const post = await requirePrisma().socialPost.findFirst({
       where: {
         id: input.socialPostId,
@@ -422,11 +443,10 @@ export const socialPublicationRecovery = {
     return {
       ...facts,
       latestMetrics: combineLatestCaptures(trackedVideos),
-      allowedActions: allowedSocialPublicationActions({
-        ...post,
-        workspace,
-        socialAccount,
-      }),
+      allowedActions: allowedSocialPublicationActions(
+        { ...post, workspace, socialAccount },
+        actor,
+      ),
     };
   },
 

@@ -13,6 +13,7 @@ import {
   assertFinalizedVisualObject,
   assertSceneVisualAssetReferences,
   assertVisualBrollAssetReferences,
+  describeVisualAssetUsage,
   visualAssetIsReferencedByClipStorage,
   visualAssetKindForContentType,
 } from "./visual-asset.service";
@@ -138,6 +139,10 @@ describe("visual object verification", () => {
     expect(() => assertVisualBrollAssetReferences([placement], [asset])).not.toThrow();
     expect(() => assertVisualBrollAssetReferences([placement], [{ ...asset, fingerprint: "b".repeat(64) }])).toThrow();
     expect(() => assertVisualBrollAssetReferences([placement], [{ ...asset, kind: "video" as const }])).toThrow();
+    // The refusal names the placements to remove, so the Studio can offer to.
+    expect(() => assertVisualBrollAssetReferences([placement], [])).toThrow(
+      expect.objectContaining({ code: "visual_broll_asset_invalid", details: { placementIds: [placement.id] } }),
+    );
   });
 
   test("detects generated B-roll and Scene references in stored Clip documents", () => {
@@ -186,5 +191,18 @@ describe("font parsing", () => {
     expect(() => parseBrandFontHeader(Buffer.from([0x00, 0x01, 0x00, 0x00]))).toThrow();
     expect(() => parseBrandFontHeader(Buffer.from("OTTO"))).toThrow();
     expect(() => parseBrandFontHeader(Buffer.from("wOF2"))).toThrow();
+  });
+});
+
+describe("visual asset usage description", () => {
+  test("names where an asset is used, capping long lists", () => {
+    expect(
+      describeVisualAssetUsage({
+        clips: ["Clip A", "Clip B", "Clip C", "Clip D", "Clip E"],
+        sceneTemplates: ["Hero"],
+        profiles: ["Acme", "Beta"],
+      }),
+    ).toBe("clips Clip A, Clip B, Clip C and 2 more; scene template Hero; brand profiles Acme, Beta");
+    expect(describeVisualAssetUsage({ clips: ["Solo"], sceneTemplates: [], profiles: [] })).toBe("clip Solo");
   });
 });

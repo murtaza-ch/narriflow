@@ -44,6 +44,7 @@ export function PublishingPosts({
 	loadOlderPosts,
 	nextCursor,
 	compose,
+	canManage,
 	filterable = false,
 	timeZone,
 }: {
@@ -54,6 +55,8 @@ export function PublishingPosts({
 	loadOlderPosts(): Promise<void>;
 	nextCursor: string | null;
 	compose(clipIds: string[]): void;
+	/** Role and workspace status allow changing posts; otherwise only links and copy show. */
+	canManage: boolean;
 	filterable?: boolean;
 	timeZone: string;
 }) {
@@ -185,11 +188,17 @@ export function PublishingPosts({
 					<EmptyState
 						icon={<Send />}
 						title="Nothing published yet"
-						description="Publish or schedule a clip and follow it here, from upload to the live link."
+						description={
+							canManage
+								? "Publish or schedule a clip and follow it here, from upload to the live link."
+								: "Posts made from this project's clips show up here, from upload to the live link."
+						}
 						action={
-							<Button asChild size="sm">
-								<Link href={`/projects/${projectId}`}>Choose a clip</Link>
-							</Button>
+							canManage ? (
+								<Button asChild size="sm">
+									<Link href={`/projects/${projectId}`}>Choose a clip</Link>
+								</Button>
+							) : undefined
 						}
 					/>
 				) : (
@@ -356,7 +365,7 @@ export function PublishingPosts({
 						</Collapsible.Root>
 						<Flex gap="1" wrap="wrap" align="start" justify="end">
 							<SocialPostLinks post={post} compact />
-							{post.deliveryMode === "tiktok_inbox" &&
+							{canManage && post.deliveryMode === "tiktok_inbox" &&
 								["inbox_delivered", "posted"].includes(post.status) && (
 									<Button
 										aria-label="Check TikTok"
@@ -430,13 +439,17 @@ export function PublishingPosts({
 												: "Publish again"}
 									</Button>
 								))}
-							{post.allowedActions.includes("reconnect_account") && (
+							{post.allowedActions.includes("reconnect_account") ? (
 								<Button size="sm" variant="subtle" asChild>
-								<Link href="/settings/social-accounts">
+									<Link href="/settings/social-accounts">
 										Reconnect account
 									</Link>
 								</Button>
-							)}
+							) : canManage && post.reconnectRequired ? (
+								<Text fontSize="sm" color="fg.muted">
+									Ask an owner or admin to reconnect this account
+								</Text>
+							) : null}
 						</Flex>
 						{recovery?.id === post.id && (
 							<Stack

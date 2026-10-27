@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   allowedSocialPublicationActions,
+  socialPublicationReconnectRequired,
   validateSocialPublicationEvidence,
 } from "./social-publication-recovery";
+
+const owner = { role: "owner", status: "active" } as const;
+const admin = { role: "admin", status: "active" } as const;
+const editor = { role: "editor", status: "active" } as const;
+const viewer = { role: "viewer", status: "active" } as const;
 
 describe("Social Publication recovery actions", () => {
   test("offers only safe actions for each terminal projection", () => {
@@ -12,13 +18,13 @@ describe("Social Publication recovery actions", () => {
         errorCode: "publication_outcome_unknown",
         workspace: { status: "active" },
         socialAccount: { status: "active" },
-      }),
+      }, owner),
     ).toEqual(["recheck", "confirm_published", "publish_again"]);
     expect(
       allowedSocialPublicationActions({
         status: "failed",
         errorCode: "x_post_failed",
-      }),
+      }, owner),
     ).toEqual(["schedule_again"]);
   });
 
@@ -29,7 +35,7 @@ describe("Social Publication recovery actions", () => {
         errorCode: "publication_outcome_unknown",
         workspace: { status: "restricted" },
         socialAccount: { status: "active" },
-      }),
+      }, owner),
     ).toEqual(["recheck", "confirm_published"]);
     expect(
       allowedSocialPublicationActions({
@@ -37,8 +43,59 @@ describe("Social Publication recovery actions", () => {
         errorCode: "publication_outcome_unknown",
         workspace: { status: "active" },
         socialAccount: { status: "revoked" },
-      }),
+      }, owner),
     ).toEqual(["confirm_published", "reconnect_account"]);
+  });
+
+  const revokedAccount = {
+    status: "needs_attention",
+    errorCode: "publication_outcome_unknown",
+    workspace: { status: "active" },
+    socialAccount: { status: "revoked" },
+  };
+
+  test("viewers get no actions", () => {
+    expect(allowedSocialPublicationActions(revokedAccount, viewer)).toEqual([]);
+    expect(
+      allowedSocialPublicationActions({ status: "scheduled", errorCode: null }, viewer),
+    ).toEqual([]);
+  });
+
+  test("editors manage posts but never reconnect an account", () => {
+    expect(allowedSocialPublicationActions(revokedAccount, editor)).toEqual([
+      "confirm_published",
+    ]);
+    expect(
+      allowedSocialPublicationActions(
+        { status: "failed", errorCode: "social_account_reconnect_required" },
+        editor,
+      ),
+    ).toEqual([]);
+    expect(
+      allowedSocialPublicationActions({ status: "scheduled", errorCode: null }, editor),
+    ).toEqual(["cancel"]);
+  });
+
+  test("owners and admins may reconnect", () => {
+    for (const actor of [owner, admin]) {
+      expect(allowedSocialPublicationActions(revokedAccount, actor)).toEqual([
+        "confirm_published",
+        "reconnect_account",
+      ]);
+    }
+  });
+
+  test("a restricted workspace stops even the owner's post actions", () => {
+    expect(
+      allowedSocialPublicationActions(revokedAccount, { role: "owner", status: "restricted" }),
+    ).toEqual([]);
+  });
+
+  test("reconnectRequired is independent of the member's role", () => {
+    expect(socialPublicationReconnectRequired(revokedAccount)).toBe(true);
+    expect(
+      socialPublicationReconnectRequired({ status: "scheduled", errorCode: null }),
+    ).toBe(false);
   });
 
   test("validates ownership only after an authenticated provider lookup", async () => {

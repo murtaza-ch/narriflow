@@ -152,6 +152,10 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await expect(socialPublicationRecovery.confirmPublished({ ...target, reason: "Posted", evidenceKind: "manual_unvalidated" })).rejects.toMatchObject({ code: "social_publication_not_found" });
 		await expect(socialPublicationRecovery.publishAgain({ ...target, reason: "Retry", duplicateRiskAcknowledged: true })).rejects.toMatchObject({ code: "social_publication_not_found" });
 		expect((await socialPublicationRecovery.inspect(target)).allowedActions).toEqual(["cancel"]);
+		// A viewer sees the post but is offered no action; the owner above is.
+		const watcher = await prisma.user.create({ data: { clerkId: `queue-watcher:${randomUUID()}`, primaryEmail: `watcher-${randomUUID()}@example.test` } });
+		await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: watcher.id, role: "viewer" } });
+		expect((await socialPublicationRecovery.inspect({ ...target, actorUserId: watcher.id })).allowedActions).toEqual([]);
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).status).toBe("draft");
 	});
 
@@ -223,7 +227,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 					version: 1, profileId: randomUUID(), profileRevision: 1, name: "Approval required",
 					identity: { primaryColor: "#FFFFFF", secondaryColor: "#111522", accentColor: null, primaryLogoAssetId: null, alternateLogoAssetId: null },
 					voice: { audience: "", tone: [], preferredTerms: [], blockedTerms: [], hashtagGuidance: "" },
-					approvalRule: "approval_required", style: null,
+					approvalRule: "approval_required", style: null, audio: { music: [], sfx: [] },
 				},
 			},
 		});
@@ -403,7 +407,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 					version: 1, profileId: randomUUID(), profileRevision: 1, name: "Approval required",
 					identity: { primaryColor: "#FFFFFF", secondaryColor: "#111522", accentColor: null, primaryLogoAssetId: null, alternateLogoAssetId: null },
 					voice: { audience: "", tone: [], preferredTerms: [], blockedTerms: [], hashtagGuidance: "" },
-					approvalRule: "approval_required", style: null,
+					approvalRule: "approval_required", style: null, audio: { music: [], sfx: [] },
 				},
 			},
 		});

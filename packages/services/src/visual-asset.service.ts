@@ -34,10 +34,12 @@ import {
   presignSingleUploadUrl,
 } from "./r2-storage";
 import { analyticsService } from "./analytics.service";
+import { accessibleProjectWhere } from "./project-access";
 import { withSerializableTransaction } from "./serializable-transaction";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
+  type ExpectedDomainFailureDetails,
 } from "./expected-domain-failure";
 
 const execFileAsync = promisify(execFile);
@@ -84,19 +86,44 @@ const visualAssetIntegrityFailureCatalog = {
 type VisualAssetIntegrityFailureCode = keyof typeof visualAssetIntegrityFailureCatalog;
 
 export class VisualAssetIntegrityError extends ExpectedDomainFailureError<VisualAssetIntegrityFailureCode> {
-  constructor(code: VisualAssetIntegrityFailureCode) {
-    super({ code, kind: visualAssetIntegrityFailureCatalog[code], message: "The selected visual asset could not be verified" });
+  constructor(code: VisualAssetIntegrityFailureCode, details?: ExpectedDomainFailureDetails) {
+    super({ code, kind: visualAssetIntegrityFailureCatalog[code], message: "The selected visual asset could not be verified", details });
     this.name = "VisualAssetIntegrityError";
   }
 }
 
+export type VisualAssetUsage = {
+  clips: readonly string[];
+  sceneTemplates: readonly string[];
+  profiles: readonly string[];
+};
+
+const USAGE_NAMES_SHOWN = 3;
+
+/** "A, B, C and 2 more" - enough to find the place, short enough to read. */
+function namesWithMore(names: readonly string[]) {
+  const shown = names.slice(0, USAGE_NAMES_SHOWN).map((name) => name.length > 40 ? `${name.slice(0, 39)}…` : name).join(", ");
+  const rest = names.length - USAGE_NAMES_SHOWN;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}
+
+/** Where the asset is used, as one readable line: "clips A, B and 2 more; brand profile Acme". */
+export function describeVisualAssetUsage(usage: VisualAssetUsage): string {
+  return [
+    usage.clips.length > 0 ? `${usage.clips.length === 1 ? "clip" : "clips"} ${namesWithMore(usage.clips)}` : null,
+    usage.sceneTemplates.length > 0 ? `${usage.sceneTemplates.length === 1 ? "scene template" : "scene templates"} ${namesWithMore(usage.sceneTemplates)}` : null,
+    usage.profiles.length > 0 ? `${usage.profiles.length === 1 ? "brand profile" : "brand profiles"} ${namesWithMore(usage.profiles)}` : null,
+  ].filter((part): part is string => part !== null).join("; ");
+}
+
 export class VisualAssetReferenceError extends ExpectedDomainFailureError<"visual_asset_in_use"> {
-  constructor() {
+  constructor(usage: VisualAssetUsage) {
     super({
       code: "visual_asset_in_use",
       kind: visualAssetIntegrityFailureCatalog.visual_asset_in_use,
       message:
         "Remove this asset from every Clip, Brand Profile, and Scene template before deleting it",
+      details: { usedIn: describeVisualAssetUsage(usage) },
     });
     this.name = "VisualAssetReferenceError";
   }
@@ -138,15 +165,15 @@ export function assertVisualBrollAssetReferences(
   assets: readonly SceneVisualAssetRecord[],
 ): void {
   const byId = new Map(assets.map((asset) => [asset.id, asset]));
-  for (const placement of placements) {
-    const asset = byId.get(placement.asset.id);
-    if (
-      !asset ||
-      asset.kind !== "image" ||
-      asset.fingerprint !== placement.asset.fingerprint
-    ) {
-      throw new VisualAssetIntegrityError("visual_broll_asset_invalid");
-    }
+  // Name every unusable placement so the Studio can offer to remove them.
+  const placementIds = placements
+    .filter((placement) => {
+      const asset = byId.get(placement.asset.id);
+      return !asset || asset.kind !== "image" || asset.fingerprint !== placement.asset.fingerprint;
+    })
+    .map((placement) => placement.id);
+  if (placementIds.length > 0) {
+    throw new VisualAssetIntegrityError("visual_broll_asset_invalid", { placementIds });
   }
 }
 
@@ -520,22 +547,20 @@ export class VisualAssetService {
         where: { id, ...brandOwnerWhere(scope), deletedAt: null },
         include: {
           // Only live profiles hold an asset in use; a deleted profile never blocks cleanup.
-          profiles: { where: { profile: { deletedAt: null } } },
-          sceneTemplates: { where: { deletedAt: null, profile: { deletedAt: null } }, select: { id: true } },
+          profiles: { where: { profile: { deletedAt: null } }, include: { profile: { select: { name: true } } } },
+          sceneTemplates: { where: { deletedAt: null, profile: { deletedAt: null } }, select: { id: true, name: true } },
         },
       });
       if (!asset) throw new VisualAssetIntegrityError("visual_asset_not_found");
       if (generatedOnly && asset.provenance !== "generated") {
         throw new VisualAssetIntegrityError("visual_asset_not_generated");
       }
-      if (asset.sceneTemplates.length > 0) throw new VisualAssetReferenceError();
-      const clipDocuments = await tx.clip.findMany({
-        where: { project: { workspaceId: scope.workspaceId } },
-        select: { studioEdits: true, sceneBlocks: true },
+      // An expired Project can't be opened, rendered or restored (only a paid
+      // plan before the deadline clears it), so its clips don't hold the asset.
+      const clips = await tx.clip.findMany({
+        where: { project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
+        select: { title: true, studioEdits: true, sceneBlocks: true },
       });
-      if (clipDocuments.some((document) => visualAssetIsReferencedByClipStorage(id, document))) {
-        throw new VisualAssetReferenceError();
-      }
       const identityReferences = await tx.brandProfile.findMany({
         where: {
           ...brandOwnerWhere(scope),
@@ -545,13 +570,23 @@ export class VisualAssetService {
             { visualIdentity: { path: ["alternateLogoAssetId"], equals: id } },
           ],
         },
-        select: { id: true, visualIdentity: true },
+        select: { id: true, name: true, visualIdentity: true },
       });
-      if (
-        (asset.profiles.length > 0 || identityReferences.length > 0) &&
-        !parsed.replacementId
-      ) {
-        throw new VisualAssetReferenceError();
+      // Clips and Scene templates always block; Brand Profiles only when no replacement takes over.
+      const usage: VisualAssetUsage = {
+        clips: clips
+          .filter((clip) => visualAssetIsReferencedByClipStorage(id, clip))
+          .map((clip) => clip.title?.trim() || "Untitled clip"),
+        sceneTemplates: asset.sceneTemplates.map((template) => template.name),
+        profiles: parsed.replacementId
+          ? []
+          : [...new Map([
+              ...asset.profiles.map((membership) => [membership.profileId, membership.profile.name] as const),
+              ...identityReferences.map((profile) => [profile.id, profile.name] as const),
+            ]).values()],
+      };
+      if (usage.clips.length + usage.sceneTemplates.length + usage.profiles.length > 0) {
+        throw new VisualAssetReferenceError(usage);
       }
       const replacement = parsed.replacementId
         ? await tx.visualAsset.findFirst({ where: { id: parsed.replacementId, ...brandOwnerWhere(scope), deletedAt: null, kind: asset.kind }, select: { id: true } })

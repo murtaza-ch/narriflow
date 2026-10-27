@@ -6,6 +6,8 @@ import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
 	type SocialPostSnapshot,
+	type WorkspaceAccessRole,
+	type WorkspaceAccessStatus,
 	type ConfirmSocialPublicationInput,
 	type RecheckSocialPublicationInput,
 	type RepublishSocialPublicationInput,
@@ -19,6 +21,7 @@ import { socialPublicationScheduling } from "./social-publication-scheduling-run
 import { publishingQueue } from "./publishing-queue.service";
 import {
 	allowedSocialPublicationActions,
+	socialPublicationReconnectRequired,
 	socialPublicationRecovery,
 } from "./social-publication-recovery";
 type SocialPostCursor = { createdAt: string; id: string };
@@ -130,7 +133,7 @@ function toSocialPostSnapshot(row: {
 	}>;
 	trackedVideos?: LatestCaptures[];
 	createdAt: Date;
-}): SocialPostSnapshot {
+}, actor: { role: WorkspaceAccessRole; status: WorkspaceAccessStatus }): SocialPostSnapshot {
 	const aspectRatio =
 		row.aspectRatio === "ratio_9_16"
 			? "9:16"
@@ -171,7 +174,8 @@ function toSocialPostSnapshot(row: {
 			null,
 		providerVisibility:
 			row.publicationAttempts?.[0]?.receipt?.providerVisibility ?? null,
-		allowedActions: allowedSocialPublicationActions(row),
+		allowedActions: allowedSocialPublicationActions(row, actor),
+		reconnectRequired: socialPublicationReconnectRequired(row),
 		latestMetrics: combineLatestCaptures(row.trackedVideos ?? []),
 		createdAt: row.createdAt.toISOString(),
 	};
@@ -243,7 +247,7 @@ export class SocialService {
 		projectId: string,
 		options: { activeOnly?: boolean; trackedIds?: string[]; cursor?: string } = {},
 	): Promise<{ items: SocialPostSnapshot[]; nextCursor: string | null }> {
-		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
+		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
 		const prisma = requirePrisma();
 		const cursor = decodeSocialPostCursor(options.cursor);
 		const rows = await prisma.socialPost.findMany({
@@ -271,7 +275,7 @@ export class SocialService {
 			take: 101,
 			include: socialPostSnapshotInclude,
 		});
-		return { items: rows.slice(0, 100).map(toSocialPostSnapshot), nextCursor: rows.length > 100 ? encodeSocialPostCursor(rows[99]!) : null };
+		return { items: rows.slice(0, 100).map((row) => toSocialPostSnapshot(row, actor)), nextCursor: rows.length > 100 ? encodeSocialPostCursor(rows[99]!) : null };
 	}
 
 	async cancelPost(
@@ -279,7 +283,7 @@ export class SocialService {
 		projectId: string,
 		postId: string,
 	): Promise<SocialPostSnapshot> {
-		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
+		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
 		const prisma = requirePrisma();
 		const existing = await prisma.socialPost.findFirst({
 			where: {
@@ -312,7 +316,7 @@ export class SocialService {
 			throw new SocialServiceError("social_post_not_found");
 		}
 
-		return toSocialPostSnapshot(row);
+		return toSocialPostSnapshot(row, actor);
 	}
 }
 

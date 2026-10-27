@@ -602,6 +602,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 					},
 					approvalRule: "approval_required",
 					style: null,
+					audio: { music: [], sfx: [] },
 				},
 			},
 		});
