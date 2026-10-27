@@ -8,7 +8,7 @@
 
 **Validated:** 2026-10-24
 
-**Follows:** [External integrations map](../external-integrations/map.md). Its steps 2 to 9 shipped: the usage ledger, the assistant connector, REST v1, Completion Callbacks, and the n8n Drive template.
+**Follows:** the External integrations map (2026-10-07, retired 2026-10-27). Its steps 2 to 9 shipped: the usage ledger, the assistant connector, REST v1, Completion Callbacks, and the n8n Drive template. Its remaining verdicts and open questions are carried into the tables below.
 
 ## Destination
 
@@ -144,6 +144,11 @@ This amends ADR 0013, which rejected Workspace-level subscriptions for v1. A pul
 | Visual workflow editor | Don't | Reaffirmed. n8n and Make already are one. |
 | Slack app | Don't | Reaffirmed. Templates post to Slack. |
 | YouTube channel import | Don't | Reaffirmed. API policy forbids it. |
+| ComfyUI finish node | Conditional pilot | Only after Captioned Video has repeat users. Own API key, local ComfyUI only. |
+| Premiere or Resolve plugin | Later | Timeline export shipped first; a plugin only on agency demand. |
+| TypeScript SDK | Later | OpenAPI plus curl and TypeScript examples first. |
+| C2PA signing | Don't, this cycle | Carry AI-disclosure choices to publishing instead. A transformed asset needs its own manifest. |
+| ComfyUI highlight or transcript nodes, illustrated explainers, product variations | Don't | Weak fit or a second product. |
 
 ### Sequence
 
@@ -192,14 +197,16 @@ This amends ADR 0013, which rejected Workspace-level subscriptions for v1. A pul
 
 - Which persona comes first? Still open from the previous map. It decides whether Zoom (webinar teams), RSS (podcasters), or AI-short captioning (AI-video creators) leads.
 - Is unattended delivery, to clients or to the public, a product goal, or does every delivery keep a click?
-- Tiers: which of finishing, the queue, events, and REST open to Creator and Pro? The ledger no longer blocks opening integrations.
-- What happens to an Autopilot rule when its Workspace downgrades below the tier its finishing needs: pause, or import without finishing?
-- Should REST and MCP open to Pro? OpusClip puts them on its $29 plan, and Reap at $9.99. Recommend opening them to Pro with lower rate limits, while review rooms stay Business.
+- Resolved by credit pricing (2026-10-26): Publishing Queue opens at Creator; Finishing, standing grants, Autopilot, REST, MCP, events, and webhooks at Pro; Review Rooms at Business. A rule the plan no longer covers pauses with a reason (`autopilotPlanPauseReason`).
+- OAuth consent currently covers every Workspace the user belongs to. Keep that, or store per-client selected-Workspace grants and enforce them on every tool and continuation admission?
+- Content Suite generation still runs synchronously inside a 60-second browser route. Make it a durable operation (frozen inputs, per-asset outcomes, Operation Status polling) before exposing it on REST or MCP.
+- Generated short video (Vizard-expansion ticket 16, never built; pricing sells only AI images). Build only on demand. Entry gate: the owner names a video provider, model, maximum duration, concurrency, and usage unit; reuse the Generated Media Job contract proven for images and insert results as B-roll or Scene Blocks.
 - Unverified:
   - Whether uploads from unverified YouTube API projects are really no longer forced private. The reference changed with no revision note, and nobody has tested it with a real upload.
   - How long TikTok's audit takes.
   - Which grant Facebook Reels insights need beyond `pages_read_engagement`.
   - One user report that claude.ai connectors time out near 240 seconds.
+  - Whether Zapier and Make propagate the OAuth `resource` parameter; ChatGPT and Claude file-size limits for app uploads; Gemini and Copilot listing paths.
 
 ## Sources
 

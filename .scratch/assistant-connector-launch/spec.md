@@ -2,9 +2,9 @@
 
 **Status:** claimed
 
-**Map:** [External integrations map](../external-integrations/map.md), sequence steps 3 to 7.
+**Map:** the retired External integrations map, sequence steps 3 to 7; open items now live in the [automation map](../automation/map.md).
 
-**Blocked by:** [Processing usage ledger](../processing-usage-ledger/spec.md), for directory submission only. Implementation tickets in this spec can start immediately.
+**Blocked by:** Processing Usage, for directory submission only; shipped ([ADR 0012](../../docs/adr/0012-processing-usage.md)). Implementation tickets in this spec can start immediately.
 
 **Builds on:** [MCP production readiness](../mcp-production-readiness/spec.md). That effort's acceptance ticket stays open until this spec's live acceptance passes.
 
@@ -151,7 +151,7 @@ Close the gaps, prove one complete journey on real assistant clients, and submit
   - "Unavailable" may be recorded only for a host capability a client doesn't support, such as Apps cards or Tasks in a given client. It is never recorded for a Narriflow security or confirmation gate.
 - Record client versions, negotiated capabilities, and IDs in the runbook.
 - Submitting to Claude's directory is an outward-facing action. The owner submits, or explicitly authorizes the submission at the time. ChatGPT submission materials are prepared in the same folder. Their submission waits for the Claude listing and the owner's go-ahead.
-- Directory submission is blocked until the [processing usage ledger](../processing-usage-ledger/spec.md) is done.
+- Directory submission was blocked until Processing Usage shipped ([ADR 0012](../../docs/adr/0012-processing-usage.md)); it has.
 
 ## Testing Decisions
 
@@ -190,7 +190,7 @@ Close the gaps, prove one complete journey on real assistant clients, and submit
 - Per-Workspace OAuth consent, CIMD adoption, and removing DCR. DCR keeps working, and CIMD is a later change.
 - Opening the connector to Creator or Pro.
 - MCP Registry publication and listings for Gemini or Copilot.
-- The public REST API, customer webhooks, and automation templates. See the [public REST API spec](../public-rest-api/spec.md).
+- The public REST API, customer webhooks, and automation templates. See the [REST API guide](../../docs/integrations/rest-api.md).
 - Renaming `McpOperation` or `MCP_CANCELLED`. The REST spec owns receipt normalization.
 
 ## Further Notes

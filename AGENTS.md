@@ -7,6 +7,8 @@ Narriflow turns long videos into short, captioned, virality-scored clips
 
 I like ambitious ideas, simple systems, and software that feels obvious. Do not preserve complexity just because it already exists. Do not introduce machinery because it looks architecturally impressive. Understand the real constraint, then fight for the smallest model that makes the correct behavior unsurprising.
 
+For unfamiliar features, don't write from scratch, first search github for open-source projects, compare approaches, then get started.
+
 Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the developer's intent in a minimal, realistic way.
 
 ## Monorepo layout (Bun + Turborepo)
@@ -64,12 +66,12 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 
 Local apps and deployed development apps intentionally use the same resources.
 
-| Resource | Shared selection |
-| --- | --- |
-| Neon project / branch / database | `narriflow-dev` / `deployed-dev` / `neondb` |
-| Redis | Upstash `narriflow-dev-live` |
-| R2 bucket | `narriflow-dev` |
-| Applications | Local web and worker via `bun run dev`; Vercel `narriflow-dev`; Railway `@narriflow/worker` in environment `dev` |
+| Resource                         | Shared selection                                                                                                 |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Neon project / branch / database | `narriflow-dev` / `deployed-dev` / `neondb`                                                                      |
+| Redis                            | Upstash `narriflow-dev-live`                                                                                     |
+| R2 bucket                        | `narriflow-dev`                                                                                                  |
+| Applications                     | Local web and worker via `bun run dev`; Vercel `narriflow-dev`; Railway `@narriflow/worker` in environment `dev` |
 
 - PostgreSQL owns the durable `IngestJob` and `WorkflowRun` queues. Local and Railway workers share the queue and can process jobs created by either web app. Maintenance and publishing also affect the shared data.
 - Keep web, worker, and migration connections on this same database. Prisma prefers `DIRECT_URL` over `DATABASE_URL`; verify both before migrations.
