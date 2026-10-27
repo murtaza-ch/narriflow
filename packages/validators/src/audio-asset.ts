@@ -36,6 +36,7 @@ export const finalizeAudioUploadSchema = z.object({
   kind: audioAssetKindSchema,
   title: z.string().trim().min(1).max(120),
   durationSec: z.number().min(0).max(60 * 60).default(0),
+  sizeBytes: z.number().int().positive().max(AUDIO_UPLOAD_MAX_BYTES).optional(),
 }).strict();
 
 export type FinalizeAudioUploadInput = z.infer<
@@ -45,6 +46,14 @@ export type FinalizeAudioUploadInput = z.infer<
 export const listAudioAssetsQuerySchema = z.object({
   kind: audioAssetKindSchema,
   mood: z.string().trim().max(40).optional(),
+  search: z.string().trim().max(120).optional(),
+  scope: z.enum(["all", "user"]).default("all"),
+  favorited: z.preprocess(
+    (value) => value === "true" ? true : value === "false" ? false : value,
+    z.boolean().optional(),
+  ),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  offset: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
 }).strict();
 
 export type ListAudioAssetsQuery = z.infer<typeof listAudioAssetsQuerySchema>;

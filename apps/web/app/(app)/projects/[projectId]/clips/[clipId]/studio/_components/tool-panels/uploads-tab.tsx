@@ -6,7 +6,7 @@ import { chipProps } from "./panel-ui";
 import { AlertTriangle, Music2, Trash2, Upload as UploadIcon } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { AUDIO_UPLOAD_MAX_BYTES, type AudioAssetKindInput } from "@narriflow/validators";
+import { AUDIO_UPLOAD_MAX_BYTES, audioUploadContentTypeSchema, type AudioAssetKindInput } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
 import { useAudioAssetList, type AudioAssetListRow } from "./audio-library";
 
@@ -25,7 +25,8 @@ const EXTENSION_CONTENT_TYPE: Record<string, string> = {
  *  some .m4a files, "audio/x-m4a" vs "audio/mp4" for others) — fall back to
  *  the extension when the reported type isn't one the server accepts. */
 function resolveContentType(file: File): string | null {
-  if (file.type) return file.type;
+  const reportedType = audioUploadContentTypeSchema.safeParse(file.type);
+  if (reportedType.success) return reportedType.data;
   const ext = file.name.split(".").pop()?.toLowerCase();
   return ext ? EXTENSION_CONTENT_TYPE[ext] ?? null : null;
 }
@@ -121,8 +122,8 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
   const [uploading, setUploading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const musicList = useAudioAssetList("music", null, reloadKey);
-  const sfxList = useAudioAssetList("sfx", null, reloadKey);
+  const musicList = useAudioAssetList("music", null, reloadKey, { scope: "user" });
+  const sfxList = useAudioAssetList("sfx", null, reloadKey, { scope: "user" });
 
   const myUploads = useMemo(
     () =>
@@ -185,6 +186,7 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
           kind: uploadKind,
           title: stripExtension(file.name).slice(0, 120) || "Untitled",
           durationSec,
+          sizeBytes: file.size,
         }),
       });
       if (!finalizeRes.ok) {
@@ -299,10 +301,18 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
             <Text fontSize="12px">Loading…</Text>
           </Flex>
         ) : musicList.error || sfxList.error ? (
-          <Flex align="center" gap="6px" color="danger.400">
-            <AlertTriangle size={12} />
-            <Text fontSize="12px">Couldn&apos;t load your uploads.</Text>
-          </Flex>
+          <Stack gap="6px" align="start" role="alert">
+            <Flex align="center" gap="6px" color="studio.danger">
+              <AlertTriangle size={12} />
+              <Text fontSize="12px">Couldn&apos;t load your uploads.</Text>
+            </Flex>
+            <Flex as="button" minH="24px" px="8px" align="center" color="studio.fg" fontSize="13px" onClick={() => {
+              if (musicList.error) musicList.retry();
+              if (sfxList.error) sfxList.retry();
+            }}>
+              Retry
+            </Flex>
+          </Stack>
         ) : myUploads.length === 0 ? (
           <Text fontSize="12px" color="studio.fgMuted">
             Nothing uploaded yet.
@@ -320,6 +330,22 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
             ))}
           </Stack>
         )}
+        {musicList.loadMoreError || sfxList.loadMoreError ? (
+          <Stack align="start" gap="6px" role="alert" mt="8px">
+            <Text fontSize="12px" color="studio.danger">Couldn't load more uploads.</Text>
+            <Flex as="button" minH="24px" minW="24px" px="8px" align="center" fontSize="13px" onClick={() => {
+              if (musicList.loadMoreError) musicList.loadMore();
+              if (sfxList.loadMoreError) sfxList.loadMore();
+            }}>Retry</Flex>
+          </Stack>
+        ) : musicList.hasMore || sfxList.hasMore ? (
+          <Flex as="button" minH="32px" minW="24px" mt="8px" align="center" justify="center" fontSize="13px" aria-disabled={musicList.loadingMore || sfxList.loadingMore} onClick={musicList.loadingMore || sfxList.loadingMore ? undefined : () => {
+            if (musicList.hasMore) musicList.loadMore();
+            if (sfxList.hasMore) sfxList.loadMore();
+          }}>
+            {musicList.loadingMore || sfxList.loadingMore ? "Loading…" : "Load more"}
+          </Flex>
+        ) : null}
       </Box>
     </Stack>
   );

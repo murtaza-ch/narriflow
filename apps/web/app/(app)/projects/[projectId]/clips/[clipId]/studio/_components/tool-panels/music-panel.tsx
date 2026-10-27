@@ -127,6 +127,8 @@ export function MusicPanel() {
             as="button"
             aria-pressed={sourceAudio.muted}
             aria-label={sourceAudio.muted ? "Unmute source audio" : "Mute source audio"}
+            minH="24px"
+            minW="24px"
             align="center"
             gap="5px"
             color={sourceAudio.muted ? "studio.danger" : "studio.fgMuted"}

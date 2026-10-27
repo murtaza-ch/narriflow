@@ -99,7 +99,7 @@ function SfxRow({
             bg="blackAlpha.400"
             cursor="pointer"
             _hover={{ bg: "blackAlpha.600" }}
-            onClick={() => player.toggle(asset.id, asset.playbackUrl)}
+            onClick={() => player.toggle(asset)}
           >
             {loading ? (
               <Box animation="spin"><LoaderCircle size={15} /></Box>
@@ -178,15 +178,22 @@ function SfxRow({
 
 export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
   const { studioEdits, setStudioEdits, endCoalesce, playbackClock } = useStudio("studioEdits", "setStudioEdits", "endCoalesce", "playbackClock");
-  const { assets, moodTags, loading, error, setFavorite } = useAudioAssetList("sfx", null, reloadKey);
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
+  const { assets, moodTags, loading, error, retry, setFavorite, hasMore, loadingMore, loadMoreError, loadMore } = useAudioAssetList(
+    "sfx",
+    category === "all" || category === "saved" ? null : category,
+    reloadKey,
+    { search, favorited: category === "saved" ? true : undefined },
+  );
   const placements = studioEdits.sfx;
   const atCap = placements.length >= MAX_SFX_PLACEMENTS;
 
   const visibleAssets = useMemo(() => {
-    return filterAudioAssets(assets, { category, search, activeId: player.activeId });
-  }, [assets, category, player.activeId, search]);
+    const active = player.activeAsset;
+    const rows = active?.kind === "sfx" && !assets.some((asset) => asset.id === active.id) ? [...assets, active] : assets;
+    return filterAudioAssets(rows, { category, search, activeId: player.activeId });
+  }, [assets, category, player.activeId, player.activeAsset, search]);
 
   const addAtPlayhead = (asset: AudioAssetListRow) => {
     if (atCap) return;
@@ -240,6 +247,7 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
           <Input
             aria-label="Search sound effects"
             placeholder="Search effects…"
+            maxLength={120}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             p="0"
@@ -251,7 +259,7 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
             _focusVisible={{ boxShadow: "none" }}
             _placeholder={{ color: "studio.fgSubtle" }}
           />
-          {search ? <Flex as="button" aria-label="Clear effect search" onClick={() => setSearch("")}><X size={12} /></Flex> : null}
+          {search ? <Flex as="button" aria-label="Clear effect search" minW="24px" minH="24px" align="center" justify="center" onClick={() => setSearch("")}><X size={12} /></Flex> : null}
         </Flex>
         <Flex
           as="button"
@@ -291,7 +299,12 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
               <Text fontSize="13px">Loading effects…</Text>
             </Flex>
           ) : error ? (
-            <Text fontSize="11px" color="studio.danger" py="14px" textAlign="center">{error}</Text>
+            <Stack align="center" gap="6px" py="14px" role="alert">
+              <Text fontSize="12px" color="studio.danger" textAlign="center">{error}</Text>
+              <Flex as="button" minH="24px" px="8px" align="center" color="studio.fg" fontSize="13px" onClick={retry}>
+                Retry
+              </Flex>
+            </Stack>
           ) : visibleAssets.length === 0 ? (
             <Stack align="center" gap="8px" py="28px" px="12px" textAlign="center">
               <Sparkles size={18} />
@@ -303,7 +316,7 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
                     : "No royalty-free effects have been added yet."}
               </Text>
               {!search && category !== "saved" ? (
-                <Flex as="button" align="center" gap="6px" color="studio.fg" fontSize="13px" fontWeight="500" onClick={onOpenUploads}>
+                <Flex as="button" minH="24px" minW="24px" align="center" gap="6px" color="studio.fg" fontSize="13px" fontWeight="500" onClick={onOpenUploads}>
                   <Upload size={12} /> Upload an effect
                 </Flex>
               ) : null}
@@ -318,6 +331,16 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
               onFavorite={() => void toggleFavorite(asset)}
             />
           ))}
+          {loadMoreError ? (
+            <Stack align="center" gap="6px" role="alert">
+              <Text fontSize="12px" color="studio.danger">{loadMoreError}</Text>
+              <Flex as="button" minH="24px" minW="24px" px="8px" align="center" fontSize="13px" onClick={loadMore}>Retry</Flex>
+            </Stack>
+          ) : hasMore ? (
+            <Flex as="button" minH="32px" minW="24px" align="center" justify="center" fontSize="13px" aria-disabled={loadingMore} onClick={loadingMore ? undefined : loadMore}>
+              {loadingMore ? "Loading…" : "Load more"}
+            </Flex>
+          ) : null}
         </Stack>
       </Box>
 

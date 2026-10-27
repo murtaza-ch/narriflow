@@ -4,93 +4,128 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { AudioAssetListRow } from "@narriflow/services";
 import type { AudioAssetKindInput } from "@narriflow/validators";
+import { toaster } from "@narriflow/ui/components/toaster";
 
 export type { AudioAssetListRow };
+
+interface AudioAssetPage {
+  assets: AudioAssetListRow[];
+  moodTags: string[];
+  nextOffset: number | null;
+}
 
 interface UseAudioAssetListResult {
   assets: AudioAssetListRow[];
   moodTags: string[];
   loading: boolean;
   error: string | null;
+  retry: () => void;
+  hasMore: boolean;
+  loadingMore: boolean;
+  loadMoreError: string | null;
+  loadMore: () => void;
   setFavorite: (assetId: string, favorited: boolean) => Promise<void>;
 }
 
-/**
- * Music/SFX library (docs/plans/vizard-parity.md "Music/SFX library").
- * Fetches `GET /api/audio-assets` for one `kind`, refetching whenever `kind`,
- * `mood`, or `reloadKey` changes. `reloadKey` lets a sibling tab (the
- * Uploads tab, after a finalize or delete) force every open list to refresh
- * without a shared cache layer — the library is small enough (~120-200
- * curated rows per the plan) that a full refetch on change is cheap.
- */
+/** Pages reset when filters or the caller's library version change. */
 export function useAudioAssetList(
   kind: AudioAssetKindInput,
   mood: string | null,
   reloadKey: number,
+  options: { search?: string; scope?: "all" | "user"; favorited?: boolean } = {},
 ): UseAudioAssetListResult {
+  const { search, scope, favorited } = options;
   const [assets, setAssets] = useState<AudioAssetListRow[]>([]);
   const [moodTags, setMoodTags] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const generation = useRef(0);
+  const pendingPage = useRef<number | null>(null);
+  const [retryVersion, setRetryVersion] = useState(0);
+  const retry = useCallback(() => setRetryVersion((version) => version + 1), []);
+
+  const fetchPage = useCallback(async (offset: number): Promise<AudioAssetPage> => {
+    const params = new URLSearchParams({ kind, limit: "30", offset: String(offset) });
+    if (mood) params.set("mood", mood);
+    if (search?.trim()) params.set("search", search.trim());
+    if (scope) params.set("scope", scope);
+    if (favorited !== undefined) params.set("favorited", String(favorited));
+    const response = await fetch(`/api/audio-assets?${params.toString()}`);
+    if (!response.ok) throw new Error("Couldn't load the audio library.");
+    return response.json();
+  }, [kind, mood, search, scope, favorited]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey is an explicit caller-controlled refetch trigger.
   useEffect(() => {
-    let canceled = false;
-    async function load() {
-      setLoading(true);
-      setError(null);
-      try {
-        const params = new URLSearchParams({ kind });
-        if (mood) params.set("mood", mood);
-        const res = await fetch(`/api/audio-assets?${params.toString()}`);
-        if (!res.ok) throw new Error("Couldn't load the audio library.");
-        const data = (await res.json()) as {
-          assets: AudioAssetListRow[];
-          moodTags: string[];
-        };
-        if (canceled) return;
-        setAssets(data.assets);
-        setMoodTags(data.moodTags);
-      } catch (e) {
-        if (!canceled) {
-          setError(e instanceof Error ? e.message : "Couldn't load the audio library.");
-        }
-      } finally {
-        if (!canceled) setLoading(false);
-      }
-    }
-    void load();
-    return () => {
-      canceled = true;
-    };
-  }, [kind, mood, reloadKey]);
+    const current = ++generation.current;
+    pendingPage.current = null;
+    setLoading(true);
+    setLoadingMore(false);
+    setAssets([]);
+    setNextOffset(null);
+    setError(null);
+    setLoadMoreError(null);
+    void fetchPage(0).then((page) => {
+      if (current !== generation.current) return;
+      setAssets(page.assets);
+      setMoodTags(page.moodTags);
+      setNextOffset(page.nextOffset);
+    }).catch(() => {
+      if (current === generation.current) setError("Couldn't load the audio library.");
+    }).finally(() => {
+      if (current === generation.current) setLoading(false);
+    });
+    return () => { generation.current++; };
+  }, [fetchPage, reloadKey, retryVersion]);
+
+  const loadMore = useCallback(() => {
+    if (nextOffset === null || loading || pendingPage.current !== null) return;
+    const current = generation.current;
+    pendingPage.current = current;
+    setLoadingMore(true);
+    setLoadMoreError(null);
+    void fetchPage(nextOffset).then((page) => {
+      if (current !== generation.current) return;
+      setAssets((previous) => {
+        const ids = new Set(previous.map((asset) => asset.id));
+        return [...previous, ...page.assets.filter((asset) => !ids.has(asset.id))];
+      });
+      setNextOffset(page.nextOffset);
+    }).catch(() => {
+      if (current === generation.current) setLoadMoreError("Couldn't load more audio.");
+    }).finally(() => {
+      if (current !== generation.current) return;
+      pendingPage.current = null;
+      setLoadingMore(false);
+    });
+  }, [fetchPage, nextOffset, loading]);
 
   const setFavorite = useCallback(async (assetId: string, favorited: boolean) => {
-    let previous = false;
-    setAssets((current) =>
-      current.map((asset) => {
-        if (asset.id !== assetId) return asset;
-        previous = asset.favorited;
-        return { ...asset, favorited };
-      }),
-    );
-
+    const previous = assets.find((asset) => asset.id === assetId)?.favorited ?? false;
+    setAssets((current) => current.map((asset) => asset.id === assetId ? { ...asset, favorited } : asset));
     try {
       const response = await fetch(`/api/audio-assets/${assetId}/favorite`, {
         method: favorited ? "PUT" : "DELETE",
       });
       if (!response.ok) throw new Error("Couldn't update Saved tracks.");
     } catch (error) {
-      setAssets((current) =>
-        current.map((asset) =>
-          asset.id === assetId ? { ...asset, favorited: previous } : asset,
-        ),
-      );
+      setAssets((current) => current.map((asset) => asset.id === assetId ? { ...asset, favorited: previous } : asset));
       throw error;
     }
-  }, []);
+  }, [assets]);
 
-  return { assets, moodTags, loading, error, setFavorite };
+  return { assets, moodTags, loading, error, retry, hasMore: nextOffset !== null, loadingMore, loadMoreError, loadMore, setFavorite };
+}
+
+/** Each user action refreshes the short-lived URL through the existing endpoint. */
+export async function resolveAudioPlaybackUrl(assetId: string): Promise<string> {
+  const response = await fetch(`/api/audio-assets/${assetId}/playback-url`);
+  if (!response.ok) throw new Error("Couldn't load this audio. Please try again.");
+  const source = await response.json() as { url: string };
+  return source.url;
 }
 
 export interface PreviewPlayer {
@@ -98,6 +133,7 @@ export interface PreviewPlayer {
   audioRef: RefObject<HTMLAudioElement | null>;
   /** The row currently loaded in the shared player, even when paused. */
   activeId: string | null;
+  activeAsset: AudioAssetListRow | null;
   isPlaying: boolean;
   loadingId: string | null;
   currentTime: number;
@@ -105,7 +141,7 @@ export interface PreviewPlayer {
   /** Click handler for a row's play/pause button: starts this row (pausing
    *  whatever was previously playing since there's only one shared element),
    *  or pauses it if it's already the active row. */
-  toggle: (id: string, url: string) => void;
+  toggle: (asset: AudioAssetListRow) => void;
   seek: (seconds: number) => void;
 }
 
@@ -119,7 +155,9 @@ export interface PreviewPlayer {
 export function usePreviewPlayer(): PreviewPlayer {
   const audioRef = useRef<HTMLAudioElement>(null);
   const activeIdRef = useRef<string | null>(null);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const playbackRequest = useRef(0);
+  const [activeAsset, setActiveAsset] = useState<AudioAssetListRow | null>(null);
+  const activeId = activeAsset?.id ?? null;
   const [isPlaying, setIsPlaying] = useState(false);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
@@ -153,6 +191,7 @@ export function usePreviewPlayer(): PreviewPlayer {
     audio.addEventListener("waiting", handleWaiting);
     audio.addEventListener("error", handleError);
     return () => {
+      playbackRequest.current++;
       audio.removeEventListener("timeupdate", syncTime);
       audio.removeEventListener("loadedmetadata", syncDuration);
       audio.removeEventListener("durationchange", syncDuration);
@@ -164,35 +203,37 @@ export function usePreviewPlayer(): PreviewPlayer {
     };
   }, []);
 
-  const toggle = useCallback((id: string, url: string) => {
+  const toggle = useCallback(async (asset: AudioAssetListRow) => {
+    const { id } = asset;
     const audio = audioRef.current;
     if (!audio) return;
-    if (activeIdRef.current === id) {
-      if (audio.paused) {
-        setLoadingId(id);
-        void audio.play().catch(() => {
-          setIsPlaying(false);
-          setLoadingId(null);
-        });
-      } else {
-        audio.pause();
-      }
+    const request = ++playbackRequest.current;
+    if (activeIdRef.current === id && !audio.paused) {
+      audio.pause();
+      setLoadingId(null);
       return;
     }
+    const resumeAt = activeIdRef.current === id ? audio.currentTime : 0;
+    audio.pause();
     activeIdRef.current = id;
-    setActiveId(id);
-    setCurrentTime(0);
+    setActiveAsset(asset);
+    setIsPlaying(false);
+    setCurrentTime(resumeAt);
     setDuration(0);
     setLoadingId(id);
-    if (audio.src !== url) {
+    try {
+      const url = await resolveAudioPlaybackUrl(id);
+      if (request !== playbackRequest.current) return;
       audio.src = url;
       audio.load();
-    }
-    audio.currentTime = 0;
-    void audio.play().catch(() => {
+      audio.currentTime = resumeAt;
+      await audio.play();
+    } catch {
+      if (request !== playbackRequest.current) return;
       setIsPlaying(false);
       setLoadingId(null);
-    });
+      toaster.create({ type: "error", title: "Couldn't preview this audio", description: "Please try again." });
+    }
   }, []);
 
   const seek = useCallback((seconds: number) => {
@@ -203,5 +244,5 @@ export function usePreviewPlayer(): PreviewPlayer {
     setCurrentTime(next);
   }, []);
 
-  return { audioRef, activeId, isPlaying, loadingId, currentTime, duration, toggle, seek };
+  return { audioRef, activeId, activeAsset, isPlaying, loadingId, currentTime, duration, toggle, seek };
 }

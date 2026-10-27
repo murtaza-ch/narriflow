@@ -9,17 +9,22 @@
  * short-lived presigned download URL rather than a public bucket.
  */
 import { randomUUID } from "node:crypto";
-import type { AudioAsset } from "@prisma/client";
+import { Prisma, type AudioAsset } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
+  AUDIO_UPLOAD_MAX_BYTES,
+  audioUploadContentTypeSchema,
   finalizeAudioUploadSchema,
+  listAudioAssetsQuerySchema,
   presignAudioUploadSchema,
   type AudioAssetKindInput,
   type FinalizeAudioUploadInput,
+  type ListAudioAssetsQuery,
   type PresignAudioUploadInput,
 } from "@narriflow/validators";
 import {
   deleteObject,
+  headObject,
   isR2Configured,
   presignDownloadUrl,
   presignSingleUploadUrl,
@@ -39,6 +44,10 @@ function log(
 }
 
 const audioAssetFailureCatalog = {
+	audio_asset_object_missing: "missing",
+  audio_asset_size_invalid: "unprocessable",
+  audio_asset_size_mismatch: "unprocessable",
+  audio_asset_mime_invalid: "unprocessable",
 	audio_asset_key_forbidden: "forbidden",
   audio_asset_not_found: "missing",
   audio_asset_presign_failed: "unavailable",
@@ -92,7 +101,6 @@ export interface AudioAssetListRow {
   title: string;
   moodTags: string[];
   durationSec: number;
-  playbackUrl: string;
   favorited: boolean;
 }
 
@@ -137,7 +145,7 @@ function requirePrisma() {
   return prisma;
 }
 
-async function toListRow(row: AudioAsset, favorited = false): Promise<AudioAssetListRow> {
+function toListRow(row: AudioAsset, favorited = false): AudioAssetListRow {
   return {
     id: row.id,
     kind: row.kind as AudioAssetKindInput,
@@ -145,7 +153,6 @@ async function toListRow(row: AudioAsset, favorited = false): Promise<AudioAsset
     title: row.title,
     moodTags: row.moodTags,
     durationSec: row.durationSec,
-    playbackUrl: await presignDownloadUrl({ key: row.storageKey }),
     favorited,
   };
 }
@@ -153,59 +160,66 @@ async function toListRow(row: AudioAsset, favorited = false): Promise<AudioAsset
 export class AudioAssetService {
   private requirePrisma = requirePrisma;
 
-  /**
-   * Curated rows (userId null) first, then the caller's own non-deleted
-   * uploads, each ordered title-then-createdAt within its group — mirrors
-   * `brandTemplateService.list`'s builtIns-then-mine shape. `mood` filters
-   * case-insensitively by substring against `moodTags`; this is done in
-   * application code rather than a Postgres array predicate because the
-   * curated library is small (~120-200 rows for music, tens for SFX per the
-   * plan) and Prisma's array filters (`has`/`hasSome`) are exact-match only,
-   * not case-insensitive contains.
-   *
-   * L2: the mood filter applies ONLY to curated rows — a user's own uploads
-   * have no `moodTags` (there's no UI to set them), so filtering `mine` by
-   * mood too would silently hide every upload the moment the user picked
-   * any mood filter at all, rather than just narrowing the curated library
-   * as intended.
-   */
+  constructor(private readonly storage = { headObject, presignDownloadUrl, presignSingleUploadUrl, isR2Configured, deleteObject }) {}
+
+  /** Bounded metadata pages. Only playback/render resolution signs access URLs. */
   async listAssets(
     userId: string,
-    query: { kind: AudioAssetKindInput; mood?: string },
+    query: Pick<ListAudioAssetsQuery, "kind"> & Partial<Omit<ListAudioAssetsQuery, "kind">>,
     context?: AudioWorkspaceContext,
-  ): Promise<{ assets: AudioAssetListRow[]; moodTags: string[] }> {
+  ): Promise<{ assets: AudioAssetListRow[]; moodTags: string[]; nextOffset: number | null }> {
+    const parsed = listAudioAssetsQuerySchema.parse(query);
     const prisma = this.requirePrisma();
-    const [curated, mine, favorites] = await Promise.all([
-      prisma.audioAsset.findMany({
-        where: { kind: query.kind, userId: null },
-        orderBy: { title: "asc" },
-      }),
-      prisma.audioAsset.findMany({
-        where: { kind: query.kind, ...(context ? { workspaceId: context.workspaceId } : { userId }), deletedAt: null },
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.audioAssetFavorite.findMany({
-        where: context ? { workspaceId: context.workspaceId } : { userId },
-        select: { assetId: true },
-      }),
+    const owner = context
+      ? Prisma.sql`asset."workspaceId" = ${context.workspaceId}::uuid`
+      : Prisma.sql`asset."userId" = ${userId}::uuid`;
+    const favoriteOwner = context
+      ? Prisma.sql`favorite."workspaceId" = ${context.workspaceId}::uuid`
+      : Prisma.sql`favorite."userId" = ${userId}::uuid`;
+    const favorite = Prisma.sql`EXISTS (
+      SELECT 1 FROM "AudioAssetFavorite" favorite
+      WHERE favorite."assetId" = asset.id AND ${favoriteOwner}
+    )`;
+    const scope = parsed.scope === "user"
+      ? owner
+      : Prisma.sql`(asset."userId" IS NULL OR ${owner})`;
+    const mood = parsed.mood
+      ? Prisma.sql`AND (asset."userId" IS NOT NULL OR EXISTS (
+          SELECT 1 FROM unnest(asset."moodTags") tag
+          WHERE strpos(lower(tag), lower(${parsed.mood})) > 0
+        ))`
+      : Prisma.empty;
+    const search = parsed.search
+      ? Prisma.sql`AND strpos(lower(concat_ws(' ', asset.title, array_to_string(asset."moodTags", ' '))), lower(${parsed.search})) > 0`
+      : Prisma.empty;
+    const [rows, tags] = await Promise.all([
+      prisma.$queryRaw<(AudioAsset & { favorited: boolean })[]>(Prisma.sql`
+        SELECT asset.*, ${favorite} AS favorited
+        FROM "AudioAsset" asset
+        WHERE asset.kind = ${parsed.kind}::"AudioAssetKind"
+          AND asset."deletedAt" IS NULL
+          AND ${scope}
+          ${mood} ${search}
+          ${parsed.favorited === undefined ? Prisma.empty : Prisma.sql`AND ${favorite} = ${parsed.favorited}`}
+        ORDER BY (asset."userId" IS NOT NULL) ASC,
+          CASE WHEN asset."userId" IS NULL THEN asset.title END ASC,
+          CASE WHEN asset."userId" IS NOT NULL THEN asset."createdAt" END DESC,
+          asset.id ASC
+        LIMIT ${parsed.limit + 1} OFFSET ${parsed.offset}
+      `),
+      // Aggregate facets in PostgreSQL rather than reading every catalog row.
+      prisma.$queryRaw<{ tag: string }[]>(Prisma.sql`
+        SELECT DISTINCT unnest("moodTags") AS tag FROM "AudioAsset"
+        WHERE kind = ${parsed.kind}::"AudioAssetKind" AND "userId" IS NULL AND "deletedAt" IS NULL
+        ORDER BY tag
+      `),
     ]);
-
-    const moodTags = Array.from(
-      new Set(curated.flatMap((row) => row.moodTags)),
-    ).sort((a, b) => a.localeCompare(b));
-
-    const needle = query.mood?.trim().toLowerCase();
-    const matchesMood = (row: AudioAsset) =>
-      !needle ||
-      row.moodTags.some((tag) => tag.toLowerCase().includes(needle));
-
-    const filtered = [...curated.filter(matchesMood), ...mine];
-    const favoriteIds = new Set(favorites.map((favorite) => favorite.assetId));
-    const assets = await Promise.all(
-      filtered.map((row) => toListRow(row, favoriteIds.has(row.id))),
-    );
-
-    return { assets, moodTags };
+    const assets = rows.slice(0, parsed.limit).map((row) => toListRow(row, row.favorited));
+    return {
+      assets,
+      moodTags: tags.map(({ tag }) => tag),
+      nextOffset: rows.length > parsed.limit ? parsed.offset + assets.length : null,
+    };
   }
 
   async presignUpload(
@@ -214,7 +228,7 @@ export class AudioAssetService {
     context?: AudioWorkspaceContext,
   ): Promise<{ key: string; uploadUrl: string; contentType: string }> {
     const parsed = presignAudioUploadSchema.parse(input);
-    if (!isR2Configured()) {
+    if (!this.storage.isR2Configured()) {
       throw new AudioAssetError(
         "audio_asset_storage_unavailable",
         "Audio asset storage is temporarily unavailable",
@@ -223,7 +237,7 @@ export class AudioAssetService {
 
     const ext = extensionForAudioContentType(parsed.contentType);
     const key = `${context ? workspaceAudioAssetUploadPrefix(context.workspaceId) : audioAssetUploadPrefix(userId)}${randomUUID()}.${ext}`;
-    const uploadUrl = await presignSingleUploadUrl({
+    const uploadUrl = await this.storage.presignSingleUploadUrl({
       key,
       contentType: parsed.contentType,
     });
@@ -247,6 +261,32 @@ export class AudioAssetService {
     }
 
     const prisma = this.requirePrisma();
+    const replayWhere = {
+      storageKey: parsed.key,
+      deletedAt: null,
+      ...(context ? { workspaceId: context.workspaceId } : { userId }),
+    };
+    const existing = await prisma.audioAsset.findFirst({ where: replayWhere });
+    if (existing) return toListRow(existing);
+    let object;
+    try {
+      object = await this.storage.headObject(parsed.key);
+    } catch (error) {
+      const failure = error as { name?: string; $metadata?: { httpStatusCode?: number } } | null;
+      if (failure?.name === "NotFound" || failure?.name === "NoSuchKey" || failure?.$metadata?.httpStatusCode === 404) {
+        throw new AudioAssetError("audio_asset_object_missing", "The uploaded audio object was not found");
+      }
+      throw new AudioAssetError("audio_asset_storage_unavailable", "Audio asset storage is temporarily unavailable");
+    }
+    if (object.sizeBytes === null || !Number.isSafeInteger(object.sizeBytes) || object.sizeBytes <= 0 || object.sizeBytes > AUDIO_UPLOAD_MAX_BYTES) {
+      throw new AudioAssetError("audio_asset_size_invalid", "The uploaded audio must be between 1 byte and 50MB");
+    }
+    if (parsed.sizeBytes !== undefined && object.sizeBytes !== parsed.sizeBytes) {
+      throw new AudioAssetError("audio_asset_size_mismatch", "The uploaded audio size does not match the declared size");
+    }
+    if (!audioUploadContentTypeSchema.safeParse(object.contentType).success) {
+      throw new AudioAssetError("audio_asset_mime_invalid", "The uploaded object must be MP3, WAV, or M4A audio");
+    }
     const created = await prisma.audioAsset.create({
       data: {
         kind: parsed.kind,
@@ -257,8 +297,12 @@ export class AudioAssetService {
         title: parsed.title,
         durationSec: parsed.durationSec,
       },
-    }).catch((error) => {
-      if (isUniqueConstraintError(error)) throw new AudioAssetDuplicateError();
+    }).catch(async (error) => {
+      if (isUniqueConstraintError(error)) {
+        const replay = await prisma.audioAsset.findFirst({ where: replayWhere });
+        if (replay) return replay;
+        throw new AudioAssetDuplicateError();
+      }
       throw error;
     });
     return toListRow(created);
@@ -322,7 +366,7 @@ export class AudioAssetService {
     });
     if (!row) return null;
     return {
-      url: await presignDownloadUrl({ key: row.storageKey }),
+      url: await this.storage.presignDownloadUrl({ key: row.storageKey }),
       durationSec: row.durationSec,
     };
   }
@@ -350,7 +394,7 @@ export class AudioAssetService {
     });
 
     try {
-      await deleteObject(existing.storageKey);
+      await this.storage.deleteObject(existing.storageKey);
     } catch (error) {
       log("error", "audio_asset_r2_delete_failed", {
         assetId,
@@ -394,7 +438,7 @@ export class AudioAssetService {
     if (!row) return null;
     try {
       return {
-        url: await presignDownloadUrl({ key: row.storageKey }),
+        url: await this.storage.presignDownloadUrl({ key: row.storageKey }),
         title: row.title,
         durationSec: row.durationSec,
       };

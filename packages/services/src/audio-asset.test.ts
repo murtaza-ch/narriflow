@@ -1,14 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { finalizeAudioUploadSchema, listAudioAssetsQuerySchema } from "@narriflow/validators";
 import {
   audioAssetUploadPrefix,
   extensionForAudioContentType,
   isOwnedAudioUploadKey,
 } from "./audio-asset.service";
 
-// Pure helpers behind AudioAssetService (Music/SFX library, vizard-parity
-// Phase C). No DB-backed harness exists for this package (see
-// billing-features.test.ts's precedent) — everything that needs Prisma is
-// exercised indirectly through these extracted, unit-testable pieces.
+// Service behavior against PostgreSQL lives in audio-asset.db.test.ts.
 
 describe("audioAssetUploadPrefix / isOwnedAudioUploadKey", () => {
   test("a key under the caller's own prefix is owned", () => {
@@ -62,5 +60,23 @@ describe("extensionForAudioContentType", () => {
     expect(extensionForAudioContentType("application/octet-stream")).toBe(
       "bin",
     );
+  });
+});
+
+describe("audio request validation", () => {
+  test("coerces bounded pages and explicit favorite filters from query strings", () => {
+    expect(listAudioAssetsQuerySchema.parse({ kind: "music", limit: "10", offset: "20", favorited: "false", search: " calm " })).toEqual({
+      kind: "music", scope: "all", limit: 10, offset: 20, favorited: false, search: "calm",
+    });
+  });
+
+  test.each([{ limit: 0 }, { limit: 101 }, { offset: -1 }, { offset: "invalid" }, { limit: 1.5 }, { favorited: "invalid" }, { search: "x".repeat(121) }])("rejects invalid list input %j", (query) => {
+    expect(listAudioAssetsQuerySchema.safeParse({ kind: "music", ...query }).success).toBe(false);
+  });
+
+  test("accepts an optional declared upload size and rejects sizes outside the bound", () => {
+    const input = { key: "audio-assets/user/track.mp3", kind: "music", title: "Track", sizeBytes: 128 };
+    expect(finalizeAudioUploadSchema.parse(input).sizeBytes).toBe(128);
+    expect(finalizeAudioUploadSchema.safeParse({ ...input, sizeBytes: 0 }).success).toBe(false);
   });
 });

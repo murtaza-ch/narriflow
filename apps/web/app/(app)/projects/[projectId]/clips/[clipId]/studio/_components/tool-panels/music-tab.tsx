@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Image, Input, Slider, Stack, Text } from "@chakra-ui/react";
 import { chipProps, softFieldProps, studioSliderCss, softFocusWithin } from "./panel-ui";
 import {
@@ -23,6 +23,7 @@ import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
 import {
   useAudioAssetList,
+  resolveAudioPlaybackUrl,
   type AudioAssetListRow,
   type PreviewPlayer,
 } from "./audio-library";
@@ -111,7 +112,7 @@ function TrackRow({
             bg="blackAlpha.400"
             cursor="pointer"
             _hover={{ bg: "blackAlpha.600" }}
-            onClick={() => player.toggle(asset.id, asset.playbackUrl)}
+            onClick={() => player.toggle(asset)}
           >
             {loading ? (
               <Box animation="spin">
@@ -204,17 +205,21 @@ function TrackRow({
 export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   const { studioEdits, setStudioEdits, endCoalesce } = useStudio("studioEdits", "setStudioEdits", "endCoalesce");
   const music = studioEdits.music;
-  const { assets, moodTags, loading, error, setFavorite } = useAudioAssetList(
-    "music",
-    null,
-    reloadKey,
-  );
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
+  const { assets, moodTags, loading, error, retry, setFavorite, hasMore, loadingMore, loadMoreError, loadMore } = useAudioAssetList(
+    "music",
+    category === "all" || category === "saved" ? null : category,
+    reloadKey,
+    { search, favorited: category === "saved" ? true : undefined },
+  );
   const [showMix, setShowMix] = useState(Boolean(music.url));
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [urlDraft, setUrlDraft] = useState(music.url ?? "");
   const [titleDraft, setTitleDraft] = useState(music.title ?? "");
+  const applyRequest = useRef(0);
+
+  useEffect(() => () => { applyRequest.current++; }, []);
 
   useEffect(() => {
     setUrlDraft(music.url ?? "");
@@ -222,8 +227,10 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   }, [music]);
 
   const visibleAssets = useMemo(() => {
-    return filterAudioAssets(assets, { category, search, activeId: player.activeId });
-  }, [assets, category, player.activeId, search]);
+    const active = player.activeAsset;
+    const rows = active?.kind === "music" && !assets.some((asset) => asset.id === active.id) ? [...assets, active] : assets;
+    return filterAudioAssets(rows, { category, search, activeId: player.activeId });
+  }, [assets, category, player.activeId, player.activeAsset, search]);
 
   const selectedAssetDurationSec = assets.find((asset) => asset.id === music.assetId)?.durationSec;
   const startOffsetMaxSec =
@@ -234,12 +241,21 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   const updateMusic = (patch: Partial<typeof music>, coalesceKey?: string) =>
     setStudioEdits((prev) => ({ ...prev, music: { ...prev.music, ...patch } }), coalesceKey);
 
-  const applyTrack = (asset: AudioAssetListRow) => {
-    updateMusic({ assetId: asset.id, title: asset.title, url: asset.playbackUrl });
-    setShowMix(true);
+  const applyTrack = async (asset: AudioAssetListRow) => {
+    const request = ++applyRequest.current;
+    try {
+      const url = await resolveAudioPlaybackUrl(asset.id);
+      if (request !== applyRequest.current) return;
+      updateMusic({ assetId: asset.id, title: asset.title, url });
+      setShowMix(true);
+    } catch {
+      if (request !== applyRequest.current) return;
+      toaster.create({ type: "error", title: "Couldn't apply this track", description: "Please try again." });
+    }
   };
 
   const clearMusic = () => {
+    applyRequest.current++;
     setUrlDraft("");
     setTitleDraft("");
     setShowLinkInput(false);
@@ -247,6 +263,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   };
 
   const applyLink = () => {
+    applyRequest.current++;
     const trimmedUrl = urlDraft.trim();
     updateMusic({ assetId: null, url: trimmedUrl || null, title: titleDraft.trim() || null });
     if (trimmedUrl) setShowMix(true);
@@ -278,6 +295,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
           <Input
             aria-label="Search music"
             placeholder="Search music…"
+            maxLength={120}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             p="0"
@@ -290,7 +308,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
             _placeholder={{ color: "studio.fgSubtle" }}
           />
           {search ? (
-            <Flex as="button" aria-label="Clear music search" onClick={() => setSearch("")}>
+            <Flex as="button" aria-label="Clear music search" minW="24px" minH="24px" align="center" justify="center" onClick={() => setSearch("")}>
               <X size={12} />
             </Flex>
           ) : null}
@@ -331,9 +349,12 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               <Text fontSize="13px">Loading music…</Text>
             </Flex>
           ) : error ? (
-            <Text fontSize="11px" color="studio.danger" py="14px" textAlign="center">
-              {error}
-            </Text>
+            <Stack align="center" gap="6px" py="14px" role="alert">
+              <Text fontSize="12px" color="studio.danger" textAlign="center">{error}</Text>
+              <Flex as="button" minH="24px" px="8px" align="center" color="studio.fg" fontSize="13px" onClick={retry}>
+                Retry
+              </Flex>
+            </Stack>
           ) : visibleAssets.length === 0 ? (
             <Stack align="center" gap="8px" py="28px" px="12px" textAlign="center">
               <Music size={20} />
@@ -347,6 +368,8 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               {!search && category !== "saved" ? (
                 <Flex
                   as="button"
+                  minH="24px"
+                  minW="24px"
                   align="center"
                   gap="5px"
                   color="studio.fg"
@@ -366,11 +389,21 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
                 asset={asset}
                 player={player}
                 selected={music.assetId === asset.id}
-                onUse={() => applyTrack(asset)}
+                onUse={() => void applyTrack(asset)}
                 onFavorite={() => void toggleFavorite(asset)}
               />
             ))
           )}
+          {loadMoreError ? (
+            <Stack align="center" gap="6px" role="alert">
+              <Text fontSize="12px" color="studio.danger">{loadMoreError}</Text>
+              <Flex as="button" minH="24px" minW="24px" px="8px" align="center" fontSize="13px" onClick={loadMore}>Retry</Flex>
+            </Stack>
+          ) : hasMore ? (
+            <Flex as="button" minH="32px" minW="24px" align="center" justify="center" fontSize="13px" aria-disabled={loadingMore} onClick={loadingMore ? undefined : loadMore}>
+              {loadingMore ? "Loading…" : "Load more"}
+            </Flex>
+          ) : null}
         </Stack>
       </Box>
 
