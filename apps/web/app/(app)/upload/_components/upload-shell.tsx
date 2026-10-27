@@ -178,7 +178,7 @@ export function UploadShell({
   sourcePickers,
 }: UploadShellProps) {
   const router = useRouter();
-  const uploadAdapter = useMemo(
+  const createUploadAdapter = useCallback(
     () =>
       createUploadSessionBrowserAdapter({
         storage: safelyGetUploadResumeStorage(() => window.localStorage),
@@ -189,12 +189,21 @@ export function UploadShell({
       }),
     [router],
   );
+  // A disposed adapter ignores every later call, so the effect that disposes
+  // an adapter must also be the one that created it. A memoized adapter
+  // disposed by an effect cleanup survives React's remounts (Strict Mode, Fast
+  // Refresh) and then silently drops every upload.
+  const [uploadAdapter, setUploadAdapter] = useState(createUploadAdapter);
+  useEffect(() => {
+    const adapter = createUploadAdapter();
+    setUploadAdapter(adapter);
+    return () => adapter.dispose();
+  }, [createUploadAdapter]);
   const uploadSnapshot = useSyncExternalStore(
     uploadAdapter.subscribe,
     uploadAdapter.snapshot,
     uploadAdapter.snapshot,
   );
-  useEffect(() => () => uploadAdapter.dispose(), [uploadAdapter]);
   const confirmUploadUnload = uploadAdapter.shouldConfirmUnload();
 
   // A recognized ?url= commits straight to a chosen source; anything else pre-fills the paste field.
@@ -1025,6 +1034,15 @@ export function UploadShell({
           sourceLabel={sourceKindLabel}
           mode={mode}
           canContinue={Boolean(hasSource) && Boolean(title.trim())}
+          blockedReason={
+            !hasSource
+              ? activeTab === "rss"
+                ? "Choose an episode to continue."
+                : null
+              : !title.trim()
+                ? "Name the project to continue."
+                : null
+          }
           locked={busy || uploadSourceLocked}
           onChangeSource={handleChangeSource}
           sourcePreview={
