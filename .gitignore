@@ -16,3 +16,11 @@ apps/worker/.venv/
 apps/worker/models/
 .codex-audit
 .vercel
+
+# local agent and browser output
+/.playwright-mcp/
+/artifacts/
+/.claude/worktrees/
+/.claude/settings.local.json
+.scratch/research/*.html
+.scratch/research/*.jpg
