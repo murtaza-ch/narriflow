@@ -248,6 +248,30 @@ function getResponseMessage(
   return fallback;
 }
 
+// AssemblyAI pauses an account whose balance runs out and says so in the error
+// text (documented: HTTP 400, "Your current account balance is negative.
+// Please top up to continue using the API."). Retrying can't help until the
+// account is topped up, so it fails at once with its own code.
+const ASSEMBLYAI_BALANCE_MESSAGE = /balance is negative|top up|insufficient (funds|balance|credits?)|out of credits/i;
+
+export function assemblyAiFailure(
+  fallbackCode: string,
+  status: number | null,
+  payload: unknown,
+  fallbackMessage: string,
+): WorkflowFailure {
+  const message = getResponseMessage(payload, fallbackMessage);
+  if (ASSEMBLYAI_BALANCE_MESSAGE.test(message)) {
+    log("error", "assemblyai_quota_exhausted", { status, message });
+    return new WorkflowWorkerError("assemblyai_quota_exhausted", message, "permanent");
+  }
+  return new WorkflowWorkerError(
+    fallbackCode,
+    message,
+    status === null ? "retryable" : workflowHttpFailureDisposition(status),
+  );
+}
+
 async function uploadAssemblyAiAudio(audioPath: string, apiKey: string) {
   let response: Response;
   try {
@@ -284,13 +308,11 @@ async function uploadAssemblyAiAudio(audioPath: string, apiKey: string) {
   const payload = await parseJsonResponse(response);
 
   if (!response.ok || !payload || typeof payload !== "object") {
-    throw new WorkflowWorkerError(
+    throw assemblyAiFailure(
       "assemblyai_upload_failed",
-      getResponseMessage(
-        payload,
-        `AssemblyAI upload failed with status ${response.status}`,
-      ),
-      workflowHttpFailureDisposition(response.status),
+      response.status,
+      payload,
+      `AssemblyAI upload failed with status ${response.status}`,
     );
   }
 
@@ -356,13 +378,11 @@ async function submitAssemblyAiTranscript(
   const payload = await parseJsonResponse(response);
 
   if (!response.ok || !payload || typeof payload !== "object") {
-    throw new WorkflowWorkerError(
+    throw assemblyAiFailure(
       "assemblyai_transcription_submit_failed",
-      getResponseMessage(
-        payload,
-        `AssemblyAI transcription submit failed with status ${response.status}`,
-      ),
-      workflowHttpFailureDisposition(response.status),
+      response.status,
+      payload,
+      `AssemblyAI transcription submit failed with status ${response.status}`,
     );
   }
 
@@ -803,10 +823,7 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
         await settleTranscriptRunFailure(
           run,
           attempt,
-          new WorkflowWorkerError(
-            "assemblyai_transcription_failed",
-            getResponseMessage(payload, "AssemblyAI transcription failed"),
-          ),
+          assemblyAiFailure("assemblyai_transcription_failed", null, payload, "AssemblyAI transcription failed"),
         );
         settled += 1;
         return;

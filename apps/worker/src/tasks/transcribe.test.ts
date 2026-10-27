@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { projectService, type ClaimedWorkflowAttempt, type CompleteTranscriptInput } from "@narriflow/services";
 import { parseSuppliedCaptions } from "@narriflow/validators";
-import { getAssemblyAiTranscript, processTranscriptRun } from "./transcribe";
+import { assemblyAiFailure, getAssemblyAiTranscript, processTranscriptRun } from "./transcribe";
 
 const mocks: Array<{ mockRestore(): void }> = [];
 afterEach(() => { for (const mock of mocks.splice(0)) mock.mockRestore(); });
@@ -78,5 +78,35 @@ describe("transcription without speech-to-text", () => {
     expect(h.fetched).not.toHaveBeenCalled();
     expect(h.complete).toHaveBeenCalledTimes(1);
     expect(h.complete.mock.calls[0]![1]).toMatchObject({ provider: "none", utterances: [], text: "", speakerCount: 0, durationSeconds: 8, rawStorageKey: null });
+  });
+});
+
+describe("assemblyAiFailure", () => {
+  test("an out-of-credits account fails at once with its own code", () => {
+    const negative = { error: "Your current account balance is negative. Please top up to continue using the API." };
+    for (const [code, status] of [
+      ["assemblyai_transcription_submit_failed", 400],
+      ["assemblyai_upload_failed", 429],
+      ["assemblyai_transcription_failed", null],
+    ] as const) {
+      const failure = assemblyAiFailure(code, status, negative, "fallback");
+      expect(failure.code).toBe("assemblyai_quota_exhausted");
+      expect(failure.disposition).toBe("permanent");
+    }
+  });
+
+  test("other provider errors keep their code and HTTP-based disposition", () => {
+    expect(assemblyAiFailure("assemblyai_transcription_submit_failed", 503, { error: "Service unavailable" }, "x")).toMatchObject({
+      code: "assemblyai_transcription_submit_failed",
+      disposition: "retryable",
+    });
+    expect(assemblyAiFailure("assemblyai_transcription_submit_failed", 400, { error: "Invalid audio_url" }, "x")).toMatchObject({
+      code: "assemblyai_transcription_submit_failed",
+      disposition: "permanent",
+    });
+    expect(assemblyAiFailure("assemblyai_transcription_failed", null, { error: "File does not appear to contain audio." }, "x")).toMatchObject({
+      code: "assemblyai_transcription_failed",
+      disposition: "retryable",
+    });
   });
 });

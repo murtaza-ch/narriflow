@@ -187,6 +187,8 @@ export interface ProcessingPanelProps {
     defaultCaptionPreset: CaptionPresetId;
   };
   defaultSourceLanguageCode: string | null;
+  /** Role and workspace status allow retries and preferences; otherwise progress is read-only. */
+  canEdit: boolean;
 }
 
 /**
@@ -265,6 +267,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
         ? "detect"
         : null;
 
+  const stopped = isIngestFailed || noClipsDetected || genericFailureStage !== null;
   return (
     <Stack
       gap="6"
@@ -289,14 +292,22 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
             </Text>
           )}
         </Stack>
-        <Text fontSize="sm" color="fg.muted" maxW="42ch">
-          You can safely leave this page — progress continues in the
-          background.
-        </Text>
-        <NotifyToggle
-          projectId={props.projectId}
-          initialNotifyOnComplete={props.notifyOnComplete}
-        />
+        {/* Once a step has stopped, nothing continues in the background; the
+            recovery below is the next step. */}
+        {stopped ? null : (
+          <>
+            <Text fontSize="sm" color="fg.muted" maxW="42ch">
+              You can safely leave this page — progress continues in the
+              background.
+            </Text>
+            {props.canEdit ? (
+              <NotifyToggle
+                projectId={props.projectId}
+                initialNotifyOnComplete={props.notifyOnComplete}
+              />
+            ) : null}
+          </>
+        )}
       </Stack>
 
       <Box layerStyle="band">
@@ -317,7 +328,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
               <AlertTriangle size={14} aria-hidden />
               <Text fontSize="sm">{userErrorMessage(props.ingestErrorCode)}</Text>
             </Flex>
-            {ingestRecoveryAction(props.ingestErrorCode, props.ingestFromDrivePicker) === "new_upload" ? (
+            {!props.canEdit ? null : ingestRecoveryAction(props.ingestErrorCode, props.ingestFromDrivePicker) === "new_upload" ? (
               <Button asChild size="sm" variant="subtle" alignSelf="flex-start">
                 <Link href="/upload">
                   {ingestRecoveryLabel(props.ingestFromDrivePicker)}
@@ -368,7 +379,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
                 )}
               </Text>
             </Flex>
-            {genericFailureStage === "transcribe" ? (
+            {!props.canEdit ? null : genericFailureStage === "transcribe" ? (
               <AuthenticatedActionForm action={queueTranscriptionFormAction}>
                 <input type="hidden" name="projectId" value={props.projectId} />
                 <input type="hidden" name="idempotencyKey" value={transcribeRetryKey} />
@@ -423,6 +434,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
               adjusting the processing window or moment prompt, then re-run.
             </Text>
           </Stack>
+          {props.canEdit ? (
           <AuthenticatedActionForm action={regenerateClipsFormAction}>
             <input type="hidden" name="projectId" value={props.projectId} />
             <input
@@ -443,6 +455,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
               />
             </Flex>
           </AuthenticatedActionForm>
+          ) : null}
         </Flex>
       )}
     </Stack>

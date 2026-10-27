@@ -24,6 +24,7 @@ describe("isAutoRetryableFailureCode", () => {
     expect(isAutoRetryableFailureCode("assemblyai_api_key_missing")).toBe(false); // auth failure
     expect(isAutoRetryableFailureCode("openai_api_key_missing")).toBe(false); // auth failure
     expect(isAutoRetryableFailureCode("openai_quota_exhausted")).toBe(false); // provider billing
+    expect(isAutoRetryableFailureCode("assemblyai_quota_exhausted")).toBe(false); // provider billing
     expect(isAutoRetryableFailureCode("credits_exhausted")).toBe(false);
     expect(isAutoRetryableFailureCode("credits_reservation_released")).toBe(false);
     expect(isAutoRetryableFailureCode("link_download_missing_file")).toBe(false); // file not found

@@ -17,11 +17,16 @@ describe("userErrorMessage", () => {
     expect(userErrorMessage("credits_reservation_released")).toContain("Retry the import");
   });
 
-  test("explains how to recover from exhausted OpenAI credits", () => {
-    const message = userErrorMessage("openai_quota_exhausted");
-    expect(message).toBe(USER_ERROR_MESSAGES.openai_quota_exhausted);
-    expect(message).toContain("no credits");
-    expect(message).toContain("then retry detection");
+  test("exhausted provider credits read as our outage, with the retry step", () => {
+    const detection = userErrorMessage("openai_quota_exhausted");
+    expect(detection).toBe(USER_ERROR_MESSAGES.openai_quota_exhausted);
+    expect(detection).toContain("on our side");
+    expect(detection).toContain("Retry detection");
+    const transcription = userErrorMessage("assemblyai_quota_exhausted");
+    expect(transcription).toContain("on our side");
+    expect(transcription).toContain("Retry transcription");
+    // The customer can't top up our provider accounts.
+    expect(`${detection} ${transcription}`).not.toMatch(/OpenAI|AssemblyAI|add credits/i);
   });
 
   test("explains recovery from missing or invalid generation settings", () => {

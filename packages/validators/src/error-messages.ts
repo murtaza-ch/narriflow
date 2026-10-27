@@ -106,9 +106,9 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	rss_missing_enclosure:
 		"That RSS episode doesn't have a downloadable audio file. Choose a different episode.",
 	upload_too_long:
-		"This video is longer than your plan allows per video. Upload a shorter video, or check Billing for plans that allow longer ones.",
+		"This video is longer than your plan allows per video. Choose a shorter video; Billing lists each plan's per-video limit.",
 	credits_exhausted:
-		"This video needs more credits than your workspace has left this month. Credits renew on the 1st (UTC); check Billing for plans with more credits, then retry the import.",
+		"This video needs more credits than your workspace has left this month. Credits renew on the 1st (UTC), then retry the import; Billing lists each plan's monthly credits.",
 	credits_reservation_released:
 		"This video's credit reservation was released before processing started. Retry the import to reserve credits again.",
 	workspace_processing_capacity_reached:
@@ -121,6 +121,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
 	assemblyai_transcription_failed:
 		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
+	assemblyai_quota_exhausted:
+		"Transcription is temporarily unavailable on our side. Retry transcription in a little while.",
 	moment_detection_failed:
 		"Clip detection didn't complete. Please retry generation.",
 	clip_detection_run_failed:
@@ -304,8 +306,10 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	// suite, which previously fell through to the generic message.
 	openai_not_configured:
 		"AI features aren't configured on this server yet. Add an OpenAI API key and try again.",
+	// Provider accounts are ours, not the customer's: say it's on our side and
+	// how to retry. Workers log the provider detail at error level for operators.
 	openai_quota_exhausted:
-		"Clip detection is paused because the OpenAI API account has no credits. Add credits, then retry detection.",
+		"Clip detection is temporarily unavailable on our side. Retry detection in a little while.",
 	openai_request_failed:
 		"Our AI provider didn't respond. Please try again in a moment.",
 	openai_bad_output:
@@ -345,6 +349,12 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"This post wasn't sent: its custom thumbnail needs a plan with custom thumbnails. Schedule it again without the thumbnail, or change the plan.",
 	publication_account_beyond_plan:
 		"This post wasn't sent: the plan publishes to fewer accounts than are connected. Disconnect an older account, then schedule it again.",
+	scene_visual_asset_invalid:
+		"A scene uses an image or video that was deleted or changed. Replace or remove it.",
+	scene_visual_asset_range_invalid:
+		"A scene plays past the end of its video. Shorten it or choose another video.",
+	visual_broll_asset_invalid:
+		"A B-roll image was deleted or changed. Remove it from the clip.",
 	// Extend as new codes appear.
 };
 

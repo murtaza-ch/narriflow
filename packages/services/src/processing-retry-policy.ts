@@ -30,6 +30,7 @@ export const PERMANENT_FAILURE_CODES: ReadonlySet<string> = new Set([
   "assemblyai_api_key_missing",
   "openai_api_key_missing",
   "openai_quota_exhausted",
+  "assemblyai_quota_exhausted",
   "worker_command_missing",
   "source_provider_access_denied",
   "worker_invalid_payload",

@@ -990,6 +990,7 @@ export function classifyOpenAiHttpFailure(
     (providerType !== null && OPENAI_QUOTA_ERROR_MARKERS.has(providerType));
 
   if (status === 429 && quotaExhausted) {
+    log("error", "openai_quota_exhausted", { status, providerCode, providerType });
     return { code: "openai_quota_exhausted", disposition: "permanent" };
   }
 
