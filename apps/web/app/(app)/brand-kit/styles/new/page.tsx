@@ -26,6 +26,13 @@ export default async function NewBrandTemplatePage() {
   const fontRequirement = brandPlanRequirement(actor, "brand.customFonts");
   const activeFonts = await brandFontService.list(actor);
   const fonts = activeFonts;
+  if (!requirement) {
+    return (
+      <BrandFontsProvider fonts={fonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: actor.role === "owner" } : null}>
+        <TemplateForm mode="create" cancelHref="/brand-kit?tab=styles" />
+      </BrandFontsProvider>
+    );
+  }
   return (
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
@@ -34,22 +41,12 @@ export default async function NewBrandTemplatePage() {
           description="Styles apply when you import a video."
           actions={
             <Button variant="subtle" asChild>
-              <Link href="/brand-kit">Cancel</Link>
+              <Link href="/brand-kit?tab=styles">Cancel</Link>
             </Button>
           }
         />
       </Box>
-      <Box
-        animation="fade-up"
-        animationFillMode="backwards"
-        style={{ animationDelay: "60ms" }}
-      >
-        {requirement ? (
-          <PlanLimitNotice message={requirement.requiredTier ? requirement.message : `${requirement.message} Delete a style to add another.`} upgrade={upgrade} canManageBilling={actor.role === "owner"} />
-        ) : (
-          <BrandFontsProvider fonts={fonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: actor.role === "owner" } : null}><TemplateForm mode="create" /></BrandFontsProvider>
-        )}
-      </Box>
+      <PlanLimitNotice message={requirement.requiredTier ? requirement.message : `${requirement.message} Delete a style to add another.`} upgrade={upgrade} canManageBilling={actor.role === "owner"} />
     </Stack>
   );
 }

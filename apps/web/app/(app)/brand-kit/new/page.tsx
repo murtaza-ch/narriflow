@@ -42,6 +42,7 @@ export default async function NewBrandProfilePage() {
           : null,
       }
     : null;
+  if (!requirement) return <BrandProfileCreateForm governance={governance} />;
   return (
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
@@ -51,9 +52,7 @@ export default async function NewBrandProfilePage() {
           actions={<Button variant="subtle" asChild><Link href="/brand-kit">Cancel</Link></Button>}
         />
       </Box>
-      {requirement ? (
-        <PlanLimitNotice message={requirement.requiredTier ? requirement.message : `${requirement.message} Delete a profile in Brand kit to add another.`} upgrade={upgrade} canManageBilling={actor.role === "owner"} />
-      ) : <BrandProfileCreateForm governance={governance} />}
+      <PlanLimitNotice message={requirement.requiredTier ? requirement.message : `${requirement.message} Delete a profile in Brand kit to add another.`} upgrade={upgrade} canManageBilling={actor.role === "owner"} />
     </Stack>
   );
 }

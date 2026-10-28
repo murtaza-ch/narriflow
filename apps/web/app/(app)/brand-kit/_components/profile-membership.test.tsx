@@ -11,11 +11,12 @@ const { BrandProfileDeleteButton, describeBrandProfileUsage } = await import("./
 const render = (node: React.ReactNode) => renderToStaticMarkup(<ChakraProvider value={system}>{node}</ChakraProvider>);
 
 describe("profile membership controls", () => {
-  test("the style picker lists the styles still free to add", () => {
-    const html = render(<StyleAdder profileId="p1" nextPosition={0} styles={[{ id: "s1", name: "Editorial" }, { id: "s2", name: "Bold" }]} />);
-    expect(html).toContain("Add style");
-    expect(html).toContain("Editorial");
-    expect(html).toContain("Bold");
+  test("adding a style opens a menu of the styles still free to add", () => {
+    for (const variant of ["tile", "button"] as const) {
+      const html = render(<StyleAdder variant={variant} profileId="p1" nextPosition={0} styles={[{ id: "s1", name: "Editorial" }]} createHref="/brand-kit/styles/new" />);
+      expect(html).toContain("Add style");
+      expect(html).toContain('aria-haspopup="menu"');
+    }
   });
 
   test("a member can be removed by name", () => {

@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { NativeSelect } from "@chakra-ui/react";
-import { X } from "lucide-react";
+import { Box, Flex, Menu, Portal, Stack, Text, chakra } from "@chakra-ui/react";
+import { LayoutTemplate, Plus, X } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { toaster } from "@narriflow/ui/components/toaster";
 
@@ -67,37 +68,102 @@ export function MembershipRemoveButton({
   );
 }
 
-/** Picks one of the owner's styles that no profile uses yet. */
+/**
+ * The "Add style" tile at the end of a profile's styles: a menu of the
+ * owner's styles no profile uses yet, and the way to make a new one.
+ */
 export function StyleAdder({
   profileId,
   styles,
   nextPosition,
+  createHref,
+  variant = "tile",
 }: {
   profileId: string;
   styles: { id: string; name: string }[];
   nextPosition: number;
+  /** Where a new style is made; omitted when the viewer can't make one. */
+  createHref?: string;
+  /** `tile` ends a grid of thumbnails; `button` sits in an empty state. */
+  variant?: "tile" | "button";
 }) {
   const { busy, run } = useMembershipChange("Could not add the style");
   return (
-    <NativeSelect.Root size="sm" w="auto" minW="44" disabled={busy}>
-      <NativeSelect.Field
-        aria-label="Add style"
-        value=""
-        onChange={(event) => {
-          const resourceId = event.currentTarget.value;
-          if (resourceId) void run(() => putProfileMembership(profileId, { kind: "template", resourceId, position: nextPosition }));
-        }}
-        bg="bg.soft"
-        borderWidth="0"
+    <Menu.Root positioning={{ placement: variant === "tile" ? "bottom-start" : "bottom", gutter: 6 }}>
+      <Menu.Trigger asChild>
+        {variant === "tile" ? (
+          <chakra.button type="button" aria-label="Add style" disabled={busy} w="full" textAlign="left" cursor="pointer" className="group">
+            <AddTile label="Add style" />
+          </chakra.button>
+        ) : (
+          <Button size="sm" variant="subtle" loading={busy}>
+            <Plus size={14} /> Add style
+          </Button>
+        )}
+      </Menu.Trigger>
+      <Portal>
+        <Menu.Positioner>
+          <Menu.Content maxH="320px" overflowY="auto">
+            {styles.length > 0 ? (
+              <Menu.ItemGroup>
+                <Menu.ItemGroupLabel>Your styles</Menu.ItemGroupLabel>
+                {styles.map((style) => (
+                  <Menu.Item
+                    key={style.id}
+                    value={style.id}
+                    onClick={() => void run(() => putProfileMembership(profileId, { kind: "template", resourceId: style.id, position: nextPosition }))}
+                  >
+                    <LayoutTemplate size={14} />
+                    <Text truncate>{style.name}</Text>
+                  </Menu.Item>
+                ))}
+              </Menu.ItemGroup>
+            ) : (
+              <Text px="2.5" py="2" fontSize="13px" color="fg.muted">
+                Every style is already in a profile.
+              </Text>
+            )}
+            {createHref ? (
+              <>
+                <Menu.Separator />
+                <Menu.Item value="create" asChild>
+                  <Link href={createHref}>
+                    <Plus size={14} /> Create a new style
+                  </Link>
+                </Menu.Item>
+              </>
+            ) : null}
+          </Menu.Content>
+        </Menu.Positioner>
+      </Portal>
+    </Menu.Root>
+  );
+}
+
+/** A soft 9:16 tile that starts something new in a grid of thumbnails. */
+export function AddTile({ label, icon = <Plus size={18} /> }: { label: string; icon?: React.ReactNode }) {
+  return (
+    <Stack gap="2.5">
+      <Flex
+        aspectRatio={9 / 16}
+        direction="column"
+        align="center"
+        justify="center"
+        gap="3"
         borderRadius="l2"
-        _focusVisible={{ bg: "bg.muted", outline: "none" }}
+        bg="bg.soft"
+        color="fg.muted"
+        transition="background 120ms ease, color 120ms ease"
+        _groupHover={{ bg: "bg.softHover", color: "fg" }}
       >
-        <option value="">Add style</option>
-        {styles.map((style) => (
-          <option key={style.id} value={style.id}>{style.name}</option>
-        ))}
-      </NativeSelect.Field>
-      <NativeSelect.Indicator />
-    </NativeSelect.Root>
+        <Flex boxSize="11" borderRadius="full" bg="bg.soft" align="center" justify="center">
+          {icon}
+        </Flex>
+        <Text fontSize="13px" fontWeight="500">
+          {label}
+        </Text>
+      </Flex>
+      <Box h="6" />
+    </Stack>
   );
 }

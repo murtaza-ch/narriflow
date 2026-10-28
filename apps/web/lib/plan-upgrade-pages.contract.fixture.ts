@@ -1,5 +1,5 @@
 import { beforeAll, expect, mock, test } from "bun:test";
-import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
+import { isValidElement, type ReactElement } from "react";
 import { hasFeature, planFeatureRequirement } from "@narriflow/validators";
 import { requirePlanFeature, requireWithinPlanLimit } from "../../../packages/services/src/plan-features";
 
@@ -76,7 +76,6 @@ for (const [file, name] of [
   ["../app/(app)/projects/_components/project-expiration", "ProjectExpiration"],
   ["../app/_components/authenticated-action-form", "AuthenticatedActionForm"],
   ["../app/(app)/brand-kit/_components/template-gallery", "TemplateGallery"],
-  ["../app/(app)/brand-kit/_components/brand-profile-default-button", "BrandProfileDefaultButton"],
   ["../app/(app)/brand-kit/_components/template-form", "TemplateForm"],
 ] as const) mock.module(file, () => ({ [name]: () => null }));
 mock.module("../app/(app)/projects/actions", () => ({
@@ -96,15 +95,17 @@ beforeAll(async () => {
   ({ PlanLimitNotice } = await import("../app/(app)/_components/plan-limit-notice"));
 });
 
-function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
-  return Children.toArray(node).flatMap((child) => isValidElement<Record<string, any>>(child)
-    ? [child, ...elements(child.props.children)] : []);
+// Walk every element-valued prop (children, a header's actions, ...): the contract is what a page offers, not where.
+function elements(node: unknown): ReactElement<Record<string, any>>[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!isValidElement<Record<string, any>>(node)) return [];
+  return [node, ...Object.values(node.props).flatMap(elements)];
 }
 
 for (const [count, expectedTier] of [[0, "creator"], [3, "pro"], [10, "business"], [30, null]] as const) {
   test(`both style pages account for ${count} retained styles on Free`, async () => {
     styleCount = count;
-    const library = elements(await BrandKitPage());
+    const library = elements(await BrandKitPage({ searchParams: Promise.resolve({ tab: "styles" }) }));
     const newStyle = elements(await NewStylePage());
     const libraryPrompt = library.find((node) => node.type === LockedButton && node.props.children === "New style")?.props.prompt ?? null;
     const notice = newStyle.find((node) => node.type === PlanLimitNotice)!;

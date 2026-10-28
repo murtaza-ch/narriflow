@@ -97,6 +97,12 @@ export function BrandFontsProvider({
   return <FontContext.Provider value={value}>{children}</FontContext.Provider>;
 }
 
+/** The provider's fonts and the plan's custom-font gate. */
+export function useBrandFontLibrary() {
+  const { fonts, requirement, upgrade } = useContext(FontContext);
+  return { fonts, requirement, upgrade };
+}
+
 export function useBrandFont(reference: FontReference | null | undefined) {
   const { fonts, loaded } = useContext(FontContext);
   return (

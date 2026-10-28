@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { NativeSelect, Stack, Text } from "@chakra-ui/react";
 import { Trash2 } from "lucide-react";
 import type { BrandProfileUsage } from "@narriflow/services";
-import { Button } from "@narriflow/ui/components/button";
+import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
 
@@ -55,6 +55,8 @@ export function BrandProfileDeleteButton({
         if (!response.ok) throw new Error(payload?.message ?? "The profile could not be deleted.");
         toaster.create({ type: "success", title: "Brand Profile deleted" });
         setOpen(false);
+        // The button lives on the profile's own page, which no longer exists.
+        router.replace("/brand-kit");
         router.refresh();
       } catch (error) {
         toaster.create({
@@ -68,18 +70,19 @@ export function BrandProfileDeleteButton({
 
   return (
     <>
-      <Button
+      <IconButton
         size="sm"
-        variant="ghost"
+        variant="subtle"
         color="fg.muted"
+        _hover={{ color: "danger.fg" }}
         aria-label={`Delete ${name}`}
         onClick={() => {
           setReplacement(NO_PROFILE);
           setOpen(true);
         }}
       >
-        <Trash2 size={12} />
-      </Button>
+        <Trash2 size={14} />
+      </IconButton>
       <Dialog.Root
         open={open}
         onOpenChange={(details) => {

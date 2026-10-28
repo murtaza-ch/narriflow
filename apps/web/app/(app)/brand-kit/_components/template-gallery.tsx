@@ -3,15 +3,15 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { Box, Flex, Grid, Menu, Portal, Stack, Text, chakra } from "@chakra-ui/react";
-import { Copy, Gem, MoreVertical, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, Copy, Gem, LayoutTemplate, MoreVertical, Pencil, Trash2 } from "lucide-react";
 import { IconButton } from "@narriflow/ui/components/button";
-import { MediaWell } from "@narriflow/ui/components/media-well";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
-import type { BrandTemplateSummary, CaptionPreset } from "@narriflow/validators";
-import { CaptionCue } from "../../projects/[projectId]/clips/[clipId]/studio/_components/caption-style-engine";
+import type { BrandTemplateSummary } from "@narriflow/validators";
+import { CoverChip } from "./brand-kit-ui";
+import { StyleThumb } from "../../_shared/style-thumb";
 import {
   deleteBrandTemplateAction,
   duplicateBrandTemplateAction,
@@ -41,6 +41,8 @@ interface TemplateGalleryProps {
   builtIns: BrandTemplateSummary[];
   mine: BrandTemplateSummary[];
   defaultId: string | null;
+  /** The Brand Profile each style belongs to, by style id. */
+  profileByStyle?: Record<string, string>;
   access: TemplateGalleryAccess;
 }
 
@@ -58,14 +60,16 @@ export function TemplateGallery({
   builtIns,
   mine,
   defaultId,
+  profileByStyle = {},
   access,
 }: TemplateGalleryProps) {
   return (
-    <Stack gap="8" role="radiogroup" aria-label="Default style">
+    <Stack gap="10" role="radiogroup" aria-label="Default style">
       <Section
         title="Your styles"
         templates={mine}
         defaultId={defaultId}
+        profileByStyle={profileByStyle}
         ownership="mine"
         access={access}
       />
@@ -73,6 +77,7 @@ export function TemplateGallery({
         title="Built-in"
         templates={builtIns}
         defaultId={defaultId}
+        profileByStyle={profileByStyle}
         ownership="built-in"
         access={access}
       />
@@ -84,52 +89,55 @@ interface SectionProps {
   title: string;
   templates: BrandTemplateSummary[];
   defaultId: string | null;
+  profileByStyle: Record<string, string>;
   ownership: "mine" | "built-in";
   access: TemplateGalleryAccess;
 }
 
-function Section({ title, templates, defaultId, ownership, access }: SectionProps) {
+/** Thumbnails share one grid so built-ins and saved styles line up. */
+export const STYLE_GRID_COLUMNS = { base: "repeat(2, minmax(0, 1fr))", sm: "repeat(3, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))", lg: "repeat(5, minmax(0, 1fr))", xl: "repeat(6, minmax(0, 1fr))" };
+
+function Section({ title, templates, defaultId, profileByStyle, ownership, access }: SectionProps) {
   return (
-    <Box as="section">
-      <Text textStyle="eyebrow" color="fg.muted" mb="2">
-        {title}
-      </Text>
-      <Box layerStyle="band">
-        {templates.length === 0 ? (
-          <EmptyState
-            ratio={4 / 3}
-            icon={<Plus size={18} />}
-            title="No saved styles yet"
-            description={access.canManage ? "Duplicate a built-in below to make it yours." : "Saved styles appear here."}
-          />
-        ) : (
-          <Grid
-            templateColumns={{
-              base: "repeat(2, 1fr)",
-              md: "repeat(3, 1fr)",
-              lg: "repeat(4, 1fr)",
-            }}
-            gap="4"
-          >
-            {templates.map((template) => (
-              <TemplateCard
-                key={template.id}
-                template={template}
-                isDefault={defaultId === template.id}
-                ownership={ownership}
-                access={access}
-              />
-            ))}
-          </Grid>
-        )}
-      </Box>
-    </Box>
+    <Stack as="section" gap="4">
+      <Flex align="baseline" gap="2">
+        <Text as="h2" fontSize="15px" fontWeight="500">
+          {title}
+        </Text>
+        {templates.length > 0 ? (
+          <Text fontSize="13px" color="fg.subtle" fontVariantNumeric="tabular-nums">
+            {templates.length}
+          </Text>
+        ) : null}
+      </Flex>
+      {templates.length === 0 ? (
+        <EmptyState
+          icon={<LayoutTemplate size={18} />}
+          title="No saved styles yet"
+          description={access.canManage ? "Duplicate a built-in below to make it yours." : "Saved styles appear here."}
+        />
+      ) : (
+        <Grid templateColumns={STYLE_GRID_COLUMNS} gap="4" rowGap="5">
+          {templates.map((template) => (
+            <TemplateCard
+              key={template.id}
+              template={template}
+              isDefault={defaultId === template.id}
+              profileName={profileByStyle[template.id] ?? null}
+              ownership={ownership}
+              access={access}
+            />
+          ))}
+        </Grid>
+      )}
+    </Stack>
   );
 }
 
 interface TemplateCardProps {
   template: BrandTemplateSummary;
   isDefault: boolean;
+  profileName: string | null;
   ownership: "mine" | "built-in";
   access: TemplateGalleryAccess;
 }
@@ -142,7 +150,7 @@ function UpgradeMark() {
   );
 }
 
-function TemplateCard({ template, isDefault, ownership, access }: TemplateCardProps) {
+function TemplateCard({ template, isDefault, profileName, ownership, access }: TemplateCardProps) {
   const { openUpgrade } = useUpgrade();
   // A kept custom style on a plan without custom styles: editing and choosing it open the upgrade.
   const lockedCustom = ownership === "mine" ? access.customUpgrade : null;
@@ -262,18 +270,34 @@ function TemplateCard({ template, isDefault, ownership, access }: TemplateCardPr
   }
 
   const preset = template.captionPreset;
+  const editHref = access.canManage && ownership === "mine" && !lockedCustom ? `/brand-kit/styles/${template.id}` : null;
+  const thumb = (
+    <Box
+      position="relative"
+      borderRadius="l2"
+      overflow="hidden"
+      outline="2px solid"
+      outlineColor={isDefault ? "accent.solid" : "transparent"}
+      outlineOffset="2px"
+      transition="outline-color 150ms ease"
+    >
+      <Box transition="transform 400ms cubic-bezier(0.22, 1, 0.36, 1)" _groupHover={{ transform: "scale(1.04)" }}>
+        <StyleThumb preset={preset} seed={template.id} imageSizes="(min-width: 1280px) 18vw, (min-width: 768px) 24vw, 45vw" />
+      </Box>
+      <Stack position="absolute" top="2" left="2" right="2" gap="1.5" align="flex-start" pointerEvents="none">
+        {isDefault ? <CoverChip icon={<Check size={12} />}>Default</CoverChip> : null}
+        {profileName ? <CoverChip>{profileName}</CoverChip> : null}
+      </Stack>
+    </Box>
+  );
 
   return (
-    <Stack gap="2" minW="0">
-      {/* Compact type specimen; full video positioning is shown in the style editor. */}
-      <MediaWell
-        ratio={4 / 3}
-        borderColor={isDefault ? "accent.solid" : "transparent"}
-        borderWidth="2px"
-        transition="border-color 120ms ease"
-      >
-        <CaptionSpecimen preset={preset} />
-      </MediaWell>
+    <Stack gap="2.5" minW="0" className="group">
+      {editHref ? (
+        <Link href={editHref} aria-label={`Edit ${template.name}`}>
+          {thumb}
+        </Link>
+      ) : thumb}
 
       <Flex align="center" justify="space-between" gap="1" minW="0">
         {/* Default selection — radio pattern with pending indication. Only
@@ -285,7 +309,7 @@ function TemplateCard({ template, isDefault, ownership, access }: TemplateCardPr
           aria-label={`Use "${template.name}" as default style`}
           display="inline-flex"
           alignItems="center"
-          gap="1.5"
+          gap="2"
           minW="0"
           cursor={isDefault || !access.canSetDefault ? "default" : "pointer"}
           disabled={pending || !access.canSetDefault}
@@ -294,39 +318,33 @@ function TemplateCard({ template, isDefault, ownership, access }: TemplateCardPr
         >
           {pendingAction === "default" ? (
             <Spinner size="xs" />
-          ) : (
+          ) : access.canSetDefault || isDefault ? (
             <Flex
               boxSize="3.5"
               align="center"
               justify="center"
               borderRadius="full"
-              borderWidth="1px"
-              borderColor={isDefault ? "accent.solid" : "border.control"}
-              bg="bg.panel"
+              borderWidth="1.5px"
+              borderColor={isDefault ? "accent.solid" : "border.emphasized"}
               flexShrink={0}
               transition="border-color 120ms ease"
+              _groupHover={isDefault ? undefined : { borderColor: "border.control" }}
             >
               {isDefault ? (
                 <Box boxSize="1.5" borderRadius="full" bg="accent.solid" />
               ) : null}
             </Flex>
-          )}
+          ) : null}
           <Text
             fontSize="13px"
-            fontWeight={isDefault ? "600" : "500"}
+            fontWeight="500"
             color="fg"
             truncate
             textAlign="left"
           >
             {template.name}
           </Text>
-          {isDefault ? (
-            <Text textStyle="eyebrow" color="accent.fg" flexShrink={0}>
-              Default
-            </Text>
-          ) : null}
         </chakra.button>
-
         {access.canManage || access.canSetDefault ? (
         <Menu.Root positioning={{ placement: "bottom-end", gutter: 4 }}>
           <Menu.Trigger asChild>
@@ -405,32 +423,5 @@ function TemplateCard({ template, isDefault, ownership, access }: TemplateCardPr
       </Flex>
       {dialog}
     </Stack>
-  );
-}
-
-/** A static frame of the style's caption, drawn by the real caption engine. */
-function CaptionSpecimen({ preset }: { preset: CaptionPreset }) {
-  const [width, setWidth] = useState(0);
-  return (
-    <Flex
-      ref={(element: HTMLDivElement | null) => {
-        if (element && element.offsetWidth !== width) setWidth(element.offsetWidth);
-      }}
-      position="absolute"
-      inset="0"
-      align="center"
-      justify="center"
-    >
-      {width > 0 && (
-        <CaptionCue
-          preset={preset}
-          words={["This", "is", "your"].map((word, index) => ({ word, isActive: index === 2 }))}
-          scale={(width * 1.6) / 1080}
-          frameWidth={width}
-          cueKey="specimen"
-          reducedMotion
-        />
-      )}
-    </Flex>
   );
 }

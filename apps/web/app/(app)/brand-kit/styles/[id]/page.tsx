@@ -35,7 +35,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
   }
 
   const profileId = await brandProfileService.resolveProfileForTemplate(appUser, id);
-  const returnHref = profileId ? `/brand-kit/${profileId}?section=styles&template=${id}` : "/brand-kit";
+  const returnHref = profileId ? `/brand-kit/${profileId}?section=styles&template=${id}` : "/brand-kit?tab=styles";
 
   if (template.isBuiltIn) {
     return (
@@ -62,36 +62,35 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
   const activeFonts = await brandFontService.list(appUser);
   const retainedFonts = await brandFontService.resolveReferences(appUser, template.captionPreset.fontAsset ? [template.captionPreset.fontAsset] : []);
   const fonts = [...new Map<string, BrandFontChoice>([...retainedFonts.map((font) => [font.id, { ...font, insertable: false }] as const), ...activeFonts.map((font) => [font.id, { ...font, insertable: true }] as const)]).values()];
+  if (mayEdit && !styleRequirement) {
+    return (
+      <BrandFontsProvider fonts={fonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: appUser.role === "owner" } : null}>
+        <TemplateForm mode="edit" initialTemplate={template} cancelHref={returnHref} />
+      </BrandFontsProvider>
+    );
+  }
   return (
     <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
-          title={`Edit · ${template.name}`}
+          title={template.name}
           description="Changes apply to new projects only."
           actions={
             <Button variant="subtle" asChild>
-              <Link href={returnHref}>Cancel</Link>
+              <Link href={returnHref}>Back</Link>
             </Button>
           }
         />
       </Box>
-      <Box
-        animation="fade-up"
-        animationFillMode="backwards"
-        style={{ animationDelay: "60ms" }}
-      >
-        {!mayEdit ? (
-          <AccessNote access={appUser} capability="brand.manage" action="edit this style" />
-        ) : styleRequirement ? (
-          <PlanLimitNotice
-            message={styleRequirement.message}
-            upgrade={styleRequirement.requiredTier ? { tier: styleRequirement.requiredTier, headline: "Upgrade to edit your caption styles", highlight: planUpgradeHighlight(styleRequirement.requiredTier, "brand.customTemplates") } : null}
-            canManageBilling={appUser.role === "owner"}
-          />
-        ) : (
-        <BrandFontsProvider fonts={fonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: appUser.role === "owner" } : null}><TemplateForm mode="edit" initialTemplate={template} /></BrandFontsProvider>
-        )}
-      </Box>
+      {!mayEdit ? (
+        <AccessNote access={appUser} capability="brand.manage" action="edit this style" />
+      ) : styleRequirement ? (
+        <PlanLimitNotice
+          message={styleRequirement.message}
+          upgrade={styleRequirement.requiredTier ? { tier: styleRequirement.requiredTier, headline: "Upgrade to edit your caption styles", highlight: planUpgradeHighlight(styleRequirement.requiredTier, "brand.customTemplates") } : null}
+          canManageBilling={appUser.role === "owner"}
+        />
+      ) : null}
     </Stack>
   );
 }

@@ -1,8 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { NativeSelect, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { Upload } from "lucide-react";
+import { Button } from "@narriflow/ui/components/button";
+import { Select } from "@narriflow/ui/components/select";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
   BrandFontsProvider,
@@ -12,9 +16,16 @@ import {
 } from "./brand-fonts";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import type { UpgradePrompt } from "../../_components/upgrade";
+import { Panel } from "./brand-kit-ui";
 
-const ROLES = ["display", "body", "caption", "fallback"] as const;
-type Role = (typeof ROLES)[number];
+const ROLES = [
+  { role: "display", label: "Display", sample: "Headline" },
+  { role: "body", label: "Body", sample: "Body text" },
+  { role: "caption", label: "Caption", sample: "Caption" },
+  { role: "fallback", label: "Fallback", sample: "Fallback" },
+] as const;
+type Role = (typeof ROLES)[number]["role"];
+const SYSTEM = "system";
 type Membership = {
   id: string;
   role: string;
@@ -22,12 +33,17 @@ type Membership = {
   fingerprint: string;
 };
 
-function RolePreview({ font }: { font?: Membership }) {
+function RoleSample({ font, sample }: { font?: Membership; sample: string }) {
   const loaded = useBrandFont(font ? { ...font, kind: "brand_font" } : null);
   return (
-    <Text fontSize="18px" style={loaded ? brandFontStyle(loaded) : undefined}>
-      {font?.family ?? "System typography"}
-    </Text>
+    <Stack gap="0" minW="0" flex="1">
+      <Text fontSize="22px" lineHeight="1.25" truncate style={loaded ? brandFontStyle(loaded) : undefined}>
+        {sample}
+      </Text>
+      <Text fontSize="12px" color="fg.subtle" truncate>
+        {font?.family ?? "System typography"}
+      </Text>
+    </Stack>
   );
 }
 
@@ -48,6 +64,7 @@ export function ProfileFontRoles({
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const choices = fonts.filter((font) => font.accessUrl && !requirement);
   async function assign(role: Role, id: string) {
     const current = memberships.find((font) => font.role === role);
     if (!id && !current) return;
@@ -62,7 +79,7 @@ export function ProfileFontRoles({
             kind: "font",
             role,
             resourceId: id || current?.id,
-            position: ROLES.indexOf(role),
+            position: ROLES.findIndex((item) => item.role === role),
             ...(!id ? { remove: true } : {}),
           }),
         },
@@ -83,64 +100,52 @@ export function ProfileFontRoles({
       setBusy(false);
     }
   }
+  const noUploads = canManage && !requirement && choices.length === 0;
   return (
     <BrandFontsProvider fonts={fonts}>
-      <Stack gap="4" bg="bg.soft" borderRadius="l3" p="5">
-        <Text textStyle="eyebrow" color="fg.muted">
-          Type roles
-        </Text>
-        {requirement ? (
-          <PlanLimitNotice message={requirement} upgrade={upgrade} />
+      <Panel
+        title="Typography"
+        action={noUploads ? (
+          <Button size="sm" variant="subtle" asChild>
+            <Link href="/brand-kit?tab=fonts"><Upload size={13} /> Upload a font</Link>
+          </Button>
         ) : null}
-        {ROLES.map((role) => {
-          const current = memberships.find((font) => font.role === role);
-          return (
-            <Stack key={role} gap="2">
-              <Text fontSize="12px" color="fg.muted" textTransform="capitalize">
-                {role}
-              </Text>
-              <RolePreview font={current} />
-              {canManage ? (
-                <NativeSelect.Root
-                  size="sm"
-                  disabled={busy || (!!requirement && !current)}
-                >
-                  <NativeSelect.Field
-                    aria-label={`${role} font`}
-                    value={current?.id ?? ""}
-                    onChange={(event) =>
-                      assign(role, event.currentTarget.value)
-                    }
-                    bg="bg.panel"
-                    borderWidth="0"
-                    borderRadius="l2"
-                    _focusVisible={{ bg: "bg.muted", outline: "none" }}
-                  >
-                    <option value="">Use system typography</option>
-                    {fonts
-                      .filter(
-                        (font) =>
-                          (font.accessUrl && !requirement) ||
-                          font.id === current?.id,
-                      )
-                      .map((font) => (
-                        <option key={font.id} value={font.id}>
-                          {font.family} · {font.style}
-                        </option>
-                      ))}
-                  </NativeSelect.Field>
-                  <NativeSelect.Indicator />
-                </NativeSelect.Root>
-              ) : null}
-            </Stack>
-          );
-        })}
-        <Text fontSize="12px" color="fg.muted">
-          Upload fonts in Brand kit. Roles make them available to this profile's
-          Scene Templates. Caption styles and Studio let you choose the font for
-          each design.
+      >
+        {requirement ? <PlanLimitNotice message={requirement} upgrade={upgrade} /> : null}
+        <Stack gap="4">
+          {ROLES.map(({ role, label, sample }) => {
+            const current = memberships.find((font) => font.role === role);
+            const options = fonts.filter((font) => (font.accessUrl && !requirement) || font.id === current?.id);
+            return (
+              <Flex key={role} align="center" gap="4" minW="0">
+                <Text w="16" flexShrink={0} fontSize="12px" fontWeight="500" color="fg.muted">
+                  {label}
+                </Text>
+                <RoleSample font={current} sample={sample} />
+                {canManage && options.length > 0 ? (
+                  <Box w={{ base: "36", md: "44" }} flexShrink={0}>
+                    <Select
+                      ariaLabel={`${label} font`}
+                      disabled={busy || (!!requirement && !current)}
+                      value={current?.id ?? SYSTEM}
+                      items={[
+                        { label: "System typography", value: SYSTEM },
+                        ...options.map((font) => ({ label: `${font.family} · ${font.style}`, value: font.id })),
+                      ]}
+                      onValueChange={(value) => {
+                        if (value && value !== (current?.id ?? SYSTEM)) void assign(role, value === SYSTEM ? "" : value);
+                      }}
+                    />
+                  </Box>
+                ) : null}
+              </Flex>
+            );
+          })}
+        </Stack>
+        <Text fontSize="12px" color="fg.subtle">
+          Roles make fonts available to this profile&apos;s scenes.
         </Text>
-      </Stack>
+      </Panel>
     </BrandFontsProvider>
   );
 }
