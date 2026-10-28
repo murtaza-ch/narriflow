@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useReverification, useSession, useUser } from "@clerk/nextjs";
 import { isReverificationCancelledError } from "@clerk/nextjs/errors";
 import { Box, Dialog, Flex, Portal, Stack, Text } from "@chakra-ui/react";
-import { KeyRound, X } from "lucide-react";
+import { Fingerprint, KeyRound, X } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
@@ -12,6 +12,7 @@ import { supportsPasskeys } from "@/lib/auth-flow";
 import { PasswordInput } from "@/app/_components/auth/password-input";
 import { FormError } from "@/app/_components/auth/form-error";
 import { getClerkErrorMessage } from "@/app/_components/auth/clerk-error";
+import { SettingsCard } from "../_components/settings-ui";
 
 type VerificationRequest = {
   level: "first_factor" | "second_factor" | "multi_factor";
@@ -52,22 +53,32 @@ export function PasskeySettings() {
     }
   }
 
-  return <Box borderRadius="l3" bg="bg.panel" borderWidth="1px" borderColor="border.card" p={{ base: "4", md: "6" }}>
-    <Stack gap="5">
-      <Stack gap="1">
-        <Text as="h2" fontSize="16px" fontWeight="500">Passkeys</Text>
-        <Text fontSize="sm" color="fg.muted">Sign in with your fingerprint, face, or device PIN. Adding a passkey is optional.</Text>
-      </Stack>
+  const addButton = supported ? (
+    <Button size="sm" disabled={!isLoaded || pending} loading={pending} onClick={() => perform(() => user!.createPasskey(), "Passkey added. You can now use it to sign in on this site.")}>
+      <KeyRound size={14} />
+      Add a passkey
+    </Button>
+  ) : null;
+  return <>
+    <SettingsCard icon={<KeyRound size={16} />} title="Passkeys" description="Sign in with your fingerprint, face, or device PIN. Optional." action={addButton}>
       <FormError message={error} />
-      <Text role="status" fontSize="sm" color="fg.muted">{notice}</Text>
-      {isLoaded && !user?.passkeys.length && <Text fontSize="sm" color="fg.muted">You haven’t added a passkey yet.</Text>}
-      <Stack gap="3">
-        {user?.passkeys.map((passkey) => <PasskeyRow key={passkey.id} passkey={passkey} disabled={pending} onRename={(name) => perform(() => passkey.update({ name }), "Passkey renamed.")} onRemove={() => perform(() => passkey.delete(), "Passkey removed.")} />)}
-      </Stack>
-      {supported ? <Button alignSelf="flex-start" disabled={!isLoaded || pending} loading={pending} onClick={() => perform(() => user!.createPasskey(), "Passkey added. You can now use it to sign in on this site.")}><KeyRound size={16} />Add a passkey</Button> : <Text fontSize="sm" color="fg.muted">Use a browser that supports passkeys to add one. Your other sign-in methods are available.</Text>}
-    </Stack>
+      {notice ? <Text role="status" fontSize="13px" color="fg.muted">{notice}</Text> : <Text role="status" srOnly>{notice}</Text>}
+      {isLoaded && !user?.passkeys.length ? (
+        <Flex align="center" gap="3" px="4" py="3.5" borderRadius="l2" bg="bg.soft">
+          <Box color="fg.muted"><Fingerprint size={18} /></Box>
+          <Text fontSize="13px" color="fg.muted">
+            {supported ? "No passkeys yet. Add one to sign in without a password." : "Use a browser that supports passkeys to add one. Your other sign-in methods are available."}
+          </Text>
+        </Flex>
+      ) : null}
+      {user?.passkeys.length ? (
+        <Stack gap="2">
+          {user.passkeys.map((passkey) => <PasskeyRow key={passkey.id} passkey={passkey} disabled={pending} onRename={(name) => perform(() => passkey.update({ name }), "Passkey renamed.")} onRemove={() => perform(() => passkey.delete(), "Passkey removed.")} />)}
+        </Stack>
+      ) : null}
+    </SettingsCard>
     {verification && <ReverificationDialog request={verification} onClose={() => setVerification(null)} />}
-  </Box>;
+  </>;
 }
 
 function PasskeyRow({ passkey, disabled, onRename, onRemove }: {
@@ -77,15 +88,17 @@ function PasskeyRow({ passkey, disabled, onRename, onRemove }: {
   onRemove: () => void;
 }) {
   const [name, setName] = useState(passkey.name ?? "Passkey");
-  return <Stack bg="bg.soft" borderRadius="l2" p="4" gap="3">
-    <Label htmlFor={`passkey-${passkey.id}`}>Passkey name</Label>
-    <Flex gap="2" wrap="wrap">
-      <Input id={`passkey-${passkey.id}`} value={name} maxLength={64} onChange={(e) => setName(e.target.value)} disabled={disabled} flex="1" minW="140px" />
-      <Button variant="subtle" disabled={disabled || !name.trim() || name.trim() === passkey.name} onClick={() => onRename(name.trim())}>Save name</Button>
-      <Button variant="ghost" disabled={disabled} onClick={onRemove}>Remove</Button>
-    </Flex>
-    <Text fontSize="12px" color="fg.subtle">{passkey.lastUsedAt ? `Last used ${passkey.lastUsedAt.toLocaleDateString()}` : `Added ${passkey.createdAt.toLocaleDateString()}`}</Text>
-  </Stack>;
+  const changed = Boolean(name.trim()) && name.trim() !== passkey.name;
+  return <Flex align="center" gap="3" px="3" py="2.5" borderRadius="l2" bg="bg.soft" wrap="wrap">
+    <Flex boxSize="8" flexShrink={0} align="center" justify="center" borderRadius="8px" bg="bg.soft" color="fg.muted" aria-hidden><Fingerprint size={15} /></Flex>
+    <Stack gap="0" flex="1" minW="160px">
+      <Label htmlFor={`passkey-${passkey.id}`} srOnly>Passkey name</Label>
+      <Input id={`passkey-${passkey.id}`} value={name} maxLength={64} onChange={(e) => setName(e.target.value)} disabled={disabled} size="sm" bg="transparent" px="1.5" fontWeight="500" _hover={{ bg: "bg.soft" }} />
+      <Text fontSize="12px" color="fg.subtle" px="1.5">{passkey.lastUsedAt ? `Last used ${passkey.lastUsedAt.toLocaleDateString()}` : `Added ${passkey.createdAt.toLocaleDateString()}`}</Text>
+    </Stack>
+    {changed ? <Button size="sm" variant="subtle" disabled={disabled} onClick={() => onRename(name.trim())}>Save name</Button> : null}
+    <Button size="sm" variant="ghost" disabled={disabled} onClick={onRemove}>Remove</Button>
+  </Flex>;
 }
 
 function ReverificationDialog({ request, onClose }: { request: VerificationRequest; onClose: () => void }) {

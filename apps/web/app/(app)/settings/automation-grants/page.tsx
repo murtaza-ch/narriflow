@@ -18,7 +18,7 @@ export default async function AutomationGrantsPage({ searchParams }: { searchPar
 		<Stack gap="8">
 			<PageHeader
 				title="Automation grants"
-				description="A grant lets one Autopilot rule's output go out without a click, within caps and until it expires. Brand approval rules still apply."
+				description="Let an Autopilot rule post or send review rounds without a click."
 			/>
 			<GrantsPanel
 				grants={grants}

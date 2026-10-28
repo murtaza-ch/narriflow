@@ -1,4 +1,4 @@
-import { Box, Text } from "@chakra-ui/react";
+import { Box } from "@chakra-ui/react";
 import { CodeBlock } from "@narriflow/ui/components/code-block";
 
 /** A first request that works with any key: read the key's own workspace. */
@@ -6,9 +6,6 @@ export function ApiQuickstart({ apiBase }: { apiBase: string }) {
   const url = `${apiBase}/workspace`;
   return (
     <Box>
-      <Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted" mb="3">
-        Quickstart
-      </Text>
       <CodeBlock
         copyLabel="Copy snippet"
         tabs={[

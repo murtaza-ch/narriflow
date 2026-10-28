@@ -12,7 +12,7 @@ export default async function MembersSettingsPage() {
   ]);
   return (
     <Stack gap="8">
-      <PageHeader title="Members" />
+      <PageHeader title="Members" description="Invite your team and choose what each person can do." />
       <MembersPanel
         actorRole={appUser.workspace.role}
         isBusiness={hasFeature(billingView.plan, "workspace.members")}

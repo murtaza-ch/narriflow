@@ -2,8 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Field, Input, Stack, Text } from "@chakra-ui/react";
-import { Plus } from "lucide-react";
+import { Box, Field, Flex, Input, Stack, Text } from "@chakra-ui/react";
+import { Bot, CheckCircle2, Download, Eye, Plus, Scissors, Send } from "lucide-react";
 import { WORKSPACE_API_KEY_READ_SCOPES } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { CodeBlock } from "@narriflow/ui/components/code-block";
@@ -14,10 +14,10 @@ import { authenticatedActionResultMessage } from "@/lib/authenticated-request-br
 import { createApiKeyAction } from "../actions";
 
 const WRITE_SCOPES = [
-  { scope: "processing:write", label: "Import and clip", description: "Import links, upload files and generate clips" },
-  { scope: "exports:write", label: "Export", description: "Request clip exports" },
-  { scope: "autopilot:write", label: "Autopilot", description: "Create and run RSS rules" },
-  { scope: "publishing:write", label: "Publishing", description: "Prepare, schedule and recover social posts" },
+  { scope: "processing:write", label: "Import and clip", description: "Import links, upload files and generate clips", icon: Scissors },
+  { scope: "exports:write", label: "Export", description: "Request clip exports", icon: Download },
+  { scope: "autopilot:write", label: "Autopilot", description: "Create and run RSS rules", icon: Bot },
+  { scope: "publishing:write", label: "Publishing", description: "Prepare, schedule and recover social posts", icon: Send },
 ] as const;
 
 type WriteScope = (typeof WRITE_SCOPES)[number]["scope"];
@@ -41,6 +41,10 @@ export function CreateKeyDialog() {
   function create(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
+    if (!name.trim()) {
+      setError("Name the key so you can recognise it later.");
+      return;
+    }
     startTransition(async () => {
       const result = await createApiKeyAction({ name, scopes: [...WORKSPACE_API_KEY_READ_SCOPES, ...writes] });
       if (!result.ok) {
@@ -73,55 +77,81 @@ export function CreateKeyDialog() {
       <Portal>
         <Dialog.Backdrop />
         <Dialog.Positioner>
-          <Dialog.Content asChild maxW="440px">
+          <Dialog.Content asChild maxW="480px">
             <form onSubmit={create}>
-              <Dialog.Header>
+              <Dialog.Header flexDirection="column" alignItems="flex-start" gap="1">
                 <Dialog.Title>{secret ? "Copy your key" : "Create API key"}</Dialog.Title>
+                <Text fontSize="13px" color="fg.muted">
+                  {secret ? "This is the only time it's shown." : "Give it a name and only the access it needs."}
+                </Text>
               </Dialog.Header>
               <Dialog.Body>
                 {secret ? (
-                  <Stack gap="3">
-                    <Text fontSize="14px" color="fg.muted">
-                      You won't see this key again.
-                    </Text>
+                  <Stack gap="4">
+                    <Flex align="center" gap="3" px="4" py="3" borderRadius="l2" bg="accent.subtle" color="accent.fg">
+                      <CheckCircle2 size={18} />
+                      <Text fontSize="13.5px" fontWeight="500">
+                        Key created. You won't see this key again.
+                      </Text>
+                    </Flex>
                     <CodeBlock code={secret} copyLabel="Copy key" />
                   </Stack>
                 ) : (
-                  <Stack gap="5">
-                    <Field.Root required>
+                  <Stack gap="6">
+                    <Field.Root required invalid={Boolean(error) && !name.trim()}>
                       <Field.Label>Name</Field.Label>
-                      <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. n8n production" maxLength={80} required />
+                      <Input value={name} onChange={(event) => { setName(event.target.value); if (error) setError(null); }} placeholder="e.g. n8n production" maxLength={80} autoFocus />
                     </Field.Root>
-                    <Stack gap="4">
-                      <Stack gap="0.5">
+                    <Stack gap="2.5">
+                      <Flex align="baseline" justify="space-between" gap="3">
                         <Text fontSize="14px" fontWeight="500">
                           Permissions
                         </Text>
-                        <Text fontSize="13px" color="fg.muted">
-                          Reads are always included.
-                        </Text>
-                      </Stack>
-                      {WRITE_SCOPES.map(({ scope, label, description }) => (
-                        <Switch
-                          key={scope}
-                          checked={writes.includes(scope)}
-                          onCheckedChange={(checked) =>
-                            setWrites((current) => (checked ? [...current, scope] : current.filter((item) => item !== scope)))
-                          }
-                          justifyContent="space-between"
-                          flexDirection="row-reverse"
-                          w="full"
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => setWrites(writes.length === WRITE_SCOPES.length ? [] : WRITE_SCOPES.map((item) => item.scope))}
                         >
-                          <Stack as="span" gap="0.5" lineHeight="1.4">
-                            <Text as="span" fontSize="14px">
-                              {label}
-                            </Text>
-                            <Text as="span" fontSize="13px" color="fg.muted">
-                              {description}
-                            </Text>
-                          </Stack>
-                        </Switch>
-                      ))}
+                          {writes.length === WRITE_SCOPES.length ? "Clear all" : "Select all"}
+                        </Button>
+                      </Flex>
+                      <Flex align="center" gap="3" px="3.5" py="3" borderRadius="l2" bg="bg.soft">
+                        <PermissionIcon><Eye size={15} /></PermissionIcon>
+                        <Stack gap="0.5" flex="1" minW="0">
+                          <Text fontSize="14px">Read</Text>
+                          <Text fontSize="12.5px" color="fg.muted">Projects, exports, usage, Autopilot and publishing.</Text>
+                        </Stack>
+                        <Text fontSize="12px" color="fg.subtle" fontWeight="500">Always on</Text>
+                      </Flex>
+                      {WRITE_SCOPES.map(({ scope, label, description, icon: Icon }) => {
+                        const on = writes.includes(scope);
+                        return (
+                          <Box key={scope} px="3.5" py="3" borderRadius="l2" bg={on ? "accent.subtle" : "bg.soft"} transition="background 120ms ease">
+                            <Switch
+                              checked={on}
+                              onCheckedChange={(checked) =>
+                                setWrites((current) => (checked ? [...current, scope] : current.filter((item) => item !== scope)))
+                              }
+                              justifyContent="space-between"
+                              flexDirection="row-reverse"
+                              w="full"
+                            >
+                              <Flex as="span" align="center" gap="3" minW="0">
+                                <PermissionIcon active={on}><Icon size={15} /></PermissionIcon>
+                                <Stack as="span" gap="0.5" lineHeight="1.4" minW="0">
+                                  <Text as="span" fontSize="14px">
+                                    {label}
+                                  </Text>
+                                  <Text as="span" fontSize="12.5px" color="fg.muted">
+                                    {description}
+                                  </Text>
+                                </Stack>
+                              </Flex>
+                            </Switch>
+                          </Box>
+                        );
+                      })}
                     </Stack>
                     {error ? (
                       <Text fontSize="13px" color="danger.fg">
@@ -150,7 +180,7 @@ export function CreateKeyDialog() {
                         Cancel
                       </Button>
                     </Dialog.ActionTrigger>
-                    <Button type="submit" size="sm" disabled={pending || !name.trim()}>
+                    <Button type="submit" size="sm" disabled={pending}>
                       {pending ? <Spinner size="xs" /> : null}
                       Create key
                     </Button>
@@ -165,5 +195,13 @@ export function CreateKeyDialog() {
         </Dialog.Positioner>
       </Portal>
     </Dialog.Root>
+  );
+}
+
+function PermissionIcon({ active = false, children }: { active?: boolean; children: React.ReactNode }) {
+  return (
+    <Flex as="span" boxSize="8" flexShrink={0} align="center" justify="center" borderRadius="8px" bg={active ? "accent.muted" : "bg.soft"} color={active ? "accent.fg" : "fg.muted"} aria-hidden>
+      {children}
+    </Flex>
   );
 }

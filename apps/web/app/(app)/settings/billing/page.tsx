@@ -1,10 +1,11 @@
-import { Box, Stack, Text } from "@chakra-ui/react";
+import { Box, Grid, Stack } from "@chakra-ui/react";
+import { BadgeCheck, CalendarClock, Coins } from "lucide-react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { StatBand } from "@narriflow/ui/components/stat-band";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { billingService, projectService } from "@narriflow/services";
 import { billingIntervalSchema, paidPricingTierSchema, planDefinition } from "@narriflow/validators";
 import { BillingPlans } from "./billing-plans";
+import { StatTile } from "../_components/settings-ui";
 
 function reveal(index: number) {
   return {
@@ -41,42 +42,32 @@ export default async function BillingPage({
   return (
     <Stack gap="8">
       <Box {...reveal(0)}>
-        <PageHeader
-          title="Billing & plans"
-        />
+        <PageHeader title="Billing & plans" description="Your plan, credits, and subscription." />
       </Box>
 
-      <Box {...reveal(1)}>
-        <StatBand columns={3}>
-          <StatBand.Item
-            label="Current plan"
-            value={planDefinition(tier).name}
-          />
-          <StatBand.Item
-            label="Credits used this month"
-            value={usedCredits + reservedCredits}
-            suffix={
-              <Text fontSize="13px" color="fg.muted" fontVariantNumeric="tabular-nums">
-                / {limitCredits}
-                {reservedCredits > 0 ? ` · ${reservedCredits} reserved` : ""}
-              </Text>
-            }
-            meter={pct}
-            meterPalette={
-              pct >= 100 ? "danger" : pct >= 80 ? "warning" : "accent"
-            }
-          />
-          <StatBand.Item
-            label="Credits remaining"
-            value={usage.remainingCredits}
-            suffix={
-              <Text fontSize="13px" color="fg.muted">
-                renew {renewsOn} (UTC)
-              </Text>
-            }
-          />
-        </StatBand>
-      </Box>
+      <Grid {...reveal(1)} templateColumns={{ base: "1fr", md: "repeat(3, minmax(0, 1fr))" }} gap="3">
+        <StatTile
+          icon={<BadgeCheck size={14} />}
+          label="Current plan"
+          value={planDefinition(tier).name}
+          hint={tier === "free" ? "No subscription" : billingView.interval ? `Billed ${billingView.interval === "annual" ? "annually" : "monthly"}` : undefined}
+        />
+        <StatTile
+          icon={<Coins size={14} />}
+          label="Credits used this month"
+          value={usedCredits + reservedCredits}
+          suffix={`/ ${limitCredits}`}
+          meter={pct}
+          hint={reservedCredits > 0 ? `${reservedCredits} reserved for videos in progress` : undefined}
+        />
+        <StatTile
+          icon={<CalendarClock size={14} />}
+          label="Credits remaining"
+          value={usage.remainingCredits}
+          suffix="credits"
+          hint={`Renew ${renewsOn} (UTC)`}
+        />
+      </Grid>
 
       <Box {...reveal(2)}>
         <BillingPlans

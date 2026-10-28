@@ -40,6 +40,7 @@ export default async function SocialAccountsPage({
 			<Box animation="fade-up" animationFillMode="backwards">
 				<PageHeader
 					title="Social accounts"
+					description="The accounts Narriflow publishes your clips to."
 					actions={
 						returnTo ? (
 							<Button variant="subtle" asChild>

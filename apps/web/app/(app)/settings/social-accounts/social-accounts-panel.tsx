@@ -6,7 +6,9 @@ import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { AccessNote, type WorkspaceAccess } from "../_components/access-note";
 import { UpgradeGem, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { Box, Flex, Image, SimpleGrid, Stack, Text } from "@chakra-ui/react";
-import { Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { BrandTile } from "../../integrations/_components/brand-tile";
+import { SettingsCard, StatusPill } from "../_components/settings-ui";
 import { Button } from "@narriflow/ui/components/button";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
@@ -76,6 +78,16 @@ function PlatformTile({
 		</Flex>
 	);
 }
+
+/** What each platform receives, shown under its name. */
+const platformFormats: Record<SocialPlatform, string> = {
+	tiktok: "Short videos",
+	youtube_shorts: "Shorts",
+	instagram_reels: "Reels",
+	facebook_reels: "Page Reels",
+	linkedin: "Video posts",
+	x: "Video posts",
+};
 
 const platforms: SocialPlatform[] = [
 	"tiktok",
@@ -325,33 +337,18 @@ export function SocialAccountsPanel({
 		}
 	}
 
+	const slotsUsed = accounts.filter((account) => account.status !== "revoked").length;
 	return (
-		<Box as="section">
+		<Stack as="section" gap="8">
 			{facebookSelectionToken && facebookPages.length > 0 ? (
-				<Box
-					mb="6"
-					p="5"
-					bg="bg.panel"
-					borderRadius="l3"
-					borderWidth="1px"
-					borderColor="border.card"
+				<SettingsCard
+					icon={<PlatformTile platform="facebook_reels" compact />}
+					title="Choose one Facebook Page"
+					description="Only the Page you choose will be connected to this workspace."
 				>
-					<Text fontSize="16px" fontWeight="500">
-						Choose one Facebook Page
-					</Text>
-					<Text mt="1" fontSize="13px" color="fg.muted">
-						Only the Page you choose will be connected to this workspace.
-					</Text>
-					<Stack mt="3" gap="0">
+					<Stack gap="1">
 						{facebookPages.map((page) => (
-							<Flex
-								key={page.id}
-								py="3"
-								align="center"
-								gap="3"
-								borderTopWidth="1px"
-								borderColor="border.subtle"
-							>
+							<Flex key={page.id} py="2.5" align="center" gap="3">
 								<SocialAvatar
 									src={page.avatarUrl}
 									name={page.name ?? "Facebook Page"}
@@ -371,34 +368,28 @@ export function SocialAccountsPanel({
 							</Flex>
 						))}
 					</Stack>
-				</Box>
+				</SettingsCard>
 			) : null}
 			{accounts.length > 0 ? (
-				<Stack gap="3" mb="8" maxW="600px">
-					<Text as="h2" fontSize="16px" fontWeight="500">
-						Connected accounts
-					</Text>
-					<SimpleGrid
-						columns={{ base: 1, sm: 2, md: 3 }}
-						gap="3"
-						css={{
-							"@media (min-width: 360px) and (max-width: 479px)": {
-								gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-							},
-						}}
-					>
+				<Stack gap="3">
+					<Flex align="center" gap="2">
+						<Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted">
+							Connected accounts
+						</Text>
+						<Text as="span" h="5" px="2" display="inline-flex" alignItems="center" borderRadius="full" bg="bg.soft" fontSize="11.5px" color="fg.muted" fontVariantNumeric="tabular-nums">
+							{accounts.length}
+						</Text>
+					</Flex>
+					<SimpleGrid columns={{ base: 1, md: 2 }} gap="2">
 						{accounts.map((account) => (
 							<Flex
 								key={account.id}
-								direction="column"
-								gap="3"
 								align="center"
+								gap="3.5"
 								minW="0"
-								p="4"
-								borderWidth="1px"
-								borderColor="border.card"
-								borderRadius="l3"
-								bg="bg.panel"
+								p="3.5"
+								borderRadius="12px"
+								bg="bg.subtle"
 							>
 								<Box position="relative" flexShrink={0}>
 									<SocialAvatar
@@ -414,8 +405,6 @@ export function SocialAccountsPanel({
 										justify="center"
 										borderRadius="full"
 										bg="bg.panel"
-										borderWidth="2px"
-										borderColor="bg.panel"
 										role="img"
 										aria-label={platformLabels[account.platform]}
 										title={platformLabels[account.platform]}
@@ -423,174 +412,178 @@ export function SocialAccountsPanel({
 										<PlatformTile platform={account.platform} compact />
 									</Flex>
 								</Box>
-								<Box flex="1" minW="0" w="full" textAlign="center">
-									<Text fontSize="14px" fontWeight="500" overflowWrap="anywhere">
+								<Stack gap="0.5" flex="1" minW="0" align="flex-start">
+									<Text fontSize="14px" fontWeight="500" maxW="full" truncate>
 										{account.displayName}
 									</Text>
-									<Text fontSize="xs" color="fg.muted" overflowWrap="anywhere">
+									<Text fontSize="12px" color="fg.muted" maxW="full" truncate>
 										{account.handle ?? account.providerAccountId}
 									</Text>
 									{account.status !== "active" ? (
-										<Text
-											fontSize="xs"
-											color="fg.muted"
-											textTransform="capitalize"
-										>
-											{account.status.replaceAll("_", " ")}
-										</Text>
+										<Box mt="1">
+											<StatusPill tone="warning">
+												<Text as="span" textTransform="capitalize">{account.status.replaceAll("_", " ")}</Text>
+											</StatusPill>
+										</Box>
 									) : !SOCIAL_PROVIDER_CAPABILITIES[account.platform].publishingEnabled ? (
-										<Text fontSize="xs" color="fg.muted">
-											Publishing coming soon
-										</Text>
+										<Box mt="1">
+											<StatusPill>Publishing coming soon</StatusPill>
+										</Box>
 									) : !account.publishingEligible ? (
-										<Text fontSize="xs" color="warning.fg">
+										<Text mt="1" fontSize="12px" color="warning.fg">
 											Over your plan's {accountLimit}-account limit
 										</Text>
 									) : null}
-								</Box>
-								{canManage && account.status !== "active" ? (
-									<Button variant="subtle" size="sm" asChild>
-										{/* A plain anchor: starting OAuth writes state, so it must not be prefetched. */}
-										<a href={connectHref(account.platform, returnTo)}>Reconnect</a>
-									</Button>
-								) : null}
+								</Stack>
 								{canManage ? (
-									<Button
-										size="sm"
-										variant="ghost"
-										colorPalette="danger"
-										aria-label={`Disconnect ${account.displayName}`}
-										loading={disconnecting === account.id}
-										disabled={isPending || disconnecting !== null}
-										onClick={() => void disconnect(account)}
-									>
-										<Trash2 size={14} />
-										Disconnect
-									</Button>
+									<Flex gap="1" align="center" flexShrink={0}>
+										{account.status !== "active" ? (
+											<Button variant="subtle" size="sm" asChild>
+												{/* A plain anchor: starting OAuth writes state, so it must not be prefetched. */}
+												<a href={connectHref(account.platform, returnTo)}><RefreshCw size={13} />Reconnect</a>
+											</Button>
+										) : null}
+										<Button
+											size="sm"
+											variant="ghost"
+											color="fg.muted"
+											_hover={{ color: "danger.fg", bg: "bg.soft" }}
+											aria-label={`Disconnect ${account.displayName}`}
+											loading={disconnecting === account.id}
+											disabled={isPending || disconnecting !== null}
+											onClick={() => void disconnect(account)}
+										>
+											<Trash2 size={14} />
+										</Button>
+									</Flex>
 								) : null}
 							</Flex>
 						))}
 					</SimpleGrid>
 				</Stack>
 			) : null}
-			<Stack gap="2" mb="5" maxW="560px">
-				<Text as="h2" fontSize="16px" fontWeight="500">
-					{accounts.length
-						? "Add an account"
-						: "Connect your first social account"}
-				</Text>
-				{canManage ? (
-					<Text fontSize="13px" color="fg.muted">
-						Sign in to the social account you want to add, then choose a platform below.
-					</Text>
-				) : (
-					<AccessNote access={access} capability="social.manage" action="connect a social account" />
-				)}
-				{accountLimit > 0 ? (
-					<Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
-						Your plan publishes to {accountLimit} connected account{accountLimit === 1 ? "" : "s"}. Disconnect one to make room for another.
-					</Text>
-				) : null}
+			<Stack gap="4">
+				<Flex align={{ base: "flex-start", md: "flex-end" }} justify="space-between" gap="4" wrap="wrap">
+					<Stack gap="1" maxW="560px">
+						<Text as="h2" fontSize="16px" fontWeight="500">
+							{accounts.length
+								? "Add an account"
+								: "Connect your first social account"}
+						</Text>
+						{canManage ? (
+							<Text fontSize="13px" color="fg.muted">
+								Sign in to the account you want to add in this browser, then pick its platform.
+							</Text>
+						) : (
+							<AccessNote access={access} capability="social.manage" action="connect a social account" />
+						)}
+					</Stack>
+					{accountLimit > 0 ? (
+						// How many of the plan's account slots are in use.
+						<Stack gap="1.5" minW="200px">
+							<Flex justify="space-between" fontSize="12px" color="fg.muted" gap="3">
+								<Text>Accounts on your plan</Text>
+								<Text color="fg" fontVariantNumeric="tabular-nums">
+									{Math.min(slotsUsed, accountLimit)} of {accountLimit}
+								</Text>
+							</Flex>
+							<Box h="6px" borderRadius="full" bg="bg.soft" overflow="hidden">
+								<Box h="full" borderRadius="full" bg={slotsUsed >= accountLimit ? "warning.solid" : "accent.solid"} style={{ width: `${Math.max(3, Math.min(100, (slotsUsed / accountLimit) * 100))}%` }} />
+							</Box>
+						</Stack>
+					) : null}
+				</Flex>
 				{/* With no account slots at all, the page leads with an upgrade banner instead. */}
 				{canManage && accountLimit > 0 ? (
 					<PlanLimitNotice message={connectRequirement} upgrade={connectUpgrade} canManageBilling={canManageBilling} />
 				) : null}
-			</Stack>
-			<SimpleGrid
-				columns={{ base: 1, sm: 2, md: 3 }}
-				gap="3"
-				maxW="600px"
-				css={{
-					"@media (min-width: 360px) and (max-width: 479px)": {
-						gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-					},
-				}}
-			>
-				{platforms.map((platform) => {
-					const content = (
-						<Stack
-							key={platform}
-							gap="3"
-							align="center"
-							justify="center"
-							minH="132px"
-							p="5"
-						>
-							<PlatformTile platform={platform} />
-							<Box textAlign="center">
-								<Text fontSize="13px" fontWeight="500">
-									{platformLabels[platform]}
-								</Text>
-								{!SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabled ? (
-									<Text fontSize="xs" color="fg.muted">
-										Publishing coming soon
+				<SimpleGrid columns={{ base: 1, sm: 2, lg: 3 }} gap="2">
+					{platforms.map((platform) => {
+						const enabled = SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabled;
+						const connected = accounts.filter((account) => account.platform === platform && account.status === "active").length;
+						const content = (
+							<Flex key="content" align="center" gap="3" p="3.5" minW="0" w="full" textAlign="start">
+								<BrandTile brand={platform} />
+								<Stack gap="0" flex="1" minW="0">
+									<Text fontSize="14px" fontWeight="500">
+										{platformLabels[platform]}
 									</Text>
-								) : null}
-							</Box>
-						</Stack>
-					);
-					return mayConnect ? (
-						<Box
-							key={platform}
-							asChild
-							bg="bg.soft"
-							borderRadius="l2"
-							transition="background 120ms ease"
-							_hover={{ bg: "bg.softHover" }}
-							_focusVisible={{
-								outline: "2px solid",
-								outlineColor: "accent.solid",
-								outlineOffset: "3px",
-							}}
-						>
-							<a
-								href={connectHref(platform, returnTo)}
-								aria-label={`Connect ${platformLabels[platform]} account${SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabled ? "" : " (publishing coming soon)"}`}
+									<Text fontSize="12px" color={enabled ? "fg.muted" : "fg.subtle"} truncate>
+										{!enabled ? "Publishing coming soon" : connected ? `${platformFormats[platform]} · ${connected} connected` : platformFormats[platform]}
+									</Text>
+								</Stack>
+							</Flex>
+						);
+						const addMark = (
+							<Flex key="add" boxSize="7" me="3.5" borderRadius="8px" bg="bg.soft" color="fg" align="center" justify="center" flexShrink={0} aria-hidden="true">
+								<Plus size={16} />
+							</Flex>
+						);
+						return mayConnect ? (
+							<Flex
+								key={platform}
+								asChild
+								align="center"
+								bg="bg.subtle"
+								borderRadius="12px"
+								transition="background 120ms ease"
+								_hover={{ bg: "bg.muted" }}
+								_focusVisible={{
+									outline: "2px solid",
+									outlineColor: "accent.solid",
+									outlineOffset: "3px",
+								}}
+							>
+								<a
+									href={connectHref(platform, returnTo)}
+									aria-label={`Connect ${platformLabels[platform]} account${enabled ? "" : " (publishing coming soon)"}`}
+								>
+									{content}
+									{addMark}
+								</a>
+							</Flex>
+						) : canManage && connectUpgrade?.tier ? (
+							// At the plan's account limit the tile explains the upgrade instead of greying out.
+							<Flex
+								key={platform}
+								asChild
+								align="center"
+								bg="bg.subtle"
+								borderRadius="12px"
+								cursor="pointer"
+								transition="background 120ms ease"
+								_hover={{ bg: "bg.muted" }}
+								_focusVisible={{
+									outline: "2px solid",
+									outlineColor: "accent.solid",
+									outlineOffset: "3px",
+								}}
+							>
+								<button
+									type="button"
+									aria-haspopup="dialog"
+									aria-label={`Connect ${platformLabels[platform]} account (needs ${PLAN_CATALOG[connectUpgrade.tier].name})`}
+									onClick={() => openUpgrade(connectUpgrade)}
+								>
+									{content}
+									<Box me="3.5" flexShrink={0}><UpgradeGem label={`Needs ${PLAN_CATALOG[connectUpgrade.tier].name}`} /></Box>
+								</button>
+							</Flex>
+						) : (
+							<Flex
+								key={platform}
+								align="center"
+								bg="bg.subtle"
+								borderRadius="12px"
+								color="fg.muted"
 							>
 								{content}
-							</a>
-						</Box>
-					) : canManage && connectUpgrade?.tier ? (
-						// At the plan's account limit the tile explains the upgrade instead of greying out.
-						<Box
-							key={platform}
-							asChild
-							position="relative"
-							bg="bg.soft"
-							borderRadius="l2"
-							textAlign="start"
-							cursor="pointer"
-							transition="background 120ms ease"
-							_hover={{ bg: "bg.softHover" }}
-							_focusVisible={{
-								outline: "2px solid",
-								outlineColor: "accent.solid",
-								outlineOffset: "3px",
-							}}
-						>
-							<button
-								type="button"
-								aria-haspopup="dialog"
-								aria-label={`Connect ${platformLabels[platform]} account (needs ${PLAN_CATALOG[connectUpgrade.tier].name})`}
-								onClick={() => openUpgrade(connectUpgrade)}
-							>
-								<Box position="absolute" top="2.5" insetEnd="2.5"><UpgradeGem label={`Needs ${PLAN_CATALOG[connectUpgrade.tier].name}`} /></Box>
-								{content}
-							</button>
-						</Box>
-					) : (
-						<Box
-							key={platform}
-							bg="bg.soft"
-							borderRadius="l2"
-							color="fg.muted"
-						>
-							{content}
-						</Box>
-					);
-				})}
-			</SimpleGrid>
+							</Flex>
+						);
+					})}
+				</SimpleGrid>
+			</Stack>
 			{dialog}
-		</Box>
+		</Stack>
 	);
 }

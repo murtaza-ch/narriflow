@@ -1,5 +1,5 @@
 import { Flex, Stack, Text } from "@chakra-ui/react";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, KeyRound, ShieldCheck, Terminal, Webhook } from "lucide-react";
 import { callbackSigningSecrets, webhookSubscriptions, workspaceService } from "@narriflow/services";
 import { hasFeature, lowestTierWithFeature, planUpgradeHighlight } from "@narriflow/validators";
 import { UpgradeHero } from "../../_components/upgrade";
@@ -14,12 +14,25 @@ import { ApiQuickstart } from "./api-quickstart";
 import { CallbackSecretPanel } from "./callback-secret-panel";
 import { CreateKeyDialog } from "./create-key-dialog";
 import { WebhooksPanel } from "./webhooks-panel";
+import { IconTile } from "../_components/settings-ui";
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
+/** A section's header: icon, title, one line on what it's for, and its action on the right. */
+function SectionHeader({ icon, title, description, action }: { icon: React.ReactNode; title: string; description: string; action?: React.ReactNode }) {
   return (
-    <Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted" mb="3">
-      {children}
-    </Text>
+    <Flex align={{ base: "flex-start", sm: "center" }} justify="space-between" gap="3" mb="4" direction={{ base: "column", sm: "row" }}>
+      <Flex align="center" gap="3" minW="0">
+        <IconTile>{icon}</IconTile>
+        <Stack gap="0.5" minW="0">
+          <Text as="h2" fontSize="15px" fontWeight="500">
+            {title}
+          </Text>
+          <Text fontSize="13px" color="fg.muted">
+            {description}
+          </Text>
+        </Stack>
+      </Flex>
+      {action ? <Flex align="center" gap="3" flexShrink={0}>{action}</Flex> : null}
+    </Flex>
   );
 }
 
@@ -38,16 +51,14 @@ export default async function ApiSettingsPage() {
     <Stack gap="10">
       <PageHeader
         title="Developer access"
+        description="API keys, callbacks and webhooks for connecting your own tools."
         actions={
-          <>
-            <Button asChild size="sm" variant="ghost" color="fg.muted">
-              <a href={docsUrl("api/introduction")} target="_blank" rel="noreferrer">
-                API docs
-                <ArrowUpRight size={16} />
-              </a>
-            </Button>
-            {hasApi ? <CreateKeyDialog /> : null}
-          </>
+          <Button asChild size="sm" variant="subtle">
+            <a href={docsUrl("api/introduction")} target="_blank" rel="noreferrer">
+              API docs
+              <ArrowUpRight size={16} />
+            </a>
+          </Button>
         }
       />
 
@@ -67,29 +78,34 @@ export default async function ApiSettingsPage() {
       ) : null}
 
       <section>
-        <SectionTitle>API keys</SectionTitle>
+        <SectionHeader icon={<KeyRound size={16} />} title="API keys" description="Each key acts for this workspace with the permissions you give it." action={hasApi ? <CreateKeyDialog /> : undefined} />
         <ApiKeysPanel
           keys={keys.map((key) => ({ ...key, createdAt: key.createdAt.toISOString(), lastUsedAt: key.lastUsedAt?.toISOString() ?? null }))}
         />
       </section>
 
-      {hasApi ? <ApiQuickstart apiBase={apiBase} /> : null}
+      {hasApi ? (
+        <section>
+          <SectionHeader icon={<Terminal size={16} />} title="Quickstart" description="Check a key works with one request." />
+          <ApiQuickstart apiBase={apiBase} />
+        </section>
+      ) : null}
 
       {hasApi ? (
         <section id="callbacks">
-          <SectionTitle>Callbacks</SectionTitle>
+          <SectionHeader icon={<ShieldCheck size={16} />} title="Callbacks" description="Narriflow signs every callback so your endpoint can trust it." />
           <CallbackSecretPanel status={signing} />
         </section>
       ) : null}
 
       {hasApi ? (
         <section id="webhooks">
-          <Flex align="center" justify="space-between" mb="3" gap="3">
-            <Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted">
-              Webhooks
-            </Text>
-            <AddWebhookDialog disabledReason={signing.current ? null : "Create a callback signing secret above first."} />
-          </Flex>
+          <SectionHeader
+            icon={<Webhook size={16} />}
+            title="Webhooks"
+            description="Push finished work to your tools as signed events."
+            action={<AddWebhookDialog disabledReason={signing.current ? null : "Create a callback signing secret above first."} />}
+          />
           <WebhooksPanel webhooks={webhooks} />
         </section>
       ) : null}

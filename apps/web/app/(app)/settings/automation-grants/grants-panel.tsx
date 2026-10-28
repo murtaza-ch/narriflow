@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Box, Field, Flex, IconButton, Input, Stack, Text } from "@chakra-ui/react";
-import { ChevronDown, ChevronRight, MoreHorizontal, Pause, Plus, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
+import { CalendarClock, ChevronDown, ChevronRight, MoreHorizontal, Pause, Plus, RotateCcw, Send, Trash2, Users } from "lucide-react";
 import {
 	STANDING_GRANT_MAX_DAILY_CAP,
 	STANDING_GRANT_MAX_WEEKLY_CAP,
@@ -19,9 +19,11 @@ import { Button } from "@narriflow/ui/components/button";
 import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { AccessNote, type WorkspaceAccess } from "../_components/access-note";
+import { IconTile, StatusPill } from "../_components/settings-ui";
+import { FeatureHero } from "../../_components/feature-hero";
+import { AutopilotVisual } from "../../_components/upgrade-visuals";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { CloseButton, Dialog, Portal } from "@narriflow/ui/components/dialog";
-import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { ActionMenu } from "@narriflow/ui/components/menu";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Select } from "@narriflow/ui/components/select";
@@ -53,22 +55,10 @@ const failed = (result: unknown) =>
 	isAuthenticatedActionFailure(result) || (typeof result === "object" && result !== null && "ok" in result && result.ok === false);
 
 function StatusChip({ status }: { status: StandingGrantStatus }) {
-	const paused = status === "paused";
 	return (
-		<Text
-			as="span"
-			display="inline-flex"
-			alignItems="center"
-			h="22px"
-			px="2"
-			borderRadius="6px"
-			fontSize="12px"
-			whiteSpace="nowrap"
-			bg={paused ? "warning.subtle" : "bg.soft"}
-			color={paused ? "warning.fg" : status === "active" ? "fg" : "fg.muted"}
-		>
+		<StatusPill tone={status === "active" ? "accent" : status === "paused" ? "warning" : "neutral"}>
 			{STATUS_LABELS[status]}
-		</Text>
+		</StatusPill>
 	);
 }
 
@@ -98,11 +88,18 @@ function eventText(event: StandingGrantEventView) {
 
 const parseEmails = (text: string) => [...new Set(text.split(/[\s,;]+/).map((value) => value.trim()).filter(Boolean))];
 
+/** Used against a cap, as the line tests and people read plus a small meter. */
 function Usage({ label, used, cap }: { label: string; used: number; cap: number }) {
+	const full = used >= cap;
 	return (
-		<Text as="span" fontSize="13px" color={used >= cap ? "warning.fg" : "fg.muted"}>
-			{label} {used} of {cap}
-		</Text>
+		<Stack gap="1.5" minW="150px" flex="1">
+			<Text as="span" fontSize="12.5px" color={full ? "warning.fg" : "fg.muted"} fontVariantNumeric="tabular-nums">
+				{label} {used} of {cap}
+			</Text>
+			<Box h="4px" borderRadius="full" bg="bg.soft" overflow="hidden">
+				<Box h="full" borderRadius="full" bg={full ? "warning.solid" : "accent.solid"} style={{ width: `${Math.max(3, Math.min(100, cap > 0 ? (used / cap) * 100 : 0))}%` }} />
+			</Box>
+		</Stack>
 	);
 }
 
@@ -399,93 +396,116 @@ export function GrantsPanel({
 		</Button>
 	);
 
-	return (
-		<Stack gap="4">
-			<Flex justify="space-between" align="center" gap="4" wrap="wrap">
-				{!canManage && access && access.status !== "active" && access.role !== "editor" && access.role !== "viewer" ? (
-					<AccessNote access={access} capability="workspace.manage" action="manage grants" maxW="640px" />
-				) : (
-					<Text fontSize="13px" color="fg.muted" maxW="640px">
-						{canManage
-							? "Only Owners and Admins can grant, renew, pause or revoke. A grant never overrides a Brand Profile that requires approval."
-							: "Only Owners and Admins can grant, renew, pause or revoke. You can see what is granted and what went out."}
-					</Text>
-				)}
-				{createButton}
-			</Flex>
+	const memberNote =
+		!canManage && access && access.status !== "active" && access.role !== "editor" && access.role !== "viewer" ? (
+			<AccessNote access={access} capability="workspace.manage" action="manage grants" maxW="640px" />
+		) : !canManage ? (
+			<Text fontSize="13px" color="fg.muted" maxW="640px">
+				Only Owners and Admins can grant, renew, pause or revoke. You can see what is granted and what went out.
+			</Text>
+		) : null;
 
+	return (
+		<Stack gap="5">
 			{grants.length === 0 ? (
-				<EmptyState
-					icon={<ShieldCheck />}
-					title="No automation grants"
-					description={
-						autopilotUpgrade?.tier
-							? "Grants let an Autopilot rule publish without a click. Autopilot needs the Pro plan."
-							: rules.length === 0
-							? "Grants belong to an Autopilot rule. Create a rule first."
-							: "Without a grant, every post and every review round waits for a person's click."
-					}
-					action={createButton ?? undefined}
-				/>
+				<>
+					{memberNote}
+					<FeatureHero
+						title="No automation grants"
+						points={[
+							"Without a grant, every post and every review round waits for a person's click.",
+							autopilotUpgrade?.tier
+								? "Grants let an Autopilot rule publish without a click. Autopilot needs the Pro plan."
+								: rules.length === 0
+									? "Grants belong to an Autopilot rule. Create a rule first."
+									: "A grant covers one rule, within daily and weekly caps, until it expires.",
+							"Brand Profiles that require approval still wait for a reviewer.",
+						]}
+						visual={<AutopilotVisual />}
+						action={createButton ?? undefined}
+					/>
+				</>
 			) : (
-				<Stack gap="2">
-					{grants.map((grant) => (
-						<Stack key={grant.id} gap="3" bg="bg.subtle" borderRadius="12px" p="4">
-							<Flex justify="space-between" align="flex-start" gap="3">
-								<Stack gap="1" minW="0">
-									<Flex align="center" gap="2.5" wrap="wrap">
-										<Text fontSize="14px" fontWeight="500">
-											{grant.ruleName}
-										</Text>
-										<StatusChip status={grant.status} />
+				<>
+					<Flex justify="space-between" align="center" gap="4" wrap="wrap">
+						{memberNote ?? (
+							<Text fontSize="13px" color="fg.muted">
+								{grants.filter((grant) => grant.status === "active").length} of {grants.length} active
+							</Text>
+						)}
+						{createButton}
+					</Flex>
+					<Stack gap="2">
+						{grants.map((grant) => (
+							<Stack key={grant.id} gap="4" bg="bg.subtle" borderRadius="l3" p={{ base: "4", md: "5" }}>
+								<Flex justify="space-between" align="flex-start" gap="3">
+									<Flex gap="3" minW="0" align="flex-start">
+										<IconTile tone={grant.status === "active" ? "accent" : "neutral"}>
+											{grant.kind === "publish" ? <Send size={16} /> : <Users size={16} />}
+										</IconTile>
+										<Stack gap="1" minW="0">
+											<Flex align="center" gap="2.5" wrap="wrap">
+												<Text fontSize="15px" fontWeight="500">
+													{grant.ruleName}
+												</Text>
+												<StatusChip status={grant.status} />
+											</Flex>
+											<Text fontSize="13px" color="fg.muted">
+												{destination(grant)}
+											</Text>
+										</Stack>
 									</Flex>
+									{canManage && grant.status !== "revoked" ? (
+										<ActionMenu
+											ariaLabel={`${grant.ruleName} grant actions`}
+											trigger={
+												<IconButton size="sm" variant="ghost" color="fg.muted" aria-label={`${grant.ruleName} grant actions`} disabled={pending}>
+													<MoreHorizontal size={16} />
+												</IconButton>
+											}
+											items={[
+												{ value: "renew", label: grant.status === "active" ? "Renew" : "Renew and resume", icon: <RotateCcw size={14} />, onSelect: () => setEditing({ grant }) },
+												...(grant.status === "active"
+													? [{ value: "pause", label: "Pause", icon: <Pause size={14} />, onSelect: () => run(() => pauseStandingGrantAction(grant.id), "The grant could not be paused.") }]
+													: []),
+												{ value: "revoke", label: "Revoke", icon: <Trash2 size={14} />, destructive: true, onSelect: () => void revoke(grant) },
+											]}
+										/>
+									) : null}
+								</Flex>
+								{grant.optedOut.length > 0 ? (
 									<Text fontSize="13px" color="fg.muted">
-										{destination(grant)}
+										Opted out of automated review requests, so skipped: {grant.optedOut.join(", ")}
 									</Text>
-								</Stack>
-								{canManage && grant.status !== "revoked" ? (
-									<ActionMenu
-										ariaLabel={`${grant.ruleName} grant actions`}
-										trigger={
-											<IconButton size="sm" variant="ghost" color="fg.muted" aria-label={`${grant.ruleName} grant actions`} disabled={pending}>
-												<MoreHorizontal size={16} />
-											</IconButton>
-										}
-										items={[
-											{ value: "renew", label: grant.status === "active" ? "Renew" : "Renew and resume", icon: <RotateCcw size={14} />, onSelect: () => setEditing({ grant }) },
-											...(grant.status === "active"
-												? [{ value: "pause", label: "Pause", icon: <Pause size={14} />, onSelect: () => run(() => pauseStandingGrantAction(grant.id), "The grant could not be paused.") }]
-												: []),
-											{ value: "revoke", label: "Revoke", icon: <Trash2 size={14} />, destructive: true, onSelect: () => void revoke(grant) },
-										]}
-									/>
 								) : null}
-							</Flex>
-							{grant.optedOut.length > 0 ? (
-								<Text fontSize="13px" color="fg.muted">
-									Opted out of automated review requests, so skipped: {grant.optedOut.join(", ")}
-								</Text>
-							) : null}
-							{grant.pausedMessage ? (
-								<Text fontSize="13px" color="warning.fg">
-									{grant.pausedMessage}
-								</Text>
-							) : null}
-							<Flex gap={{ base: "2", md: "6" }} wrap="wrap" align="center">
-								<Usage label="Last 24 hours" used={grant.usedDay} cap={grant.dailyCap} />
-								<Usage label="Last 7 days" used={grant.usedWeek} cap={grant.weeklyCap} />
-								<Text as="span" fontSize="13px" color="fg.muted">
-									{grant.status === "expired" ? "Expired" : "Expires"} {formatDay(grant.expiresAt)}
-								</Text>
-								<Text as="span" fontSize="13px" color="fg.subtle">
-									Revision {grant.revision}
-									{grant.grantedByName ? `, for ${grant.grantedByName}` : ""}
-								</Text>
-							</Flex>
-							<History grant={grant} />
-						</Stack>
-					))}
-				</Stack>
+								{grant.pausedMessage ? (
+									<Box px="3" py="2.5" borderRadius="l2" bg="warning.subtle">
+										<Text fontSize="13px" color="warning.fg">
+											{grant.pausedMessage}
+										</Text>
+									</Box>
+								) : null}
+								<Flex gap="5" wrap="wrap" align="flex-end">
+									<Usage label="Last 24 hours" used={grant.usedDay} cap={grant.dailyCap} />
+									<Usage label="Last 7 days" used={grant.usedWeek} cap={grant.weeklyCap} />
+									<Flex align="center" gap="1.5" h="7" px="2.5" borderRadius="8px" bg="bg.soft" fontSize="12.5px" color="fg.muted" flexShrink={0}>
+										<CalendarClock size={13} aria-hidden />
+										<Text as="span">
+											{grant.status === "expired" ? "Expired" : "Expires"} {formatDay(grant.expiresAt)}
+										</Text>
+									</Flex>
+								</Flex>
+								<Flex align="center" justify="space-between" gap="3" wrap="wrap">
+									<History grant={grant} />
+									<Text as="span" fontSize="12px" color="fg.subtle">
+										Revision {grant.revision}
+										{grant.grantedByName ? `, for ${grant.grantedByName}` : ""}
+									</Text>
+								</Flex>
+							</Stack>
+						))}
+					</Stack>
+				</>
 			)}
 			{message ? (
 				<Text fontSize="13px" color="danger.fg">

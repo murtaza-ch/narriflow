@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { CircleAlert, RefreshCw } from "lucide-react";
+import { CalendarClock, Check, CircleAlert, Clock, CreditCard, RefreshCw, Users } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Dialog, Portal } from "@narriflow/ui/components/dialog";
@@ -40,6 +40,26 @@ import {
   planChangeQuotePresentation,
   stripeInvoicePaymentUrl,
 } from "@/lib/billing-plan-change";
+import { IconTile, SettingRow, SettingsCard, StatusPill } from "../_components/settings-ui";
+
+const STATUS_PILL: Record<"accent" | "warning" | "danger", { tone: "accent" | "warning" | "danger"; label: string }> = {
+  accent: { tone: "accent", label: "Updating" },
+  warning: { tone: "warning", label: "Needs attention" },
+  danger: { tone: "danger", label: "Action needed" },
+};
+
+/** A notice about a plan change in flight: icon, what is happening, and its actions. */
+function ChangeNotice({ icon, children, actions }: { icon: React.ReactNode; children: React.ReactNode; actions?: React.ReactNode }) {
+  return (
+    <Flex gap="4" align={{ base: "flex-start", md: "center" }} justify="space-between" direction={{ base: "column", md: "row" }} p={{ base: "5", md: "6" }} bg="bg.subtle" borderRadius="l3">
+      <Flex gap="3" align="flex-start" minW="0">
+        <IconTile tone="accent">{icon}</IconTile>
+        <Box minW="0">{children}</Box>
+      </Flex>
+      {actions}
+    </Flex>
+  );
+}
 
 export function BillingPlans({
   initialView,
@@ -421,117 +441,153 @@ export function BillingPlans({
 
   const primaryAction = canManageBilling ? status.primaryAction : null;
 
+  const pill = status.tone !== "neutral" ? STATUS_PILL[status.tone] : view.health === "current" ? { tone: "accent" as const, label: "Up to date" } : null;
+
   return (
-    <Stack gap="7" as="section">
+    <Stack gap="6" as="section">
       <Box
         ref={statusRef}
         tabIndex={-1}
         borderRadius="l3"
-        bg="bg.soft"
-        p="5"
+        bg="bg.subtle"
+        p={{ base: "5", md: "6" }}
         outline="none"
         role="status"
         aria-live={status.live}
         aria-atomic="true"
       >
         <Flex justify="space-between" align={{ base: "flex-start", md: "center" }} gap="5" direction={{ base: "column", md: "row" }}>
-          <Stack gap="1.5" maxW="680px">
-            <Flex align="center" gap="2">
-              {status.tone === "warning" || status.tone === "danger" ? <CircleAlert size={15} /> : null}
-              <Text textStyle="title" fontSize="16px">{status.headline}</Text>
-            </Flex>
-            <Text fontSize="13px" color="fg.muted">{status.body}</Text>
-            {status.dateLabel && status.dateValue ? (
-              <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
-                {status.dateLabel} · {status.dateValue}
-              </Text>
-            ) : null}
-          </Stack>
+          <Flex gap="3" align="flex-start" minW="0">
+            <IconTile tone={status.tone === "neutral" ? "neutral" : "accent"}>
+              {status.tone === "warning" || status.tone === "danger" ? <CircleAlert size={16} /> : <CreditCard size={16} />}
+            </IconTile>
+            <Stack gap="1.5" maxW="680px" minW="0">
+              <Flex align="center" gap="2.5" wrap="wrap">
+                <Text as="h2" fontSize="15px" fontWeight="500">{status.headline}</Text>
+                {pill ? <StatusPill tone={pill.tone}>{pill.label}</StatusPill> : null}
+              </Flex>
+              <Text fontSize="13px" color="fg.muted">{status.body}</Text>
+              {status.dateLabel && status.dateValue ? (
+                <Flex align="center" gap="1.5" fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
+                  <CalendarClock size={12} aria-hidden />
+                  {status.dateLabel} · {status.dateValue}
+                </Flex>
+              ) : null}
+            </Stack>
+          </Flex>
           {primaryAction === "open_portal" ? (
-            <Button size="sm" variant="solid" loading={busy === "portal"} disabled={busy !== null} onClick={openPortal}>
+            <Button size="sm" variant="solid" flexShrink={0} loading={busy === "portal"} disabled={busy !== null} onClick={openPortal}>
               Open billing portal
             </Button>
           ) : primaryAction === "retry" ? (
-            <Button size="sm" variant="solid" loading={busy === "retry"} disabled={busy !== null} onClick={retry}>
+            <Button size="sm" variant="solid" flexShrink={0} loading={busy === "retry"} disabled={busy !== null} onClick={retry}>
               <RefreshCw size={14} /> Retry sync
             </Button>
           ) : primaryAction === "contact_support" ? (
-            <Button size="sm" variant="solid" asChild><Link href="mailto:support@narriflow.com">Contact support</Link></Button>
+            <Button size="sm" variant="solid" flexShrink={0} asChild><Link href="mailto:support@narriflow.com">Contact support</Link></Button>
           ) : null}
         </Flex>
       </Box>
 
       {view.plan === "business" ? (
-        <Grid layerStyle="band" templateColumns={{ base: "1fr", md: "repeat(2, 1fr)" }} columnGap="8" rowGap="6">
-          <Box>
-            <Text textStyle="eyebrow" color="fg.muted">Additional paid seats</Text>
-            <Text fontWeight="500" fontVariantNumeric="tabular-nums" fontSize="24px" mt="1">{view.desiredAdditionalSeats}</Text>
-            <Text fontSize="13px" color="fg.muted">Owner seat included. Viewers are free.</Text>
-          </Box>
-          <Box>
-            <Text textStyle="eyebrow" color="fg.muted">Synchronized seats</Text>
-            <Text fontWeight="500" fontVariantNumeric="tabular-nums" fontSize="24px" mt="1">{view.synchronizedAdditionalSeats ?? "—"}</Text>
-            <Text fontSize="13px" color="fg.muted">
-              {view.synchronizedAdditionalSeats === view.desiredAdditionalSeats ? "Matches committed membership" : "Updating in the background"}
-            </Text>
-          </Box>
-        </Grid>
+        <SettingsCard icon={<Users size={16} />} title="Seats" description="Admins and Editors are billed per seat.">
+          <Stack gap="1">
+            <SettingRow
+              title="Additional paid seats"
+              description="Owner seat included. Viewers are free."
+              control={<Text fontSize="20px" fontWeight="550" fontVariantNumeric="tabular-nums">{view.desiredAdditionalSeats}</Text>}
+            />
+            <SettingRow
+              title="Seats on the subscription"
+              description={view.synchronizedAdditionalSeats === view.desiredAdditionalSeats ? "Matches your team" : "Updating in the background"}
+              control={<Text fontSize="20px" fontWeight="550" fontVariantNumeric="tabular-nums">{view.synchronizedAdditionalSeats ?? "—"}</Text>}
+            />
+          </Stack>
+        </SettingsCard>
       ) : null}
 
       {view.planChange?.state === "scheduled" ? (
-        <Flex gap="4" align={{ base: "flex-start", md: "center" }} justify="space-between" direction={{ base: "column", md: "row" }} p="5" bg="bg.soft" borderRadius="l3">
-          <Stack gap="1">
-            <Text textStyle="title" fontSize="16px">Switching to {PLAN_CATALOG[view.planChange.tier].name}</Text>
-            <Text fontSize="13px" color="fg.muted">
-              {view.planChange.effectiveAt ? `Your current plan stays active until ${formatBillingChangeDate(view.planChange.effectiveAt)} UTC.` : "Your current plan stays active until renewal."}
-              {" "}To cancel your subscription in the billing portal, remove this scheduled change first.
-            </Text>
-          </Stack>
-          {canManageBilling ? <Button size="sm" variant="subtle" loading={busy === "cancel-change"} disabled={busy !== null} onClick={keepCurrentPlan}>Keep current plan</Button> : null}
-        </Flex>
+        <ChangeNotice
+          icon={<CalendarClock size={16} />}
+          actions={canManageBilling ? <Button size="sm" variant="subtle" flexShrink={0} loading={busy === "cancel-change"} disabled={busy !== null} onClick={keepCurrentPlan}>Keep current plan</Button> : null}
+        >
+          <Text fontSize="15px" fontWeight="500">Switching to {PLAN_CATALOG[view.planChange.tier].name}</Text>
+          <Text fontSize="13px" color="fg.muted" mt="1">
+            {view.planChange.effectiveAt ? `Your current plan stays active until ${formatBillingChangeDate(view.planChange.effectiveAt)} UTC.` : "Your current plan stays active until renewal."}
+            {" "}To cancel your subscription in the billing portal, remove this scheduled change first.
+          </Text>
+        </ChangeNotice>
       ) : view.planChange?.state === "pending_payment" ? (
-        <Flex gap="4" align={{ base: "flex-start", md: "center" }} justify="space-between" direction={{ base: "column", md: "row" }} p="5" bg="bg.soft" borderRadius="l3">
-          <Stack gap="1" role="status">
-            <Text textStyle="title" fontSize="16px">Upgrade to {PLAN_CATALOG[view.planChange.tier].name} is awaiting payment</Text>
-            <Text fontSize="13px" color="fg.muted">
-              Your current plan stays active. {canManageBilling ? "Finish paying to switch now, or keep your current plan. Unpaid upgrades are cancelled automatically within a day." : "The workspace owner can finish the payment or keep the current plan."}
-            </Text>
-          </Stack>
-          {canManageBilling ? (
+        <ChangeNotice
+          icon={<Clock size={16} />}
+          actions={canManageBilling ? (
             <Flex gap="2" flexShrink={0}>
               <Button size="sm" variant="subtle" loading={busy === "cancel-change"} disabled={busy !== null} onClick={keepCurrentPlan}>Keep current plan</Button>
               <Button size="sm" variant="solid" loading={busy === "complete-payment"} disabled={busy !== null} onClick={completePlanChangePayment}>Complete payment</Button>
             </Flex>
           ) : null}
-        </Flex>
+        >
+          <Stack gap="1" role="status">
+            <Text fontSize="15px" fontWeight="500">Upgrade to {PLAN_CATALOG[view.planChange.tier].name} is awaiting payment</Text>
+            <Text fontSize="13px" color="fg.muted">
+              Your current plan stays active. {canManageBilling ? "Finish paying to switch now, or keep your current plan. Unpaid upgrades are cancelled automatically within a day." : "The workspace owner can finish the payment or keep the current plan."}
+            </Text>
+          </Stack>
+        </ChangeNotice>
       ) : null}
 
       {mayStartCheckout || mayChangePlan ? (
-        <Stack id="plans" gap="5" scrollMarginTop="24px">
+        <Stack id="plans" gap="4" scrollMarginTop="24px" pt="2">
           <Flex align="center" justify="space-between" gap="3" wrap="wrap">
-            <Text textStyle="eyebrow" color="fg.muted">{mayStartCheckout ? "Choose a plan" : "Change plan"}</Text>
+            <Text as="h2" fontSize="15px" fontWeight="500">{mayStartCheckout ? "Choose a plan" : "Change plan"}</Text>
             <SegmentedControl size="sm" aria-label="Billing interval" items={[{ label: "Monthly", value: "monthly" }, { label: `Annual · save ${minimumAnnualSavingsPercent()}%+`, value: "annual" }]} value={interval} onValueChange={(value) => setInterval(value as BillingInterval)} />
           </Flex>
-          <Grid layerStyle="band" templateColumns={{ base: "1fr", md: `repeat(${Math.min(3, availableTiers.length)}, minmax(0, 1fr))` }} gap="3">
+          <Grid templateColumns={{ base: "1fr", md: `repeat(${Math.min(3, availableTiers.length)}, minmax(0, 1fr))` }} gap="3">
             {availableTiers.map((tier) => {
               const info = PLAN_CATALOG[tier];
               const isCurrentPlan = !mayStartCheckout && tier === view.plan && interval === view.interval;
+              // The workspace's own plan, on either interval.
+              const isOwnTier = !mayStartCheckout && tier === view.plan;
               const perMonth = formatUsdCents(
                 interval === "annual" ? Math.round(info.annualPriceCents / 12) : info.monthlyPriceCents,
               );
+              const highlighted = tier === focusTier;
               return (
-                <Stack key={tier} gap="4" p="5" bg={tier === focusTier ? "accent.subtle" : "bg.soft"} borderRadius="l3">
-                  <Flex align="baseline" justify="space-between" gap="2">
-                    <Text textStyle="title" fontSize="16px">{info.name}</Text>
-                    {tier === focusTier ? <Text fontSize="12px" fontWeight="500" color="accent.fg">Selected</Text> : tier === "pro" ? <Text fontSize="12px" fontWeight="500" color="accent.fg">Recommended</Text> : null}
+                <Stack
+                  key={tier}
+                  gap="5"
+                  p="6"
+                  bg={highlighted ? "accent.subtle" : "bg.subtle"}
+                  borderRadius="l3"
+                  outline="2px solid"
+                  outlineColor={isOwnTier || highlighted ? "accent.solid" : "transparent"}
+                  outlineOffset="-2px"
+                >
+                  <Flex align="center" justify="space-between" gap="2" minH="6">
+                    <Text as="h3" textStyle="title" fontSize="17px">{info.name}</Text>
+                    <Flex gap="1.5" wrap="wrap" justify="flex-end">
+                      {isOwnTier ? <PlanChip>{isCurrentPlan ? "Your plan" : `Your plan · ${view.interval === "annual" ? "annual" : "monthly"}`}</PlanChip> : null}
+                      {highlighted ? <PlanChip>Selected</PlanChip> : tier === "pro" ? <PlanChip>Recommended</PlanChip> : null}
+                    </Flex>
                   </Flex>
-                  <Flex align="baseline" gap="1"><Text fontWeight="500" fontVariantNumeric="tabular-nums" fontSize="28px">{perMonth}</Text><Text fontSize="13px" color="fg.muted">/mo</Text></Flex>
-                  <Stack as="ul" gap="1" listStyleType="none">
+                  <Stack gap="1">
+                    <Flex align="baseline" gap="1">
+                      <Text fontWeight="550" fontVariantNumeric="tabular-nums" fontSize="34px" lineHeight="1" letterSpacing="-0.02em">{perMonth}</Text>
+                      <Text fontSize="13px" color="fg.muted">/mo</Text>
+                    </Flex>
+                    <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
+                      {interval === "annual" ? `${formatUsdCents(info.annualPriceCents)} billed yearly` : "Billed monthly"}
+                    </Text>
+                  </Stack>
+                  <Stack as="ul" gap="2.5" listStyleType="none" flex="1">
                     {planHighlights(tier).map((highlight) => (
-                      <Text as="li" key={highlight} fontSize="13px" color="fg.muted">{highlight}</Text>
+                      <Flex as="li" key={highlight} gap="2.5" align="flex-start" fontSize="13px" color="fg.muted">
+                        <Box color="accent.fg" mt="0.5" flexShrink={0}><Check size={14} aria-hidden /></Box>
+                        <Text as="span">{highlight}</Text>
+                      </Flex>
                     ))}
                   </Stack>
-                  <Button size="sm" variant={tier === leadTier ? "solid" : "subtle"} loading={busy === tier} disabled={busy !== null || isCurrentPlan} onClick={() => mayStartCheckout ? checkout(tier) : previewPlanChange(tier)}>
+                  <Button size="md" w="full" variant={tier === leadTier ? "solid" : "subtle"} loading={busy === tier} disabled={busy !== null || isCurrentPlan} onClick={() => mayStartCheckout ? checkout(tier) : previewPlanChange(tier)}>
                     {mayStartCheckout ? `Continue with ${info.name}` : isCurrentPlan ? "Current plan" : `Review ${info.name}`}
                   </Button>
                 </Stack>
@@ -575,5 +631,14 @@ export function BillingPlans({
         </Text>
       ) : null}
     </Stack>
+  );
+}
+
+/** A small label on a plan card: whose plan it is, or which one to pick. */
+function PlanChip({ children }: { children: React.ReactNode }) {
+  return (
+    <Text as="span" display="inline-flex" alignItems="center" h="6" px="2.5" borderRadius="full" bg="accent.muted" color="accent.fg" fontSize="12px" fontWeight="500" whiteSpace="nowrap">
+      {children}
+    </Text>
   );
 }
