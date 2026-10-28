@@ -26,7 +26,9 @@ import {
 	ChevronDown,
 	Clapperboard,
 	Download,
+	Pause,
 	Pencil,
+	Play,
 	Scissors,
 } from "lucide-react";
 import { formatDuration, formatTimecode } from "@/lib/format";
@@ -157,7 +159,23 @@ function ClipVideo({
 	endSec: number;
 }) {
 	const containerRef = useRef<HTMLDivElement>(null);
+	const videoRef = useRef<HTMLVideoElement>(null);
 	const [shouldLoad, setShouldLoad] = useState(false);
+	const [playing, setPlaying] = useState(false);
+	// Seconds into the clip, for the countdown on the duration chip.
+	const [elapsed, setElapsed] = useState(0);
+	const clipDuration = Math.max(0, endSec - startSec);
+
+	function togglePlay() {
+		const video = videoRef.current;
+		if (!video) return;
+		if (video.paused) {
+			if (video.currentTime < startSec || video.currentTime >= endSec) video.currentTime = startSec;
+			void video.play();
+		} else {
+			video.pause();
+		}
+	}
 
 	useEffect(() => {
 		const element = containerRef.current;
@@ -185,15 +203,18 @@ function ClipVideo({
 	}, []);
 
 	return (
-		<Box ref={containerRef} w="full" h="full">
+		// Custom controls only: one play/pause button and the duration, which
+		// counts down while the clip plays. A click anywhere on the video toggles it.
+		<Box ref={containerRef} w="full" h="full" position="relative" className="group" cursor="pointer" onClick={togglePlay}>
 			{/* biome-ignore lint/a11y/useMediaCaption: preview player for a clip segment; no caption/VTT source is available in this component. */}
 			<video
+				ref={videoRef}
 				src={`${src}#t=${startSec},${endSec}`}
-				controls
-				// The row has its own Download; the native overflow menu only repeated it.
-				controlsList="nodownload noplaybackrate"
+				playsInline
 				disablePictureInPicture
 				preload={shouldLoad ? "metadata" : "none"}
+				onPlay={() => setPlaying(true)}
+				onPause={() => setPlaying(false)}
 				style={{
 					width: "100%",
 					height: "100%",
@@ -210,8 +231,52 @@ function ClipVideo({
 						video.pause();
 						video.currentTime = startSec;
 					}
+					setElapsed(Math.min(clipDuration, Math.max(0, video.currentTime - startSec)));
 				}}
 			/>
+			<Flex
+				as="button"
+				aria-label={playing ? "Pause clip" : "Play clip"}
+				position="absolute"
+				top="50%"
+				left="50%"
+				transform="translate(-50%, -50%)"
+				boxSize="12"
+				align="center"
+				justify="center"
+				borderRadius="full"
+				bg="studio.scrimStrong"
+				color="white"
+				border="none"
+				cursor="pointer"
+				// Hidden while playing until the pointer is over the clip.
+				opacity={playing ? 0 : 1}
+				transition="opacity 150ms ease, transform 150ms ease"
+				_groupHover={{ opacity: 1 }}
+				_focusVisible={{ opacity: 1, outline: "2px solid", outlineColor: "accent.solid", outlineOffset: "2px" }}
+				onClick={(event: React.MouseEvent) => {
+					event.stopPropagation();
+					togglePlay();
+				}}
+			>
+				{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" style={{ marginLeft: 2 }} />}
+			</Flex>
+			<Box
+				position="absolute"
+				bottom="1.5"
+				insetEnd="1.5"
+				px="1.5"
+				py="0.5"
+				borderRadius="l1"
+				bg="studio.scrim"
+				color="studio.timecode"
+				textStyle="data"
+				fontSize="11px"
+				lineHeight="1.4"
+				pointerEvents="none"
+			>
+				{formatDuration(playing || elapsed > 0 ? clipDuration - elapsed : clipDuration)}
+			</Box>
 		</Box>
 	);
 }
@@ -670,8 +735,7 @@ export function ClipRow({
 							ratio={selectedOption.width / selectedOption.height}
 							w="full"
 							maxH="full"
-							// A playing preview's controls sit where the chip would; the
-							// duration moves to the copy column's timecode line instead.
+							// With a preview, the player draws its own duration chip.
 							timecode={previewUrl ? undefined : formatDuration(clip.durationSec)}
 							borderWidth="0"
 						>
