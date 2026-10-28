@@ -198,3 +198,20 @@ describe("normalizeCensorAudioSchedule", () => {
     }]);
   });
 });
+
+describe("maskCensoredCaptionWord first_last", () => {
+  const mask = (value: string) =>
+    maskCensoredCaptionWord(value, { replacement: "first_last", preservePunctuation: true });
+
+  test("keeps the first and last letter and preserves punctuation", () => {
+    expect(mask("Fuck")).toBe("F**k");
+    expect(mask("FUCKING,")).toBe("F*****G,");
+    expect(mask("“shit!”")).toBe("“s**t!”");
+  });
+
+  test("masks a word too short to hide behind its own ends", () => {
+    expect(mask("ass")).toBe("a*s");
+    expect(mask("ok")).toBe("**");
+    expect(mask("I")).toBe("*");
+  });
+});

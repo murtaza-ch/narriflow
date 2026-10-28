@@ -976,6 +976,8 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
 	action("app/(app)/calendar/queue/actions.ts", "acceptProposalAction", "workspace", "publishing.manage"),
 	action("app/(app)/calendar/queue/actions.ts", "acceptAllProposalsAction", "workspace", "publishing.manage"),
 	action("app/(app)/calendar/queue/actions.ts", "proposeToQueueAction", "workspace", "publishing.manage"),
+	action("app/(app)/settings/workspace/censor-words-actions.ts", "replaceCensorWordsAction", "workspace", "workspace.manage"),
+	action("app/(app)/settings/workspace/censor-words-actions.ts", "resetCensorWordsAction", "workspace", "workspace.manage"),
 	action("app/(app)/settings/automation-grants/actions.ts", "createStandingGrantAction", "workspace", "workspace.manage"),
 	action("app/(app)/settings/automation-grants/actions.ts", "renewStandingGrantAction", "workspace", "workspace.manage"),
 	action("app/(app)/settings/automation-grants/actions.ts", "pauseStandingGrantAction", "workspace", "workspace.manage"),

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { editorDocumentSchema } from "@narriflow/validators";
+import { autoCensorWordId, editorDocumentSchema } from "@narriflow/validators";
 import { brandOwnerForWorkspace } from "./brand-ownership";
 import {
   assertClipExportDocumentAllowed,
@@ -63,6 +63,47 @@ describe("clip export motion entitlement", () => {
     );
     const disabled = editorDocumentSchema.parse({ ...motionDocument, studioEdits: {}, censorSegments: [{ ...segment, enabled: false }] });
     expect(() => assertClipExportDocumentAllowed("free", disabled)).not.toThrow();
+  });
+
+  describe("Auto Censor entitlement", () => {
+    const words = [{ word: "heck", startSec: 1, endSec: 1.4, confidence: 0.9 }];
+    const wordId = autoCensorWordId({ utteranceIndex: 0, wordIndex: 0, word: words[0]! });
+    const segment = (enabled: boolean) => ({
+      schemaVersion: 1,
+      id: "50000000-0000-4000-8000-000000000002",
+      sourceWordIds: [wordId],
+      sourceStartSec: 1,
+      sourceEndSec: 1.4,
+      treatment: "beep",
+      paddingSec: 0.06,
+      beepSettings: { frequencyHz: 1_000, levelDb: -8 },
+      captionMaskPolicy: null,
+      suggestionFingerprint: "e".repeat(64),
+      policyVersion: "auto-censor-v2",
+      enabled,
+    });
+    const current = (enabled: boolean) => editorDocumentSchema.parse({
+      version: 1, clipStartSec: 0, clipEndSec: 10, captionPreset: {},
+      transcriptSlice: [{ index: 0, speaker: 0, speakerLabel: "Speaker 1", confidence: 0.9, startSec: 1, endSec: 1.4, text: "heck", words }],
+      studioEdits: {}, brollUrl: null, deletedRanges: [], censorSegments: [segment(enabled)],
+    });
+
+    test("refuses current, enabled censor segments on Free (a downgraded workspace)", () => {
+      expect(() => assertClipExportDocumentAllowed("free", current(true))).toThrow(
+        expect.objectContaining({
+          code: "plan_feature_required",
+          kind: "payment_required",
+          details: expect.objectContaining({ feature: "editor.censoring", requiredTier: "creator" }),
+        }),
+      );
+    });
+
+    test("allows only disabled censor segments on Free, and enabled ones on a paid plan", () => {
+      expect(() => assertClipExportDocumentAllowed("free", current(false))).not.toThrow();
+      for (const tier of ["creator", "pro", "business"] as const) {
+        expect(() => assertClipExportDocumentAllowed(tier, current(true))).not.toThrow();
+      }
+    });
   });
 });
 

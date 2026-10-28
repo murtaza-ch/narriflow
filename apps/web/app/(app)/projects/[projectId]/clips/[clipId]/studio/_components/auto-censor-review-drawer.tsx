@@ -1,18 +1,13 @@
 "use client";
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { Box, Button, Checkbox, Flex, Input, NativeSelect, Stack, Text } from "@chakra-ui/react";
-import { Check, Plus, Search, X } from "lucide-react";
-import { toaster } from "@narriflow/ui/components/toaster";
+import { Box, Button, Checkbox, Flex, Input, Stack, Text } from "@chakra-ui/react";
+import { Check, Search, X } from "lucide-react";
 import {
   AUTO_CENSOR_POLICY_VERSION,
-  autoCensorWordId,
-  detectAutoCensorSuggestions,
   isCensorSegmentStale,
-  lowestTierWithFeature,
   PLAN_CATALOG,
   type AutoCensorSuggestion,
-  type AutoCensorTreatment,
   type CensorSegment,
 } from "@narriflow/validators";
 import { formatTimecode } from "@/lib/format";
@@ -20,78 +15,38 @@ import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "./studio-shell";
 import { StudioLockGem } from "./studio-lock-gem";
 import {
-  autoCensorResultCountBucket,
-  autoCensorSourceSpanKey,
-  buildReviewedCensorSegments,
-  type AutoCensorReviewDecision,
+  AUTO_CENSOR_SOUNDS,
+  AUTO_CENSOR_TEXT_STYLES,
+  autoCensorEffectsValid,
+  censorWordIdsInRange,
+  groupAppliedCensorSegments,
+  hasCensorChanges,
+  censorChanges,
+  type AppliedCensorGroup,
+  type AutoCensorEffects,
 } from "./auto-censor-review-model";
 import { PanelButton, SectionLabel, chipProps, softButtonProps, softFieldProps, softFocusWithin } from "./tool-panels/panel-ui";
 
-const TREATMENT_LABEL: Record<AutoCensorTreatment, string> = {
-  caption_mask: "Mask captions",
-  mute: "Mute dialogue",
-  beep: "Bleep",
-};
-
 function sourceLabel(source: AutoCensorSuggestion["policySource"]) {
   if (source === "brand_profile") return "Brand";
-  return source === "project" ? "Project" : "Built-in";
+  return source === "project" ? "Project" : "Workspace";
 }
 
-function treatmentSettings(
-  segment: CensorSegment,
-  treatment: AutoCensorTreatment,
-): CensorSegment {
-  return {
-    ...segment,
-    treatment,
-    beepSettings: treatment === "beep"
-      ? segment.beepSettings ?? { frequencyHz: 1_000, levelDb: -8 }
-      : null,
-    captionMaskPolicy: treatment === "caption_mask"
-      ? segment.captionMaskPolicy ?? {
-          replacement: "first_character",
-          preservePunctuation: true,
-        }
-      : null,
-  };
+export function effectsSummary(effects: AutoCensorEffects) {
+  const style = AUTO_CENSOR_TEXT_STYLES.find((option) => option.value === effects.textStyle);
+  const sound = AUTO_CENSOR_SOUNDS.find((option) => option.value === effects.sound);
+  return [
+    effects.textStyle === "none" ? null : style?.label,
+    effects.sound === "none" ? null : sound?.label,
+  ].filter(Boolean).join(" · ");
 }
 
-function TreatmentSelect({
-  value,
-  onChange,
-  availability,
-  disabled = false,
-}: {
-  value: AutoCensorTreatment;
-  onChange: (value: AutoCensorTreatment) => void;
-  availability: Readonly<Record<AutoCensorTreatment, boolean>>;
-  disabled?: boolean;
-}) {
-  return (
-    <NativeSelect.Root w="auto" flexShrink={0} disabled={disabled}>
-      <NativeSelect.Field
-        aria-label="Censor treatment"
-        value={value}
-        onChange={(event) => onChange(event.currentTarget.value as AutoCensorTreatment)}
-        h="32px"
-        ps="3"
-        pe="8"
-        bg="studio.raised"
-        borderWidth="0"
-        borderRadius="8px"
-        color="studio.fg"
-        fontSize="13px"
-      >
-        {(Object.keys(TREATMENT_LABEL) as AutoCensorTreatment[]).map((treatment) => (
-          <option key={treatment} value={treatment} disabled={!availability[treatment]}>
-            {TREATMENT_LABEL[treatment]}{availability[treatment] ? "" : " — soon"}
-          </option>
-        ))}
-      </NativeSelect.Field>
-      <NativeSelect.Indicator color="studio.fgMuted" />
-    </NativeSelect.Root>
-  );
+function groupSummary(group: AppliedCensorGroup) {
+  const style = group.maskPolicy
+    ? AUTO_CENSOR_TEXT_STYLES.find((option) => option.value === group.maskPolicy?.replacement)?.label
+    : null;
+  const sound = group.sound ? AUTO_CENSOR_SOUNDS.find((option) => option.value === group.sound)?.label : null;
+  return [style, sound].filter(Boolean).join(" · ");
 }
 
 /** Quiet text action, e.g. "Select all". */
@@ -146,225 +101,92 @@ function RoundIconButton({
   );
 }
 
-export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
-  const {
-    editorDocument,
-    editorRevision,
-    utterances,
-    clipWindow,
-    autoCensorPolicy,
-    setCensorSegments,
-    updateProjectCensorTerms,
-    recordAutoCensorEvent,
-    upgradePrompts,
-  } = useStudio("editorDocument", "editorRevision", "utterances", "clipWindow", "autoCensorPolicy", "setCensorSegments", "updateProjectCensorTerms", "recordAutoCensorEvent", "upgradePrompts");
+/**
+ * The per-match review behind the Auto-censor panel: pick which matches to
+ * censor, and manage the ones already applied. How a match is censored comes
+ * from the panel; nothing here is per-row.
+ */
+export function AutoCensorReviewDrawer({
+  suggestions,
+  effects,
+  onApply,
+  onClose,
+}: {
+  suggestions: readonly AutoCensorSuggestion[];
+  effects: AutoCensorEffects;
+  /** Censors these matches with the panel's style and sound. */
+  onApply: (matches: readonly AutoCensorSuggestion[]) => void;
+  onClose: () => void;
+}) {
+  const { editorDocument, utterances, autoCensorPolicy, setCensorSegments, upgradePrompts } = useStudio(
+    "editorDocument", "utterances", "autoCensorPolicy", "setCensorSegments", "upgradePrompts",
+  );
   const { openUpgrade } = useUpgrade();
-  // Scanning and review stay free; only saving the edits is plan-locked.
   const applyLock = autoCensorPolicy.canApply ? null : upgradePrompts.censoring;
-  const availableTreatment = (Object.keys(autoCensorPolicy.treatments) as AutoCensorTreatment[])
-    .find((treatment) => autoCensorPolicy.treatments[treatment]);
-  const firstTreatment = availableTreatment ?? "caption_mask";
-  const hasWritableTreatment = availableTreatment !== undefined;
-  const [defaultTreatment, setDefaultTreatment] = useState<AutoCensorTreatment>(firstTreatment);
-  const [suggestions, setSuggestions] = useState<AutoCensorSuggestion[]>([]);
-  const [decisions, setDecisions] = useState<AutoCensorReviewDecision[]>([]);
+  const existing = editorDocument.censorSegments;
+  const effectsReady = autoCensorEffectsValid(effects);
+
+  const pendingFingerprints = useMemo(
+    () => new Set(suggestions
+      .filter((suggestion) => hasCensorChanges(censorChanges(suggestion, existing, effects)))
+      .map((suggestion) => suggestion.fingerprint)),
+    [suggestions, existing, effects],
+  );
+  const [deselected, setDeselected] = useState<ReadonlySet<string>>(new Set());
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<"all" | AutoCensorSuggestion["policySource"]>("all");
-  const [projectTerms, setProjectTerms] = useState([...autoCensorPolicy.projectTerms]);
-  const [termDraft, setTermDraft] = useState("");
-  const [savingTerms, setSavingTerms] = useState(false);
 
-  const recordEventBestEffort = (input: Parameters<typeof recordAutoCensorEvent>[0]) => {
-    void recordAutoCensorEvent(input).catch(() => {
-      console.warn(JSON.stringify({
-        level: "warn",
-        message: "auto_censor_analytics_failed",
-        eventType: input.type,
-      }));
-    });
-  };
-
-  const runScan = (terms: readonly string[] = projectTerms, treatment = defaultTreatment) => {
-    recordEventBestEffort({ type: "auto_censor_scan_started" });
-    const result = detectAutoCensorSuggestions({
-      documentRevision: editorRevision,
-      locale: autoCensorPolicy.locale,
-      clipWindow,
-      deletedRanges: editorDocument.deletedRanges,
-      transcript: utterances,
-      brandTerms: autoCensorPolicy.brandTerms,
-      projectTerms: terms,
-      defaultTreatment: treatment,
-      paddingSec: 0.06,
-    });
-    setSuggestions(result);
-    setDecisions(result.map((suggestion) => {
-      const applied = editorDocument.censorSegments.find(
-        (segment) => autoCensorSourceSpanKey(segment.sourceWordIds) ===
-          autoCensorSourceSpanKey(suggestion.sourceWordIds),
-      );
-      const treatmentForSuggestion = suggestion.timingLimitation
-        ? "caption_mask"
-        : treatment;
-      return {
-        fingerprint: suggestion.fingerprint,
-        selected: suggestion.timingLimitation === null &&
-          !applied &&
-          autoCensorPolicy.treatments[treatmentForSuggestion],
-        treatment: applied?.treatment ?? treatmentForSuggestion,
-      };
-    }));
-    recordEventBestEffort({
-      type: "auto_censor_scan_completed",
-      resultCountBucket: autoCensorResultCountBucket(result.length),
-    });
-  };
-
-  // Opening the drawer always scans the current corrected transcript. No
-  // editor action is dispatched until Apply.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the drawer mount is the explicit scan gesture; later rescans are invoked after project-term changes.
-  useEffect(() => {
-    runScan(autoCensorPolicy.projectTerms, firstTreatment);
-  }, []);
-
-  const decisionByFingerprint = useMemo(
-    () => new Map(decisions.map((decision) => [decision.fingerprint, decision])),
-    [decisions],
-  );
-  const suggestionByFingerprint = useMemo(
-    () => new Map(suggestions.map((suggestion) => [suggestion.fingerprint, suggestion])),
-    [suggestions],
-  );
-  const appliedSourceSpans = useMemo(
-    () => new Set(editorDocument.censorSegments.map((segment) =>
-      autoCensorSourceSpanKey(segment.sourceWordIds),
-    )),
-    [editorDocument.censorSegments],
-  );
-  const visibleSuggestions = useMemo(() => {
+  const isSelected = (fingerprint: string) =>
+    pendingFingerprints.has(fingerprint) && !deselected.has(fingerprint);
+  const selectedMatches = suggestions.filter((suggestion) => isSelected(suggestion.fingerprint));
+  const visible = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return suggestions.filter((suggestion) =>
       (sourceFilter === "all" || suggestion.policySource === sourceFilter) &&
       (!normalizedQuery || suggestion.matchedText.toLocaleLowerCase().includes(normalizedQuery)),
     );
   }, [query, sourceFilter, suggestions]);
-  const selectedCount = suggestions.filter((suggestion) => {
-    const decision = decisionByFingerprint.get(suggestion.fingerprint);
-    return decision?.selected &&
-      suggestion.timingLimitation === null &&
-      autoCensorPolicy.treatments[decision.treatment] &&
-      !appliedSourceSpans.has(autoCensorSourceSpanKey(suggestion.sourceWordIds));
-  }).length;
+  const groups = useMemo(() => groupAppliedCensorSegments(existing), [existing]);
 
-  const updateDecision = (
-    fingerprint: string,
-    update: Partial<Omit<AutoCensorReviewDecision, "fingerprint">>,
-  ) => setDecisions((current) => current.map((decision) =>
-    decision.fingerprint === fingerprint ? { ...decision, ...update } : decision,
-  ));
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
-  const saveTerms = async (nextTerms: string[]) => {
-    setSavingTerms(true);
-    try {
-      const result = await updateProjectCensorTerms(nextTerms);
-      const payload = result && typeof result === "object"
-        ? result as { terms?: unknown; kind?: string }
-        : null;
-      if (!payload || !Array.isArray(payload.terms)) throw new Error("term_save_failed");
-      const saved = payload.terms.filter((term): term is string => typeof term === "string");
-      setProjectTerms(saved);
-      runScan(saved);
-    } catch {
-      toaster.create({
-        type: "error",
-        title: "Word list not saved",
-        description: "Try again. Your current review is unchanged.",
-      });
-    } finally {
-      setSavingTerms(false);
-    }
+  const toggle = (fingerprint: string, selected: boolean) =>
+    setDeselected((current) => {
+      const next = new Set(current);
+      if (selected) next.delete(fingerprint);
+      else next.add(fingerprint);
+      return next;
+    });
+
+  const updateGroup = (group: AppliedCensorGroup, update: (segment: CensorSegment) => CensorSegment) => {
+    const ids = new Set(group.segmentIds);
+    setCensorSegments(existing.map((segment) => ids.has(segment.id) ? update(segment) : segment));
   };
 
-  const addProjectTerm = () => {
-    const term = termDraft.trim();
-    if (!term) return;
-    setTermDraft("");
-    void saveTerms([...projectTerms, term]);
-  };
-
-  const apply = () => {
-    try {
-      const result = buildReviewedCensorSegments({
-        suggestions,
-        decisions,
-        existing: editorDocument.censorSegments,
-        canApply: autoCensorPolicy.canApply,
-        treatments: autoCensorPolicy.treatments,
-        paddingSec: 0.06,
-        createId: () => crypto.randomUUID(),
-      });
-      if (result.applied.length === 0) return;
-      if (!setCensorSegments(result.segments)) {
-        throw new Error("auto_censor_document_rejected");
-      }
-      const staleCount = editorDocument.censorSegments.filter((segment) =>
-        isCensorSegmentStale(segment, utterances),
-      ).length;
-      recordEventBestEffort({
-        type: "auto_censor_applied",
-        selectedCount: result.applied.length,
-        captionMaskCount: result.applied.filter((segment) => segment.treatment === "caption_mask").length,
-        muteCount: result.applied.filter((segment) => segment.treatment === "mute").length,
-        beepCount: result.applied.filter((segment) => segment.treatment === "beep").length,
-        staleCount,
-      });
-      setDecisions((current) => current.map((decision) => ({ ...decision, selected: false })));
-      toaster.create({
-        type: "success",
-        title: `${result.applied.length} censor ${result.applied.length === 1 ? "edit" : "edits"} applied`,
-        description: "Undo restores the clip in one step.",
-      });
-    } catch (error) {
-      const code = error instanceof Error ? error.message : "auto_censor_apply_failed";
-      console.warn(JSON.stringify({
-        level: "warn",
-        message: "auto_censor_apply_failed",
-        code,
-      }));
-      const entitlementRequired = code === "plan_feature_required";
-      toaster.create({
-        type: "error",
-        title: entitlementRequired
-          ? "Upgrade to apply Auto Censor"
-          : "Auto Censor was not applied",
-        description: entitlementRequired
-          ? `Scanning is included. Applying edits is available on ${PLAN_CATALOG[lowestTierWithFeature("editor.censoring") ?? "creator"].name} and above.`
-          : process.env.NODE_ENV === "development"
-            ? code
-            : "Your review is unchanged. Try again.",
-      });
-    }
-  };
-
-  const updateApplied = (id: string, update: (segment: CensorSegment) => CensorSegment) => {
-    setCensorSegments(editorDocument.censorSegments.map((segment) =>
-      segment.id === id ? update(segment) : segment,
-    ));
-  };
-
-  const reviewStale = (segment: CensorSegment) => {
-    const sourceWordIds = utterances.flatMap((utterance) => utterance.words.flatMap((word, wordIndex) =>
-      word.endSec > segment.sourceStartSec && word.startSec < segment.sourceEndSec
-        ? [autoCensorWordId({ utteranceIndex: utterance.index, wordIndex, word })]
-        : [],
-    ));
+  const reviewStale = (group: AppliedCensorGroup) => {
+    const first = existing.find((segment) => group.segmentIds.includes(segment.id));
+    if (!first) return;
+    const sourceWordIds = censorWordIdsInRange(utterances, {
+      startSec: first.sourceStartSec,
+      endSec: first.sourceEndSec,
+    });
     if (sourceWordIds.length === 0) return;
-    updateApplied(segment.id, (current) => ({
-      ...current,
+    updateGroup(group, (segment) => ({
+      ...segment,
       sourceWordIds,
       suggestionFingerprint: null,
       policyVersion: AUTO_CENSOR_POLICY_VERSION,
     }));
+  };
+
+  const applySelected = () => {
+    if (selectedMatches.length === 0 || !effectsReady) return;
+    if (applyLock?.tier) openUpgrade(applyLock);
+    else onApply(selectedMatches);
   };
 
   return (
@@ -387,49 +209,40 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
         <Box px="6" pt="5" pb="4" flexShrink={0}>
           <Flex align="center" justify="space-between" gap="3">
             <Text id="auto-censor-title" fontSize="18px" fontWeight="500">
-              Review sensitive words
+              Review matches
             </Text>
-            <RoundIconButton label="Close Auto Censor" onClick={onClose}>
+            <RoundIconButton label="Close review" onClick={onClose}>
               <X size={17} />
             </RoundIconButton>
           </Flex>
           <Text mt="1" fontSize="13px" color="studio.fgMuted" fontVariantNumeric="tabular-nums">
-            {suggestions.length} found · {selectedCount} selected ·{" "}
-            {editorDocument.censorSegments.length} applied
+            {suggestions.length} found · {selectedMatches.length} selected · {groups.length} censored
+          </Text>
+          <Text mt="0.5" fontSize="13px" color="studio.fgSubtle">
+            {effectsReady
+              ? `Applies ${effectsSummary(effects)}. Change it in the Auto-censor panel.`
+              : "Choose a text style or a sound in the Auto-censor panel first."}
           </Text>
 
-          <Flex gap="2" mt="5">
-            <Flex flex="1" align="center" gap="2" px="3" h="40px" {...softFieldProps} color="studio.fgMuted" _focusWithin={softFocusWithin}>
-              <Search size={15} />
-              <Input
-                aria-label="Filter sensitive word matches"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                border="0"
-                p="0"
-                h="full"
-                bg="transparent"
-                color="studio.fg"
-                fontSize="14px"
-                _placeholder={{ color: "studio.fgSubtle" }}
-                _focusVisible={{ outline: "none", boxShadow: "none" }}
-                placeholder="Filter matches"
-              />
-            </Flex>
-            <Flex align="center">
-              <TreatmentSelect disabled={!hasWritableTreatment} value={defaultTreatment} availability={autoCensorPolicy.treatments} onChange={(value) => {
-                setDefaultTreatment(value);
-                setDecisions((current) => current.map((decision) => ({
-                  ...decision,
-                  treatment: suggestionByFingerprint.get(decision.fingerprint)?.timingLimitation
-                    ? "caption_mask"
-                    : value,
-                })));
-              }} />
-            </Flex>
+          <Flex mt="5" align="center" gap="2" px="3" h="40px" {...softFieldProps} color="studio.fgMuted" _focusWithin={softFocusWithin}>
+            <Search size={15} />
+            <Input
+              aria-label="Filter matches"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              border="0"
+              p="0"
+              h="full"
+              bg="transparent"
+              color="studio.fg"
+              fontSize="14px"
+              _placeholder={{ color: "studio.fgSubtle" }}
+              _focusVisible={{ outline: "none", boxShadow: "none" }}
+              placeholder="Filter matches"
+            />
           </Flex>
           <Flex gap="2" mt="3" flexWrap="wrap">
-            {(["all", "built_in", "brand_profile", "project"] as const).map((source) => (
+            {(["all", "workspace", "brand_profile", "project"] as const).map((source) => (
               <Box
                 key={source}
                 as="button"
@@ -445,116 +258,66 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
         </Box>
 
         <Box flex="1" overflowY="auto" px="6" pb="6">
-          <Box pt="2" pb="6">
-            <SectionLabel
-              action={
-                <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums">
-                  {projectTerms.length}/50
-                </Text>
-              }
-            >
-              Project words
-            </SectionLabel>
-            <Flex gap="2">
-              <Input
-                value={termDraft}
-                onChange={(event) => setTermDraft(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") addProjectTerm(); }}
-                h="40px"
-                px="3"
-                fontSize="14px"
-                {...softFieldProps}
-                placeholder="Add a word or phrase"
-              />
-              <Button
-                aria-label="Add project word"
-                {...softButtonProps}
-                w="40px"
-                minW="40px"
-                h="40px"
-                p="0"
-                loading={savingTerms}
-                onClick={addProjectTerm}
-              >
-                <Plus size={16} />
-              </Button>
-            </Flex>
-            {projectTerms.length > 0 && (
-              <Flex mt="3" gap="2" flexWrap="wrap">
-                {projectTerms.map((term) => (
-                  <Flex
-                    key={term}
-                    as="button"
-                    aria-label={`Remove ${term}`}
-                    align="center"
-                    gap="1.5"
-                    h="30px"
-                    px="2.5"
-                    borderRadius="8px"
-                    bg="studio.raised"
-                    border="none"
-                    color="studio.fg"
-                    fontSize="13px"
-                    cursor="pointer"
-                    _hover={{ bg: "studio.borderStrong" }}
-                    onClick={() => void saveTerms(projectTerms.filter((candidate) => candidate !== term))}
-                  >
-                    {term}
-                    <X size={12} />
-                  </Flex>
-                ))}
-              </Flex>
-            )}
-          </Box>
-
           <SectionLabel
             action={
               <Flex gap="4">
-                <TextAction onClick={() => setDecisions((current) => current.map((decision) => ({
-                  ...decision,
-                  selected: suggestionByFingerprint.get(decision.fingerprint)?.timingLimitation === null &&
-                    autoCensorPolicy.treatments[decision.treatment] &&
-                    !appliedSourceSpans.has(autoCensorSourceSpanKey(
-                      suggestionByFingerprint.get(decision.fingerprint)?.sourceWordIds ?? [],
-                    )),
-                })))}>Select all</TextAction>
-                <TextAction onClick={() => setDecisions((current) => current.map((decision) => ({ ...decision, selected: false })))}>Clear</TextAction>
+                <TextAction onClick={() => setDeselected(new Set())}>Select all</TextAction>
+                <TextAction onClick={() => setDeselected(new Set(suggestions.map((suggestion) => suggestion.fingerprint)))}>Clear</TextAction>
               </Flex>
             }
           >
-            Suggestions
+            Matches
           </SectionLabel>
 
-          {visibleSuggestions.length === 0 ? (
+          {visible.length === 0 ? (
             <Stack py="10" align="center" textAlign="center" gap="1.5">
               <Box color="studio.fgSubtle" mb="1"><Check size={20} /></Box>
-              <Text fontSize="14px" fontWeight="500">No matching suggestions</Text>
-              <Text fontSize="13px" color="studio.fgMuted">The scan completed successfully.</Text>
+              <Text fontSize="14px" fontWeight="500">
+                {suggestions.length === 0 ? "No sensitive words found" : "No matches for this filter"}
+              </Text>
+              <Text fontSize="13px" color="studio.fgMuted">
+                {suggestions.length === 0 ? "The scan completed successfully." : "Try another source or search."}
+              </Text>
             </Stack>
           ) : (
             <Stack gap="2">
-              {visibleSuggestions.map((suggestion) => {
-                const decision = decisionByFingerprint.get(suggestion.fingerprint)!;
-                const alreadyApplied = appliedSourceSpans.has(
-                  autoCensorSourceSpanKey(suggestion.sourceWordIds),
-                );
-                const treatmentUnavailable = !autoCensorPolicy.treatments[decision.treatment];
+              {visible.map((suggestion) => {
+                const untimed = suggestion.timingLimitation !== null;
+                const pending = pendingFingerprints.has(suggestion.fingerprint);
                 return (
                   <Flex key={suggestion.fingerprint} p="3" gap="3" bg="studio.subtle" borderRadius="10px">
-                    <Checkbox.Root size="sm" colorPalette="accent" disabled={alreadyApplied || treatmentUnavailable || suggestion.timingLimitation !== null} checked={decision.selected} onCheckedChange={(event) => updateDecision(suggestion.fingerprint, { selected: Boolean(event.checked) })} mt="3px">
+                    <Checkbox.Root
+                      size="sm"
+                      colorPalette="accent"
+                      disabled={!pending}
+                      checked={isSelected(suggestion.fingerprint)}
+                      onCheckedChange={(event) => toggle(suggestion.fingerprint, Boolean(event.checked))}
+                      mt="3px"
+                    >
                       <Checkbox.HiddenInput /><Checkbox.Control />
                     </Checkbox.Root>
                     <Box minW="0" flex="1">
                       <Flex align="baseline" justify="space-between" gap="2">
                         <Text fontSize="14px" fontWeight="600" truncate>{suggestion.matchedText}</Text>
-                        <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums" flexShrink={0}>{suggestion.sourceStartSec === null ? "No timing" : formatTimecode(suggestion.sourceStartSec)}</Text>
+                        <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums" flexShrink={0}>
+                          {suggestion.sourceStartSec === null ? "No timing" : formatTimecode(suggestion.sourceStartSec)}
+                        </Text>
                       </Flex>
-                      <Text mt="0.5" fontSize="13px" color="studio.fgMuted" lineHeight="1.5" lineClamp="2">{suggestion.contextBefore} <Text as="span" color="studio.fg" fontWeight="600">{suggestion.matchedText}</Text> {suggestion.contextAfter}</Text>
-                      <Flex mt="2.5" align="center" justify="space-between" gap="2">
-                        <Text fontSize="12px" color="studio.fgSubtle">{alreadyApplied ? "Applied · " : ""}{sourceLabel(suggestion.policySource)} · {suggestion.confidence === null ? "No confidence" : `${Math.round(suggestion.confidence * 100)}%`}</Text>
-                        <TreatmentSelect disabled={alreadyApplied || !hasWritableTreatment || suggestion.timingLimitation !== null} value={decision.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateDecision(suggestion.fingerprint, { treatment: value, selected: true })} />
-                      </Flex>
-                      {suggestion.timingLimitation && <Text mt="2" fontSize="12px" color="studio.fgMuted">Audio unavailable — caption mask only</Text>}
+                      <Text mt="0.5" fontSize="13px" color="studio.fgMuted" lineHeight="1.5" lineClamp="2">
+                        {suggestion.contextBefore} <Text as="span" color="studio.fg" fontWeight="600">{suggestion.matchedText}</Text> {suggestion.contextAfter}
+                      </Text>
+                      <Text mt="2" fontSize="12px" color="studio.fgSubtle">
+                        {!pending && !untimed ? "Censored · " : ""}
+                        {sourceLabel(suggestion.policySource)}
+                        {suggestion.policyCategory === "slur" ? " · Slur" : ""}
+                        {" · "}
+                        {suggestion.confidence === null ? "No confidence" : `${Math.round(suggestion.confidence * 100)}%`}
+                      </Text>
+                      {untimed ? (
+                        <Text mt="1.5" fontSize="12px" color="studio.fgMuted">
+                          No word timing, so this one can't be censored. Correct the word in the transcript instead.
+                        </Text>
+                      ) : null}
                     </Box>
                   </Flex>
                 );
@@ -562,29 +325,56 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
             </Stack>
           )}
 
-          {editorDocument.censorSegments.length > 0 && (
+          {groups.length > 0 && (
             <Box pt="6">
-              <SectionLabel>Applied segments</SectionLabel>
+              <SectionLabel>Censored words</SectionLabel>
               <Stack gap="2">
-                {editorDocument.censorSegments.map((segment) => {
-                  const stale = isCensorSegmentStale(segment, utterances);
+                {groups.map((group) => {
+                  const stale = existing.some((segment) =>
+                    group.segmentIds.includes(segment.id) && isCensorSegmentStale(segment, utterances));
                   return (
-                    <Flex key={segment.id} p="3" gap="3" align="center" bg="studio.subtle" borderRadius="10px">
-                      <Checkbox.Root size="sm" colorPalette="accent" checked={segment.enabled} onCheckedChange={(event) => {
-                        // Turning a segment off is cleanup any plan may save; turning one on is not.
-                        if (event.checked && applyLock?.tier) openUpgrade(applyLock);
-                        else if (!event.checked || autoCensorPolicy.canApply) updateApplied(segment.id, (current) => ({ ...current, enabled: Boolean(event.checked) }));
-                      }}><Checkbox.HiddenInput /><Checkbox.Control /></Checkbox.Root>
-                      <Flex flex="1" minW="0" align="center" gap="2">
-                        <Text fontSize="13px" color="studio.fgMuted" fontVariantNumeric="tabular-nums">{formatTimecode(segment.sourceStartSec)}</Text>
+                    <Flex key={group.key} p="3" gap="3" align="center" bg="studio.subtle" borderRadius="10px">
+                      <Checkbox.Root
+                        size="sm"
+                        colorPalette="accent"
+                        checked={group.enabled}
+                        onCheckedChange={(event) => {
+                          // Turning a word off is cleanup any plan may save; turning one on is not.
+                          if (event.checked && applyLock?.tier) openUpgrade(applyLock);
+                          else if (!event.checked || autoCensorPolicy.canApply) {
+                            updateGroup(group, (segment) => ({ ...segment, enabled: Boolean(event.checked) }));
+                          }
+                        }}
+                      >
+                        <Checkbox.HiddenInput /><Checkbox.Control />
+                      </Checkbox.Root>
+                      <Flex flex="1" minW="0" align="baseline" gap="2">
+                        <Text fontSize="13px" color="studio.fgMuted" fontVariantNumeric="tabular-nums">{formatTimecode(group.sourceStartSec)}</Text>
+                        <Text fontSize="13px" color="studio.fg" truncate>{groupSummary(group)}</Text>
                         {stale && <Text fontSize="12px" fontWeight="500" color="studio.danger">Stale</Text>}
                       </Flex>
-                      <TreatmentSelect disabled={!autoCensorPolicy.canApply && segment.enabled} value={segment.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateApplied(segment.id, (current) => treatmentSettings(current, value))} />
-                      {stale && <Button size="sm" h="32px" {...softButtonProps} fontSize="13px" aria-haspopup={applyLock?.tier && segment.enabled ? "dialog" : undefined} onClick={() => {
-                        if (!autoCensorPolicy.canApply && segment.enabled && applyLock?.tier) openUpgrade(applyLock);
-                        else reviewStale(segment);
-                      }}>Review</Button>}
-                      <RoundIconButton label="Delete censor segment" onClick={() => setCensorSegments(editorDocument.censorSegments.filter((candidate) => candidate.id !== segment.id))}>
+                      {stale && (
+                        <Button
+                          size="sm"
+                          h="32px"
+                          {...softButtonProps}
+                          fontSize="13px"
+                          aria-haspopup={applyLock?.tier && group.enabled ? "dialog" : undefined}
+                          onClick={() => {
+                            if (!autoCensorPolicy.canApply && group.enabled && applyLock?.tier) openUpgrade(applyLock);
+                            else reviewStale(group);
+                          }}
+                        >
+                          Review
+                        </Button>
+                      )}
+                      <RoundIconButton
+                        label="Remove censor"
+                        onClick={() => {
+                          const ids = new Set(group.segmentIds);
+                          setCensorSegments(existing.filter((segment) => !ids.has(segment.id)));
+                        }}
+                      >
                         <X size={15} />
                       </RoundIconButton>
                     </Flex>
@@ -595,22 +385,18 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
           )}
         </Box>
 
-        <Box px="6" py="5" borderTopWidth="1px" borderColor="studio.border" flexShrink={0}>
-          {!hasWritableTreatment ? (
-            <Text mb="3" fontSize="13px" color="studio.fgMuted">Scanning is available. Applying censor edits is temporarily unavailable.</Text>
+        <Box px="6" py="5" flexShrink={0}>
+          {applyLock?.tier ? (
+            <Text mb="3" fontSize="13px" color="studio.fgMuted">
+              Preview is free. Saving censor edits needs {PLAN_CATALOG[applyLock.tier].name}.
+            </Text>
           ) : !autoCensorPolicy.canApply ? (
-            <Text mb="3" fontSize="13px" color="studio.fgMuted">{applyLock?.tier ? `Preview is free. Saving censor edits needs ${PLAN_CATALOG[applyLock.tier].name}.` : "Preview is free. Saving censor edits isn't available."}</Text>
+            <Text mb="3" fontSize="13px" color="studio.fgMuted">Preview is free. Saving censor edits isn't available.</Text>
           ) : null}
-          {applyLock?.tier && hasWritableTreatment ? (
-            <PanelButton disabled={selectedCount === 0} onClick={() => openUpgrade(applyLock)}>
-              Apply {selectedCount > 0 ? selectedCount : "selected"} {selectedCount === 1 ? "edit" : "edits"}
-              <StudioLockGem tier={applyLock.tier} />
-            </PanelButton>
-          ) : (
-            <PanelButton disabled={!autoCensorPolicy.canApply || !hasWritableTreatment || selectedCount === 0} onClick={apply}>
-              Apply {selectedCount > 0 ? selectedCount : "selected"} {selectedCount === 1 ? "edit" : "edits"}
-            </PanelButton>
-          )}
+          <PanelButton disabled={selectedMatches.length === 0 || !effectsReady || (!applyLock?.tier && !autoCensorPolicy.canApply)} onClick={applySelected}>
+            Apply to {selectedMatches.length > 0 ? selectedMatches.length : "selected"} {selectedMatches.length === 1 ? "word" : "words"}
+            {applyLock?.tier ? <StudioLockGem tier={applyLock.tier} /> : null}
+          </PanelButton>
         </Box>
       </Flex>
     </>

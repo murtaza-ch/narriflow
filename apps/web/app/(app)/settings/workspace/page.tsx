@@ -3,9 +3,10 @@ import { Building2, Sparkles } from "lucide-react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Combobox } from "@narriflow/ui/components/combobox";
-import { performanceService, workspaceService } from "@narriflow/services";
+import { autoCensorService, performanceService, workspaceService } from "@narriflow/services";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { updatePerformanceGuidanceAction, updateWorkspaceAction } from "../actions";
+import { CensorWordsCard } from "./censor-words-card";
 import { PerformanceGuidanceField } from "./performance-guidance-field";
 import { WorkspaceAvatarControl } from "./workspace-avatar-control";
 import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
@@ -24,7 +25,10 @@ export default async function WorkspaceSettingsPage() {
   const workspace = await workspaceService.getWorkspace(appUser.actorUserId, appUser.workspaceId,
   );
   if (!workspace) return null;
-  const guidance = await performanceService.guidance(appUser);
+  const [guidance, censorWords] = await Promise.all([
+    performanceService.guidance(appUser),
+    autoCensorService.getWorkspaceWords(appUser),
+  ]);
   const avatarUrls = await workspaceService.getAvatarUrls(
     appUser.actorUserId,
     [appUser.workspaceId,
@@ -84,6 +88,7 @@ export default async function WorkspaceSettingsPage() {
           </Stack>
         </AuthenticatedActionForm>
       </SettingsCard>
+      <CensorWordsCard initialWords={censorWords.words} customized={censorWords.customized} canManage={canManage} />
     </Stack>
   );
 }

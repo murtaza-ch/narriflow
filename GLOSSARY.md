@@ -51,6 +51,10 @@ _Avoid_: Timeline clip, composition scene, intro file
 A timed Clip Editor Document instruction that masks caption text, replaces source audio with a beep, or silences source audio without changing the transcript.
 _Avoid_: Transcript correction, muted word, profanity flag
 
+**Censored Words**:
+The list Auto-censor scans for: one per Workspace (the built-in defaults until edited, then exactly the stored list), plus a Project's own words and the Brand Profile's blocked terms. A trailing `*` matches whole words that start with the stem. Auto-censoring a match writes a caption Censor Segment and, with a sound, an audio Censor Segment on the same word span.
+_Avoid_: Profanity filter, blocklist
+
 **Device Draft**:
 The latest Clip Editor Document durably retained in the current browser but not necessarily confirmed by Narriflow.
 _Avoid_: Cache, local copy, backup

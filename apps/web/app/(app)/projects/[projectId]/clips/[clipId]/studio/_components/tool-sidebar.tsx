@@ -11,6 +11,7 @@ import {
   Crop,
   X,
   PanelsTopLeft,
+  ShieldCheck,
 } from "lucide-react";
 import { useStudio } from "./studio-shell";
 import type { ToolId } from "./studio-shell";
@@ -24,6 +25,7 @@ import { BrandTemplatePanel } from "./tool-panels/brand-template-panel";
 import { TransitionsPanel } from "./tool-panels/transitions-panel";
 import { LayoutPanel } from "./tool-panels/layout-panel";
 import { ScenesPanel } from "./tool-panels/scenes-panel";
+import { CensorPanel } from "./tool-panels/censor-panel";
 
 /** `railLabel` is the short name under the rail icon; `label` titles the panel. */
 const TOOLS: { id: ToolId; label: string; railLabel?: string; icon: React.ReactNode }[] = [
@@ -35,6 +37,7 @@ const TOOLS: { id: ToolId; label: string; railLabel?: string; icon: React.ReactN
   { id: "music",       label: "Music",    icon: <Music size={22} strokeWidth={1.75} /> },
   { id: "layout",      label: "Layout",   icon: <Crop size={22} strokeWidth={1.75} /> },
   { id: "scenes",      label: "Scenes",   icon: <PanelsTopLeft size={22} strokeWidth={1.75} /> },
+  { id: "censor",      label: "Auto-censor", railLabel: "Censor", icon: <ShieldCheck size={22} strokeWidth={1.75} /> },
 ]
 
 const PANEL_MAP: Record<ToolId, React.ReactNode> = {
@@ -46,6 +49,7 @@ const PANEL_MAP: Record<ToolId, React.ReactNode> = {
   "music":       <MusicPanel />,
   "layout":      <LayoutPanel />,
   "scenes":      <ScenesPanel />,
+  "censor":      <CensorPanel />,
 };
 
 /**
@@ -144,7 +148,7 @@ export function ToolSidebar() {
         </Flex>
       ) : null}
 
-      {/* Eight tools must fit short laptop screens: below 900px tall the
+      {/* Nine tools must fit short laptop screens: below 900px tall the
           buttons compact, below 760px they drop to icons (names stay in the
           tooltip and accessible label); anything shorter scrolls. */}
       <Stack

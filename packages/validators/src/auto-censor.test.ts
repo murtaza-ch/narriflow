@@ -5,6 +5,7 @@ import {
   detectAutoCensorSuggestions,
   isCensorSegmentStale,
 } from "./auto-censor";
+import { DEFAULT_CENSOR_WORD_LIST } from "./censor-words";
 
 describe("detectAutoCensorSuggestions", () => {
   test("does not suggest censoring speech in a discarded edit fragment", () => {
@@ -16,7 +17,7 @@ describe("detectAutoCensorSuggestions", () => {
         text: "fuck", confidence: 1,
         words: [{ word: "fuck", startSec: 0, endSec: 0.04, confidence: 1 }],
       }],
-      brandTerms: [], projectTerms: [], defaultTreatment: "mute", paddingSec: 0,
+      workspaceTerms: DEFAULT_CENSOR_WORD_LIST, brandTerms: [], projectTerms: [], paddingSec: 0,
     });
     expect(suggestions).toEqual([]);
   });
@@ -47,15 +48,14 @@ describe("detectAutoCensorSuggestions", () => {
       transcript,
       brandTerms: [],
       projectTerms: [],
-      defaultTreatment: "beep",
+      workspaceTerms: DEFAULT_CENSOR_WORD_LIST,
       paddingSec: 0.08,
     });
 
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({
       matchedText: "FUCK!",
-      policySource: "built_in",
-      treatment: "beep",
+      policySource: "workspace",
       sourceStartSec: 10.55,
       sourceEndSec: 10.95,
       audioStartSec: 10.47,
@@ -92,7 +92,7 @@ describe("detectAutoCensorSuggestions", () => {
       ],
       brandTerms: ["leak"],
       projectTerms: ["launch leak"],
-      defaultTreatment: "mute",
+      workspaceTerms: DEFAULT_CENSOR_WORD_LIST,
       paddingSec: 0,
     });
 
@@ -101,7 +101,7 @@ describe("detectAutoCensorSuggestions", () => {
       source: suggestion.policySource,
       wordCount: suggestion.sourceWordIds.length,
     }))).toEqual([
-      { text: "ＦＵＣＫ,", source: "built_in", wordCount: 1 },
+      { text: "ＦＵＣＫ,", source: "workspace", wordCount: 1 },
       { text: "launch leak", source: "project", wordCount: 2 },
     ]);
     expect(result[1]?.contextAfter).toBe("now");
@@ -128,7 +128,7 @@ describe("detectAutoCensorSuggestions", () => {
       }],
       brandTerms: [],
       projectTerms: ["alpha beta", "beta gamma", "gamma delta"],
-      defaultTreatment: "mute",
+      workspaceTerms: DEFAULT_CENSOR_WORD_LIST,
       paddingSec: 0,
     });
 
@@ -159,7 +159,7 @@ describe("detectAutoCensorSuggestions", () => {
       }],
       brandTerms: [],
       projectTerms: [],
-      defaultTreatment: "beep",
+      workspaceTerms: DEFAULT_CENSOR_WORD_LIST,
       paddingSec: 0.06,
     });
 
@@ -167,7 +167,7 @@ describe("detectAutoCensorSuggestions", () => {
   });
 
   test("limits an untimed match to caption masking", () => {
-    const scan = (defaultTreatment: "beep" | "mute") => detectAutoCensorSuggestions({
+    const suggestion = detectAutoCensorSuggestions({
       documentRevision: 1,
       locale: "en",
       clipWindow: { startSec: 0, endSec: 8 },
@@ -187,20 +187,17 @@ describe("detectAutoCensorSuggestions", () => {
       ],
       brandTerms: [],
       projectTerms: [],
-      defaultTreatment,
+      workspaceTerms: DEFAULT_CENSOR_WORD_LIST,
       paddingSec: 0.1,
     })[0]!;
-    const suggestion = scan("beep");
 
     expect(suggestion).toMatchObject({
-      treatment: "caption_mask",
       timingLimitation: "caption_only",
       sourceStartSec: null,
       sourceEndSec: null,
       audioStartSec: null,
       audioEndSec: null,
     });
-    expect(scan("mute").fingerprint).toBe(suggestion.fingerprint);
   });
 
   test("classifies a built-in slur separately from profanity", () => {
@@ -213,13 +210,13 @@ describe("detectAutoCensorSuggestions", () => {
         speakerLabel: "Speaker 1",
         startSec: 0,
         endSec: 2,
-        text: "retard",
+        text: "retarded",
         confidence: 0.95,
-        words: [{ word: "retard", startSec: 0.4, endSec: 0.9, confidence: 0.95 }],
+        words: [{ word: "retarded", startSec: 0.4, endSec: 0.9, confidence: 0.95 }],
       }],
       brandTerms: [],
       projectTerms: [],
-      defaultTreatment: "mute",
+      workspaceTerms: DEFAULT_CENSOR_WORD_LIST,
       paddingSec: 0.05,
     });
 
@@ -242,7 +239,7 @@ describe("detectAutoCensorSuggestions", () => {
       }],
       brandTerms: ["ship"],
       projectTerms: [],
-      defaultTreatment: "caption_mask" as const,
+      workspaceTerms: DEFAULT_CENSOR_WORD_LIST,
       paddingSec: 0,
     })[0]!;
 
@@ -254,7 +251,7 @@ describe("detectAutoCensorSuggestions", () => {
   });
 
   test("includes revision and review settings in a deterministic suggestion fingerprint", () => {
-    const scan = (documentRevision: number, defaultTreatment: "beep" | "mute", paddingSec: number) =>
+    const scan = (documentRevision: number, paddingSec: number) =>
       detectAutoCensorSuggestions({
         documentRevision,
         locale: "en",
@@ -270,12 +267,12 @@ describe("detectAutoCensorSuggestions", () => {
         }],
         brandTerms: [],
         projectTerms: [],
-        defaultTreatment,
+        workspaceTerms: DEFAULT_CENSOR_WORD_LIST,
         paddingSec,
       })[0]!.fingerprint;
 
-    expect(scan(2, "beep", 0.04)).toBe(scan(2, "beep", 0.04));
-    expect(scan(2, "beep", 0.04)).not.toBe(scan(7, "mute", 0.12));
+    expect(scan(2, 0.04)).toBe(scan(2, 0.04));
+    expect(scan(2, 0.04)).not.toBe(scan(7, 0.12));
   });
 
   test("marks an applied segment stale when a referenced transcript word changes", () => {
@@ -336,7 +333,7 @@ describe("detectAutoCensorSuggestions", () => {
       }],
       brandTerms: [],
       projectTerms: [],
-      defaultTreatment: "mute" as const,
+      workspaceTerms: DEFAULT_CENSOR_WORD_LIST,
       paddingSec: 0.05,
     };
 

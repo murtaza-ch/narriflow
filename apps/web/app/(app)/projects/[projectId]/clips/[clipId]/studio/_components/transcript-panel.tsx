@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
 import { Combine, Copy, Plus, PanelsTopLeft, Scissors, ShieldCheck, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { editedToSource, sourceToEdited, userErrorMessage } from "@narriflow/validators";
+import { autoCensorWordId, censoredCaptionWordText, editedToSource, sourceToEdited, userErrorMessage } from "@narriflow/validators";
 import type {
   ClipSnapshot,
   EditedTimeMap,
@@ -26,7 +26,12 @@ import {
 } from "./transcript-selection";
 import { subtitleParagraphGroups } from "./subtitle-lines";
 import { sceneTextContent } from "./scene-fonts";
-import { AutoCensorReviewDrawer } from "./auto-censor-review-drawer";
+import {
+  AUTO_CENSOR_SOUNDS,
+  AUTO_CENSOR_TEXT_STYLES,
+  censorMarkersByWordId,
+  type CensorWordMarker,
+} from "./auto-censor-review-model";
 import { transcriptHighlight, type TranscriptHighlight } from "./transcript-highlight";
 import { StudioLockGem } from "./studio-lock-gem";
 import { useUpgrade, type UpgradePrompt } from "@/app/(app)/_components/upgrade";
@@ -313,6 +318,17 @@ function WordCorrectInput({
   );
 }
 
+/** "Censored · F**k · Beep": what this word does on the video. */
+function censorTooltip(marker: CensorWordMarker): string {
+  const style = marker.maskPolicy
+    ? AUTO_CENSOR_TEXT_STYLES.find((option) => option.value === marker.maskPolicy?.replacement)?.label
+    : null;
+  const sound = marker.sound
+    ? AUTO_CENSOR_SOUNDS.find((option) => option.value === marker.sound)?.label
+    : null;
+  return ["Censored", style, sound].filter(Boolean).join(" · ");
+}
+
 // ─── Editable Utterance ─────────────────────────────────────────────────────
 
 const EditableUtterance = memo(function EditableUtterance({
@@ -321,6 +337,7 @@ const EditableUtterance = memo(function EditableUtterance({
   isActive,
   activeWordIndex,
   highlight,
+  censorMarkers,
   onSeek,
 }: {
   utterance: TranscriptUtterance;
@@ -329,6 +346,8 @@ const EditableUtterance = memo(function EditableUtterance({
   activeWordIndex: number;
   /** The caption style's active-word look; null keeps the Studio accent. */
   highlight: TranscriptHighlight | null;
+  /** Censored words by id, so they read here as they will on the video. */
+  censorMarkers: ReadonlyMap<string, CensorWordMarker>;
   onSeek: (editedTime: number) => void;
 }) {
   const { editedTimeMap, updateWord, deletedRanges } = useStudio("editedTimeMap", "updateWord", "deletedRanges");
@@ -401,6 +420,13 @@ const EditableUtterance = memo(function EditableUtterance({
         // a shadow, not padding, so the line never reflows as it moves.
         const pill = isActiveWord && !isDeleted ? (highlight?.pill ?? null) : null;
         const isEditingThisWord = editingWordIndex === wordIdx;
+        const censor = hasRealWordTiming
+          ? censorMarkers.get(autoCensorWordId({ utteranceIndex: utterance.index, wordIndex: wordIdx, word: token.word }))
+          : undefined;
+        // The transcript always shows punctuation; only the mask is the captions'.
+        const shownText = censor?.maskPolicy
+          ? censoredCaptionWordText(token.word.word, censor.maskPolicy, { punctuation: true })
+          : token.word.word;
 
         return (
           <Box as="span" key={i} display="inline">
@@ -425,7 +451,10 @@ const EditableUtterance = memo(function EditableUtterance({
                 }
                 bg={pill ?? undefined}
                 boxShadow={pill ? `0 0 0 2px ${pill}` : undefined}
-                textDecoration={isDeleted ? "line-through" : "none"}
+                textDecoration={isDeleted ? "line-through" : censor ? "underline dotted" : "none"}
+                textDecorationColor="studio.fgSubtle"
+                textUnderlineOffset="3px"
+                title={censor ? censorTooltip(censor) : undefined}
                 opacity={isDeleted ? 0.65 : 1}
                 fontWeight="inherit"
                 cursor="pointer"
@@ -459,9 +488,9 @@ const EditableUtterance = memo(function EditableUtterance({
                     onSeek(sourceToEdited(editedTimeMap, token.word.startSec));
                   }
                 }}
-                aria-label={`${token.word.word}. Press Enter to correct; Space to seek.`}
+                aria-label={`${shownText}. ${censor ? `${censorTooltip(censor)}. ` : ""}Press Enter to correct; Space to seek.`}
               >
-                {token.word.word}
+                {shownText}
               </Box>
             )}
             {/* Always a single joining space after every word (never
@@ -911,7 +940,9 @@ export function TranscriptPanel() {
     sceneFonts,
     upgradePrompts,
     captionPreset,
-  } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts", "upgradePrompts", "captionPreset");
+    editorDocument,
+    setActiveTool,
+  } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts", "upgradePrompts", "captionPreset", "editorDocument", "setActiveTool");
   // The spoken word follows the clip's caption style, so it reads like the captions on the video.
   const highlight = useMemo(() => transcriptHighlight(captionPreset), [captionPreset]);
   const { openUpgrade } = useUpgrade();
@@ -926,7 +957,10 @@ export function TranscriptPanel() {
   const [selection, setSelection] = useState<TranscriptSelectionState | null>(null);
   const [viewMode, setViewMode] = useState<TranscriptViewMode>("word");
   const [creatingClip, setCreatingClip] = useState(false);
-  const [autoCensorOpen, setAutoCensorOpen] = useState(false);
+  const censorMarkers = useMemo(
+    () => censorMarkersByWordId(editorDocument.censorSegments),
+    [editorDocument.censorSegments],
+  );
   // Synchronous re-entrancy guard for handleCreateClip: both the toolbar
   // button and the ⇧⌘C shortcut call it, and `creatingClip` state alone
   // can't prevent a second dispatch landing before the first re-render.
@@ -1322,9 +1356,9 @@ export function TranscriptPanel() {
           px="2"
           ms="-2"
           _hover={{ bg: "studio.subtle" }}
-          onClick={() => setAutoCensorOpen(true)}
+          onClick={() => setActiveTool("censor")}
         >
-          <ShieldCheck size={15} /> Find sensitive words
+          <ShieldCheck size={15} /> Auto-censor
         </Button>
       </Flex>
 
@@ -1399,6 +1433,7 @@ export function TranscriptPanel() {
                 isActive={isActive}
                 activeWordIndex={isActive ? activeState.wordIndex : -1}
                 highlight={highlight}
+                censorMarkers={censorMarkers}
                 onSeek={seekTo}
               />
 
@@ -1449,9 +1484,6 @@ export function TranscriptPanel() {
           />
         )}
       </Box>
-      {autoCensorOpen && (
-        <AutoCensorReviewDrawer onClose={() => setAutoCensorOpen(false)} />
-      )}
     </Box>
   );
 }

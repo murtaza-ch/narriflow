@@ -5,19 +5,12 @@ import {
   type EditedTimeMap,
   type SourceRange,
 } from "./edit-ranges";
+import { formatCaptionWord } from "./caption-preset";
+import { censorWildcardStem, censorWordCategory, CENSOR_STEM_MIN_LENGTH } from "./censor-words";
 import type { CensorSegment, SceneBlock } from "./timed-edits";
 import { z } from "zod";
 
-export const AUTO_CENSOR_POLICY_VERSION = "auto-censor-v1";
-
-export const projectCensorTermsSchema = z
-  .array(z.string().trim().min(1).max(80))
-  .max(50)
-  .transform((terms) => [
-    ...new Map(
-      terms.map((term) => [term.normalize("NFKC").toLocaleLowerCase("und"), term.trim()]),
-    ).values(),
-  ]);
+export const AUTO_CENSOR_POLICY_VERSION = "auto-censor-v2";
 
 export const autoCensorAnalyticsInputSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("auto_censor_scan_started") }),
@@ -42,7 +35,7 @@ export const autoCensorAnalyticsInputSchema = z.discriminatedUnion("type", [
 export type AutoCensorAnalyticsInput = z.infer<typeof autoCensorAnalyticsInputSchema>;
 
 export type AutoCensorTreatment = "beep" | "mute" | "caption_mask";
-export type AutoCensorPolicySource = "built_in" | "brand_profile" | "project";
+export type AutoCensorPolicySource = "workspace" | "brand_profile" | "project";
 
 export interface AutoCensorTranscriptWord {
   readonly word: string;
@@ -76,7 +69,6 @@ export interface AutoCensorSuggestion {
   readonly audioStartSec: number | null;
   readonly audioEndSec: number | null;
   readonly confidence: number | null;
-  readonly treatment: AutoCensorTreatment;
   readonly timingLimitation: "caption_only" | null;
 }
 
@@ -86,14 +78,15 @@ export interface DetectAutoCensorSuggestionsInput {
   readonly clipWindow: { readonly startSec: number; readonly endSec: number };
   readonly deletedRanges?: readonly SourceRange[];
   readonly transcript: readonly AutoCensorTranscriptUtterance[];
+  /** The Workspace's censored-word list (see censor-words.ts). */
+  readonly workspaceTerms: readonly string[];
   readonly brandTerms: readonly string[];
   readonly projectTerms: readonly string[];
-  readonly defaultTreatment: AutoCensorTreatment;
   readonly paddingSec: number;
 }
 
 export interface CaptionMaskPolicy {
-  readonly replacement: "asterisks" | "first_character" | "full_block";
+  readonly replacement: "asterisks" | "first_last" | "first_character" | "full_block";
   readonly preservePunctuation: boolean;
 }
 
@@ -126,25 +119,11 @@ interface AutoCensorPolicyTerm {
   readonly category: AutoCensorSuggestion["policyCategory"];
 }
 
-const BUILT_IN_POLICY: Readonly<Record<string, readonly Omit<AutoCensorPolicyTerm, "source">[]>> = {
-  en: [
-    { value: "fuck", category: "profanity" },
-    { value: "fucking", category: "profanity" },
-    { value: "shit", category: "profanity" },
-    { value: "bitch", category: "profanity" },
-    { value: "asshole", category: "profanity" },
-    { value: "son of a bitch", category: "profanity" },
-    { value: "retard", category: "slur" },
-  ],
-  es: [
-    { value: "mierda", category: "profanity" },
-    { value: "hijo de puta", category: "profanity" },
-  ],
-  fr: [
-    { value: "merde", category: "profanity" },
-    { value: "putain", category: "profanity" },
-  ],
-};
+/** One word of a term: a literal, or the stem of a trailing-`*` wildcard. */
+interface CompiledTermToken {
+  readonly text: string;
+  readonly wildcard: boolean;
+}
 
 function hash64(value: string): string {
   const seeds = [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35];
@@ -166,6 +145,11 @@ function normalizeToken(value: string, locale: string): string {
     .normalize("NFKC")
     .toLocaleLowerCase(locale)
     .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+}
+
+/** "shit's" and "fuck'd" are the censored word plus a contraction: match on the word. */
+function withoutContraction(token: string): string {
+  return token.replace(/['\u2019](?:s|d|ll|re|ve|m)$/u, "");
 }
 
 function normalizeLocaleTag(locale: string): string {
@@ -220,21 +204,48 @@ export function maskCensoredCaptionWord(
   value: string,
   policy: CaptionMaskPolicy,
 ): string {
-  let keptFirstCharacter = false;
+  const graphemes = segmentGraphemes(value.normalize("NFC"));
+  const isMaskable = (grapheme: string) => policy.preservePunctuation
+    ? /[\p{L}\p{N}\p{M}]/u.test(grapheme)
+    : !/^\s+$/u.test(grapheme);
+  const maskableIndexes = graphemes.flatMap((grapheme, index) => isMaskable(grapheme) ? [index] : []);
+  const kept = new Set<number>();
+  if (policy.replacement === "first_character") {
+    kept.add(maskableIndexes[0] ?? -1);
+  } else if (policy.replacement === "first_last" && maskableIndexes.length >= 3) {
+    // "F**k". A word shorter than three letters would show itself, so it is masked whole.
+    kept.add(maskableIndexes[0]!);
+    kept.add(maskableIndexes[maskableIndexes.length - 1]!);
+  }
   const replacement = policy.replacement === "full_block" ? "█" : "*";
-  return segmentGraphemes(value.normalize("NFC"))
-    .map((grapheme) => {
-      const maskable = policy.preservePunctuation
-        ? /[\p{L}\p{N}\p{M}]/u.test(grapheme)
-        : !/^\s+$/u.test(grapheme);
-      if (!maskable) return grapheme;
-      if (policy.replacement === "first_character" && !keptFirstCharacter) {
-        keptFirstCharacter = true;
-        return grapheme;
-      }
-      return replacement;
-    })
+  return graphemes
+    .map((grapheme, index) =>
+      !isMaskable(grapheme) || kept.has(index) ? grapheme : replacement)
     .join("");
+}
+
+/**
+ * A word as a caption shows it: edge punctuation is dropped first (when
+ * captions hide it), then the censor mask is applied, so the mask's own `*`
+ * can never be stripped as punctuation. Callers apply the text transform last.
+ * The composition plan's cues (burn-in, SRT/VTT, preview) and the transcript
+ * panel all use this one function.
+ */
+export function censoredCaptionWordText(
+  word: string,
+  maskPolicy: CaptionMaskPolicy | null,
+  options: { readonly punctuation: boolean },
+): string {
+  const visible = formatCaptionWord(word, options);
+  return maskPolicy && visible ? maskCensoredCaptionWord(visible, maskPolicy) : visible;
+}
+
+/** A list entry as shown in the word-list editor: each word masked, e.g. "f**k*". */
+export function maskCensorTermForDisplay(term: string): string {
+  return term
+    .split(/\s+/)
+    .map((word) => maskCensoredCaptionWord(word, { replacement: "first_last", preservePunctuation: true }))
+    .join(" ");
 }
 
 function retimeCensorIntervalForScenes(
@@ -412,14 +423,15 @@ export function detectAutoCensorSuggestions(
         word,
         wordIndex,
         normalized: normalizeToken(word.word, locale),
+        base: withoutContraction(normalizeToken(word.word, locale)),
       }];
     }),
   );
-  const localeKey = locale.toLocaleLowerCase().split("-")[0] ?? "en";
   const policyTerms: AutoCensorPolicyTerm[] = [
-    ...(BUILT_IN_POLICY[localeKey] ?? BUILT_IN_POLICY.en ?? []).map((term) => ({
-      ...term,
-      source: "built_in" as const,
+    ...input.workspaceTerms.map((value) => ({
+      value,
+      source: "workspace" as const,
+      category: censorWordCategory(value),
     })),
     ...input.brandTerms.map((value) => ({
       value,
@@ -436,16 +448,28 @@ export function detectAutoCensorSuggestions(
     const tokens = term.value
       .trim()
       .split(/\s+/)
-      .map((token) => normalizeToken(token, locale))
-      .filter(Boolean);
-    return tokens.length > 0 ? [{ ...term, tokens }] : [];
+      .map((raw): CompiledTermToken => {
+        const stem = censorWildcardStem(raw);
+        return { text: normalizeToken(stem ?? raw, locale), wildcard: stem !== null };
+      })
+      .filter((token) => token.text);
+    // A stem that short would match half the transcript; skip the whole term.
+    const tooBroad = tokens.some(
+      (token) => token.wildcard && [...token.text].length < CENSOR_STEM_MIN_LENGTH,
+    );
+    return tokens.length > 0 && !tooBroad ? [{ ...term, tokens }] : [];
   });
   const candidates = words.flatMap((entry, flatIndex) =>
     compiledTerms.flatMap((term) => {
       const span = words.slice(flatIndex, flatIndex + term.tokens.length);
       if (
         span.length !== term.tokens.length ||
-        span.some((candidate, index) => candidate.normalized !== term.tokens[index]) ||
+        span.some((candidate, index) => {
+          const token = term.tokens[index]!;
+          return token.wildcard
+            ? !candidate.normalized.startsWith(token.text)
+            : candidate.normalized !== token.text && candidate.base !== token.text;
+        }) ||
         span.some((candidate) => candidate.utterance.index !== entry.utterance.index)
       ) {
         return [];
@@ -454,7 +478,7 @@ export function detectAutoCensorSuggestions(
     }),
   );
   const sourcePriority: Record<AutoCensorPolicySource, number> = {
-    built_in: 1,
+    workspace: 1,
     brand_profile: 2,
     project: 3,
   };
@@ -504,9 +528,6 @@ export function detectAutoCensorSuggestions(
           Math.min(input.clipWindow.endSec, sourceEndSec! + input.paddingSec),
         )
       : null;
-    const treatment: AutoCensorTreatment = timed
-      ? input.defaultTreatment
-      : "caption_mask";
     const fingerprint = hash64(
       JSON.stringify({
         documentRevision: input.documentRevision,
@@ -514,7 +535,6 @@ export function detectAutoCensorSuggestions(
         policySource: term.source,
         policyTerm: term.tokens,
         sourceWordIds,
-        treatment,
         paddingSec: input.paddingSec,
       }),
     );
@@ -541,7 +561,6 @@ export function detectAutoCensorSuggestions(
         audioStartSec,
         audioEndSec,
         confidence: confidences.length > 0 ? Math.min(...confidences) : null,
-        treatment,
         timingLimitation: timed ? null : ("caption_only" as const),
       };
   });

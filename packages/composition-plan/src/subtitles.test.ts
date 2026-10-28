@@ -99,6 +99,57 @@ describe("subtitle cues share burn-in's derivation", () => {
     expect(cue!.text.endsWith(", friends.")).toBe(true);
   });
 
+  test("a first-and-last mask reaches the subtitle files too, with or without a beep on the span", () => {
+    const word = { word: "Damn,", startSec: 0.5, endSec: 0.9, confidence: 0.9 };
+    const sourceWordIds = [autoCensorWordId({ utteranceIndex: 0, wordIndex: 0, word })];
+    const base = { schemaVersion: 1 as const, sourceWordIds, sourceStartSec: 0.5, sourceEndSec: 0.9,
+      suggestionFingerprint: "a".repeat(64), policyVersion: "auto-censor-v2", enabled: true };
+    const mask = { ...base, id: "10000000-0000-4000-8000-000000000004", treatment: "caption_mask" as const, paddingSec: 0,
+      beepSettings: null, captionMaskPolicy: { replacement: "first_last" as const, preservePunctuation: true } };
+    const beep = { ...base, id: "10000000-0000-4000-8000-000000000005", treatment: "beep" as const, paddingSec: 0.06,
+      beepSettings: { frequencyHz: 1_000, levelDb: -8 }, captionMaskPolicy: null };
+    const transcriptSlice = [utterance(0, [["Damn,", 0.5, 0.9], ["friends.", 1, 1.5]])];
+    for (const censorSegments of [[mask], [mask, beep]]) {
+      const [cue] = deriveCaptionCues(document({ transcriptSlice, censorSegments }));
+      expect(cue!.text).toBe("D**n, friends.");
+      expect(formatSubtitles([cue!], "srt")).toContain("D**n, friends.");
+    }
+    // Sound alone leaves the text as spoken.
+    expect(deriveCaptionCues(document({ transcriptSlice, censorSegments: [beep] }))[0]!.text).toBe("Damn, friends.");
+  });
+
+  test("every mask style survives captions that hide punctuation, and the case transform runs last", () => {
+    const words: Word[] = [["what", 0.5, 0.8], ["fuck,", 0.9, 1.2], ["ok.", 1.3, 1.6], ["ad", 1.7, 1.9]];
+    const ids = (index: number) => [autoCensorWordId({
+      utteranceIndex: 0, wordIndex: index,
+      word: { word: words[index]![0], startSec: words[index]![1], endSec: words[index]![2], confidence: 0.9 },
+    })];
+    const segment = (index: number, replacement: "asterisks" | "first_last" | "first_character" | "full_block") => ({
+      schemaVersion: 1 as const, id: `10000000-0000-4000-8000-00000000010${index}`, sourceWordIds: ids(index),
+      sourceStartSec: words[index]![1], sourceEndSec: words[index]![2], treatment: "caption_mask" as const, paddingSec: 0,
+      beepSettings: null, captionMaskPolicy: { replacement, preservePunctuation: true },
+      suggestionFingerprint: "a".repeat(64), policyVersion: "auto-censor-v2", enabled: true,
+    });
+    const cue = (replacement: Parameters<typeof segment>[1], textTransform: string, index = 1) =>
+      deriveCaptionCues(document(
+        { transcriptSlice: [utterance(0, words)], censorSegments: [segment(index, replacement)] },
+        { punctuation: false, wordsPerCue: 4, textTransform },
+      ))[0]!.text;
+    expect(cue("asterisks", "none")).toBe("what **** ok ad");
+    expect(cue("first_character", "none")).toBe("what f*** ok ad");
+    expect(cue("first_last", "none")).toBe("what f**k ok ad");
+    expect(cue("full_block", "none")).toBe("what ████ ok ad");
+    expect(cue("first_last", "uppercase")).toBe("WHAT F**K OK AD");
+    // A word too short for first-and-last is masked whole, not dropped.
+    expect(cue("first_last", "none", 3)).toBe("what fuck ok **");
+    // Punctuation on keeps the mask's own edge punctuation too.
+    const kept = deriveCaptionCues(document(
+      { transcriptSlice: [utterance(0, words)], censorSegments: [segment(1, "first_last")] },
+      { punctuation: true, wordsPerCue: 4, textTransform: "none" },
+    ))[0]!.text;
+    expect(kept).toBe("what f**k, ok. ad");
+  });
+
   test("cues are bounded by the clip window at its start and end", () => {
     const cues = deriveCaptionCues(document({ clipStartSec: 0.7, clipEndSec: 3.6 }));
     expect(cues[0]!.startSec).toBe(0);

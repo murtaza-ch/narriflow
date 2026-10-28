@@ -13,7 +13,7 @@ import {
   extractSpeechWordIntervals,
   formatCaptionWord,
   autoCensorWordId,
-  maskCensoredCaptionWord,
+  censoredCaptionWordText,
   normalizeCensorAudioSchedule,
   resolveMusicFadeWindows,
   resolveEffectiveFramingMode,
@@ -2427,11 +2427,9 @@ function captionLayersForTarget(input: {
           segment.sourceWordIds.includes(wordId),
         )
         .sort((left, right) => left.id.localeCompare(right.id))[0];
-      const visibleWord = maskSegment?.captionMaskPolicy
-        ? maskCensoredCaptionWord(word.word, maskSegment.captionMaskPolicy)
-        : word.word;
+      // Strip punctuation, then mask, then case: see censoredCaptionWordText.
       const formatted = applyCaptionTextTransform(
-        formatCaptionWord(visibleWord, { punctuation }),
+        censoredCaptionWordText(word.word, maskSegment?.captionMaskPolicy ?? null, { punctuation }),
         preset.textTransform,
       );
       if (!formatted) return [];

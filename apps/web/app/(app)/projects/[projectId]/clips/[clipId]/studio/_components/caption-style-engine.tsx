@@ -200,6 +200,10 @@ export interface CaptionCueProps {
   showEmojis?: boolean;
   /** From the consumer's useReducedMotion() — renders static final frames. */
   reducedMotion?: boolean;
+  /** The words already went through the composition plan's cue formatting
+   *  (punctuation, censor masks, case). Formatting them again would strip a
+   *  mask's asterisks. */
+  preformatted?: boolean;
 }
 
 /** One copy of a word's glyphs; every caption layer is one of these. */
@@ -244,6 +248,7 @@ export function CaptionCue({
   cueIndex = 0,
   showEmojis = false,
   reducedMotion = false,
+  preformatted = false,
 }: CaptionCueProps) {
   const [naturalWidth, setNaturalWidth] = useState(0);
   const customFont = useBrandFont(preset.fontAsset);
@@ -255,7 +260,9 @@ export function CaptionCue({
   const keepPunctuation = preset.punctuation !== false;
 
   const display = words.map((item) =>
-    applyCaptionTextTransform(formatCaptionWord(item.word, { punctuation: keepPunctuation }), preset.textTransform),
+    preformatted
+      ? item.word
+      : applyCaptionTextTransform(formatCaptionWord(item.word, { punctuation: keepPunctuation }), preset.textTransform),
   );
 
   // The keyed cue entrance replaces this node on every cue change. Observe

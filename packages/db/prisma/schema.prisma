@@ -930,6 +930,10 @@ model Workspace {
   /// "Use my performance data to pick clips". Null means the default, which is
   /// on once the Workspace's guidance qualifies; false switches it off.
   usePerformanceGuidance Boolean?
+  /// The Workspace's censored-word list. It only applies once
+  /// `censorWordsCustomized` is true; until then the built-in defaults do.
+  censorWords            String[]        @default([])
+  censorWordsCustomized  Boolean         @default(false)
   createdAt              DateTime        @default(now())
   updatedAt              DateTime        @updatedAt
 

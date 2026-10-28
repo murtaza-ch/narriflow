@@ -1,3 +1,4 @@
+import { replaceCensorWordsAction, resetCensorWordsAction } from "@/app/(app)/settings/workspace/censor-words-actions";
 import { BrandFontsProvider, type BrandFontChoice } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { notFound } from "next/navigation";
 import { admitProjectPage } from "@/lib/authenticated-request-page";
@@ -318,6 +319,8 @@ export default async function StudioPage({
       autoCensorPolicy={autoCensorPolicy}
       upgradePrompts={upgradePrompts}
       updateProjectCensorTerms={updateProjectCensorTerms}
+      replaceWorkspaceCensorWords={replaceCensorWordsAction}
+      resetWorkspaceCensorWords={resetCensorWordsAction}
       recordAutoCensorEvent={recordAutoCensorEvent}
     /></BrandFontsProvider>
   );

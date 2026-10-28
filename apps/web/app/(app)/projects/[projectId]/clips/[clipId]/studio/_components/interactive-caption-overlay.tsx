@@ -391,6 +391,7 @@ export function InteractiveCaptionOverlay({
             cueIndex={layer.cueIndex}
             showEmojis={captionPreset.emojis === true}
             reducedMotion={reducedMotion}
+            preformatted
           />
         </motion.div>
       </div>

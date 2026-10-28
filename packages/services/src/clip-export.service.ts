@@ -93,14 +93,20 @@ export function staleCensorSegmentCount(document: EditorDocument): number {
 
 /**
  * What a document must satisfy before a new export or an export retry is
- * accepted, on every surface: motion needs a plan with motion, and enabled
- * Auto Censor segments must still match the transcript.
+ * accepted, on every surface (new export, retry, bulk render): motion needs a
+ * plan with motion, enabled Auto Censor segments need a plan with Auto Censor,
+ * and they must still match the transcript.
  */
 export function assertClipExportDocumentAllowed(
   pricingTier: PricingTier,
   document: EditorDocument,
 ): void {
   if (editorDocumentUsesMotion(document)) requirePlanFeature(pricingTier, "editor.motion");
+  // A frozen snapshot can outlive the plan that saved it: enabled censor edits
+  // render only where the plan has Auto Censor. Disabled ones render nothing.
+  if (document.censorSegments.some((segment) => segment.enabled)) {
+    requirePlanFeature(pricingTier, "editor.censoring");
+  }
   const staleCount = staleCensorSegmentCount(document);
   if (staleCount > 0) {
     throw new ClipExportError(

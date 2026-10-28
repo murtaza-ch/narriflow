@@ -3,10 +3,14 @@ import { getPrismaClient } from "@narriflow/db/client";
 import {
   autoCensorAnalyticsInputSchema,
   brandVoiceGuidanceSchema,
+  effectiveWorkspaceCensorWords,
   projectCensorTermsSchema,
+  readProjectCensorTerms,
   resolvePricingTier,
   workspaceAllowsCapability,
+  workspaceCensorWordsSchema,
   type AutoCensorAnalyticsInput,
+  type WorkspaceCensorWords,
 } from "@narriflow/validators";
 import type { BrandActorScope } from "./brand-ownership";
 import { analyticsService } from "./analytics.service";
@@ -44,32 +48,72 @@ export class AutoCensorService {
     if (!workspaceAllowsCapability(scope, "content.view")) {
       throw new AutoCensorAccessError("auto_censor_forbidden");
     }
-    const project = await this.requirePrisma().project.findFirst({
-      where: { id: projectId, workspaceId: scope.workspaceId },
-      select: {
-        languageCode: true,
-        censorTerms: true,
-        brandProfile: { select: { voiceGuidance: true } },
-      },
-    });
+    const [project, workspaceTerms] = await Promise.all([
+      this.requirePrisma().project.findFirst({
+        where: { id: projectId, workspaceId: scope.workspaceId },
+        select: {
+          languageCode: true,
+          censorTerms: true,
+          brandProfile: { select: { voiceGuidance: true } },
+        },
+      }),
+      this.getWorkspaceWords(scope),
+    ]);
     if (!project) throw new AutoCensorAccessError("auto_censor_forbidden");
     const voice = project.brandProfile
       ? brandVoiceGuidanceSchema.parse(project.brandProfile.voiceGuidance)
       : brandVoiceGuidanceSchema.parse({});
     return {
       locale: project.languageCode ?? "en",
+      workspaceTerms: workspaceTerms.words,
+      workspaceTermsCustomized: workspaceTerms.customized,
+      canEditWorkspaceTerms: workspaceAllowsCapability(scope, "workspace.manage"),
       brandTerms: voice.blockedTerms,
-      projectTerms: projectCensorTermsSchema.parse(project.censorTerms),
+      // Read leniently: a stored term the rules now reject must not break the Studio.
+      projectTerms: readProjectCensorTerms(project.censorTerms),
       canApply:
         workspaceAllowsCapability(scope, "content.edit") &&
         hasFeature(scope.pricingTier, "editor.censoring"),
-      treatments: {
-        caption_mask: true,
-        mute: true,
-        beep: true,
-      },
       planTier: resolvePricingTier(scope.pricingTier),
     } as const;
+  }
+
+  /** The Workspace's censored words: the built-in defaults until someone edits the list. */
+  async getWorkspaceWords(scope: BrandActorScope): Promise<WorkspaceCensorWords> {
+    if (!workspaceAllowsCapability(scope, "content.view")) {
+      throw new AutoCensorAccessError("auto_censor_forbidden");
+    }
+    const workspace = await this.requirePrisma().workspace.findUnique({
+      where: { id: scope.workspaceId },
+      select: { censorWords: true, censorWordsCustomized: true },
+    });
+    if (!workspace) throw new AutoCensorAccessError("auto_censor_forbidden");
+    return effectiveWorkspaceCensorWords(workspace);
+  }
+
+  /** Replaces the whole list. Once edited, the stored list replaces the defaults. */
+  async replaceWorkspaceWords(scope: BrandActorScope, input: unknown): Promise<WorkspaceCensorWords> {
+    if (!workspaceAllowsCapability(scope, "workspace.manage")) {
+      throw new AutoCensorAccessError("auto_censor_forbidden");
+    }
+    const words = workspaceCensorWordsSchema.parse(input);
+    await this.requirePrisma().workspace.update({
+      where: { id: scope.workspaceId },
+      data: { censorWords: words, censorWordsCustomized: true },
+    });
+    return { words, customized: true };
+  }
+
+  /** Back to the built-in defaults. */
+  async resetWorkspaceWords(scope: BrandActorScope): Promise<WorkspaceCensorWords> {
+    if (!workspaceAllowsCapability(scope, "workspace.manage")) {
+      throw new AutoCensorAccessError("auto_censor_forbidden");
+    }
+    await this.requirePrisma().workspace.update({
+      where: { id: scope.workspaceId },
+      data: { censorWords: [], censorWordsCustomized: false },
+    });
+    return this.getWorkspaceWords(scope);
   }
 
   async replaceProjectTerms(

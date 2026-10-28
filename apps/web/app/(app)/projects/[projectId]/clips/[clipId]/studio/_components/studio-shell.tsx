@@ -58,6 +58,7 @@ import {
   type MediaMotion,
   type SceneTemplateDefinition,
   type CensorSegment,
+  type WorkspaceCensorWords,
   type AutoCensorAnalyticsInput,
   type BrandAudioSnapshot,
 } from "@narriflow/validators";
@@ -300,7 +301,8 @@ export type ToolId =
   | "text"
   | "music"
   | "layout"
-  | "scenes";
+  | "scenes"
+  | "censor";
 
 export interface StudioVisualAsset {
   id: string;
@@ -342,12 +344,24 @@ export interface TranscriptItem {
   description?: string;
 }
 
+/** The censored-word lists as edited this session. They live in the shell, not
+ *  the Auto-censor panel, so switching tools doesn't revert saved edits. */
+export interface StudioCensorWords {
+  workspace: WorkspaceCensorWords;
+  project: string[];
+}
+
 export interface StudioAutoCensorPolicy {
   locale: string;
+  /** The Workspace's censored words (the defaults until someone edits them). */
+  workspaceTerms: readonly string[];
+  /** False until the Workspace edits its list; then only English and the clip's language are scanned. */
+  workspaceTermsCustomized: boolean;
+  /** Who may edit the Workspace list: roles that manage the workspace. */
+  canEditWorkspaceTerms: boolean;
   brandTerms: readonly string[];
   projectTerms: readonly string[];
   canApply: boolean;
-  treatments: Readonly<Record<"caption_mask" | "mute" | "beep", boolean>>;
   planTier: "free" | "creator" | "pro" | "business";
 }
 
@@ -691,7 +705,12 @@ interface StudioFields extends StudioState {
   upsertMediaMotion: (motion: MediaMotion) => void;
   deleteSceneBlock: (id: string) => void;
   setCensorSegments: (segments: CensorSegment[]) => boolean;
+  censorWords: StudioCensorWords;
+  setCensorWords: React.Dispatch<React.SetStateAction<StudioCensorWords>>;
   updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
+  /** The Workspace word list's server actions, handed through so the word-list dialog stays server-free. */
+  replaceWorkspaceCensorWords: (words: string[]) => Promise<unknown>;
+  resetWorkspaceCensorWords: () => Promise<unknown>;
   recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
 }
 
@@ -823,6 +842,9 @@ interface StudioShellProps {
   autoCensorPolicy: StudioAutoCensorPolicy;
   upgradePrompts?: StudioUpgradePrompts;
   updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
+  /** The Workspace word list's server actions, handed through so the word-list dialog stays server-free. */
+  replaceWorkspaceCensorWords: (words: string[]) => Promise<unknown>;
+  resetWorkspaceCensorWords: () => Promise<unknown>;
   recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
 }
 
@@ -865,6 +887,8 @@ export function StudioShell({
   autoCensorPolicy,
   upgradePrompts = NO_STUDIO_UPGRADE_PROMPTS,
   updateProjectCensorTerms,
+  replaceWorkspaceCensorWords,
+  resetWorkspaceCensorWords,
   recordAutoCensorEvent,
 }: StudioShellProps) {
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
@@ -1241,6 +1265,13 @@ export function StudioShell({
   const isPlaying = playbackPresentation.state === "playing";
   const playbackRate = playbackPresentation.rate;
   const [activeTool, setActiveTool] = useState<ToolId | null>(null);
+  const [censorWords, setCensorWords] = useState<StudioCensorWords>(() => ({
+    workspace: {
+      words: [...autoCensorPolicy.workspaceTerms],
+      customized: autoCensorPolicy.workspaceTermsCustomized,
+    },
+    project: [...autoCensorPolicy.projectTerms],
+  }));
   const [showTimeline, setShowTimeline] = useState(true);
   const [timelineSnapping, setTimelineSnapping] = useState(true);
   const router = useRouter();
@@ -2316,7 +2347,7 @@ export function StudioShell({
     reportCompositionPlanStatus, compositionPlanQaFixture,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
     insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, upsertMediaMotion, deleteSceneBlock,
-    setCensorSegments, updateProjectCensorTerms, recordAutoCensorEvent,
+    setCensorSegments, censorWords, setCensorWords, updateProjectCensorTerms, replaceWorkspaceCensorWords, resetWorkspaceCensorWords, recordAutoCensorEvent,
   };
   const [studioAccessSource] = useState(() => createStudioAccess(fields));
   useLayoutEffect(() => {

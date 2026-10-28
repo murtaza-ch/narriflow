@@ -139,7 +139,7 @@ export const censorSegmentSchema = z.strictObject({
     levelDb: z.number().finite().min(-48).max(-1),
   }).nullable().default(null),
   captionMaskPolicy: z.strictObject({
-    replacement: z.enum(["asterisks", "first_character", "full_block"]),
+    replacement: z.enum(["asterisks", "first_last", "first_character", "full_block"]),
     preservePunctuation: z.boolean(),
   }).nullable().default(null),
   suggestionFingerprint: z.string().regex(/^[a-f0-9]{32,128}$/i).nullable().default(null),

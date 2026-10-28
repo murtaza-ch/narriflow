@@ -15,6 +15,7 @@ import {
 	splitLayoutInputFingerprint,
 } from "@narriflow/composition-plan";
 import {
+	autoCensorWordId,
 	captionPresetSchema,
 	clipAutoLayoutAnalysisSchema,
 	editorDocumentSchema,
@@ -32,6 +33,7 @@ import {
 	compileCompositionPlanVisualLayers,
 	bindCompositionPlanAudioInputs,
 } from "./composition-ffmpeg-adapter";
+import { serializeCaptionAss } from "./caption-ass";
 import { drawtextLiteralText } from "./ffmpeg-text";
 import { productionWorkerProcessModule } from "./worker-process";
 
@@ -1317,6 +1319,88 @@ describe("composition FFmpeg adapter", () => {
 				{ startSec: 3, endSec: 3.4, treatment: "mute" },
 			],
 		});
+	});
+
+	test("burns a masked word into the captions and bleeps the same span in the audio graph", () => {
+		const word = { word: "Fuck!", startSec: 1, endSec: 1.5, confidence: 0.98 };
+		const sourceWordIds = [autoCensorWordId({ utteranceIndex: 0, wordIndex: 0, word })];
+		const segment = (id: string, over: Record<string, unknown>) => ({
+			schemaVersion: 1,
+			id,
+			sourceWordIds,
+			sourceStartSec: 1,
+			sourceEndSec: 1.5,
+			suggestionFingerprint: "a".repeat(64),
+			policyVersion: "auto-censor-v2",
+			enabled: true,
+			...over,
+		});
+		const planned = planClipComposition({
+			document: editorDocumentSchema.parse({
+				version: 1,
+				clipStartSec: 0,
+				clipEndSec: 4,
+				captionPreset: captionPresetSchema.parse({}),
+				transcriptSlice: [{
+					index: 0, speaker: 0, speakerLabel: "Speaker 1", startSec: 1, endSec: 1.5,
+					text: "Fuck!", confidence: 0.98, words: [word],
+				}],
+				studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+				brollUrl: null,
+				deletedRanges: [],
+				censorSegments: [
+					segment("10000000-0000-4000-8000-000000000001", {
+						treatment: "caption_mask",
+						paddingSec: 0,
+						beepSettings: null,
+						captionMaskPolicy: { replacement: "first_last", preservePunctuation: true },
+					}),
+					segment("10000000-0000-4000-8000-000000000002", {
+						treatment: "beep",
+						paddingSec: 0.06,
+						beepSettings: { frequencyHz: 1_000, levelDb: -8 },
+						captionMaskPolicy: null,
+					}),
+				],
+			}),
+			source: { identity: "source:key", kind: "video", width: 1920, height: 1080, hasAudio: true },
+			evidence: { automaticLayout: { state: "missing" } },
+			assets: { backgroundImage: { state: "missing" } },
+			capabilities: {
+				automaticSpeakerLayout: true,
+				automaticSpeakerEngineVersion: "shot-layout-v1",
+			},
+			targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
+		});
+		if (planned.status === "invalid") throw new Error(planned.error.code);
+		const plan = planned.plan;
+
+		// Captions: the burn-in file carries the masked text, never the original.
+		const captions = plan.targets[0]!.visualLayers.filter((layer) => layer.kind === "caption");
+		const ass = serializeCaptionAss({ layers: captions, canvas: { width: 1080, height: 1920 } });
+		// The default preset uppercases captions after the mask, so F**k becomes F**K.
+		expect(ass).toContain("F**K!");
+		expect(ass).not.toMatch(/fuck/i);
+
+		// Audio: one beep over the padded span, rendered by the same command.
+		expect(plan.audioSchedule.censors).toHaveLength(1);
+		const audio = bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(plan), {});
+		const args = compileClipCompositionCommand({
+			sourcePath: "/tmp/source.mp4",
+			outputPath: "/tmp/output.mp4",
+			startSec: 0,
+			endSec: 4,
+			audio,
+			source: { hasVideo: true, hasAudio: true, width: 1920, height: 1080, durationSec: 4, fps: 30 },
+			plan,
+			targetId: "variant-1",
+			encoder: { preset: "veryfast", crf: "21" },
+			assets: { subtitlePath: "/tmp/captions.ass" },
+		});
+		const graph = args[args.indexOf("-filter_complex") + 1]!;
+		expect(graph).toContain("between(t,0.940000,1.560000)");
+		expect(graph).toContain("sine=frequency=1000:sample_rate=48000:duration=0.620000");
+		expect(graph).toContain("ass='/tmp/captions.ass'");
 	});
 
 	test("compiles mute and beep from the shared schedule without touching music", () => {
