@@ -1,7 +1,7 @@
 "use client";
 
 import { Flex } from "@chakra-ui/react";
-import { Scissors, FileText } from "lucide-react";
+import { Captions, Sparkles } from "lucide-react";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import type { GenerationMode } from "@narriflow/validators";
 
@@ -14,8 +14,8 @@ const items = [
   {
     value: "clip",
     label: (
-      <Flex align="center" gap="1.5" justify="center">
-        <Scissors size={14} strokeWidth={1.75} />
+      <Flex align="center" gap="2" justify="center">
+        <Sparkles size={14} strokeWidth={1.75} />
         AI clipping
       </Flex>
     ),
@@ -23,8 +23,8 @@ const items = [
   {
     value: "caption_only",
     label: (
-      <Flex align="center" gap="1.5" justify="center">
-        <FileText size={14} strokeWidth={1.75} />
+      <Flex align="center" gap="2" justify="center">
+        <Captions size={14} strokeWidth={1.75} />
         Caption only
       </Flex>
     ),
@@ -40,6 +40,8 @@ export function ModeTabs({ value, onChange }: ModeTabsProps) {
         if (next) onChange(next as GenerationMode);
       }}
       size="md"
+      w="full"
+      css={{ "& [data-part=item]": { flex: "1", px: "2", whiteSpace: "nowrap" } }}
     />
   );
 }

@@ -54,13 +54,11 @@ export function SourceSetupFlow({
     window.scrollTo({ top: 0, behavior: "instant" });
   }
   return (
-    <Stack gap="5" maxW={step === 2 ? "640px" : "860px"} mx="auto">
+    <Stack gap="5" w="full" maxW={step === 2 ? "640px" : "860px"} mx="auto">
       <Stack
-        gap="4"
+        gap="5"
         bg="bg.panel"
-        borderWidth="1px"
-        borderColor="border.card"
-        p={{ base: "4", md: step === 2 ? "5" : "3" }}
+        p={{ base: "4", md: step === 2 ? "6" : "3" }}
         borderRadius="l3"
       >
         <Flex
@@ -69,12 +67,13 @@ export function SourceSetupFlow({
           align="center"
           gap="2"
         >
-          <Text fontSize="13px" color="fg.muted">
+          <Text fontSize="13px" fontWeight="500" color="fg.muted">
             {sourceLabel}
           </Text>
           <Button
             size="sm"
             variant="ghost"
+            color="fg.muted"
             disabled={locked}
             onClick={step === 2 ? onChangeSource : () => changeStep(2)}
           >
@@ -99,7 +98,7 @@ export function SourceSetupFlow({
             flexShrink="0"
             pointerEvents={expandedPreview ? "auto" : "none"}
             overflow="hidden"
-            rounded="lg"
+            borderRadius="l2"
           >
             {sourcePreview}
           </Box>
@@ -111,7 +110,8 @@ export function SourceSetupFlow({
                 value={title}
                 disabled={locked}
                 onChange={(event) => onTitleChange(event.target.value)}
-                size="sm"
+                size="md"
+                fontWeight="500"
               />
             ) : (
               <Text fontSize="13px" fontWeight="500" truncate>

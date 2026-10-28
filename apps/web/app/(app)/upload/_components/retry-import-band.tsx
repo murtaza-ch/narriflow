@@ -3,8 +3,8 @@
 import { useActionState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Box, chakra, Flex, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle } from "lucide-react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { AlertTriangle, RotateCw } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { userErrorMessage } from "@narriflow/validators";
@@ -19,7 +19,7 @@ type RetryState = { ok: boolean; error: string | null };
 const initialState: RetryState = { ok: true, error: null };
 
 /**
- * Step 2's ingest-failure surface: a contained danger panel with the plain-
+ * Step 2's ingest-failure surface: a quiet danger row with the plain-
  * language reason, a Retry import button (the existing
  * `retryIngestFormAction` from projects/actions.ts — imported, not edited),
  * and a way out that never leaves the user stuck.
@@ -68,68 +68,78 @@ export function RetryImportBand({
   );
 
   return (
-    <Box
-      position="relative"
-      overflow="hidden"
-      borderRadius="l2"
+    <Flex
+      align="flex-start"
+      gap="3"
+      borderRadius="l3"
       bg="danger.subtle"
-      px="4"
-      py="3.5"
+      p="4"
     >
-      <Stack gap="3">
-        <Flex align="flex-start" gap="2.5">
-          <Box color="danger.fg" mt="0.5" flexShrink={0}>
-            <AlertTriangle size={14} strokeWidth={2} />
-          </Box>
-          <Text fontSize="13px" color="danger.fg" fontWeight="500">
-            {quota?.message ?? userErrorMessage(errorCode) ?? "This import failed."}
+      <Flex
+        boxSize="9"
+        flexShrink={0}
+        align="center"
+        justify="center"
+        borderRadius="l2"
+        bg="danger.muted"
+        color="danger.fg"
+        aria-hidden
+      >
+        <AlertTriangle size={16} strokeWidth={2} />
+      </Flex>
+      <Stack gap="3.5" flex="1" minW="0">
+        <Box>
+          <Text fontSize="14px" fontWeight="500" color="fg" lineHeight="1.3">
+            Import failed
           </Text>
-        </Flex>
+          <Text fontSize="13px" color="fg.muted" lineHeight="1.5" mt="0.5">
+            {quota?.message ?? userErrorMessage(errorCode) ?? "Something went wrong during the import."}
+          </Text>
+        </Box>
         {quota?.higherPlanNote ? <PlanLimitNotice message={quota.higherPlanNote} actionLabel="See plans" /> : null}
         <form action={formAction}>
           <input type="hidden" name="projectId" value={projectId} />
-          <Flex align="center" gap="3" wrap="wrap">
+          <Flex align="center" gap="2" wrap="wrap">
             {fromDrivePicker ? (
               // The token ended with the job; only a new pick helps.
-              <Button asChild size="sm" variant="subtle">
+              <Button asChild size="sm">
                 <Link href="/upload">{ingestRecoveryLabel(fromDrivePicker)}</Link>
               </Button>
             ) : (
-              <Button type="submit" size="sm" variant="subtle" disabled={isPending}>
-                {isPending ? <Spinner size="xs" borderTopColor="accent.fg" /> : null}
-                <Text ms={isPending ? "1" : "0"}>Retry import</Text>
+              <Button type="submit" size="sm" disabled={isPending}>
+                {isPending ? (
+                  <Spinner size="xs" borderTopColor="brand.contrast" />
+                ) : (
+                  <RotateCw size={13} aria-hidden />
+                )}
+                <Text as="span">Retry import</Text>
               </Button>
             )}
-            <chakra.button
+            <Button
               type="button"
+              size="sm"
+              variant="ghost"
+              color="fg.muted"
               onClick={onSaveAndFinishLater}
               disabled={savingDraft}
-              fontSize="13px"
-              color="fg"
-              textDecoration="underline"
-              textUnderlineOffset="3px"
-              transition="color 120ms ease"
-              cursor={savingDraft ? "default" : "pointer"}
-              opacity={savingDraft ? 0.6 : 1}
-              _hover={savingDraft ? undefined : { color: "fg.muted" }}
             >
               {savingDraft ? "Saving…" : "Save settings and finish later"}
-            </chakra.button>
+            </Button>
           </Flex>
           {state.error ? (
-            <Flex align="center" gap="1.5" mt="2" color="danger.fg">
+            <Flex align="center" gap="1.5" mt="2.5" color="danger.fg">
               <AlertTriangle size={12} aria-hidden />
               <Text fontSize="xs">{state.error}</Text>
             </Flex>
           ) : null}
           {saveDraftError ? (
-            <Flex align="center" gap="1.5" mt="2" color="danger.fg">
+            <Flex align="center" gap="1.5" mt="2.5" color="danger.fg">
               <AlertTriangle size={12} aria-hidden />
               <Text fontSize="xs">{saveDraftError}</Text>
             </Flex>
           ) : null}
         </form>
       </Stack>
-    </Box>
+    </Flex>
   );
 }
