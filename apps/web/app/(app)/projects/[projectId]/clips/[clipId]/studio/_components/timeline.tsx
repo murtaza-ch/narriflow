@@ -18,6 +18,11 @@ import {
   Undo2,
   AudioLines,
   Magnet,
+  Film,
+  Image as ImageIcon,
+  Captions,
+  Clapperboard,
+  Type,
 } from "lucide-react";
 import {
   editedToSource,
@@ -75,12 +80,9 @@ function formatTimecode(secs: number) {
 }
 
 function formatRulerLabel(secs: number) {
-  if (secs === 0) return "0";
   const m = Math.floor(secs / 60);
   const s = Math.floor(secs % 60);
-  if (m > 0 && s === 0) return `${m}m`;
-  if (m > 0) return `${m}:${String(s).padStart(2, "0")}`;
-  return `${s}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 // ─── Thumbnail strip (canvas-based, memory-only session cache) ───────────────
@@ -405,6 +407,11 @@ const WaveformCanvas = memo(function WaveformCanvas({
     ctx.fillStyle = getComputedStyle(canvas).color;
 
     const hasRealPeaks = peaksData !== null && peaksData.peaks.length > 0;
+    // Drawn as rounded bars with a gap between them (each bar takes the
+    // loudest sample in its step), which reads as audio rather than a fill.
+    const BAR = 2;
+    const STEP = 3;
+    let bucketPeak = 0;
 
     for (let px = 0; px < canvas.width; px++) {
       // px is an EDITED-timeline position; editedToSource is monotonic
@@ -445,8 +452,15 @@ const WaveformCanvas = memo(function WaveformCanvas({
         }
       }
 
-      const barH = amplitude * midY;
-      ctx.fillRect(px, midY - barH, 1, barH * 2);
+      bucketPeak = Math.max(bucketPeak, amplitude);
+      if (px % STEP !== STEP - 1 && px !== canvas.width - 1) continue;
+      const barH = Math.max(1, bucketPeak * (midY - 2));
+      const barX = px - (px % STEP);
+      ctx.beginPath();
+      if (typeof ctx.roundRect === "function") ctx.roundRect(barX, midY - barH, BAR, barH * 2, 1);
+      else ctx.rect(barX, midY - barH, BAR, barH * 2);
+      ctx.fill();
+      bucketPeak = 0;
     }
   }, [timingIndex, editedTimeMap, duration, canvasWidth, height, peaksData, compositeToBaseEdited, isInsertedSceneTime]);
 
@@ -457,8 +471,8 @@ const WaveformCanvas = memo(function WaveformCanvas({
         width: `${width}px`,
         height: `${height}px`,
         display: "block",
-        color: "var(--chakra-colors-studio-fgSubtle)",
-        opacity: 0.62,
+        color: "var(--chakra-colors-studio-accent)",
+        opacity: 0.9,
       }}
     />
   );
@@ -616,8 +630,8 @@ const CaptionChipsRow = memo(function CaptionChipsRow({
             px="8px"
             borderRadius="6px"
             borderWidth="0"
-            bg="studio.raised"
-            color="studio.fg"
+            bg="studio.surface"
+            color="studio.fgMuted"
             fontSize="11px"
             fontWeight="500"
             whiteSpace="nowrap"
@@ -629,8 +643,8 @@ const CaptionChipsRow = memo(function CaptionChipsRow({
               event.stopPropagation();
               onSeek(chip.editedStartSec);
             }}
-            transition="background 100ms ease"
-            _hover={{ bg: "studio.borderStrong" }}
+            transition="background 100ms ease, color 100ms ease"
+            _hover={{ bg: "studio.raised", color: "studio.fg" }}
             _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
           >
             {chip.text}
@@ -662,6 +676,15 @@ function SceneGapMasks({ scenes, pxPerSec }: { scenes: readonly { id: string; an
 
 // ─── Control button ───────────────────────────────────────────────────────────
 
+/** A soft group of related controls on the bar (tools, playback speed, fit, zoom). */
+function CtrlGroup({ children }: { children: React.ReactNode }) {
+  return (
+    <Flex align="center" gap="1px" p="2px" bg="studio.subtle" borderRadius="9px" flexShrink={0}>
+      {children}
+    </Flex>
+  );
+}
+
 function CtrlBtn({
   icon,
   onClick,
@@ -669,6 +692,7 @@ function CtrlBtn({
   active,
   title,
   disabled = false,
+  compactLabel = false,
 }: {
   icon?: React.ReactNode;
   onClick?: () => void;
@@ -676,6 +700,8 @@ function CtrlBtn({
   active?: boolean;
   title?: string;
   disabled?: boolean;
+  /** Hide the label below xl, leaving the icon (and the title as the name). */
+  compactLabel?: boolean;
 }) {
   return (
     <Flex
@@ -703,7 +729,11 @@ function CtrlBtn({
       _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
     >
       {icon}
-      {label && <Text fontSize="11px">{label}</Text>}
+      {label && (
+        <Text fontSize="11px" display={compactLabel ? { base: "none", xl: "inline" } : undefined}>
+          {label}
+        </Text>
+      )}
     </Flex>
   );
 }
@@ -900,7 +930,9 @@ const WORD_CHIPS_HEIGHT = 24;
 const WAVEFORM_HEIGHT = 40;
 const RULER_HEIGHT = 24;
 // Lead-in before edited-time 0 — room for the start trim grip, no lane names.
-const LEFT_GUTTER = 24;
+// Room for the fixed track rail (one icon per lane) left of edited-time 0.
+const LEFT_GUTTER = 40;
+const TRACK_RAIL_WIDTH = 30;
 const CONTROL_BAR_HEIGHT = 52;
 const TIMELINE_OVERSCAN_PX = 900;
 const PAUSE_MARKER_THRESHOLD_SEC = 0.4;
@@ -1039,7 +1071,7 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
       aria-label={`Segment "${label}", ${formatTimecode(editedStartSec)} to ${formatTimecode(editedEndSec)}`}
       contain="layout paint"
     >
-      <Box opacity={isSelected ? 1 : 0.82} transition="opacity 120ms ease">
+      <Box opacity={isSelected ? 1 : 0.88} transition="opacity 120ms ease">
         <SegmentThumbnails
           thumbnailVideoUrl={thumbnailVideoUrl}
           videoKind={videoKind}
@@ -1055,27 +1087,28 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
         />
       </Box>
 
-      {/* Utterance label — first words of the segment's speech */}
+      {/* Utterance label and length as small pills floating over the
+          thumbnails, so the footage stays visible behind them. */}
       <Flex
         position="absolute"
-        top="0"
-        left="0"
-        right="0"
-        px="6px"
-        h="20px"
+        top="4px"
+        left="4px"
+        right="4px"
         align="center"
         justify="space-between"
         gap="6px"
-        bg="studio.canvas/86"
-        borderBottomWidth="1px"
-        borderColor={isSelected ? "studio.accent" : "studio.border"}
-        backdropFilter="blur(4px)"
+        pointerEvents="none"
       >
         <Text
+          minW="0"
+          h="16px"
+          px="5px"
+          borderRadius="4px"
+          bg="studio.scrimStrong"
           fontSize="10px"
-          fontWeight="600"
+          lineHeight="16px"
+          fontWeight="500"
           color={isSelected ? "studio.fg" : "studio.fgMuted"}
-          letterSpacing="0.02em"
           whiteSpace="nowrap"
           overflow="hidden"
           textOverflow="ellipsis"
@@ -1083,7 +1116,7 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
           {label}
         </Text>
         {w >= 110 && (
-          <Text textStyle="data" fontSize="9px" color="studio.timecode" flexShrink={0}>
+          <Text textStyle="data" h="16px" px="5px" borderRadius="4px" bg="studio.scrimStrong" fontSize="9px" lineHeight="16px" color="studio.timecode" flexShrink={0}>
             {(editedEndSec - editedStartSec).toFixed(1)}s
           </Text>
         )}
@@ -1206,11 +1239,16 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
   isPlaying,
   timeToX,
   scrollRootRef,
+  aheadLane,
 }: {
   duration: number;
   isPlaying: boolean;
   timeToX: (time: number) => number;
   scrollRootRef: RefObject<HTMLDivElement | null>;
+  /** The waveform lane: everything right of the playhead on it is dimmed, so
+   *  what has played reads brighter. A child of the playhead, it moves with
+   *  the playhead's own transform — no extra paint work per tick. */
+  aheadLane: { top: number; height: number; width: number };
 }) {
   const { playbackClock } = useStudio("playbackClock");
   const playheadRef = useRef<HTMLDivElement>(null);
@@ -1262,18 +1300,33 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
       }}
       zIndex={10}
     >
-      {/* Pill grip at the ruler */}
       <Box
         position="absolute"
-        top="1px"
+        left="2px"
+        bg="studio.canvas/55"
+        style={{ top: `${aheadLane.top}px`, height: `${aheadLane.height}px`, width: `${aheadLane.width}px` }}
+        aria-hidden="true"
+      />
+      {/* Grip at the ruler: a rounded head with a point */}
+      <Box
+        position="absolute"
+        top="2px"
         left="50%"
         transform="translateX(-50%)"
-        w="12px"
-        h="20px"
-        borderRadius="6px"
+        w="13px"
+        h="14px"
+        borderRadius="4px 4px 2px 2px"
         bg="studio.accent"
-        borderWidth="2px"
-        borderColor="studio.canvas"
+      />
+      <Box
+        position="absolute"
+        top="12px"
+        left="50%"
+        w="9px"
+        h="9px"
+        bg="studio.accent"
+        borderRadius="1px"
+        style={{ transform: "translateX(-50%) rotate(45deg)" }}
       />
       <Box
         position="absolute"
@@ -1834,6 +1887,9 @@ export function Timeline() {
   } = useStudio("isPlaying", "playbackRate", "setPlaybackRate", "togglePlay", "duration", "seekTo", "showTimeline", "setShowTimeline", "timelineSnapping", "setTimelineSnapping", "timelineZoom", "setTimelineZoom", "segments", "selectedSegmentId", "setSelectedSegmentId", "splitAtPlayhead", "deleteSelectedSegment", "activeVideoUrl", "activeOffsetSec", "activeVideoKind", "sourcePreviewId", "clipStartSec", "editedTimeMap", "deletedRanges", "revertDeletedRange", "utterances", "transcriptSelectionRange", "exportState", "waveformPeaksUrl", "studioEdits", "selectedTextLayerId", "clipInfo", "brollUrl", "brollPreviewAsset", "sceneBlocks", "baseEditedToComposite", "baseEditedRangeToComposite", "compositeToBaseEdited", "isInsertedSceneTime");
 
   const stripRef = useRef<HTMLDivElement>(null);
+  // The hover line follows the pointer by direct DOM writes, like the playhead.
+  const hoverLineRef = useRef<HTMLDivElement>(null);
+  const hoverLabelRef = useRef<HTMLDivElement>(null);
   const { viewport, onScroll } = useTimelineViewport(stripRef);
 
   const safeDuration = Math.max(0, duration);
@@ -2232,11 +2288,13 @@ export function Timeline() {
         gap="2px"
       >
         {/* Left group */}
-        <Flex align="center" gap="2px" flex="1" pl="1">
+        <Flex align="center" gap="2" flex="1" minW="0">
+          <CtrlGroup>
           <CtrlBtn
             icon={showTimeline ? <PanelBottomClose size={17} /> : <PanelBottomOpen size={17} />}
             onClick={() => setShowTimeline(!showTimeline)}
             label={showTimeline ? "Hide timeline" : "Show timeline"}
+            compactLabel
           />
           <CtrlBtn
             icon={<Scissors size={17} />}
@@ -2252,6 +2310,7 @@ export function Timeline() {
             disabled={!showTimeline}
           />
           {showTimeline && <RemoveSilencePopover />}
+          </CtrlGroup>
         </Flex>
 
         {/* Center: Playback controls */}
@@ -2287,8 +2346,9 @@ export function Timeline() {
           <TimelineTimecode duration={safeDuration} />
         </Flex>
 
-        {/* Right: Zoom */}
-        <Flex align="center" gap="4px" flex="1" justify="flex-end">
+        {/* Right: view controls */}
+        <Flex align="center" gap="2" flex="1" justify="flex-end" minW="0">
+          <CtrlGroup>
           <CtrlBtn
             icon={<Magnet size={16} />}
             onClick={() => setTimelineSnapping(!timelineSnapping)}
@@ -2297,11 +2357,15 @@ export function Timeline() {
             title={`${timelineSnapping ? "Turn off" : "Turn on"} snapping (N)`}
           />
           <CtrlBtn label={`${playbackRate}x`} onClick={cyclePlaybackRate} title="Playback speed" />
-          <Text fontSize="11px" color="studio.fgSubtle" ms="1">
+          </CtrlGroup>
+          <CtrlGroup>
+          <Text fontSize="11px" color="studio.fgSubtle" px="2" display={{ base: "none", xl: "block" }}>
             Fit
           </Text>
           <CtrlBtn label="Word" onClick={handleFitToWord} title="Fit to word" disabled={!showTimeline} />
           <CtrlBtn label="Clip" onClick={handleFitToSentence} title="Fit to sentence" disabled={!showTimeline} />
+          </CtrlGroup>
+          <CtrlGroup>
           <CtrlBtn
             icon={<ZoomOut size={16} />}
             onClick={() =>
@@ -2318,7 +2382,7 @@ export function Timeline() {
             onValueChange={(e) => setTimelineZoom(e.value[0]!)}
             size="sm"
             css={studioSliderCss}
-            w="72px"
+            w={{ base: "56px", xl: "72px" }}
             disabled={!showTimeline}
             aria-label={["Timeline zoom"]}
             getAriaValueText={({ value }) => `${value.toFixed(2)} times`}
@@ -2344,11 +2408,50 @@ export function Timeline() {
             color="studio.timecode"
             minW="34px"
             textAlign="right"
+            pe="2"
+            display={{ base: "none", xl: "block" }}
           >
             {Math.round(timelineZoom * 100)}%
           </Text>
+          </CtrlGroup>
         </Flex>
       </Flex>
+
+      {/* ── Track rail: one icon per lane, fixed while the tracks scroll ── */}
+      {showTimeline && (
+        <Box
+          position="absolute"
+          left="0"
+          w={`${TRACK_RAIL_WIDTH}px`}
+          style={{ top: `${CONTROL_BAR_HEIGHT + RULER_HEIGHT}px`, height: `${trackAreaHeight - RULER_HEIGHT}px` }}
+          bg="studio.canvas"
+          zIndex={15}
+          pointerEvents="none"
+          aria-hidden="true"
+        >
+          {[
+            { top: RULER_HEIGHT, height: TRACK_HEIGHT, icon: <Film size={13} /> },
+            ...(hasSceneBlocks ? [{ top: sceneTrackTop, height: SCENE_TRACK_HEIGHT, icon: <Clapperboard size={13} /> }] : []),
+            ...(hasBrollLane ? [{ top: brollTrackTop, height: BROLL_TRACK_HEIGHT, icon: <ImageIcon size={13} /> }] : []),
+            { top: wordTrackTop, height: WORD_CHIPS_HEIGHT, icon: <Captions size={13} /> },
+            { top: waveformTrackTop, height: WAVEFORM_HEIGHT, icon: <AudioLines size={13} /> },
+            ...(hasTextLayers ? [{ top: textTrackTop, height: TEXT_TRACK_HEIGHT, icon: <Type size={13} /> }] : []),
+          ].map((lane) => (
+            <Flex
+              key={lane.top}
+              position="absolute"
+              left="0"
+              right="0"
+              align="center"
+              justify="center"
+              color="studio.fgSubtle"
+              style={{ top: `${lane.top - RULER_HEIGHT}px`, height: `${lane.height}px` }}
+            >
+              {lane.icon}
+            </Flex>
+          ))}
+        </Box>
+      )}
 
       {/* ── Track area ────────────────────────────────────────────────── */}
       {showTimeline && (
@@ -2377,7 +2480,48 @@ export function Timeline() {
               position="relative"
               style={{ width: `${totalWidth + LEFT_GUTTER + 60}px` }}
               h="100%"
+              onPointerMove={(event) => {
+                const line = hoverLineRef.current;
+                if (!line || event.pointerType === "touch") return;
+                const x = Math.min(LEFT_GUTTER + totalWidth, Math.max(LEFT_GUTTER, event.clientX - event.currentTarget.getBoundingClientRect().left));
+                line.style.opacity = "1";
+                line.style.transform = `translate3d(${x}px, 0, 0)`;
+                if (hoverLabelRef.current) hoverLabelRef.current.textContent = formatTimecode((x - LEFT_GUTTER) / TIMELINE_PX_PER_SEC);
+              }}
+              onPointerLeave={() => {
+                if (hoverLineRef.current) hoverLineRef.current.style.opacity = "0";
+              }}
             >
+            {/* Where a click lands: a faint line with its time at the ruler */}
+            <Box
+              ref={hoverLineRef}
+              position="absolute"
+              top="0"
+              bottom="0"
+              left="0"
+              w="1px"
+              bg="studio.fg/25"
+              opacity={0}
+              pointerEvents="none"
+              zIndex={9}
+              transition="opacity 120ms ease"
+              aria-hidden="true"
+            >
+              <Box
+                ref={hoverLabelRef}
+                position="absolute"
+                top="3px"
+                left="6px"
+                px="1.5"
+                borderRadius="4px"
+                bg="studio.raised"
+                color="studio.fg"
+                textStyle="data"
+                fontSize="10px"
+                lineHeight="16px"
+                whiteSpace="nowrap"
+              />
+            </Box>
             {/* ── Ruler ───────────────────────────────────────────── */}
             <Box
               position="absolute"
@@ -2404,7 +2548,8 @@ export function Timeline() {
                         fontSize="10px"
                         textStyle="data"
                         color="studio.timecode"
-                        style={{ transform: "translateX(-50%)" }}
+                        // 0:00 sits right of the start trim grip instead of under it.
+                        style={{ transform: time === 0 ? "translateX(8px)" : "translateX(-50%)" }}
                         whiteSpace="nowrap"
                         userSelect="none"
                       >
@@ -2412,8 +2557,9 @@ export function Timeline() {
                       </Text>
                       <Box
                         w="1px"
-                        h="6px"
-                        bg="studio.borderStrong"
+                        h="8px"
+                        bg="studio.fgSubtle"
+                        opacity={0.6}
                         position="absolute"
                         bottom="0"
                       />
@@ -2421,8 +2567,8 @@ export function Timeline() {
                   ) : (
                     <Box
                       w="1px"
-                      h="3px"
-                      bg="studio.border"
+                      h="4px"
+                      bg="studio.borderStrong"
                       position="absolute"
                       bottom="0"
                       style={{ transform: "translateX(-0.5px)" }}
@@ -2483,20 +2629,30 @@ export function Timeline() {
                   (marker.endSec - marker.startSec) * TIMELINE_PX_PER_SEC,
                 );
 
+                // A rounded pill inset from the clips on either side, so it
+                // never squares off their corners; its length shows when it fits.
                 return (
-                  <Box
+                  <Flex
                     key={marker.id}
                     position="absolute"
-                    top="0"
-                    bottom="0"
-                    style={{ left: `${left}px`, width: `${width}px` }}
-                    bg="rgba(255,255,255,0.08)"
-                    borderLeft="1px solid rgba(255,255,255,0.16)"
-                    borderRight="1px solid rgba(255,255,255,0.12)"
+                    top="8px"
+                    bottom="8px"
+                    style={{ left: `${left + 2}px`, width: `${Math.max(2, width - 4)}px` }}
+                    align="center"
+                    justify="center"
+                    overflow="hidden"
+                    borderRadius="6px"
+                    bg="rgba(255,255,255,0.05)"
                     pointerEvents="none"
                     title={`${marker.duration.toFixed(1)}s pause`}
                     zIndex={6}
-                  />
+                  >
+                    {width >= 40 ? (
+                      <Text textStyle="data" fontSize="9px" color="studio.fgSubtle" whiteSpace="nowrap">
+                        {marker.duration.toFixed(1)}s
+                      </Text>
+                    ) : null}
+                  </Flex>
                 );
               })}
 
@@ -2537,9 +2693,14 @@ export function Timeline() {
                     }}
                     title={`${scene.content.kind} scene · ${scene.durationSec.toFixed(1)}s`}
                   >
-                    <Text fontSize="11px" fontWeight="500" color="studio.fg" truncate lineHeight="22px">
-                      {scene.content.kind === "text" ? scene.content.text : `${scene.content.kind} scene`}
-                    </Text>
+                    <Flex align="center" gap="1.5" h="22px" minW="0">
+                      <Flex flexShrink={0} color="studio.fgMuted" aria-hidden>
+                        <Clapperboard size={11} />
+                      </Flex>
+                      <Text fontSize="11px" fontWeight="500" color="studio.fg" truncate>
+                        {scene.content.kind === "text" ? scene.content.text : `${scene.content.kind} scene`}
+                      </Text>
+                    </Flex>
                   </Box>
                 ))}
               </Box>
@@ -2583,24 +2744,24 @@ export function Timeline() {
                       minW="0"
                       overflow="hidden"
                       borderRadius="6px"
-                      bg="studio.raised"
+                      bg="studio.accentSubtle"
                       border="none"
-                      color="studio.fg"
+                      color="studio.accentFg"
                       cursor="pointer"
-                      _hover={{ bg: "studio.borderStrong" }}
+                      _hover={{ bg: "studio.accent/30" }}
                       transition="background 120ms ease"
                       onClick={(event) => {
                         event.stopPropagation();
 								seekTo(cutaway.compositeStartSec);
                       }}
                     >
-                      <Text fontSize="11px" fontWeight="500" color="studio.fgSubtle" flexShrink={0}>
-                        {cutaway.manual ? "B-roll" : `Auto ${index + 1}`}
-                      </Text>
+                      <Flex flexShrink={0} opacity={0.8} aria-hidden>
+                        <ImageIcon size={12} />
+                      </Flex>
                       <Text fontSize="11px" fontWeight="500" truncate minW="0" flex="1">
-                        {cutaway.query}
+                        {cutaway.manual ? cutaway.query : `${index + 1} · ${cutaway.query}`}
                       </Text>
-                      <Text fontSize="11px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums" flexShrink={0}>
+                      <Text textStyle="data" fontSize="10px" opacity={0.75} flexShrink={0}>
                         {durationLabel}
                       </Text>
                     </Flex>
@@ -2760,6 +2921,7 @@ export function Timeline() {
               isPlaying={isPlaying}
               timeToX={timeToX}
               scrollRootRef={stripRef}
+              aheadLane={{ top: waveformTrackTop, height: WAVEFORM_HEIGHT, width: totalWidth + 60 }}
             />
 
             {/* ── Trim handles (vizard-parity.md Phase B step 13) ─ */}
