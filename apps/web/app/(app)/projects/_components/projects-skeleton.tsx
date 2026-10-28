@@ -1,9 +1,14 @@
-import { Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
+import { Flex, Grid, Stack } from "@chakra-ui/react";
+import { Bone } from "@narriflow/ui/components/page-loading";
 
 /**
- * ProjectsGridSkeleton — 1:1 mirror of the real explorer: the right-aligned
- * filter + view controls above the grid of 16:9 wells with the date / title
- * text block underneath.
+ * ProjectsGridSkeleton — mirror of the explorer below the page header: the
+ * filter and view controls on the right, then the grid of 16:9 wells, each
+ * with its title (up to two lines) and its meta line underneath.
+ *
+ * The folders panel and the retention banner are left out on purpose: whether
+ * they show depends on the workspace, so a placeholder would shift the grid
+ * for everyone who has neither.
  *
  * The cards carry no entrance animation on purpose. A skeleton is a
  * placeholder held in reserved space, not an arrival — giving it the same
@@ -14,46 +19,39 @@ import { Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
 export function ProjectsGridSkeleton() {
   return (
     <Stack gap="5">
-      <ToolbarSkeleton />
-      <Grid
-        gap="4"
-        templateColumns="repeat(auto-fill, minmax(min(100%, 260px), 1fr))"
-      >
+      {/* Filters icon button · grid/list toggle — both 36px controls */}
+      <Flex justify="flex-end" gap="2">
+        <Bone boxSize="9" borderRadius="l2" />
+        <Bone h="9" w="84px" borderRadius="control" />
+      </Flex>
+      <Grid gap="4" templateColumns="repeat(auto-fill, minmax(min(100%, 260px), 1fr))">
         {Array.from({ length: 8 }).map((_, index) => (
-          <SkeletonCard key={index} />
+          <ProjectCardSkeleton key={index} />
         ))}
       </Grid>
     </Stack>
   );
 }
 
-function ToolbarSkeleton() {
+/** One project card: the well, then the title lines and the meta line. */
+export function ProjectCardSkeleton() {
   return (
-    <Flex justify="flex-end" gap="2">
-      {/* Filters icon button · grid/list toggle — both 36px controls */}
-      <Skeleton variant="pulse" bg="bg.muted" boxSize="9" borderRadius="l1" />
-      <Skeleton variant="pulse" bg="bg.muted" h="9" w="84px" borderRadius="l2" />
-    </Flex>
+    <Stack gap="3">
+      <Bone aspectRatio={16 / 9} borderRadius="l2" />
+      <Stack gap="1">
+        {/* Bones sit inside the real line boxes: 14px/1.35 title, 12px meta. */}
+        <TextLine h="19px" w="90%" />
+        <TextLine h="19px" w="55%" />
+        <TextLine h="18px" w="40%" small />
+      </Stack>
+    </Stack>
   );
 }
 
-function SkeletonCard() {
+function TextLine({ h, w, small = false }: { h: string; w: string; small?: boolean }) {
   return (
-    <Stack gap="3">
-      {/* MediaWell stand-in — same border-box 16:9 footprint and radius */}
-      <Skeleton
-        variant="pulse"
-        bg="bg.muted"
-        aspectRatio={16 / 9}
-        borderRadius="l2"
-      />
-
-      <Stack gap="1.5">
-        {/* Date line, then the title (up to two 14px lines) */}
-        <Skeleton variant="pulse" bg="bg.muted" h="12px" w="40%" borderRadius="l1" />
-        <Skeleton variant="pulse" bg="bg.muted" h="14px" w="90%" borderRadius="l1" />
-        <Skeleton variant="pulse" bg="bg.muted" h="14px" w="55%" borderRadius="l1" />
-      </Stack>
-    </Stack>
+    <Flex h={h} align="center">
+      <Bone h={small ? "2.5" : "3"} w={w} />
+    </Flex>
   );
 }

@@ -28,7 +28,7 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { useColorMode } from "@narriflow/ui/components/color-mode";
 
 import { EmptyState } from "@narriflow/ui/components/empty-state";
-import { PageLoading } from "@narriflow/ui/components/page-loading";
+import { ProjectsGridSkeleton } from "@/app/(app)/projects/_components/projects-skeleton";
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
 
 export function UIKIT() {
@@ -236,9 +236,7 @@ export function UIKIT() {
             <Tabs.List flexWrap="wrap">
               <Tabs.Trigger value="empty">Empty</Tabs.Trigger>
               <Tabs.Trigger value="status">Status</Tabs.Trigger>
-              <Tabs.Trigger value="library">Library loading</Tabs.Trigger>
-              <Tabs.Trigger value="import">Import loading</Tabs.Trigger>
-              <Tabs.Trigger value="rows">Settings loading</Tabs.Trigger>
+              <Tabs.Trigger value="loading">Loading</Tabs.Trigger>
             </Tabs.List>
             <Tabs.Content value="empty">
               <EmptyState
@@ -259,11 +257,9 @@ export function UIKIT() {
                 ))}
               </Flex>
             </Tabs.Content>
-            {(["library", "import", "rows"] as const).map((layout) => (
-              <Tabs.Content key={layout} value={layout}>
-                <PageLoading layout={layout} />
-              </Tabs.Content>
-            ))}
+            <Tabs.Content value="loading">
+              <ProjectsGridSkeleton />
+            </Tabs.Content>
           </Tabs.Root>
         </Card.Body>
       </Card.Root>

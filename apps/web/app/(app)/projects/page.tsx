@@ -21,7 +21,9 @@ import { WorkspaceMismatchNotice } from "./_components/workspace-mismatch-notice
 import { ProjectsHeaderActions } from "./_components/projects-header-actions";
 
 /**
- * Deliberately NOT async, and deliberately without a sibling `loading.tsx`.
+ * Deliberately NOT async. The sibling `loading.tsx` renders this page's
+ * static shell (the header fallback and the grid skeleton below), so its
+ * route boundary hands off to the in-page one without repainting.
  *
  * `loading.tsx` compiles to a Suspense boundary around the whole page, so a
  * route with both `loading.tsx` and an in-page `<Suspense>` runs two
