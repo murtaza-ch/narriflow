@@ -23,7 +23,7 @@
     "test:workspace-billing:db": "bun packages/services/scripts/run-workspace-billing-db-tests.ts",
     "test:social-publication:db": "bun packages/services/scripts/run-social-publication-db-tests.ts",
     "test:clip-editor-persistence:db": "bun packages/services/scripts/run-clip-editor-persistence-db-tests.ts",
-    "test:authenticated-request-policy:db": "bun apps/web/scripts/run-authenticated-request-policy-db-tests.ts",
+    "test:authenticated-request-policy:db": "bun apps/api/scripts/run-authenticated-request-policy-db-tests.ts",
     "test:brand-profiles:db": "bun packages/services/scripts/run-brand-profile-db-tests.ts",
     "test:integration-api:db": "bun packages/services/scripts/run-integration-api-db-tests.ts",
     "test:library-search:db": "bun packages/services/scripts/run-library-search-db-tests.ts",

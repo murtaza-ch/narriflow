@@ -26,23 +26,6 @@ async function globModules(pattern: string): Promise<string[]> {
   return modules.sort();
 }
 
-// Follow the app's actual mounts so extracted routes cannot escape the drift check.
-async function registeredHonoRoutes(module: URL, prefix = ""): Promise<string[]> {
-  const source = await Bun.file(module).text();
-  const routes = [...source.matchAll(/(?:app|routes)\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g)]
-    .map(([, method, path]) => `${method!.toUpperCase()} ${prefix}${path}`);
-  const imports = new Map<string, string>();
-  for (const [, names, path] of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*["'](\.\/[^"']+)["']/g)) {
-    for (const name of names!.split(",")) imports.set(name.trim(), path!);
-  }
-  for (const [, mount, factory] of source.matchAll(/app\.route\(\s*["']([^"']+)["'],\s*(\w+)\(/g)) {
-    const path = imports.get(factory!);
-    if (!path) throw new Error(`Undeclared Hono mount: ${factory}`);
-    routes.push(...await registeredHonoRoutes(new URL(`${path}.ts`, module), `${prefix}${mount === "/" ? "" : mount}`));
-  }
-  return routes;
-}
-
 function hasModifier(
   node: ts.Node,
   kind: ts.SyntaxKind.ExportKeyword | ts.SyntaxKind.AsyncKeyword,
@@ -375,13 +358,6 @@ describe("authenticated request inventory", () => {
     expect(source).not.toContain('"/api/uploads(.*)"');
   });
 
-  test("the mounted Hono routes and policy inventory agree in both directions", async () => {
-    const registered = await registeredHonoRoutes(new URL("app/api/[[...route]]/route.ts", webRoot));
-    const expected = [...browserSessionHonoSurfaces, ...independentTrustHonoSurfaces]
-      .map(({ method, path }) => `${method} ${path}`);
-    expect(registered.sort()).toEqual(expected.sort());
-  });
-
   test("inventories every action, page admission, and long-lived stream through the approved adapters", async () => {
     for (const module of browserSessionServerActionModules) {
       const source = await Bun.file(new URL(module, webRoot)).text();
@@ -513,7 +489,6 @@ describe("authenticated request inventory", () => {
 
   test("migrated surfaces cannot restore direct actor policy or handwritten common failures", async () => {
     const modules = [
-      "app/api/[[...route]]/route.ts",
       ...browserSessionServerActionModules,
       ...browserSessionPageModules,
       ...browserSessionLongLivedModules,
@@ -533,20 +508,6 @@ describe("authenticated request inventory", () => {
     for (const module of modules) {
       const source = await Bun.file(new URL(module, webRoot)).text();
       for (const value of forbidden) expect(source).not.toContain(value);
-    }
-  });
-
-  test("main browser routes use stable literal error codes", async () => {
-    const source = await Bun.file(
-      new URL("app/api/[[...route]]/route.ts", webRoot),
-    ).text();
-    const literalErrors = [...source.matchAll(/error:\s*["']([^"']+)["']/g)].map(
-      ([, code]) => code,
-    );
-
-    expect(literalErrors.length).toBeGreaterThan(0);
-    for (const code of literalErrors) {
-      expect(code).toMatch(/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/);
     }
   });
 });

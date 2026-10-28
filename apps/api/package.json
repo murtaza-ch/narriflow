@@ -14,21 +14,36 @@
     "build": "tsc -p tsconfig.build.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test src/",
-    "clean": "rm -rf dist"
+    "test:inventory": "bun scripts/check-route-inventory.ts",
+    "openapi:generate": "bun scripts/generate-openapi.ts",
+    "openapi:check": "bun scripts/generate-openapi.ts --check",
+    "clean": "rm -rf dist",
+    "smoke:native": "bun scripts/native-smoke.ts"
   },
   "dependencies": {
+    "@ffprobe-installer/ffprobe": "2.1.2",
+    "@hono/zod-openapi": "^1.2.2",
     "@hono/zod-validator": "^0.7.6",
+    "@modelcontextprotocol/server": "2.0.0",
     "@narriflow/auth": "workspace:*",
+    "@narriflow/composition-plan": "workspace:*",
     "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",
+    "@narriflow/mcp-core": "workspace:*",
     "@narriflow/services": "workspace:*",
     "@narriflow/validators": "workspace:*",
+    "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "^7.4.2",
+    "fontkit": "2.0.4",
     "hono": "^4.12.28",
+    "ioredis": "^5.9.3",
+    "sharp": "^0.35.4",
+    "svix": "^1.86.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@prisma/adapter-pg": "7.7.0",
+    "@seriousme/openapi-schema-validator": "^2.11.0",
     "@types/node": "26.2.0",
     "@types/pg": "8.15.5",
     "pg": "8.16.3"

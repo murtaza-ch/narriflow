@@ -6,6 +6,28 @@ const globalForPrisma = globalThis as unknown as {
   narriflowPrismaClient?: PrismaClient;
 };
 
+/**
+ * Optional pool sizing from the environment. Only settings that are present
+ * (and positive integers) are returned, so a process without them keeps the
+ * driver defaults and the API can supply its own.
+ */
+export function databasePoolOptions(
+  env: Record<string, string | undefined> = process.env,
+): { max?: number; idleTimeoutMillis?: number; connectionTimeoutMillis?: number } {
+  const read = (name: string) => {
+    const value = Number(env[name]);
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  };
+  const max = read("DATABASE_POOL_MAX");
+  const idleTimeoutMillis = read("DATABASE_POOL_IDLE_TIMEOUT_MS");
+  const connectionTimeoutMillis = read("DATABASE_POOL_CONNECTION_TIMEOUT_MS");
+  return {
+    ...(max ? { max } : {}),
+    ...(idleTimeoutMillis ? { idleTimeoutMillis } : {}),
+    ...(connectionTimeoutMillis ? { connectionTimeoutMillis } : {}),
+  };
+}
+
 export function getPrismaClient() {
   if (!process.env.DATABASE_URL) {
     return null;
@@ -14,6 +36,7 @@ export function getPrismaClient() {
   if (!globalForPrisma.narriflowAdapter) {
     globalForPrisma.narriflowAdapter = new PrismaNeon({
       connectionString: process.env.DATABASE_URL,
+      ...databasePoolOptions(),
     });
   }
 

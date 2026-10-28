@@ -4,7 +4,7 @@
 
 **Blocked by:** [03 - Build typed client transport and cache scope](03-build-typed-client-transport-and-cache-scope.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -312,11 +312,11 @@ Mechanically partition all 106 inline registrations from the catch-all. Final ro
 
 ## Acceptance criteria
 
-- [ ] All 106 inline registrations partition by the copied route rows with identical handlers/deps; existing siblings are handed to their domain owners, not reimplemented here.
-- [ ] All named route/client/type/schema and receipt-command exports/mounts reserved; domain owners need no central edit.
-- [ ] Bun entry health/ready, pool settings, SSE timeout hook, signal drain, Docker native packages and Railway health config follow spec.
-- [ ] Define apps/api scripts build/typecheck/test/test:inventory/openapi:generate/openapi:check and update the root authenticated-policy DB gate runner path. Use Docker repo root /app and API workdir /app/apps/api so the documented native smoke command runs. Root dev/build/env hashing and manifests/lock support API on 4000; worker remains 4001; use the three warm web typecheck timings captured by 01, before source extraction. Before 31 updates env-check for four files, record that legacy checker result separately; the final checker must pass before startup.
-- [ ] No Vercel forwarding/dual backend is deployed; baseline inventory comparison admits only declared routes and independent trust exceptions.
+- [x] All 106 inline registrations partition by the copied route rows with identical handlers/deps; existing siblings are handed to their domain owners, not reimplemented here.
+- [x] All named route/client/type/schema and receipt-command exports/mounts reserved; domain owners need no central edit.
+- [x] Bun entry health/ready, pool settings, SSE timeout hook, signal drain, Docker native packages and Railway health config follow spec.
+- [x] Define apps/api scripts build/typecheck/test/test:inventory/openapi:generate/openapi:check and update the root authenticated-policy DB gate runner path. Use Docker repo root /app and API workdir /app/apps/api so the documented native smoke command runs. Root dev/build/env hashing and manifests/lock support API on 4000; worker remains 4001; use the three warm web typecheck timings captured by 01, before source extraction. Before 31 updates env-check for four files, record that legacy checker result separately; the final checker must pass before startup.
+- [x] No Vercel forwarding/dual backend is deployed; baseline inventory comparison admits only declared routes and independent trust exceptions.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -331,4 +331,59 @@ bun run --cwd apps/api test:inventory
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (last acceptance box left open for the orchestrator).
+
+### Contract for domain owners (05-30)
+Every domain directory `apps/api/src/domains/<d>/` now has `admission.ts`, `routes.ts`, `runtime.ts`; `apps/api/src/types/<d>.ts` re-exports `type <D>Routes`; `packages/api-client/src/<d>/index.ts` exports `create<D>Client(transport)` (one `hc<<D>Routes>` via `createRpcClient`); `packages/validators/src/api/<d>.ts` exists (library holds `librarySearchRequestSchema`). No central file needs an edit when you add a route.
+- **admission.ts**: `export const <d>Admission = {"GET /path": {kind, capability, ...} | {trust}} as const satisfies AdmissionTable` (keys `METHOD /path` relative to `/api`). `trust` entries: `provider_signature`, `oauth_state`, `public_health`, plus ticket 02's `signed_review_token|public_share_token|signed_opt_out_token`. `check-route-inventory` fails on a mounted route with no key, a key with no route, a gated key without `admit(...)`/`declareIndependentTrust(...)`, the same key registered twice, and a parameter route registered before a literal it would swallow. Gated entries need the marker; `public_health` and `provider_signature` (webhooks outside the chain) do not.
+- **routes.ts**: `export function create<D>Routes(deps: <D>RouteDeps)` returns the chained `new Hono<ApiEnv>().get(path, admit(<d>Admission[key]), [uuidParams(...)], [requireIdempotencyKey()], [readCampaignRetryOf()], validate(...), handler)`; `export type <D>Routes = ReturnType<typeof create<D>Routes>`. Paths are relative; `app.ts` mounts them at `/api`. Services arrive through `deps` (destructure at the top of the factory so handlers read like the originals); replace the empty `Record<string, never>` deps type of a skeleton with the services you call. Fill `runtime.ts` (`create<D>RouteDeps(config: ApiConfig)`), which `src/runtime.ts` already calls. `uuidParams("id", ...)` (domains/platform/params.ts) is the post-admission UUID path guard.
+- **Mount order** (`FIRST_PARTY_DOMAINS` in domains/index.ts): session, workspace, billing, projects, library, ingest, recipes, clips, exports, studio, brand, publishing, automation, reviews, developer, integrations, progress. Register literals before parameter routes inside your own factory; cross-domain overlaps are caught by the inventory check.
+- **Body ceilings**: default 1 MiB for first-party routes (also webhooks). Put `bodyClass("editor")` (8 MiB, `src/body-limits.ts`) or `bodyClass("guest")` (32 KiB) as the FIRST handler of a route that needs another class; the app-level limiter reads the marker before any body is touched. Already marked: clips `apply-brand-profile|apply-style|apply-motion|apply-studio-edits`. 11/13 mark the editor PUT/reset and bulk writes; 27 marks guest access/opt-out.
+- **Outside the first-party chain** (no session, no first-party CORS/JSON guard/envelope): webhooks are `create<Billing|Publishing|Automation>WebhookRoutes` in `domains/<d>/webhooks.ts` (billing = Stripe, 07; automation = Zoom event delivery incl. CRC, 21; publishing = TikTok, implemented), mounted at `/api` under a 1 MiB limit; Clerk's webhook is mounted by `app.ts` from ticket 01's adapter. REST: `domains/rest/routes.ts` `createRestRoutes` mounted at `/api/v1` (23). MCP: `domains/integrations/mcp.ts` `createMcpTransportRoutes` mounted at `/` (`/mcp`, `/.well-known/*`, `/mcp/integrations/*`, 24); first-party MCP continuation routes (`/api/integrations/mcp/*`) go in `integrations/routes.ts` behind `admit`. The inventory check skips `/api/v1`, `/mcp`, `/.well-known/` (their owners test them).
+- **SSE** (29): call `disableIdleTimeout(c)` (src/server-hooks.ts) once the stream is admitted (Bun's idle timeout is 120 s, the heartbeat is 15 s, so this is only needed for streams that can be idle longer than 120 s; it is still the spec's rule); register a closer with `getLifecycle(c)?.onDrain(close)` so SIGTERM ends every subscriber (it returns an unregister function). `socketAddress(c)` gives the peer IP for per-IP limits.
+- **Receipt command slots**: `packages/services/src/<d>-commands.ts` (`create<D>Commands(deps)`) and `<d>-commands-runtime.ts` (`<d>Commands`) exist for the 11 domains and are exported from the services index; `ReceiptCommand` names stay in ticket 02's `<d>-receipt-commands.ts`.
+- **Tests**: `apps/api/src/test-app.ts` `createInventoryApp({policyRuntime?, domains?, health?})` composes the real app with inert edges (see `app.test.ts` for a fake policy runtime and injected domain deps). `src/admission-tables.test.ts` checks the spec's 50 preserved limits as their routes appear in the tables (35 present now; the rest are asserted automatically when the owning domain declares them).
+- **Client**: `createRpcClient<Routes>(transport, mount = "/api")` in `packages/api-client/src/rpc.ts`; compile-time proof of read/mutation inference in `src/rpc-types.check.ts` (type-checked, not executed).
+- `@narriflow/validators` now exports `./api/*`, `./clip-preview-peaks`, `./review-selection` (explicit subpaths; `src/index.ts` untouched).
+
+### Partition result
+106 inline registrations: 105 relocated (projects 13, library 3, ingest 4, recipes 5, automation 6, workspace 2, clips 22, exports 17, brand 17, publishing 8 incl. the TikTok webhook, reviews 8) + health (platform), plus new `GET /api/ready`. Inventory comparison reports 108 checked endpoints (105 + health + ready + Clerk webhook), 0 problems. The web catch-all `route.ts` is deleted; the eight sibling modules and their tests stay in `apps/web/app/api/[[...route]]/` for their owners (billing 07, stripe 07, zoom 21, upload-session 15, clip-generation 11, clip-editor 13, brand-profile 19, social-publication 17) and are no longer mounted anywhere.
+
+### Deliberate behavior deltas (all spec-defined transport changes)
+- Handlers use `admit` + `@hono/zod-validator` instead of the deleted web adapters; inline `safeParse` of body/query became `validate(...)`. Refusals share the common envelope (`invalid_input` with bounded issues). A missing/invalid `Idempotency-Key` is now 400 `idempotency_key_required` (was 400 `invalid_input`); `create-from-selection` invalid input now also returns `issues`.
+- `GET /projects/:id/transcript/utterances` no longer sets `Cache-Control: private, max-age=120` (spec: no-store). `preview-peaks` keeps `private, max-age=3600, immutable` for 13 to decide.
+- Social OAuth: `getOAuthOrigin` removed (origins are validated at startup). Provider redirect URI/`handleCallback` use `API_ORIGIN`; every browser redirect uses `WEB_ORIGIN`. Redirects and the GET start remain as they were (cookie-free POST + JSON conversion is ticket 17); `safeSocialRedirectPath` was copied into `publishing/redirect.ts` (delete web's copy with 06).
+- `clip /file`, workspace export download and export-bundle download still redirect (Download Grant JSON conversion belongs to 11/30).
+- Health body is `{ok, service: "narriflow-api", version}`; liveness no longer touches Clerk.
+- Startup: `billingService.validateConfiguration({surface:"web"})` now runs in `createProductionApp` (the "web" surface name is the service's legacy label for webhook+portal requirements). `CLERK_WEBHOOK_SECRET` and `DATABASE_URL` are required there (config.ts is ticket 02's file, so validation lives in `src/runtime.ts` instead of `loadApiConfig`).
+- DB pool: `packages/db/src/client.ts` passes `DATABASE_POOL_MAX|IDLE_TIMEOUT_MS|CONNECTION_TIMEOUT_MS` to the Neon pool only when set; `applyApiPoolDefaults` sets 10/30000/10000 for the API process. Worker and web keep driver defaults.
+- Bun: `idleTimeout` 120 s (slowest synchronous LLM route is ~30-60 s), `maxRequestBodySize` 8 MiB, bound to `0.0.0.0:$PORT`. SIGTERM: readiness 503, registered subscribers close, `server.stop()`, Prisma `$disconnect`, exit 0 (hard exit 1 after 20 s). Redis is closed by process exit: the services layer exports no disconnect and those files are not mine.
+
+### Spec issues / notes
+- `@types/bun` cannot be loaded in this repo: it clashes with services' Node/DOM typings (`fetch.preconnect`, `ReadableStream`). `src/index.ts` declares the slice of `Bun.serve` it uses instead.
+- The spec's per-domain `contracts.ts` is not in any ticket manifest, so it was not created; request schemas live in `packages/validators/src/api/<d>.ts`.
+- `packages/api-client/tsconfig.json` (ticket 03 asked to delete its `paths`): validators subpaths now resolve through package `exports`, but the api-client type check walks `apps/api` and the services layer, so the block now mirrors `apps/api/tsconfig.json`'s backend mappings instead.
+- Not verifiable here: Docker is unavailable, so `apps/api/Dockerfile` was not built (`bun install --frozen-lockfile` with the Dockerfile's manifest set, and `smoke:native` on the host, both pass); Railway ingress limits (URL 8 KiB / headers 32 KiB) and `X-Real-IP` overwrite; the deployed region/RTT.
+- Web warm typecheck baseline is 4 s median (baseline.md); the web project does not compile during the sequence (34 transitional errors, below), so the after-measurement belongs to 31.
+
+### Requests for other owners
+- 23: `apps/api/scripts/generate-openapi.ts` (supports `--check`); `package.json` scripts `openapi:generate|openapi:check` already point at it and fail until it exists. `packages/api-client/package.json` already exports `./openapi` -> `src/openapi/index.ts`; create that file.
+- 11/13: `isClipPreviewPeaks`/`ClipPreviewPeaks` now live in `@narriflow/validators/clip-preview-peaks`; make `packages/services/src/clip-preview-storage.ts` import them and delete its copy, and point the Studio `waveform-peaks.ts` at validators.
+- 27: `encodeReviewSelection`/`decodeReviewSelection` now live in `@narriflow/validators/review-selection`; make `review.service.ts` import them (re-export from services if mcp-core needs it) and delete its copies; 28 points `lib/review-preselection.ts` at validators.
+- 06/31: `scripts/env-check.ts` still checks web+worker+db only (legacy result recorded: passes). Remove `validateCoreEnv`/billing validation from the root layout (06), delete `apps/web/lib/env.ts`, `safe-redirect.ts` after their last callers move.
+- 17: split provider callback origin from the web return origin inside the social services (routes already pass `callbackOrigin`/`webOrigin` separately); make OAuth start a POST returning `{authorizationUrl}`.
+- 05: bootstrap/selection routes use `admit({kind: "signed_in"})` (`getSignedInActor`).
+- 31: Dockerfile for the worker already copies `apps/api/package.json`; the API image installs the same manifest set. `apps/web/lib/authenticated-request-inventory.ts` keeps the 165-row baseline data (including `browserSessionHonoSurfaces`) because `integration-admission-parity.test.ts` still reads it; delete both when that parity test moves.
+
+### Transitional breakage left for owners (web typecheck, 34 errors)
+`lib/authenticated-request-action.ts`, `lib/authenticated-request-page.ts`, `lib/workflow-stream-reauthorization.ts` (31/29), `app/api/stream/[projectId]/route.ts` (29), `app/api/[[...route]]/{zoom-http,brand-profile-routes}.ts` (21/19), `lib/rest-api/app.ts` (23), `app/workspaces/new/actions.ts`, `app/invite/[token]/actions.ts` (05), `app/mcp/integrations/[workspaceId]/[...upload]/route.ts` (24), and nine `app/(app)` files (06-22). All import modules removed by tickets 01/02; none is new from this ticket.
+
+### Evidence
+- `bun run --cwd apps/api typecheck` clean; `bun run typecheck` clean in packages/api-client, validators, services, db, auth; `bunx turbo run build --filter=@narriflow/api` 8/8 tasks pass.
+- `bun test apps/api/src` -> 229 pass, 6 skip (DB suite), 0 fail (includes http 131/6 skip, app composition, route inventory, admission tables, error codes, DB pool); `bun test packages/api-client` 111 pass; `bun test packages/validators` 615 pass; `cd apps/web && bun test lib/authenticated-request-inventory.test.ts` 15 pass.
+- `bun run --cwd apps/api test:inventory` -> `route_inventory_checked routes=108 problems=0`.
+- `.scratch/api-extraction/db-gate.sh bun run test:authenticated-request-policy:db` -> 4 pass, 0 skipped (root script now targets `apps/api/scripts/run-authenticated-request-policy-db-tests.ts`).
+- `bun run --cwd apps/api smoke:native` -> font metadata, argon2id, sharp+ffprobe, ffmpeg thumbnail all ok on the host. `bun install --frozen-lockfile` consistent (lock diff: `apps/api` workspace deps, `@narriflow/api-client` deps).
+- Local start: with env borrowed from `apps/web/.env.local` (no env file edited) `bun src/index.ts` listens on 4000; `/api/health` 200, `/api/ready` 200 (Neon reachable), `/api/projects` 401 envelope with CORS for `http://localhost:3000`, preflight 204 with the first-party header set; SIGTERM logs `api_draining` then `api_drained` and exits 0. `bun run dev` (turbo `--parallel`) includes the API through its `dev` script; it needs `apps/api/.env` (see `.env.example`).
+- `bun run env:check` (legacy, web+worker+db files only) passes; four-file check is ticket 31's.
+- `bunx biome check` on all owned paths: clean (one pre-existing info in `packages/validators/src/caption-preset.ts`).

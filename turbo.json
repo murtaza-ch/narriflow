@@ -6,6 +6,8 @@
         "^build"
       ],
       "env": [
+        "NEXT_PUBLIC_API_URL",
+        "NEXT_PUBLIC_APP_URL",
         "NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT",
         "NEXT_PUBLIC_SCREEN_LAYOUT",
         "NEXT_PUBLIC_SPLIT_LAYOUT",
@@ -22,6 +24,8 @@
     "dev": {
       "cache": false,
       "env": [
+        "NEXT_PUBLIC_API_URL",
+        "NEXT_PUBLIC_APP_URL",
         "NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT",
         "NEXT_PUBLIC_SCREEN_LAYOUT",
         "NEXT_PUBLIC_SPLIT_LAYOUT",

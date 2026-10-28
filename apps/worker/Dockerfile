@@ -38,6 +38,7 @@ ENV REFRAME_MODEL_PATH=/usr/local/share/narriflow/face_yunet.onnx
 WORKDIR /app
 
 COPY package.json bun.lock turbo.json ./
+COPY apps/api/package.json apps/api/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY apps/mcp/package.json apps/mcp/package.json

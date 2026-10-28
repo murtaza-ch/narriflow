@@ -620,3 +620,26 @@ export { createOpenAiEmbeddingProvider, EmbeddingProviderError, LIBRARY_EMBEDDIN
 
 export { zoomService, ZoomService } from "./zoom.service";
 export { zoomConfigured, ZoomError, ZOOM_WEBHOOK_MAX_BYTES } from "./zoom";
+
+export { createWorkspaceCommands, type WorkspaceCommandDependencies, type WorkspaceCommands } from "./workspace-commands";
+export { workspaceCommands } from "./workspace-commands-runtime";
+export { createProjectsCommands, type ProjectsCommandDependencies, type ProjectsCommands } from "./projects-commands";
+export { projectsCommands } from "./projects-commands-runtime";
+export { createClipsCommands, type ClipsCommandDependencies, type ClipsCommands } from "./clips-commands";
+export { clipsCommands } from "./clips-commands-runtime";
+export { createIngestCommands, type IngestCommandDependencies, type IngestCommands } from "./ingest-commands";
+export { ingestCommands } from "./ingest-commands-runtime";
+export { createRecipesCommands, type RecipesCommandDependencies, type RecipesCommands } from "./recipes-commands";
+export { recipesCommands } from "./recipes-commands-runtime";
+export { createPublishingCommands, type PublishingCommandDependencies, type PublishingCommands } from "./publishing-commands";
+export { publishingCommands } from "./publishing-commands-runtime";
+export { createBrandCommands, type BrandCommandDependencies, type BrandCommands } from "./brand-commands";
+export { brandCommands } from "./brand-commands-runtime";
+export { createAutomationCommands, type AutomationCommandDependencies, type AutomationCommands } from "./automation-commands";
+export { automationCommands } from "./automation-commands-runtime";
+export { createDeveloperCommands, type DeveloperCommandDependencies, type DeveloperCommands } from "./developer-commands";
+export { developerCommands } from "./developer-commands-runtime";
+export { createReviewsCommands, type ReviewsCommandDependencies, type ReviewsCommands } from "./reviews-commands";
+export { reviewsCommands } from "./reviews-commands-runtime";
+export { createExportsCommands, type ExportsCommandDependencies, type ExportsCommands } from "./exports-commands";
+export { exportsCommands } from "./exports-commands-runtime";

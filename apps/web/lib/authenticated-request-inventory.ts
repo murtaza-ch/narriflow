@@ -37,7 +37,10 @@ import {
 	type WorkspaceCapability,
 } from "@narriflow/validators";
 import { z, type ZodType } from "zod";
-import type { AuthenticatedRequestAdmission } from "./authenticated-request-policy";
+/** Admission shape of a matched baseline surface. The runtime policy lives in `apps/api/src/http`. */
+type AuthenticatedRequestAdmission =
+	| { kind: "workspace"; capability: WorkspaceCapability }
+	| { kind: "project"; capability: WorkspaceCapability; projectId: string };
 
 interface HonoSurface {
 	method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

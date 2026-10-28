@@ -1,0 +1,22 @@
+import type { AdmissionTable } from "../platform/admission-table";
+
+/** Admission of the brand routes, keyed by `METHOD /path` under `/api`. */
+export const brandAdmission = {
+  "POST /projects/:id/brand-profiles/:profileId/scene-templates/:templateId/apply": { kind: "project", capability: "content.edit", projectParam: "id", rate: { scope: "actor", prefix: "apply-scene-template", limit: 20, windowSeconds: 3600 } },
+  "GET /brand-templates": { kind: "workspace", capability: "content.view" },
+  "GET /brand-templates/:id": { kind: "workspace", capability: "content.view" },
+  "POST /brand-templates": { kind: "workspace", capability: "brand.manage" },
+  "PATCH /brand-templates/:id": { kind: "workspace", capability: "brand.manage" },
+  "DELETE /brand-templates/:id": { kind: "workspace", capability: "brand.manage" },
+  "POST /brand-templates/:id/set-default": { kind: "workspace", capability: "workspace.manage" },
+  "POST /brand-templates/:id/duplicate": { kind: "workspace", capability: "brand.manage" },
+  "POST /brand-templates/logo/presign": { kind: "workspace", capability: "brand.manage", rate: { scope: "actor", prefix: "logo-presign", limit: 30 } },
+  "GET /brand-templates/:id/logo-url": { kind: "workspace", capability: "content.view" },
+  "GET /audio-assets": { kind: "workspace", capability: "content.view" },
+  "POST /audio-assets/presign-upload": { kind: "workspace", capability: "brand.manage", rate: { scope: "actor", prefix: "audio-asset-presign", limit: 30 } },
+  "POST /audio-assets": { kind: "workspace", capability: "brand.manage" },
+  "GET /audio-assets/:id/playback-url": { kind: "workspace", capability: "content.view" },
+  "PUT /audio-assets/:id/favorite": { kind: "workspace", capability: "brand.manage" },
+  "DELETE /audio-assets/:id/favorite": { kind: "workspace", capability: "brand.manage" },
+  "DELETE /audio-assets/:id": { kind: "workspace", capability: "brand.manage" },
+} as const satisfies AdmissionTable;
