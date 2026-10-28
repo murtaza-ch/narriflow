@@ -1,6 +1,7 @@
 "use client";
 
 import { Dialog, Flex, Portal, Stack, Text } from "@chakra-ui/react";
+import { RotateCcw } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 
 const actionProps = {
@@ -16,7 +17,8 @@ const actionProps = {
  * destructive, unrecoverable-once-confirmed action (it discards every studio
  * edit, including anything not yet autosaved), so it gets an explicit
  * confirm step rather than firing straight off the top-bar icon button.
- * Studio tokens only, matching keyboard-shortcuts-modal.tsx.
+ * Studio tokens only (the dialog renders in a portal, outside the always-dark
+ * editor): a quiet cancel beside one danger-filled action.
  */
 export function ResetConfirmDialog({
   open,
@@ -39,16 +41,19 @@ export function ResetConfirmDialog({
         <Dialog.Backdrop zIndex={300} />
         <Dialog.Positioner zIndex={310}>
           <Dialog.Content
-            w="min(440px, 92vw)"
-            maxW="min(440px, 92vw)"
+            w="min(420px, 92vw)"
+            maxW="min(420px, 92vw)"
             bg="studio.surface"
             color="studio.fg"
             borderRadius="14px"
             p="6"
           >
+            <Flex boxSize="40px" mb="4" align="center" justify="center" borderRadius="full" bg="studio.raised" color="studio.danger" aria-hidden>
+              <RotateCcw size={18} />
+            </Flex>
             <Stack gap="2">
               <Dialog.Title asChild>
-                <Text fontSize="18px" fontWeight="500" color="studio.fg">
+                <Text fontSize="17px" fontWeight="500" letterSpacing="-0.01em" color="studio.fg">
                   Reset this clip to its original version?
                 </Text>
               </Dialog.Title>
@@ -75,9 +80,9 @@ export function ResetConfirmDialog({
               </Dialog.ActionTrigger>
               <Button
                 {...actionProps}
-                bg="danger.600"
-                color="white"
-                _hover={{ bg: "danger.700" }}
+                bg="studio.danger"
+                color="studio.canvas"
+                _hover={{ bg: "studio.dangerBorder" }}
                 onClick={onConfirm}
                 loading={confirming}
                 loadingText="Resetting…"

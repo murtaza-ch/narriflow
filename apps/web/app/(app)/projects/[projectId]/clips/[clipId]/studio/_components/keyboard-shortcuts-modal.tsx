@@ -60,18 +60,18 @@ const COLUMNS: readonly (readonly Group[])[] = [
   ],
 ];
 
+/** A flat key cap: a raised chip, no bevel or shadow. */
 function Key({ children }: { children: string }) {
   return (
     <Flex
       as="kbd"
       align="center"
       justify="center"
-      minW="26px"
-      h="26px"
-      px="7px"
+      minW="24px"
+      h="24px"
+      px="6px"
       borderRadius="6px"
       bg="studio.raised"
-      boxShadow="inset 0 -1px 0 rgba(0, 0, 0, 0.35)"
       color="studio.fg"
       fontFamily="body"
       fontSize="12px"
@@ -89,7 +89,7 @@ function Keys({ combos }: { combos: readonly Combo[] }) {
       {combos.map((combo, index) => (
         <Fragment key={combo.join("+")}>
           {index > 0 ? (
-            <Text fontSize="12px" color="studio.fgSubtle" px="0.5">
+            <Text fontSize="11px" color="studio.fgSubtle" px="0.5">
               or
             </Text>
           ) : null}
@@ -134,9 +134,9 @@ export function KeyboardShortcutsModal() {
             borderRadius="14px"
           >
             {/* Header */}
-            <Flex px="6" pt="5" pb="2" align="center" justify="space-between" flexShrink={0}>
+            <Flex px="6" pt="5" pb="1" align="center" justify="space-between" flexShrink={0}>
               <Dialog.Title asChild>
-                <Text fontSize="18px" fontWeight="500" color="studio.fg">
+                <Text fontSize="17px" fontWeight="500" letterSpacing="-0.01em" color="studio.fg">
                   Keyboard shortcuts
                 </Text>
               </Dialog.Title>
@@ -144,28 +144,29 @@ export function KeyboardShortcutsModal() {
                 <Flex
                   as="button"
                   aria-label="Close keyboard shortcuts"
+                  title="Close (Esc)"
                   align="center"
                   justify="center"
-                  w="32px"
-                  h="32px"
-                  borderRadius="full"
+                  boxSize="32px"
+                  borderRadius="8px"
                   bg="transparent"
                   border="none"
                   color="studio.fgMuted"
                   cursor="pointer"
                   _hover={{ color: "studio.fg", bg: "studio.raised" }}
+                  _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
                   transition="background 120ms ease, color 120ms ease"
                 >
-                  <X size={17} />
+                  <X size={16} />
                 </Flex>
               </Dialog.CloseTrigger>
             </Flex>
 
             <Box
               overflowY="auto"
-              px="6"
+              px="4"
               pt="3"
-              pb="6"
+              pb="5"
               css={{
                 "&::-webkit-scrollbar": { width: "4px" },
                 "&::-webkit-scrollbar-thumb": {
@@ -176,14 +177,14 @@ export function KeyboardShortcutsModal() {
             >
               <Grid
                 templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))" }}
-                columnGap="10"
-                rowGap="7"
+                columnGap="6"
+                rowGap="6"
               >
                 {COLUMNS.map((groups) => (
-                  <Stack key={groups.map((group) => group.title).join()} gap="7">
+                  <Stack key={groups.map((group) => group.title).join()} gap="6">
                     {groups.map((group) => (
                       <Box key={group.title}>
-                        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="2">
+                        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="1.5" px="2">
                           {group.title}
                         </Text>
                         <Stack gap="0">
@@ -193,7 +194,11 @@ export function KeyboardShortcutsModal() {
                               align="center"
                               justify="space-between"
                               gap="4"
-                              minH="38px"
+                              minH="36px"
+                              px="2"
+                              borderRadius="8px"
+                              transition="background 120ms ease"
+                              _hover={{ bg: "studio.subtle" }}
                             >
                               <Text fontSize="14px" color="studio.fg">
                                 {shortcut.command}

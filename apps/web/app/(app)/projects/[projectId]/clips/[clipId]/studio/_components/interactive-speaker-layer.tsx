@@ -228,9 +228,20 @@ export function InteractiveSpeakerLayer({
       onMouseLeave={() => setHovered(false)}
       onKeyDown={handleKeyboard}
       _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent", outlineOffset: "2px" }}
-      borderWidth={selected ? "2px" : hovered ? "1px" : "0"}
-      borderColor="studio.accent"
     >
+      {/* The frame is its own layer, so showing it never shifts the handles. */}
+      {selected || hovered ? (
+        <Box
+          position="absolute"
+          inset="0"
+          borderWidth={selected ? "1.5px" : "1px"}
+          borderColor="studio.accent"
+          opacity={selected ? 1 : 0.6}
+          pointerEvents="none"
+          aria-hidden
+        />
+      ) : null}
+
       {hovered && !selected && (
         <Flex
           position="absolute"
@@ -257,10 +268,10 @@ export function InteractiveSpeakerLayer({
             left="50%"
             top={layer.frameY < 0.08 ? "8px" : "-48px"}
             transform="translateX(-50%)"
-            h="40px"
+            h="36px"
             align="center"
             gap="2px"
-            px="4px"
+            p="2px"
             bg="studio.surface"
             color="studio.fg"
             borderRadius="10px"
@@ -268,22 +279,24 @@ export function InteractiveSpeakerLayer({
             zIndex={20}
           >
             <ToolbarButton active={mode === "move"} label="Move" onClick={() => setMode("move")}>
-              <Move size={16} />
+              <Move size={15} />
             </ToolbarButton>
             <ToolbarButton active={mode === "crop"} label="Crop" onClick={() => setMode("crop")}>
-              <Crop size={16} />
+              <Crop size={15} />
             </ToolbarButton>
+            <ToolbarDivider />
             <ToolbarButton label="Zoom out" onClick={() => changeZoom(-0.1)}>
-              <Minus size={16} />
+              <Minus size={15} />
             </ToolbarButton>
-            <Text minW="40px" textAlign="center" fontSize="13px" fontWeight="500" fontVariantNumeric="tabular-nums">
+            <Text minW="36px" textAlign="center" fontSize="12.5px" fontWeight="500" color="studio.fgMuted" fontVariantNumeric="tabular-nums">
               {layer.cropZoom.toFixed(1)}×
             </Text>
             <ToolbarButton label="Zoom in" onClick={() => changeZoom(0.1)}>
-              <Plus size={16} />
+              <Plus size={15} />
             </ToolbarButton>
+            <ToolbarDivider />
             <ToolbarButton label="Reset scene" onClick={onReset}>
-              <RotateCcw size={16} />
+              <RotateCcw size={15} />
             </ToolbarButton>
           </Flex>
 
@@ -338,10 +351,9 @@ export function InteractiveSpeakerLayer({
               zIndex={10}
             >
               <Box
-                w="12px"
-                h="12px"
+                boxSize="9px"
                 bg="studio.fg"
-                borderWidth="2px"
+                borderWidth="1.5px"
                 borderColor="studio.accent"
                 borderRadius="full"
                 pointerEvents="none"
@@ -352,8 +364,7 @@ export function InteractiveSpeakerLayer({
             position="absolute"
             left="50%"
             bottom={layer.frameY + layer.frameHeight > 0.92 ? "8px" : "-36px"}
-            w="26px"
-            h="26px"
+            boxSize="24px"
             display="flex"
             alignItems="center"
             justifyContent="center"
@@ -361,7 +372,6 @@ export function InteractiveSpeakerLayer({
             bg="studio.fg"
             color="studio.canvas"
             borderRadius="full"
-            boxShadow="0 2px 8px rgba(0, 0, 0, 0.4)"
             cursor="grab"
             onPointerDown={(event) => beginPointerGesture(event, "rotate")}
             aria-label="Rotate speaker layer"
@@ -387,13 +397,17 @@ export function InteractiveSpeakerLayer({
             }}
             _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent", outlineOffset: "2px" }}
           >
-            <RotateCw size={14} />
-            <Box position="absolute" left="50%" top="-9px" h="9px" borderLeftWidth="1.5px" borderColor="studio.accent" />
+            <RotateCw size={13} />
+            <Box position="absolute" left="50%" top="-9px" h="9px" borderLeftWidth="1.5px" borderColor="studio.accent" aria-hidden />
           </Box>
         </>
       )}
     </Box>
   );
+}
+
+function ToolbarDivider() {
+  return <Box w="1px" h="14px" mx="1" bg="studio.borderStrong" aria-hidden />;
 }
 
 function ToolbarButton({
@@ -415,13 +429,15 @@ function ToolbarButton({
       title={label}
       align="center"
       justify="center"
-      w="32px"
-      h="32px"
+      boxSize="32px"
       borderRadius="8px"
-      bg={active ? "studio.raised" : "transparent"}
-      color={active ? "studio.fg" : "studio.fgMuted"}
+      // A chosen mode is interactive state: the accent's tint, as in the panels.
+      bg={active ? "studio.accentSubtle" : "transparent"}
+      color={active ? "studio.accentFg" : "studio.fgMuted"}
       cursor="pointer"
-      _hover={{ bg: "studio.raised", color: "studio.fg" }}
+      transition="background 120ms ease, color 120ms ease"
+      _hover={{ bg: active ? "studio.accentSubtle" : "studio.raised", color: active ? "studio.accentFg" : "studio.fg" }}
+      _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
       onClick={(event) => {
         event.stopPropagation();
         onClick();

@@ -27,14 +27,14 @@ import { ScenesPanel } from "./tool-panels/scenes-panel";
 
 /** `railLabel` is the short name under the rail icon; `label` titles the panel. */
 const TOOLS: { id: ToolId; label: string; railLabel?: string; icon: React.ReactNode }[] = [
-  { id: "captions",    label: "Captions", icon: <Subtitles size={22} /> },
-  { id: "brand",       label: "Brand template", railLabel: "Brand", icon: <LayoutGrid size={22} /> },
-  { id: "broll",       label: "B-Roll",   icon: <Clapperboard size={22} /> },
-  { id: "transitions", label: "Motion",   icon: <Shuffle size={22} /> },
-  { id: "text",        label: "Text",     icon: <Type size={22} /> },
-  { id: "music",       label: "Music",    icon: <Music size={22} /> },
-  { id: "layout",      label: "Layout",   icon: <Crop size={22} /> },
-  { id: "scenes",      label: "Scenes",   icon: <PanelsTopLeft size={22} /> },
+  { id: "captions",    label: "Captions", icon: <Subtitles size={22} strokeWidth={1.75} /> },
+  { id: "brand",       label: "Brand template", railLabel: "Brand", icon: <LayoutGrid size={22} strokeWidth={1.75} /> },
+  { id: "broll",       label: "B-Roll",   icon: <Clapperboard size={22} strokeWidth={1.75} /> },
+  { id: "transitions", label: "Motion",   icon: <Shuffle size={22} strokeWidth={1.75} /> },
+  { id: "text",        label: "Text",     icon: <Type size={22} strokeWidth={1.75} /> },
+  { id: "music",       label: "Music",    icon: <Music size={22} strokeWidth={1.75} /> },
+  { id: "layout",      label: "Layout",   icon: <Crop size={22} strokeWidth={1.75} /> },
+  { id: "scenes",      label: "Scenes",   icon: <PanelsTopLeft size={22} strokeWidth={1.75} /> },
 ]
 
 const PANEL_MAP: Record<ToolId, React.ReactNode> = {
@@ -48,10 +48,6 @@ const PANEL_MAP: Record<ToolId, React.ReactNode> = {
   "scenes":      <ScenesPanel />,
 };
 
-/**
- * Tool rail on the editor's right edge, and — only while a tool is open — its
- * panel floating beside it. With no tool selected the canvas gets the room.
- */
 /**
  * While another tab holds the write lease, edits in this tab are refused. Say
  * so where the edits happen, with the same take-over the top bar offers.
@@ -84,6 +80,10 @@ export function ReadOnlyPanelNotice({ onTakeOver }: { onTakeOver: () => void }) 
   );
 }
 
+/**
+ * Tool rail on the editor's right edge, and — only while a tool is open — its
+ * panel floating beside it. With no tool selected the canvas gets the room.
+ */
 export function ToolSidebar() {
   const { activeTool, setActiveTool, editingElsewhere, handleTakeOverEditing } = useStudio("activeTool", "setActiveTool", "editingElsewhere", "handleTakeOverEditing");
 
@@ -110,16 +110,17 @@ export function ToolSidebar() {
             <Flex
               as="button"
               aria-label="Close tool panel"
+              title="Close"
               align="center"
               justify="center"
-              w="30px"
-              h="30px"
-              borderRadius="l2"
+              boxSize="32px"
+              borderRadius="8px"
               bg="transparent"
               border="none"
               color="studio.fgMuted"
               cursor="pointer"
               _hover={{ color: "studio.fg", bg: "studio.raised" }}
+              _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
               transition="background 120ms ease, color 120ms ease"
               onClick={() => setActiveTool(null)}
             >
@@ -192,6 +193,7 @@ export function ToolSidebar() {
               cursor="pointer"
               transition="background 120ms ease, color 120ms ease"
               _hover={{ bg: isActive ? "studio.accentSubtle" : "studio.subtle", color: isActive ? "studio.accentFg" : "studio.fg" }}
+              _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "-2px" }}
               onClick={() => handleToolClick(tool.id)}
             >
               {tool.icon}

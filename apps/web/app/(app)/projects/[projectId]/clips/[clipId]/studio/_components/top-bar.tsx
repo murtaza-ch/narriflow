@@ -1,8 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { Box, Flex, Popover, Portal, Text, HStack } from "@chakra-ui/react";
-import { ChevronLeft, ChevronDown, Undo2, Redo2, Keyboard, RotateCcw, Lock } from "lucide-react";
+import { Box, Flex, Grid, Popover, Portal, Text } from "@chakra-ui/react";
+import {
+  Check,
+  ChevronLeft,
+  ChevronDown,
+  Cloud,
+  CloudOff,
+  CircleAlert,
+  HardDrive,
+  Keyboard,
+  Lock,
+  Redo2,
+  RotateCcw,
+  Undo2,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { ClipActionsMenu } from "../../../../clip-actions-menu";
@@ -15,6 +28,10 @@ import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { authEntryHref } from "@/lib/auth-entry";
 import { useIsMac } from "./use-is-mac";
 
+/**
+ * Soft icon button for the bar. Same rhythm as the timeline's control groups:
+ * 32px, 8px radius, a raised fill on hover, no outline.
+ */
 function IconBtn({
   icon,
   onClick,
@@ -31,31 +48,65 @@ function IconBtn({
       as="button"
       align="center"
       justify="center"
-      w="36px"
-      h="36px"
-      borderRadius="l2"
+      boxSize="32px"
+      flexShrink={0}
+      borderRadius="8px"
       bg="transparent"
       border="none"
-      color={disabled ? "fg.disabled" : "studio.fgMuted"}
+      color="studio.fgMuted"
       cursor={disabled ? "not-allowed" : "pointer"}
+      opacity={disabled ? 0.38 : 1}
       title={label}
       aria-label={label}
       aria-disabled={disabled}
+      tabIndex={disabled ? -1 : undefined}
       onClick={disabled ? undefined : onClick}
       transition="background 120ms ease, color 120ms ease"
-      _hover={disabled ? {} : { bg: "studio.raised", color: "studio.fg" }}
+      _hover={disabled ? undefined : { bg: "studio.raised", color: "studio.fg" }}
+      _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
     >
       {icon}
     </Flex>
   );
 }
 
+/** A soft group of related controls (history), like the timeline's control groups. */
+function BarGroup({ children, label }: { children: React.ReactNode; label: string }) {
+  return (
+    <Flex role="group" aria-label={label} align="center" gap="1px" p="2px" bg="studio.subtle" borderRadius="10px">
+      {children}
+    </Flex>
+  );
+}
+
+type SaveTone = "muted" | "accent" | "danger";
+
+const TONE_ICON: Record<SaveTone, string> = {
+  muted: "studio.fgSubtle",
+  accent: "studio.accent",
+  danger: "studio.danger",
+};
+
+/** One save status: an icon, a few words, and a tone. Failure is the only red. */
+function SaveStatus({ icon, label, tone = "muted" }: { icon: React.ReactNode; label: string; tone?: SaveTone }) {
+  return (
+    <Flex align="center" gap="1.5" aria-live="polite">
+      <Flex boxSize="14px" align="center" justify="center" color={TONE_ICON[tone]} aria-hidden>
+        {icon}
+      </Flex>
+      <Text fontSize="12.5px" fontWeight="500" color={tone === "danger" ? "studio.danger" : "studio.fgMuted"} whiteSpace="nowrap">
+        {label}
+      </Text>
+    </Flex>
+  );
+}
+
 /**
- * Ambient autosave indicator — a small status dot plus micro-copy. Failures
- * additionally surface as an error toast from the shell. 'blocked' is a
- * distinct, non-retryable state (a 409/422 that only clears on reload) — it
- * gets its own copy rather than falling back to the generic "Save failed" so
- * the user knows retrying won't help.
+ * Ambient autosave indicator: an icon plus micro-copy. Failures additionally
+ * surface as an error toast from the shell. 'blocked' is a distinct,
+ * non-retryable state (a 409/422 that only clears on reload) — it gets its own
+ * copy rather than falling back to the generic "Save failed" so the user knows
+ * retrying won't help.
  */
 function AutosaveIndicator({
   saveState,
@@ -69,66 +120,35 @@ function AutosaveIndicator({
   issueActions?: SaveIssueActions;
 }) {
   if (saveState === "saving") {
-    return (
-      <HStack gap="6px" aria-live="polite">
-        <Spinner size="xs" />
-        <Text fontSize="12px" color="studio.fgMuted">
-          Saving…
-        </Text>
-      </HStack>
-    );
+    return <SaveStatus icon={<Spinner size="xs" />} label="Saving…" />;
   }
 
-  const isBlocked = saveState === "blocked";
-  const isError = saveState === "error" || isBlocked;
-  const isLocal = saveState === "local";
-  const isOffline = saveState === "offline";
-  const isReadonly = saveState === "readonly";
-  const isDegraded = saveState === "degraded";
   // Live-QA finding 2026-08-06: 'idle' alone is NOT proof the document is
   // saved — a failed save times back to idle after 4s with the retry still
   // pending, and the debounce window before the first PUT is also 'idle'.
   // Claiming "Saved" while dirty is a silent-data-loss message; consult the
   // dirty flag and say so honestly instead.
+  const isBlocked = saveState === "blocked";
+  const isError = saveState === "error" || isBlocked;
   const idleButDirty = !isError && isDocDirty;
-  const status = (
-    <HStack gap="6px" aria-live="polite">
-      <Box
-        w="6px"
-        h="6px"
-        borderRadius="full"
-        bg={
-          isError
-            ? "danger.solid"
-            : isOffline || isLocal || isDegraded
-              ? "accent.solid"
-            : idleButDirty
-              ? "studio.fgSubtle"
-              : saveState === "saved"
-                ? "success.solid"
-                : "studio.fgSubtle"
-        }
-      />
-      <Text fontSize="12px" color={isError ? "danger.fg" : "studio.fgMuted"}>
-        {isBlocked
-          ? "Save needs attention"
-          : isDegraded
-            ? "Cloud safety only"
-          : isReadonly
-            ? "Read-only tab"
-          : isOffline
-            ? "Saved offline"
-          : isLocal
-            ? "Saved on this device"
-          : isError
-            ? "Save failed"
-            : idleButDirty
-              ? "Unsaved changes…"
-              : "Saved"}
-      </Text>
-    </HStack>
+  const status = isBlocked ? (
+    <SaveStatus icon={<CircleAlert size={14} />} label="Save needs attention" tone="danger" />
+  ) : saveState === "degraded" ? (
+    <SaveStatus icon={<Cloud size={14} />} label="Cloud safety only" tone="accent" />
+  ) : saveState === "readonly" ? (
+    <SaveStatus icon={<Lock size={13} />} label="Read-only tab" />
+  ) : saveState === "offline" ? (
+    <SaveStatus icon={<CloudOff size={14} />} label="Saved offline" tone="accent" />
+  ) : saveState === "local" ? (
+    <SaveStatus icon={<HardDrive size={14} />} label="Saved on this device" tone="accent" />
+  ) : isError ? (
+    <SaveStatus icon={<CircleAlert size={14} />} label="Save failed" tone="danger" />
+  ) : idleButDirty ? (
+    <SaveStatus icon={<Box boxSize="6px" borderRadius="full" bg="currentColor" />} label="Unsaved changes…" />
+  ) : (
+    <SaveStatus icon={<Check size={14} strokeWidth={2.5} />} label="Saved" />
   );
-  if (!isBlocked || !saveIssue || !issueActions) return status;
+  if (!isBlocked || !saveIssue || !issueActions) return <Box px="2">{status}</Box>;
   return <SaveIssuePopover issue={saveIssue} actions={issueActions}>{status}</SaveIssuePopover>;
 }
 
@@ -178,23 +198,26 @@ function SaveIssuePopover({
           align="center"
           gap="1.5"
           h="32px"
-          px="2.5"
+          ps="2.5"
+          pe="2"
           borderRadius="8px"
-          bg="studio.raised"
+          bg={open ? "studio.raised" : "studio.subtle"}
+          color="studio.fgMuted"
           cursor="pointer"
           aria-haspopup="dialog"
           aria-label="Save needs attention. See details"
           transition="background 120ms ease"
-          _hover={{ bg: "studio.borderStrong" }}
+          _hover={{ bg: "studio.raised" }}
+          _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
         >
           {children}
-          <ChevronDown size={12} aria-hidden />
+          <ChevronDown size={13} aria-hidden />
         </Flex>
       </Popover.Trigger>
       <Portal>
         <Popover.Positioner>
           <Popover.Content
-            w="min(300px, calc(100vw - 24px))"
+            w="min(320px, calc(100vw - 24px))"
             p="4"
             bg="studio.surface"
             color="studio.fg"
@@ -217,22 +240,22 @@ function SaveIssuePopover({
  */
 function EditingElsewhereNotice({ onTakeOver }: { onTakeOver: () => void }) {
   return (
-    <HStack gap="3" ms="3" me="2" role="status" aria-live="polite">
-      <HStack gap="1.5" color="studio.fgMuted">
-        <Lock size={14} />
-        <Text fontSize="13px" whiteSpace="nowrap">
+    <Flex align="center" h="32px" ps="2.5" pe="1" gap="2.5" bg="studio.subtle" borderRadius="8px" role="status" aria-live="polite">
+      <Flex align="center" gap="1.5" color="studio.fgMuted">
+        <Lock size={13} aria-hidden />
+        <Text fontSize="12.5px" fontWeight="500" whiteSpace="nowrap">
           Editing in another tab
         </Text>
-      </HStack>
+      </Flex>
       <Box
         as="button"
-        h="32px"
-        px="3"
-        borderRadius="8px"
+        h="24px"
+        px="2.5"
+        borderRadius="6px"
         bg="studio.raised"
         border="none"
         color="studio.fg"
-        fontSize="13px"
+        fontSize="12px"
         fontWeight="500"
         whiteSpace="nowrap"
         cursor="pointer"
@@ -241,9 +264,9 @@ function EditingElsewhereNotice({ onTakeOver }: { onTakeOver: () => void }) {
         title="Only one tab can edit at a time. Taking over makes the other tab read-only."
         onClick={onTakeOver}
       >
-        Take over editing
+        Take over
       </Box>
-    </HStack>
+    </Flex>
   );
 }
 
@@ -273,21 +296,47 @@ export function TopBar() {
 
   return (
     // The header is its own panel, like the transcript, tools and timeline.
-    <Flex h="56px" align="center" px="3" gap="2" bg="studio.canvas" borderRadius="12px" flexShrink={0}>
-      {/* Left: back + clip title */}
-      <HStack gap="1.5" flex="1" minW="0">
-        <IconBtn
-          icon={<ChevronLeft size={20} />}
+    // Three balanced zones: the clip, its history, and the save status with
+    // the one primary action.
+    <Grid
+      h="56px"
+      templateColumns="minmax(0, 1fr) auto minmax(0, 1fr)"
+      alignItems="center"
+      columnGap="3"
+      px="3"
+      bg="studio.canvas"
+      borderRadius="12px"
+      flexShrink={0}
+    >
+      <Flex align="center" gap="1.5" minW="0">
+        <Flex
+          as="button"
+          boxSize="32px"
+          flexShrink={0}
+          align="center"
+          justify="center"
+          borderRadius="8px"
+          bg="studio.subtle"
+          border="none"
+          color="studio.fgMuted"
+          cursor="pointer"
+          title="Back to project"
+          aria-label="Back to project"
+          transition="background 120ms ease, color 120ms ease"
+          _hover={{ bg: "studio.raised", color: "studio.fg" }}
+          _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
           onClick={() => router.push(`/projects/${clipInfo.projectId}`)}
-          label="Back to project"
-        />
+        >
+          <ChevronLeft size={18} />
+        </Flex>
         <Text
-          fontSize="18px"
+          ms="1.5"
+          fontSize="15px"
           fontWeight="500"
           letterSpacing="-0.01em"
           color="studio.fg"
           truncate
-          maxW="560px"
+          minW="0"
         >
           {clipInfo.clipTitle ?? clipInfo.title}
         </Text>
@@ -307,53 +356,54 @@ export function TopBar() {
           }
           onDeleted={() => router.push(`/projects/${clipInfo.projectId}`)}
         />
-      </HStack>
+      </Flex>
 
-      {/* Right: history, shortcuts, save state, export */}
-      <HStack gap="1" flexShrink={0}>
+      <BarGroup label="History">
         <IconBtn
-          icon={<Undo2 size={18} />}
+          icon={<Undo2 size={16} />}
           onClick={handleUndo}
           disabled={!canUndo}
           label={isMac ? "Undo (⌘Z)" : "Undo (Ctrl+Z)"}
         />
         <IconBtn
-          icon={<Redo2 size={18} />}
+          icon={<Redo2 size={16} />}
           onClick={handleRedo}
           disabled={!canRedo}
           label={isMac ? "Redo (⇧⌘Z)" : "Redo (Ctrl+Shift+Z)"}
         />
+        <Box w="1px" h="14px" mx="1" bg="studio.borderStrong" aria-hidden />
         <IconBtn
-          icon={<RotateCcw size={17} />}
+          icon={<RotateCcw size={15} />}
           onClick={() => setShowResetConfirm(true)}
           disabled={!canReset || resetState === "resetting" || editingElsewhere}
           label="Reset to original"
         />
-        <IconBtn
-          icon={<Keyboard size={18} />}
-          onClick={() => setShowShortcuts(!showShortcuts)}
-          label="Keyboard shortcuts"
-        />
+      </BarGroup>
+
+      <Flex align="center" justify="flex-end" gap="2" minW="0">
         {editingElsewhere ? (
           <EditingElsewhereNotice onTakeOver={handleTakeOverEditing} />
         ) : (
-          <Box ms="3" me="2">
-            <AutosaveIndicator
-              saveState={saveState}
-              isDocDirty={isDocDirty}
-              saveIssue={saveIssue}
-              issueActions={{
-                ...saveIssueActions,
-                undo: canUndo ? handleUndo : null,
-                upgrade: openUpgrade,
-                openSignIn: () => window.open(authEntryHref("sign-in", "/home"), "_blank", "noopener"),
-                backToProject: () => router.push(`/projects/${clipInfo.projectId}`),
-              }}
-            />
-          </Box>
+          <AutosaveIndicator
+            saveState={saveState}
+            isDocDirty={isDocDirty}
+            saveIssue={saveIssue}
+            issueActions={{
+              ...saveIssueActions,
+              undo: canUndo ? handleUndo : null,
+              upgrade: openUpgrade,
+              openSignIn: () => window.open(authEntryHref("sign-in", "/home"), "_blank", "noopener"),
+              backToProject: () => router.push(`/projects/${clipInfo.projectId}`),
+            }}
+          />
         )}
+        <IconBtn
+          icon={<Keyboard size={17} />}
+          onClick={() => setShowShortcuts(!showShortcuts)}
+          label="Keyboard shortcuts"
+        />
         <StudioExportMenu />
-      </HStack>
+      </Flex>
 
       <ResetConfirmDialog
         open={showResetConfirm}
@@ -363,6 +413,6 @@ export function TopBar() {
           void handleReset();
         }}
       />
-    </Flex>
+    </Grid>
   );
 }

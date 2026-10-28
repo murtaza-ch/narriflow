@@ -7,7 +7,7 @@ import type { StudioTextLayer } from "@narriflow/validators";
 import { useBrandFont, brandFontStyle } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { useStudio } from "./studio-shell";
 import { computeSnap, type SnapGuide } from "./snap-guides";
-import { SnapGuideLines, DragResizeHandles } from "./interactive-caption-overlay";
+import { SelectionFrame, SnapGuideLines, DragResizeHandles } from "./interactive-caption-overlay";
 
 /** Vizard-parity Phase C step 1: per-layer draggable/resizable overlay for a
  *  studio text overlay, mirroring InteractiveCaptionOverlay's drag/resize/
@@ -160,28 +160,7 @@ export function InteractiveTextLayer({
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
         >
-          {showHoverBorder && (
-            <Box
-              position="absolute"
-              inset="-2px"
-              borderWidth="1px"
-              borderColor="studio.accent"
-              opacity={0.7}
-              borderRadius="6px"
-              pointerEvents="none"
-            />
-          )}
-
-          {showSelection && (
-            <Box
-              position="absolute"
-              inset="-2px"
-              borderWidth="2px"
-              borderColor="studio.accent"
-              borderRadius="6px"
-              pointerEvents="none"
-            />
-          )}
+          <SelectionFrame selected={showSelection} hovered={showHoverBorder} />
 
           {showSelection && (
             <DragResizeHandles

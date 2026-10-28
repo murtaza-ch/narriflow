@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Box, Flex, Text } from "@chakra-ui/react";
-import { Gem } from "lucide-react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { CircleAlert, CloudDownload, Gem, History, RefreshCw, Undo2 } from "lucide-react";
+import type { ReactNode } from "react";
 import type { UpgradePrompt } from "@/app/(app)/_components/upgrade";
 import type { SaveIssue } from "./save-issue";
 
@@ -24,9 +25,13 @@ export interface SaveIssueActions {
   backToProject: () => void;
 }
 
+const focusRing = { outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" } as const;
+
+/** The one fix this problem is asking for: a solid, full-width action. */
 const primary = {
   as: "button" as const,
-  h: "36px",
+  w: "full",
+  h: "38px",
   px: "4",
   borderRadius: "10px",
   bg: "studio.fg",
@@ -39,16 +44,25 @@ const primary = {
   cursor: "pointer",
   transition: "opacity 120ms ease",
   _hover: { opacity: 0.9 },
+  _focusVisible: focusRing,
 };
 
-const quiet = {
+/** The other ways forward: quiet rows that fill on hover. */
+const secondary = {
   as: "button" as const,
+  w: "full",
+  h: "32px",
+  px: "2.5",
+  gap: "2.5",
+  alignItems: "center",
+  borderRadius: "8px",
   color: "studio.fgMuted",
   fontSize: "13px",
+  textAlign: "left" as const,
   cursor: "pointer",
-  textDecoration: "underline",
-  textUnderlineOffset: "3px",
-  _hover: { color: "studio.fg" },
+  transition: "background 120ms ease, color 120ms ease",
+  _hover: { bg: "studio.raised", color: "studio.fg" },
+  _focusVisible: focusRing,
 };
 
 /** The popover behind a blocked save status: the reason and what to do next. */
@@ -63,15 +77,17 @@ export function SaveIssueBody({
   const undo = actions.undo;
   let reason: string;
   let main: { label: string; onClick: () => void; gem?: boolean };
-  const others: Array<{ label: string; onClick: () => void }> = [];
+  const others: Array<{ label: string; icon: ReactNode; onClick: () => void }> = [];
+  const retry = { label: "Try saving again", icon: <RefreshCw size={14} />, onClick: actions.retry };
+  const loadLastSaved = { label: "Load last saved version", icon: <History size={14} />, onClick: actions.loadLastSaved };
 
   switch (issue.kind) {
     case "plan":
       reason = issue.message;
       main = { label: "See plans", onClick: () => actions.upgrade(issue.prompt), gem: true };
-      others.push({ label: "Try saving again", onClick: actions.retry });
-      if (undo) others.push({ label: "Undo last change", onClick: undo });
-      others.push({ label: "Load last saved version", onClick: actions.loadLastSaved });
+      others.push(retry);
+      if (undo) others.push({ label: "Undo last change", icon: <Undo2 size={14} />, onClick: undo });
+      others.push(loadLastSaved);
       break;
     case "deleted-broll":
       reason = "A B-roll image was deleted.";
@@ -81,17 +97,16 @@ export function SaveIssueBody({
       reason = issue.message;
       if (undo) {
         main = { label: "Undo last change", onClick: undo };
-        others.push({ label: "Try saving again", onClick: actions.retry });
-        others.push({ label: "Load last saved version", onClick: actions.loadLastSaved });
+        others.push(retry, loadLastSaved);
       } else {
-        main = { label: "Try saving again", onClick: actions.retry };
-        others.push({ label: "Load last saved version", onClick: actions.loadLastSaved });
+        main = { label: retry.label, onClick: retry.onClick };
+        others.push(loadLastSaved);
       }
       break;
     case "signed-out":
       reason = "You were signed out. Your edits are safe on this device.";
       main = signInOpened
-        ? { label: "Try saving again", onClick: actions.retry }
+        ? { label: retry.label, onClick: retry.onClick }
         : {
             label: "Sign in again",
             onClick: () => {
@@ -110,18 +125,23 @@ export function SaveIssueBody({
         : "Checking for a newer version…";
       // Keeping local edits is the default; loading the latest discards them.
       main = { label: "Keep mine", onClick: () => actions.resolveConflict("device") };
-      others.push({ label: "Load latest", onClick: () => actions.resolveConflict("cloud") });
+      others.push({ label: "Load latest", icon: <CloudDownload size={14} />, onClick: () => actions.resolveConflict("cloud") });
       break;
   }
   const hasAction = issue.kind !== "conflict" || issue.resolvable;
 
   return (
     <Box role="alert">
-      <Text fontSize="13px" color="studio.fg" lineHeight="1.5">
-        {reason}
-      </Text>
+      <Flex gap="3" align="flex-start">
+        <Flex boxSize="28px" flexShrink={0} align="center" justify="center" borderRadius="full" bg="studio.raised" color="studio.fgMuted" aria-hidden>
+          <CircleAlert size={15} />
+        </Flex>
+        <Text fontSize="13px" color="studio.fg" lineHeight="1.5" pt="1">
+          {reason}
+        </Text>
+      </Flex>
       {hasAction ? (
-        <Flex mt="3" direction="column" gap="2.5" align="stretch">
+        <Stack mt="4" gap="2">
           <Flex
             {...primary}
             {...(main.gem
@@ -134,15 +154,18 @@ export function SaveIssueBody({
             {main.label}
           </Flex>
           {others.length > 0 ? (
-            <Flex gap="4" justify="center" wrap="wrap">
+            <Stack gap="0.5">
               {others.map((other) => (
-                <Box key={other.label} {...quiet} onClick={other.onClick}>
+                <Flex key={other.label} {...secondary} onClick={other.onClick}>
+                  <Flex boxSize="14px" align="center" justify="center" flexShrink={0} aria-hidden>
+                    {other.icon}
+                  </Flex>
                   {other.label}
-                </Box>
+                </Flex>
               ))}
-            </Flex>
+            </Stack>
           ) : null}
-        </Flex>
+        </Stack>
       ) : null}
     </Box>
   );

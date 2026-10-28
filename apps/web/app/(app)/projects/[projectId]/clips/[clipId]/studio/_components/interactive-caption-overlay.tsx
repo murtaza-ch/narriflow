@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useCallback, useEffect } from "react";
-import { Box } from "@chakra-ui/react";
+import { Box, Flex } from "@chakra-ui/react";
 import { motion, useMotionValue, useReducedMotion } from "framer-motion";
 import { useStudio } from "./studio-shell";
 import { computeSnap, type SnapGuide } from "./snap-guides";
@@ -13,17 +13,23 @@ import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
+// Handles sit on the selection frame's edge: `left`/`top` are the frame box's
+// own edges, centred on the line by the handle's translate(-50%, -50%).
 const HANDLE_POSITIONS = [
-  // 12px handles, centred on the 2px selection border drawn at inset -2px.
-  { cursor: "nw-resize", style: { top: -7, left: -7 } },
-  { cursor: "n-resize", style: { top: -7, left: "calc(50% - 6px)" } },
-  { cursor: "ne-resize", style: { top: -7, right: -7 } },
-  { cursor: "e-resize", style: { top: "calc(50% - 6px)", right: -7 } },
-  { cursor: "se-resize", style: { bottom: -7, right: -7 } },
-  { cursor: "s-resize", style: { bottom: -7, left: "calc(50% - 6px)" } },
-  { cursor: "sw-resize", style: { bottom: -7, left: -7 } },
-  { cursor: "w-resize", style: { top: "calc(50% - 6px)", left: -7 } },
+  { cursor: "nw-resize", style: { top: 0, left: 0 } },
+  { cursor: "n-resize", style: { top: 0, left: "50%" } },
+  { cursor: "ne-resize", style: { top: 0, left: "100%" } },
+  { cursor: "e-resize", style: { top: "50%", left: "100%" } },
+  { cursor: "se-resize", style: { top: "100%", left: "100%" } },
+  { cursor: "s-resize", style: { top: "100%", left: "50%" } },
+  { cursor: "sw-resize", style: { top: "100%", left: 0 } },
+  { cursor: "w-resize", style: { top: "50%", left: 0 } },
 ] as const;
+
+// The frame is a 1.5px line drawn 2px outside the object; the handles' box is
+// inset to the middle of that line (-2px + half its width).
+const FRAME_INSET = "-2px";
+const HANDLE_BOX_INSET = "-1.25px";
 
 // ─── Snap Guide Lines ────────────────────────────────────────────────────────
 
@@ -50,6 +56,28 @@ export function SnapGuideLines({ guides }: { guides: SnapGuide[] }) {
         />
       ))}
     </>
+  );
+}
+
+// ─── Selection frame ─────────────────────────────────────────────────────────
+
+/**
+ * The thin accent frame around a canvas object: a faint hairline while hovered,
+ * a solid line once selected. Shared by captions and text layers.
+ */
+export function SelectionFrame({ selected, hovered }: { selected: boolean; hovered: boolean }) {
+  if (!selected && !hovered) return null;
+  return (
+    <Box
+      position="absolute"
+      inset={FRAME_INSET}
+      borderWidth={selected ? "1.5px" : "1px"}
+      borderColor="studio.accent"
+      opacity={selected ? 1 : 0.6}
+      borderRadius="6px"
+      pointerEvents="none"
+      aria-hidden
+    />
   );
 }
 
@@ -102,30 +130,29 @@ export function DragResizeHandles({
   );
 
   return (
-    <>
+    <Box position="absolute" inset={HANDLE_BOX_INSET} pointerEvents="none" zIndex={10}>
       {HANDLE_POSITIONS.map((hp, i) => (
-        <Box
+        // A 20px hit area around a 9px dot: easy to grab, quiet to look at.
+        <Flex
           key={i}
           position="absolute"
-          w="12px"
-          h="12px"
-          borderRadius="full"
-          bg="studio.fg"
-          borderWidth="2px"
-          borderColor="studio.accent"
+          boxSize="20px"
+          align="center"
+          justify="center"
+          pointerEvents="auto"
           cursor={hp.cursor}
-          zIndex={10}
-          style={hp.style as React.CSSProperties}
+          style={{ ...hp.style, transform: "translate(-50%, -50%)" }}
           onPointerDown={handlePointerDown}
-          transition="background 120ms ease, transform 120ms ease"
-          _hover={{
-            bg: "studio.accent",
-            borderColor: "studio.accent",
-            transform: "scale(1.2)",
+          css={{
+            "& > span": { transition: "background 120ms ease, transform 120ms ease" },
+            "&:hover > span": { background: "var(--chakra-colors-studio-accent)", transform: "scale(1.25)" },
+            "@media (prefers-reduced-motion: reduce)": { "& > span": { transition: "none" } },
           }}
-        />
+        >
+          <Box as="span" boxSize="9px" borderRadius="full" bg="studio.fg" borderWidth="1.5px" borderColor="studio.accent" />
+        </Flex>
       ))}
-    </>
+    </Box>
   );
 }
 
@@ -342,30 +369,8 @@ export function InteractiveCaptionOverlay({
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
         >
-          {/* Hover border */}
-          {showHoverBorder && (
-            <Box
-              position="absolute"
-              inset="-2px"
-              borderWidth="1px"
-              borderColor="studio.accent"
-              opacity={0.7}
-              borderRadius="6px"
-              pointerEvents="none"
-            />
-          )}
-
-          {/* Selection border — a draggable/selected object earns the accent frame */}
-          {showSelection && (
-            <Box
-              position="absolute"
-              inset="-2px"
-              borderWidth="2px"
-              borderColor="studio.accent"
-              borderRadius="6px"
-              pointerEvents="none"
-            />
-          )}
+          {/* A draggable/selected object earns the accent frame */}
+          <SelectionFrame selected={showSelection} hovered={showHoverBorder} />
 
           {/* Resize handles */}
           {showSelection && (
