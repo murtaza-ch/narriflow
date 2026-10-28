@@ -4513,6 +4513,15 @@ export class UploadSessionService {
     return this.ownStatus(scope, await prismaUploadSessionPersistence.findByClientKey({ workspaceId: scope.workspaceId, clientIdempotencyKey }));
   }
 
+  /** Whether the caller already has an Upload Session under this stored key. A
+   * lookup only: it starts no reconciliation and authorizes no new upload, so a
+   * handoff past its expiry can learn whether there is something to resume. */
+  async hasOwnSessionByClientKey(scope: ActorScope, clientIdempotencyKey: string) {
+    await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
+    const session = await prismaUploadSessionPersistence.findByClientKey({ workspaceId: scope.workspaceId, clientIdempotencyKey });
+    return session !== null && session.actorUserId === scope.actorUserId;
+  }
+
   private async ownStatus(scope: ActorScope, session: UploadSessionRecord | null) {
     if (!session || session.actorUserId !== scope.actorUserId) throw new UploadSessionNotFoundError();
     return productionUploadSessionModule.status({

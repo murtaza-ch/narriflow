@@ -56,55 +56,10 @@ export function tryDerivePeaksStorageKey(
   }
 }
 
-/**
- * A clip preview proxy's amplitude-peaks artifact — mono max-abs amplitude
- * per bin, quantized to an integer 0-100 to keep the payload small (roughly
- * a few KB for a two-minute proxy at the default 20 bins/sec: 20 * 120 =
- * 2400 small integers).
- *
- * `startSec` is the SAME source-absolute value as the proxy's own
- * `Clip.previewStartSec` (the padded preview window's t=0 in source time) —
- * bin `i`'s source time is `startSec + i / peaksPerSec`. `durationSec` is
- * the same padded-window duration as `Clip.previewDurationSec`.
- *
- * `sampleRateHz` is always `null`: this describes the peaks' own time
- * resolution (`peaksPerSec`), not the PCM sample rate the worker happened to
- * decode at to compute them — that rate is an internal detail of the
- * worker's binning pass, not part of this artifact's contract, and callers
- * must never assume a value for it.
- */
-export interface ClipPreviewPeaks {
-  version: 1;
-  sampleRateHz: null;
-  peaksPerSec: number;
-  startSec: number;
-  durationSec: number;
-  /** Mono max-abs amplitude per bin, quantized to integers in [0, 100]. */
-  peaks: number[];
-}
-
-/** Runtime validation for the R2 artifact before it crosses the server/client
- * boundary. Values are finite and quantized exactly as the worker contract
- * specifies, so a malformed object cannot inflate the canvas or RSC payload.
- */
-export function isClipPreviewPeaks(value: unknown): value is ClipPreviewPeaks {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    candidate.version === 1 &&
-    candidate.sampleRateHz === null &&
-    typeof candidate.peaksPerSec === "number" &&
-    Number.isFinite(candidate.peaksPerSec) &&
-    candidate.peaksPerSec > 0 &&
-    typeof candidate.startSec === "number" &&
-    Number.isFinite(candidate.startSec) &&
-    typeof candidate.durationSec === "number" &&
-    Number.isFinite(candidate.durationSec) &&
-    candidate.durationSec > 0 &&
-    Array.isArray(candidate.peaks) &&
-    candidate.peaks.length <= 20_000 &&
-    candidate.peaks.every(
-      (peak) => Number.isInteger(peak) && peak >= 0 && peak <= 100,
-    )
-  );
-}
+// The artifact's type and guard live in @narriflow/validators so browser code
+// can validate it without importing the services bundle. Re-exported here so
+// the worker and clip.service keep one import site.
+export {
+  isClipPreviewPeaks,
+  type ClipPreviewPeaks,
+} from "@narriflow/validators/clip-preview-peaks";

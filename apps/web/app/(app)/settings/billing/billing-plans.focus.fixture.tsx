@@ -12,10 +12,12 @@ import { createRoot, type Root } from "react-dom/client";
 const browser = new Window({ url: "http://localhost:3000/settings/billing" });
 
 mock.module("next/navigation", () => ({
-  useRouter: () => ({ replace: () => undefined, refresh: () => undefined }),
+  useRouter: () => ({ replace: () => undefined }),
 }));
 
 let BillingPlans: typeof import("./billing-plans").BillingPlans;
+let createApi: () => import("./billing-plans").BillingPlansApi;
+let views: WorkspaceBillingView[] = [];
 let ChakraProvider: typeof import("@chakra-ui/react").ChakraProvider;
 let system: typeof import("@narriflow/ui/theme").system;
 let root: Root | null = null;
@@ -61,7 +63,36 @@ function installBrowserGlobals() {
   });
 }
 
-function billingElement(initialView: WorkspaceBillingView, requestedInterval: BillingInterval | null = null) {
+const API = "http://api.test";
+const USER = "user_focus";
+
+/** An API client bound to this Workspace that sends every request through the test's `globalThis.fetch`. */
+async function loadApi() {
+  const { createApiRuntime } = await import("@narriflow/api-client");
+  const { createBillingActions, readBillingState } = await import("@narriflow/api-client/billing");
+  return () => {
+    const runtime = createApiRuntime({
+      baseUrl: API,
+      getToken: async () => "session-token",
+      fetch: ((input: string | URL | Request, init?: RequestInit) => globalThis.fetch(input, init)) as typeof fetch,
+    });
+    runtime.setIdentity(USER);
+    runtime.selectWorkspace(retryingView.workspaceId);
+    const scope = { userId: USER, workspaceId: retryingView.workspaceId };
+    return {
+      ...createBillingActions(runtime.transport, scope),
+      readState: () => readBillingState(runtime.transport, scope),
+    };
+  };
+}
+
+const settings = { availableTiers: ["creator", "pro", "business"], isConfigured: true };
+
+function billingElement(
+  initialView: WorkspaceBillingView,
+  requestedInterval: BillingInterval | null = null,
+  checkoutReturnSessionId: string | null = null,
+) {
   return (
     <ChakraProvider value={system}>
       <BillingPlans
@@ -69,20 +100,22 @@ function billingElement(initialView: WorkspaceBillingView, requestedInterval: Bi
         availableTiers={["creator", "pro", "business"]}
         isConfigured
         canManageBilling
-        checkoutReturnSessionId={null}
+        checkoutReturnSessionId={checkoutReturnSessionId}
         checkoutCancelled={false}
         requestedInterval={requestedInterval}
+        api={createApi()}
+        onViewChange={(view) => views.push(view)}
       />
     </ChakraProvider>
   );
 }
 
-async function renderBilling(initialView = retryingView) {
+async function renderBilling(initialView = retryingView, checkoutReturnSessionId: string | null = null) {
   const container = browser.document.createElement("div");
   browser.document.body.append(container);
   root = createRoot(container as unknown as HTMLDivElement);
   await act(async () => {
-    root?.render(billingElement(initialView));
+    root?.render(billingElement(initialView, null, checkoutReturnSessionId));
   });
   return container;
 }
@@ -90,11 +123,13 @@ async function renderBilling(initialView = retryingView) {
 beforeAll(async () => {
   installBrowserGlobals();
   ({ BillingPlans } = await import("./billing-plans"));
+  createApi = await loadApi();
   ({ ChakraProvider } = await import("@chakra-ui/react"));
   ({ system } = await import("@narriflow/ui/theme"));
 });
 
 afterEach(async () => {
+  views = [];
   await act(async () => root?.unmount());
   root = null;
   browser.document.body.replaceChildren();
@@ -116,6 +151,7 @@ describe("BillingPlans focus recovery", () => {
     globalThis.fetch = mock(async () =>
       Response.json({
         view: { ...retryingView, health: "current", actions: ["open_portal"] },
+        ...settings,
       }),
     ) as unknown as typeof fetch;
     const container = await renderBilling(activatingView);
@@ -127,6 +163,8 @@ describe("BillingPlans focus recovery", () => {
     expect(browser.document.activeElement).toBe(
       container.querySelector('[role="status"]'),
     );
+    // The verified state is handed to the container, which owns the cache.
+    expect(views.at(-1)?.health).toBe("current");
   });
 
   test("returns focus to the originating action after an inline failure", async () => {
@@ -182,13 +220,13 @@ describe("BillingPlans focus recovery", () => {
     const calls: string[] = [];
     const paid = { ...retryingView, health: "current" as const, actions: ["open_portal" as const] };
     globalThis.fetch = mock(async (url: string | URL | Request) => {
-      calls.push(String(url));
+      calls.push(new URL(String(url)).pathname);
       if (String(url).endsWith("/preview")) return Response.json({ quote: {
         id: "018f5f6a-4c31-7c75-9a4f-8f74f977bc12", tier: "business", interval: "monthly", kind: "immediate",
         amountDue: 745, currency: "usd", effectiveAt: "2026-10-27T12:00:00.000Z", expiresAt: "2099-10-27T12:10:00.000Z",
       } });
       if (String(url).endsWith("/confirm")) return Response.json({ kind: "pending_payment", effectiveAt: null });
-      return Response.json({ view: { ...paid, planChange: { state: "pending_payment", tier: "business", interval: "monthly", effectiveAt: null } } });
+      return Response.json({ kind: "reconciled", view: { ...paid, planChange: { state: "pending_payment", tier: "business", interval: "monthly", effectiveAt: null } } });
     }) as unknown as typeof fetch;
     const container = await renderBilling(paid);
     const review = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Review Business"));
@@ -221,5 +259,39 @@ describe("BillingPlans focus recovery", () => {
     expect(browser.document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("quote expired");
     expect(container.textContent).toContain("Current plan");
     expect(container.textContent).toContain("Review Business");
+  });
+
+  test("coming back from Checkout shows only the state the API verified", async () => {
+    const free: WorkspaceBillingView = {
+      ...retryingView,
+      plan: "free",
+      interval: null,
+      health: "current",
+      actions: ["start_checkout"],
+    };
+    const calls: Array<{ path: string; body: unknown }> = [];
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (path.endsWith("/checkout/return")) {
+        return Response.json(
+          { kind: "activating", retryAfterSeconds: 2, view: { ...free, health: "activating", workspaceAccessStatus: "pending_payment", actions: [] } },
+          { status: 202, headers: { "Retry-After": "2" } },
+        );
+      }
+      return Response.json({ view: { ...retryingView, health: "current", actions: ["open_portal"] }, ...settings });
+    }) as unknown as typeof fetch;
+
+    const container = await renderBilling(free, "cs_workspace_return");
+    await act(async () => {
+      await browser.happyDOM.waitUntilComplete();
+    });
+
+    // The session id goes to the API, which asks Stripe; the screen follows its answer, in order.
+    expect(calls[0]).toEqual({ path: "/api/billing/checkout/return", body: { sessionId: "cs_workspace_return" } });
+    expect(calls[1]?.path).toBe("/api/billing/state");
+    expect(views.map((view) => view.health)).toEqual(["activating", "current"]);
+    expect(views.map((view) => view.plan)).toEqual(["free", "pro"]);
+    expect(container.textContent).not.toContain("Continue with Creator");
   });
 });

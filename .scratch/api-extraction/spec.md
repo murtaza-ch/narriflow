@@ -487,3 +487,12 @@ Added after Sol's foundation review (F01, F03, F11, F14). It supersedes the "`.p
 **Drain.** `lifecycle.beginDrain()` is synchronous at its start: from then on the `drainGate` answers every request except `/api/health` and `/api/ready` with 503 `server_draining` and `Retry-After: 5` in the common envelope (with first-party CORS for allowed origins), and `onDrain(closer)` calls the closer immediately instead of storing it. A long-lived route must register its closer after admission and before it returns the stream; if the drain has already begun the closer runs at once and the route should end the stream rather than keep it open. Every closer runs even if one throws or rejects.
 
 **Ingress.** Oversize URL/header (414/431) and the drain 503 carry first-party CORS headers for an allowed `Origin` on first-party paths only (not REST, MCP or webhooks). Bun's native `maxRequestBodySize` is `NATIVE_BODY_CAP_BYTES` (16 MiB, twice the largest route class), so every ordinary oversize body is refused by `limitBody` in the common envelope. Only a declared Content-Length above the native cap is an intentional native-ingress exception: Bun answers it before the application runs with a bare 413 (a bare 400 on a reused connection under Bun 1.3.6), without a JSON envelope, request ID or CORS. Chunked bodies are bounded by `limitBody`'s own byte count (Bun 1.3.6 does not apply its cap to chunked bodies; Bun 1.4 does).
+
+## Client import convention (orchestrator, 2026-10-29)
+
+UI code imports a domain's client, queries, mutations and invalidators from its
+subpath: `@narriflow/api-client/<domain>` (e.g. `@narriflow/api-client/brand`).
+The package exports `./*` → `src/<domain>/index.ts`; each domain `index.ts` is the
+public surface. The root `@narriflow/api-client` exports only `core`, `rpc` and
+the per-domain client factories. Do not add `export *` of domains to the root
+(names collide across domains).

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import {
 	brandApprovalRequiredByDefault,
   deriveReviewRoundStatus,
@@ -136,5 +136,17 @@ describe("assistant review handoff", () => {
     expect(summary).toMatchObject({ status: "changes_requested", generalCommentCount: 1, items: [{ decision: "changes_requested", commentCount: 1 }] });
     const serialized = JSON.stringify(summary);
     for (const secret of ["token-hash-secret", "delivery-secret", "passcode-secret", "client@example.test", "secret body"]) expect(serialized).not.toContain(secret);
+  });
+});
+
+describe("review media authorization", () => {
+  afterEach(() => { mock.restore(); });
+  test("download disabled, unselected and incomplete variants cannot receive grants", async () => {
+    const itemId = crypto.randomUUID(); const selected = crypto.randomUUID(); const unselected = crypto.randomUUID();
+    const round = { allowDownloads: false, items: [{ id: itemId, selectedVariantIds: [selected], export: { variants: [{ id: selected, status: "pending" }, { id: unselected, status: "completed" }] } }] };
+    spyOn(reviewService, "readRound").mockResolvedValue({ round, claims: {} } as never);
+    await expect(reviewService.resolveMedia("session", "secret", itemId, selected, "download")).rejects.toMatchObject({ code: "review_download_forbidden" });
+    await expect(reviewService.resolveMedia("session", "secret", itemId, unselected)).rejects.toMatchObject({ code: "review_media_not_found" });
+    await expect(reviewService.resolveMedia("session", "secret", itemId, selected)).rejects.toMatchObject({ code: "review_media_not_found" });
   });
 });

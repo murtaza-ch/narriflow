@@ -1,12 +1,19 @@
 import {
   analyticsService,
+  autopilotService,
+  brandProfileService,
+  clipService,
   contentSuiteService,
   dubbingService,
+  getProcessingUsage,
+  getProjectFinishing,
+  presignDownloadUrl,
   projectService,
+  reviewService,
+  socialOAuthService,
+  socialService,
   workspaceLibraryService,
-  type ProjectListSort,
-  type ProjectListSourceFilter,
-  type ProjectListStatusFilter,
+  workspaceService,
 } from "@narriflow/services";
 import {
   dubDownloadQuerySchema,
@@ -15,60 +22,84 @@ import {
   requestClipDubSchema,
   transcriptExportFormatSchema,
 } from "@narriflow/validators";
+import { moveProjectToFolderRequestSchema } from "@narriflow/validators/api/library";
+import {
+  applyProjectBrandProfileRequestSchema,
+  notifyPreferenceRequestSchema,
+  projectDetailQuerySchema,
+  projectListQuerySchema,
+  transcriptViewQuerySchema,
+} from "@narriflow/validators/api/projects";
 import { createRouteApp, getActor } from "../../http/admission";
 import { getIdempotencyKey, requireIdempotencyKey } from "../../http/idempotency";
 import { validate } from "../../http/route";
 import { projectsAdmission as access } from "./admission";
+import {
+  readExplorer,
+  readHome,
+  readProjectDetail,
+  readSourceGrant,
+  type ProjectReadDeps,
+} from "./read-models";
 
 /** Services the projects routes call. `runtime.ts` supplies the production instances. */
-export interface ProjectsRouteDeps {
+export interface ProjectsRouteDeps extends ProjectReadDeps {
   projectService: typeof projectService;
   workspaceLibraryService: typeof workspaceLibraryService;
   contentSuiteService: typeof contentSuiteService;
   analyticsService: typeof analyticsService;
   dubbingService: typeof dubbingService;
+  clipService: typeof clipService;
+  socialService: typeof socialService;
+  socialOAuthService: typeof socialOAuthService;
+  brandProfileService: typeof brandProfileService;
+  reviewService: typeof reviewService;
+  workspaceService: typeof workspaceService;
+  autopilotService: typeof autopilotService;
+  getProjectFinishing: typeof getProjectFinishing;
+  getProcessingUsage: typeof getProcessingUsage;
+  presignDownloadUrl: typeof presignDownloadUrl;
 }
 
-const STATUS_FILTERS = ["all", "ready", "processing", "queued", "failed"];
-const SOURCE_FILTERS = ["all", "youtube", "link", "upload", "rss"];
-const SORTS = ["newest", "oldest", "title", "clips"];
+/** A Project another request deleted first: the end state a delete wants already holds. */
+function alreadyDeleted(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === "project_not_found";
+}
 
-/** Project list and snapshot reads, generation, transcripts, content suite, analytics and dubbing. */
+const notFound = (code: string, message: string) => ({ error: code, message });
+
+/**
+ * Project screens and commands: the home and explorer aggregates, the detail
+ * aggregate with its constituent reads, generation, transcripts, content suite,
+ * analytics, dubbing and the Project's own controls. Literal paths
+ * (`/projects/explorer`) are registered before `/projects/:id`.
+ */
 export function createProjectsRoutes(deps: ProjectsRouteDeps) {
-  const { projectService, workspaceLibraryService, contentSuiteService, analyticsService, dubbingService } = deps;
+  const {
+    projectService,
+    workspaceLibraryService,
+    contentSuiteService,
+    analyticsService,
+    dubbingService,
+    brandProfileService,
+  } = deps;
 
   return createRouteApp(access)
-    .get("/projects", async (c) => {
-      const appUser = getActor(c);
-      const limitRaw = c.req.query("limit");
-      const limit = limitRaw ? Number(limitRaw) : undefined;
-      const cursor = c.req.query("cursor") ?? null;
-      const folderId = c.req.query("folder") || undefined;
-      const query = c.req.query("q") ?? "";
-      const statusRaw = c.req.query("status");
-      const sourceRaw = c.req.query("source");
-      const sortRaw = c.req.query("sort");
-      const status = STATUS_FILTERS.includes(statusRaw ?? "all")
-        ? (statusRaw as ProjectListStatusFilter | undefined)
-        : undefined;
-      const source = SOURCE_FILTERS.includes(sourceRaw ?? "all")
-        ? (sourceRaw as ProjectListSourceFilter | undefined)
-        : undefined;
-      const sort = SORTS.includes(sortRaw ?? "newest")
-        ? (sortRaw as ProjectListSort | undefined)
-        : undefined;
+    .get("/home", async (c) => c.json(await readHome(deps, getActor(c)), 200))
 
-      const page = await workspaceLibraryService.listProjects(appUser, {
-        limit,
-        cursor,
-        folderId,
-        query,
-        status,
-        source,
-        sort,
+    .get("/projects", validate("query", projectListQuerySchema), async (c) => {
+      const { q, folder, ...rest } = c.req.valid("query");
+      const page = await workspaceLibraryService.listProjects(getActor(c), {
+        ...rest,
+        query: q,
+        folderId: folder,
       });
       return c.json(page, 200);
     })
+
+    .get("/projects/explorer", validate("query", projectListQuerySchema), async (c) =>
+      c.json(await readExplorer(deps, getActor(c), c.req.valid("query")), 200),
+    )
 
     .post(
       "/projects/:id/generate",
@@ -93,6 +124,92 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
       return c.json(snapshot, 200);
     })
 
+    // Permanently deletes the Project and its media. Naturally idempotent: a
+    // Project that is already gone is the success the caller asked for.
+    .delete("/projects/:id", async (c) => {
+      try {
+        await projectService.deleteProject(getActor(c), c.req.param("id"));
+      } catch (error) {
+        if (!alreadyDeleted(error)) throw error;
+      }
+      return c.json({ ok: true as const }, 200);
+    })
+
+    .get("/projects/:id/detail", validate("query", projectDetailQuerySchema), async (c) => {
+      const detail = await readProjectDetail(deps, getActor(c), c.req.param("id"), c.req.valid("query").tab);
+      if (!detail) return c.json(notFound("project_not_found", "Project not found."), 404);
+      return c.json(detail, 200);
+    })
+
+    .get("/projects/:id/content-pack", async (c) => {
+      const contentPack = await projectService.getLatestContentPack(getActor(c), c.req.param("id"));
+      return c.json({ contentPack }, 200);
+    })
+
+    .get("/projects/:id/workflow-history", async (c) => {
+      const workflowHistory = await projectService.getWorkflowHistory(getActor(c), c.req.param("id"));
+      return c.json({ workflowHistory }, 200);
+    })
+
+    .get("/projects/:id/finishing", async (c) => {
+      const finishing = await deps.getProjectFinishing({
+        workspaceId: getActor(c).workspaceId,
+        projectId: c.req.param("id"),
+      });
+      return c.json({ finishing }, 200);
+    })
+
+    .get("/projects/:id/credit-usage", async (c) => {
+      const creditUsage = await deps.getProcessingUsage().projectCreditUsage(c.req.param("id"));
+      return c.json({ creditUsage }, 200);
+    })
+
+    // A short-lived grant for the source video; both fields are null once the source was reclaimed.
+    .get("/projects/:id/source-url", async (c) => {
+      const snapshot = await projectService.getProjectSnapshot(getActor(c), c.req.param("id"));
+      if (!snapshot.project) {
+        return c.json(notFound("project_not_found", "Project not found."), 404);
+      }
+      const grant = await readSourceGrant(deps, snapshot.project.sourceStorageKey);
+      return c.json({ url: grant?.url ?? null, expiresAt: grant?.expiresAt ?? null }, 200);
+    })
+
+    .patch(
+      "/projects/:id/folder",
+      validate("json", moveProjectToFolderRequestSchema),
+      async (c) => {
+        await workspaceLibraryService.moveProject(
+          getActor(c),
+          c.req.param("id"),
+          c.req.valid("json").folderId,
+        );
+        return c.json({ ok: true as const }, 200);
+      },
+    )
+
+    .post(
+      "/projects/:id/brand-profile",
+      validate("json", applyProjectBrandProfileRequestSchema),
+      async (c) => {
+        const { profileId, templateId } = c.req.valid("json");
+        await brandProfileService.applyToProject(getActor(c), c.req.param("id"), { profileId, templateId });
+        return c.json({ ok: true as const }, 200);
+      },
+    )
+
+    .put(
+      "/projects/:id/notify-preference",
+      validate("json", notifyPreferenceRequestSchema),
+      async (c) => {
+        await projectService.setProjectNotifyPreference(
+          getActor(c),
+          c.req.param("id"),
+          c.req.valid("json").notifyOnComplete,
+        );
+        return c.json({ ok: true as const }, 200);
+      },
+    )
+
     .get(
       "/projects/:id/runs/:workflowRunId",
       async (c) => {
@@ -111,7 +228,12 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
       },
     )
 
-    .get("/projects/:id/transcript", async (c) => {
+    // `?view=status` is the shell's cheap read: the transcript's status only.
+    .get("/projects/:id/transcript", validate("query", transcriptViewQuerySchema), async (c) => {
+      if (c.req.valid("query").view === "status") {
+        const transcript = await projectService.getTranscriptStatusSnapshot(getActor(c), c.req.param("id"));
+        return c.json({ view: "status" as const, transcript }, 200);
+      }
       const transcript = await projectService.getTranscriptSnapshot(getActor(c), c.req.param("id"));
       if (!transcript) {
         return c.json({ error: "transcript_not_found", message: "Transcript not found" }, 404);
@@ -189,6 +311,11 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
     .get("/projects/:id/dubs", async (c) => {
       const dubs = await dubbingService.listProjectDubs(getActor(c), c.req.param("id"));
       return c.json({ dubs }, 200);
+    })
+
+    .get("/projects/:id/dubs/allowance", async (c) => {
+      const allowance = await dubbingService.getDubbingAllowance(getActor(c));
+      return c.json({ allowance }, 200);
     })
 
     .post(

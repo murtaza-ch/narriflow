@@ -1,8 +1,16 @@
 import {
   acceptTikTokPublicationWebhook,
   assistedSocialCopyService,
+  bulkSocialSchedulingService,
+  performanceService,
+  publishingQueue,
+  refreshTikTokInbox,
   socialOAuthService,
+  socialPublishingOptions,
+  socialService,
   TikTokPublicationWebhookError,
+  workspaceLibraryService,
+  workspaceService,
 } from "@narriflow/services";
 import type { ApiConfig } from "../../config";
 import type { PublishingRouteDeps } from "./routes";
@@ -13,6 +21,14 @@ export function createPublishingRouteDeps(config: ApiConfig): PublishingRouteDep
   return {
     socialOAuthService,
     assistedSocialCopyService,
+    socialService,
+    bulkSocialSchedulingService,
+    publishingQueue,
+    performanceService,
+    workspaceLibraryService,
+    workspaceService,
+    socialPublishingOptions,
+    refreshTikTokInbox,
     callbackOrigin: config.apiOrigin,
     webOrigin: config.webOrigin,
   };

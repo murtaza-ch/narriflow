@@ -1,7 +1,7 @@
+import { checkRateLimit } from "@narriflow/services";
 import type { ApiConfig } from "../../config";
 import type { RestRouteDeps } from "./routes";
 
-/** Production wiring of the rest routes. */
-export function createRestRouteDeps(_config: ApiConfig): RestRouteDeps {
-  return {};
+export function createRestRouteDeps(config: ApiConfig): RestRouteDeps {
+  return { checkRateLimit, apiOrigin: () => config.apiOrigin, webOrigin: () => config.webOrigin, corsAllowedOrigins: config.corsAllowedOrigins };
 }

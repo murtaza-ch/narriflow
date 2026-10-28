@@ -361,6 +361,7 @@ export class SocialOAuthService {
 		await returnGrantPosts(prisma);
 	}
 
+	/** `origin` is the origin providers call back to (the API); where the browser returns to is the caller's concern. */
 	async createAuthorizationUrl(scope: ActorScope, params: {
 		platform: SocialPlatform;
 		origin: string;
@@ -404,6 +405,7 @@ export class SocialOAuthService {
 		}
 	}
 
+	/** Identity and Workspace come from the stored one-use state, never from a session. `origin` must be the same callback origin the authorization URL used. */
 	async handleCallback(params: {
 		state: string;
 		code: string;

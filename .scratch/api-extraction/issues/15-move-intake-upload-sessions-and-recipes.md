@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -177,12 +177,12 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] All 14 intake/recipe routes, Upload Session sibling and six upload action semantics map to spec, with separate draft vs finalize acceptance.
-- [ ] Drive token remains server-only request data; metadata host/provider validated; Drive 10/minute, RSS 20 preview/5 import per Workspace preserved.
-- [ ] Upload Session five commands/native keys, processing reservations, multipart bounds/resume and direct storage grants preserved across browser/MCP/REST.
-- [ ] Provide service method for MCP integration-session resume lookup so 24 removes raw web Prisma query without owning this file.
-- [ ] Recipes keep resolution/replay/brand/account rules; project.service.ts remains solely owned here and consumer requests are resolved before their acceptance.
-- [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
+- [x] All 14 intake/recipe routes, Upload Session sibling and six upload action semantics map to spec, with separate draft vs finalize acceptance.
+- [x] Drive token remains server-only request data; metadata host/provider validated; Drive 10/minute, RSS 20 preview/5 import per Workspace preserved.
+- [x] Upload Session five commands/native keys, processing reservations, multipart bounds/resume and direct storage grants preserved across browser/MCP/REST.
+- [x] Provide service method for MCP integration-session resume lookup so 24 removes raw web Prisma query without owning this file.
+- [x] Recipes keep resolution/replay/brand/account rules; project.service.ts remains solely owned here and consumer requests are resolved before their acceptance.
+- [x] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
 
@@ -199,4 +199,31 @@ bun run --cwd apps/api typecheck
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (the "paired review findings" part of the last acceptance box is left to the orchestrator).
+
+### What changed
+- **ingest domain** (`apps/api/src/domains/ingest`): `GET /ingest/configuration` (Styles, Brand Profiles with the default, Recipes, usage; parallel `Promise.all`; profiles read with `limit: 100`, not the 24 default), `GET /ingest/link/metadata?url=` (shared schema runs `detectLinkProvider`; only YouTube is fetched, fixed oEmbed host), `POST /ingest/link`, `POST /ingest/drive` (rate `drive-import` 10/60 per Workspace), RSS preview/import (20 / 5 per Workspace, import now carries `contentPack` + `languageCode`), `GET /ingest/:projectId`, `GET /ingest/:projectId/resume` (typed `resume | open_project | restart`), `POST /ingest/:projectId/retry` (domain refusals `ingest_retry_limit_exceeded|ingest_not_failed|drive_token_expired` flow through the common envelope), separate `PUT /projects/:id/generation/draft` and `POST /projects/:id/generation/finalize`, and the five `/upload-sessions/*` POSTs with the same actor limits (60/60/120/120/30) and 202 + `Retry-After` for reconciling/compensating. Literal paths are registered before `:projectId`; the inventory comparison reports no problem for these keys.
+- **Native idempotency, no header**: link, Drive and RSS commits now REQUIRE the body `commitToken` (the intake's native identity; the UI already mints it), Upload Sessions keep `clientIdempotencyKey`. No `Idempotency-Key` header is accepted there, so nothing can disagree. Failure shapes of the old actions (`{ok:false, code, message, details}`) are the common envelope: `error` = the same code, `details` unchanged (`ProcessingUsageError`, `DriveSourceError`, `LinkUnsupportedSourceError`). `commitLinkImportAction`'s missing zod parse is replaced by `linkCommitRequestSchema`. Link commit still looks the title up when none was typed (server, `projectService.fetchLinkTitle`).
+- **Shared Upload Session adapter** for 24: `apps/api/src/domains/ingest/upload-session-http.ts` exports `createUploadSessionHttpRoutes({ getActor, service })` (plain Hono, relocated unchanged with its test; it keeps the `validation_failed` body MCP clients already see). The web copy and its test were deleted; 24 must repoint `apps/web/lib/mcp-upload-http.ts` (it imported the deleted path) to this file.
+- **MCP resume helper** for 24 (replaces the raw Prisma query in `apps/web/app/(app)/integrations/mcp/upload/page.tsx`): `uploadSessionService.hasOwnSessionByClientKey(actor, storedKey): Promise<boolean>`; pass `integrationUploadSessionKey(actor.actorUserId, state.intent.clientIdempotencyKey)`. It requires `processing.consume`, is a pure lookup (no reconciliation, no new upload authorization) and answers false for another actor's session.
+- **recipes domain**: create and duplicate are now receipt-backed (`create_recipe`, `duplicate_recipe` in `recipes-receipt-commands.ts`; `recipesCommands` in `recipes-commands(-runtime).ts`): `Idempotency-Key` required, `Idempotent-Replayed: true` on replay, limiter refusal (429, or 503 `mutations_unavailable` when Redis is down) deferred past replay lookup via `deferRateRefusal` + `enforceRecordedRateLimit` in `beforeAccept`, plan/brand-default resolution only after the replay lookup (`RecipeService.planCreate/planDuplicate/insertPlanned`, with `create`/`duplicate` unchanged for other callers such as MCP/REST/tests). Update (guarded by `expectedRevision`) and delete stay native. A lost response now replays the saved Recipe instead of saving a second.
+- **api-client**: `packages/api-client/src/ingest/**` and `recipes/**` (`createIngestActions`/`createRecipesActions`, query option factories `ingestConfiguration|linkResume|ingestSnapshot|linkMetadata`, `recipesList`, `invalidateAfterIntake`, `invalidateAfterRecipeChange`). Validators: `@narriflow/validators/api/ingest` (request schemas, `LinkResumeData/Result`) and `/api/recipes` (re-export).
+
+### Deviations and notes
+- Upload Session `grants` and `status` use `tier: "read"` (300/min baseline) instead of the 60/min mutation baseline: their own limit is 120/min, which the shared 60/min mutation bucket would otherwise make unreachable for multipart uploads and polling. Open/finalize/discard keep the mutation baseline plus their own limit.
+- Resume is declared as a project-kind route (`processing.consume`), so a foreign or missing Project is the concealed 404 `project_not_found` (client: restart) and a Project of another Workspace is `active_workspace_mismatch`; the old page redirected to `/upload` in both cases.
+- `retryIngestFormAction` returns `{ok:true, queuedJobId, attemptsUsed, maxAttempts}` now; expected refusals are typed 4xx failures rather than `{ok:false}` (UI 16 branches on `ApiError.code`; `userErrorMessage(code)` stays the copy source).
+- `generateFromRssAction`'s "throws if no project produced" is unchanged server behavior (the service throws); the route returns the service result (`projects[0].project.id`).
+- Source-picker keys (`NEXT_PUBLIC_*`) stay in web; the configuration aggregate does not carry them.
+- Requests for others: **24** repoint the deleted web import and use `hasOwnSessionByClientKey` (above). **16** can build on `createIngestActions` / `ingestConfigurationQueryOptions` / `linkResumeQueryOptions`; mint one `commitToken` per import (as today) and one `runtime.createIntent()` key per Recipe create/duplicate. **08**: no `project.service.ts` change was requested; if one arrives it is still mine. Pre-existing and unrelated: `test:integration-api:db` fails in `completion-callback.db.test.ts` (2 tests, `worker.observe()` returns 0) before reaching the recipe suites; I ran the suites from that gate that touch my code (`recipe.db`, `recipe-migration.db`) separately: 15 + 2 pass.
+- Not run here: `bun run --cwd apps/api test:inventory` (stops on `inviteTokenParamSchema` missing from `packages/validators/src/index.ts`, imported by `apps/api/src/domains/session/routes.ts`, ticket 05, in progress). I ran `checkRouteInventory` on a one-domain app for ingest and recipes: no problems for any of their keys. My route tests use a one-domain harness (`ingest/test-app.ts`) so they do not read other domains' modules.
+
+### Evidence
+- `bun test apps/api/src/domains/ingest apps/api/src/domains/recipes` -> 29 pass, 0 fail (route tests, relocated Upload Session adapter tests).
+- `bun test packages/services/src/recipes-commands.test.ts` -> 5 pass (replay, changed-body conflict, limiter after replay, duplicate replays the first copy).
+- `.scratch/api-extraction/db-gate.sh bun run test:upload-session:db` -> 15 pass, 0 fail, 0 skipped (adds the `hasOwnSessionByClientKey` case). `... test:processing-usage:db` -> 31 pass, 0 fail. `... test:workflow:db` -> 175 pass, 0 fail.
+- `bunx biome check` on every owned path: clean.
+- `tsc -p apps/api/tsconfig.json` and `tsc -p packages/api-client/tsconfig.json` (walk services, validators, ingest and recipes): no error in any file of this ticket. Remaining errors are other tickets' in-progress files: `packages/services/src/clips-commands.ts` (11), `apps/api/src/domains/brand/aggregates.ts` (19), `studio/bootstrap.ts` (13), `rest/routes.ts` (23), `workspace/routes.ts` (05), `reviews/guest-replay-child.ts` (27), `packages/api-client/src/clips/mutations.ts` (11).
+- Web typecheck was not run: it has the transitional breakage ticket 04 recorded, and the deleted `upload-session-http` import in `apps/web/lib/mcp-upload-http.ts` belongs to 24.

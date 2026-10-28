@@ -14,11 +14,13 @@ import {
   reviewSelectedVariantIdsSchema,
   type PricingTier,
 } from "@narriflow/validators";
+export { encodeReviewSelection, decodeReviewSelection } from "@narriflow/validators/review-selection";
+import { executeGuestReviewCommand, type GuestReviewMutation } from "./reviews-commands";
 import { requirePlanFeature } from "./plan-features";
 import type { ActorScope } from "./actor-scope";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
-import { checkRateLimit } from "./rate-limit";
+import { checkRateLimit, requireNewMutationAllowed } from "./rate-limit";
 import { presignDownloadUrl } from "./r2-storage";
 import {
   ExpectedDomainFailureError,
@@ -119,7 +121,7 @@ export function verifyReviewPasscode(passcode: string, hash: string) {
   return argon2Verify(hash, passcode);
 }
 
-type ReviewSessionClaims = { roundId: string; guestId: string; grant: string; identity: string; subject: string; exp: number };
+export type ReviewSessionClaims = { roundId: string; guestId: string; grant: string; identity: string; subject: string; exp: number };
 
 function reviewGrantHash(subject: string) {
   return createHash("sha256").update(subject).digest("hex");
@@ -200,10 +202,11 @@ function enforceLocalRateLimit(key: string, limit: number, windowMs: number, now
   }
 }
 
-async function enforceReviewRateLimit(key: string, limit: number, windowMs: number) {
+async function enforceReviewRateLimit(key: string, limit: number, windowMs: number, commandCheck?: typeof checkRateLimit) {
   enforceLocalRateLimit(key, limit, windowMs);
-  const distributed = await checkRateLimit(key, limit, windowMs / 1_000);
+  const distributed = await (commandCheck ?? checkRateLimit)(key, limit, windowMs / 1_000);
   if (!distributed.allowed) throw new ReviewServiceError("review_access_rate_limited", "Too many review requests");
+  if (commandCheck) requireNewMutationAllowed(distributed);
 }
 
 async function withSerializableRetry<T>(operation: () => Promise<T>): Promise<T> {
@@ -293,6 +296,7 @@ export function issueReviewSession(claims: Omit<ReviewSessionClaims, "exp">, sec
 }
 
 export function verifyReviewSession(value: string, secret: string, now = new Date()): ReviewSessionClaims {
+  if (secret.length < 32) throw new ReviewServiceError("review_session_configuration_invalid", "Review session secret is not configured");
   const [body, signature, extra] = value.split(".");
   if (!body || !signature || extra) throw new ReviewServiceError("review_session_invalid", "Review session is invalid");
   const expected = createHmac("sha256", secret).update(body).digest();
@@ -305,7 +309,7 @@ export function verifyReviewSession(value: string, secret: string, now = new Dat
   catch { throw new ReviewServiceError("review_session_invalid", "Review session is invalid"); }
   if (!claims || typeof claims !== "object") throw new ReviewServiceError("review_session_invalid", "Review session is invalid");
   const parsed = claims as Partial<ReviewSessionClaims>;
-  if (typeof parsed.roundId !== "string" || typeof parsed.guestId !== "string" || typeof parsed.grant !== "string" || typeof parsed.identity !== "string" || typeof parsed.subject !== "string" || typeof parsed.exp !== "number" || parsed.exp < now.getTime() / 1000) {
+  if (typeof parsed.roundId !== "string" || typeof parsed.guestId !== "string" || typeof parsed.grant !== "string" || typeof parsed.identity !== "string" || typeof parsed.subject !== "string" || typeof parsed.exp !== "number" || (!Number.isSafeInteger(parsed.exp) || parsed.exp <= now.getTime() / 1000 || parsed.exp > now.getTime() / 1000 + REVIEW_SESSION_TTL_SEC)) {
     throw new ReviewServiceError("review_session_invalid", "Review session is invalid or expired");
   }
   return parsed as ReviewSessionClaims;
@@ -350,22 +354,6 @@ export function validateReviewHandoffSelection(
   };
 }
 
-/** Composer preselection travels in the URL as `exportId:variantId,variantId;...`.
- * It carries no authority; the composer rechecks every item. */
-export function encodeReviewSelection(items: Array<{ exportId: string; variantIds: string[] }>) {
-  return items.map((item) => `${item.exportId}:${item.variantIds.join(",")}`).join(";");
-}
-
-export function decodeReviewSelection(value: string | undefined | null) {
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!value || value.length > 4_000) return [];
-  return value.split(";").slice(0, 20).flatMap((entry) => {
-    const [exportId, variants = ""] = entry.split(":");
-    const variantIds = variants.split(",").filter((id) => uuid.test(id)).slice(0, 4);
-    return exportId && uuid.test(exportId) && variantIds.length ? [{ exportId, variantIds }] : [];
-  });
-}
-
 type ReviewRoundSummaryRow = {
   id: string; projectId: string; revision: number; title: string; status: string; decision: string | null;
   sentAt: Date | null; expiresAt: Date | null; revokedAt: Date | null;
@@ -393,7 +381,21 @@ const reviewRoundSummarySelect = {
   comments: { select: { itemId: true } },
 } as const;
 
+function reviewTransaction<T>(transaction: Prisma.TransactionClient | undefined, run: (tx: Prisma.TransactionClient) => Promise<T>, serializable = false): Promise<T> {
+  if (transaction) return run(transaction);
+  return withSerializableRetry(() => requirePrisma().$transaction(run, serializable ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : {}));
+}
+
+function guestCommentResult(comment: { id: string; itemId: string | null; parentId: string | null; authorKind: string; authorName: string; body: string; timestampSec: number | null; resolvedAt: Date | null; editedAt: Date | null; createdAt: Date }) {
+  return { id: comment.id, itemId: comment.itemId, parentId: comment.parentId, authorKind: comment.authorKind, authorName: comment.authorName, body: comment.body, timestampSec: comment.timestampSec,
+    resolvedAt: comment.resolvedAt?.toISOString() ?? null, editedAt: comment.editedAt?.toISOString() ?? null, createdAt: comment.createdAt.toISOString() };
+}
+function guestDecisionResult(decision: { id: string; itemId: string | null; decision: string; actorKind: string; actorName: string; reason: string | null; createdAt: Date }) {
+  return { id: decision.id, itemId: decision.itemId, decision: decision.decision, actorKind: decision.actorKind, actorName: decision.actorName, reason: decision.reason, createdAt: decision.createdAt.toISOString() };
+}
+
 export class ReviewService {
+  constructor(private readonly commandRateLimit: typeof checkRateLimit = checkRateLimit) {}
   async prepareHandoff(scope: ActorScope, items: Array<{ exportId: string; variantIds: string[] }>) {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     requirePlanFeature(actor.pricingTier, "review.rooms");
@@ -432,7 +434,7 @@ export class ReviewService {
     input: unknown,
     /** A Standing Grant sending the round, and the finishing it is the round of. `admit` runs in the
      * round's transaction: it checks the grant and counts its caps, and returns the revision it ran under. */
-    options: { grant?: { id: string; admit(tx: Prisma.TransactionClient): Promise<{ revision: number }> }; finishingId?: string } = {},
+    options: { grant?: { id: string; admit(tx: Prisma.TransactionClient): Promise<{ revision: number }> }; finishingId?: string; tx?: Prisma.TransactionClient } = {},
   ) {
     requirePlanFeature(scope.pricingTier, "review.rooms");
     const parsed = createReviewRoundSchema.parse(input);
@@ -445,7 +447,7 @@ export class ReviewService {
     if (new Set(parsed.contextCommentIds).size !== parsed.contextCommentIds.length) {
       throw new ReviewServiceError("review_context_duplicate", "A feedback thread can be linked only once");
     }
-    const prisma = requirePrisma();
+    const prisma = options.tx ?? requirePrisma();
     const project = await prisma.project.findFirst({ where: { id: scope.projectId, workspaceId: scope.workspaceId }, select: { id: true } });
     if (!project) throw new ReviewServiceError("review_project_not_found", "Project was not found");
     const exports = await prisma.clipExport.findMany({
@@ -467,7 +469,8 @@ export class ReviewService {
     const passcodeHash = parsed.passcode
       ? await hashReviewPasscode(parsed.passcode)
       : null;
-    const round = await withSerializableRetry(() => prisma.$transaction(async (tx) => {
+    const round = await reviewTransaction(options.tx, async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${scope.projectId}::uuid FOR UPDATE`;
       const granted = options.grant ? await options.grant.admit(tx) : null;
       const latest = await tx.reviewRound.findFirst({
         where: { projectId: scope.projectId },
@@ -542,7 +545,7 @@ export class ReviewService {
         created.id,
       );
       return created;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    }, true);
     return { ...round, token: rawToken, path: `/review/${rawToken}` };
   }
 
@@ -550,12 +553,13 @@ export class ReviewService {
     scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier },
     roundId: string,
     input: unknown,
+    transaction?: Prisma.TransactionClient,
   ) {
     requirePlanFeature(scope.pricingTier, "review.rooms");
     const parsed = inviteReviewersSchema.parse(input);
     const requestedEmails = normalizeRecipientEmails(parsed.recipientEmails);
 
-    return withSerializableRetry(() => requirePrisma().$transaction(async (tx) => {
+    return reviewTransaction(transaction, async (tx) => {
       const round = await tx.reviewRound.findFirst({
         where: {
           id: roundId,
@@ -613,11 +617,7 @@ export class ReviewService {
       }
 
       return { addedCount: addedEmails.length, recipientEmails };
-    }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      maxWait: 15_000,
-      timeout: 30_000,
-    }));
+    }, true);
   }
 
   async authenticate(rawToken: string, input: unknown, rateLimitKey: string, secret: string) {
@@ -664,12 +664,25 @@ export class ReviewService {
       }
       return row;
     });
-    return issueReviewSession({ roundId: round.id, guestId: guest.id, grant: round.accessTokenHash.slice(0, 32), identity: guest.displayName, subject }, secret);
+    return issueReviewSession({ roundId: round.id, guestId: guest.id, grant: round.accessTokenHash, identity: guest.displayName, subject }, secret);
   }
 
-  async readRound(session: string, secret: string) {
+  /** Live admission for HTTP guest input; writes repeat this check under their lock. */
+  async authorizeSession(session: string, secret: string, transaction?: Prisma.TransactionClient): Promise<void> {
     const claims = verifyReviewSession(session, secret);
-    const round = await requirePrisma().reviewRound.findUnique({
+    const now = new Date();
+    const round = await (transaction ?? requirePrisma()).reviewRound.findUnique({
+      where: { id: claims.roundId, accessTokenHash: claims.grant, status: "open", revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }], project: accessibleProjectWhere(now),
+        guests: { some: { id: claims.guestId, sessionGrantHash: reviewGrantHash(claims.subject) } },
+      }, select: { id: true },
+    });
+    if (!round) throw new ReviewServiceError("review_session_invalid", "Review session is invalid or expired");
+  }
+
+  async readRound(session: string, secret: string, transaction?: Prisma.TransactionClient) {
+    const claims = verifyReviewSession(session, secret);
+    const round = await (transaction ?? requirePrisma()).reviewRound.findUnique({
       where: { id: claims.roundId, project: accessibleProjectWhere() },
       include: {
         project: { select: { title: true } },
@@ -681,13 +694,13 @@ export class ReviewService {
         comments: { orderBy: { createdAt: "asc" } },
       },
     });
-    if (round?.expiresAt && round.expiresAt <= new Date()) {
+    if (!transaction && round?.expiresAt && round.expiresAt <= new Date()) {
       await recordReviewExpiry(round.id);
     }
-    if (!round || round.accessTokenHash.slice(0, 32) !== claims.grant || round.revokedAt || round.status !== "open" || (round.expiresAt && round.expiresAt <= new Date())) {
+    if (!round || round.accessTokenHash !== claims.grant || round.revokedAt || round.status !== "open" || (round.expiresAt && round.expiresAt <= new Date())) {
       throw new ReviewServiceError("review_session_invalid", "Review session is invalid or expired");
     }
-    const guest = await requirePrisma().reviewGuest.findFirst({ where: { id: claims.guestId, reviewRoundId: round.id, sessionGrantHash: reviewGrantHash(claims.subject) }, select: { id: true } });
+    const guest = await (transaction ?? requirePrisma()).reviewGuest.findFirst({ where: { id: claims.guestId, reviewRoundId: round.id, sessionGrantHash: reviewGrantHash(claims.subject) }, select: { id: true } });
     if (!guest) throw new ReviewServiceError("review_session_invalid", "Review session is invalid or expired");
     return { round, claims };
   }
@@ -705,50 +718,54 @@ export class ReviewService {
     if (!item || !variant || variant.status !== "completed") throw new ReviewServiceError("review_media_not_found", "Review media was not found");
     const stored = await requirePrisma().clipExportVariant.findUnique({ where: { id: variant.id }, select: { storageKey: true } });
     if (!stored?.storageKey) throw new ReviewServiceError("review_media_not_found", "Review media was not found");
-    return presignDownloadUrl({
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const url = await presignDownloadUrl({
       key: stored.storageKey,
       expiresIn: 60,
       ...(mode === "download" ? { fileName: `review-${item.id}-${variant.id}.mp4` } : {}),
     });
+    return { url, expiresAt };
   }
 
-  async addComment(session: string, secret: string, input: unknown) {
+  async addComment(session: string, secret: string, input: unknown, mutation?: GuestReviewMutation) {
     const parsed = reviewCommentSchema.parse(input);
-    const { round, claims } = await this.readRound(session, secret);
-    await enforceReviewRateLimit(`review-comment:${round.id}:${claims.guestId}`, 60, 15 * 60_000);
-    if (round.status !== "open") throw new ReviewServiceError("review_round_closed", "This review round is closed");
-    if (parsed.itemId && !round.items.some((item) => item.id === parsed.itemId)) throw new ReviewServiceError("review_item_not_found", "Review item was not found");
-    if (parsed.timestampSec !== null) {
-      if (!parsed.itemId) {
-        throw new ReviewServiceError("review_timecode_requires_item", "A timecoded comment must target a review item");
+    return executeGuestReviewCommand({ mutation, command: "review.comment.create", input: parsed,
+      authorize: (tx) => this.readRound(session, secret, tx),
+      mutate: async (tx, { round, claims }, receipt) => {
+        await assertReviewRoundWritable(tx, round.id);
+      await enforceReviewRateLimit(`review-comment:${round.id}:${claims.guestId}`, 60, 15 * 60_000, this.commandRateLimit);
+      if (round.status !== "open") throw new ReviewServiceError("review_round_closed", "This review round is closed");
+      if (parsed.itemId && !round.items.some((item) => item.id === parsed.itemId)) throw new ReviewServiceError("review_item_not_found", "Review item was not found");
+      if (parsed.timestampSec !== null) {
+        if (!parsed.itemId) {
+          throw new ReviewServiceError("review_timecode_requires_item", "A timecoded comment must target a review item");
+        }
+        const item = round.items.find((candidate) => candidate.id === parsed.itemId)!;
+        const selected = new Set(reviewSelectedVariantIdsSchema.parse(item.selectedVariantIds));
+        const durations = item.export.variants
+          .filter((variant) => selected.has(variant.id) && variant.status === "completed" && variant.durationSec !== null)
+          .map((variant) => variant.durationSec!);
+        const durationSec = durations.length > 0 ? Math.max(...durations) : null;
+        if (durationSec === null || parsed.timestampSec > durationSec + 0.001) {
+          throw new ReviewServiceError("review_timecode_out_of_range", "The comment timecode is outside the frozen review media");
+        }
       }
-      const item = round.items.find((candidate) => candidate.id === parsed.itemId)!;
-      const selected = new Set(reviewSelectedVariantIdsSchema.parse(item.selectedVariantIds));
-      const durations = item.export.variants
-        .filter((variant) => selected.has(variant.id) && variant.status === "completed" && variant.durationSec !== null)
-        .map((variant) => variant.durationSec!);
-      const durationSec = durations.length > 0 ? Math.max(...durations) : null;
-      if (durationSec === null || parsed.timestampSec > durationSec + 0.001) {
-        throw new ReviewServiceError("review_timecode_out_of_range", "The comment timecode is outside the frozen review media");
+      if (parsed.parentId) {
+        const parent = round.comments.find((comment) => comment.id === parsed.parentId);
+        if (!parent || parent.parentId || parent.itemId !== parsed.itemId) throw new ReviewServiceError("review_thread_invalid", "Replies can only be one level deep within the same review item");
       }
-    }
-    if (parsed.parentId) {
-      const parent = round.comments.find((comment) => comment.id === parsed.parentId);
-      if (!parent || parent.parentId || parent.itemId !== parsed.itemId) throw new ReviewServiceError("review_thread_invalid", "Replies can only be one level deep within the same review item");
-    }
-    return requirePrisma().$transaction(async (tx) => {
-      await assertReviewRoundWritable(tx, round.id);
-      const comment = await tx.reviewComment.create({ data: { reviewRoundId: round.id, itemId: parsed.itemId, parentId: parsed.parentId, authorKind: "guest", authorName: claims.identity, authorGuestId: claims.guestId, authorGrantHash: reviewGrantHash(claims.subject), body: parsed.body, timestampSec: parsed.timestampSec } });
-      await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: claims.guestId, kind: "comment_created", targetId: comment.id, metadata: { itemId: parsed.itemId, timecoded: parsed.timestampSec !== null } } });
-      const firstComment = await tx.reviewRound.updateMany({
-        where: { id: round.id, firstCommentAt: null },
-        data: { firstCommentAt: new Date() },
-      });
-      if (firstComment.count === 1) {
-        await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_first_comment, round.id);
-      }
-      return comment;
-    });
+
+        const comment = await tx.reviewComment.create({ data: { reviewRoundId: round.id, itemId: parsed.itemId, parentId: parsed.parentId, authorKind: "guest", authorName: claims.identity, authorGuestId: claims.guestId, authorGrantHash: reviewGrantHash(claims.subject), body: parsed.body, timestampSec: parsed.timestampSec } });
+        await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: claims.guestId, kind: "comment_created", targetId: comment.id, metadata: { itemId: parsed.itemId, timecoded: parsed.timestampSec !== null, receipt: receipt(guestCommentResult(comment)) } } });
+        const firstComment = await tx.reviewRound.updateMany({
+          where: { id: round.id, firstCommentAt: null },
+          data: { firstCommentAt: new Date() },
+        });
+        if (firstComment.count === 1) {
+          await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_first_comment, round.id);
+        }
+        return guestCommentResult(comment);
+    } });
   }
 
   async editComment(session: string, secret: string, commentId: string, input: unknown) {
@@ -761,6 +778,7 @@ export class ReviewService {
     }
     return requirePrisma().$transaction(async (tx) => {
       await assertReviewRoundWritable(tx, round.id);
+      await this.readRound(session, secret, tx);
       const eligible = await tx.reviewComment.updateMany({
         where: {
           id: comment.id,
@@ -772,7 +790,7 @@ export class ReviewService {
       if (eligible.count !== 1) throw new ReviewServiceError("review_comment_edit_forbidden", "This comment can no longer be edited");
       const updated = await tx.reviewComment.findUniqueOrThrow({ where: { id: comment.id } });
       await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: claims.guestId, kind: "comment_edited", targetId: comment.id } });
-      return updated;
+      return guestCommentResult(updated);
     });
   }
 
@@ -786,6 +804,7 @@ export class ReviewService {
     }
     return withSerializableRetry(() => requirePrisma().$transaction(async (tx) => {
       await assertReviewRoundWritable(tx, round.id);
+      await this.readRound(session, secret, tx);
       if (await tx.reviewComment.count({ where: { parentId: comment.id } }) > 0) {
         throw new ReviewServiceError("review_comment_has_replies", "A comment with replies cannot be deleted");
       }
@@ -798,94 +817,96 @@ export class ReviewService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   }
 
-  async decide(session: string, secret: string, input: unknown) {
+  async decide(session: string, secret: string, input: unknown, mutation?: GuestReviewMutation) {
     const parsed = reviewDecisionSchema.parse(input);
-    const { round, claims } = await this.readRound(session, secret);
-    await enforceReviewRateLimit(`review-decision:${round.id}:${claims.guestId}`, 30, 15 * 60_000);
-    return withSerializableRetry(() => requirePrisma().$transaction(async (tx) => {
-      await assertReviewRoundWritable(tx, round.id);
-      const currentItems = await tx.reviewRoundItem.findMany({ where: { reviewRoundId: round.id } });
-      const item = parsed.itemId ? currentItems.find((candidate) => candidate.id === parsed.itemId) : null;
-      if (parsed.itemId && !item) throw new ReviewServiceError("review_item_not_found", "Review item was not found");
-      if (!parsed.itemId && parsed.decision === "approved") {
-        const requiredItems = currentItems.filter((candidate) => candidate.required);
-        if (round.approvalRequired && requiredItems.some((candidate) => candidate.currentDecision !== "approved")) {
-          throw new ReviewServiceError("review_campaign_not_ready", "Every required item must be approved first");
+    return executeGuestReviewCommand({ mutation, command: "review.decision.create", input: parsed,
+      authorize: (tx) => this.readRound(session, secret, tx),
+      mutate: async (tx, { round, claims }, receipt) => {
+        await enforceReviewRateLimit(`review-decision:${round.id}:${claims.guestId}`, 30, 15 * 60_000, this.commandRateLimit);
+        await assertReviewRoundWritable(tx, round.id);
+        const currentItems = await tx.reviewRoundItem.findMany({ where: { reviewRoundId: round.id } });
+        const item = parsed.itemId ? currentItems.find((candidate) => candidate.id === parsed.itemId) : null;
+        if (parsed.itemId && !item) throw new ReviewServiceError("review_item_not_found", "Review item was not found");
+        if (!parsed.itemId && parsed.decision === "approved") {
+          const requiredItems = currentItems.filter((candidate) => candidate.required);
+          if (round.approvalRequired && requiredItems.some((candidate) => candidate.currentDecision !== "approved")) {
+            throw new ReviewServiceError("review_campaign_not_ready", "Every required item must be approved first");
+          }
         }
-      }
-      const decidedAt = new Date();
-      await tx.reviewDecision.updateMany({ where: { reviewRoundId: round.id, itemId: parsed.itemId, supersededAt: null }, data: { supersededAt: decidedAt } });
-      const decision = await tx.reviewDecision.create({ data: { reviewRoundId: round.id, itemId: parsed.itemId, actorGuestId: claims.guestId, decision: parsed.decision, actorKind: "guest", actorName: claims.identity, reason: parsed.reason } });
-      if (item) {
-        await tx.reviewRoundItem.update({ where: { id: item.id }, data: { currentDecision: parsed.decision } });
-        if (parsed.decision === "changes_requested") await tx.reviewRound.update({ where: { id: round.id }, data: { decision: null, decidedAt: null } });
-      } else {
-        await tx.reviewRound.update({ where: { id: round.id }, data: { decision: parsed.decision, decidedAt } });
-      }
-      await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: claims.guestId, kind: item ? "item_decided" : "campaign_decided", targetId: item?.id ?? round.id, metadata: { decision: parsed.decision } } });
-      if (item && parsed.decision === "approved" && item.currentDecision !== "approved") {
-        await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_item_approved, round.id, item.clipId);
-      }
-      if (!item && parsed.decision === "approved" && round.decision !== "approved") {
-        await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.campaign_approved, round.id);
-      }
-      if (parsed.decision === "changes_requested") {
-        const firstChange = await tx.reviewRound.updateMany({
-          where: { id: round.id, firstChangeRequestedAt: null },
-          data: { firstChangeRequestedAt: decidedAt },
-        });
-        if (firstChange.count === 1) {
-          await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_changes_requested, round.id, item?.clipId);
+        const decidedAt = new Date();
+        await tx.reviewDecision.updateMany({ where: { reviewRoundId: round.id, itemId: parsed.itemId, supersededAt: null }, data: { supersededAt: decidedAt } });
+        const decision = await tx.reviewDecision.create({ data: { reviewRoundId: round.id, itemId: parsed.itemId, actorGuestId: claims.guestId, decision: parsed.decision, actorKind: "guest", actorName: claims.identity, reason: parsed.reason } });
+        if (item) {
+          await tx.reviewRoundItem.update({ where: { id: item.id }, data: { currentDecision: parsed.decision } });
+          if (parsed.decision === "changes_requested") await tx.reviewRound.update({ where: { id: round.id }, data: { decision: null, decidedAt: null } });
+        } else {
+          await tx.reviewRound.update({ where: { id: round.id }, data: { decision: parsed.decision, decidedAt } });
         }
-      }
-      const creator = await tx.user.findUnique({
-        where: { id: round.createdByUserId },
-        select: { primaryEmail: true },
-      });
-      const recipientEmail = creator?.primaryEmail?.trim().toLowerCase();
-      if (recipientEmail && parsed.decision === "changes_requested") {
-        await tx.reviewNotificationLedger.upsert({
-          where: { reviewRoundId_recipientEmail_kind_scopeKey: {
-            reviewRoundId: round.id,
-            recipientEmail,
-            kind: "first_change_requested",
-            scopeKey: "round",
-          } },
-          update: {},
-          create: { reviewRoundId: round.id, recipientEmail, kind: "first_change_requested", scopeKey: "round" },
+        await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: claims.guestId, kind: item ? "item_decided" : "campaign_decided", targetId: item?.id ?? round.id, metadata: { decision: parsed.decision, receipt: receipt(guestDecisionResult(decision)) } } });
+        if (item && parsed.decision === "approved" && item.currentDecision !== "approved") {
+          await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_item_approved, round.id, item.clipId);
+        }
+        if (!item && parsed.decision === "approved" && round.decision !== "approved") {
+          await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.campaign_approved, round.id);
+        }
+        if (parsed.decision === "changes_requested") {
+          const firstChange = await tx.reviewRound.updateMany({
+            where: { id: round.id, firstChangeRequestedAt: null },
+            data: { firstChangeRequestedAt: decidedAt },
+          });
+          if (firstChange.count === 1) {
+            await recordReviewAnalytics(tx, round.projectId, AnalyticsEventType.review_changes_requested, round.id, item?.clipId);
+          }
+        }
+        const creator = await tx.user.findUnique({
+          where: { id: round.createdByUserId },
+          select: { primaryEmail: true },
         });
-      }
-      const decisionsAfterChange = currentItems.map((candidate) =>
-        candidate.id === item?.id ? { ...candidate, currentDecision: parsed.decision } : candidate,
-      );
-      const requiredAfterChange = decisionsAfterChange.filter((candidate) => candidate.required);
-      if (
-        recipientEmail &&
-        requiredAfterChange.length > 0 &&
-        requiredAfterChange.every((candidate) => candidate.currentDecision === "approved")
-      ) {
-        await tx.reviewNotificationLedger.upsert({
-          where: { reviewRoundId_recipientEmail_kind_scopeKey: {
-            reviewRoundId: round.id,
-            recipientEmail,
-            kind: "all_approved",
-            scopeKey: "round",
-          } },
-          update: {},
-          create: { reviewRoundId: round.id, recipientEmail, kind: "all_approved", scopeKey: "round" },
-        });
-      }
-      return decision;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+        const recipientEmail = creator?.primaryEmail?.trim().toLowerCase();
+        if (recipientEmail && parsed.decision === "changes_requested") {
+          await tx.reviewNotificationLedger.upsert({
+            where: { reviewRoundId_recipientEmail_kind_scopeKey: {
+              reviewRoundId: round.id,
+              recipientEmail,
+              kind: "first_change_requested",
+              scopeKey: "round",
+            } },
+            update: {},
+            create: { reviewRoundId: round.id, recipientEmail, kind: "first_change_requested", scopeKey: "round" },
+          });
+        }
+        const decisionsAfterChange = currentItems.map((candidate) =>
+          candidate.id === item?.id ? { ...candidate, currentDecision: parsed.decision } : candidate,
+        );
+        const requiredAfterChange = decisionsAfterChange.filter((candidate) => candidate.required);
+        if (
+          recipientEmail &&
+          requiredAfterChange.length > 0 &&
+          requiredAfterChange.every((candidate) => candidate.currentDecision === "approved")
+        ) {
+          await tx.reviewNotificationLedger.upsert({
+            where: { reviewRoundId_recipientEmail_kind_scopeKey: {
+              reviewRoundId: round.id,
+              recipientEmail,
+              kind: "all_approved",
+              scopeKey: "round",
+            } },
+            update: {},
+            create: { reviewRoundId: round.id, recipientEmail, kind: "all_approved", scopeKey: "round" },
+          });
+        }
+        return guestDecisionResult(decision);
+    } });
   }
 
   async addInternalComment(
     scope: { workspaceId: string; projectId: string; actorUserId: string },
     roundId: string,
     input: unknown,
+    transaction?: Prisma.TransactionClient,
   ) {
     const parsed = internalReviewCommentSchema.parse(input);
-    return requirePrisma().$transaction(async (tx) => {
+    return reviewTransaction(transaction, async (tx) => {
       const round = await tx.reviewRound.findFirst({
         where: { id: roundId, workspaceId: scope.workspaceId, projectId: scope.projectId },
         include: { comments: true, items: { select: { id: true } } },
@@ -943,8 +964,8 @@ export class ReviewService {
     });
   }
 
-  async resolveComment(scope: { workspaceId: string; projectId: string; actorUserId: string }, roundId: string, commentId: string, resolved: boolean) {
-    return requirePrisma().$transaction(async (tx) => {
+  async resolveComment(scope: { workspaceId: string; projectId: string; actorUserId: string }, roundId: string, commentId: string, resolved: boolean, transaction?: Prisma.TransactionClient) {
+    return reviewTransaction(transaction, async (tx) => {
       const comment = await tx.reviewComment.findFirst({ where: { id: commentId, reviewRoundId: roundId, reviewRound: { workspaceId: scope.workspaceId, projectId: scope.projectId } } });
       if (!comment) throw new ReviewServiceError("review_comment_not_found", "Review comment was not found");
       const updated = await tx.reviewComment.update({ where: { id: comment.id }, data: { resolvedAt: resolved ? new Date() : null } });
@@ -953,8 +974,8 @@ export class ReviewService {
     });
   }
 
-  async revokeRound(scope: { workspaceId: string; projectId: string; actorUserId: string }, roundId: string) {
-    return requirePrisma().$transaction(async (tx) => {
+  async revokeRound(scope: { workspaceId: string; projectId: string; actorUserId: string }, roundId: string, transaction?: Prisma.TransactionClient) {
+    return reviewTransaction(transaction, async (tx) => {
       const revoked = await tx.reviewRound.updateMany({
         where: { id: roundId, workspaceId: scope.workspaceId, projectId: scope.projectId, revokedAt: null },
         data: { revokedAt: new Date(), status: "revoked" },
@@ -1130,7 +1151,10 @@ export class ReviewService {
             firstSeenAt: guest.firstSeenAt,
             lastSeenAt: guest.lastSeenAt,
           })),
-          auditEvents: access === "manage" ? round.auditEvents : [],
+          auditEvents: access === "manage" ? round.auditEvents.map((event) => {
+            const metadata = event.metadata && typeof event.metadata === "object" && !Array.isArray(event.metadata) ? Object.fromEntries(Object.entries(event.metadata).filter(([key]) => key !== "receipt")) : event.metadata;
+            return { ...event, metadata };
+          }) : [],
           notifications: access === "manage" ? round.notificationLedgers : [],
           context: access === "manage" ? round.contextLinks.map((link) => ({
             id: link.id,

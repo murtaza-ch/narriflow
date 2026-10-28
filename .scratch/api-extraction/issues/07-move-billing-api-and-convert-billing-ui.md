@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -190,10 +190,10 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] Nine billing routes plus Stripe raw webhook preserve provider receipts/fencing/checkout keys/quotes/seat and activation state.
-- [ ] New-Workspace checkout uses identity-only admission and existing pending Workspace recovery and returns explicit selection/checkoutUrl.
-- [ ] Both pages and upgrade/credit/account integrations use typed safe config and scoped data; no entitlement inferred from return navigation.
-- [ ] Billing return/portal URLs use WEB_ORIGIN; safe 202 activation polling and plan-change recovery retained; unavailable optional Stripe config degrades as today.
+- [x] Nine billing routes plus Stripe raw webhook preserve provider receipts/fencing/checkout keys/quotes/seat and activation state.
+- [x] New-Workspace checkout uses identity-only admission and existing pending Workspace recovery and returns explicit selection/checkoutUrl.
+- [x] Both pages and upgrade/credit/account integrations use typed safe config and scoped data; no entitlement inferred from return navigation.
+- [x] Billing return/portal URLs use WEB_ORIGIN; safe 202 activation polling and plan-change recovery retained; unavailable optional Stripe config degrades as today.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -211,4 +211,31 @@ Verify the changed flow in the running Next app against the separate API origin.
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (last acceptance box left open for the orchestrator). Browser verification against a running Next app was NOT performed (see Evidence).
+
+### Contract for later tickets
+- **API** (`apps/api/src/domains/billing`): `createBillingRoutes({billingService, webOrigin})`, `createBillingWebhookRoutes({acceptDelivery})`; admission table has the nine controls, `POST /workspaces/business-checkout` (`signed_in`), `POST /webhooks/stripe` (`provider_signature`). Return/portal destinations are `${WEB_ORIGIN}/settings/billing`, never from the request. `GET /billing/state` now returns `{view, availableTiers, isConfigured}` (`billingStateResponseSchema`) and keeps `Retry-After: 2` while activating. Invalid input is now the common 400 `invalid_input` (was `validation_failed` / `invalid_checkout_return`); the screen branches on domain codes only, which are unchanged. Checkout/plan-change retries keep their native body identities (`clientIdempotencyKey`, `quoteId`, `checkoutIdempotencyKey`); no `Idempotency-Key` header is required, no billing receipt-command module exists.
+- **New-Workspace checkout**: `BillingService.startBusinessWorkspaceCheckout` (services, mine) = old `createBusinessWorkspaceAction` logic: config check, resume (`requireActor(... "billing.manage")`, owner + `pending_payment`, else `workspace_checkout_state_invalid`) or `createPendingBusinessWorkspace`, then `startCheckout`. 200 `{checkoutUrl, checkoutIdempotencyKey, interval, selection:{workspaceId, workspaceName}}`. Any failure after the inputs are known carries `details.recovery = {workspaceId?, workspaceName?, interval, checkoutIdempotencyKey}` (same status/code as before; unexpected errors become 503 `workspace_checkout_failed`, logged without the cause). The form resubmits `{workspaceId, interval, checkoutIdempotencyKey}` from `recovery`. The API no longer sets the active Workspace: the client must adopt `selection.workspaceId` (runtime.selectWorkspace / `POST /api/session/workspace-selection`) before navigating to `checkoutUrl`. Known limit (unchanged from the action): a lost first response leaves a pending Workspace the form cannot name; a retry creates another (owner cap of 25 bounds it). No receipt exists for it.
+- **Client** (`@narriflow/api-client/billing`): `billingStateQueryOptions({transport, scope})` (key `nf/user/ws/billing/state`, staleTime 0, returns `retryAfterSeconds`), `readBillingState`, `createBillingActions(transport, scope)` (`startCheckout`, `observeCheckoutReturn`, `openPortal`, `previewPlanChange`, `confirmPlanChange`, `cancelPlanChange`, `pendingPaymentUrl`, `reconcile`), `startBusinessWorkspaceCheckout(transport, identityScope, input)`, `invalidateBillingDependents(qc, scope, {includeState})`, `billingKeys`.
+- **Web**: `BillingPlans` keeps its props and adds `api: BillingPlansApi` and `onViewChange`; `billing-screen.tsx` / `usage-screen.tsx` are the data views (pages are data-free shells). Stripe return/portal/payment navigation unchanged; entitlements refresh only when a verified view changes plan/interval/status/access/seats (`billingViewChangesEntitlements`), never on return.
+
+### Requests for other owners
+- **05**: export `workspaceBootstrapQueryOptions` (and ideally a usage selector) from the Workspace client with query key `scopedKey(scope, "workspace", "bootstrap")`. Until then `apps/web/app/(app)/_components/usage.ts` (mine, replaces the server `getCachedUsageSummary`) holds an identical local factory and `useWorkspaceBootstrap(scope)`; 31 should swap it for 05's and delete mine. Billing/Usage read `capabilities["billing.manage"]` (was `role === "owner"`) and `usage` from that response.
+- **06**: `app/(app)/layout.tsx` still imports the deleted `getCachedUsageSummary` (only remaining web compile error from this ticket). `app/workspaces/new/{actions,create-workspace-form}.tsx` is yours: call `startBusinessWorkspaceCheckout` (no Workspace scope), adopt `selection`, then `window.location.assign(checkoutUrl)`; feed `error.details.recovery` into `recoverBusinessWorkspaceCheckoutFields`-style state. `checkout-request.ts` helpers stay usable.
+- **04/31**: `packages/api-client/package.json` needs `"./billing"` (or `"./*"`) in `exports`; web imports `@narriflow/api-client/billing` through the tsconfig `paths` today. The root `src/index.ts` exports only `createBillingClient`; re-export the billing queries/actions if you prefer root imports. `apps/web/lib/authenticated-request-inventory.ts` still lists the nine billing rows as baseline data (31 deletes it).
+- **31**: `billingService.validateConfiguration({surface:"web"})` stays at API startup (04); delete web `billing-browser`/`billing-plan-change` only if they lose their callers (they still have them).
+
+### Deviations / decisions
+- Old `workspace-billing-routes.ts`, `stripe-webhook-http.ts` and their tests are deleted from `apps/web/app/api/[[...route]]` (moved to `apps/api/src/domains/billing/{routes,webhooks}.ts`; tests rewritten, same cases plus admission, origin and recovery cases). Working-tree deletions only; nothing staged or committed.
+- Added `packages/services/src/billing-business-checkout.test.ts` (new file next to my service change; not in the manifest list) and `apps/api/src/domains/billing/test-support.ts` (billing-only composition around the real middleware chain, so these tests do not depend on other domains' in-flight routes).
+- Stripe `webhook` body is read once with `c.req.text()` (original bytes) after the 1 MiB webhook limit; the failure log is `{level, message, errorCode}` only.
+
+### Evidence
+- `bun test apps/api/src/domains/billing` -> 21 pass (admission: signed-out 401 for every route, member without `billing.manage` 403 on all seven mutations while `GET /billing/state` is 200, removed selection 409 before the service; hostile Host/forwarded headers ignored; 202/200 return contracts; plan-change input strictness; Stripe raw bytes preserved, `missing_signature`/`invalid_signature`/500 mapping, mounted without a session).
+- `bun test packages/api-client/src/billing` -> 11 pass; `bun test packages/services/src/billing-business-checkout.test.ts` -> 8 pass.
+- `cd apps/web && bun test lib/billing-browser.test.ts lib/billing-plan-change.test.ts lib/billing-view-model.test.ts "app/(app)/settings/billing" "app/(app)/_components" lib/feature-upgrade-prompt.test.ts` -> 62 pass (fixture covers focus recovery, quote review/confirm/reconcile call order through the real client, return observation following only the API-verified state).
+- `.scratch/api-extraction/db-gate.sh bun run test:workspace-billing:db` -> 16 pass, exit 0; `... test:processing-usage:db` -> 31 pass, exit 0 (local Postgres, not Neon).
+- Typecheck: `packages/api-client`, `packages/validators`, `packages/services`, `apps/api`: no error in any file of this ticket (remaining errors are others': `workspace/routes.ts`, `rest/routes.ts`, `reviews/guest-replay-child.ts`, `brand/queries.ts`, `clips-commands.ts`). Web typecheck: only `app/(app)/layout.tsx` (06) reports a billing/usage symbol (`getCachedUsageSummary`).
+- `bunx biome check` on all owned paths: clean. `bun run --cwd apps/api test:inventory`: no billing/stripe/business-checkout problem (the other problems belong to in-flight domains).
+- Runtime (API origin only): started `apps/api` on `:4010` with `WEB_ORIGIN=http://localhost:3000` and the dev env files read-only; `GET /api/billing/state` -> 401 envelope with CORS for `http://localhost:3000`, 403 for `http://evil.example`; `POST /api/webhooks/stripe` -> 400 `missing_signature` and, with a bad signature, 400 `invalid_signature` from the real `billingService.handleWebhook`; `POST /api/workspaces/business-checkout` unauthenticated -> 401; preflight 204 with the first-party header set. Origin pair: web `http://localhost:3000` / API `http://localhost:4010`.
+- NOT done: the signed-in browser run (Clerk login, Stripe test Checkout return, portal, plan change) against `next dev` + the API. The web project still has transitional compile errors from other tickets and needs an interactive Clerk session; ticket 32 must run: Checkout start/return/activation polling, portal, plan-change preview/confirm/cancel/payment, restricted-owner recovery, New-Workspace checkout, and a real Stripe test-mode webhook redelivery against `A/api/webhooks/stripe` (new endpoint secret).

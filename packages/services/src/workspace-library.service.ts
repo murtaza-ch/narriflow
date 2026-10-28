@@ -60,7 +60,8 @@ function normalizedFolderName(name: string) {
 		.toLocaleLowerCase("en-US");
 }
 
-function validFolderName(name: string) {
+/** Validates and trims a folder name; the receipt-backed create fingerprints this form. */
+export function validFolderName(name: string) {
 	const trimmed = name.trim();
 	if (trimmed.length < 1 || trimmed.length > 80) {
 		throw new WorkspaceLibraryError(
@@ -70,6 +71,18 @@ function validFolderName(name: string) {
 	}
 	return trimmed;
 }
+
+/** The row a new folder is stored as. `name` must already be validated. */
+export function folderCreateData(scope: ActorScope, safeName: string) {
+	return {
+		workspaceId: scope.workspaceId,
+		name: safeName,
+		normalizedName: normalizedFolderName(safeName),
+		createdByUserId: scope.actorUserId,
+	};
+}
+
+export const folderCreateSelect = { id: true, name: true, createdAt: true } as const;
 
 // Carry the ordering values, so deleting the boundary record cannot strand a
 // reader. Invalid URLs simply reopen the first page.
@@ -484,15 +497,9 @@ export class WorkspaceLibraryService {
 
 	async createFolder(scope: ActorScope, name: string) {
 		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
-		const safeName = validFolderName(name);
 		return requiredPrisma().workspaceFolder.create({
-			data: {
-				workspaceId: scope.workspaceId,
-				name: safeName,
-				normalizedName: normalizedFolderName(safeName),
-				createdByUserId: scope.actorUserId,
-			},
-			select: { id: true, name: true, createdAt: true },
+			data: folderCreateData(scope, validFolderName(name)),
+			select: folderCreateSelect,
 		});
 	}
 

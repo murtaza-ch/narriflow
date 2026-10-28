@@ -9,3 +9,7 @@ export function createReviewsClient(transport: RpcTransport) {
 }
 
 export type ReviewsClient = ReturnType<typeof createReviewsClient>;
+
+export { createGuestReviewsClient } from "./guest";
+export { reviewQueries } from "./queries";
+export { invalidateReviewMutation, invalidateGuestReviewMutation, reviewMutationOptions } from "./mutations";

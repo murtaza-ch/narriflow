@@ -1,4 +1,4 @@
-import { publicOpenApiDocument } from "@/lib/rest-api/public-openapi";
+import { publicV1Document } from "@narriflow/api-client/openapi";
 
 /**
  * The REST API reference, read from the document the API itself serves.
@@ -110,7 +110,7 @@ interface OpenApiDocument {
   paths: Record<string, Record<string, unknown>>;
 }
 
-const document = publicOpenApiDocument() as unknown as OpenApiDocument;
+const document = publicV1Document as unknown as OpenApiDocument;
 
 const SCHEMA_REF_PREFIX = "#/components/schemas/";
 
@@ -142,7 +142,7 @@ export function slugify(text: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-export const apiServers = document.servers ?? [];
+export const apiServers = [{ url: (process.env.NEXT_PUBLIC_API_URL ?? document.servers?.[0]?.url ?? "http://localhost:4000").replace(/\/$/, "") }];
 export const securitySchemes = resolveRefs(document.components?.securitySchemes ?? {});
 
 export const apiOperations: ApiOperation[] = Object.entries(document.paths).flatMap(([path, item]) =>

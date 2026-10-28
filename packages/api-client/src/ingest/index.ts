@@ -1,11 +1,5 @@
-import type { IngestRoutes } from "@narriflow/api/types/ingest";
-import { type RpcTransport, createRpcClient } from "../rpc";
-
-export type { IngestRoutes };
-
-/** Typed client for the ingest routes. Pass a bound transport (`runtime.transport.scoped(scope)`). */
-export function createIngestClient(transport: RpcTransport) {
-  return createRpcClient<IngestRoutes>(transport);
-}
-
-export type IngestClient = ReturnType<typeof createIngestClient>;
+export type { IngestRoutes } from "@narriflow/api/types/ingest";
+export { type IngestClient, createIngestClient } from "./client";
+export * from "./invalidation";
+export * from "./mutations";
+export * from "./queries";

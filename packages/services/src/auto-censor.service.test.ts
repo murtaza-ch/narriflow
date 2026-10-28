@@ -6,6 +6,7 @@ import type { BrandActorScope } from "./brand-ownership";
 
 const WORKSPACE = "00000000-0000-4000-8000-000000000001";
 const PROJECT = "00000000-0000-4000-8000-000000000002";
+const CLIP = "00000000-0000-4000-8000-000000000003";
 
 function scope(role: BrandActorScope["role"], pricingTier = "creator"): BrandActorScope {
   return {
@@ -22,6 +23,7 @@ function scope(role: BrandActorScope["role"], pricingTier = "creator"): BrandAct
 let storedProjectTerms: unknown = ["launch*"];
 let workspaceRow: { censorWords: string[]; censorWordsCustomized: boolean } | null;
 const updates: unknown[] = [];
+const events: unknown[] = [];
 const fakePrisma = {
   workspace: {
     findUnique: async () => workspaceRow,
@@ -33,6 +35,15 @@ const fakePrisma = {
   },
   project: {
     findFirst: async () => ({ languageCode: "en", censorTerms: storedProjectTerms, brandProfile: null }),
+  },
+  clip: {
+    findFirst: async ({ where }: { where: { id: string; projectId: string } }) =>
+      where.projectId === PROJECT && where.id === CLIP ? { id: CLIP } : null,
+  },
+  projectAnalyticsEvent: {
+    create: async ({ data }: { data: unknown }) => {
+      events.push(data);
+    },
   },
 } as unknown as PrismaClient;
 
@@ -121,5 +132,24 @@ describe("Workspace censored words", () => {
     }
     // Writes stay strict.
     await expect(autoCensorService.replaceProjectTerms(scope("editor"), PROJECT, ["fu*ck"])).rejects.toThrow();
+  });
+});
+
+describe("Auto Censor analytics", () => {
+  test("records an event for a clip of the Project and for any role that can view", async () => {
+    const before = events.length;
+    await autoCensorService.recordEvent(scope("viewer"), PROJECT, CLIP, { type: "auto_censor_scan_started" });
+    expect(events.length).toBe(before + 1);
+    expect(events.at(-1)).toMatchObject({ projectId: PROJECT, clipId: CLIP });
+  });
+
+  test("refuses a clip that is not in the Project without recording anything", async () => {
+    const before = events.length;
+    await expect(
+      autoCensorService.recordEvent(scope("editor"), PROJECT, "00000000-0000-4000-8000-0000000000ff", {
+        type: "auto_censor_scan_started",
+      }),
+    ).rejects.toMatchObject({ code: "auto_censor_forbidden" });
+    expect(events.length).toBe(before);
   });
 });

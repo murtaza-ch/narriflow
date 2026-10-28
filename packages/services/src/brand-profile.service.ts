@@ -32,6 +32,9 @@ import {
   type BrandActorScope,
 } from "./brand-ownership";
 import { requirePlanFeature, requireWithinPlanLimit } from "./plan-features";
+import type { IntegrationMutation } from "./operation-receipt";
+import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
+import { workspaceService } from "./workspace.service";
 import { onRecipeContentChanged } from "./recipe-content-change";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { analyticsService } from "./analytics.service";
@@ -372,6 +375,8 @@ async function toAggregate(profile: ProfileAggregate) {
   };
 }
 
+const LIST_ALL_MAX_PAGES = 5;
+
 export class BrandProfileService {
   private requirePrisma = requirePrisma;
   private objectExists = brandObjectExists;
@@ -391,6 +396,26 @@ export class BrandProfileService {
       ...(parsed.cursor ? { cursor: { id: parsed.cursor }, skip: 1 } : {}),
     });
     return Promise.all(rows.map(toAggregate));
+  }
+
+  /**
+   * Every live profile, for aggregates that must not stop at the ordinary
+   * page size (summaries, default choices, replacement pickers). Paged
+   * internally and bounded, so a Workspace far over its plan still terminates.
+   */
+  async listAll(scope: BrandActorScope) {
+    const pageSize = 100;
+    const profiles: Awaited<ReturnType<BrandProfileService["list"]>> = [];
+    for (let page = 0; page < LIST_ALL_MAX_PAGES; page += 1) {
+      const rows = await this.list(scope, {
+        limit: pageSize,
+        includeDeleted: false,
+        ...(profiles.length > 0 ? { cursor: profiles[profiles.length - 1]!.id } : {}),
+      });
+      profiles.push(...rows);
+      if (rows.length < pageSize) break;
+    }
+    return profiles;
   }
 
   /** Assistant-facing list: names and defaults only, with no asset access URLs. */
@@ -450,13 +475,18 @@ export class BrandProfileService {
     return toAggregate(profile);
   }
 
-  async create(scope: BrandActorScope, input: BrandProfileCreateInput) {
+  /**
+   * With a `mutation` the create is one Operation Receipt: the profile row, its
+   * memberships and the receipt commit together, and a retry with the same key
+   * returns the profile it already created instead of a second one.
+   */
+  async create(scope: BrandActorScope, input: BrandProfileCreateInput, mutation?: IntegrationMutation) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = brandProfileCreateSchema.parse(input);
     assertApprovalRuleAllowed(scope, parsed.approvalRule, null);
     const prisma = this.requirePrisma();
     const owner = resolveBrandOwner(scope);
-    const created = await prisma.$transaction(async (tx) => {
+    const createIn = async (tx: Prisma.TransactionClient) => {
       await lockBrandOwner(tx, "brand-profiles", owner);
       const active = await tx.brandProfile.count({ where: { ...brandOwnerWhere(scope), deletedAt: null } });
       requireWithinPlanLimit(scope.pricingTier, "brandProfiles", active);
@@ -490,19 +520,47 @@ export class BrandProfileService {
         });
       }
       return profile;
-    });
-    const aggregate = await this.get(scope, created.id);
-    await recordBrandEvent(scope, {
-      type: "brand_profile_created",
-      workspaceId: scope.workspaceId,
-      actorUserId: scope.actorUserId,
-      metadata: {
-        profileId: created.id,
-        assetKind: "profile",
-        planTier: resolvePricingTier(scope.pricingTier),
-        outcome: "succeeded",
-      },
-    });
+    };
+    let createdId: string;
+    let replayed = false;
+    if (mutation) {
+      // The receipt keeps the identity only. Asset access URLs are signed and expire, so the response is read fresh.
+      const accepted = await getOperationReceiptExecutor().execute({
+        identity: {
+          workspaceId: scope.workspaceId,
+          actorUserId: scope.actorUserId,
+          command: "create_brand_profile",
+          clientIdempotencyKey: mutation.clientIdempotencyKey,
+        },
+        input: parsed,
+        authorize: async () => {
+          await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "brand.manage");
+        },
+        beforeAccept: mutation.beforeAccept,
+        mutate: async (tx) => {
+          const profile = await createIn(tx);
+          return { resourceType: "brand_profile", resourceId: profile.id, value: { id: profile.id } };
+        },
+      });
+      createdId = accepted.value.id;
+      replayed = accepted.replayed;
+    } else {
+      createdId = (await prisma.$transaction(createIn)).id;
+    }
+    const aggregate = await this.get(scope, createdId);
+    if (!replayed) {
+      await recordBrandEvent(scope, {
+        type: "brand_profile_created",
+        workspaceId: scope.workspaceId,
+        actorUserId: scope.actorUserId,
+        metadata: {
+          profileId: createdId,
+          assetKind: "profile",
+          planTier: resolvePricingTier(scope.pricingTier),
+          outcome: "succeeded",
+        },
+      });
+    }
     return aggregate;
   }
 

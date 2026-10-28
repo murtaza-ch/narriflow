@@ -20,3 +20,22 @@ describe("reviewer opt-out tokens", () => {
     expect(verifyReviewOptOutToken(token, "another-secret-0123456789abcdef0123")).toBeNull();
   });
 });
+
+import { mock } from "bun:test";
+import type { PrismaClient } from "@prisma/client";
+import { createReviewerOptOut } from "./review-opt-out";
+
+test("preview never writes; repeated confirmation keeps one opt-out", async () => {
+  const addresses = new Set<string>();
+  const upsert = mock(async (input: { create: { workspaceId: string; email: string } }) => { addresses.add(`${input.create.workspaceId}:${input.create.email}`); });
+  const prisma = { workspace: { findUnique: async () => ({ name: "Studio" }) }, reviewerOptOut: { upsert } } as unknown as PrismaClient;
+  const optOut = createReviewerOptOut({ prisma, secret: () => SECRET });
+  const token = signReviewOptOutToken({ workspaceId: WORKSPACE, email: "a@example.test" }, SECRET);
+  expect(await optOut.preview(token)).toEqual({ workspaceName: "Studio", email: "a@example.test" });
+  expect(upsert).not.toHaveBeenCalled();
+  expect(await optOut.confirm(token)).toEqual({ workspaceName: "Studio" });
+  expect(await optOut.confirm(token)).toEqual({ workspaceName: "Studio" });
+  expect(addresses.size).toBe(1);
+  expect(await optOut.confirm(`${token}x`)).toBeNull();
+  expect(upsert).toHaveBeenCalledTimes(2);
+});

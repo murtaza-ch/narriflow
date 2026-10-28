@@ -130,6 +130,8 @@ function toHits(results: SortedResult[], query: string): SearchHit[] {
 }
 
 export async function searchDocs(query: string): Promise<SearchHit[]> {
+  query = query.trim().slice(0, 300);
+  if (!query) return [];
   const exact = toHits(await exactSearch.search(query), query);
   return exact.length ? exact : toHits(await typoSearch.search(query), query);
 }

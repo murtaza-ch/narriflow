@@ -196,6 +196,17 @@ export const publishingQueue = {
 		return normalized;
 	},
 
+	/** One connected account's weekly slots, or null when it has none. */
+	async getPostingSchedule(scope: ActorScope, accountId: string): Promise<PostingSchedule | null> {
+		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
+		const account = await requirePrisma().socialAccount.findFirst({
+			where: { id: accountId, workspaceId: scope.workspaceId, status: { not: "revoked" } },
+			select: { postingSchedule: true },
+		});
+		if (!account) throw new PublishingQueueError("social_account_unavailable", "This account isn't connected to the Workspace.");
+		return parsePostingSchedule(account.postingSchedule);
+	},
+
 	/** Records one proposal. The receipt makes a retry with the same key return the first proposal;
 	 * the proposal row, its event and the receipt commit together. */
 	async propose(

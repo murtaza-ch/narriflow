@@ -22,6 +22,7 @@ import {
   UploadSessionInvalidStateError,
   prismaUploadSessionPersistence,
   UploadSessionReconciliationClaimLostError,
+  uploadSessionService,
   type UploadSessionStorage,
 } from "./upload-session.service";
 
@@ -1281,5 +1282,47 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     const fresh = await open(randomUUID());
     expect(fresh.sessionId).not.toBe(first.sessionId);
     expect(await stored(fresh.sessionId)).toMatchObject({ contentPack: { clipCountTarget: 4 }, recipe: { id: recipe.id, revision: 2 } });
+  });
+  test("a handoff past its expiry can find the caller's own session by key, and nobody else's", async () => {
+    const owner = await prisma.user.create({ data: { clerkId: `upload-lookup-${randomUUID()}` } });
+    const other = await prisma.user.create({ data: { clerkId: `upload-lookup-other-${randomUUID()}` } });
+    const workspace = await prisma.workspace.create({
+      data: {
+        name: "Upload Lookup",
+        ownerUserId: owner.id,
+        pricingTier: "business",
+        members: { create: [{ userId: owner.id, role: "owner" }, { userId: other.id, role: "editor" }] },
+      },
+    });
+    const storage = {
+      async grantSinglePut() { return { url: "https://upload.invalid/direct" }; },
+      async headExactObjectIfExists() { return null; },
+      async deleteExactObject() {},
+    } as unknown as UploadSessionStorage;
+    const module = createUploadSessionModule({
+      config: defaultUploadSessionConfig(),
+      persistence: prismaUploadSessionPersistence,
+      storage,
+      admission: { async resolveBrand() { return null; } },
+      now: () => new Date(),
+      createId: randomUUID,
+    });
+    const key = randomUUID();
+    await module.open({
+      actorUserId: owner.id,
+      workspaceId: workspace.id,
+      clientIdempotencyKey: key,
+      title: "Lookup",
+      source: { fileName: "lookup.mp4", sizeBytes: 2_048, contentType: "video/mp4", browserFingerprint: '["lookup.mp4",2048,"video/mp4",1]' },
+      brandTemplateId: null,
+      brandProfileId: null,
+      generation: null,
+    });
+    const ownerScope = { actorUserId: owner.id, workspaceId: workspace.id } as never;
+    const otherScope = { actorUserId: other.id, workspaceId: workspace.id } as never;
+
+    expect(await uploadSessionService.hasOwnSessionByClientKey(ownerScope, key)).toBe(true);
+    expect(await uploadSessionService.hasOwnSessionByClientKey(ownerScope, randomUUID())).toBe(false);
+    expect(await uploadSessionService.hasOwnSessionByClientKey(otherScope, key)).toBe(false);
   });
 });

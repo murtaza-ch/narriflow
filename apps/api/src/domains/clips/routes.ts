@@ -2,6 +2,7 @@ import {
   campaignOperationService,
   clipEditorDocumentPersistence,
   clipService,
+  clipsCommands,
   thumbnailFramePreparationService,
 } from "@narriflow/services";
 import {
@@ -13,11 +14,13 @@ import {
   clipDownloadQuerySchema,
   createClipFromSelectionSchema,
   previewCampaignEditorActionSchema,
+  regenerateClipsRequestSchema,
   requestThumbnailFrameSchema,
-  resolvePricingTier,
   triggerClipRenderSchema,
-} from "@narriflow/validators";
-import { createRouteApp, getActor } from "../../http/admission";
+} from "@narriflow/validators/api/clips";
+import { resolvePricingTier } from "@narriflow/validators";
+import { createRouteApp, getActor, getRecordedRateLimit } from "../../http/admission";
+import { enforceRecordedRateLimit } from "../../http/limits";
 import { bodyClass } from "../../body-limits";
 import {
   getIdempotencyKey,
@@ -33,12 +36,13 @@ export interface ClipsRouteDeps {
   clipService: typeof clipService;
   clipEditorDocumentPersistence: typeof clipEditorDocumentPersistence;
   campaignOperationService: typeof campaignOperationService;
+  clipsCommands: typeof clipsCommands;
   thumbnailFramePreparationService: typeof thumbnailFramePreparationService;
 }
 
 /**
- * Clip reads, duplicate/range/delete, rendering, thumbnail frames, campaign
- * operations and clip downloads. Literal paths (`create-from-range`, `render`,
+ * Clip reads, duplicate/range/delete, regeneration and rendering, thumbnail
+ * frames, campaign operations and clip download grants. Literal paths (`create-from-range`, `render`,
  * `previews`, `apply-*`) are registered before parameter routes.
  */
 export function createClipsRoutes(deps: ClipsRouteDeps) {
@@ -46,6 +50,7 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     clipService,
     clipEditorDocumentPersistence,
     campaignOperationService,
+    clipsCommands,
     thumbnailFramePreparationService,
   } = deps;
 
@@ -56,7 +61,9 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     })
 
     // Waveform metadata for the Studio. Proxied only as a bounded, validated
-    // artifact so no bucket-wide CORS dependency is needed.
+    // artifact so no bucket-wide CORS dependency is needed. The URL does not
+    // name the preview attempt, so the default `no-store` applies: a cached
+    // artifact would outlive a regenerated proxy.
     .get(
       "/projects/:id/clips/:clipId/preview-peaks",
       async (c) => {
@@ -66,7 +73,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
           c.req.param("clipId"),
         );
         if (!peaks) return c.body(null, 204);
-        c.header("Cache-Control", "private, max-age=3600, immutable");
         return c.json(peaks, 200);
       },
     )
@@ -87,16 +93,24 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     )
 
     // Duplicates a clip, copying its finished renders and preview proxy inside
-    // R2 so the copy is immediately playable. The rate limit keeps a stuck
-    // click from fanning out into dozens of R2 copies.
+    // R2 so the copy is immediately playable. The Idempotency-Key makes a
+    // retry return the accepted copy; the limiter is enforced only for new work,
+    // before any media is copied, so a stuck click cannot fan out into dozens
+    // of R2 copies.
     .post(
       "/projects/:id/clips/:clipId/duplicate",
+      requireIdempotencyKey(),
       async (c) => {
-        const clip = await clipService.duplicateClip(
+        const { clip, replayed } = await clipsCommands.duplicateClip(
           getActor(c),
           c.req.param("id"),
           c.req.param("clipId"),
+          {
+            clientIdempotencyKey: getIdempotencyKey(c),
+            beforeAccept: async () => enforceRecordedRateLimit(getRecordedRateLimit(c)),
+          },
         );
+        if (replayed) c.header("Idempotent-Replayed", "true");
         return c.json(clip, 201);
       },
     )
@@ -124,13 +138,19 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     .post(
       "/projects/:id/clips/create-from-range",
       uuidParams("id"),
+      requireIdempotencyKey(),
       validate("json", createClipFromSelectionSchema),
       async (c) => {
-        const clip = await clipService.createClipFromRange(
+        const { clip, replayed } = await clipsCommands.createClipFromRange(
           getActor(c),
           c.req.valid("param").id,
           c.req.valid("json"),
+          {
+            clientIdempotencyKey: getIdempotencyKey(c),
+            beforeAccept: async () => enforceRecordedRateLimit(getRecordedRateLimit(c)),
+          },
         );
+        if (replayed) c.header("Idempotent-Replayed", "true");
         return c.json(clip, 201);
       },
     )
@@ -143,6 +163,25 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
         await clipService.deleteClip(getActor(c), c.req.param("id"), c.req.param("clipId"));
         return c.json({ ok: true }, 200);
       },
+    )
+
+    // Regeneration is a Workflow Run admission: the header key is the run's own
+    // admission key, so a retry returns the run it already started.
+    .post(
+      "/projects/:id/clips/regenerate",
+      uuidParams("id"),
+      requireIdempotencyKey(),
+      validate("json", regenerateClipsRequestSchema),
+      async (c) =>
+        c.json(
+          await clipService.regenerateClips(
+            getActor(c),
+            c.req.valid("param").id,
+            getIdempotencyKey(c),
+            c.req.valid("json").contentPack,
+          ),
+          202,
+        ),
     )
 
     .post(
@@ -439,20 +478,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
           c.req.valid("query").aspectRatio,
         );
         return c.json(result, 200);
-      },
-    )
-
-    .get(
-      "/projects/:id/clips/:clipId/file",
-      validate("query", clipDownloadQuerySchema),
-      async (c) => {
-        const result = await clipService.getClipDownloadUrl(
-          getActor(c),
-          c.req.param("id"),
-          c.req.param("clipId"),
-          c.req.valid("query").aspectRatio,
-        );
-        return c.redirect(result.downloadUrl, 302);
       },
     );
 }

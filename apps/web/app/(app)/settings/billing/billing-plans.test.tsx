@@ -11,10 +11,17 @@ import {
 import { renderToStaticMarkup } from "react-dom/server";
 
 mock.module("next/navigation", () => ({
-  useRouter: () => ({ replace: () => undefined, refresh: () => undefined }),
+  useRouter: () => ({ replace: () => undefined }),
 }));
 
 const { BillingPlans } = await import("./billing-plans");
+
+// Static markup never runs a command, so the API is a stand-in that must stay untouched.
+const unusedApi = new Proxy({} as import("./billing-plans").BillingPlansApi, {
+  get() {
+    throw new Error("static rendering must not call the billing API");
+  },
+});
 
 const current: WorkspaceBillingView = {
   workspaceId: "018f5f6a-4c31-7c75-9a4f-8f74f977bc10",
@@ -47,6 +54,8 @@ function render(
         canManageBilling={canManageBilling}
         checkoutReturnSessionId={null}
         checkoutCancelled={false}
+        api={unusedApi}
+        onViewChange={() => undefined}
         {...extra}
       />
     </ChakraProvider>,

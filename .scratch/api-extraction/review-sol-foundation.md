@@ -252,3 +252,120 @@ The ledger below names every original inline registration, its original line, an
 - Full web/root compile and the typecheck performance comparison remain transitional cleanup gates, as recorded by the implementers. Host Bun is 1.4.2; the Docker image pins 1.3.6. Container build/smoke and deployed configuration were not verified. No shared-resource chaos tests, migrations, provider calls, messages, commits or pushes were performed.
 
 Before domain fan-out, resolve F01-F03 and rerun their adversarial regressions alongside the passing foundation gates. Do not treat the current green inventory/core tests as proof that those cases are safe.
+
+## Re-check (round 2)
+
+Reviewed 2026-10-29, branch `dev`, HEAD `f1a6ac85a618efd80f8bd34276db1a2795a09e60`, including the FIXED notes and appended registration contract. Domain tickets were changing this checkout during review. Only this section was appended; no source, fixture, configuration, or domain-ticket files were edited. Probes ran inline, without DB/provider calls.
+
+**Recommendation: reopen F01 and F02.** The original ordinary mixed-registration leak and ordinary RPC body race are fixed, but the promised registration/inventory contract still has a clone escape, and RPC Response cloning recreates premature release. F03, F09, F10, F11, F12 and F14 are CLOSED.
+
+### F01. REOPENED: Hono basePath clones escape registration restrictions, and inventory ignores ALL entries
+
+Locations: `apps/api/src/http/admission.ts:185` and `:203`; `apps/api/src/route-inventory.ts:38`.
+
+The direct helper calls behave correctly: missing declarations, duplicate method/path, no handler, and direct `use/all/on/route/mount` calls throw. Existing mixed raw/guarded GET duplicates in either order return 500 before handlers and fail inventory. The regression tests for these cases passed.
+
+However, `createRouteApp(table).basePath("/")` returns Hono's ordinary clone, sharing the original routes/router but without the patched registration methods. All five supposedly forbidden methods then succeed at construction. An author can add an unmarked `ALL` entry ahead of a properly declared GET on the same helper. The inventory skips every ALL entry, including endpoint handlers, so it reports zero problems. The runtime guard does still refuse with 500 `request_policy_missing`: this remaining reproduction is a construction/inventory false negative and broken endpoint, not a reproduced anonymous data leak.
+
+Minimal reproduction, run from `apps/api` via `bun -e`, using the actual composition:
+
+```ts
+import { Hono } from "hono";
+import { createRouteApp } from "./src/http/admission.ts";
+import { createInventoryApp } from "./src/test-app.ts";
+import { checkRouteInventory } from "./src/route-inventory.ts";
+const entry = { kind: "workspace", capability: "content.view" } as const;
+const domain = createRouteApp({ "GET /probe": entry });
+domain.basePath("/").all("/probe", c => c.json({ unauthorized: true }));
+domain.get("/probe", c => c.json({ guarded: true }));
+const mounted = new Hono().route("/api", domain);
+console.log(checkRouteInventory(mounted, new Map([["GET /api/probe", entry]])).problems);
+// []
+console.log((await createInventoryApp({ domains: { projects: domain } })
+  .request("/api/probe")).status);
+// 500
+```
+
+Repeated with cloned `use`, `all`, `on`, `route`, and `mount`: all constructed and returned 500. Inventory missed use/all/route-with-an-ALL-child/mount; it caught on("GET", ...) as missing admission plus duplicate registration. Close the clone escape and inspect matching ALL entries while distinguishing approved composition middleware. Add these cases to construction and inventory tests.
+
+### F02. REOPENED: collecting the original Response releases tracking while its clone still reads
+
+Location: `packages/api-client/src/core/transport.ts:285`, with finalizer at `:132`.
+
+The ordinary no-clone synthetic and real-loopback A→B body-consumption regressions passed, as did cancellation, caller abort, bodiless responses, and the existing A→B→A test. But the finalizer tracks the original Response object's lifetime, which does not include the lifetime of `response.clone()` or its body reader. Once the original is collected, it calls `tracked.release()` while the clone is active. Workspace transitions then cannot set that request's permanent `scopeAborted` flag or abort its reader. A→B→A before the remaining bytes arrive passes the per-chunk equality check and returns stale JSON.
+
+Reproduced twice on Bun 1.4.2, first with a synthetic stream and then with real fetch against loopback Bun.serve. Both printed `releases before body end 1` followed by `{ value: { stale: true } }`. The real-network probe was:
+
+```ts
+import { ApiScope } from "./packages/api-client/src/core/scope.ts";
+import { createApiTransport } from "./packages/api-client/src/core/transport.ts";
+const scope = new ApiScope();
+scope.setUser("u"); scope.selectWorkspace("A");
+let releases = 0;
+const track = scope.track.bind(scope);
+scope.track = (...args) => {
+  const tracked = track(...args);
+  return {
+    signal: tracked.signal,
+    get scopeAborted() { return tracked.scopeAborted; },
+    release() { releases++; tracked.release(); },
+  };
+};
+let finish!: () => void;
+const done = new Promise<void>(resolve => { finish = resolve; });
+const encoder = new TextEncoder();
+const server = Bun.serve({
+  port: 0, hostname: "127.0.0.1",
+  fetch: () => new Response(new ReadableStream({
+    async start(controller) {
+      controller.enqueue(encoder.encode('{"stale":'));
+      await done;
+      controller.enqueue(encoder.encode("true}"));
+      controller.close();
+    },
+  })),
+});
+try {
+  const bound = createApiTransport({
+    baseUrl: "http://127.0.0.1:" + server.port,
+    scope, getToken: async () => "t",
+  }).scoped({ userId: "u", workspaceId: "A" });
+  let original: Response | null = await bound.fetch("/api/probe");
+  const clone = original.clone();
+  original = null;
+  const read = clone.json().then(value => ({ value }), error => ({ error: error.code }));
+  for (let i = 0; i < 40 && !releases; i++) {
+    Bun.gc(true);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  console.log("real fetch releases before body end", releases);
+  scope.selectWorkspace("B"); scope.selectWorkspace("A");
+  finish();
+  console.log(await read);
+} finally { await server.stop(true); }
+```
+
+Keep tracking until the guarded body and its consumers finish or cancel. Response collection alone cannot establish abandonment. Add a clone/body-lifetime regression that exercises collection before scope changes.
+
+### Remaining finding dispositions
+
+- **F03 CLOSED.** App tests reran the paused-before-closer request: drain begins while paused, a new request gets 503, resumed registration invokes its closer once. Late closers run immediately both during and after drain. Sync throws/rejections do not prevent other closers. Drain 503 includes Retry-After 5, envelope, request ID and allowed-origin CORS; health remains open and readiness refuses.
+- **F04 CLOSED.** HTTP limit regressions pass for actual-byte counting despite small, invalid and negative Content-Length; chunked overflow refuses and original-request socket hooks remain covered.
+- **F05 CLOSED on its original path.** Existing A→B→A ignored-abort transport regression passes. The additional cloned RPC case belongs to reopened F02 above.
+- **F06 CLOSED.** Admission regression confirms the response reports the resolved Workspace in X-Workspace-Id.
+- **F07 CLOSED.** Idempotency/key tests pass for nullable review passcodes, changed command input and cache-key credential rejection.
+- **F08 CLOSED in checked-in code.** railway.json still specifies drainingSeconds "25" versus the application's 20-second deadline. Effective deployment configuration was not inspected.
+- **F09 CLOSED.** Stream regression records the full 120,000 ms requested delay instead of 30,000 ms; guidance beyond the 300-second stream bound stops fatally.
+- **F10 CLOSED.** Auth fixtures pass first-login and stale-profile directory outages without inventing/deleting users; confirmed 404 release, non-outage refusal and DB failures remain distinct. HTTP regression maps ClerkDirectoryUnavailableError to 503 authentication_unavailable and Retry-After 5; DB failure remains 500.
+- **F11 CLOSED under the documented contract.** Real Bun 1.4.2 app test passes: 9 MiB control body gets 413 payload_too_large, allowed-origin CORS and request ID; over 16 MiB receives a bare native refusal. An isolated real Bun 1.3.6 server using the current apiRequestId, firstPartyCors, limitBody and NATIVE_BODY_CAP_BYTES reproduced 9 MiB → enveloped 413 with CORS/ID; 16 MiB + 1 → bare 400 without CORS/ID on the reused connection. Native cap remains configured in index.ts; actual-byte/chunked application limits pass.
+- **F12 CLOSED.** All three browser-storage tests pass, including a throwing localStorage property getter. Both provider accesses use browserStorage().
+- **F13 CLOSED for this re-check.** api-client tsconfig still has no backend paths/baseUrl; full exported-client browser bundle and core boundary tests pass. No package typecheck/build rerun was claimed during concurrent domain work.
+- **F14 CLOSED.** Real-composition app tests pass 414/431 with allowed-origin CORS, Vary and typed JSON, excluding foreign origins, REST and webhook paths.
+
+### Round 2 verification and concurrent edits
+
+- Required `bun test apps/api/src/http packages/api-client/src/core packages/auth`: **334 pass, 6 skip, 0 fail**, 1,282 assertions across 23 files. Skips are the normal disabled PostgreSQL suite, not failures.
+- Required `bun run --cwd apps/api test:inventory`: **108 routes, 0 problems** at invocation. F01 above is an independently reproduced blind spot in this green gate.
+- Additional `bun test apps/api/src/app.test.ts apps/api/src/route-inventory.test.ts apps/web/app/_components/browser-storage.test.ts`: **39 pass, 0 fail**, 107 assertions.
+- Later Bun 1.3.6 full-app native-test attempts could not load the concurrently changing domain graph: missing `executeGuestReviewCommand` export from reviews-commands.ts, then missing `restAdmission` export from domains/rest/admission.ts. These were module-loading failures before the native test, not reproduced HTTP-foundation failures. No attempt was made to fix another agent's files. The isolated current-middleware Bun 1.3.6 network probe above passed.
+- No shared-resource tests, migrations, messages, commits, pushes or deployments. These checks establish local behavior at their invocation times, not an atomic validation of the ongoing domain fan-out.

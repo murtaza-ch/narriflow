@@ -74,10 +74,12 @@ import {
   type DurableMediaCopyPlan,
 } from "./media-cleanup";
 import {
-  derivePeaksStorageKey,
   isClipPreviewPeaks,
-  tryDerivePeaksStorageKey,
   type ClipPreviewPeaks,
+} from "@narriflow/validators/clip-preview-peaks";
+import {
+  derivePeaksStorageKey,
+  tryDerivePeaksStorageKey,
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
 import { hasFeature } from "./plan-features";
@@ -1015,6 +1017,25 @@ export interface ClipDuplicationStorageAdapter {
   copy(input: { sourceKey: string; destinationKey: string }): Promise<void>;
 }
 
+/** Commits a new clip's rows. A receipt-backed command supplies one so the rows
+ * and the Operation Receipt become durable in the same transaction; without it
+ * the rows commit alone. */
+export interface ClipCreationAcceptance {
+  accept(write: (tx: Prisma.TransactionClient) => Promise<ClipSnapshot>): Promise<ClipSnapshot>;
+}
+
+/** An acceptance throws this when another request already accepted the same
+ * command while this one was preparing. Creation stops (copied media is
+ * released) and the command returns the accepted snapshot. */
+export class ClipCreationReplayed extends Error {
+  constructor(readonly snapshot: ClipSnapshot) {
+    super("clip creation was already accepted");
+    this.name = "ClipCreationReplayed";
+  }
+}
+
+type ClipInsert = (tx: Prisma.TransactionClient) => Promise<{ id: string }>;
+
 export class ClipService {
   /** Compact review facts avoid loading editor documents and transcript bodies. */
   async listClipReviewFacts(scope: ActorScope, projectId: string, options: { limit?: number; cursor?: string | null; includeTranscriptExcerpt?: boolean } = {}) {
@@ -1424,6 +1445,7 @@ export class ClipService {
     scope: ActorScope,
     projectId: string,
     clipId: string,
+    acceptance?: ClipCreationAcceptance,
   ): Promise<ClipSnapshot> {
     await this.authorizeActor(scope, "content.edit");
     const prisma = requirePrisma();
@@ -1508,8 +1530,10 @@ export class ClipService {
         : []),
     ];
 
+    const commit = (insert: ClipInsert) => this.commitNewClip(acceptance, insert);
+
     try {
-      const created: { id: string } = await runDurableMediaCopies({
+      return await runDurableMediaCopies({
         store: prisma.mediaCleanupObligation,
         plans: copyPlans,
         claimId: compensationClaimId,
@@ -1619,7 +1643,7 @@ export class ClipService {
           const previewStorageKey =
             copied.find((plan) => plan.value.kind === "preview")?.objectKey ??
             null;
-          return prisma.$transaction(async (tx) => {
+          return commit(async (tx) => {
             await adoptDurableMediaCopies(
               tx.mediaCleanupObligation,
               copied,
@@ -1692,20 +1716,10 @@ export class ClipService {
         },
       });
 
-      // Read the snapshot back OUTSIDE the transaction. The row is committed by
-      // now, and against a remote Postgres this read costs a full round trip —
-      // holding a transaction (and its pooled connection) open across it buys
-      // nothing.
-      const snapshot = await prisma.clip.findUniqueOrThrow({
-        where: { id: created.id },
-        include: {
-          project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
-          renders: true,
-        },
-      });
-
-      return toClipSnapshot(snapshot);
-    } catch {
+    } catch (error) {
+      // A concurrent request already accepted this command: the copies were
+      // released above and the caller returns the accepted result.
+      if (error instanceof ClipCreationReplayed || error instanceof ExpectedDomainFailureError) throw error;
       // Planned destinations are admitted before copying. If persistence fails,
       // releasing the hold makes every successful or ambiguous copy recoverable
       // without relying on this process to finish a best-effort delete.
@@ -1830,6 +1844,7 @@ export class ClipService {
     scope: ActorScope,
     projectId: string,
     input: { startSec: number; endSec: number },
+    acceptance?: ClipCreationAcceptance,
   ): Promise<ClipSnapshot> {
     await this.authorizeActor(scope, "content.edit");
     const project = await requirePrisma().project.findFirst({
@@ -1865,6 +1880,7 @@ export class ClipService {
         brollUrl: null,
       },
       origin: { reasoning: "Created from a library search result.", llmModel: "library-search" },
+      acceptance,
     });
   }
 
@@ -1880,8 +1896,8 @@ export class ClipService {
     range: { startSec: number; endSec: number };
     look: NewClipLook;
     origin: { reasoning: string; llmModel: string };
+    acceptance?: ClipCreationAcceptance;
   }): Promise<ClipSnapshot> {
-    const prisma = requirePrisma();
     const { projectId, workflowRunId, look } = input;
 
     const plan = planCreateClipFromSelection({
@@ -1913,7 +1929,7 @@ export class ClipService {
     const newClipId = randomUUID();
 
     try {
-      const created = await prisma.$transaction(async (tx) => {
+      return await this.commitNewClip(input.acceptance, async (tx) => {
         const highest = await tx.clip.aggregate({
           where: { projectId, workflowRunId },
           _max: { index: true },
@@ -1957,20 +1973,8 @@ export class ClipService {
         });
       });
 
-      // Read the snapshot back OUTSIDE the transaction — same rationale as
-      // duplicateClip above (a remote-Postgres round trip that doesn't need
-      // to hold the transaction's pooled connection open).
-      const snapshot = await prisma.clip.findUniqueOrThrow({
-        where: { id: created.id },
-        include: {
-          project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
-          renders: true,
-        },
-      });
-
-      return toClipSnapshot(snapshot);
     } catch (error) {
-      if (error instanceof ClipActionError) throw error;
+      if (error instanceof ClipCreationReplayed || error instanceof ExpectedDomainFailureError) throw error;
       throw new ClipActionError(
         "clip_create_from_selection_failed",
       );
@@ -2076,6 +2080,31 @@ export class ClipService {
         "clip_storage_delete_incomplete",
       );
     }
+  }
+
+  /** Inserts a new clip and returns its snapshot. Without an acceptance the
+   * snapshot is read back after commit, so the remote-Postgres round trip does
+   * not hold the transaction's pooled connection open. */
+  private async commitNewClip(
+    acceptance: ClipCreationAcceptance | undefined,
+    insert: ClipInsert,
+  ): Promise<ClipSnapshot> {
+    const read = async (db: Pick<Prisma.TransactionClient, "clip">, id: string) =>
+      toClipSnapshot(
+        await db.clip.findUniqueOrThrow({
+          where: { id },
+          include: {
+            project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
+            renders: true,
+          },
+        }),
+      );
+    if (acceptance) {
+      return acceptance.accept(async (tx) => read(tx, (await insert(tx)).id));
+    }
+    const prisma = requirePrisma();
+    const created = await prisma.$transaction(insert);
+    return read(prisma, created.id);
   }
 
   async regenerateClips(

@@ -65,6 +65,15 @@ export interface ResolvedRecipe {
   finishing: FinishingSettings | null;
 }
 
+/** A new Recipe, checked and ready to insert. */
+export interface PlannedRecipe {
+  name: string;
+  brandProfileId: string | null;
+  languageCode: string | null;
+  contentPack: ContentPack;
+  finishing: FinishingSettings | null;
+}
+
 /** A request that names a Recipe. `resolve` reads it when the request is
  * accepted, after any replay lookup, so honest retries replay instead of
  * seeing a Recipe someone edited since. */
@@ -182,32 +191,41 @@ export class RecipeService {
   }
 
   async create(scope: ActorScope, input: RecipeInput): Promise<RecipeSnapshot> {
+    const plan = await this.planCreate(scope, input);
+    return requirePrisma().$transaction((tx) => this.insertPlanned(tx, scope, plan));
+  }
+
+  /** Checks a new Recipe and settles what it will hold, without writing. A
+   * receipt-backed create plans after its replay lookup and inserts in its own
+   * transaction. An omitted Brand Profile freezes the Workspace default onto
+   * the Recipe now, so a later default change doesn't move it; null means none. */
+  async planCreate(scope: ActorScope, input: RecipeInput): Promise<PlannedRecipe> {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const parsed = recipeInputSchema.parse(input);
-    // An omitted Brand Profile freezes the Workspace default onto the Recipe
-    // now, so a later default change doesn't move it. Null means none.
     const brandProfileId = parsed.brandProfileId === undefined ? await brandProfileService.getApplicableDefaultId(actor) : parsed.brandProfileId;
     const finishing = parsed.finishing ?? null;
     await this.requireUsable(scope, { brandProfileId, finishing });
-    const row = await requirePrisma().$transaction(async (tx) => {
-      // Serialize the Workspace's Recipe budget with its write.
-      await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id" = ${scope.workspaceId}::uuid FOR UPDATE`;
-      if ((await tx.recipe.count({ where: { workspaceId: scope.workspaceId, deletedAt: null } })) >= MAX_RECIPES_PER_WORKSPACE) {
-        throw new RecipeError("recipe_limit_reached");
-      }
-      return tx.recipe.create({
-        data: {
-          workspaceId: scope.workspaceId,
-          name: parsed.name,
-          brandProfileId,
-          languageCode: parsed.languageCode ?? null,
-          contentPack: parsed.contentPack as unknown as Prisma.InputJsonValue,
-          ...(finishing && { finishing }),
-          createdByUserId: scope.actorUserId,
-          updatedByUserId: scope.actorUserId,
-        },
-        include: withRuleCount,
-      });
+    return { name: parsed.name, brandProfileId, languageCode: parsed.languageCode ?? null, contentPack: parsed.contentPack, finishing };
+  }
+
+  /** Inserts a planned Recipe, serializing the Workspace's Recipe budget with the write. */
+  async insertPlanned(tx: Prisma.TransactionClient, scope: ActorScope, plan: PlannedRecipe): Promise<RecipeSnapshot> {
+    await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id" = ${scope.workspaceId}::uuid FOR UPDATE`;
+    if ((await tx.recipe.count({ where: { workspaceId: scope.workspaceId, deletedAt: null } })) >= MAX_RECIPES_PER_WORKSPACE) {
+      throw new RecipeError("recipe_limit_reached");
+    }
+    const row = await tx.recipe.create({
+      data: {
+        workspaceId: scope.workspaceId,
+        name: plan.name,
+        brandProfileId: plan.brandProfileId,
+        languageCode: plan.languageCode,
+        contentPack: plan.contentPack as unknown as Prisma.InputJsonValue,
+        ...(plan.finishing && { finishing: plan.finishing }),
+        createdByUserId: scope.actorUserId,
+        updatedByUserId: scope.actorUserId,
+      },
+      include: withRuleCount,
     });
     return toSnapshot(row);
   }
@@ -277,10 +295,16 @@ export class RecipeService {
   }
 
   async duplicate(scope: ActorScope, recipeId: string): Promise<RecipeSnapshot> {
+    const plan = await this.planDuplicate(scope, recipeId);
+    return requirePrisma().$transaction((tx) => this.insertPlanned(tx, scope, plan));
+  }
+
+  /** The copy a duplicate would save, checked like any new Recipe. */
+  async planDuplicate(scope: ActorScope, recipeId: string): Promise<PlannedRecipe> {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const source = await this.requireRow(scope.workspaceId, recipeId);
     const settings = resolved(source);
-    return this.create(scope, {
+    return this.planCreate(scope, {
       name: `${source.name.slice(0, 112)} (copy)`,
       brandProfileId: settings.brandProfileId,
       languageCode: settings.languageCode as RecipeInput["languageCode"],

@@ -25,6 +25,27 @@ export function canStartBillingCheckout(input: {
 }
 
 /**
+ * Whether a newly read, provider-verified view changes what the rest of the app
+ * shows: the plan and interval, workspace access, subscription status, or the
+ * seats on the subscription. Only these refresh credits, entitlements and
+ * member limits elsewhere; a view that merely finished settling does not.
+ */
+export function billingViewChangesEntitlements(
+  previous: WorkspaceBillingView | undefined,
+  next: WorkspaceBillingView,
+): boolean {
+  if (!previous) return false;
+  return (
+    previous.workspaceId !== next.workspaceId ||
+    previous.plan !== next.plan ||
+    previous.interval !== next.interval ||
+    previous.status !== next.status ||
+    previous.workspaceAccessStatus !== next.workspaceAccessStatus ||
+    previous.synchronizedAdditionalSeats !== next.synchronizedAdditionalSeats
+  );
+}
+
+/**
  * How an upgrade prompt should route this workspace. A first subscription
  * picks an interval for Checkout. Plan choices are available for a
  * paid, current, active subscription: a restricted or attention state also

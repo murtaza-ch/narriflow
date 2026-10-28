@@ -37,7 +37,7 @@ function useStrings() {
 /**
  * The "Try it" dialog: inputs on the left, the live request and the response
  * on the right. It is mounted from the first open on, so what was typed
- * survives closing. Requests go to the app itself, from the visitor's browser.
+ * survives closing. Requests go directly to the API from the visitor's browser.
  */
 export function Playground({ bodyRequired }: PlaygroundProps) {
   const { spec, title, token, setToken, playgroundOpen, setPlaygroundOpen, language, opener } = useApiState();
@@ -74,8 +74,8 @@ export function Playground({ bodyRequired }: PlaygroundProps) {
       setResult({ kind: "error", message: `The request body is not valid JSON: ${parsedJson.error}` });
       return;
     }
-    // The visitor's browser calls this app directly, so the request needs no relay and the key goes nowhere else.
-    const request = buildRequest({ ...spec, origin: window.location.origin }, { token, headers, path: pathValues, query, body: entered }, true);
+    // Use the same API origin as the generated request snippets.
+    const request = buildRequest(spec, { token, headers, path: pathValues, query, body: entered }, true);
     if (spec.bodySchema && request.body === undefined && bodyRequired) request.body = {};
     if (request.body !== undefined && spec.contentType && !request.headers.some(([name]) => name === "Content-Type")) {
       request.headers.push(["Content-Type", spec.contentType]);

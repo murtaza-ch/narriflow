@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -198,11 +198,11 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] All copied route/action/page rows have mapped endpoints, including folder CRUD/move, notify/delete, brand apply, transcript/status/history/finishing/credits/dubs/source grant.
-- [ ] Home/explorer/detail aggregates preserve tabs/filters/cursors and conditional capabilities; no N+1 browser waterfall or unconditional transcript load.
-- [ ] Folders and retryable create/commands use durable receipts and native workflow admission; same key/payload replay and changed-body conflict tested.
-- [ ] Any project.service.ts changes are requested from 15; do not edit its file. Project mismatch stays an explicit switch.
-- [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
+- [x] All copied route/action/page rows have mapped endpoints, including folder CRUD/move, notify/delete, brand apply, transcript/status/history/finishing/credits/dubs/source grant.
+- [x] Home/explorer/detail aggregates preserve tabs/filters/cursors and conditional capabilities; no N+1 browser waterfall or unconditional transcript load.
+- [x] Folders and retryable create/commands use durable receipts and native workflow admission; same key/payload replay and changed-body conflict tested.
+- [x] Any project.service.ts changes are requested from 15; do not edit its file. Project mismatch stays an explicit switch.
+- [x] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
 
@@ -218,4 +218,35 @@ bun run --cwd apps/api typecheck
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (left to the orchestrator); the last acceptance box is ticked for "no unowned files changed" only, review findings are still to be recorded.
+
+### Endpoints (all through `createRouteApp`; declarations in `domains/{projects,library}/admission.ts`)
+- projects: `GET /home`, `GET /projects/explorer` (registered before `/projects/:id`), `GET /projects/:id/detail?tab=`, `GET /projects/:id/{content-pack,workflow-history,finishing,credit-usage,source-url,dubs/allowance}`, `DELETE /projects/:id`, `PATCH /projects/:id/folder {folderId|null}`, `POST /projects/:id/brand-profile {profileId, templateId|null}`, `PUT /projects/:id/notify-preference {notifyOnComplete}`; `GET /projects/:id/transcript?view=full|status` (default `full` = unchanged snapshot; `status` = `{view:"status", transcript:{status,errorCode}|null}`). Every existing route kept (list gained the shared lenient query schema).
+- library: `GET /workspace/folders`, `POST /library/folders` (retryable create), `PATCH|DELETE /library/folders/:folderId`; search routes kept, now with query validators so the client types them.
+- Mutations answer `{ok:true}`; folder create answers `{folder:{id,name,createdAt}}` 201, replay 200 + `Idempotent-Replayed: true`.
+
+### Contract for UI tickets (09, 10, 12, 16, 31)
+- Detail DTO (`readProjectDetail`, `domains/projects/read-models.ts`): `{tab, access:{role,status,pricingTier,isPersonalWorkspace}, snapshot (project, progress, activeRun, lastSeq, ingestAttemptCount, ingestJobType), transcript:{view,data}, clips, contentPack, socialPosts:{items,nextCursor}, workflowHistory, usage, finishing, creditUsage, tabData:{analytics, socialAccounts, workspaceTimezone, dubs, dubAllowance, brandChoices[{id,name,colors,logoUrl}], reviewRoom, sourceVideo:{url,expiresAt}|null}}`. Every read starts together (`Promise.all`); `tabData` is filled only for the active tab (full transcript only on `transcript`; brand choices + source grant only on `clips`; accounts + timezone on `posts`/`clips`). Derived UI facts (upgrade prompts, can1080p, canEdit, quota messages, pipeline) are computed in the client from `access`/`usage`/validators helpers; none is computed server-side. Plan-limit refusals on generate are now `ApiError` (`code` + `details`) instead of `redirect()`.
+- Home DTO: `{firstName, items, canCreate, readOnlyReason: "viewer"|"paused"|null, canManageBilling, autopilot:{lockedTier, rules, activeRules}, showRetentionBanner}`; the greeting hour is the client's. Explorer DTO: `{page:{items,nextCursor,totalCount,statusCounts}, folders[{id,name,createdAt,projectCount}], activeFolder, filters, access:{canEdit,canCreate,canManageBilling,showRetentionBanner}}`; next pages come from `projectQueries.list` (`GET /projects?cursor=`).
+- `@narriflow/validators/api/projects` now holds `PROJECT_TABS`, `ProjectTab`, `projectTabFromSearchParam`, filter constants and the query/command schemas: 10 should make `app/(app)/projects/[projectId]/project-tab.ts` re-export these instead of keeping a copy.
+- API-client: `projectQueries` (home, explorer, list (infinite), detail, snapshot, transcript/transcriptStatus, contentPack, workflowHistory, finishing, creditUsage, sourceUrl, dubsAllowance), `projectCommands`, `invalidateProject|AfterGeneration|AfterBrandApplied|AfterNotifyPreference|AfterProjectMoved|AfterProjectDeleted`, `libraryQueries` (folders, workspaceSearch, search, broll), `folderCommands`, `invalidateAfterFolderChange`. Detail key is `[...scopedKey(scope,'projects','detail',projectId), tab]` (a seventh element on purpose, so `invalidateScoped(..., 'projects','detail', projectId)`, which ticket 27's reviews client already calls, refreshes every opened tab). Folder create and generate take the intent's key as the `Idempotency-Key` header. Delete: treat a 404 `project_not_found` as success, then `invalidateAfterProjectDeleted` and navigate to the explorer.
+
+### Decisions / deviations
+- Move-to-folder is `PATCH /api/projects/:id/folder` (spec table) not the ticket's `PUT`. Brand apply is `POST /api/projects/:id/brand-profile` (spec table); the campaign-operations route stays selected-clip semantics (11).
+- Folder creation is receipt-backed (`create_folder` in `projects-receipt-commands.ts`; `projects-commands.ts` `createFolder`; wiring in `-runtime.ts`): the folder row and receipt commit in one transaction, fingerprint = validated name, limiter enforced through `beforeAccept` only for new work (`deferRateRefusal`), authorization before replay. `workspace-library.service.ts` only gained the exported `validFolderName`/`folderCreateData`/`folderCreateSelect` that the command shares with `createFolder`.
+- Source grant keeps `content.view` (what the Clips tab used); a reclaimed or unsignable source gives `{url:null, expiresAt:null}`. The Brand picker reads up to 100 profiles (was the default 24) and returns only id/name/colors/logo.
+- Delete maps nothing by hand: `ProjectAccessDeniedError`, `ProjectHasActiveWorkflowError`, `ProjectHasActivePublicationError`, `ProjectDeletionIncompleteError` are expected domain failures and reach the client with their codes; only a Project already gone is success.
+- Not mine, still to do: `retryIngestFormAction` (ingest, 15), `regenerateClipsFormAction` and `renderClipsFormAction` (existing clips endpoints, 11; render action is dead and is deleted with `projects/actions.ts` by 31). `readContentPackFromForm`/`readLanguageCodeFromForm` become client-side input builders for `generateProjectRequestSchema`; the schema already matches the old action (`forceRegenerate` false by default).
+- No `project.service.ts` change was needed, so nothing is requested from 15.
+
+### Observations (not changed, outside my brief)
+- Creating or renaming a folder to an existing name still raises Prisma `P2002` (generic 500), as before; a typed `workspace_folder_name_taken` conflict would be the natural fix in `workspace-library.service.ts`'s catalog if the owner wants it.
+- `apps/api/src/admission-tables.test.ts` currently fails on `GET /social/accounts` (publishing 17's in-progress admission edit) and `route-inventory.test.ts` cannot load until 05's validators exports (`inviteTokenParamSchema` etc.) land; neither is mine.
+
+### Evidence
+- `bun test apps/api/src/domains/projects apps/api/src/domains/library` -> 30 pass, 0 fail (includes a registration check that both domains register exactly their declarations, `/projects/explorer` not swallowed by `:id`, fail-closed guard intact). `bun test packages/services/src/projects-commands.test.ts` -> 6 pass (create once, replay, changed-name conflict, concurrent same key, limiter only for new work, invalid name records nothing).
+- `.scratch/api-extraction/db-gate.sh bun run test:library-search:db` -> 23 pass, 0 fail. `.scratch/api-extraction/db-gate.sh bun run test:workflow:db` -> 175 pass, 0 fail.
+- `bun run --cwd apps/api typecheck`: no errors in projects, library or services files I own; remaining errors are other tickets' in-progress files (brand/aggregates.ts 19, reviews/guest-replay-child.ts 27, session/* and workspace/routes.ts 05, studio/bootstrap.ts 13, services/clips-commands.ts 11).
+- `bun run typecheck` in `packages/api-client` (my queries/mutations and `rpc-types.check.ts` compile) and `packages/validators` (exit 0): no errors in my files; api-client's remaining errors are `clips/mutations.ts` (11), `rest/routes.ts` (23), `workspace/routes.ts` (05) and `services/clips-commands.ts` (11).
+- `bunx biome check` on all owned paths: clean.

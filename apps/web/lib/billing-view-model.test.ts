@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   billingStatusPresentation,
+  billingViewChangesEntitlements,
   canStartBillingCheckout,
   shouldFocusBillingStatus,
   shouldShowSeatSyncStatus,
@@ -155,5 +156,25 @@ describe("upgradeBillingMode", () => {
     expect(upgradeBillingMode({ ...base, health: "attention_required", actions: ["open_portal", "contact_support"] })).toBe("billing");
     expect(upgradeBillingMode({ ...base, plan: "free" })).toBe("billing");
     expect(upgradeBillingMode({ ...base, health: "activating", actions: [] })).toBe("billing");
+  });
+});
+
+describe("billingViewChangesEntitlements", () => {
+  test("is false for the first view and for a view that only finished settling", () => {
+    expect(billingViewChangesEntitlements(undefined, base)).toBe(false);
+    expect(
+      billingViewChangesEntitlements(
+        { ...base, health: "activating" },
+        { ...base, health: "current", lastSuccessfulSyncAt: "2026-08-29T10:00:00.000Z" },
+      ),
+    ).toBe(false);
+  });
+
+  test("is true when the verified plan, access, status or seats move", () => {
+    expect(billingViewChangesEntitlements(base, { ...base, plan: "business" })).toBe(true);
+    expect(billingViewChangesEntitlements(base, { ...base, interval: "annual" })).toBe(true);
+    expect(billingViewChangesEntitlements(base, { ...base, workspaceAccessStatus: "restricted" })).toBe(true);
+    expect(billingViewChangesEntitlements(base, { ...base, status: "payment_failed" })).toBe(true);
+    expect(billingViewChangesEntitlements(base, { ...base, synchronizedAdditionalSeats: 2 })).toBe(true);
   });
 });

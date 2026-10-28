@@ -145,11 +145,17 @@ export class AutoCensorService {
     if (!workspaceAllowsCapability(scope, "content.view")) {
       throw new AutoCensorAccessError("auto_censor_forbidden");
     }
-    const project = await this.requirePrisma().project.findFirst({
-      where: { id: projectId, workspaceId: scope.workspaceId },
-      select: { id: true },
-    });
-    if (!project) throw new AutoCensorAccessError("auto_censor_forbidden");
+    const prisma = this.requirePrisma();
+    // The clip arrives as a URL segment, so it must belong to this Project:
+    // an event never attaches to another Project's clip.
+    const [project, clip] = await Promise.all([
+      prisma.project.findFirst({
+        where: { id: projectId, workspaceId: scope.workspaceId },
+        select: { id: true },
+      }),
+      prisma.clip.findFirst({ where: { id: clipId, projectId }, select: { id: true } }),
+    ]);
+    if (!project || !clip) throw new AutoCensorAccessError("auto_censor_forbidden");
     const parsed = autoCensorAnalyticsInputSchema.parse(input);
     const { type, ...metadata } = parsed;
     await analyticsService.recordProjectEvent({

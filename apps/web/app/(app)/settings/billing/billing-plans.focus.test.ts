@@ -21,4 +21,5 @@ test("BillingPlans preserves keyboard focus through recovery", async () => {
   ]);
   if (exitCode !== 0) throw new Error(`${stdout}\n${stderr}`);
   expect(exitCode).toBe(0);
-});
+  // The fixture runs in its own process, whose start-up alone can exceed the default timeout on a busy machine.
+}, 30_000);

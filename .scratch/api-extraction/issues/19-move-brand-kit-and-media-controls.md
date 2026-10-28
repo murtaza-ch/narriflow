@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -321,10 +321,10 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] All 41 brand/media routes move with exact capabilities, optimistic revisions, membership/default/governance/asset ownership and typed generated-media degradation.
-- [ ] New aggregate/default/usage/retained-reference reads serve Studio/upload/recipes without 24-row truncation; retained deleted refs remain resolvable.
-- [ ] Profile/template/scene/asset retryable creates use atomic receipts; native generated media acceptance remains authoritative.
-- [ ] Presigned media/font/audio uploads remain direct; no font/image/passcode native regression in Bun container.
+- [x] All 41 brand/media routes move with exact capabilities, optimistic revisions, membership/default/governance/asset ownership and typed generated-media degradation.
+- [x] New aggregate/default/usage/retained-reference reads serve Studio/upload/recipes without 24-row truncation; retained deleted refs remain resolvable.
+- [x] Profile/template/scene/asset retryable creates use atomic receipts; native generated media acceptance remains authoritative.
+- [x] Presigned media/font/audio uploads remain direct; no font/image/passcode native regression in Bun container.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -340,4 +340,24 @@ bun run --cwd apps/api typecheck
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (last acceptance box left open for the orchestrator).
+
+### What landed
+- `apps/api/src/domains/brand`: all 41 existing routes (17 relocated by 04 + the 24 of `brand-profile-routes.ts`, now deleted from web) plus the 6 chosen new reads (`GET /brand-kit`, `/brand-profiles/default?applicable=1`, `/brand-profiles/:id/usage|detail`, `/brand-templates/:id/profile|editor-assets`) = 47 admission entries; mounted routes equal the table (tested). Capabilities and operation rates copied from the inventory rows (`set-default` stays `workspace.manage`; presign rates 30/60; `generated-image-create` 10/60). Ids are UUID-validated after admission (the old unvalidated `:id` reads now return 400 `invalid_input` instead of a driver error); audio keeps its legacy `invalid_audio_asset_id`. Services get only the brand slice of the actor, never the App User.
+- `aggregates.ts` (API-side `Promise.all` composition, services unchanged): kit/detail/default/usage/template-profile/editor-assets, each role-gated read stays gated (usage and replacements only for `brand.manage`; replacements also need `brand.profiles` on the plan). They return the plan facts the pages computed (`brandPlanRequirement`, count and governance requirements) so the browser imports no service. Profiles come from the new `brandProfileService.listAll` (cursor-paged, 100 per page, 5-page bound), not the 24-row default. Retained fonts resolve with `insertable:false` as before.
+- Receipts (`create_brand_profile`, `create_brand_template`, `duplicate_brand_template`, `create_scene_template`, listed in `brand-receipt-commands.ts`): each service `create/duplicate` takes an optional `IntegrationMutation` (autopilot pattern; the many DB-gate callers stay unreceipted). Row and receipt commit in one transaction; scene keeps its serializable isolation via a serializable receipt persistence. Authorization on replay is a live `requireActor(brand.manage)`. Profile receipt result is `{id}` only (signed asset URLs never stored); the response is read fresh. Routes require `Idempotency-Key`, declare `deferRateRefusal`, and enforce the recorded limiter in `beforeAccept`, so replay beats 429/503.
+- Not receipt-wrapped, by design: asset finalize (visual/font/audio) is already naturally idempotent (unique fingerprint / storage key, `replayed` flag); generated media keeps its body `idempotencyKey` job store; scene apply keeps `CampaignOperation` + `Campaign-Retry-Of`.
+- `packages/validators/src/api/brand.ts` (query schemas), `packages/api-client/src/brand/{client,queries,mutations}.ts` (`brandQueries`, `brandMutations`, `invalidateBrand`; signed links `staleTime 0`, job polling 3 s only while a job can change).
+
+### Requests for other owners
+- 31 (or 04): `packages/api-client/src/index.ts` should `export * from "./brand"` (it currently re-exports only `createBrandClient/BrandClient/BrandRoutes`), otherwise 20 cannot import `brandQueries/brandMutations/invalidateBrand`.
+- 31: add `packages/services/src/brand-receipts.db.test.ts` to `packages/services/scripts/run-brand-profile-db-tests.ts` (the runner executes one fixed file; I ran the new file through a temp copy of the runner under the same env). Delete the now-unused `brand-commands.ts` / `brand-commands-runtime.ts` skeletons (and the `index.ts` exports of them) in the final cleanup; receipts live on the services, nothing uses `createBrandCommands`.
+- 20: `invalidateBrand` also invalidates `recipes`, `ingest/configuration`, `studio/editor-assets` and `studio/brand-snapshot` for the Workspace; if 14/16 name those resources differently, adjust the list in `queries.ts` (Studio's working document key is deliberately not touched).
+- 04/spec: `rpc-types.check.ts` still compiles against the new routes. The spec lists no capability for the new reads; I chose `content.view` except `/brand-profiles/:id/usage` = `brand.manage` (its only consumer is the delete dialog, which the page showed to managers only).
+
+### Evidence
+- `bun test apps/api/src/domains/brand packages/api-client/src/brand` -> 58 pass (routes 33 incl. admission, 400/403/409/429/503 envelopes, idempotency-key matrix, literal-before-param order, route/table parity; aggregates 11; client 14).
+- `.scratch/api-extraction/db-gate.sh bun run test:brand-profiles:db` -> 37 pass; `test:vizard-expansion:db` -> 17 + 4 + 3 pass. New `brand-receipts.db.test.ts` through the same gate environment -> 11 pass (replay, changed-input conflict, 5-way same-key race for profile/style/scene, limiter enforced for new work and skipped on replay, replay re-authorization, plan-limit refusal leaves no receipt, `listAll` returns 30 > 24).
+- `bun test packages/services/src/generated-media.test.ts` -> 26 pass (unchanged service). `operation-receipt.test.ts` registry test currently fails on another domain's name `review.round.create` (not matching `^[a-z][a-z0-9_]*$`; reviews/27).
+- `bunx biome check` on my paths clean. `tsc` (apps/api, packages/api-client, packages/services): no errors in my files. Remaining errors are others': api `domains/rest/routes.ts` (23), `reviews/guest-replay-child.ts` (27), `studio/bootstrap.ts` (13; its `Map` of `insertable` flags has the same typing issue I fixed in `aggregates.ts`), `workspace/routes.ts` (05); services `clips-commands.ts` (11); api-client `clips/mutations.ts` (11). `apps/api/scripts/check-route-inventory.ts` could not load while validators lacked 05's `inviteTokenParamSchema` export, so inventory parity was verified by the route/table test instead; rerun it once 05 lands.
+- `bun run test:integration-api:db`/others not run (outside scope).

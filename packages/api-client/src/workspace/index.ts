@@ -1,11 +1,23 @@
-import type { WorkspaceRoutes } from "@narriflow/api/types/workspace";
-import { type RpcTransport, createRpcClient } from "../rpc";
-
-export type { WorkspaceRoutes };
-
-/** Typed client for the workspace routes. Pass a bound transport (`runtime.transport.scoped(scope)`). */
-export function createWorkspaceClient(transport: RpcTransport) {
-  return createRpcClient<WorkspaceRoutes>(transport);
-}
-
-export type WorkspaceClient = ReturnType<typeof createWorkspaceClient>;
+export { createWorkspaceClient, type WorkspaceClient, type WorkspaceRoutes } from "./client";
+export {
+  changeMemberRoleMutation,
+  inviteMemberMutation,
+  performanceGuidanceMutation,
+  presignAvatarMutation,
+  removeMemberMutation,
+  replaceCensorWordsMutation,
+  resendInviteMutation,
+  resetCensorWordsMutation,
+  revokeInviteMutation,
+  setAvatarMutation,
+  updateWorkspaceMutation,
+} from "./mutations";
+export {
+  invalidateWorkspaceMembers,
+  invalidateWorkspaceProfile,
+  workspaceBootstrapQuery,
+  workspaceCensorWordsQuery,
+  workspaceMembersQuery,
+  workspaceProfileQuery,
+  workspaceUsageQuery,
+} from "./queries";

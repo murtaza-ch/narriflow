@@ -28,6 +28,8 @@ import {
 import { lockBrandOwner } from "./brand-ownership";
 import { requirePlanFeature, requireWithinPlanLimit } from "./plan-features";
 import { brandFontService } from "./brand-font.service";
+import type { IntegrationMutation } from "./operation-receipt";
+import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 
 const FALLBACK_BUILT_IN_KEY = "karaoke";
 
@@ -136,21 +138,48 @@ export class BrandTemplateService {
   private requirePrisma = requirePrisma;
 
   /** Creates a custom template once the Workspace's active custom templates,
-   * counted under its lock, leave room on its plan. Built-ins never count. */
+   * counted under its lock, leave room on its plan. Built-ins never count.
+   * With a `mutation` the row and its Operation Receipt commit together, so a
+   * retry with the same key returns the template it already made. */
   private async createCounted(
     prisma: ReturnType<typeof requirePrisma>,
-    workspaceId: string,
+    scope: ActorScope,
     pricingTier: string,
     data: PrismaTypes.BrandTemplateUncheckedCreateInput,
-  ): Promise<BrandTemplate> {
-    return prisma.$transaction(async (tx) => {
+    receipt?: {
+      mutation: IntegrationMutation;
+      command: "create_brand_template" | "duplicate_brand_template";
+      input: unknown;
+    },
+  ): Promise<BrandTemplateSummary> {
+    const { workspaceId } = scope;
+    const createIn = async (tx: PrismaTypes.TransactionClient) => {
       await lockBrandOwner(tx, "brand-templates", { userId: null, workspaceId });
       const active = await tx.brandTemplate.count({
         where: { workspaceId, isBuiltIn: false, deletedAt: null },
       });
       requireWithinPlanLimit(pricingTier, "brandTemplates", active);
-      return tx.brandTemplate.create({ data });
+      return toSummary(await tx.brandTemplate.create({ data }));
+    };
+    if (!receipt) return prisma.$transaction(createIn);
+    const accepted = await getOperationReceiptExecutor().execute({
+      identity: {
+        workspaceId,
+        actorUserId: scope.actorUserId,
+        command: receipt.command,
+        clientIdempotencyKey: receipt.mutation.clientIdempotencyKey,
+      },
+      input: receipt.input,
+      authorize: async () => {
+        await workspaceService.requireActor(scope.actorUserId, workspaceId, "brand.manage");
+      },
+      beforeAccept: receipt.mutation.beforeAccept,
+      mutate: async (tx) => {
+        const value = await createIn(tx);
+        return { resourceType: "brand_template", resourceId: value.id, value };
+      },
     });
+    return accepted.value;
   }
 
   buildSnapshot(template: BrandTemplate): BrandTemplateSnapshot {
@@ -224,6 +253,7 @@ export class BrandTemplateService {
   async create(
     scope: ActorScope,
     input: BrandTemplateInput,
+    mutation?: IntegrationMutation,
   ): Promise<BrandTemplateSummary> {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "brand.manage");
     const assetOwnerUserId = actor.workspaceOwnerUserId;
@@ -240,7 +270,7 @@ export class BrandTemplateService {
     requirePlanFeature(actor.pricingTier, "brand.customTemplates");
 
     const prisma = this.requirePrisma();
-    const template = await this.createCounted(prisma, scope.workspaceId, actor.pricingTier, {
+    return this.createCounted(prisma, scope, actor.pricingTier, {
         userId: assetOwnerUserId,
         workspaceId: scope.workspaceId,
         createdByUserId: scope.actorUserId,
@@ -255,8 +285,7 @@ export class BrandTemplateService {
         primaryColor: parsed.primaryColor,
         secondaryColor: parsed.secondaryColor,
         accentColor: parsed.accentColor ?? null,
-    });
-    return toSummary(template);
+    }, mutation && { mutation, command: "create_brand_template", input: parsed });
   }
 
   async update(
@@ -368,6 +397,7 @@ export class BrandTemplateService {
     scope: ActorScope,
     id: string,
     newName?: string,
+    mutation?: IntegrationMutation,
   ): Promise<BrandTemplateSummary> {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "brand.manage");
     const assetOwnerUserId = actor.workspaceOwnerUserId;
@@ -382,7 +412,7 @@ export class BrandTemplateService {
     });
     if (!source) throw new BrandTemplateNotFoundError();
 
-    const duplicated = await this.createCounted(prisma, scope.workspaceId, actor.pricingTier, {
+    return this.createCounted(prisma, scope, actor.pricingTier, {
         userId: assetOwnerUserId,
         workspaceId: scope.workspaceId,
         createdByUserId: scope.actorUserId,
@@ -397,8 +427,7 @@ export class BrandTemplateService {
         primaryColor: source.primaryColor,
         secondaryColor: source.secondaryColor,
         accentColor: source.accentColor,
-    });
-    return toSummary(duplicated);
+    }, mutation && { mutation, command: "duplicate_brand_template", input: { sourceId: id, name: newName?.trim() || null } });
   }
 
   async ensureFirstUseDefault(userId: string, context?: BrandWorkspaceContext): Promise<string | null> {

@@ -61,6 +61,11 @@ import {
 	type TranscriptExportFormat,
 	type TranscriptSnapshot,
 } from "@narriflow/validators";
+import {
+	RESUMABLE_INGEST_STATUSES,
+	type LinkResumeData,
+	type LinkResumeResult,
+} from "@narriflow/validators/api/ingest";
 import { deleteObject } from "./r2-storage";
 import {
 	createDriveTokenCipher,
@@ -921,6 +926,76 @@ export class ProjectService {
 			activeRun: relevantRun ? toWorkflowRunSnapshot(relevantRun) : null,
 			lastSeq,
 		};
+	}
+
+	/**
+	 * Where a person returning to a link import's Configure step (Step 2) lands:
+	 * the rehydrated draft, the Project itself once a run already exists (Configure
+	 * finished, so nothing is left to resume), or a fresh import when the Project
+	 * is missing, is not a link import, or lost its draft pack.
+	 */
+	async getLinkResume(
+		scope: ActorScope,
+		projectId: string,
+	): Promise<LinkResumeResult> {
+		await this.requireActor(scope, "processing.consume");
+		const snapshot = await this.getProjectSnapshot(scope, projectId);
+		if (!snapshot.project) return { outcome: "restart" };
+		if (snapshot.activeRun) return { outcome: "open_project" };
+		if (
+			snapshot.project.sourceType !== "youtube" &&
+			snapshot.project.sourceType !== "link"
+		) {
+			return { outcome: "restart" };
+		}
+		const draftPack = await this.getLatestContentPack(scope, projectId);
+		// queueLinkIngest writes the draft pack atomically with the Project, so a
+		// missing one leaves nothing sane to rehydrate.
+		if (!draftPack) return { outcome: "restart" };
+		const ingestStatus = (RESUMABLE_INGEST_STATUSES as readonly string[]).includes(
+			snapshot.project.ingestStatus,
+		)
+			? (snapshot.project.ingestStatus as LinkResumeData["ingestStatus"])
+			: "queued";
+		return {
+			outcome: "resume",
+			data: {
+				projectId: snapshot.project.id,
+				title: snapshot.project.title,
+				sourceProvider: snapshot.project.sourceProvider,
+				sourceMediaUrl: snapshot.project.sourceMediaUrl,
+				sourceInput: snapshot.project.sourceInput,
+				languageCode: snapshot.project.languageCode,
+				ingestStatus,
+				ingestErrorCode: snapshot.project.ingestErrorCode,
+				ingestFromDrivePicker: snapshot.ingestJobType === "drive_import",
+				contentPack: parseStoredContentPack(draftPack),
+			},
+		};
+	}
+
+	/**
+	 * The title YouTube publishes for a link, for the Commit step's editable
+	 * title. Only YouTube links are looked up, always against the fixed oEmbed
+	 * host with the link encoded as a parameter. Bounded to ~3s; any failure
+	 * (timeout, other provider, private or deleted video) returns null and the
+	 * title simply stays editable.
+	 */
+	async fetchLinkTitle(url: string): Promise<string | null> {
+		if (detectLinkProvider(url) !== "youtube") return null;
+		try {
+			const response = await fetch(
+				`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`,
+				{ signal: AbortSignal.timeout(3000) },
+			);
+			if (!response.ok) return null;
+			const payload = (await response.json()) as { title?: unknown };
+			const title =
+				typeof payload.title === "string" ? payload.title.trim() : "";
+			return title || null;
+		} catch {
+			return null;
+		}
 	}
 
 	async getWorkflowRun(

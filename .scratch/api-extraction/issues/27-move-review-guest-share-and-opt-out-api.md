@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** ready-for-agent
+**Status:** blocked
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -126,11 +126,11 @@ These are the nine rows in review-guest-http.ts, identified by method and relati
 
 ## Acceptance criteria
 
-- [ ] Eight internal review routes, nine guest registrations, public share and opt-out move with exact trust/plan/permission/refusal behavior.
-- [ ] Guest access returns bound sessionToken/expiresAt, max 12h, with token/round digest binding, explicit web-origin checks and existing passcode/email throttles.
-- [ ] Guest comment/decision replay uses immutable ReviewAuditEvent metadata and a transaction advisory lock scoped to round/guest/grant/command/key digest; no fake App User actor. Internal commands use OperationReceipt. Test same-key concurrency, changed-body conflict, lost response, grant rotation, expiry and receipt replay after later edits/deletes.
-- [ ] Opt-out GET is preview-only, POST confirms once; grants expose only safe downloadable variants and expire/refetch normally.
-- [ ] Review selection decoder moves to validators; service uses same decoder and no parallel parser.
+- [x] Eight internal review routes, nine guest registrations, public share and opt-out move with exact trust/plan/permission/refusal behavior.
+- [x] Guest access returns bound sessionToken/expiresAt, max 12h, with token/round digest binding, explicit web-origin checks and existing passcode/email throttles.
+- [x] Guest comment/decision replay uses immutable ReviewAuditEvent metadata and a transaction advisory lock scoped to round/guest/grant/command/key digest; no fake App User actor. Internal commands use OperationReceipt. Test same-key concurrency, changed-body conflict, lost response, grant rotation, expiry and receipt replay after later edits/deletes.
+- [x] Opt-out GET is preview-only, POST confirms once; grants expose only safe downloadable variants and expire/refetch normally.
+- [x] Review selection decoder moves to validators; service uses same decoder and no parallel parser.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -147,3 +147,36 @@ bun run --cwd apps/api typecheck
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+Claimed by GPT-6.1-Sol, 2026-10-29. Implementation in the shared dev checkout; only ticket-owned files will be edited.
+
+### Implementation
+
+- Registered all 20 operations through `createRouteApp(reviewsAdmission)`: eight internal, nine guest, public share, opt-out preview and confirmation. Literal opt-out precedes the token route. Removed the Next guest handlers/tests and opt-out HTML handler; no proxy or cookie path remains.
+- Access returns the existing HMAC-signed session plus its signed expiry, with the full review-token digest and round binding. Exact configured web origins are checked; credentialed server calls may omit Origin. Guest admission checks the live round/grant before validation. Preserved passcode/email throttles, guest author/edit-window/reply guards and the existing notification ledger.
+- Guest comment/decision acceptance writes the safe immutable result on the corresponding audit event. Transaction advisory identity is round + guest + subject-grant hash + command + caller-key digest. A round row lock prevents grant rotation during the final authorization and acceptance. Replay precedes throttles, survives later edits/deletes/decisions and rejects changed input, expiry, revocation and old grants. Guest data never enters OperationReceipt.
+- All seven internal POST commands use OperationReceipt in the same transaction as the domain write/notification intent. Admission records rate outcomes; locked new acceptance enforces them after replay. Receipt results are encrypted with the existing review delivery secret because round creation returns a capability URL; no plaintext link is stored in a receipt.
+- Media returns a 60-second storage grant. Public share reuses `getShared`, projects through the safe export schema, retains only completed downloadable variants and supplies a conservative 60-second refetch deadline. Selection encode/decode now re-export the validators implementation; the services copy is deleted.
+- Added typed client query factories, separate guest transport with no Clerk/cookies/automatic retry, scoped invalidation helpers and `packages/api-client/src/reviews/README.md` for ticket 28.
+
+### Requests and review
+
+- 28: consume the client handoff, store guest credentials only in tab sessionStorage keyed by the review-token digest, clear on expiry/refusal and refetch media/share grants after expiry or tab resume. Keep the new opt-out presentation page on the human web URL.
+- 28/31: finish the review UI XSS/CSP check, including API-origin connect-src and no raw HTML/script interpolation. These files are outside ticket 27's ownership.
+- Paired Claude review remains with the orchestrator; no nested delegate was started by this implementation sub-agent. No findings have been received yet.
+- Global inventory currently fails in ticket 05's `apps/api/src/domains/session/routes.ts`: `inviteTokenParamSchema` is imported from the validators root, but its home is `@narriflow/validators/api/session`. Please fix the import in the owning ticket. No unowned file was edited.
+
+### Verification
+
+- `bun test apps/api/src/domains/reviews` and `bun test apps/api/src/domains/reviews packages/services/src/review-opt-out.test.ts`: adapter tests pass; the separately gated PostgreSQL suite is skipped in ordinary runs.
+- Combined owned deterministic suites (API routes, client, review service, notifications and opt-out): 39 pass, 0 fail.
+- `ALLOW_REVIEW_REPLAY_DB_TESTS=1 .scratch/api-extraction/db-gate.sh bun test apps/api/src/domains/reviews/guest-replay.db.test.ts`: 6 pass, 0 skipped. Includes two separate Bun processes sharing one key, immutable replay after edits/deletes, changed input, grant rotation/expiry/revocation, limiter outage ordering, internal receipts and atomic round/notification creation.
+- `.scratch/api-extraction/db-gate.sh bun run test:authenticated-request-policy:db`: 4 pass, 0 skipped.
+- Owned-path `bunx biome check` and `git diff --check`: clean. Validators typecheck passes. Final API/services/api-client/web package typechecks were started but did not finish under shared-machine compiler contention. Redundant runs were canceled; no owned compiler process is intentionally left running. These checks are not reported as passing.
+- No commits, dependency installs, migrations on shared resources or env-file edits. No spec deviation; encrypted internal receipt snapshots and the conservative share refetch deadline are implementation choices.
+
+### Close-out blocker
+
+Implementation is complete and the five functional acceptance boxes are checked. Status is `blocked` because final package typechecks and Claude's paired review are still required. The validators typecheck passed. The earlier completed API typecheck reported only ticket 23's transitional REST errors (`domains/rest/routes.ts`, `domains/index.ts`, `runtime.ts`), with no ticket 27 diagnostics; later full checks did not finish while more than ten compilers were contending on the shared machine. Please rerun API/services/api-client/web typechecks after the compiler wave settles, fix the ticket 05 inventory import noted above, run the paired review and then mark this ticket done. The remaining acceptance box intentionally stays open.
+
+All functional verification is complete: 39 deterministic tests, 6 disposable-PostgreSQL review tests and the 4-test authenticated-request-policy DB gate pass. No implementation stub or compatibility path remains in this ticket's files.

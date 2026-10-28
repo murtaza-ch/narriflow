@@ -2,9 +2,21 @@ import type { AdmissionTable } from "../platform/admission-table";
 
 /** Admission of the projects routes, keyed by `METHOD /path` under `/api`. */
 export const projectsAdmission = {
+  "GET /home": { kind: "workspace", capability: "content.view" },
   "GET /projects": { kind: "workspace", capability: "content.view" },
+  "GET /projects/explorer": { kind: "workspace", capability: "content.view" },
   "POST /projects/:id/generate": { kind: "project", capability: "processing.consume", projectParam: "id", rate: { scope: "actor", prefix: "gen", limit: 20 } },
   "GET /projects/:id": { kind: "project", capability: "content.view", projectParam: "id" },
+  "DELETE /projects/:id": { kind: "project", capability: "content.edit", projectParam: "id" },
+  "GET /projects/:id/detail": { kind: "project", capability: "content.view", projectParam: "id" },
+  "GET /projects/:id/content-pack": { kind: "project", capability: "content.view", projectParam: "id" },
+  "GET /projects/:id/workflow-history": { kind: "project", capability: "content.view", projectParam: "id" },
+  "GET /projects/:id/finishing": { kind: "project", capability: "content.view", projectParam: "id" },
+  "GET /projects/:id/credit-usage": { kind: "project", capability: "content.view", projectParam: "id" },
+  "GET /projects/:id/source-url": { kind: "project", capability: "content.view", projectParam: "id" },
+  "PATCH /projects/:id/folder": { kind: "project", capability: "content.edit", projectParam: "id" },
+  "POST /projects/:id/brand-profile": { kind: "project", capability: "content.edit", projectParam: "id" },
+  "PUT /projects/:id/notify-preference": { kind: "project", capability: "content.edit", projectParam: "id" },
   "GET /projects/:id/runs/:workflowRunId": { kind: "project", capability: "content.view", projectParam: "id" },
   "GET /projects/:id/transcript": { kind: "project", capability: "content.view", projectParam: "id" },
   "GET /projects/:id/transcript/utterances": { kind: "project", capability: "content.view", projectParam: "id" },
@@ -13,6 +25,7 @@ export const projectsAdmission = {
   "POST /projects/:id/content-suite": { kind: "project", capability: "processing.consume", projectParam: "id", rate: { scope: "actor", prefix: "content-suite", limit: 30 } },
   "GET /projects/:id/analytics": { kind: "project", capability: "content.view", projectParam: "id" },
   "GET /projects/:id/dubs": { kind: "project", capability: "content.view", projectParam: "id" },
+  "GET /projects/:id/dubs/allowance": { kind: "project", capability: "content.view", projectParam: "id" },
   "POST /projects/:id/dubs": { kind: "project", capability: "processing.consume", projectParam: "id", rate: { scope: "actor", prefix: "dubs", limit: 20 } },
   "GET /projects/:id/dubs/:dubId/download": { kind: "project", capability: "content.download", projectParam: "id" },
 } as const satisfies AdmissionTable;

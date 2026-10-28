@@ -17,8 +17,9 @@ const actionStyle = {
 
 /**
  * Inline plan-limit prompt shown next to an action the plan doesn't allow.
- * The message is computed server-side (see `planFeatureRequirement`) so the
- * specific limit copy survives production Server-Action error redaction.
+ * The message comes from the API's typed plan refusal (see
+ * `planFeatureRequirement`), so the specific limit copy reaches the screen
+ * without the client re-deriving the rule.
  * It's an upgrade prompt, not an error: gold gem, muted copy, gold action.
  *
  * - `upgrade` with a tier: the action opens the shared upgrade dialog.

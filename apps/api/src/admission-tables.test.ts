@@ -96,7 +96,8 @@ describe("preserved admission declarations", () => {
     // Reads that are not content.view.
     expect(capabilityOf("GET /broll/search")).toBe("content.edit");
     expect(capabilityOf("GET /projects/:id/clips/:clipId/download")).toBe("content.download");
-    expect(capabilityOf("GET /social/accounts")).toBe("social.manage");
+    expect(capabilityOf("GET /social/accounts")).toBe("content.view");
+    expect(capabilityOf("DELETE /social/accounts/:accountId")).toBe("social.manage");
     // Writes that are not content.edit.
     expect(capabilityOf("POST /brand-templates/:id/set-default")).toBe("workspace.manage");
     expect(capabilityOf("POST /autopilot/rules/:ruleId/take-over")).toBe("workspace.manage");

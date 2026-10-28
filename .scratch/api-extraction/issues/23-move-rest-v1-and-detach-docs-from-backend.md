@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** ready-for-agent
+**Status:** blocked
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -461,11 +461,11 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] All 31 v1 command mappings/statuses/scopes/callbacks/receipts/header contracts and public document preserved under independent API-key trust.
-- [ ] Operation status URLs point at API; human review/composer/queue links point at web; external Zapier/Make defaults/config/tests use API.
-- [ ] Deterministic generated OpenAPI JSON is consumed by docs without loading runtime/services/provider secrets; regeneration check compares normalized servers.
-- [ ] Docs search stays web/content-only with existing scoring/snippets/results; playground and connector page advertise/call API.
-- [ ] Snapshots/tests move with REST and callback SSRF/DNS protection is retained.
+- [x] All 31 v1 command mappings/statuses/scopes/callbacks/receipts/header contracts and public document preserved under independent API-key trust.
+- [x] Operation status URLs point at API; human review/composer/queue links point at web; external Zapier/Make defaults/config/tests use API.
+- [x] Deterministic generated OpenAPI JSON is consumed by docs without loading runtime/services/provider secrets; regeneration check compares normalized servers.
+- [x] Docs search stays web/content-only with existing scoring/snippets/results; playground and connector page advertise/call API.
+- [x] Snapshots/tests move with REST and callback SSRF/DNS protection is retained.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -481,3 +481,37 @@ bun run --cwd apps/web build
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+Claimed by Sol, 2026-10-29. REST retains the spec's explicit OpenAPIHono exception, outside first-party createRouteApp/session admission. No first-party admit calls are introduced.
+
+Requests for other owners:
+- 31: update `packages/services/scripts/run-integration-api-db-tests.ts` suite path from `apps/web/lib/rest-api/events.db.test.ts` to `apps/api/src/domains/rest/events.db.test.ts`. The old adapter/tests are removed, not shimmed. I own neither this runner nor the root scripts.
+- 31/32: the deployed API hostname has not been selected in the supplied contract. Public artifact and integration defaults use the specified local API origin `http://localhost:4000`; hosted Make/Zapier connections must set the actual HTTPS API origin, and cutover should update the checked-in integration defaults when that hostname is known. Docs and connector use `NEXT_PUBLIC_API_URL`; runtime uses `API_ORIGIN`, never Host.
+
+- 31: `apps/web/lib/integration-admission-parity.test.ts` still imports deleted `lib/rest-api/app`. Move the parity test to API or import `createRestRoutes` from the API domain and `REST_ENDPOINT_COMMANDS` from its `admission.ts`; wrap routes in `new Hono().route("/api/v1", ...)`, and supply separate apiOrigin/webOrigin/corsAllowedOrigins. No compatibility export was retained. Also wire `apps/api openapi:check` into CI and artifact generation before web builds in the central scripts you own.
+
+
+Implementation evidence, before paired review:
+- Moved all 31 operations and both snapshots into `apps/api/src/domains/rest`; removed the web REST handler/backend files. The snapshot changed only its configured server URL, from request-derived localhost to the configured API origin. Route schemas, descriptions, statuses, scopes and header matrix are unchanged.
+- REST keeps independent API-key trust and OpenAPIHono per the spec exception. Per-operation `IntegrationAdmission` now runs before input validation. Current shared receipts and Upload Session rules remain native; no new REST receipt namespace/module was added.
+- Added exact-origin REST CORS for the docs playground and the shared byte-counting 1 MiB body limiter. Exhausted-budget receipt replays defer refusal until `beforeAccept`, matching outage replay ordering. Malformed JSON now returns safe 400 `invalid_request`.
+- API status links use API origin; project/clip/export review and queue links use web origin. API-key-only client uses credentials omit and strips Workspace selection headers. Docs import only API-client's generated JSON, project NEXT_PUBLIC_API_URL for snippets/playground, and retain existing content search with a 300-character query cap.
+- `bun test apps/api/src/domains/rest packages/api-client/src/rest`: 64 pass, 9 DB skips, 0 fail, both snapshots pass. Separate DB gate below covers the skips.
+- `.scratch/api-extraction/db-gate.sh bun apps/api/src/domains/rest/run-db-tests.ts`: 7 pass, 0 skip/fail against a unique disposable local PostgreSQL schema, all 128 migrations applied, schema dropped afterward. REST/MCP feed rows, cursors and scope refusals agree.
+- `bun run --cwd apps/api openapi:check`: pass. The same check under `env -i` with only PATH/HOME passed without provider credentials or API uptime. Served document matches generated artifact after normalizing servers; hostile request host cannot change its server URL.
+- `bun test 'apps/web/app/(docs)/_components/api/sample.test.ts'`: 10 pass. Browser bundle test in `public-openapi.test.ts` proves the docs OpenAPI dependency graph excludes backend/runtime/secret modules.
+- `bun run --cwd integrations/zapier test`: 74 pass; `bun run --cwd integrations/zapier typecheck`: pass. `node --test integrations/make/test/validate.test.mjs`: 13 pass.
+- `bunx biome check` on all changed supported owned paths: 21 files checked, clean. Integrations are excluded by the repository Biome config; their own tests/typecheck above pass. `git diff --check` on owned paths: clean.
+- `bun run --cwd packages/validators typecheck`: pass.
+- `bun run --cwd apps/web build`: terminated with exit 143 during optimized production compilation, no compiler diagnostic. No success claimed; rerun after the concurrent wave.
+- Initial API typecheck had only an unowned ticket 27 error in `domains/reviews/guest-replay-child.ts` after the owned REST typing fixes. Final API/API-client/web typechecks are being collected while the shared checkout is under heavy concurrent compiler load.
+- No commit, install, deployment, environment edit, or unowned source edit. Paired review is for Claude/orchestrator; no second agent was started by this implementation sub-agent.
+
+Verification coordination note: while reducing overlapping compiler load, I mistakenly terminated a concurrent agent TypeScript process (PID 13138). The affected owner should rerun that check. No unowned source file was edited. One later REST run hit only the existing 5-second OpenAPI validator timeout under machine contention; rerunning with `--timeout 30000` rather than changing the test assertions.
+
+
+Final handoff status: implementation complete, ticket **blocked on compile/build verification and paired review**. After the final registration wrapper and Content-Type fix, `bun test --timeout 30000 apps/api/src/domains/rest packages/api-client/src/rest` passed 64 tests, 9 DB-only skips, 0 failures and both snapshots. The 7 real database parity tests passed separately as recorded above. OpenAPI regeneration and owned-path Biome remain clean.
+
+Full API/API-client/web typechecks were attempted but did not finish under heavy shared compiler/memory contention. I stopped my remaining compiler processes after verifying their exact parent/command; an isolated owned-file TypeScript project also stalled and was stopped. No full typecheck success is claimed for those three packages. Validators and Zapier typechecks passed. The web build ended with exit 143 during compilation. Claude/31 must rerun full package typechecks and web build after the parallel compiler load subsides, then complete paired review and close the remaining checkbox. The earlier ticket 27 `guest-replay-child.ts` diagnostic was unowned; no unrelated file was changed to address it.
+
+Requests remain exactly as listed above: 31 updates the integration DB runner/parity test imports and central artifact CI/build wiring; 31/32 selects the public HTTPS API hostname and replaces integration local defaults at cutover. The accidental termination of the other compiler process is also recorded above so its owner can rerun that check. There is no known remaining REST behavior failure.

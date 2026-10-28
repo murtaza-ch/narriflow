@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -124,10 +124,10 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] All copied action/read rows map to chosen spec endpoints with exact capability and safe DTO; bootstrap and switching remain usable from restricted Workspaces.
-- [ ] Member/invite operations retain seat limits, acting-member attribution, email deduplication and human WEB_ORIGIN links.
-- [ ] Workspace create/invite commands add transaction-aware receipt identities and test concurrent/lost-response replay; no plaintext token/secret is logged.
-- [ ] Removed selection cannot run a command in personal Workspace; signed-in invite accept returns explicit selection and navigation facts.
+- [x] All copied action/read rows map to chosen spec endpoints with exact capability and safe DTO; bootstrap and switching remain usable from restricted Workspaces.
+- [x] Member/invite operations retain seat limits, acting-member attribution, email deduplication and human WEB_ORIGIN links.
+- [x] Workspace create/invite commands add transaction-aware receipt identities and test concurrent/lost-response replay; no plaintext token/secret is logged.
+- [x] Removed selection cannot run a command in personal Workspace; signed-in invite accept returns explicit selection and navigation facts.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -144,4 +144,32 @@ bun run --cwd apps/api typecheck
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (last acceptance box left open for the orchestrator).
+
+### Contract for other tickets
+- **Session routes** (`domains/session`, all `signed_in`): `GET /session/bootstrap` (`SessionBootstrap`: user, memberships with role/status/plan/avatar, `selection {workspaceId, workspaceSelectionChanged}`, capabilities of the effective Workspace, `authContinuation {issuerUrl, consentOrigin}`; sets `X-Workspace-Id`), `POST /session/workspace-selection {workspaceId}` (live membership only; non-member = 403 `workspace_access_denied`), `GET /invites/:token` (preview), `POST /invites/:token/accept` (returns `WorkspaceSelection` + `destination: "/home"`, sets `X-Workspace-Id`, no cookie).
+- **Workspace routes** (`domains/workspace`): the 14 routes of the spec row plus the two avatar routes. Capabilities exactly as the old actions (`content.view` reads; `workspace.manage` settings/guidance/censor PUT+DELETE/avatar; `members.invite` invites/members). Invite create/resend need `Idempotency-Key` and are receipt-backed (`deferRateRefusal`, limiter enforced in `beforeAccept` after replay lookup). Replay: HTTP 200, `Idempotent-Replayed: true`, `inviteUrl`/`emailSent` are `null` (the raw token is a credential and is never stored in a receipt; the admin uses Resend). First acceptance: 201 with `inviteUrl` on WEB_ORIGIN and the email sent with provider key `workspace-invite/<inviteId>`.
+- **DTOs/schemas**: `@narriflow/validators/api/session` and `/api/workspace` (`workspaceCapabilities(context)`, `WORKSPACE_CAPABILITY_NAMES`, all request schemas, response types). `PUT /workspace/censor-words` body is `{words}` (was a bare array in the action).
+- **api-client** (`session/`, `workspace/`): `sessionBootstrapQuery`, `inviteQuery`, `selectWorkspaceMutation`, `acceptInviteMutation`; `workspaceBootstrapQuery` (seeds the usage key), `workspaceProfileQuery`, `workspaceUsageQuery`, `workspaceMembersQuery`, `workspaceCensorWordsQuery`, mutations for update, avatar presign/set, performance guidance, invite/resend (own idempotency intent per factory: create once per form), revoke, role change, remove, censor replace/reset, plus `invalidateWorkspaceProfile|Members`. Factories take `(api: ApiRuntime | api.transport, scope)`.
+- **For ticket 07**: `workspaceCommands.createBusinessWorkspace(actorUserId, {name}, {clientIdempotencyKey, beforeAccept?})` (services index) creates the pending Workspace in the receipt transaction (receipt recorded under the actor's personal Workspace) and returns `{workspaceId, name, replayed}`. Call it from `POST /workspaces/business-checkout` before `billingService.startCheckout`.
+- **For ticket 17/18**: `performanceGuidanceMutation` invalidates `scopedKey(scope, "publishing", "guidance")`; key the guidance read that way (or tell 05's owner the real key).
+
+### Deviations from the spec
+- `GET /session/bootstrap` reads the selection hint from `X-Workspace-Id` **or** `?workspaceId=`. The transport's `identity()` binding deletes the header (and a `scoped()` binding rejects a fallback response as `workspace_response_mismatch`), so identity-only clients cannot send it; the query parameter is the same hint, validated against live membership. `sessionBootstrapQuery(transport, scope, hint)` uses it.
+- Avatar routes gained shared validators; a non-numeric `sizeBytes` is now `invalid_input` (400) instead of the service's `workspace_avatar_invalid` (also 400).
+- A replayed invite response carries no link (see above); the old action always returned `inviteUrl`.
+
+### Requests for other owners
+- 04/31: `packages/api-client/src/index.ts` exports only the three client symbols per domain. Add `export * from "./session"; export * from "./workspace";` (and equivalents) so `workspaceBootstrapQuery`, mutations and invalidators reach `@narriflow/api-client` (names are collision-free, prefixed by domain).
+- 04/31: `apps/api/src/route-inventory.test.ts:27` hard-codes `checkedRoutes` to 108; every domain ticket invalidates it (now 250). Replace with a lower bound or drop it.
+- 02/04: `ApiConfig` has no `CLERK_OAUTH_ISSUER` / `CLERK_OAUTH_CONSENT_ORIGIN`; `session/runtime.ts` reads and origin-validates them from `process.env` (null when unset). Move them into `loadApiConfig` when convenient.
+- 06: replace `app/(app)/_actions/workspace.ts`, `app/invite/[token]/actions.ts`, the settings/members/workspace actions and `censor-words-actions.ts` with these clients; on switch/accept call the mutation, then navigate (`destination`).
+- Unrelated existing failures seen, not mine: `apps/api/src/domains/rest/routes.ts(176)` and `reviews/guest-replay-child.ts` type errors (23/27); two `vizard-expansion.db.test.ts` review tests fail in `test:vizard-expansion:db` (27).
+
+### Evidence
+- `bun test apps/api/src/domains/session` 11 pass; `bun test apps/api/src/domains/workspace` 24 pass; `bun test packages/api-client/src/{session,workspace}` 7 pass; `bun test packages/services/src/workspace-commands.test.ts` 8 pass (concurrent same-key, lost commit response, changed input, token never in receipt, replay skips limiter but reauthorizes).
+- `.scratch/api-extraction/db-gate.sh bun run test:vizard-expansion:db`: `workspace-membership.db.test.ts` 8 pass (5 new: four simultaneous invites -> one invite, one receipt, one token holder, hash matches, receipt has no token; lost-response replay; changed-input conflict; plan refusal leaves nothing; resend once per key; three simultaneous Workspace creations -> one pending Business Workspace). Two failures in the same command are `vizard-expansion.db.test.ts` review tests (ticket 27's area).
+- `db-gate.sh bun run test:authenticated-request-policy:db` 4 pass; `db-gate.sh bun run test:workspace-billing:db` 16 pass.
+- Typecheck: `apps/api`, `packages/services`, `packages/validators` clean for my paths; `packages/api-client` shows only `apps/api/src/domains/rest/routes.ts(176)` (23). `bun run --cwd apps/api test:inventory` -> `problems=0`.
+- `bunx biome check` on all owned paths: clean.
+- Added `packages/services/src/workspace-commands.test.ts` (not in the manifest; next to its owned implementation).

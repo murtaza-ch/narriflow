@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Stripe from "stripe";
 import { createStripePlanChangeProvider, normalizeStripePlanChange } from "./workspace-plan-change-stripe";
 import {
@@ -20,8 +21,10 @@ import {
 } from "./workspace-billing.service";
 import {
   ExpectedDomainFailureError,
+  isExpectedDomainFailure,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { WorkspaceOperationError, workspaceService } from "./workspace.service";
 
 const billingFailureCatalog = {
   billing_catalog_invalid: "unavailable",
@@ -192,6 +195,25 @@ function catalogFromEnvironment(): BillingCatalog {
       ),
     },
   });
+}
+
+export interface BusinessWorkspaceCheckoutInput {
+  actorUserId: string;
+  /** Required to create the Workspace; ignored in favour of the stored name when resuming. */
+  name?: string;
+  /** A pending Workspace to resume instead of creating another. */
+  workspaceId?: string;
+  interval: BillingInterval;
+  checkoutIdempotencyKey?: string;
+  returnDestination: string;
+}
+
+export interface BusinessWorkspaceCheckout {
+  workspaceId: string;
+  workspaceName: string;
+  interval: BillingInterval;
+  checkoutIdempotencyKey: string;
+  checkoutUrl: string;
 }
 
 export class BillingService {
@@ -749,6 +771,93 @@ export class BillingService {
         returnDestination: input.returnDestination,
       }),
     );
+  }
+
+  /**
+   * Starts Business checkout for a new Workspace, or resumes one that is still
+   * awaiting payment (`workspaceId`). The pending Workspace is created once and
+   * its Checkout key is reused on every retry, so a retried submit continues the
+   * same Checkout. A failure after the Workspace exists carries
+   * `details.recovery` so the form can resubmit against it.
+   */
+  async startBusinessWorkspaceCheckout(input: BusinessWorkspaceCheckoutInput): Promise<BusinessWorkspaceCheckout> {
+    const checkoutIdempotencyKey = input.checkoutIdempotencyKey ?? randomUUID();
+    let workspaceId = input.workspaceId;
+    let workspaceName = input.name;
+    try {
+      if (!this.isCheckoutConfigured("business", input.interval)) {
+        throw new ExpectedDomainFailureError({
+          code: "checkout_not_configured",
+          kind: "unavailable",
+          message: `Business ${input.interval} checkout is temporarily unavailable. Try again later.`,
+        });
+      }
+      if (workspaceId) {
+        const workspaceActor = await workspaceService.requireActor(
+          input.actorUserId,
+          workspaceId,
+          "billing.manage",
+        );
+        if (workspaceActor.role !== "owner" || workspaceActor.status !== "pending_payment") {
+          throw new WorkspaceOperationError(
+            "workspace_checkout_state_invalid",
+            "This workspace is not awaiting Business checkout",
+          );
+        }
+        workspaceName = workspaceActor.workspaceName;
+      } else {
+        if (!input.name) throw new Error("Validated Workspace creation input is missing a name");
+        const workspace = await workspaceService.createPendingBusinessWorkspace(input.actorUserId, {
+          name: input.name,
+        });
+        workspaceId = workspace.id;
+        workspaceName = workspace.name;
+      }
+      const checkout = await this.startCheckout({
+        userId: input.actorUserId,
+        workspaceId,
+        clientIdempotencyKey: checkoutIdempotencyKey,
+        tier: "business",
+        interval: input.interval,
+        returnDestination: input.returnDestination,
+      });
+      return {
+        workspaceId,
+        workspaceName: workspaceName ?? "",
+        interval: input.interval,
+        checkoutIdempotencyKey,
+        checkoutUrl: checkout.url,
+      };
+    } catch (error) {
+      const recovery = {
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(workspaceName ? { workspaceName } : {}),
+        interval: input.interval,
+        checkoutIdempotencyKey,
+      };
+      if (isExpectedDomainFailure(error)) {
+        throw new ExpectedDomainFailureError({
+          code: error.code,
+          kind: error.kind,
+          message: error.message,
+          details: { ...(error.details ?? {}), recovery },
+          ...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
+        });
+      }
+      console.warn(
+        JSON.stringify({
+          level: "error",
+          message: "workspace_checkout_failed",
+          errorName: error instanceof Error ? error.name : typeof error,
+        }),
+      );
+      throw new ExpectedDomainFailureError({
+        code: "workspace_checkout_failed",
+        kind: "unavailable",
+        message: "Workspace checkout could not be started",
+        details: { recovery },
+      });
+    }
   }
 
   observeCheckoutReturn(input: {

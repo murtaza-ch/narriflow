@@ -1,2 +1,2 @@
-// Shared request and response schemas of the rest routes. The owning ticket adds them here.
-export {};
+/** Public v1 schemas keep their existing header bounds and required/optional matrix. */
+export * from "../rest-api";

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { isClipPreviewPeaks as validatorsGuard } from "@narriflow/validators/clip-preview-peaks";
 import {
   derivePeaksStorageKey,
   isClipPreviewPeaks,
@@ -33,22 +34,7 @@ describe("derivePeaksStorageKey", () => {
 });
 
 describe("isClipPreviewPeaks", () => {
-  const valid = {
-    version: 1,
-    sampleRateHz: null,
-    peaksPerSec: 20,
-    startSec: 10,
-    durationSec: 5,
-    peaks: [0, 50, 100],
-  } as const;
-
-  test("accepts the worker's bounded v1 payload", () => {
-    expect(isClipPreviewPeaks(valid)).toBe(true);
-  });
-
-  test("rejects non-finite timing and out-of-contract peak values", () => {
-    expect(isClipPreviewPeaks({ ...valid, startSec: Number.NaN })).toBe(false);
-    expect(isClipPreviewPeaks({ ...valid, peaks: [101] })).toBe(false);
-    expect(isClipPreviewPeaks({ ...valid, peaks: [0.5] })).toBe(false);
+  test("is the validators guard, not a second copy", () => {
+    expect(isClipPreviewPeaks).toBe(validatorsGuard);
   });
 });

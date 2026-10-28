@@ -50,7 +50,7 @@ function Body({ children }: { children: React.ReactNode }) {
 }
 
 export default function ConnectorPage() {
-  const endpoint = new URL("/mcp", process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").href;
+  const endpoint = new URL("/mcp", process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000").href;
   return (
     <Stack as="main" mx="auto" w="full" maxW="760px" px="6" pt={{ base: "14", md: "20" }} pb="24" gap="10">
       <PageHeader

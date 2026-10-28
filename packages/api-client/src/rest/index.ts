@@ -1,11 +1,25 @@
 import type { RestRoutes } from "@narriflow/api/types/rest";
-import { type RpcTransport, createRpcClient } from "../rpc";
+import { hc } from "hono/client";
 
 export type { RestRoutes };
 
-/** Typed client for the rest routes. Pass a bound transport (`runtime.transport.scoped(scope)`). */
-export function createRestClient(transport: RpcTransport) {
-  return createRpcClient<RestRoutes>(transport, "/api/v1");
+export interface RestClientOptions {
+  baseUrl: string;
+  apiKey(): string | Promise<string>;
+  fetch?: typeof globalThis.fetch;
+}
+
+/** Public v1 uses API keys, independently of the first-party Clerk transport. */
+export function createRestClient(options: RestClientOptions) {
+  const fetcher = options.fetch ?? globalThis.fetch;
+  return hc<RestRoutes>(`${new URL(options.baseUrl).origin}/api/v1`, {
+    fetch: (async (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("Authorization", `Bearer ${await options.apiKey()}`);
+      headers.delete("X-Workspace-Id");
+      return fetcher(input, { ...init, headers, credentials: "omit" });
+    }) as typeof globalThis.fetch,
+  });
 }
 
 export type RestClient = ReturnType<typeof createRestClient>;

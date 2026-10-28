@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -179,10 +179,10 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] Every D3 route except four editor adapter registrations moves with exact admission/rate/input/error parity; clip-generation sibling and tests move too.
-- [ ] Campaign fingerprint/retry-of/native rendering keys retained; duplicate/range creates receive atomic receipts, not response caches.
-- [ ] Clip/campaign/thumbnail DTO/client types are inferred from returned chains and errors preserve revision/recovery facts.
-- [ ] Thumbnail subprocess concurrency is bounded; expensive title/render/generation limits unchanged.
+- [x] Every D3 route except four editor adapter registrations moves with exact admission/rate/input/error parity; clip-generation sibling and tests move too.
+- [x] Campaign fingerprint/retry-of/native rendering keys retained; duplicate/range creates receive atomic receipts, not response caches.
+- [x] Clip/campaign/thumbnail DTO/client types are inferred from returned chains and errors preserve revision/recovery facts.
+- [x] Thumbnail subprocess concurrency is bounded; expensive title/render/generation limits unchanged.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -198,4 +198,30 @@ bun run --cwd apps/api typecheck
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (last acceptance box left open for the orchestrator).
+
+### What changed
+- API: `apps/api/src/domains/clips/{admission,routes,runtime}.ts` register through `createRouteApp`. Added `POST /projects/:id/clips/regenerate` (moved from `clip-generation-http.ts`; `requireIdempotencyKey` + `regenerateClipsRequestSchema`, actor `regenerate` 20/60 kept). Web `clip-generation-http.ts` and its test deleted; the adapter test moved to `routes.test.ts` (18 tests).
+- Duplicate and create-from-range are receipt commands (`duplicate_clip`, `create_clip_from_range` in `clips-receipt-commands.ts`; `clips-commands.ts` + `-runtime.ts`). `Idempotency-Key` is required; the rows and the Operation Receipt commit in one transaction (`ClipService` takes an optional `ClipCreationAcceptance`; without it behaviour is unchanged). Order: authorize, replay lookup (`Idempotent-Replayed: true`, changed input -> 409 `operation_idempotency_conflict`), then the recorded limiter (`deferRateRefusal` + `enforceRecordedRateLimit` in `beforeAccept`, so 429 / 503 `mutations_unavailable` hit new work only, before any R2 copy), then copy + commit. A concurrent same-key request that loses the race releases its copied media (`ClipCreationReplayed`) and returns the accepted clip.
+- Campaign fingerprint / `retryOfId` / render and generation admission keys untouched (`campaign-operation.service.ts` needed no change; header key and `Campaign-Retry-Of` still map once into the native fields).
+- Thumbnail extraction (`thumbnail-frame-preparation-runtime.ts`): process-wide gate, `THUMBNAIL_EXTRACTION_CONCURRENCY` (default 2, max 4) around FFmpeg + sharp. The API only enqueues; extraction runs wherever `processPending` runs (the worker loop), so the gate bounds that process.
+- `clip.service.ts` imports `isClipPreviewPeaks`/`ClipPreviewPeaks` from `@narriflow/validators/clip-preview-peaks` (ticket 04 request; 13 already removed the copy in `clip-preview-storage.ts`).
+- Client: `packages/api-client/src/clips/{queries,mutations,index}.ts` (queryOptions factories for list, previews, download grant, peaks, campaign operations, action catalog, thumbnail frame; commands with intent keys and retry-of; invalidation helpers) + `clips.test.ts`. `packages/validators/src/api/clips.ts` gathers the route input schemas.
+
+### Deviations from the inventory/spec (deliberate)
+- `GET /projects/:id/clips/:clipId/file` (302 redirect) is deleted, not converted: `GET .../download` already returns the identical JSON Download Grant from the same service call. Ticket 12 (owner of `apps/web/lib/clip-media.ts` `clipFileDownloadPath`, `clip-row.tsx`) must use `clipQueries.downloadGrant` / `/download` and navigate to `downloadUrl`.
+- `preview-peaks` no longer sets `Cache-Control: private, max-age=3600, immutable` (ticket 04 left it to 13, but the route is in this domain): the URL does not name the preview attempt, so a browser-cached artifact would outlive a regenerated proxy; default `no-store` applies and React Query dedupes.
+- `create-from-selection` stays without a receipt (spec names only duplicate and range creates).
+
+### Requests for other owners
+- Runner owner of `test:clip-editor-persistence:db` (`packages/services/scripts/run-clip-editor-persistence-db-tests.ts`): add `packages/services/src/clips-commands.db.test.ts` to its file list (I ran it with the file added to a temporary copy of the runner: 3 pass).
+- 12: switch `/file` consumers to the download grant (above). 31: delete the `/clips/:clipId/file` row from the baseline `authenticated-request-inventory.ts` with the file.
+- Optional: document `THUMBNAIL_EXTRACTION_CONCURRENCY` in `apps/api/.env.example` / worker env example (not my files).
+
+### Evidence
+- `bun test apps/api/src/domains/clips` 18 pass; `bun test packages/api-client/src/clips` 4 pass; `bun test packages/services/src/clips-commands.test.ts` 10 pass (atomic receipt, replay before work/limiter, conflict, rollback, simultaneous same key, lost commit response); `thumbnail-frame-preparation-runtime.test.ts` + existing thumbnail/campaign/clip unit tests pass.
+- `db-gate.sh bun run test:workflow:db`: 175 pass, 0 fail. `db-gate.sh bun run test:library-search:db` (range creates): 23 pass. `test:clip-editor-persistence:db` (duplicate media, with `clips-commands.db.test.ts` added to a temp runner copy): 28 + 7 + 3 pass.
+- `db-gate.sh bun run test:vizard-expansion:db` (second run): generation-usage 17, review-access 4, workspace-membership 3 pass; the vizard-expansion/autopilot/zoom process has 67 pass, 2 FAIL (`revokes replayed guest sessions...` and `allocates concurrent review revisions...`: `reviews-commands.ts` throws `idempotency_key_required` for the review service calls those tests make), which are ticket 27's in-progress files, not clips. The first run had 3 `review-access.db.test.ts` 5 s timeouts under load average ~30 that passed on rerun. `test:processing-usage:db` not run: the clips path does not touch it.
+- `bunx biome check` on all my paths clean. `tsc` clean for packages/services and packages/validators; `apps/api` and `packages/api-client` have no error in a clips file (remaining errors are other domains: rest/routes.ts, reviews/guest-replay-child.ts, studio/bootstrap.ts, workspace/routes.ts, brand/queries.ts).
+- `bun run --cwd apps/api test:inventory`: 250 routes, 0 problems. `apps/api/src/route-inventory.test.ts` (hard-coded 108 count) and `admission-tables.test.ts` (`GET /social/accounts` capability) currently fail from other tickets' additions, not from this one.
+

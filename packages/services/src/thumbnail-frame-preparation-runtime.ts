@@ -221,6 +221,42 @@ export const prismaThumbnailFrameStore: ThumbnailFrameStore = {
 	},
 };
 
+/** FFmpeg and sharp are CPU and memory heavy; one process runs at most this many extractions at once. */
+const DEFAULT_EXTRACTION_CONCURRENCY = 2;
+const MAX_EXTRACTION_CONCURRENCY = 4;
+
+export function thumbnailExtractionConcurrency(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const configured = Number(env.THUMBNAIL_EXTRACTION_CONCURRENCY);
+  if (!Number.isInteger(configured) || configured < 1) return DEFAULT_EXTRACTION_CONCURRENCY;
+  return Math.min(configured, MAX_EXTRACTION_CONCURRENCY);
+}
+
+/** A counting gate: `run` starts the task when a slot is free, otherwise queues it in arrival order. */
+export function createConcurrencyGate(limit: number) {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  const release = () => {
+    const next = waiting.shift();
+    if (next) next();
+    else active -= 1;
+  };
+  return {
+    async run<T>(task: () => Promise<T>): Promise<T> {
+      if (active < limit) active += 1;
+      else await new Promise<void>((resolve) => waiting.push(resolve));
+      try {
+        return await task();
+      } finally {
+        release();
+      }
+    },
+  };
+}
+
+const extractionGate = createConcurrencyGate(thumbnailExtractionConcurrency());
+
 function ffmpegFrame(inputUrl: string, sourceTimeMs: number) {
   return new Promise<Uint8Array>((resolve, reject) => {
     execFile(
@@ -382,24 +418,25 @@ function productionModule() {
         height: 0,
       };
     },
-    async extract({ storageKey, sourceTimeMs }) {
-      const { default: sharp } = await import("sharp");
-      const url = await presignDownloadUrl({ key: storageKey, expiresIn: 300 });
-      const bytes = await ffmpegFrame(url, sourceTimeMs);
-      const metadata = await sharp(bytes, {
-        failOn: "warning",
-        limitInputPixels: 40_000_000,
-      }).metadata();
-      if (metadata.format !== "jpeg" || !metadata.width || !metadata.height) {
-        throw new ThumbnailPreparationError("thumbnail_extraction_invalid");
-      }
-      return {
-        bytes,
-        contentType: "image/jpeg" as const,
-        width: metadata.width,
-        height: metadata.height,
-      };
-    },
+    extract: ({ storageKey, sourceTimeMs }) =>
+      extractionGate.run(async () => {
+        const { default: sharp } = await import("sharp");
+        const url = await presignDownloadUrl({ key: storageKey, expiresIn: 300 });
+        const bytes = await ffmpegFrame(url, sourceTimeMs);
+        const metadata = await sharp(bytes, {
+          failOn: "warning",
+          limitInputPixels: 40_000_000,
+        }).metadata();
+        if (metadata.format !== "jpeg" || !metadata.width || !metadata.height) {
+          throw new ThumbnailPreparationError("thumbnail_extraction_invalid");
+        }
+        return {
+          bytes,
+          contentType: "image/jpeg" as const,
+          width: metadata.width,
+          height: metadata.height,
+        };
+      }),
     publish: publishFrame,
     createId: randomUUID,
     now: () => new Date(),

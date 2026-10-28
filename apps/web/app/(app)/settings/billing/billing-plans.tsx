@@ -8,6 +8,8 @@ import { CalendarClock, Check, CircleAlert, Clock, CreditCard, RefreshCw, Users 
 import { Button } from "@narriflow/ui/components/button";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Dialog, Portal } from "@narriflow/ui/components/dialog";
+import { isApiError } from "@narriflow/api-client";
+import type { BillingActions } from "@narriflow/api-client/billing";
 import {
   formatUsdCents,
   hasFeature,
@@ -15,9 +17,6 @@ import {
   minimumAnnualSavingsPercent,
   PLAN_CATALOG,
   planHighlights,
-  planChangeQuoteSchema,
-  planChangeResultSchema,
-  workspaceBillingViewSchema,
   type BillingInterval,
   type PaidPricingTier,
   type PlanChangeQuote,
@@ -41,6 +40,12 @@ import {
   stripeInvoicePaymentUrl,
 } from "@/lib/billing-plan-change";
 import { IconTile, SettingRow, SettingsCard, StatusPill } from "../_components/settings-ui";
+
+/** What the Billing screen reads from and commands on the API; the container binds it to the Workspace. */
+export interface BillingPlansApi extends BillingActions {
+  /** A fresh provider-verified read (always bypasses the cache), with the API's pacing hint. */
+  readState(): Promise<{ view: WorkspaceBillingView; retryAfterSeconds?: number }>;
+}
 
 const STATUS_PILL: Record<"accent" | "warning" | "danger", { tone: "accent" | "warning" | "danger"; label: string }> = {
   accent: { tone: "accent", label: "Updating" },
@@ -70,6 +75,8 @@ export function BillingPlans({
   checkoutCancelled,
   focusTier = null,
   requestedInterval = null,
+  api,
+  onViewChange,
 }: {
   initialView: WorkspaceBillingView;
   availableTiers: PaidPricingTier[];
@@ -81,6 +88,9 @@ export function BillingPlans({
   focusTier?: PaidPricingTier | null;
   /** The interval the upgrade prompt showed. */
   requestedInterval?: BillingInterval | null;
+  api: BillingPlansApi;
+  /** A newer verified view: the container stores it and refreshes what depends on the plan. */
+  onViewChange: (view: WorkspaceBillingView) => void;
 }) {
   const router = useRouter();
   const [view, setView] = useState(initialView);
@@ -132,23 +142,34 @@ export function BillingPlans({
     requestAnimationFrame(() => actionOriginRef.current?.focus());
   }
 
-  const readBillingState = useCallback(async () => {
-    const response = await fetch("/api/billing/state", { cache: "no-store" });
-    const payload = (await response.json()) as { view?: unknown };
-    if (!response.ok || !payload.view) throw new Error("Billing status is unavailable");
-    const nextView = workspaceBillingViewSchema.parse(payload.view);
-    const retryAfterSeconds = Number(response.headers.get("Retry-After") ?? 0) || undefined;
-    setView(nextView);
-    return { view: nextView, retryAfterSeconds };
+  // Long-running effects (return observation, polling) must keep working when
+  // the container hands over a new `api` or callback, so they read the latest.
+  const live = useRef({ api, onViewChange });
+  live.current = { api, onViewChange };
+
+  const adoptView = useCallback((next: WorkspaceBillingView) => {
+    setView(next);
+    live.current.onViewChange(next);
   }, []);
 
+  const readBillingState = useCallback(async () => {
+    let result: Awaited<ReturnType<BillingPlansApi["readState"]>>;
+    try {
+      result = await live.current.api.readState();
+    } catch {
+      throw new Error("Billing status is unavailable");
+    }
+    adoptView(result.view);
+    return result;
+  }, [adoptView]);
+
   const pollUntilSettled = useCallback(async (signal: AbortSignal) => {
-    const result = await pollBillingActivation({
+    // Every read adopts its view, so the settled one is already on screen.
+    await pollBillingActivation({
       read: readBillingState,
       wait: waitForBillingPoll,
       signal,
     });
-    setView(result.view);
   }, [readBillingState]);
 
   useEffect(() => {
@@ -159,23 +180,17 @@ export function BillingPlans({
     void (async () => {
       try {
         if (checkoutReturnSessionId) {
-          const response = await fetch("/api/billing/checkout/return", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId: checkoutReturnSessionId }),
-            signal: controller.signal,
-          });
-          const payload = (await response.json()) as {
-            kind?: "activating" | "terminal";
-            reason?: "expired";
-            view?: unknown;
-          };
-          if (!response.ok || !payload.view) {
-            throw new Error("Checkout could not be verified. You can retry safely.");
-          }
-          setView(workspaceBillingViewSchema.parse(payload.view));
+          // Coming back from Checkout proves nothing: the API asks Stripe and
+          // reports the verified state, and only that state changes the screen.
+          const outcome = await live.current.api
+            .observeCheckoutReturn(checkoutReturnSessionId, controller.signal)
+            .catch((error: unknown) => {
+              if (controller.signal.aborted) throw error;
+              throw new Error("Checkout could not be verified. You can retry safely.");
+            });
+          adoptView(outcome.view);
           router.replace("/settings/billing", { scroll: false });
-          if (payload.kind === "terminal") {
+          if (outcome.kind === "terminal") {
             setInlineError(
               "This Checkout session expired. Your plan is unchanged, and you can retry safely.",
             );
@@ -192,7 +207,7 @@ export function BillingPlans({
       }
     })();
     return () => controller.abort();
-  }, [checkoutReturnSessionId, initialView.health, pollUntilSettled, router]);
+  }, [adoptView, checkoutReturnSessionId, initialView.health, pollUntilSettled, router]);
 
   useEffect(() => {
     if (checkoutCancelled) router.replace("/settings/billing", { scroll: false });
@@ -208,29 +223,22 @@ export function BillingPlans({
     };
   }, [view]);
 
-  async function postForUrl(url: string, body?: unknown) {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const payload = (await response.json().catch(() => ({}))) as {
-      url?: string;
-      error?: string;
-      message?: string;
-    };
-    if (!response.ok || !payload.url) {
-      const actionError = new Error(
-        payload.error === "billing_portal_required"
-          ? "This workspace already has a subscription. Manage it in the billing portal."
-          : payload.error === "checkout_in_progress"
-            ? "A Checkout for a different plan is already open for this workspace. Finish it, or wait about 30 minutes for it to expire, then try again."
-            : "The billing action could not be opened. Try again.",
-      );
-      Object.assign(actionError, { code: payload.error });
-      throw actionError;
-    }
-    return payload.url;
+  /** The code of a failed API call, which the messages below branch on (never the message text). */
+  function failureCode(error: unknown): string | undefined {
+    return isApiError(error) ? error.code : undefined;
+  }
+
+  function hostedActionError(error: unknown): Error {
+    const code = failureCode(error);
+    const actionError = new Error(
+      code === "billing_portal_required"
+        ? "This workspace already has a subscription. Manage it in the billing portal."
+        : code === "checkout_in_progress"
+          ? "A Checkout for a different plan is already open for this workspace. Finish it, or wait about 30 minutes for it to expire, then try again."
+          : "The billing action could not be opened. Try again.",
+    );
+    Object.assign(actionError, { code });
+    return actionError;
   }
 
   async function checkout(tier: PaidPricingTier) {
@@ -245,13 +253,12 @@ export function BillingPlans({
         interval,
         createKey: () => crypto.randomUUID(),
       });
-      window.location.assign(
-        await postForUrl("/api/billing/checkout", {
-          clientIdempotencyKey,
-          tier,
-          interval,
-        }),
-      );
+      const url = await api
+        .startCheckout({ clientIdempotencyKey, tier, interval })
+        .catch((error: unknown) => {
+          throw hostedActionError(error);
+        });
+      window.location.assign(url);
     } catch (error) {
       if (
         error instanceof Error &&
@@ -282,7 +289,10 @@ export function BillingPlans({
     setBusy("portal");
     setInlineError(null);
     try {
-      window.location.assign(await postForUrl("/api/billing/portal"));
+      const url = await api.openPortal().catch((error: unknown) => {
+        throw hostedActionError(error);
+      });
+      window.location.assign(url);
     } catch (error) {
       setInlineError(
         error instanceof Error ? error.message : "The billing portal is unavailable",
@@ -292,14 +302,11 @@ export function BillingPlans({
     }
   }
 
-  async function postPlanChange(path: string, body?: unknown) {
-    const response = await fetch(`/api/billing/plan-change/${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body ?? {}),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
+  /** Runs one plan-change call and turns its stable failure code into the owner-facing sentence. */
+  async function planChange<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (error) {
       const messages: Record<string, string> = {
         plan_change_invalid: "Choose a different plan or billing interval.",
         plan_change_quote_expired: "This quote expired. Close it and review the plan again for a fresh price.",
@@ -311,9 +318,12 @@ export function BillingPlans({
         plan_change_quote_missing: "This quote is no longer available. Close it and review the plan again.",
         billing_forbidden: "Only the workspace owner can change the subscription.",
       };
-      throw new Error(messages[payload.error] ?? "The plan change could not be completed. Refresh billing status and try again.");
+      const code = failureCode(error);
+      throw new Error(
+        (code && messages[code]) ??
+          "The plan change could not be completed. Refresh billing status and try again.",
+      );
     }
-    return payload;
   }
 
   async function previewPlanChange(tier: PaidPricingTier) {
@@ -322,12 +332,11 @@ export function BillingPlans({
     setInlineError(null);
     setInlineNotice(null);
     try {
-      const result = await postPlanChange("preview", {
-        clientIdempotencyKey: crypto.randomUUID(),
-        tier,
-        interval,
-      });
-      setQuote(planChangeQuoteSchema.parse(result.quote));
+      setQuote(
+        await planChange(() =>
+          api.previewPlanChange({ clientIdempotencyKey: crypto.randomUUID(), tier, interval }),
+        ),
+      );
     } catch (error) {
       setInlineError(error instanceof Error ? error.message : "The plan could not be reviewed.");
       restoreActionOriginAfterError();
@@ -338,11 +347,8 @@ export function BillingPlans({
 
   async function refreshAfterPlanChange() {
     try {
-      const response = await fetch("/api/billing/reconcile", { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok || !payload.view) throw new Error("Billing sync is delayed");
-      setView(workspaceBillingViewSchema.parse(payload.view));
-      router.refresh();
+      const result = await api.reconcile();
+      adoptView(result.view);
     } catch {
       setInlineNotice("Your billing request was submitted. Refresh billing status to check the verified result before making another change.");
     }
@@ -353,7 +359,7 @@ export function BillingPlans({
     setBusy("confirm");
     setInlineError(null);
     try {
-      const result = planChangeResultSchema.parse(await postPlanChange("confirm", { quoteId: quote.id }));
+      const result = await planChange(() => api.confirmPlanChange(quote.id));
       setQuote(null);
       if (result.kind === "pending_payment") {
         if (result.paymentUrl) {
@@ -384,7 +390,7 @@ export function BillingPlans({
     setInlineNotice(null);
     try {
       const pending = view.planChange?.state === "pending_payment";
-      planChangeResultSchema.parse(await postPlanChange("cancel"));
+      await planChange(() => api.cancelPlanChange());
       // The view may be stale (the upgrade could have been paid in another tab),
       // so say what was asked and let the refreshed status show the outcome.
       setInlineNotice(pending
@@ -405,7 +411,7 @@ export function BillingPlans({
     setBusy("complete-payment");
     setInlineError(null);
     try {
-      const { url } = (await postPlanChange("payment")) as { url?: string | null };
+      const url = await planChange(() => api.pendingPaymentUrl());
       const paymentUrl = url ? stripeInvoicePaymentUrl(url) : null;
       if (!paymentUrl) throw new Error("This upgrade no longer needs payment. Refresh billing status to see the current plan.");
       window.location.assign(paymentUrl);
@@ -421,12 +427,11 @@ export function BillingPlans({
     setBusy("retry");
     setInlineError(null);
     try {
-      const response = await fetch("/api/billing/reconcile", { method: "POST" });
-      const payload = (await response.json()) as { view?: unknown };
-      if (!response.ok || !payload.view) throw new Error("Billing sync is still delayed");
-      const nextView = workspaceBillingViewSchema.parse(payload.view);
-      setView(nextView);
-      if (nextView.health === "activating" || nextView.health === "retrying") {
+      const result = await api.reconcile().catch(() => {
+        throw new Error("Billing sync is still delayed");
+      });
+      adoptView(result.view);
+      if (result.view.health === "activating" || result.view.health === "retrying") {
         await pollUntilSettled(new AbortController().signal);
       }
     } catch (error) {

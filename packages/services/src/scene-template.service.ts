@@ -13,6 +13,9 @@ import {
 import { assertBrandManageAllowed, assertBrandMutationAllowedWithAnalytics, brandOwnerWhere, type BrandActorScope } from "./brand-ownership";
 import { requirePlanFeature } from "./plan-features";
 import { withSerializableTransaction } from "./serializable-transaction";
+import { createOperationReceiptExecutor, type IntegrationMutation } from "./operation-receipt";
+import { prismaOperationReceiptPersistence } from "./operation-receipt-runtime";
+import { workspaceService } from "./workspace.service";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -91,14 +94,19 @@ export class SceneTemplateService {
     return requirePrisma().sceneTemplate.findMany({ where: { profileId, profile: { ...brandOwnerWhere(scope), deletedAt: null }, deletedAt: null }, orderBy: [{ role: "asc" }, { name: "asc" }] });
   }
 
-  async create(scope: BrandActorScope, profileId: string, value: unknown) {
+  /**
+   * With a `mutation` the scene and its Operation Receipt commit in one
+   * serializable transaction, like the unreceipted create, so a retry with the
+   * same key returns the scene it already made.
+   */
+  async create(scope: BrandActorScope, profileId: string, value: unknown, mutation?: IntegrationMutation) {
 
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
     const input = sceneTemplateCreateSchema.parse(value);
     if (input.makeDefault && !defaultField(input.role)) throw new SceneTemplateError("scene_template_default_role_invalid", "Only intro and outro scenes can be defaults");
     if (input.makeDefault) requirePlanFeature(scope.pricingTier, "brand.defaultScenes");
     const prisma = requirePrisma();
-    return withSerializableTransaction(prisma, async (tx) => {
+    const createIn = async (tx: Prisma.TransactionClient) => {
       const profile = await tx.brandProfile.findFirst({ where: { id: profileId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } });
       if (!profile) throw new SceneTemplateError("scene_template_profile_not_found", "Brand Profile was not found");
       await assertDefinitionAsset(tx, scope, profileId, input.definition);
@@ -106,7 +114,30 @@ export class SceneTemplateService {
       const field = input.makeDefault ? defaultField(input.role) : null;
       if (field) await tx.brandProfile.update({ where: { id: profileId }, data: { [field]: created.id, revision: { increment: 1 }, updatedByUserId: scope.actorUserId } });
       return created;
+    };
+    if (!mutation) return withSerializableTransaction(prisma, createIn);
+    const receipts = createOperationReceiptExecutor({
+      ...prismaOperationReceiptPersistence(prisma),
+      transaction: (run) => withSerializableTransaction(prisma, run),
     });
+    const accepted = await receipts.execute({
+      identity: {
+        workspaceId: scope.workspaceId,
+        actorUserId: scope.actorUserId,
+        command: "create_scene_template",
+        clientIdempotencyKey: mutation.clientIdempotencyKey,
+      },
+      input: { profileId, ...input },
+      authorize: async () => {
+        await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "brand.manage");
+      },
+      beforeAccept: mutation.beforeAccept,
+      mutate: async (tx) => {
+        const created = await createIn(tx);
+        return { resourceType: "scene_template", resourceId: created.id, value: created };
+      },
+    });
+    return accepted.value;
   }
 
   async update(scope: BrandActorScope, profileId: string, templateId: string, value: unknown) {

@@ -2,6 +2,7 @@ import {
   campaignOperationService,
   clipEditorDocumentPersistence,
   clipService,
+  clipsCommands,
   thumbnailFramePreparationService,
 } from "@narriflow/services";
 import type { ApiConfig } from "../../config";
@@ -13,6 +14,7 @@ export function createClipsRouteDeps(_config: ApiConfig): ClipsRouteDeps {
     clipService,
     clipEditorDocumentPersistence,
     campaignOperationService,
+    clipsCommands,
     thumbnailFramePreparationService,
   };
 }

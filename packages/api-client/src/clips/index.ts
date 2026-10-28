@@ -9,3 +9,21 @@ export function createClipsClient(transport: RpcTransport) {
 }
 
 export type ClipsClient = ReturnType<typeof createClipsClient>;
+
+export {
+  clipCommands,
+  clipMutationOptions,
+  invalidateAfterClipChange,
+  invalidateAfterThumbnailFrame,
+  invalidateProjectClips,
+} from "./mutations";
+export {
+  CLIP_RESOURCES,
+  clipQueries,
+  type CampaignOperationsData,
+  type ClipDownloadGrant,
+  type ClipListData,
+  type ClipPreviewsData,
+  type EditorActionCatalogData,
+  type ThumbnailFrameData,
+} from "./queries";

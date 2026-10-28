@@ -13,6 +13,10 @@
     "./openapi": {
       "types": "./src/openapi/index.ts",
       "default": "./src/openapi/index.ts"
+    },
+    "./*": {
+      "types": "./src/*/index.ts",
+      "default": "./src/*/index.ts"
     }
   },
   "scripts": {

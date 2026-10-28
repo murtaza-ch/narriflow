@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import { accessibleProjectWhere } from "./project-access";
 import { signReviewOptOutToken } from "./review-opt-out";
@@ -111,10 +112,10 @@ function requirePrisma() {
   return prisma;
 }
 
-export function createReviewNotificationStore(): ReviewNotificationStore {
+export function createReviewNotificationStore(transaction?: Prisma.TransactionClient): ReviewNotificationStore {
   return {
     listDue(now, limit) {
-      return requirePrisma().reviewNotificationLedger.findMany({
+      return (transaction ?? requirePrisma()).reviewNotificationLedger.findMany({
         where: {
           attemptCount: { lt: REVIEW_NOTIFICATION_MAX_ATTEMPTS },
           nextAttemptAt: { lte: now },
@@ -128,7 +129,7 @@ export function createReviewNotificationStore(): ReviewNotificationStore {
       }) as Promise<ReviewNotificationLedgerRow[]>;
     },
     async claim(id, now, leaseExpiresAt) {
-      const claimed = await requirePrisma().reviewNotificationLedger.updateMany({
+      const claimed = await (transaction ?? requirePrisma()).reviewNotificationLedger.updateMany({
         where: {
           id,
           attemptCount: { lt: REVIEW_NOTIFICATION_MAX_ATTEMPTS },
@@ -143,7 +144,7 @@ export function createReviewNotificationStore(): ReviewNotificationStore {
       return claimed.count === 1;
     },
     async getContext(id) {
-      const ledger = await requirePrisma().reviewNotificationLedger.findUnique({
+      const ledger = await (transaction ?? requirePrisma()).reviewNotificationLedger.findUnique({
         where: { id, reviewRound: { project: accessibleProjectWhere() } },
         include: { reviewRound: { select: {
           id: true,
@@ -183,14 +184,14 @@ export function createReviewNotificationStore(): ReviewNotificationStore {
       };
     },
     async markSent(id, leaseExpiresAt, providerMessageId, sentAt) {
-      const updated = await requirePrisma().reviewNotificationLedger.updateMany({
+      const updated = await (transaction ?? requirePrisma()).reviewNotificationLedger.updateMany({
         where: { id, status: "claimed", leaseExpiresAt },
         data: { status: "sent", leaseExpiresAt: null, providerMessageId, sentAt, failureCode: null },
       });
       return updated.count === 1;
     },
     async markFailed(id, leaseExpiresAt, attemptCount, nextAttemptAt, terminal, failureCode) {
-      const updated = await requirePrisma().reviewNotificationLedger.updateMany({
+      const updated = await (transaction ?? requirePrisma()).reviewNotificationLedger.updateMany({
         where: { id, status: "claimed", leaseExpiresAt },
         data: {
           status: terminal ? "failed" : "pending",
@@ -203,7 +204,7 @@ export function createReviewNotificationStore(): ReviewNotificationStore {
       return updated.count === 1;
     },
     async retry(scope, reviewRoundId, id, now) {
-      const updated = await requirePrisma().reviewNotificationLedger.updateMany({
+      const updated = await (transaction ?? requirePrisma()).reviewNotificationLedger.updateMany({
         where: {
           id,
           reviewRoundId,

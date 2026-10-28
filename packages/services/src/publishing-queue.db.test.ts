@@ -350,6 +350,20 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await expect(publishingQueue.accept({ actorUserId: viewer.id, workspaceId: f.workspace.id }, randomUUID())).rejects.toBeDefined();
 	});
 
+	test("one account's posting slots can be read by any member, but only for a connected account of this Workspace", async () => {
+		const f = await fixture({ schedule: null });
+		expect(await publishingQueue.getPostingSchedule(scope(f), f.account.id)).toBeNull();
+		await publishingQueue.setPostingSchedule(scope(f), f.account.id, { slots: [{ weekday: "fri", time: "08:00" }] });
+		expect(await publishingQueue.getPostingSchedule(scope(f), f.account.id)).toEqual({ slots: [{ weekday: "fri", time: "08:00" }] });
+		const viewer = await prisma.user.create({ data: { clerkId: `queue-reader:${randomUUID()}`, primaryEmail: `reader-${randomUUID()}@example.test` } });
+		await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: viewer.id, role: "viewer" } });
+		expect(await publishingQueue.getPostingSchedule({ actorUserId: viewer.id, workspaceId: f.workspace.id }, f.account.id)).not.toBeNull();
+		const other = await fixture();
+		await expect(publishingQueue.getPostingSchedule(scope(f), other.account.id)).rejects.toMatchObject({ code: "social_account_unavailable" });
+		await prisma.socialAccount.update({ where: { id: f.account.id }, data: { status: "revoked" } });
+		await expect(publishingQueue.getPostingSchedule(scope(f), f.account.id)).rejects.toMatchObject({ code: "social_account_unavailable" });
+	});
+
 	test("accepting converts the proposal in place: its ID is the scheduled post, with its source kept", async () => {
 		const f = await fixture();
 		const proposal = await propose(f);

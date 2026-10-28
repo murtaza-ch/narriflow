@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import type { PricingTier, WorkspaceRole, WorkspaceStatus } from "@prisma/client";
+import type { Prisma, PricingTier, WorkspaceRole, WorkspaceStatus } from "@prisma/client";
 
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -176,8 +176,13 @@ export class WorkspaceService {
     });
   }
 
-  async createPendingBusinessWorkspace(userId: string, input: { name: string }) {
-    const prisma = requiredPrisma();
+  /** `db` lets a receipt-backed command create the Workspace in its acceptance transaction. */
+  async createPendingBusinessWorkspace(
+    userId: string,
+    input: { name: string },
+    db: Prisma.TransactionClient = requiredPrisma(),
+  ) {
+    const prisma = db;
     const name = normalizeWorkspaceName(input.name);
     const [user, ownedCount, personalWorkspace] = await Promise.all([
       prisma.user.findFirst({ where: { id: userId, deletedAt: null }, select: { id: true } }),
@@ -465,6 +470,20 @@ export class WorkspaceService {
       actorRole: actor.role,
       invitedRole: input.role,
     });
+    return this.issueInvite(requiredPrisma(), userId, workspaceId, input);
+  }
+
+  /**
+   * Writes the invite and returns it with its one-time raw token. The caller
+   * has already admitted the actor and checked the entitlement; `db` is a
+   * transaction when a receipt-backed command accepts the invite atomically.
+   */
+  async issueInvite(
+    db: Prisma.TransactionClient,
+    userId: string,
+    workspaceId: string,
+    input: { email: string; role: Exclude<WorkspaceRole, "owner"> },
+  ) {
     const email = input.email.trim().toLocaleLowerCase("en-US");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       throw new WorkspaceOperationError(
@@ -472,13 +491,12 @@ export class WorkspaceService {
         "Enter a valid email address",
       );
     }
-    const prisma = requiredPrisma();
-    const existingUser = await prisma.user.findFirst({
+    const existingUser = await db.user.findFirst({
       where: { primaryEmail: { equals: email, mode: "insensitive" } },
       select: { id: true },
     });
     if (existingUser) {
-      const member = await prisma.workspaceMember.findUnique({
+      const member = await db.workspaceMember.findUnique({
         where: { workspaceId_userId: { workspaceId, userId: existingUser.id } },
       });
       if (member) {
@@ -488,13 +506,13 @@ export class WorkspaceService {
         );
       }
     }
-    await prisma.workspaceInvite.updateMany({
+    await db.workspaceInvite.updateMany({
       where: { workspaceId, email: { equals: email, mode: "insensitive" }, acceptedAt: null, revokedAt: null },
       data: { revokedAt: new Date() },
     });
     const token = randomBytes(32).toString("base64url");
     const tokenHash = createHash("sha256").update(token).digest("hex");
-    const invite = await prisma.workspaceInvite.create({
+    const invite = await db.workspaceInvite.create({
       data: {
         workspaceId,
         email,
@@ -518,7 +536,17 @@ export class WorkspaceService {
 
   async resendInvite(userId: string, workspaceId: string, inviteId: string) {
     await this.requireActor(userId, workspaceId, "members.invite");
-    const invite = await requiredPrisma().workspaceInvite.findFirst({
+    const invite = await this.readResendableInvite(requiredPrisma(), workspaceId, inviteId);
+    return this.createInvite(userId, workspaceId, invite);
+  }
+
+  /** The pending invite a resend replaces, or a refusal when it is gone. */
+  async readResendableInvite(
+    db: Prisma.TransactionClient,
+    workspaceId: string,
+    inviteId: string,
+  ): Promise<{ email: string; role: Exclude<WorkspaceRole, "owner"> }> {
+    const invite = await db.workspaceInvite.findFirst({
       where: {
         id: inviteId,
         workspaceId,
@@ -533,10 +561,7 @@ export class WorkspaceService {
         "Invitation is no longer available",
       );
     }
-    return this.createInvite(userId, workspaceId, {
-      email: invite.email,
-      role: invite.role,
-    });
+    return { email: invite.email, role: invite.role };
   }
 
   async getInvitePreview(rawToken: string) {
