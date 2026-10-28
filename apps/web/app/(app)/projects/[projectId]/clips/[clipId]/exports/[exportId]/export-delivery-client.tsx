@@ -22,6 +22,7 @@ import {
 	RefreshCw,
 	Send,
 	ShieldCheck,
+	UserCheck,
 } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Progress } from "@narriflow/ui/components/progress";
@@ -96,6 +97,8 @@ export function ExportDeliveryClient({
 	timelineUpgrade,
 	canEdit,
 	publishingUpgrade,
+	canSendForReview,
+	reviewUpgrade,
 }: {
 	initialExport: ClipExportSnapshot;
 	initialSeq: number;
@@ -107,6 +110,10 @@ export function ExportDeliveryClient({
 	canEdit: boolean;
 	/** What unlocks publishing; `null` when the plan already publishes. */
 	publishingUpgrade: UpgradePrompt | null;
+	/** Role allows starting a review round (`review.manage`). */
+	canSendForReview: boolean;
+	/** What unlocks review rooms; `null` when the plan has them. */
+	reviewUpgrade: UpgradePrompt | null;
 }) {
 	const { openUpgrade } = useUpgrade();
 	const [data, setData] = useState(initialExport);
@@ -204,6 +211,9 @@ export function ExportDeliveryClient({
 		data.variants[0];
 	const copy = statusCopy(data.status);
 	const hasReady = data.variants.some((variant) => variant.hasAsset);
+	// The review composer only lists exports that are fully ready, so a rendering or
+	// partially ready export would open it with nothing picked.
+	const reviewable = data.status === "ready" && hasReady;
 	const hasFailed = data.variants.some(
 		(variant) => variant.status === "failed",
 	);
@@ -641,6 +651,36 @@ export function ExportDeliveryClient({
 										)}
 									</Button>
 								)}
+								{canSendForReview ? (
+									reviewUpgrade ? (
+										<LockedButton {...TILE_PROPS} gridColumn="span 2" prompt={reviewUpgrade}>
+											<TileBody icon={<UserCheck size={16} />} label="Send for review" hint="Get a client's approval" />
+										</LockedButton>
+									) : (
+										<Button {...TILE_PROPS} gridColumn="span 2" asChild={reviewable} disabled={!reviewable}>
+											{reviewable ? (
+												// The project's review composer opens with this export picked
+												// (same `exportId:variantIds` format as encodeReviewSelection).
+												<Link
+													href={`/projects/${data.projectId}?tab=review&reviewSelection=${encodeURIComponent(
+														`${data.id}:${data.variants
+															.filter((variant) => variant.hasAsset)
+															.map((variant) => variant.id)
+															.join(",")}`,
+													)}`}
+												>
+													<TileBody icon={<UserCheck size={16} />} label="Send for review" hint="Get a client's approval" />
+												</Link>
+											) : (
+												<TileBody
+													icon={<UserCheck size={16} />}
+													label="Send for review"
+													hint={data.status === "ready" ? "Get a client's approval" : "Available once the export is ready"}
+												/>
+											)}
+										</Button>
+									)
+								) : null}
 							</Grid>
 							{shareUrl ? (
 								<Flex align="center" gap="2" mt="2" ps="3" pe="1" py="1" bg="accent.subtle" borderRadius="l2">

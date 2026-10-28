@@ -25,6 +25,8 @@ export default async function ClipExportPage({
       timelineUpgrade={featureUpgradePrompt(appUser.pricingTier, "export.timelines", "Upgrade to edit in your own editor")}
       canEdit={workspaceAllowsCapability({ role: appUser.role, status: appUser.status }, "content.edit")}
       publishingUpgrade={featureUpgradePrompt(appUser.pricingTier, "publishing.schedule", "Upgrade to publish your clips")}
+      canSendForReview={workspaceAllowsCapability({ role: appUser.role, status: appUser.status }, "review.manage")}
+      reviewUpgrade={featureUpgradePrompt(appUser.pricingTier, "review.rooms", "Upgrade to share projects for client review")}
     />
   );
 }

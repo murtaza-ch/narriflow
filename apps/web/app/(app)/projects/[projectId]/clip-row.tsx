@@ -30,6 +30,7 @@ import {
 	Pencil,
 	Play,
 	Scissors,
+	Share2,
 } from "lucide-react";
 import { formatDuration, formatTimecode } from "@/lib/format";
 import {
@@ -614,6 +615,67 @@ export function ClipRow({
 		await queueRender(aspectRatio);
 	}
 
+	const [sharing, setSharing] = useState(false);
+	/**
+	 * Share opens the clip's export page (link, publish, review, downloads).
+	 * It reuses the clip's current export when there is one; otherwise an
+	 * editor can render one, after the same capacity confirm as Render.
+	 */
+	async function openShare() {
+		setSharing(true);
+		setActionError(null);
+		try {
+			const exportPage = (exportId: string) =>
+				`/projects/${clip.projectId}/clips/${clip.id}/exports/${exportId}`;
+			const response = await fetch(`/api/projects/${clip.projectId}/exports/current`, { cache: "no-store" });
+			const payload = (await response.json().catch(() => null)) as {
+				exports?: Array<{ id: string; clipId: string; variants: Array<{ aspectRatio: string }> }>;
+			} | null;
+			// A failed or malformed lookup is not "no export": say so, and don't offer to render.
+			if (!response.ok || !Array.isArray(payload?.exports)) {
+				setActionError(apiErrorCopy(payload, "Could not check this clip's exports. Try again."));
+				return;
+			}
+			const mine = payload.exports.filter((item) => item.clipId === clip.id);
+			const current =
+				mine.find((item) => item.variants.some((variant) => variant.aspectRatio === selectedAspectRatio)) ?? mine[0];
+			if (current) {
+				router.push(exportPage(current.id));
+				return;
+			}
+			if (!canEdit) {
+				setActionError("Nothing to share yet. An editor needs to render this clip first.");
+				return;
+			}
+			const confirmed = await confirm({
+				title: `Prepare a ${selectedAspectRatio} video to share?`,
+				description:
+					"Rendering burns captions into a shareable video and uses render capacity on your plan.",
+				confirmLabel: "Render and share",
+			});
+			if (!confirmed) return;
+			const created = await fetch(`/api/projects/${clip.projectId}/clips/${clip.id}/exports`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "idempotency-key": crypto.randomUUID() },
+				body: JSON.stringify({
+					expectedRevision: clip.editorRevision,
+					aspectRatios: [selectedAspectRatio],
+					resolution: publishing.config.can1080pExport ? "1080p" : "720p",
+				}),
+			});
+			const body = (await created.json().catch(() => null)) as { export?: { id?: string } } | null;
+			if (!created.ok || !body?.export?.id) {
+				setActionError(apiErrorCopy(body, "Could not prepare a video to share."));
+				return;
+			}
+			router.push(exportPage(body.export.id));
+		} catch {
+			setActionError("Could not open sharing. Try again.");
+		} finally {
+			setSharing(false);
+		}
+	}
+
 	const studioHref = `/projects/${clip.projectId}/clips/${clip.id}/studio`;
 	const visibleError = actionError ?? previewError;
 	const isCaptionOnly = rank === null;
@@ -1121,11 +1183,21 @@ export function ClipRow({
 									{selectedStatus === "failed" ? "Retry render" : "Render"}
 								</Button>
 							)}
+							<IconButton
+								size="sm"
+								variant="ghost"
+								ms="auto"
+								aria-label="Share clip"
+								title="Share: link, publish, review, downloads"
+								disabled={sharing}
+								onClick={() => void openShare()}
+							>
+								{sharing ? <Spinner size="xs" /> : <Share2 size={16} />}
+							</IconButton>
 							{canEdit ? (
 								<IconButton
 									size="sm"
 									variant="ghost"
-									ms="auto"
 									aria-label="Trim or extend clip"
 									title="Trim / Extend"
 									onClick={() => setEditingBoundaries(true)}
