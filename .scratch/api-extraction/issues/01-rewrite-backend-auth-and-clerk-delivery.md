@@ -40,7 +40,7 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 |---|---|---|---|---|---|---|
 | 2 | `app/api/webhooks/clerk/route.ts` (143 lines) | POST | Svix-verified Clerk webhook: `user.created/updated` to `syncClerkUserPayload`, `user.deleted` to `markUserDeletedByClerkId`, `email.*` relayed by `@narriflow/email` `relayClerkEmail`; idempotent via `getWebhookDeliveryLog` / `recordWebhookDeliveryLog("clerk", svixId)`. | `headers()` from `next/headers`; `UserJSON` type from `@clerk/nextjs/server`; `validateWebhookEnv()` from `lib/env.ts` (`server-only`); `runtime = "nodejs"`. | Svix signature (`CLERK_WEBHOOK_SECRET`) | **Move to API** (backend writes users). Replace `headers()` with `c.req.header`, type from `@clerk/backend`; update the endpoint URL in the Clerk dashboard (external registration). |
 
-Capture the median of three warm `bun run --cwd apps/web typecheck` runs before source changes; record machine and command durations here for 31/32. Dependency-install lockfile ownership is serial 01 -> 02 -> 03 -> 04, then 31.
+Baseline already captured by the orchestrator in `.scratch/api-extraction/baseline.md` (warm web typecheck median 4s at 5d65a0c8). Dependency-install lockfile ownership is serial 01 -> 02 -> 03 -> 04, then 31.
 
 ## Acceptance criteria
 
