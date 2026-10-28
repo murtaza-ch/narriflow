@@ -2,6 +2,8 @@ import { Progress as ChakraProgress } from "@chakra-ui/react"
 
 export interface ProgressProps {
   value?: number | null
+  /** Accessible name for the progress bar. */
+  label?: string
 }
 
 /**
@@ -9,9 +11,9 @@ export interface ProgressProps {
  * 3px bg.muted track, ultramarine fill, full radius. For static values
  * prefer `Meter`.
  */
-export function Progress({ value }: ProgressProps) {
+export function Progress({ value, label }: ProgressProps) {
   return (
-    <ChakraProgress.Root value={value ?? undefined} colorPalette="accent">
+    <ChakraProgress.Root value={value ?? undefined} colorPalette="accent" aria-label={label}>
       <ChakraProgress.Track h="3px" borderRadius="full" bg="bg.muted">
         <ChakraProgress.Range borderRadius="full" bg="accent.solid" />
       </ChakraProgress.Track>

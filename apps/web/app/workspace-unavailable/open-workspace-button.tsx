@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Stack, Text } from "@chakra-ui/react";
+import { ArrowRight } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { switchWorkspaceAction } from "../(app)/_actions/workspace";
 import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
@@ -16,6 +17,8 @@ export function OpenWorkspaceButton({ workspaceId }: { workspaceId: string }) {
       <Button
         size="sm"
         variant="subtle"
+        bg="bg.panel"
+        _hover={{ bg: "bg.muted" }}
         loading={pending}
         onClick={() =>
           startTransition(async () => {
@@ -29,6 +32,7 @@ export function OpenWorkspaceButton({ workspaceId }: { workspaceId: string }) {
         }
       >
         Open
+        <ArrowRight size={14} aria-hidden />
       </Button>
       {error ? <Text role="alert" fontSize="12px" color="danger.fg">{error}</Text> : null}
     </Stack>
